@@ -31,10 +31,13 @@ linters:
   exclusions:
     rules:
       # Test helpers often call side-effecting APIs and assert via the
-      # surrounding test, not the returned error.
+      # surrounding test, not the returned error. `unused` also misfires
+      # on scaffold helpers that only get wired up once a sibling test
+      # grows into them.
       - path: _test\.go
         linters:
           - errcheck
+          - unused
 formatters:
   enable:
     - gofmt

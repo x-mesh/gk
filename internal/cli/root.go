@@ -12,10 +12,6 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
-
 	// Persistent flags populated during root init.
 	flagRepo    string
 	flagVerbose bool
@@ -47,7 +43,6 @@ func Root() *cobra.Command { return rootCmd }
 
 // SetVersionInfo wires build-time version metadata for `gk --version` output.
 func SetVersionInfo(v, c, d string) {
-	version, commit, date = v, c, d
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", v, c, d)
 }
 

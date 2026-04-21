@@ -179,6 +179,7 @@ func runBuiltinBranchCheck(ctx context.Context, r git.Runner, cfg *config.Config
 }
 
 // runBuiltinNoConflict performs a pre-merge conflict scan against the base branch.
+// Thin wrapper over scanMergeConflicts; see precheck.go for the shared helper.
 func runBuiltinNoConflict(ctx context.Context, r git.Runner, cfg *config.Config) error {
 	client := git.NewClient(r)
 	remote := cfg.Remote
@@ -195,27 +196,20 @@ func runBuiltinNoConflict(ctx context.Context, r git.Runner, cfg *config.Config)
 		base = b
 	}
 
-	// Locate merge-base between HEAD and remote base.
-	mb, _, err := r.Run(ctx, "merge-base", "HEAD", remote+"/"+base)
+	target := remote + "/" + base
+	mb, _, err := r.Run(ctx, "merge-base", "HEAD", target)
 	if err != nil {
 		// No upstream ref yet (e.g. fresh branch not pushed) — treat as pass.
 		return nil
 	}
 	mergeBase := strings.TrimSpace(string(mb))
 
-	// `git merge-tree --write-tree` requires git >= 2.38.
-	stdout, stderr, merr := r.Run(ctx, "merge-tree", "--write-tree", "--no-messages",
-		mergeBase, "HEAD", remote+"/"+base)
-	if merr != nil {
-		stderrStr := string(stderr)
-		if strings.Contains(stderrStr, "unknown option") || strings.Contains(stderrStr, "usage:") {
-			// Older git — skip gracefully.
-			return nil
-		}
-		return fmt.Errorf("merge-tree: %s: %w", strings.TrimSpace(stderrStr), merr)
+	conflicts, serr := scanMergeConflicts(ctx, r, mergeBase, "HEAD", target)
+	if serr != nil {
+		return fmt.Errorf("merge-tree: %w", serr)
 	}
-	if strings.Contains(string(stdout), "<<<<<<<") {
-		return fmt.Errorf("conflicts detected merging HEAD into %s/%s", remote, base)
+	if len(conflicts) > 0 {
+		return fmt.Errorf("conflicts detected merging HEAD into %s (%d path(s))", target, len(conflicts))
 	}
 	return nil
 }

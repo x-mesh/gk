@@ -14,13 +14,13 @@ import (
 type StateKind int
 
 const (
-	StateNone       StateKind = iota
-	StateRebaseMerge          // interactive rebase / merge backend (.git/rebase-merge)
-	StateRebaseApply          // am / patch-based rebase (.git/rebase-apply)
-	StateMerge                // merge conflict (.git/MERGE_HEAD)
-	StateCherryPick           // cherry-pick in progress (.git/CHERRY_PICK_HEAD)
-	StateRevert               // revert in progress (.git/REVERT_HEAD)
-	StateBisect               // bisect in progress (.git/BISECT_LOG)
+	StateNone        StateKind = iota
+	StateRebaseMerge           // interactive rebase / merge backend (.git/rebase-merge)
+	StateRebaseApply           // am / patch-based rebase (.git/rebase-apply)
+	StateMerge                 // merge conflict (.git/MERGE_HEAD)
+	StateCherryPick            // cherry-pick in progress (.git/CHERRY_PICK_HEAD)
+	StateRevert                // revert in progress (.git/REVERT_HEAD)
+	StateBisect                // bisect in progress (.git/BISECT_LOG)
 )
 
 // String returns a human-readable name for the StateKind.

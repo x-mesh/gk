@@ -228,9 +228,9 @@ func TestDefaultBranch_FallbackDevelop(t *testing.T) {
 func TestDefaultBranch_FallbackMain(t *testing.T) {
 	r := &FakeRunner{
 		Responses: map[string]FakeResponse{
-			"symbolic-ref --short refs/remotes/origin/HEAD":          {ExitCode: 128},
-			"show-ref --verify --quiet refs/remotes/origin/develop":  {ExitCode: 1},
-			"show-ref --verify --quiet refs/remotes/origin/main":     {ExitCode: 0},
+			"symbolic-ref --short refs/remotes/origin/HEAD":         {ExitCode: 128},
+			"show-ref --verify --quiet refs/remotes/origin/develop": {ExitCode: 1},
+			"show-ref --verify --quiet refs/remotes/origin/main":    {ExitCode: 0},
 		},
 	}
 	c := NewClient(r)

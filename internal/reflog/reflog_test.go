@@ -33,11 +33,11 @@ func TestParse_EmptyInput(t *testing.T) {
 
 func TestParse_SingleRecord(t *testing.T) {
 	const (
-		sha     = "abc1234567890abcdef1234567890abcdef123456"
-		short   = "abc1234"
-		ref     = "HEAD@{0}"
-		msg     = "commit: fix typo"
-		unixAt  = "1700000000"
+		sha    = "abc1234567890abcdef1234567890abcdef123456"
+		short  = "abc1234"
+		ref    = "HEAD@{0}"
+		msg    = "commit: fix typo"
+		unixAt = "1700000000"
 	)
 
 	raw := buildRaw(record(sha, short, ref, msg, unixAt))

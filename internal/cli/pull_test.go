@@ -200,13 +200,13 @@ func TestRunPull_DirtyNoAutostash(t *testing.T) {
 func TestRunPull_Autostash(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short refs/remotes/origin/HEAD":    {Stdout: "origin/main\n"},
-			"check-ref-format --branch main":                   {Stdout: "main\n"},
-			"status --porcelain=v1 -uno":                       {Stdout: "M  somefile.go\n"},
-			"stash push -m gk pull autostash":                  {},
-			"fetch origin main":                                {},
-			"rebase origin/main":                               {Stdout: "Successfully rebased.\n"},
-			"stash pop":                                        {},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
+			"check-ref-format --branch main":                {Stdout: "main\n"},
+			"status --porcelain=v1 -uno":                    {Stdout: "M  somefile.go\n"},
+			"stash push -m gk pull autostash":               {},
+			"fetch origin main":                             {},
+			"rebase origin/main":                            {Stdout: "Successfully rebased.\n"},
+			"stash pop":                                     {},
 		},
 	}
 

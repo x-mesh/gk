@@ -41,8 +41,8 @@ func (c *Client) Fetch(ctx context.Context, remote, ref string, prune bool) erro
 // RebaseResult holds the classified outcome of a rebase operation.
 type RebaseResult struct {
 	Success   bool
-	Conflict  bool   // conflict occurred
-	NothingTo bool   // already up-to-date / nothing to do
+	Conflict  bool // conflict occurred
+	NothingTo bool // already up-to-date / nothing to do
 	Stdout    string
 	Stderr    string
 }
@@ -132,7 +132,7 @@ func (c *Client) DefaultBranch(ctx context.Context, remote string) (string, erro
 type StatusKind int
 
 const (
-	KindOrdinary  StatusKind = iota
+	KindOrdinary StatusKind = iota
 	KindRenamed
 	KindUnmerged
 	KindUntracked

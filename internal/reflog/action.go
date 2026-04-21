@@ -7,13 +7,13 @@ type Action string
 
 const (
 	ActionReset      Action = "reset"
-	ActionCommit     Action = "commit"      // includes commit (initial), commit (amend)
+	ActionCommit     Action = "commit" // includes commit (initial), commit (amend)
 	ActionMerge      Action = "merge"
-	ActionRebase     Action = "rebase"      // finish, start, pick, continue, skip, abort
-	ActionCheckout   Action = "checkout"    // moving from X to Y
+	ActionRebase     Action = "rebase"   // finish, start, pick, continue, skip, abort
+	ActionCheckout   Action = "checkout" // moving from X to Y
 	ActionPull       Action = "pull"
 	ActionPush       Action = "push"
-	ActionBranch     Action = "branch"      // Branch: created, renamed
+	ActionBranch     Action = "branch" // Branch: created, renamed
 	ActionCherryPick Action = "cherry-pick"
 	ActionStash      Action = "stash"
 	ActionUnknown    Action = "unknown"

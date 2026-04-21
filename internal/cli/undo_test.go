@@ -344,7 +344,7 @@ func TestShortSHA(t *testing.T) {
 		{"abcdefgh", "abcdefgh"},                                 // exactly 8 → unchanged
 		{"abcdefghi", "abcdefgh"},                                // 9 → first 8
 		{"abcdefghijklmnopqrstuvwxyz1234567890abcd", "abcdefgh"}, // full sha → first 8
-		{"", ""},                                                  // empty → empty
+		{"", ""}, // empty → empty
 	}
 	for _, tc := range tests {
 		got := shortSHA(tc.input)

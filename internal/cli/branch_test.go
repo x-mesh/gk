@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
-	"github.com/spf13/cobra"
 )
 
 // ---------------------------------------------------------------------------

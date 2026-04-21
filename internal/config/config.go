@@ -56,9 +56,9 @@ type PreflightConfig struct {
 // Command can be a shell command (e.g., "make test") or a built-in
 // alias: "commit-lint", "branch-check", "no-conflict".
 type PreflightStep struct {
-	Name        string `mapstructure:"name"         yaml:"name"`
-	Command     string `mapstructure:"command"      yaml:"command"`
-	ContinueOnFailure bool `mapstructure:"continue_on_failure" yaml:"continue_on_failure"`
+	Name              string `mapstructure:"name"         yaml:"name"`
+	Command           string `mapstructure:"command"      yaml:"command"`
+	ContinueOnFailure bool   `mapstructure:"continue_on_failure" yaml:"continue_on_failure"`
 }
 
 // Defaults returns a Config populated with default values.

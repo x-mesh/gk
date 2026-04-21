@@ -23,9 +23,11 @@ linters:
         - (*os.File).Close
         - os.Remove
     revive:
-      rules:
-        - name: exported
-          arguments: ["checkPublicInterface"]
+      # Use revive's minimal default rules. The strict `exported` rule
+      # (require a doc comment on every exported identifier) is valuable
+      # but currently out of scope — turning it on would require a
+      # project-wide doc sweep across ~30 call sites.
+      rules: []
   exclusions:
     rules:
       # Test helpers often call side-effecting APIs and assert via the

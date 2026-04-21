@@ -38,7 +38,7 @@ type branchCheckResult struct {
 	Branch   string
 	Patterns []string
 	Matched  bool
-	Skipped  bool   // true when the branch is on the protected allowlist
+	Skipped  bool // true when the branch is on the protected allowlist
 	Reason   string
 }
 

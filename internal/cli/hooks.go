@@ -248,4 +248,3 @@ func absPath(p string) string {
 	}
 	return p
 }
-

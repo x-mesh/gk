@@ -1,0 +1,40 @@
+# ~/.config/gk/config.yaml (or ./.gk.yaml in a repo)
+#
+# gk configuration — see docs/config.md for full reference.
+# All fields are optional. Omit to use defaults.
+
+# Default base branch for `gk pull`. If empty, auto-detect:
+#   origin/HEAD → develop → main → master
+base_branch: ""
+
+# Remote name used for fetch/rebase operations.
+remote: origin
+
+log:
+  # git --pretty=format string. See docs/commands.md#gk-log.
+  # Default shows: short hash, relative age, author, subject, refs.
+  format: '%C(yellow)%h%C(reset) %C(green)(%ar)%C(reset) %C(bold blue)<%an>%C(reset) %s%C(auto)%d%C(reset)'
+
+  # Include topology graph by default.
+  graph: false
+
+  # Max commits (overridden by --limit / -n flag).
+  limit: 20
+
+ui:
+  # Color mode: "auto", "always", "never". NO_COLOR env is always respected.
+  color: auto
+
+  # Default conflict resolution preference: "", "ours", "theirs".
+  # Empty means always prompt interactively when TTY is available.
+  prefer: ""
+
+branch:
+  # Threshold in days for `gk branch list --stale`.
+  stale_days: 30
+
+  # Branches never deleted by `gk branch clean`.
+  protected:
+    - main
+    - master
+    - develop

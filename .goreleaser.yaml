@@ -1,0 +1,52 @@
+version: 2
+project_name: gk
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: gk
+    main: ./cmd/gk
+    binary: gk
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+snapshot:
+  version_template: "{{ .Tag }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+brews:
+  - name: gk
+    repository:
+      owner: x-mesh
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/x-mesh/gk
+    description: "Lightweight Go git helper CLI (pull, log, status, branch)"
+    license: MIT
+    commit_author:
+      name: gk-bot
+      email: bot@gk.dev
+    test: |
+      system "#{bin}/gk --version"
+    install: |
+      bin.install "gk"
+    caveats: |
+      gk uses git under the hood. Ensure git >= 2.30 is installed.

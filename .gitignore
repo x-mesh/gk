@@ -1,0 +1,17 @@
+bin/
+dist/
+*.test
+*.out
+coverage.out
+.DS_Store
+.env
+.idea/
+.vscode/
+
+# AI / project harness state (not part of the product)
+.claude/
+.omc/
+.xm/
+
+# Compiled binaries at root (for local dev)
+/gk

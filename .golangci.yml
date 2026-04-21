@@ -12,10 +12,27 @@ linters:
     - revive
     - unconvert
   settings:
+    errcheck:
+      # Writes to stdout/stderr and defer-close idioms rarely produce
+      # actionable errors in CLI code; excluding keeps the signal strong.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - os.Remove
     revive:
       rules:
         - name: exported
           arguments: ["checkPublicInterface"]
+  exclusions:
+    rules:
+      # Test helpers often call side-effecting APIs and assert via the
+      # surrounding test, not the returned error.
+      - path: _test\.go
+        linters:
+          - errcheck
 formatters:
   enable:
     - gofmt

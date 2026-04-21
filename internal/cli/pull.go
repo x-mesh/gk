@@ -90,7 +90,10 @@ func runPullCore(cmd *cobra.Command) error {
 	var stashed bool
 	if dirty {
 		if !autostash {
-			return errors.New("working tree has uncommitted changes (use --autostash)")
+			return WithHint(
+				errors.New("working tree has uncommitted changes"),
+				hintCommand("gk pull --autostash"),
+			)
 		}
 		if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk pull autostash"); err != nil {
 			return fmt.Errorf("stash failed: %w", err)

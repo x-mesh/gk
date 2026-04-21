@@ -16,7 +16,7 @@ var (
 func main() {
 	cli.SetVersionInfo(version, commit, date)
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "gk:", err)
+		fmt.Fprintln(os.Stderr, cli.FormatError(err))
 		os.Exit(1)
 	}
 }

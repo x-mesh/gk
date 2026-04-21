@@ -66,7 +66,10 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 
 	// Resolve the target to a concrete commit so error messages are actionable.
 	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", target+"^{commit}"); err != nil {
-		return fmt.Errorf("unknown target %q: not a commit", target)
+		return WithHint(
+			fmt.Errorf("unknown target %q: not a commit", target),
+			"run `git fetch` if the ref lives on a remote, or spell-check the branch name",
+		)
 	}
 
 	base := strings.TrimSpace(baseOverride)

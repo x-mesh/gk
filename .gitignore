@@ -9,7 +9,9 @@ coverage.out
 .vscode/
 
 # AI / project harness state (not part of the product)
-.claude/
+# .claude/skills/ is tracked so /release etc. are shared; everything else is local.
+.claude/*
+!.claude/skills/
 .omc/
 .xm/
 

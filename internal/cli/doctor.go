@@ -222,7 +222,7 @@ func checkHook(ctx context.Context, r git.Runner, name, suggested string) doctor
 		return doctorCheck{
 			Name: "hooks: " + name, Status: statusWarn,
 			Detail: "not installed",
-			Fix:    fmt.Sprintf("add a %s hook that runs `%s` (gk hooks install coming in v0.4)", name, suggested),
+			Fix:    fmt.Sprintf("gk hooks install --%s   # shim runs `%s`", name, suggested),
 		}
 	}
 	if info.Mode()&0o111 == 0 {

@@ -8,7 +8,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        go: ['1.23', '1.24']
+        # Matrix must satisfy the `go 1.25.0` directive in go.mod.
+        go: ['1.25']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +25,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-      - uses: golangci/golangci-lint-action@v6
+          go-version: '1.25'
+      # action@v8 resolves the latest golangci-lint v2 release (Go 1.25-capable).
+      - uses: golangci/golangci-lint-action@v8
         with:
           version: latest

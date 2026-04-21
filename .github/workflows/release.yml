@@ -13,7 +13,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
       - name: Validate config
         uses: goreleaser/goreleaser-action@v6
         with:

@@ -412,37 +412,37 @@ func TestRenderDivergenceGauge(t *testing.T) {
 	t.Cleanup(func() { color.NoColor = false })
 
 	cases := []struct {
-		name                  string
-		ahead, behind         int
-		mustContain           []string
-		mustNotContain        []string
+		name           string
+		ahead, behind  int
+		mustContain    []string
+		mustNotContain []string
 	}{
 		{
-			name:   "in sync",
-			ahead:  0, behind: 0,
+			name:  "in sync",
+			ahead: 0, behind: 0,
 			mustContain:    []string{"[········│········]", "in sync"},
 			mustNotContain: []string{"↑", "↓"},
 		},
 		{
-			name:   "ahead only",
-			ahead:  2, behind: 0,
+			name:  "ahead only",
+			ahead: 2, behind: 0,
 			mustContain:    []string{"······▓▓│········", "↑2"},
 			mustNotContain: []string{"↓"},
 		},
 		{
-			name:   "behind only",
-			ahead:  0, behind: 3,
+			name:  "behind only",
+			ahead: 0, behind: 3,
 			mustContain:    []string{"········│▓▓▓·····", "↓3"},
 			mustNotContain: []string{"↑"},
 		},
 		{
-			name:   "both",
-			ahead:  1, behind: 4,
+			name:  "both",
+			ahead: 1, behind: 4,
 			mustContain: []string{"↑1", "↓4"},
 		},
 		{
-			name:   "clamp",
-			ahead:  50, behind: 0,
+			name:  "clamp",
+			ahead: 50, behind: 0,
 			mustContain: []string{"▓▓▓▓▓▓▓▓│", "↑50"},
 		},
 	}

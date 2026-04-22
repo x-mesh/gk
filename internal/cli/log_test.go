@@ -20,9 +20,9 @@ func TestCalendarLines(t *testing.T) {
 	mon := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC) // Monday
 	dates := []time.Time{
 		mon, mon, mon, // W1 Mon = 3 (peak)
-		mon.Add(24 * time.Hour),                  // W1 Tue = 1
-		mon.Add((7 + 3) * 24 * time.Hour),        // W2 Thu
-		mon.Add((7 + 3) * 24 * time.Hour),        // W2 Thu = 2
+		mon.Add(24 * time.Hour),           // W1 Tue = 1
+		mon.Add((7 + 3) * 24 * time.Hour), // W2 Thu
+		mon.Add((7 + 3) * 24 * time.Hour), // W2 Thu = 2
 	}
 	lines := calendarLines(dates)
 	if len(lines) != 8 {

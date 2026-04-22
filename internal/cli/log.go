@@ -86,7 +86,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	// instead of passing the user's pretty-format through to git log. The
 	// non-viz fast path still uses git's native output.
 	if viz.any() && !JSONOut() {
-		if (pulse || calendar) {
+		if pulse || calendar {
 			dates := fetchCommitDates(cmd.Context(), runner, since, args)
 			if pulse {
 				if line := pulseLine(dates, since); line != "" {
@@ -391,7 +391,7 @@ type numstat struct {
 
 func isHex(s string) bool {
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}
@@ -460,10 +460,11 @@ func renderImpactBar(adds, dels, peak int) string {
 }
 
 // rebaseSafety classifies a commit by its relation to the current upstream.
-//   ◆ already pushed (in @{u})
-//   ◇ unpushed (ahead of @{u})
-//   ! would be orphaned by a rebase onto @{u} (not a direct ancestor of HEAD)
-//   ✎ recently amended (reflog says HEAD was rewritten within an hour)
+//
+//	◆ already pushed (in @{u})
+//	◇ unpushed (ahead of @{u})
+//	! would be orphaned by a rebase onto @{u} (not a direct ancestor of HEAD)
+//	✎ recently amended (reflog says HEAD was rewritten within an hour)
 func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushed map[string]bool, amended map[string]bool) rune {
 	if amended[sha] {
 		return '✎'

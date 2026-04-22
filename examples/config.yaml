@@ -21,6 +21,13 @@ log:
   # Max commits (overridden by --limit / -n flag).
   limit: 20
 
+  # Default visualization layers for `gk log`. Values: pulse, calendar,
+  # tags-rule, impact, cc, safety, hotspots, trailers, lanes. Individual
+  # --cc / --impact / ... flags or --vis <list> override this for a single
+  # invocation; --vis none disables every layer; explicit --format also
+  # suppresses the default so the raw pretty-format wins.
+  vis: [cc, safety, tags-rule]
+
 status:
   # Default visualization layers for `gk status`. Values: gauge, bar, progress,
   # types, staleness, tree, conflict, churn, risk. Override per-invocation

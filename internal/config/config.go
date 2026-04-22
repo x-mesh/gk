@@ -13,11 +13,14 @@ type Config struct {
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 }
 
-// LogConfig controls git log output format.
+// LogConfig controls git log output format. Vis is the default set of
+// visualization layers applied when the caller does not pass any viz flag;
+// pass `--vis none` or a comma-list to override for a single invocation.
 type LogConfig struct {
-	Format string `mapstructure:"format" yaml:"format"`
-	Graph  bool   `mapstructure:"graph"  yaml:"graph"`
-	Limit  int    `mapstructure:"limit"  yaml:"limit"`
+	Format string   `mapstructure:"format" yaml:"format"`
+	Graph  bool     `mapstructure:"graph"  yaml:"graph"`
+	Limit  int      `mapstructure:"limit"  yaml:"limit"`
+	Vis    []string `mapstructure:"vis"    yaml:"vis"`
 }
 
 // StatusConfig controls gk status defaults. Vis is the default set of
@@ -88,6 +91,7 @@ func Defaults() Config {
 			Format: "%C(yellow)%h%C(reset) %C(green)(%ar)%C(reset) %C(bold blue)<%an>%C(reset) %s%C(auto)%d%C(reset)",
 			Graph:  false,
 			Limit:  20,
+			Vis:    []string{"cc", "safety", "tags-rule"},
 		},
 		Status: StatusConfig{
 			Vis:       []string{"gauge", "bar", "progress"},

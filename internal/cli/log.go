@@ -41,6 +41,7 @@ func init() {
 	cmd.Flags().Bool("hotspots", false, "mark commits that touch the repo's most-churned files")
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
+	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -51,15 +52,19 @@ func runLog(cmd *cobra.Command, args []string) error {
 	format, _ := cmd.Flags().GetString("format")
 	graph, _ := cmd.Flags().GetBool("graph")
 	limit, _ := cmd.Flags().GetInt("limit")
-	pulse, _ := cmd.Flags().GetBool("pulse")
-	calendar, _ := cmd.Flags().GetBool("calendar")
-	tagsRule, _ := cmd.Flags().GetBool("tags-rule")
+
+	// Resolve the effective viz set: any explicit flag (individual boolean or
+	// --vis) overrides the config default. --vis none disables everything.
+	effectiveLogVis := resolveLogVis(cmd, cfg)
+	pulse := containsVis(effectiveLogVis, "pulse")
+	calendar := containsVis(effectiveLogVis, "calendar")
+	tagsRule := containsVis(effectiveLogVis, "tags-rule")
 	viz := logVizFlags{
-		impact:   must[bool](cmd.Flags().GetBool("impact")),
-		cc:       must[bool](cmd.Flags().GetBool("cc")),
-		safety:   must[bool](cmd.Flags().GetBool("safety")),
-		hotspots: must[bool](cmd.Flags().GetBool("hotspots")),
-		trailers: must[bool](cmd.Flags().GetBool("trailers")),
+		impact:   containsVis(effectiveLogVis, "impact"),
+		cc:       containsVis(effectiveLogVis, "cc"),
+		safety:   containsVis(effectiveLogVis, "safety"),
+		hotspots: containsVis(effectiveLogVis, "hotspots"),
+		trailers: containsVis(effectiveLogVis, "trailers"),
 	}
 
 	if format == "" {
@@ -77,8 +82,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 
-	lanes, _ := cmd.Flags().GetBool("lanes")
-	if lanes && !JSONOut() {
+	if containsVis(effectiveLogVis, "lanes") && !JSONOut() {
 		return renderLanes(cmd, runner, since, limit, args)
 	}
 
@@ -278,6 +282,80 @@ func renderLanes(cmd *cobra.Command, runner *git.ExecRunner, since string, limit
 	axis := fmt.Sprintf("%-*s %s", nameWidth, "", faint(fmt.Sprintf("└── %s ago → now", formatAge(time.Since(minT)))))
 	fmt.Fprintln(w, axis)
 	return nil
+}
+
+// logVizNames lists every known viz token alongside its flag name so
+// resolveLogVis can map between them.
+var logVizNames = []string{
+	"pulse", "calendar", "tags-rule",
+	"impact", "cc", "safety", "hotspots", "trailers",
+	"lanes",
+}
+
+// resolveLogVis determines the effective viz set for this invocation.
+// Precedence mirrors `gk status --vis`:
+//   - If any individual viz flag (--cc, --impact, ...) OR --vis is set,
+//     the user's explicit set wins (union across forms).
+//   - --vis none returns an empty set, disabling every viz layer.
+//   - Otherwise the config default (cfg.Log.Vis) applies.
+//
+// This keeps one-off overrides ergonomic (`gk log --impact`) while still
+// letting projects lean on the configured default for bare `gk log`.
+func resolveLogVis(cmd *cobra.Command, cfg *config.Config) []string {
+	var explicit []string
+	anyExplicit := false
+
+	for _, name := range logVizNames {
+		if !cmd.Flags().Changed(name) {
+			continue
+		}
+		anyExplicit = true
+		if v, _ := cmd.Flags().GetBool(name); v {
+			explicit = appendUnique(explicit, name)
+		}
+	}
+	if cmd.Flags().Changed("vis") {
+		anyExplicit = true
+		slice, _ := cmd.Flags().GetStringSlice("vis")
+		if len(slice) == 1 && slice[0] == "none" {
+			return nil
+		}
+		for _, v := range slice {
+			explicit = appendUnique(explicit, v)
+		}
+	}
+
+	if anyExplicit {
+		return explicit
+	}
+	// When the caller explicitly sets --format, they are asking for the raw
+	// git pretty-format output; the configured viz default would ignore it,
+	// so suppress the default so --format keeps control of rendering.
+	if cmd.Flags().Changed("format") {
+		return nil
+	}
+	if cfg != nil {
+		return cfg.Log.Vis
+	}
+	return nil
+}
+
+func containsVis(set []string, name string) bool {
+	for _, v := range set {
+		if v == name {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUnique(xs []string, x string) []string {
+	for _, v := range xs {
+		if v == x {
+			return xs
+		}
+	}
+	return append(xs, x)
 }
 
 // logVizFlags captures the five per-commit visualizations that require

@@ -40,6 +40,18 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("Status.Vis[%d]: want %q, got %q", i, v, d.Status.Vis[i])
 		}
 	}
+	if !d.Status.AutoFetch {
+		t.Error("Status.AutoFetch: want true by default")
+	}
+	wantLogVis := []string{"cc", "safety", "tags-rule"}
+	if len(d.Log.Vis) != len(wantLogVis) {
+		t.Fatalf("Log.Vis len: want %d, got %d (%v)", len(wantLogVis), len(d.Log.Vis), d.Log.Vis)
+	}
+	for i, v := range wantLogVis {
+		if d.Log.Vis[i] != v {
+			t.Errorf("Log.Vis[%d]: want %q, got %q", i, v, d.Log.Vis[i])
+		}
+	}
 }
 
 func TestLoadNilFlags_NoConfigFile(t *testing.T) {

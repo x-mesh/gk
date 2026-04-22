@@ -96,6 +96,21 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--hotspots` | false | Mark commits that touch the repo's top-10 most-churned files |
 | `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |
 | `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
+| `--vis <list>` | `cc,safety,tags-rule` (from `log.vis`) | Visualization set (comma-list or repeated). Any explicit viz flag (`--vis` or an individual flag like `--cc`) overrides the configured default. Pass `--vis none` to disable all layers; setting `--format` alone also suppresses the default. |
+
+### Default visualization layers
+
+When `gk log` is invoked with no viz flag, it applies the set in `log.vis`
+(default `[cc, safety, tags-rule]`). Override rules:
+
+- `gk log --impact` → only `impact` for this run (any explicit viz flag
+  replaces the default; it does not add to it).
+- `gk log --vis cc,impact` → `cc` and `impact` only.
+- `gk log --vis none` → no visualizations for this run.
+- `gk log --format "%H %s"` → raw pretty-format output, no viz (the config
+  default is suppressed so user-supplied formats keep control).
+- `gk log --format "%H" --cc` → viz still applies because `--cc` is
+  explicit; `--format` is ignored by the viz renderer.
 
 ### Since shortcuts
 

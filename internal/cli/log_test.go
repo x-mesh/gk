@@ -10,6 +10,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -100,6 +101,76 @@ func TestParseCommitRecords(t *testing.T) {
 	if recs[1].author != "Bob" || recs[1].relDate != "1h" {
 		t.Errorf("rec1 unexpected: %+v", recs[1])
 	}
+}
+
+func TestResolveLogVis(t *testing.T) {
+	cfg := &config.Config{Log: config.LogConfig{Vis: []string{"cc", "safety", "tags-rule"}}}
+
+	// mkCmd builds a cobra command that mirrors the real registration so the
+	// resolver can query every viz flag by Changed/GetBool.
+	mkCmd := func() *cobra.Command {
+		c := &cobra.Command{Use: "log"}
+		for _, name := range logVizNames {
+			c.Flags().Bool(name, false, "")
+		}
+		c.Flags().StringSlice("vis", nil, "")
+		c.Flags().String("format", "", "")
+		return c
+	}
+
+	t.Run("no flags → config default", func(t *testing.T) {
+		got := resolveLogVis(mkCmd(), cfg)
+		if strings.Join(got, ",") != "cc,safety,tags-rule" {
+			t.Errorf("got %v, want [cc safety tags-rule]", got)
+		}
+	})
+
+	t.Run("individual flag overrides config", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("impact", "true")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "impact" {
+			t.Errorf("got %v, want [impact]", got)
+		}
+	})
+
+	t.Run("--vis none disables everything", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("vis", "none")
+		got := resolveLogVis(c, cfg)
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("--format alone suppresses config viz", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("format", "%H")
+		got := resolveLogVis(c, cfg)
+		if got != nil {
+			t.Errorf("got %v, want nil when --format is explicit", got)
+		}
+	})
+
+	t.Run("--format plus --cc keeps viz", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("format", "%H")
+		_ = c.Flags().Set("cc", "true")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "cc" {
+			t.Errorf("got %v, want [cc]", got)
+		}
+	})
+
+	t.Run("--vis union deduplicates", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("cc", "true")
+		_ = c.Flags().Set("vis", "cc,impact")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "cc,impact" {
+			t.Errorf("got %v, want [cc impact]", got)
+		}
+	})
 }
 
 func TestPulseLine(t *testing.T) {

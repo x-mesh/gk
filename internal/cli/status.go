@@ -559,13 +559,24 @@ func detachedShortSHA(ctx context.Context, runner *git.ExecRunner) string {
 // The caller currently only renders when non-empty. Distinguishing "up
 // to date" from "can't tell" is tracked for a follow-up that threads a
 // (string, ok bool) signal; for now the zero/error cases still collapse.
-func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) string {
+// sincePushSuffix now returns (suffix, ok). ok=false means the value
+// cannot be determined (no upstream, rev-list failed, offline with no
+// cached remote ref). Callers should render a dim `?` marker in that
+// case rather than silently pretending "up to date" — that was the bug
+// the error-vs-zero refine surfaces.
+//
+//	ok=false              → unknown        → caller: "· since push ?"
+//	ok=true, suffix==""   → known up-to-date → caller: silent (no chip)
+//	ok=true, suffix!=""   → unpushed exists → caller: "· <suffix>"
+func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) (string, bool) {
 	out, _, err := runner.Run(ctx, "rev-list", "@{u}..HEAD", "--format=%ct")
-	if err != nil || len(out) == 0 {
-		return ""
+	if err != nil {
+		return "", false
 	}
-	// Output interleaves `commit <sha>` lines with `<ct>` lines when
-	// --format is used with rev-list. Collect only the pure-numeric ones.
+	// Empty output = `@{u}` resolved but no unpushed commits = known up-to-date.
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return "", true
+	}
 	oldest := int64(0)
 	count := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -583,16 +594,16 @@ func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) string {
 		}
 	}
 	if count == 0 || oldest == 0 {
-		return ""
+		return "", true // known up-to-date
 	}
 	age := shortAge(time.Unix(oldest, 0))
 	if age == "" {
 		age = "now"
 	}
 	if count == 1 {
-		return fmt.Sprintf("since push %s", age)
+		return fmt.Sprintf("since push %s", age), true
 	}
-	return fmt.Sprintf("since push %s (%dc)", age, count)
+	return fmt.Sprintf("since push %s (%dc)", age, count), true
 }
 
 // renderStashSummary returns a compact one-liner describing the stash
@@ -1092,17 +1103,25 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if statusVisEnabled("since-push") && !detached {
-		if unpushed := sincePushSuffix(cmd.Context(), runner); unpushed != "" {
+		// Three-state rendering (error-vs-zero refine):
+		//   ok=false           → "· since push ?"   (dim, unknown state)
+		//   ok=true, suffix==""→ silent             (known up-to-date)
+		//   ok=true, suffix!="" → "· <suffix>"       (known unpushed)
+		unpushed, ok := sincePushSuffix(cmd.Context(), runner)
+		var extra string
+		if !ok {
+			extra = "  " + faint("· since push ?")
+		} else if unpushed != "" {
 			// R6: drop the "(Nc)" count when the gauge is already showing it.
 			if statusVisEnabled("gauge") {
 				if i := strings.Index(unpushed, " ("); i > 0 {
 					unpushed = unpushed[:i]
 				}
 			}
-			extra := "  " + faint("· "+unpushed)
-			if !wouldOverflow(extra) {
-				line += extra
-			}
+			extra = "  " + faint("· "+unpushed)
+		}
+		if extra != "" && !wouldOverflow(extra) {
+			line += extra
 		}
 	}
 	fmt.Fprintln(w, line)

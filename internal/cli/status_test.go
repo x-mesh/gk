@@ -282,9 +282,13 @@ func TestSincePushSuffix(t *testing.T) {
 	r.RunGit("push", "-q", "-u", "origin", "main")
 
 	runner := &git.ExecRunner{Dir: r.Dir}
-	// No unpushed commits yet.
-	if got := sincePushSuffix(context.Background(), runner); got != "" {
-		t.Errorf("no unpushed → expected empty, got %q", got)
+	// No unpushed commits yet — ok=true (upstream known), suffix empty.
+	got, ok := sincePushSuffix(context.Background(), runner)
+	if !ok {
+		t.Errorf("upstream configured → expected ok=true, got ok=false")
+	}
+	if got != "" {
+		t.Errorf("no unpushed → expected empty suffix, got %q", got)
 	}
 	// Add two unpushed commits.
 	r.WriteFile("a.txt", "a\n")
@@ -294,12 +298,30 @@ func TestSincePushSuffix(t *testing.T) {
 	r.RunGit("add", "b.txt")
 	r.RunGit("commit", "-m", "unpushed 2")
 
-	got := sincePushSuffix(context.Background(), runner)
+	got, ok = sincePushSuffix(context.Background(), runner)
+	if !ok {
+		t.Fatalf("expected ok=true after pushing commits, got ok=false")
+	}
 	if !strings.Contains(got, "since push") {
 		t.Errorf("expected 'since push' prefix, got %q", got)
 	}
 	if !strings.Contains(got, "(2c)") {
 		t.Errorf("expected '(2c)' count suffix, got %q", got)
+	}
+}
+
+// TestSincePushSuffix_UnknownWhenNoUpstream verifies the error-vs-zero
+// split: a repo without an upstream returns ok=false (unknown) so the
+// caller can render `?` instead of silently claiming up-to-date.
+func TestSincePushSuffix_UnknownWhenNoUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t) // fresh repo, no upstream configured
+	runner := &git.ExecRunner{Dir: r.Dir}
+	_, ok := sincePushSuffix(context.Background(), runner)
+	if ok {
+		t.Error("no upstream → expected ok=false (unknown), got ok=true")
 	}
 }
 

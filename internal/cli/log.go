@@ -602,17 +602,21 @@ func renderImpactBar(adds, dels, peak int) string {
 }
 
 // rebaseSafety classifies a commit by its relation to the current upstream.
-// The "already pushed" case — which is the overwhelming majority on an
-// active branch — returns a blank space on purpose: marking every pushed
-// commit with a glyph would flood the log column and drown out the cases
-// that actually deserve attention.
+// The `pushedKnown` flag is critical: when it is false (no upstream, offline,
+// rev-list failed) we MUST return blank — pretending every commit is
+// "unpushed" because the lookup failed was a bug where offline users saw
+// `◇` on every single row.
 //
-//	(space) already pushed (in @{u}) — default, silent state
-//	◇       unpushed (ahead of @{u}) — you still need to push this
-//	✎       recently amended (reflog says HEAD was rewritten within an hour)
-func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushed map[string]bool, amended map[string]bool) rune {
-	if amended[sha] {
+//	(space) pushedKnown && pushed[sha]           — silent safe state
+//	(space) !pushedKnown                         — unknown; refuse to mark
+//	◇       pushedKnown && !pushed[sha]          — confirmed unpushed
+//	✎       amendedKnown && amended[sha]         — recently amended
+func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushed map[string]bool, pushedKnown bool, amended map[string]bool, amendedKnown bool) rune {
+	if amendedKnown && amended[sha] {
 		return '✎'
+	}
+	if !pushedKnown {
+		return ' '
 	}
 	if pushed[sha] {
 		return ' '
@@ -620,13 +624,15 @@ func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushe
 	return '◇'
 }
 
-// collectPushedShas enumerates SHAs reachable from @{upstream} so we can mark
-// commits as already-pushed without one git call per commit. Returns empty
-// map when there is no configured upstream.
-func collectPushedShas(ctx context.Context, runner *git.ExecRunner) map[string]bool {
+// collectPushedShas enumerates SHAs reachable from @{upstream}. Returns
+// (shas, ok): ok=false means we could not determine the pushed set (no
+// upstream / rev-list error / offline without cached remote ref) — the
+// caller must then treat every commit's push state as unknown rather
+// than silently re-interpreting an empty map as "nothing pushed."
+func collectPushedShas(ctx context.Context, runner *git.ExecRunner) (map[string]bool, bool) {
 	out, _, err := runner.Run(ctx, "rev-list", "@{upstream}")
 	if err != nil {
-		return map[string]bool{}
+		return nil, false
 	}
 	m := make(map[string]bool, 256)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -634,17 +640,18 @@ func collectPushedShas(ctx context.Context, runner *git.ExecRunner) map[string]b
 			m[line] = true
 		}
 	}
-	return m
+	return m, true
 }
 
-// collectRecentlyAmended returns the set of SHAs that the local reflog shows
-// as having been rewritten (commit --amend / rebase) within the last hour.
-func collectRecentlyAmended(ctx context.Context, runner *git.ExecRunner) map[string]bool {
-	m := map[string]bool{}
+// collectRecentlyAmended returns (shas, ok). Reflog read failures are
+// genuinely unknown state (not "nothing was amended"). Callers suppress
+// the `✎` marker when ok=false.
+func collectRecentlyAmended(ctx context.Context, runner *git.ExecRunner) (map[string]bool, bool) {
 	out, _, err := runner.Run(ctx, "reflog", "HEAD", "--format=%H %gs", "--since=1.hours.ago")
 	if err != nil {
-		return m
+		return nil, false
 	}
+	m := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "amend") || strings.Contains(line, "rebase") {
 			if f := strings.Fields(line); len(f) > 0 {
@@ -652,7 +659,7 @@ func collectRecentlyAmended(ctx context.Context, runner *git.ExecRunner) map[str
 			}
 		}
 	}
-	return m
+	return m, true
 }
 
 // collectHotspots returns the top-10 most-touched files in the last 90 days.
@@ -770,9 +777,10 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	}
 
 	var pushed, amended, hotspots map[string]bool
+	var pushedOK, amendedOK bool
 	if v.safety {
-		pushed = collectPushedShas(ctx, runner)
-		amended = collectRecentlyAmended(ctx, runner)
+		pushed, pushedOK = collectPushedShas(ctx, runner)
+		amended, amendedOK = collectRecentlyAmended(ctx, runner)
 	}
 	if v.hotspots {
 		hotspots = collectHotspots(ctx, runner)
@@ -845,7 +853,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			// yellow because it's a reminder, not a warning. Pushed commits
 			// stay blank — the whole point of the column is to draw the eye
 			// only when action is needed.
-			if mark := rebaseSafety(ctx, runner, r.sha, pushed, amended); mark != ' ' {
+			if mark := rebaseSafety(ctx, runner, r.sha, pushed, pushedOK, amended, amendedOK); mark != ' ' {
 				switch mark {
 				case '✎':
 					prefix.WriteString(color.New(color.FgRed, color.Bold).Sprint(string(mark)))

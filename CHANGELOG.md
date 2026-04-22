@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk wt` interactive TUI.** Running `gk wt` (or `gk worktree`) without a subcommand opens a loop over the worktree list with actions for cd / remove / add-new. The `cd` action prints the chosen path to stdout (menu UI goes to stderr), so `gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }` in `.zshrc` turns worktree switching into a single keypress. Non-TTY callers get the usual help output.
+- **`gk worktree add` managed base directory.** Relative name arguments now land under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<basename>/<name>`) instead of the caller's cwd. Absolute paths still passthrough. Two clones with the same basename (e.g. `work/gk` and `personal/gk`) can disambiguate via `worktree.project` in `.gk.yaml`. Intermediate directories are created automatically; subdir names like `feat/api` are preserved under the managed root.
+- **`gk status --xy-style labels|glyphs|raw`** — per-entry state column is now self-documenting by default. The cryptic two-letter porcelain code (`??`, `.M`, `MM`, `UU`) is replaced with word labels (`new`, `mod`, `staged`, `conflict`) on every row. Pass `--xy-style glyphs` for a compact one-cell marker (`+` `~` `●` `⚔` `#`), or `--xy-style raw` / `status.xy_style: raw` to restore the previous git-literate rendering. Glyph mode collapses states into five broad categories for dashboard density; label mode preserves per-action granularity. Also fixes a latent bug where `DD`/`AA` unmerged conflicts were colored yellow instead of red.
+- **`gk pull` post-integration summary.** Previously `gk pull` ended with a terse `integrating origin/main (ff-only)...` line even when it pulled in a dozen commits — the user had to run `git log` separately to see what actually changed. The new summary prints the pre/post HEAD range, commit count, a one-line listing of each new commit (SHA, subject, author, short age; capped at 10 with a `+N more` footer), and a `--shortstat` diff summary. When nothing changed, a single `already up to date at <sha>` line confirms HEAD. `gk pull --no-rebase` (fetch-only) now reports how many upstream commits are waiting and whether HEAD has diverged, replacing the opaque `done (fetch only)` message.
+- **`gk clone <owner/repo | alias:owner/repo | url> [target]`** — short-form URL expansion for cloning. Bare `owner/repo` expands to `git@github.com:owner/repo.git` (SSH by default; configurable via `clone.default_protocol`/`clone.default_host`). `--ssh`/`--https` flip protocol for a single invocation. Scheme URLs (`https://`, `ssh://`, `git://`, `file://`) and SCP-style `user@host:path` strings pass through unchanged. New config:
+  - `clone.hosts` — alias table so `gk clone gl:group/svc` resolves to `git@gitlab.com:group/svc.git` (per-alias `host` + optional `protocol`).
+  - `clone.root` — opt-in Go-style layout; when set, bare `owner/repo` lands at `<root>/<host>/<owner>/<repo>`.
+  - `clone.post_actions` — run `hooks-install` and/or `doctor` inside the fresh checkout once the clone succeeds. Failures warn but never fail the clone.
+  - `--dry-run` prints the resolved URL + target and exits without touching the network.
+- **`gk status -f, --fetch`** — opt-in upstream fetch. Debounced, 3-second hard timeout, silent on failure (all safety bounds from the previous auto-fetch path remain intact).
+- **narrow-TTY adaptation for `gk status` and `gk log`**: tree compresses 3-cell indent to 2-cell under 60 cols and drops the `(N)` subtree badge under 40 cols; types-chip budget-truncates tail tokens with a `+N more` suffix; heatmap directory column caps at `ttyW-22` with rune-aware ellipsis (fixes mid-codepoint truncation on CJK path names); `gk log --calendar` caps weeks at `(ttyW-4)/4`.
+
+### Changed
+
+- **`gk status` fetch is now opt-in.** The quiet upstream fetch introduced in v0.6.0 used to run on every invocation, which surfaced confusing noise (and `fatal: ...` fallout) on repos with no remote, detached HEAD, or an unreachable remote. New default: zero network activity — `gk status` reads only local state. Pass `-f` / `--fetch` to refresh the upstream ref for the ↑N ↓N counts. To restore the old always-fetch behavior, set `status.auto_fetch: true` in `.gk.yaml`.
+- **Removed**: `--no-fetch` flag and `GK_NO_FETCH` env var — both existed only as opt-outs for the now-removed default.
+
 ## [0.8.0] - 2026-04-23
 
 ### Added

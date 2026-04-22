@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -478,5 +482,135 @@ func TestIntegration_PullAutoDetect(t *testing.T) {
 	upstreamHead := upstream.RunGit("rev-parse", "HEAD")
 	if got != upstreamHead {
 		t.Errorf("downstream HEAD = %s, want %s", got, upstreamHead)
+	}
+}
+
+// summaryCmd returns a cobra.Command whose stderr is redirected to buf so
+// tests can assert on renderPullSummary's output. The context is required
+// because runners use it for cancellation plumbing.
+func summaryCmd(buf *bytes.Buffer) *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetErr(buf)
+	return cmd
+}
+
+func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only")
+
+	got := buf.String()
+	if !strings.Contains(got, "already up to date at abc1234") {
+		t.Errorf("expected up-to-date line with sha, got:\n%s", got)
+	}
+}
+
+func TestRenderPullSummary_EmptyRefsStaySilent(t *testing.T) {
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "ff-only")
+	if buf.Len() != 0 {
+		t.Errorf("expected silence when pre is empty, got %q", buf.String())
+	}
+}
+
+func TestRenderPullSummary_WithCommits(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	// Craft a log payload with two commits. `%at` is a unix timestamp —
+	// use a value ~2 hours in the past so formatAge renders "2h".
+	ts := time.Now().Add(-2*time.Hour - 5*time.Minute).Unix()
+	logOut := fmt.Sprintf(
+		"abcd123\x1ffeat: thing\x1falice\x1f%d\nef45678\x1ffix: other\x1fbob\x1f%d\n",
+		ts, ts,
+	)
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --count deadbee0..facef00": {Stdout: "2\n"},
+			fmt.Sprintf("log --max-count=%d --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at deadbee0..facef00", pullCommitLimit): {Stdout: logOut},
+			"diff --shortstat deadbee0..facef00": {Stdout: " 3 files changed, 12 insertions(+), 4 deletions(-)\n"},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, r, "deadbee0", "facef00", "rebase")
+
+	got := buf.String()
+	for _, want := range []string{
+		"updated deadbee0 → facef00",
+		"(+2 commits · rebase)",
+		"abcd123",
+		"feat: thing",
+		"alice",
+		"2h",
+		"fix: other",
+		"3 files changed, 12 insertions(+), 4 deletions(-)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderFetchOnlySummary_Behind(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --left-right --count HEAD...origin/main": {Stdout: "0\t3\n"},
+		},
+	}
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderFetchOnlySummary(cmd, r, "origin/main")
+	got := buf.String()
+	if !strings.Contains(got, "+3 commits waiting") {
+		t.Errorf("expected behind summary, got %q", got)
+	}
+	if !strings.Contains(got, "gk pull") {
+		t.Errorf("expected integration hint, got %q", got)
+	}
+}
+
+func TestRenderFetchOnlySummary_UpToDate(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --left-right --count HEAD...origin/main": {Stdout: "0\t0\n"},
+		},
+	}
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderFetchOnlySummary(cmd, r, "origin/main")
+	if !strings.Contains(buf.String(), "already up to date") {
+		t.Errorf("expected up-to-date, got %q", buf.String())
+	}
+}
+
+func TestRenderFetchOnlySummary_Diverged(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --left-right --count HEAD...origin/main": {Stdout: "2\t4\n"},
+		},
+	}
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderFetchOnlySummary(cmd, r, "origin/main")
+	got := buf.String()
+	if !strings.Contains(got, "↑2 local") || !strings.Contains(got, "↓4 upstream") {
+		t.Errorf("expected diverged display, got %q", got)
 	}
 }

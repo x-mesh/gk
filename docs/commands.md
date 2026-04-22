@@ -64,6 +64,83 @@ gk pull --dry-run
 - Runs `git fetch <remote> <base>` then `git rebase origin/<base>`.
 - On conflict, gk pauses and prompts. Use `gk continue` or `gk abort` to resume.
 
+### Post-integration summary
+
+When the integration succeeds, gk prints a compact block describing what actually changed:
+
+```
+updated 6ab13b03 → 67208ff8  (+3 commits · ff-only)
+  67208ff  feat: commit 3  <alice · 2h>
+  8beb369  feat: commit 2  <alice · 5h>
+  e3422b1  feat: commit 1  <alice · 1d>
+3 files changed, 12 insertions(+), 4 deletions(-)
+```
+
+- Range is the pre/post HEAD pair. Long commit lists are capped at 10 entries with a `… +N more` footer.
+- When nothing changed (HEAD already matched upstream), gk prints `already up to date at <sha>` instead of the range block.
+- `gk pull --no-rebase` (fetch-only) reports waiting commits:
+  - `fetched origin/main: +2 commits waiting  (run gk pull to integrate)` when only behind.
+  - `fetched origin/main: ↑N local · ↓M upstream  (diverged — run gk pull to rebase/merge)` when both sides have diverged.
+
+---
+
+## gk clone
+
+Clone a repository with short-form URL expansion.
+
+### Synopsis
+
+```
+gk clone <owner/repo | alias:owner/repo | url> [target] [flags]
+```
+
+### Dispatch order
+
+gk inspects the first positional argument in this order and stops at the first match:
+
+1. **Scheme URL** (`http://`, `https://`, `ssh://`, `git://`, `file://`) — handed to `git clone` unchanged.
+2. **SCP-style URL** (`user@host:path`) — handed to `git clone` unchanged.
+3. **Alias shorthand** (`alias:owner/repo` where `alias` is listed under `clone.hosts` in config) — expanded against the alias's host and protocol.
+4. **Bare shorthand** (`owner/repo`) — expanded against `clone.default_host` and `clone.default_protocol`.
+
+A trailing `.git` on shorthands is tolerated and reattached by gk so the final URL is always canonical.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ssh` | false | Force SSH URL form for this invocation. Mutually exclusive with `--https`. |
+| `--https` | false | Force HTTPS URL form for this invocation. Mutually exclusive with `--ssh`. |
+| `--dry-run` (global) | false | Print the resolved URL and target directory, then exit without calling `git`. |
+
+### Config (`.gk.yaml` → `clone:`)
+
+```yaml
+clone:
+  default_protocol: ssh        # or https; SSH by default
+  default_host: github.com
+  root: ~/work                 # optional Go-style layout: <root>/<host>/<owner>/<repo>
+  hosts:
+    gl: { host: gitlab.com, protocol: ssh }
+    work: { host: git.company.internal, protocol: https }
+  post_actions: [hooks-install, doctor]
+```
+
+- `root` — when set, bare `gk clone owner/repo` drops the checkout at `<root>/<host>/<owner>/<repo>` instead of the current directory. An explicit `[target]` positional always wins over this.
+- `hosts` — per-alias `host` + optional `protocol` (falls back to `default_protocol` when omitted). Unknown aliases are passed to `git` verbatim in case they encode something git already understands (e.g., `host:port/path`).
+- `post_actions` — run gk subcommands inside the fresh checkout once the clone succeeds. Supported values: `hooks-install` (runs `gk hooks install --all`), `doctor` (runs `gk doctor`). Failures print a warning but do not fail the clone.
+
+### Examples
+
+```bash
+gk clone JINWOO-J/playground           # → git@github.com:JINWOO-J/playground.git
+gk clone --https JINWOO-J/playground   # → https://github.com/JINWOO-J/playground.git
+gk clone gl:group/service              # → git@gitlab.com:group/service.git (via alias)
+gk clone git@host:team/proj.git        # SCP URL passes through unchanged
+gk clone https://example.com/x/y       # scheme URL passes through unchanged
+gk clone --dry-run foo/bar             # prints url + target, no network call
+```
+
 ---
 
 ## gk log
@@ -197,20 +274,46 @@ gk st [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`, `heatmap`, `glyphs`. |
-| `--no-fetch` | false | Skip the quiet upstream fetch that keeps ↑N ↓N counts current. Also honored via `GK_NO_FETCH=1` or `status.auto_fetch: false`. |
+| `-f`, `--fetch` | false | Fetch the current branch's upstream before reporting ↑N ↓N. Off by default — `gk status` does no network activity unless this flag (or `status.auto_fetch: true`) is set. |
+| `--xy-style` | `labels` (from `status.xy_style`) | Per-entry state column: `labels` (`new`/`mod`/`staged`/`conflict`, self-documenting, default), `glyphs` (`+` `~` `●` `⚔` `#`, compact), or `raw` (git's two-character code like `??`/`.M`/`UU`). |
 | `--top N` | 0 (unlimited) | Limit the entry list to the first N paths (alphabetically sorted for stable output); a `… +K more (total · showing top N)` footer surfaces the hidden remainder so the truncation is never silent. Composes with every viz layer. |
 
-### Upstream auto-fetch
+### Per-entry state column (`--xy-style`)
 
-By default, `gk status` attempts a short fetch of the current branch's upstream ref (the one recorded in `branch.<name>.remote` / `branch.<name>.merge`) before reading porcelain output, so the ↑N ↓N counts reflect the actual remote state rather than the last-cached view. The fetch is intentionally scoped and safe:
+The two-letter porcelain code git emits (`??`, `.M`, `MM`, `UU`) is cryptic when half the tree shares the same state. `gk status` resolves each entry to one of three representations:
+
+| Mode | Example row | Best for |
+|------|-------------|----------|
+| `labels` (default) | `├─ new       docs/intro.md` | self-documenting — no lookup required |
+| `glyphs` | `├─ + docs/intro.md` | compact dashboards, dense trees |
+| `raw` | `├─ ?? docs/intro.md` | git-literate users, scripting off the output |
+
+Label mapping (labels mode):
+
+| XY | Label | XY | Label | XY | Label |
+|----|-------|----|-------|----|-------|
+| `??` | `new` | `M.` | `staged` | `.M` | `mod` |
+| `!!` | `ignored` | `A.` | `added` | `.D` | `del` |
+| `UU`/`AU`/`UA`/`UD`/`DU` | `conflict` | `D.` | `deleted` | `.R` | `ren` |
+| `DD`/`AA` | `conflict` | `R.` | `renamed` | `.T` | `typ` |
+| `MM`/`AM` | `mod*` (staged + touched again) | `C.` | `copied` | `.C` | `cop` |
+
+Glyph mapping (glyphs mode) collapses to five categories: `+` new, `#` ignored, `●` staged (any action), `~` worktree-dirty, `◉` both (staged + worktree), `⚔` conflict. Granularity is deliberately lower — glyph mode trades per-action precision for visual density.
+
+Colors (dim gray / green / yellow / red) are applied consistently across all three modes, so switching styles never loses the category cue.
+
+### Upstream fetch (opt-in)
+
+By default `gk status` reads only local state — no network call. Pass `-f`/`--fetch` to refresh the current branch's upstream ref (the one recorded in `branch.<name>.remote` / `branch.<name>.merge`) before reading porcelain output, so the ↑N ↓N counts reflect the live remote rather than the last-cached view. The fetch is intentionally scoped and safe:
 
 - Only the single upstream ref is fetched — no `--all`, no `--tags`, no submodule recursion, no FETCH_HEAD write.
 - A 3-second hard timeout means a slow or flaky remote never blocks status beyond that budget.
 - `GIT_TERMINAL_PROMPT=0` + empty `SSH_ASKPASS` prevent credential prompts from hijacking the terminal.
 - stderr is discarded so `remote: …` chatter does not interleave with status output.
 - On any failure (offline, auth expired, timeout) the fetch is silently dropped and status renders with the local cached view.
+- Debounced: repeated `-f` invocations within a 3-second window reuse the previous fetch rather than hitting the network again.
 
-Disable globally with `status.auto_fetch: false`, per-invocation with `--no-fetch`, or via `GK_NO_FETCH=1`. When upstream is not configured (detached HEAD or brand-new branch) the fetch is skipped without network activity.
+To always fetch without typing the flag, set `status.auto_fetch: true` in `.gk.yaml` (or `~/.config/gk/config.yaml`). When upstream is not configured (detached HEAD, brand-new branch, no remote) the fetch is skipped silently.
 
 #### `--vis` values
 
@@ -669,10 +772,28 @@ Alias: `gk wt`.
 
 | Subcommand | Description |
 |-----------|-------------|
+| *(none)* | Interactive TUI — list, add, remove, cd. See below. |
 | `list` | List worktrees (table or `--json`) |
-| `add <path> [branch]` | Create a worktree at `<path>` checking out `[branch]` (or HEAD) |
+| `add <name\|path> [branch]` | Create a worktree (managed base for relative names, passthrough for absolute paths) |
 | `remove <path>` | Remove a worktree |
 | `prune` | Prune worktree administrative records |
+
+### Interactive mode (`gk wt`)
+
+Running `gk wt` or `gk worktree` without a subcommand opens an interactive picker that loops until you quit. Actions:
+
+- **cd** — prints the selected worktree's path to **stdout** so a shell alias can `cd` into it. All menu rendering stays on stderr, so `$(gk wt)` captures only the chosen path.
+- **remove** — confirm prompt → `git worktree remove <path>`.
+- **add new** — form: name, create-new-branch?, branch name, base ref. The name is resolved through the same managed-base rules as `gk worktree add` (see below).
+
+Pair with a shell function so the picked path actually cd's in the parent shell:
+
+```sh
+# ~/.zshrc or ~/.bashrc
+gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }
+```
+
+On a non-interactive stdin/stdout (CI, piped input) the TUI falls back to printing this help instead of drawing a dead UI.
 
 ### gk worktree add
 
@@ -683,6 +804,45 @@ Flags:
 | `-b, --new` | false | Create a new branch named `[branch]` at `--from` |
 | `--from <ref>` | HEAD | Base ref for the new branch |
 | `--detach` | false | Detach HEAD in the worktree instead of tracking a branch |
+
+#### Managed base directory
+
+Relative path arguments are placed under a managed layout so worktrees for different projects do not collide:
+
+```
+<worktree.base>/<worktree.project>/<name>
+```
+
+- `worktree.base` defaults to `~/.gk/worktree`. Override in `.gk.yaml` or via the `GK_WORKTREE_BASE` env var. Leading `~/` is expanded against `$HOME`.
+- `worktree.project` defaults to the repo's git-toplevel basename (`/Users/me/work/gk` → `gk`). Set it explicitly when two clones share the same basename (e.g. `work-gk` vs `personal-gk`).
+- An **absolute path** always wins and is used verbatim — useful for one-off placements outside the managed layout.
+
+Examples:
+
+```bash
+gk worktree add ai-commit -b ai-commit
+# → ~/.gk/worktree/<project>/ai-commit, new branch 'ai-commit' off HEAD
+
+gk worktree add feat/api -b feat/api
+# → ~/.gk/worktree/<project>/feat/api (subdir preserved)
+
+gk worktree add /tmp/exp -b hotfix
+# → /tmp/exp (absolute path used as-is)
+```
+
+Project layout on disk:
+
+```
+~/.gk/worktree/
+├── gk/
+│   ├── ai-commit/
+│   ├── feat/api/
+│   └── bugfix/
+├── playground/
+│   └── spike-1/
+└── ai-commit/
+    └── review/
+```
 
 ### gk worktree remove
 
@@ -696,17 +856,20 @@ Flags:
 # JSON list for scripts
 gk worktree list --json
 
-# Add a worktree that tracks an existing branch
-gk worktree add ../gk-feat feat/login
+# Track an existing branch under the managed base
+gk worktree add feat-login feat/login
 
-# Create a new branch in a new worktree off HEAD
-gk worktree add -b ../gk-review feat/review
+# New branch in a managed worktree off HEAD
+gk worktree add feat-review -b feat/review
 
-# Create a new branch off a specific base
-gk worktree add -b ../gk-hotfix hotfix/1.2.3 --from origin/main
+# New branch off a specific base (still managed)
+gk worktree add hotfix -b hotfix/1.2.3 --from origin/main
+
+# Absolute path wins — bypasses managed layout for this call
+gk worktree add /tmp/gk-spike -b spike/wip
 
 # Remove cleanly
-gk worktree remove ../gk-feat
+gk worktree remove ~/.gk/worktree/gk/feat-login
 ```
 
 ---

@@ -40,8 +40,8 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("Status.Vis[%d]: want %q, got %q", i, v, d.Status.Vis[i])
 		}
 	}
-	if !d.Status.AutoFetch {
-		t.Error("Status.AutoFetch: want true by default")
+	if d.Status.AutoFetch {
+		t.Error("Status.AutoFetch: want false by default (fetch is opt-in via --fetch/-f)")
 	}
 	wantLogVis := []string{"cc", "safety", "tags-rule"}
 	if len(d.Log.Vis) != len(wantLogVis) {

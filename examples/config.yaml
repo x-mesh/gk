@@ -40,12 +40,19 @@ status:
   # ~15ms per invocation (one `git rev-list --left-right --count` call).
   vis: [gauge, bar, progress, tree, staleness]
 
-  # When true, `gk status` does a short, quiet fetch of the current branch's
-  # upstream before reading porcelain output so that ↑N ↓N counts reflect the
-  # live remote. Fetch is bounded (3s timeout, no prompts, no submodule
-  # recursion, silent on failure) — status always renders even offline.
-  # Disable per-invocation with `--no-fetch` or `GK_NO_FETCH=1`.
-  auto_fetch: true
+  # Opt-in upstream fetch. Default false: `gk status` does no network activity
+  # unless the caller passes `-f` / `--fetch`. Set to true to always fetch
+  # (equivalent to passing the flag on every invocation). The fetch itself is
+  # bounded (3s timeout, no prompts, no submodule recursion, silent on
+  # failure) — status always renders even offline.
+  auto_fetch: false
+
+  # How per-entry state is displayed in the tree and section renderers.
+  #   labels (default) → word label ("new", "mod", "staged", "conflict", ...)
+  #   glyphs           → single-cell marker (+ ~ ● ⚔ #) — dense, less granular
+  #   raw              → literal git porcelain code (??, .M, UU) — git-literate
+  # Overridable per call via `--xy-style`.
+  xy_style: labels
 
 ui:
   # Color mode: "auto", "always", "never". NO_COLOR env is always respected.
@@ -64,3 +71,41 @@ branch:
     - main
     - master
     - develop
+
+clone:
+  # Protocol used when `gk clone owner/repo` expands the shorthand.
+  # Values: "ssh" (default) or "https". Passing `--ssh` / `--https` to
+  # a single invocation overrides this without changing config.
+  default_protocol: ssh
+
+  # Host inserted into the expanded URL when the shorthand omits it.
+  default_host: github.com
+
+  # Optional Go-style layout. When set, `gk clone owner/repo` with no
+  # explicit target lands at `<root>/<host>/<owner>/<repo>` instead of
+  # the current directory. Leave empty for git's default `./repo`.
+  # root: ~/work
+
+  # Alias table for multi-host users. `gk clone gl:group/svc` expands
+  # to the host + protocol listed here. Omit `protocol:` to fall back
+  # to default_protocol. Unknown aliases are passed to git verbatim.
+  # hosts:
+  #   gl:   { host: gitlab.com, protocol: ssh }
+  #   work: { host: git.company.internal, protocol: https }
+
+  # Run these gk subcommands inside the fresh checkout after clone
+  # succeeds. Supported: "hooks-install", "doctor". Failures warn but
+  # never fail the clone itself. Default empty — opt-in only.
+  # post_actions: [hooks-install, doctor]
+
+worktree:
+  # Managed base for relative worktree names. `gk worktree add <name>` drops
+  # the checkout at <base>/<project>/<name>. Leading `~/` is expanded against
+  # $HOME. Absolute paths passed to `gk worktree add` always win and bypass
+  # this layout.
+  base: ~/.gk/worktree
+
+  # Per-project segment under `base`. Empty means "auto-derive from the git
+  # toplevel basename", so /Users/me/work/gk → `gk`. Override when two
+  # clones share the same basename (e.g. work vs personal).
+  # project: work-gk

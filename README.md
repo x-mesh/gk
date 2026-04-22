@@ -57,6 +57,7 @@ unalias gk gke 2>/dev/null
 
 ```bash
 # Daily driver
+gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
 gk pull                      # fetch + rebase, auto-detects upstream
 gk pull --strategy ff-only   # fast-forward only; errors if histories diverged
 gk sync                      # fetch + fast-forward only (never rebases)
@@ -91,9 +92,10 @@ gk preflight               # run the configured check sequence
 ### Daily
 | Command | Alias | Description |
 |---|---|---|
+| `gk clone <owner/repo \| alias:owner/repo \| url>` | | Clone with short-form URL expansion. Bare `owner/repo` expands to `git@github.com:owner/repo.git` (ssh default, configurable). `--ssh`/`--https` override. `clone.hosts` maps aliases (`gl:`, `work:`). Optional `clone.root` + `clone.post_actions: [hooks-install, doctor]`. |
 | `gk pull` | | Fetch + integrate upstream. `--strategy rebase\|merge\|ff-only\|auto`; resolves `@{u}` first; auto-switches to `--ff-only` when HEAD is already an ancestor |
 | `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
-| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
+| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Pass `-f`/`--fetch` to refresh ↑N ↓N from the remote. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 
 ### Branches

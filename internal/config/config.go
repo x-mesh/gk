@@ -12,6 +12,8 @@ type Config struct {
 	Push       PushConfig      `mapstructure:"push"        yaml:"push"`
 	Pull       PullConfig      `mapstructure:"pull"        yaml:"pull"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
+	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
+	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 }
 
 // LogConfig controls git log output format. Vis is the default set of
@@ -28,16 +30,22 @@ type LogConfig struct {
 // visualization layers applied when the caller does not pass --vis. Pass
 // --vis none on the CLI to turn them all off for a single invocation.
 //
-// AutoFetch, when true, makes `gk status` attempt a short, quiet fetch of
-// the current branch's upstream before reading the porcelain output so
-// that ↑N ↓N counts reflect the actual remote state. Fetch is strictly
-// bounded (timeout, no prompts, no submodule recursion, no LFS side
-// effects) and silent on failure, falling back to the local cached view.
-// Disable globally with `auto_fetch: false`, per-invocation with
-// `--no-fetch`, or via `GK_NO_FETCH=1`.
+// AutoFetch controls whether `gk status` fetches the current branch's
+// upstream before reading porcelain output. Default false — status does no
+// network activity unless the caller passes `--fetch` / `-f`. Set
+// `auto_fetch: true` in config to opt-in globally (equivalent to passing
+// the flag on every invocation); the fetch itself remains strictly bounded
+// (timeout, no prompts, no submodule recursion, no LFS side effects) and
+// silent on failure, falling back to the local cached view.
 type StatusConfig struct {
 	Vis       []string `mapstructure:"vis"        yaml:"vis"`
 	AutoFetch bool     `mapstructure:"auto_fetch" yaml:"auto_fetch"`
+	// XYStyle controls how the two-letter porcelain code is rendered per
+	// entry. "labels" (default) → word labels ("new", "mod", "staged",
+	// "conflict"); "glyphs" → single-char markers (+ ~ ● ⚔ #); "raw"
+	// keeps the literal git code (`??`, `.M`, `UU`). Overridable per call
+	// via `--xy-style`.
+	XYStyle string `mapstructure:"xy_style" yaml:"xy_style"`
 }
 
 // UIConfig controls terminal UI behaviour.
@@ -80,6 +88,53 @@ type PreflightConfig struct {
 	Steps []PreflightStep `mapstructure:"steps" yaml:"steps"`
 }
 
+// CloneConfig controls `gk clone` shorthand expansion and post-clone hooks.
+//
+//   - DefaultProtocol: "ssh" (default) or "https". Determines the URL form
+//     used when the caller passes a bare `owner/repo`.
+//   - DefaultHost: the hostname inserted when only `owner/repo` is given
+//     ("github.com" by default).
+//   - Root: optional filesystem root for Go-style layout. When non-empty,
+//     `gk clone owner/repo` places the checkout at
+//     `<root>/<host>/<owner>/<repo>` unless an explicit target is passed.
+//     Empty means "let git pick a directory in cwd" (the standard default).
+//   - Hosts: alias table for multi-host users. `gk clone gl:group/repo`
+//     looks up `gl` here, using the per-alias host + protocol (falling
+//     back to DefaultProtocol when the alias omits it).
+//   - PostActions: subcommands to run inside the freshly-cloned checkout.
+//     Supported values: "hooks-install" (invokes `gk hooks install --all`)
+//     and "doctor" (invokes `gk doctor`). Default empty — opt-in only.
+type CloneConfig struct {
+	DefaultProtocol string                `mapstructure:"default_protocol" yaml:"default_protocol"`
+	DefaultHost     string                `mapstructure:"default_host"     yaml:"default_host"`
+	Root            string                `mapstructure:"root"             yaml:"root"`
+	Hosts           map[string]HostAlias  `mapstructure:"hosts"            yaml:"hosts"`
+	PostActions     []string              `mapstructure:"post_actions"     yaml:"post_actions"`
+}
+
+// HostAlias names a custom clone shorthand like `gl:` or `work:`.
+// Protocol is optional; when empty, CloneConfig.DefaultProtocol wins.
+type HostAlias struct {
+	Host     string `mapstructure:"host"     yaml:"host"`
+	Protocol string `mapstructure:"protocol" yaml:"protocol"`
+}
+
+// WorktreeConfig controls how `gk worktree add <name>` maps a relative
+// name argument into a real filesystem path. Default layout:
+//
+//	<Base>/<Project>/<name>
+//
+// Base defaults to `~/.gk/worktree` so worktrees live outside the main
+// checkout (safer for IDEs and backup sweeps). Project defaults to the
+// basename of the repo's toplevel directory — override when two clones
+// share the same basename (e.g. `work/gk` and `personal/gk`). An
+// absolute path passed to `gk worktree add` always wins and is used
+// verbatim; the managed layout only applies to bare/relative names.
+type WorktreeConfig struct {
+	Base    string `mapstructure:"base"    yaml:"base"`
+	Project string `mapstructure:"project" yaml:"project"`
+}
+
 // PreflightStep is one check in the preflight sequence.
 // Command can be a shell command (e.g., "make test") or a built-in
 // alias: "commit-lint", "branch-check", "no-conflict".
@@ -107,7 +162,8 @@ func Defaults() Config {
 			// `bar` from the default to cut a row; users who want both
 			// can add `bar` back via .gk.yaml.
 			Vis:       []string{"gauge", "progress", "tree", "staleness"},
-			AutoFetch: true,
+			AutoFetch: false,
+			XYStyle:   "labels",
 		},
 		UI: UIConfig{
 			Color:  "auto",
@@ -138,6 +194,17 @@ func Defaults() Config {
 				{Name: "branch-check", Command: "branch-check"},
 				{Name: "no-conflict", Command: "no-conflict"},
 			},
+		},
+		Clone: CloneConfig{
+			DefaultProtocol: "ssh",
+			DefaultHost:     "github.com",
+			Root:            "",
+			Hosts:           nil,
+			PostActions:     nil,
+		},
+		Worktree: WorktreeConfig{
+			Base:    "~/.gk/worktree",
+			Project: "",
 		},
 	}
 }

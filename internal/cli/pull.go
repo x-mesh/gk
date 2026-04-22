@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -139,12 +142,17 @@ func runPullCore(cmd *cobra.Command) error {
 		if stashed {
 			popStashBestEffort(ctx, runner)
 		}
-		fmt.Fprintln(os.Stderr, "done (fetch only)")
+		renderFetchOnlySummary(cmd, runner, upstream)
 		return nil
 	}
 
 	// 6) resolve strategy
 	strategy := resolveStrategy(ctx, strategyFlag, cfg, runner)
+
+	// Capture pre-integration HEAD so we can summarize what the
+	// integration actually pulled in. Failure to read HEAD is tolerated —
+	// we fall back to a silent summary rather than aborting the pull.
+	preHEAD := headRev(ctx, runner)
 
 	// 7) D — fast-forward optimisation: if HEAD is already an ancestor of the
 	//    upstream and strategy is rebase, substitute merge --ff-only (same
@@ -159,6 +167,10 @@ func runPullCore(cmd *cobra.Command) error {
 		return err
 	}
 
+	// Summary block: what came in, diffstat, one-line commit list.
+	postHEAD := headRev(ctx, runner)
+	renderPullSummary(cmd, runner, preHEAD, postHEAD, strategy)
+
 	// 9) pop stash
 	if stashed {
 		if err := popStash(ctx, runner); err != nil {
@@ -166,6 +178,16 @@ func runPullCore(cmd *cobra.Command) error {
 		}
 	}
 	return nil
+}
+
+// headRev returns the current HEAD SHA or empty when it cannot be read
+// (fresh repo with no commits, detached HEAD parse error, etc.).
+func headRev(ctx context.Context, runner git.Runner) string {
+	out, _, err := runner.Run(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // resolveUpstream returns (upstreamRef, fetchRemote, fetchBranch).
@@ -242,9 +264,8 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 			}
 			return fmt.Errorf("merge --ff-only: %w", err)
 		}
-		if strings.Contains(strings.ToLower(string(stdout)+string(stderr)), "already up to date") {
-			fmt.Fprintln(os.Stderr, "already up to date")
-		}
+		_ = stdout
+		_ = stderr
 
 	case pullStrategyMerge:
 		stdout, stderr, err := runner.Run(ctx, "merge", "--no-edit", upstream)
@@ -259,9 +280,8 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 			}
 			return fmt.Errorf("merge: %w\n%s", err, strings.TrimSpace(combined))
 		}
-		if strings.Contains(strings.ToLower(string(stdout)+string(stderr)), "already up to date") {
-			fmt.Fprintln(os.Stderr, "already up to date")
-		}
+		_ = stdout
+		_ = stderr
 
 	default: // rebase
 		res, err := client.RebaseOnto(ctx, upstream)
@@ -275,9 +295,7 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 			}
 			return &ConflictError{Code: 3, Stashed: stashed}
 		}
-		if res.NothingTo {
-			fmt.Fprintln(os.Stderr, "already up to date")
-		}
+		_ = res
 	}
 	return nil
 }
@@ -288,6 +306,137 @@ func popStash(ctx context.Context, r git.Runner) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(stderr)))
 	}
 	return nil
+}
+
+// pullCommitLimit caps the one-line commit listing in renderPullSummary.
+// Ten entries is enough to recognise a sprint's worth of catch-up without
+// overflowing a terminal; the `+N more` footer advertises the remainder.
+const pullCommitLimit = 10
+
+// renderPullSummary prints a compact block describing what the
+// integration actually changed — range, commit count, one-line subject
+// list, and diffstat. When pre == post nothing changed; we emit the
+// single "already up to date at <sha>" line so the user still confirms
+// what HEAD resolved to. All output goes to stderr to match the rest
+// of gk pull's progress stream.
+func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strategy string) {
+	ctx := cmd.Context()
+	out := cmd.ErrOrStderr()
+	faint := color.New(color.Faint).SprintFunc()
+	bold := color.New(color.Bold).SprintFunc()
+
+	if pre == "" || post == "" {
+		// Can't diff without both refs. Stay silent rather than lie.
+		return
+	}
+	if pre == post {
+		fmt.Fprintf(out, "already up to date at %s\n", bold(shortSHA(post)))
+		return
+	}
+
+	// Commit count — cheap single-call roll-up.
+	count := 0
+	if n, _, err := runner.Run(ctx, "rev-list", "--count", pre+".."+post); err == nil {
+		count, _ = strconv.Atoi(strings.TrimSpace(string(n)))
+	}
+
+	header := fmt.Sprintf("updated %s → %s", bold(shortSHA(pre)), bold(shortSHA(post)))
+	meta := fmt.Sprintf("(+%d commit%s · %s)", count, plural(count), strategy)
+	fmt.Fprintf(out, "%s  %s\n", header, faint(meta))
+
+	// One-line commit list. Format fields with unit-separator (\x1f) so
+	// subjects containing tabs/pipes do not split mid-row.
+	commits, _, err := runner.Run(ctx, "log",
+		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--pretty=format:%h\x1f%s\x1f%an\x1f%at",
+		pre+".."+post,
+	)
+	if err == nil {
+		lines := strings.Split(strings.TrimRight(string(commits), "\n"), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, "\x1f", 4)
+			if len(parts) != 4 {
+				continue
+			}
+			sha, subj, author, atStr := parts[0], parts[1], parts[2], parts[3]
+			age := "now"
+			if ts, err := strconv.ParseInt(strings.TrimSpace(atStr), 10, 64); err == nil {
+				if a := formatAge(time.Since(time.Unix(ts, 0))); a != "" {
+					age = a
+				}
+			}
+			meta := fmt.Sprintf("<%s · %s>", author, age)
+			fmt.Fprintf(out, "  %s  %s  %s\n", color.YellowString(sha), subj, faint(meta))
+		}
+		if count > pullCommitLimit {
+			fmt.Fprintf(out, "  %s\n", faint(fmt.Sprintf("… +%d more", count-pullCommitLimit)))
+		}
+	}
+
+	// Diffstat summary. `--shortstat` prints "N files changed, X insertions(+), Y deletions(-)".
+	if stat, _, err := runner.Run(ctx, "diff", "--shortstat", pre+".."+post); err == nil {
+		if s := strings.TrimSpace(string(stat)); s != "" {
+			fmt.Fprintln(out, faint(s))
+		}
+	}
+}
+
+// renderFetchOnlySummary is the --no-rebase counterpart to
+// renderPullSummary. After a fetch-only run we cannot describe "what
+// integrated" (nothing did), so instead we surface how many upstream
+// commits are now waiting locally and hint at the follow-up command.
+func renderFetchOnlySummary(cmd *cobra.Command, runner git.Runner, upstream string) {
+	ctx := cmd.Context()
+	out := cmd.ErrOrStderr()
+	faint := color.New(color.Faint).SprintFunc()
+
+	// rev-list --left-right --count HEAD...upstream prints "ahead\tbehind".
+	raw, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "HEAD..."+upstream)
+	if err != nil {
+		fmt.Fprintln(out, "fetched; integrate with `gk pull`")
+		return
+	}
+	fields := strings.Fields(strings.TrimSpace(string(raw)))
+	if len(fields) != 2 {
+		fmt.Fprintln(out, "fetched; integrate with `gk pull`")
+		return
+	}
+	ahead, _ := strconv.Atoi(fields[0])
+	behind, _ := strconv.Atoi(fields[1])
+
+	switch {
+	case ahead == 0 && behind == 0:
+		fmt.Fprintln(out, "already up to date")
+	case behind > 0 && ahead == 0:
+		fmt.Fprintf(out, "fetched %s: %s %s waiting  %s\n",
+			upstream,
+			color.GreenString("+%d", behind),
+			plural2(behind, "commit"),
+			faint("(run `gk pull` to integrate)"))
+	case behind > 0 && ahead > 0:
+		fmt.Fprintf(out, "fetched %s: ↑%d local · ↓%d upstream  %s\n",
+			upstream, ahead, behind,
+			faint("(diverged — run `gk pull` to rebase/merge)"))
+	case ahead > 0:
+		fmt.Fprintf(out, "fetched %s: ↑%d local, upstream unchanged\n", upstream, ahead)
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func plural2(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 func popStashBestEffort(ctx context.Context, r git.Runner) {

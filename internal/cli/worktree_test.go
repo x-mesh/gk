@@ -2,13 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -161,5 +165,118 @@ func TestWorktree_AddNewRequiresBranch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "requires a branch name") {
 		t.Errorf("unexpected err: %v", err)
+	}
+}
+
+func TestResolveWorktreePath_AbsoluteWins(t *testing.T) {
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "/tmp/ignored", Project: "p"}}
+	got, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "/explicit/abs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/explicit/abs" {
+		t.Errorf("absolute path should passthrough, got %q", got)
+	}
+}
+
+func TestResolveWorktreePath_RelativeUsesManagedBase(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "~/.gk/worktree", Project: "myproj"}}
+	got, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "ai-commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".gk/worktree", "myproj", "ai-commit")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveWorktreePath_SubdirPreserved(t *testing.T) {
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "/tmp/base", Project: "p"}}
+	got, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "feat/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/tmp/base", "p", "feat/api")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveWorktreePath_AutoProjectSlug(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --show-toplevel": {Stdout: "/Users/me/work/agentic/gk\n"},
+		},
+	}
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "/tmp/base", Project: ""}}
+	got, err := resolveWorktreePath(context.Background(), fake, cfg, "feat-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/tmp/base", "gk", "feat-x")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveWorktreePath_EmptyBaseFallsBack(t *testing.T) {
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "", Project: "p"}}
+	got, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "name" {
+		t.Errorf("empty base should return raw input, got %q", got)
+	}
+}
+
+func TestResolveWorktreePath_NoToplevelFallsBack(t *testing.T) {
+	// rev-parse returns empty (or errors) — we must not crash; instead
+	// fall through to the cwd-relative behavior.
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --show-toplevel": {Stdout: "", ExitCode: 128},
+		},
+	}
+	cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "/tmp/base", Project: ""}}
+	got, err := resolveWorktreePath(context.Background(), fake, cfg, "name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "name" {
+		t.Errorf("fallback expected, got %q", got)
+	}
+}
+
+func TestWorktreeTUI_NonTTYFallsBackToHelp(t *testing.T) {
+	// When stdin/stdout is not a TTY (as in `go test`), bare `gk wt`
+	// must not attempt to draw an interactive UI. Instead it prints
+	// the usage help and returns nil. We verify by executing the
+	// TUI handler directly with a fresh cobra command and checking
+	// that its output contains the Long description.
+	cmd := &cobra.Command{Use: "worktree"}
+	cmd.Long = "Worktree management helpers.\n\nWith no subcommand, gk opens an interactive TUI."
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetContext(context.Background())
+
+	if err := runWorktreeTUI(cmd, nil); err != nil {
+		t.Fatalf("runWorktreeTUI non-TTY: unexpected error %v", err)
+	}
+	if !strings.Contains(buf.String(), "interactive TUI") {
+		t.Errorf("expected fallback help in output, got:\n%s", buf.String())
+	}
+}
+
+func TestResolveWorktreePath_RejectsProjectWithSeparator(t *testing.T) {
+	cases := []string{"ev/il", "..", "../../etc", "with\\back"}
+	for _, bad := range cases {
+		cfg := &config.Config{Worktree: config.WorktreeConfig{Base: "/tmp/base", Project: bad}}
+		if _, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "x"); err == nil {
+			t.Errorf("project %q should be rejected", bad)
+		}
 	}
 }

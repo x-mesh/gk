@@ -1,20 +1,39 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/huh"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
 	wt := &cobra.Command{
 		Use:     "worktree",
 		Aliases: []string{"wt"},
-		Short:   "Worktree management helpers",
+		Short:   "Worktree management helpers (interactive TUI when run without a subcommand)",
+		Long: `Worktree management helpers.
+
+With no subcommand, gk opens an interactive TUI for listing, adding,
+removing, and cd'ing into worktrees. Pair with a shell alias so picked
+paths apply to the parent shell:
+
+    # ~/.zshrc or ~/.bashrc
+    gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }
+
+The TUI falls back to printing this help on non-interactive stdin/stdout.`,
+		RunE: runWorktreeTUI,
 	}
 
 	list := &cobra.Command{
@@ -24,12 +43,26 @@ func init() {
 	}
 
 	add := &cobra.Command{
-		Use:   "add <path> [branch]",
-		Short: "Create a worktree at <path> checking out [branch] (or HEAD)",
+		Use:   "add <name|path> [branch]",
+		Short: "Create a worktree checking out [branch] (or HEAD)",
 		Long: `Create a worktree.
 
-Without --new, [branch] must already exist (local or remote-tracking).
-With --new (-b), a new branch named [branch] is created from --from (default HEAD).
+Path resolution:
+  - An absolute path is used as-is.
+  - A relative name/path is resolved under the managed base directory:
+      <worktree.base>/<worktree.project>/<name>
+    Default base is ~/.gk/worktree; project defaults to the repo's
+    toplevel basename. Override both in .gk.yaml.
+
+Branch logic:
+  - Without --new, [branch] must already exist (local or remote-tracking).
+  - With --new (-b), a new branch named [branch] is created from
+    --from (default HEAD).
+
+Examples:
+  gk worktree add ai-commit           # ~/.gk/worktree/<project>/ai-commit
+  gk worktree add feat-x -b feat/x    # new branch, managed path
+  gk worktree add /tmp/exp -b hotfix  # absolute path wins, branch still created
 `,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: runWorktreeAdd,
@@ -159,8 +192,9 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	ctx := cmd.Context()
 	w := cmd.OutOrStdout()
+	cfg, _ := config.Load(cmd.Flags())
 
-	path := args[0]
+	rawPath := args[0]
 	branch := ""
 	if len(args) == 2 {
 		branch = args[1]
@@ -176,6 +210,18 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--from requires --new")
 	}
 
+	resolvedPath, err := resolveWorktreePath(ctx, runner, cfg, rawPath)
+	if err != nil {
+		return err
+	}
+	// Only create intermediate dirs when the path was rewritten through
+	// the managed layout. An absolute path is the user's responsibility.
+	if resolvedPath != rawPath {
+		if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
+			return fmt.Errorf("ensure worktree base: %w", err)
+		}
+	}
+
 	gitArgs := []string{"worktree", "add"}
 	if detach {
 		gitArgs = append(gitArgs, "--detach")
@@ -186,7 +232,7 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		}
 		gitArgs = append(gitArgs, "-b", branch)
 	}
-	gitArgs = append(gitArgs, path)
+	gitArgs = append(gitArgs, resolvedPath)
 
 	if newBranch {
 		if from != "" {
@@ -203,8 +249,64 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	if len(stdout) > 0 {
 		_, _ = w.Write(stdout)
 	}
-	fmt.Fprintf(w, "added worktree at %s\n", path)
+	fmt.Fprintf(w, "added worktree at %s\n", resolvedPath)
 	return nil
+}
+
+// resolveWorktreePath expands a worktree path argument into a concrete
+// filesystem path using gk's managed layout:
+//
+//  1. absolute path → use as-is (user intent is explicit)
+//  2. relative path → <base>/<project>/<input>, where:
+//       base    = cfg.Worktree.Base (default "~/.gk/worktree"), ~ expanded
+//       project = cfg.Worktree.Project (explicit), else basename of the
+//                 git toplevel directory for the current repo
+//
+// When the managed base cannot be resolved (empty config, no home dir,
+// no git toplevel) the raw input is returned so git falls back to
+// placing the worktree relative to the caller's cwd — matching the
+// pre-v0.9 behaviour of `gk worktree add`.
+func resolveWorktreePath(ctx context.Context, runner git.Runner, cfg *config.Config, input string) (string, error) {
+	if filepath.IsAbs(input) {
+		return input, nil
+	}
+	if cfg == nil || cfg.Worktree.Base == "" {
+		return input, nil
+	}
+	base := expandHome(cfg.Worktree.Base)
+	if base == "" {
+		return input, nil
+	}
+
+	project := cfg.Worktree.Project
+	if project == "" {
+		slug, derr := deriveWorktreeProjectSlug(ctx, runner)
+		if derr != nil || slug == "" {
+			// No toplevel? Fall back to cwd behavior rather than
+			// surprising the user with a failed mkdir.
+			return input, nil
+		}
+		project = slug
+	}
+	if strings.ContainsAny(project, "/\\") || strings.Contains(project, "..") {
+		return "", fmt.Errorf("invalid worktree.project %q: must not contain path separators or '..'", project)
+	}
+	return filepath.Join(base, project, input), nil
+}
+
+// deriveWorktreeProjectSlug returns basename(toplevel) so two clones at
+// /Users/me/work/gk and /Users/me/personal/gk still share the layout
+// unless `worktree.project` is set explicitly.
+func deriveWorktreeProjectSlug(ctx context.Context, runner git.Runner) (string, error) {
+	out, _, err := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return "", fmt.Errorf("empty toplevel")
+	}
+	return filepath.Base(top), nil
 }
 
 func runWorktreeRemove(cmd *cobra.Command, args []string) error {
@@ -235,5 +337,246 @@ func runWorktreePrune(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	_, _ = cmd.OutOrStdout().Write(stdout)
+	return nil
+}
+
+// runWorktreeTUI is the handler for bare `gk wt` / `gk worktree`. It
+// drives a REPL-style loop over the worktree list and dispatches to
+// add/remove/cd actions. All interactive rendering is kept on stderr so
+// a caller can safely wrap the command in `$(gk wt)` and capture the
+// chosen path for a cd alias.
+func runWorktreeTUI(cmd *cobra.Command, args []string) error {
+	if !ui.IsTerminal() {
+		return cmd.Help()
+	}
+
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	ctx := cmd.Context()
+	cfg, _ := config.Load(cmd.Flags())
+	stderr := cmd.ErrOrStderr()
+
+	// Menu action sentinels. Using clearly reserved keys avoids any
+	// collision with a real worktree path a user might pick.
+	const (
+		keyAddNew = "__gk_add_new__"
+		keyQuit   = "__gk_quit__"
+	)
+
+	for {
+		entries, err := listWorktreesForTUI(ctx, runner)
+		if err != nil {
+			return err
+		}
+
+		bold := color.New(color.Bold).SprintFunc()
+		faint := color.New(color.Faint).SprintFunc()
+
+		items := make([]ui.PickerItem, 0, len(entries)+2)
+		for _, e := range entries {
+			label := worktreeTUILabel(e, bold, faint)
+			items = append(items, ui.PickerItem{
+				Display: label,
+				Key:     e.Path,
+			})
+		}
+		items = append(items,
+			ui.PickerItem{Display: faint("[+] add new worktree"), Key: keyAddNew},
+			ui.PickerItem{Display: faint("[q] quit"), Key: keyQuit},
+		)
+
+		picked, err := ui.NewPicker().Pick(ctx, "worktree", items)
+		if err != nil {
+			if errors.Is(err, ui.ErrPickerAborted) {
+				return nil
+			}
+			return err
+		}
+
+		switch picked.Key {
+		case keyQuit:
+			return nil
+		case keyAddNew:
+			if err := worktreeTUIAdd(ctx, runner, cfg); err != nil {
+				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
+			}
+		default:
+			// Chosen worktree — open the action submenu.
+			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, picked.Key)
+			if err != nil {
+				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
+			}
+			if done {
+				return nil
+			}
+		}
+	}
+}
+
+// listWorktreesForTUI returns the current worktrees parsed from
+// `git worktree list --porcelain`. Shared with the non-interactive
+// `gk worktree list` command so both see identical data.
+func listWorktreesForTUI(ctx context.Context, runner *git.ExecRunner) ([]WorktreeEntry, error) {
+	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+	return parseWorktreePorcelain(string(stdout)), nil
+}
+
+// worktreeTUILabel formats one row for the picker. The branch (or
+// "(detached)"/"(bare)") is bolded so it scans first; path is faint.
+// Flags like [locked] / [prunable] append as red-on-default suffixes.
+func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string) string {
+	var branch string
+	switch {
+	case e.Bare:
+		branch = "(bare)"
+	case e.Detached:
+		branch = "(detached)"
+	case e.Branch != "":
+		branch = e.Branch
+	default:
+		branch = "-"
+	}
+	tail := ""
+	if e.Locked {
+		tail += "  " + color.RedString("[locked]")
+	}
+	if e.Prunable {
+		tail += "  " + color.RedString("[prunable]")
+	}
+	return fmt.Sprintf("%-20s  %s%s", bold(branch), faint(e.Path), tail)
+}
+
+// worktreeTUIActOnEntry is the secondary picker: what to do with the
+// worktree the user just selected. Returns (done, err) — done=true
+// means the outer loop should exit (e.g. user picked "cd").
+func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, path string) (bool, error) {
+	const (
+		actCD     = "cd"
+		actRemove = "remove"
+		actCancel = "cancel"
+	)
+	faint := color.New(color.Faint).SprintFunc()
+	items := []ui.PickerItem{
+		{Display: fmt.Sprintf("cd  %s", faint("(print path to stdout for shell alias)")), Key: actCD},
+		{Display: "remove", Key: actRemove},
+		{Display: "cancel", Key: actCancel},
+	}
+	picked, err := ui.NewPicker().Pick(ctx, path, items)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	switch picked.Key {
+	case actCD:
+		// Write the chosen path to stdout so `cd $(gk wt)` can consume it.
+		// All interactive UI so far has used stderr, so stdout is clean.
+		fmt.Fprintln(cmd.OutOrStdout(), path)
+		return true, nil
+	case actRemove:
+		ok, err := ui.Confirm(fmt.Sprintf("remove %s?", path), false)
+		if err != nil || !ok {
+			return false, nil
+		}
+		if _, stderr, err := runner.Run(ctx, "worktree", "remove", path); err != nil {
+			return false, fmt.Errorf("worktree remove: %s: %w", strings.TrimSpace(string(stderr)), err)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "removed %s\n", path)
+		return false, nil
+	default: // cancel
+		return false, nil
+	}
+}
+
+// worktreeTUIAdd collects a worktree name + branch choice from the user
+// and dispatches to git worktree add via the managed-path resolver.
+// huh forms render on stderr by default, so stdout stays reserved for
+// the `cd` action in the outer loop.
+func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) error {
+	var name string
+	var createBranch bool = true
+	var branchName string
+	var fromRef string
+
+	nameForm := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title("worktree name").
+			Description("relative → placed under the managed base; absolute → used as-is").
+			Value(&name).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("name is required")
+				}
+				return nil
+			}),
+		huh.NewConfirm().
+			Title("create a new branch?").
+			Description("no → check out an existing branch").
+			Value(&createBranch),
+	))
+	if err := nameForm.Run(); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+
+	branchPrompt := "branch name"
+	branchDesc := "existing branch to check out"
+	if createBranch {
+		branchDesc = "name of the new branch"
+		branchName = filepath.Base(name) // sensible default: "feat/api" → "api"
+	}
+	branchForm := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title(branchPrompt).Description(branchDesc).Value(&branchName),
+	))
+	if err := branchForm.Run(); err != nil {
+		return err
+	}
+	branchName = strings.TrimSpace(branchName)
+	if branchName == "" {
+		return fmt.Errorf("branch name is required")
+	}
+
+	if createBranch {
+		fromForm := huh.NewForm(huh.NewGroup(
+			huh.NewInput().
+				Title("base ref").
+				Description("blank = HEAD; e.g. origin/main").
+				Value(&fromRef),
+		))
+		if err := fromForm.Run(); err != nil {
+			return err
+		}
+		fromRef = strings.TrimSpace(fromRef)
+	}
+
+	resolved, err := resolveWorktreePath(ctx, runner, cfg, name)
+	if err != nil {
+		return err
+	}
+	if resolved != name {
+		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+			return fmt.Errorf("ensure worktree base: %w", err)
+		}
+	}
+
+	gitArgs := []string{"worktree", "add"}
+	if createBranch {
+		gitArgs = append(gitArgs, "-b", branchName, resolved)
+		if fromRef != "" {
+			gitArgs = append(gitArgs, fromRef)
+		}
+	} else {
+		gitArgs = append(gitArgs, resolved, branchName)
+	}
+	if _, gitErr, err := runner.Run(ctx, gitArgs...); err != nil {
+		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(gitErr)), err)
+	}
+	// Surface the resolved path on stderr so the user sees where it
+	// landed without polluting stdout.
+	fmt.Fprintln(os.Stderr, "added worktree at", resolved)
 	return nil
 }

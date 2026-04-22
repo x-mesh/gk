@@ -22,14 +22,20 @@ import (
 )
 
 var statusVisFlags []string
-var statusNoFetch bool
+var statusFetch bool
 var statusTopN int
 var statusLegend bool
+var statusXYStyleFlag string
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
 // and read by statusVisEnabled. A nil value means "no viz" (e.g., --vis none).
 var effectiveVis []string
+
+// effectiveXYStyle is the resolved display mode for the per-entry
+// porcelain-code column ("labels" / "glyphs" / "raw"). Set once at the
+// top of runStatus and read by renderXY from every section renderer.
+var effectiveXYStyle string
 
 // statusFetchTimeout is the hard ceiling on the optional upstream fetch at
 // the top of runStatus. On slow or flaky networks, status still returns
@@ -50,9 +56,10 @@ func init() {
 		RunE:    runStatus,
 	}
 	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
-	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
+	cmd.Flags().BoolVarP(&statusFetch, "fetch", "f", false, "fetch the current branch's upstream before reporting ↑N ↓N (opt-in; no network activity by default)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
+	cmd.Flags().StringVar(&statusXYStyleFlag, "xy-style", "", "per-entry state column: 'labels' (new/mod/staged/conflict, default), 'glyphs' (+ ~ ● ⚔ #), or 'raw' (git's two-char code like ??/.M/UU)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -82,19 +89,18 @@ func statusVisEnabled(name string) bool {
 	return false
 }
 
-// shouldAutoFetch folds together every opt-out signal that disables the
-// quiet upstream fetch. Precedence: CLI flag > env var > config.
+// shouldAutoFetch reports whether this invocation should fetch the upstream
+// ref before reading porcelain. Fetch is opt-in: the CLI flag wins, and
+// `status.auto_fetch: true` in config is kept as an always-fetch escape
+// hatch for users who want the old v0.8.0-and-earlier behavior.
 func shouldAutoFetch(cmd *cobra.Command, cfg *config.Config) bool {
-	if statusNoFetch {
-		return false
-	}
-	if v := strings.TrimSpace(os.Getenv("GK_NO_FETCH")); v != "" && v != "0" && strings.ToLower(v) != "false" {
-		return false
-	}
-	if cfg == nil {
+	if statusFetch {
 		return true
 	}
-	return cfg.Status.AutoFetch
+	if cfg != nil && cfg.Status.AutoFetch {
+		return true
+	}
+	return false
 }
 
 // maybeFetchUpstream does a best-effort, strictly-bounded fetch of the
@@ -1032,6 +1038,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	cfg, _ := config.Load(cmd.Flags())
 	effectiveVis = resolveStatusVis(cmd, cfg)
+	effectiveXYStyle = resolveXYStyle(cmd, cfg)
 
 	// --legend short-circuits everything: print the glyph/color key for
 	// the currently-active viz set and return. Useful for first-run users
@@ -1228,13 +1235,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 						suffix = "  " + faint(s)
 					}
 				}
-				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), color.RedString(e.XY), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), e.Path, suffix)
 			}
 		}
 		if len(grouped.Staged) > 0 {
 			fmt.Fprintln(w, color.GreenString("staged:"))
 			for _, e := range grouped.Staged {
-				fmt.Fprintf(w, "  %s%s %s\n", glyphPrefix(e.Path, useGlyphs), color.GreenString(e.XY), displayPath(e))
+				fmt.Fprintf(w, "  %s%s %s\n", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), displayPath(e))
 			}
 		}
 		if len(grouped.Modified) > 0 {
@@ -1246,10 +1253,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			showChurn := statusVisEnabled("churn") && len(st.Entries) <= 50
 			showRisk := statusVisEnabled("risk")
 			for _, e := range modified {
-				parts := []string{fmt.Sprintf("  %s%s %s", glyphPrefix(e.Path, useGlyphs), color.YellowString(e.XY), displayPath(e))}
+				parts := []string{fmt.Sprintf("  %s%s %s", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), displayPath(e))}
 				if showRisk {
 					if marker := riskMarker(cmd.Context(), runner, e); marker != "" {
-						parts[0] = fmt.Sprintf("  %s%s %s %s", glyphPrefix(e.Path, useGlyphs), color.YellowString(e.XY), marker, displayPath(e))
+						parts[0] = fmt.Sprintf("  %s%s %s %s", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), marker, displayPath(e))
 					}
 				}
 				if showChurn {
@@ -1696,7 +1703,7 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 		if child.entry != nil {
 			useGlyphs := statusVisEnabled("glyphs")
 			stat := formatDiffStat(stats, child.entry.Path)
-			fmt.Fprintf(w, "%s%s%s%s  %s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), colorXY(child.entry.XY), displayTreeName(child), stat)
+			fmt.Fprintf(w, "%s%s%s%s  %s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), renderXY(child.entry.XY, effectiveXYStyle), displayTreeName(child), stat)
 		} else {
 			if dropBadge {
 				fmt.Fprintf(w, "%s%s%s/\n", prefix, faint(branch),
@@ -1797,18 +1804,188 @@ func formatDiffStat(stats map[string]diffStat, path string) string {
 	return "  " + strings.Join(parts, " ")
 }
 
-// colorXY picks a color for the two-letter porcelain code based on the
-// entry's broad category (conflict/staged/modified/untracked).
-func colorXY(xy string) string {
+// xyStyleLabels, xyStyleGlyphs, xyStyleRaw are the three valid values for
+// --xy-style / status.xy_style. Anything else resolves to labels (default).
+const (
+	xyStyleLabels = "labels"
+	xyStyleGlyphs = "glyphs"
+	xyStyleRaw    = "raw"
+)
+
+// xyCellWidthLabels is the column width reserved in labels mode. 8 fits
+// "conflict" (the longest label) + room for the trailing space handled by
+// format strings at the call site.
+const xyCellWidthLabels = 8
+
+// renderXY returns a styled, width-stable cell for the two-letter
+// porcelain code. The style argument picks one of:
+//
+//   "labels" — word label (`new`, `mod`, `staged`, `conflict`), padded to 8 cells
+//   "glyphs" — single-cell category marker (+ ~ ● ⚔ #)
+//   "raw"    — literal two-character git code (`??`, `.M`, `UU`), unchanged
+//
+// The color follows the existing semantic map (dim gray for untracked,
+// red for conflicts, green for staged-only, yellow otherwise). Callers
+// that previously wrapped the code in color.GreenString etc. should
+// drop that wrapper — renderXY owns color selection.
+func renderXY(xy, style string) string {
+	body := xy
+	switch style {
+	case xyStyleGlyphs:
+		body = xyGlyph(xy)
+	case xyStyleRaw:
+		body = xy
+	default: // labels
+		body = fmt.Sprintf("%-*s", xyCellWidthLabels, xyLabel(xy))
+	}
+	return applyXYColor(xy, body)
+}
+
+// colorXY preserves the historical entry point for callers that want the
+// raw two-char code colored by category. New code should use renderXY.
+func colorXY(xy string) string { return applyXYColor(xy, xy) }
+
+// applyXYColor wraps body in the semantic color for xy. Body may be the
+// raw code, a word label, or a glyph — color is picked off the XY
+// category, not the body, so all three modes stay visually consistent.
+//
+// Note: DD and AA (both-deleted / both-added unmerged) always mean
+// conflict per git porcelain v1 even though they don't contain a U.
+// Earlier versions of this routine missed them and colored them yellow
+// by accident; this guard now fixes that.
+func applyXYColor(xy, body string) string {
 	switch {
 	case xy == "??":
-		return color.New(color.FgHiBlack).Sprint(xy)
-	case strings.ContainsAny(xy, "Uu"):
-		return color.RedString(xy)
+		return color.New(color.FgHiBlack).Sprint(body)
+	case xy == "!!":
+		return color.New(color.Faint).Sprint(body)
+	case xy == "DD" || xy == "AA" || strings.ContainsAny(xy, "Uu"):
+		return color.RedString(body)
 	case len(xy) >= 2 && xy[0] != '.' && xy[0] != ' ' && (xy[1] == '.' || xy[1] == ' '):
-		return color.GreenString(xy)
+		return color.GreenString(body)
 	default:
-		return color.YellowString(xy)
+		return color.YellowString(body)
+	}
+}
+
+// xyLabel maps the two-letter porcelain code to a human-readable word.
+// The mapping covers the common states first and falls through to the
+// raw code for anything unusual (future-proofing against new porcelain
+// extensions).
+func xyLabel(xy string) string {
+	if len(xy) < 2 {
+		return xy
+	}
+	switch xy {
+	case "??":
+		return "new"
+	case "!!":
+		return "ignored"
+	case "DD", "AA", "UU", "AU", "UA", "UD", "DU":
+		return "conflict"
+	}
+	x, y := xy[0], xy[1]
+	stagedOnly := isXYActive(x) && !isXYActive(y)
+	worktreeOnly := !isXYActive(x) && isXYActive(y)
+
+	switch {
+	case stagedOnly:
+		switch x {
+		case 'M':
+			return "staged"
+		case 'A':
+			return "added"
+		case 'D':
+			return "deleted"
+		case 'R':
+			return "renamed"
+		case 'C':
+			return "copied"
+		case 'T':
+			return "typ-ch"
+		}
+	case worktreeOnly:
+		switch y {
+		case 'M':
+			return "mod"
+		case 'D':
+			return "del"
+		case 'R':
+			return "ren"
+		case 'C':
+			return "cop"
+		case 'T':
+			return "typ"
+		}
+	default: // both staged + worktree dirty
+		// Trailing '*' hints "touched in both the index and the working
+		// tree" — you staged it and then edited further.
+		switch y {
+		case 'M':
+			return "mod*"
+		case 'D':
+			return "del*"
+		case 'R':
+			return "ren*"
+		}
+	}
+	return xy
+}
+
+// xyGlyph collapses the porcelain code into a single-cell category
+// marker. Granularity is deliberately lower than xyLabel — callers opting
+// into glyph mode are trading per-action precision for visual density.
+func xyGlyph(xy string) string {
+	if len(xy) < 2 {
+		return xy
+	}
+	switch xy {
+	case "??":
+		return "+"
+	case "!!":
+		return "#"
+	case "DD", "AA", "UU", "AU", "UA", "UD", "DU":
+		return "⚔"
+	}
+	x, y := xy[0], xy[1]
+	stagedOnly := isXYActive(x) && !isXYActive(y)
+	worktreeOnly := !isXYActive(x) && isXYActive(y)
+	switch {
+	case stagedOnly:
+		return "●"
+	case worktreeOnly:
+		return "~"
+	default:
+		return "◉"
+	}
+}
+
+// isXYActive reports whether a porcelain code slot encodes an actual
+// change. Git uses `.` in porcelain v2 and ` ` in v1 for "nothing here";
+// both collapse to inactive.
+func isXYActive(c byte) bool { return c != '.' && c != ' ' }
+
+// resolveXYStyle picks the effective XY display mode using flag > config > default.
+// Unknown values fall back to "labels" — we never trust a bad input to
+// leak raw porcelain codes by accident.
+func resolveXYStyle(cmd *cobra.Command, cfg *config.Config) string {
+	if cmd.Flags().Changed("xy-style") && statusXYStyleFlag != "" {
+		return normalizeXYStyle(statusXYStyleFlag)
+	}
+	if cfg != nil && cfg.Status.XYStyle != "" {
+		return normalizeXYStyle(cfg.Status.XYStyle)
+	}
+	return xyStyleLabels
+}
+
+func normalizeXYStyle(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case xyStyleGlyphs:
+		return xyStyleGlyphs
+	case xyStyleRaw:
+		return xyStyleRaw
+	default:
+		return xyStyleLabels
 	}
 }
 

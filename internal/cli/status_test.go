@@ -67,8 +67,9 @@ func TestRunStatus_Untracked(t *testing.T) {
 	if !strings.Contains(out, "newfile.txt") {
 		t.Errorf("expected 'newfile.txt' in output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "??") {
-		t.Errorf("expected '??' marker, got:\n%s", out)
+	// Default XY style is "labels"; untracked rendered as "new".
+	if !strings.Contains(out, "new") {
+		t.Errorf("expected 'new' label, got:\n%s", out)
 	}
 }
 
@@ -86,8 +87,9 @@ func TestRunStatus_Modified(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, ".M") {
-		t.Errorf("expected '.M' modified marker, got:\n%s", out)
+	// Default XY style is "labels"; worktree-modified renders as "mod".
+	if !strings.Contains(out, "mod") {
+		t.Errorf("expected 'mod' label, got:\n%s", out)
 	}
 	if !strings.Contains(out, "tracked.txt") {
 		t.Errorf("expected 'tracked.txt' in output, got:\n%s", out)
@@ -109,8 +111,9 @@ func TestRunStatus_Staged(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "M.") {
-		t.Errorf("expected 'M.' staged marker, got:\n%s", out)
+	// Default XY style is "labels"; index-modified renders as "staged".
+	if !strings.Contains(out, "staged") {
+		t.Errorf("expected 'staged' label, got:\n%s", out)
 	}
 	if !strings.Contains(out, "staged.txt") {
 		t.Errorf("expected 'staged.txt' in output, got:\n%s", out)
@@ -435,52 +438,39 @@ func TestFastPathDebounced(t *testing.T) {
 }
 
 func TestShouldAutoFetch(t *testing.T) {
-	cfg := &config.Config{Status: config.StatusConfig{AutoFetch: true}}
+	off := &config.Config{Status: config.StatusConfig{AutoFetch: false}}
+	on := &config.Config{Status: config.StatusConfig{AutoFetch: true}}
 
-	t.Run("default on", func(t *testing.T) {
-		t.Setenv("GK_NO_FETCH", "")
-		statusNoFetch = false
-		cmd := &cobra.Command{Use: "status"}
-		if !shouldAutoFetch(cmd, cfg) {
-			t.Error("expected auto-fetch on by default")
-		}
-	})
-
-	t.Run("--no-fetch flag disables", func(t *testing.T) {
-		t.Setenv("GK_NO_FETCH", "")
-		statusNoFetch = true
-		t.Cleanup(func() { statusNoFetch = false })
-		cmd := &cobra.Command{Use: "status"}
-		if shouldAutoFetch(cmd, cfg) {
-			t.Error("--no-fetch should disable")
-		}
-	})
-
-	t.Run("GK_NO_FETCH=1 disables", func(t *testing.T) {
-		t.Setenv("GK_NO_FETCH", "1")
-		statusNoFetch = false
-		cmd := &cobra.Command{Use: "status"}
-		if shouldAutoFetch(cmd, cfg) {
-			t.Error("GK_NO_FETCH=1 should disable")
-		}
-	})
-
-	t.Run("GK_NO_FETCH=0 allows", func(t *testing.T) {
-		t.Setenv("GK_NO_FETCH", "0")
-		statusNoFetch = false
-		cmd := &cobra.Command{Use: "status"}
-		if !shouldAutoFetch(cmd, cfg) {
-			t.Error("GK_NO_FETCH=0 should not disable")
-		}
-	})
-
-	t.Run("config auto_fetch=false disables", func(t *testing.T) {
-		t.Setenv("GK_NO_FETCH", "")
-		statusNoFetch = false
-		off := &config.Config{Status: config.StatusConfig{AutoFetch: false}}
+	t.Run("default off — no flag, no config", func(t *testing.T) {
+		statusFetch = false
 		cmd := &cobra.Command{Use: "status"}
 		if shouldAutoFetch(cmd, off) {
-			t.Error("config AutoFetch=false should disable")
+			t.Error("expected no fetch by default")
+		}
+	})
+
+	t.Run("--fetch flag enables", func(t *testing.T) {
+		statusFetch = true
+		t.Cleanup(func() { statusFetch = false })
+		cmd := &cobra.Command{Use: "status"}
+		if !shouldAutoFetch(cmd, off) {
+			t.Error("--fetch should enable")
+		}
+	})
+
+	t.Run("config auto_fetch=true enables globally", func(t *testing.T) {
+		statusFetch = false
+		cmd := &cobra.Command{Use: "status"}
+		if !shouldAutoFetch(cmd, on) {
+			t.Error("config AutoFetch=true should enable")
+		}
+	})
+
+	t.Run("nil config treated as off", func(t *testing.T) {
+		statusFetch = false
+		cmd := &cobra.Command{Use: "status"}
+		if shouldAutoFetch(cmd, nil) {
+			t.Error("nil config should not enable fetch")
 		}
 	})
 }
@@ -954,8 +944,9 @@ func TestRunStatus_Conflict(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "UU") {
-		t.Errorf("expected 'UU' conflict marker, got:\n%s", out)
+	// Default XY style is "labels"; unmerged renders as "conflict".
+	if !strings.Contains(out, "conflict") {
+		t.Errorf("expected 'conflict' label, got:\n%s", out)
 	}
 	if !strings.Contains(out, "conflict.txt") {
 		t.Errorf("expected 'conflict.txt' in output, got:\n%s", out)
@@ -1074,4 +1065,94 @@ func TestFormatDiffStat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestXYStyle(t *testing.T) {
+	t.Run("labels cover every common XY", func(t *testing.T) {
+		cases := map[string]string{
+			"??": "new",
+			"!!": "ignored",
+			".M": "mod",
+			".D": "del",
+			".R": "ren",
+			".T": "typ",
+			"M.": "staged",
+			"A.": "added",
+			"D.": "deleted",
+			"R.": "renamed",
+			"MM": "mod*",
+			"MD": "del*",
+			"UU": "conflict",
+			"AU": "conflict",
+			"UA": "conflict",
+			"DD": "conflict",
+			"AA": "conflict",
+		}
+		for xy, want := range cases {
+			if got := xyLabel(xy); got != want {
+				t.Errorf("xyLabel(%q) = %q, want %q", xy, got, want)
+			}
+		}
+	})
+
+	t.Run("glyphs collapse to 5 categories", func(t *testing.T) {
+		cases := map[string]string{
+			"??": "+",
+			"!!": "#",
+			".M": "~",
+			".D": "~",
+			"M.": "●",
+			"A.": "●",
+			"MM": "◉",
+			"UU": "⚔",
+			"DD": "⚔",
+			"AA": "⚔",
+		}
+		for xy, want := range cases {
+			if got := xyGlyph(xy); got != want {
+				t.Errorf("xyGlyph(%q) = %q, want %q", xy, got, want)
+			}
+		}
+	})
+
+	t.Run("renderXY labels mode pads to 8 cells", func(t *testing.T) {
+		color.NoColor = true
+		t.Cleanup(func() { color.NoColor = false })
+		got := renderXY(".M", xyStyleLabels)
+		if got != "mod     " {
+			t.Errorf("padded labels: got %q (len %d)", got, len(got))
+		}
+	})
+
+	t.Run("renderXY raw mode preserves git code", func(t *testing.T) {
+		color.NoColor = true
+		t.Cleanup(func() { color.NoColor = false })
+		if got := renderXY("??", xyStyleRaw); got != "??" {
+			t.Errorf("raw mode should preserve code, got %q", got)
+		}
+	})
+
+	t.Run("renderXY glyphs mode returns single glyph", func(t *testing.T) {
+		color.NoColor = true
+		t.Cleanup(func() { color.NoColor = false })
+		if got := renderXY("??", xyStyleGlyphs); got != "+" {
+			t.Errorf("glyphs mode: got %q", got)
+		}
+	})
+
+	t.Run("normalizeXYStyle defends against bad input", func(t *testing.T) {
+		cases := map[string]string{
+			"LABELS":  xyStyleLabels,
+			"glyphs":  xyStyleGlyphs,
+			"raw":     xyStyleRaw,
+			"":        xyStyleLabels,
+			"bogus":   xyStyleLabels,
+			"  raw ": xyStyleRaw,
+		}
+		for in, want := range cases {
+			if got := normalizeXYStyle(in); got != want {
+				t.Errorf("normalizeXYStyle(%q) = %q, want %q", in, got, want)
+			}
+		}
+	})
 }

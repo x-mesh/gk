@@ -34,10 +34,14 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("log.vis", defaults.Log.Vis)
 	v.SetDefault("status.vis", defaults.Status.Vis)
 	v.SetDefault("status.auto_fetch", defaults.Status.AutoFetch)
+	v.SetDefault("status.xy_style", defaults.Status.XYStyle)
 	v.SetDefault("ui.color", defaults.UI.Color)
 	v.SetDefault("ui.prefer", defaults.UI.Prefer)
 	v.SetDefault("branch.stale_days", defaults.Branch.StaleDays)
 	v.SetDefault("branch.protected", defaults.Branch.Protected)
+	v.SetDefault("clone.default_protocol", defaults.Clone.DefaultProtocol)
+	v.SetDefault("clone.default_host", defaults.Clone.DefaultHost)
+	v.SetDefault("worktree.base", defaults.Worktree.Base)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()

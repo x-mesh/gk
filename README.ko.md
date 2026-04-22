@@ -57,6 +57,7 @@ unalias gk gke 2>/dev/null
 
 ```bash
 # 일상 작업
+gk clone JINWOO-J/playground # git@github.com:JINWOO-J/playground.git로 확장
 gk pull                      # fetch + rebase, upstream 자동 감지
 gk pull --strategy ff-only   # fast-forward only; 히스토리 분기 시 에러
 gk sync                      # fetch + fast-forward only (rebase 없음)
@@ -92,9 +93,10 @@ gk preflight               # 설정된 검사 순서 실행
 
 | 명령어 | 별칭 | 설명 |
 |---|---|---|
+| `gk clone <owner/repo \| alias:owner/repo \| url>` | | 단축 URL 확장 clone. `owner/repo`는 기본 `git@github.com:owner/repo.git` (ssh, 설정 가능). `--ssh`/`--https` override. `clone.hosts`로 alias(`gl:`, `work:`). `clone.root`, `clone.post_actions: [hooks-install, doctor]` 옵션 지원. |
 | `gk pull` | | fetch + upstream 통합. `--strategy rebase\|merge\|ff-only\|auto`; `@{u}` 우선 해석; HEAD가 이미 ancestor이면 `--ff-only`로 자동 전환 |
 | `gk sync` | | fetch + fast-forward only; `--all`로 모든 추적 브랜치 |
-| `gk status` | `gk st` | 간결한 작업 트리 상태. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` 오버레이 |
+| `gk status` | `gk st` | 간결한 작업 트리 상태. `-f`/`--fetch`로 ↑N ↓N을 원격에서 갱신. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` 오버레이 |
 | `gk log` | `gk slog` | 짧은 컬러 커밋 로그. `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` 시각화 |
 
 ### 브랜치

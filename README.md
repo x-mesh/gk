@@ -8,7 +8,7 @@
 
 # gk — git helper
 
-A lightweight Go git helper for daily pull/log/status/branch workflows, with a focus on **safe operations** (dry-run previews, reflog-backed undo, secret-scanning push) and **ergonomic diagnostics** (`doctor`, `precheck`, `sync`).
+A lightweight Go git helper for daily pull/log/status/branch workflows, with a focus on **safe operations** (reflog-backed undo, time-machine restore, policies-as-code) and **ergonomic diagnostics** (`doctor`, `precheck`, `sync`).
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org/dl/)
 [![Release](https://img.shields.io/github/v/release/x-mesh/gk)](https://github.com/x-mesh/gk/releases/latest)
@@ -17,11 +17,14 @@ A lightweight Go git helper for daily pull/log/status/branch workflows, with a f
 ## Why gk?
 
 - **Safer pushes by default** — `gk push` scans the commits-to-push diff for AWS / GitHub / Slack / OpenAI keys and PEM bodies; protected-branch force pushes require typing the exact branch name.
+- **Time machine for HEAD** — `gk timemachine list` surfaces every recoverable state (reflog + gk backup refs). `gk timemachine restore <sha|ref>` resets safely: atomic backup ref written first, autostash support, refuses mid-rebase/merge.
 - **Reflog-backed undo** — `gk undo` picks a past HEAD from the reflog (fzf or numeric picker), resets to it, and leaves a backup ref at `refs/gk/undo-backup/<branch>/<unix>` so every undo is trivially reversible.
+- **Policies as code** — `gk guard check` evaluates repo policy rules (secret scanning, commit size, required trailers) in parallel; `gk guard init` scaffolds `.gk.yaml` with commented stubs. Wire as a pre-commit hook with `gk hooks install --pre-commit`.
 - **Dry-run any merge** — `gk precheck <target>` runs `git merge-tree` and reports conflicted paths without touching your working tree (exit 3 on conflicts for CI).
 - **One-shot fast-forward** — `gk sync` fetches remotes and fast-forwards the current branch (or every tracked branch with `--all`). Never creates merge commits; diverged branches fail cleanly with a `gk pull` hint.
-- **Conventional-Commits-aware hooks** — `gk hooks install` wires `commit-msg` → `gk lint-commit` and `pre-push` → `gk preflight`. Managed hooks carry a marker, so re-installation is idempotent and foreign hooks are never clobbered without `--force`.
-- **Health at a glance** — `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, and hook install state — with copy-paste fix commands.
+- **Flexible pull strategy** — `gk pull --strategy rebase|merge|ff-only|auto` overrides the default per-invocation; resolves upstream from `@{u}` first, auto-switches to `merge --ff-only` when fast-forward is possible.
+- **Conventional-Commits-aware hooks** — `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so re-installation is idempotent and foreign hooks are never clobbered without `--force`.
+- **Health at a glance** — `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation — with copy-paste fix commands.
 - **Actionable errors** — most errors print a second-line `hint:` with the concrete next command.
 
 ## Install
@@ -54,19 +57,28 @@ unalias gk gke 2>/dev/null
 
 ```bash
 # Daily driver
-gk pull              # fetch + rebase, auto-detects base branch
-gk sync              # fetch + fast-forward only (never rebases)
-gk status            # concise working-tree summary
-gk log               # short, colorful commit log
+gk pull                      # fetch + rebase, auto-detects upstream
+gk pull --strategy ff-only   # fast-forward only; errors if histories diverged
+gk sync                      # fetch + fast-forward only (never rebases)
+gk status                    # concise working-tree summary
+gk log                       # short, colorful commit log
 
 # Safety
 gk precheck main     # dry-run merge into main; exits 3 if conflicts
 gk push              # scans diff for secrets, enforces protected-branch rules
 gk undo              # pick a past HEAD from the reflog and restore
 
+# Time machine
+gk timemachine list          # all recoverable HEAD states (reflog + backups)
+gk timemachine restore <sha> # safe reset — writes backup ref first
+
+# Policies
+gk guard init        # scaffold .gk.yaml with commented policy stubs
+gk guard check       # evaluate all policy rules; exit 0/1/2
+
 # Onboarding
 gk doctor            # report env health + fix commands
-gk hooks install --all   # wire commit-msg + pre-push hooks
+gk hooks install --all       # wire commit-msg + pre-push + pre-commit hooks
 
 # Conventions
 gk lint-commit --staged    # validate commit message vs Conventional Commits
@@ -79,7 +91,7 @@ gk preflight               # run the configured check sequence
 ### Daily
 | Command | Alias | Description |
 |---|---|---|
-| `gk pull` | | Fetch + rebase onto the auto-detected base branch |
+| `gk pull` | | Fetch + integrate upstream. `--strategy rebase\|merge\|ff-only\|auto`; resolves `@{u}` first; auto-switches to `--ff-only` when HEAD is already an ancestor |
 | `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
 | `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
@@ -101,9 +113,19 @@ gk preflight               # run the configured check sequence
 | `gk preflight` | Run configured check sequence (`commit-lint`, `branch-check`, `no-conflict`, or shell commands) |
 | `gk lint-commit` | Validate commit message against Conventional Commits; `--staged`, `--file PATH`, `<rev-range>` |
 
+### Policies
+| Command | Description |
+|---|---|
+| `gk guard check` | Evaluate all policy rules in parallel; human or `--json` output; exit 0 clean / 1 warn / 2 error |
+| `gk guard init` | Scaffold `.gk.yaml` with a fully-commented `policies:` block; `--force` to overwrite, `--out` for custom path |
+
 ### Recovery
 | Command | Alias | Description |
 |---|---|---|
+| `gk timemachine list` | | Unified timeline of reflog + gk backup refs; `--kinds reflog,backup,stash,dangling`, `--json` (NDJSON) |
+| `gk timemachine restore <sha\|ref>` | | Safe reset: writes backup ref first, then resets; `--mode soft\|mixed\|hard\|auto`, `--dry-run`, `--autostash` |
+| `gk timemachine list-backups` | | gk-managed backup refs only; `--kind undo\|wipe\|timemachine`, `--json` |
+| `gk timemachine show <sha\|ref>` | | Commit header + diff stat (or `--patch`) for any timeline entry |
 | `gk undo` | | Reflog-based HEAD restore; leaves backup ref at `refs/gk/undo-backup/...` |
 | `gk reset` | | Hard-reset current branch to its upstream; `--to-remote` uses `<remote>/<current>` |
 | `gk wipe` | | `reset --hard` + `clean -fd`; backs up pre-wipe HEAD at `refs/gk/wipe-backup/...` |
@@ -116,8 +138,8 @@ gk preflight               # run the configured check sequence
 ### Onboarding / config
 | Command | Description |
 |---|---|
-| `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks) with fix commands; `--json` for CI |
-| `gk hooks install [--commit-msg\|--pre-push\|--all] [--force]` | Write gk-managed hook shims under `.git/hooks/` |
+| `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs) with fix commands; `--json` for CI |
+| `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | Write gk-managed hook shims under `.git/hooks/` (`--pre-commit` wires `gk guard check`) |
 | `gk hooks uninstall [...]` | Remove gk-managed hooks (refuses to delete foreign ones) |
 | `gk config show` | Print fully resolved config as YAML |
 | `gk config get <key>` | Print a single config value by dot-path |
@@ -152,8 +174,8 @@ See [docs/config.md](docs/config.md) for all fields. A sample config is at [exam
 | Code | Meaning |
 |:-:|---|
 | 0 | Success |
-| 1 | General error |
-| 2 | Invalid input (unknown ref, bad flag) |
+| 1 | General error · `gk guard check`: warn-level violations present |
+| 2 | Invalid input (unknown ref, bad flag) · `gk guard check`: error-level violations present |
 | 3 | Conflict (merge/rebase/precheck) |
 | 4 | Diverged (cannot fast-forward) |
 | 5 | Network error |

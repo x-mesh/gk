@@ -465,6 +465,33 @@ func topDir(p string) string {
 	return "."
 }
 
+// compactUpstreamSuffix renders the trailing "  → <remote-or-path>"
+// fragment for the gauge-head layout. Dedup rule:
+//
+//	local == upstream-branch  →  "  → origin"            (remote short only)
+//	local != upstream-branch  →  "  → origin/release"    (full remote/branch)
+//	upstream empty            →  ""                       (caller handles)
+//
+// Saves 15–30 characters on the common case where the branch name
+// exactly matches its upstream, which is the overwhelming majority of
+// real-world branches.
+func compactUpstreamSuffix(branch, upstream string, cyan func(format string, a ...interface{}) string, faint func(a ...interface{}) string) string {
+	if upstream == "" {
+		return ""
+	}
+	slash := strings.IndexByte(upstream, '/')
+	if slash <= 0 || slash >= len(upstream)-1 {
+		return "  " + faint("→ ") + cyan("%s", upstream)
+	}
+	remote := upstream[:slash]
+	upstreamBranch := upstream[slash+1:]
+	target := upstream
+	if upstreamBranch == branch {
+		target = remote
+	}
+	return "  " + faint("→ ") + cyan("%s", target)
+}
+
 // detachedShortSHA returns the abbreviated commit id for the current HEAD
 // when the branch name is "(detached)". Empty string on any error.
 func detachedShortSHA(ctx context.Context, runner *git.ExecRunner) string {
@@ -971,14 +998,28 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			color.New(color.FgYellow, color.Bold).Sprint("⚠ detached"),
 		)
 	default:
-		line = fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
-		if st.Upstream != "" {
-			line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
-		}
+		// L1 refinement (adopted from .xm/op/refine-2026-04-22-gk-status-
+		// branch-line-layout.json): when gauge is active on a branch that
+		// has an upstream, hoist it to line-head so the single most
+		// action-critical signal is the first thing the eye hits.
+		//
+		//   [··▓▓│▒▒▒▒··]  (↑2 ↓4)  feature/api-v2 → origin  · 3d · push 2h
+		//
+		// Fallback to branch-head layout when gauge is off or no upstream
+		// exists — preserves muscle memory + the `branch:` label that
+		// users relied on since v0.1.
 		if statusVisEnabled("gauge") && st.Upstream != "" {
-			line += "  " + renderDivergenceGauge(st.Ahead, st.Behind)
-		} else if st.Ahead != 0 || st.Behind != 0 {
-			line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
+			line = renderDivergenceGauge(st.Ahead, st.Behind) +
+				"  " + bold(st.Branch) +
+				compactUpstreamSuffix(st.Branch, st.Upstream, cyan, faint)
+		} else {
+			line = fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
+			if st.Upstream != "" {
+				line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
+			}
+			if st.Ahead != 0 || st.Behind != 0 {
+				line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
+			}
 		}
 	}
 	if statusVisEnabled("staleness") {

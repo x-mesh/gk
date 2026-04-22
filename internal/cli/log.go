@@ -292,52 +292,64 @@ var logVizNames = []string{
 	"lanes",
 }
 
-// resolveLogVis determines the effective viz set for this invocation.
-// Precedence mirrors `gk status --vis`:
-//   - If any individual viz flag (--cc, --impact, ...) OR --vis is set,
-//     the user's explicit set wins (union across forms).
-//   - --vis none returns an empty set, disabling every viz layer.
-//   - Otherwise the config default (cfg.Log.Vis) applies.
+// resolveLogVis determines the effective viz set for this invocation in
+// two steps:
 //
-// This keeps one-off overrides ergonomic (`gk log --impact`) while still
-// letting projects lean on the configured default for bare `gk log`.
+//  1. Baseline. Priority order:
+//     - `--vis <list>` replaces the baseline entirely (intentional
+//       "start fresh" semantic); `--vis none` empties the baseline.
+//     - `--format <fmt>` alone suppresses the baseline so the raw
+//       git pretty-format keeps control.
+//     - Otherwise the configured default (cfg.Log.Vis) is the baseline.
+//
+//  2. Individual flags layer on top of the baseline:
+//     - `--cc`, `--impact`, ... (true) add the name to the set.
+//     - `--cc=false` removes it from the set.
+//
+// Intuition: individual flags are *additive*. `gk log --impact` keeps
+// the configured cc/safety/tags-rule AND adds the impact bar. Users who
+// want to blow away the default set reach for `--vis ...` instead.
 func resolveLogVis(cmd *cobra.Command, cfg *config.Config) []string {
-	var explicit []string
-	anyExplicit := false
+	var effective []string
+
+	switch {
+	case cmd.Flags().Changed("vis"):
+		slice, _ := cmd.Flags().GetStringSlice("vis")
+		if !(len(slice) == 1 && slice[0] == "none") {
+			for _, v := range slice {
+				effective = appendUnique(effective, v)
+			}
+		}
+	case cmd.Flags().Changed("format"):
+		// Explicit --format suppresses the configured default so the raw
+		// pretty-format stays in control. Individual viz flags below can
+		// still re-introduce specific layers.
+	case cfg != nil:
+		effective = append(effective, cfg.Log.Vis...)
+	}
 
 	for _, name := range logVizNames {
 		if !cmd.Flags().Changed(name) {
 			continue
 		}
-		anyExplicit = true
 		if v, _ := cmd.Flags().GetBool(name); v {
-			explicit = appendUnique(explicit, name)
+			effective = appendUnique(effective, name)
+		} else {
+			effective = removeStr(effective, name)
 		}
 	}
-	if cmd.Flags().Changed("vis") {
-		anyExplicit = true
-		slice, _ := cmd.Flags().GetStringSlice("vis")
-		if len(slice) == 1 && slice[0] == "none" {
-			return nil
-		}
-		for _, v := range slice {
-			explicit = appendUnique(explicit, v)
-		}
-	}
+	return effective
+}
 
-	if anyExplicit {
-		return explicit
+// removeStr returns xs with the first occurrence of x removed. Used by
+// the --flag=false path in resolveLogVis.
+func removeStr(xs []string, x string) []string {
+	for i, v := range xs {
+		if v == x {
+			return append(xs[:i], xs[i+1:]...)
+		}
 	}
-	// When the caller explicitly sets --format, they are asking for the raw
-	// git pretty-format output; the configured viz default would ignore it,
-	// so suppress the default so --format keeps control of rendering.
-	if cmd.Flags().Changed("format") {
-		return nil
-	}
-	if cfg != nil {
-		return cfg.Log.Vis
-	}
-	return nil
+	return xs
 }
 
 func containsVis(set []string, name string) bool {

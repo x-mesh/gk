@@ -128,8 +128,6 @@ func TestParseCommitRecords(t *testing.T) {
 func TestResolveLogVis(t *testing.T) {
 	cfg := &config.Config{Log: config.LogConfig{Vis: []string{"cc", "safety", "tags-rule"}}}
 
-	// mkCmd builds a cobra command that mirrors the real registration so the
-	// resolver can query every viz flag by Changed/GetBool.
 	mkCmd := func() *cobra.Command {
 		c := &cobra.Command{Use: "log"}
 		for _, name := range logVizNames {
@@ -147,12 +145,30 @@ func TestResolveLogVis(t *testing.T) {
 		}
 	})
 
-	t.Run("individual flag overrides config", func(t *testing.T) {
+	t.Run("individual flag appends to config", func(t *testing.T) {
 		c := mkCmd()
 		_ = c.Flags().Set("impact", "true")
 		got := resolveLogVis(c, cfg)
-		if strings.Join(got, ",") != "impact" {
-			t.Errorf("got %v, want [impact]", got)
+		if strings.Join(got, ",") != "cc,safety,tags-rule,impact" {
+			t.Errorf("got %v, want [cc safety tags-rule impact]", got)
+		}
+	})
+
+	t.Run("individual flag=false removes from config", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("cc", "false")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "safety,tags-rule" {
+			t.Errorf("got %v, want [safety tags-rule]", got)
+		}
+	})
+
+	t.Run("--vis replaces config entirely", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("vis", "cc,impact")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "cc,impact" {
+			t.Errorf("got %v, want [cc impact]", got)
 		}
 	})
 
@@ -160,8 +176,28 @@ func TestResolveLogVis(t *testing.T) {
 		c := mkCmd()
 		_ = c.Flags().Set("vis", "none")
 		got := resolveLogVis(c, cfg)
-		if got != nil {
-			t.Errorf("got %v, want nil", got)
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
+		}
+	})
+
+	t.Run("--vis none plus --trailers → only trailers", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("vis", "none")
+		_ = c.Flags().Set("trailers", "true")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "trailers" {
+			t.Errorf("got %v, want [trailers]", got)
+		}
+	})
+
+	t.Run("--vis plus individual layers", func(t *testing.T) {
+		c := mkCmd()
+		_ = c.Flags().Set("vis", "cc,impact")
+		_ = c.Flags().Set("trailers", "true")
+		got := resolveLogVis(c, cfg)
+		if strings.Join(got, ",") != "cc,impact,trailers" {
+			t.Errorf("got %v, want [cc impact trailers]", got)
 		}
 	})
 
@@ -169,28 +205,18 @@ func TestResolveLogVis(t *testing.T) {
 		c := mkCmd()
 		_ = c.Flags().Set("format", "%H")
 		got := resolveLogVis(c, cfg)
-		if got != nil {
-			t.Errorf("got %v, want nil when --format is explicit", got)
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
 		}
 	})
 
-	t.Run("--format plus --cc keeps viz", func(t *testing.T) {
+	t.Run("--format plus --cc re-enables cc only", func(t *testing.T) {
 		c := mkCmd()
 		_ = c.Flags().Set("format", "%H")
 		_ = c.Flags().Set("cc", "true")
 		got := resolveLogVis(c, cfg)
 		if strings.Join(got, ",") != "cc" {
 			t.Errorf("got %v, want [cc]", got)
-		}
-	})
-
-	t.Run("--vis union deduplicates", func(t *testing.T) {
-		c := mkCmd()
-		_ = c.Flags().Set("cc", "true")
-		_ = c.Flags().Set("vis", "cc,impact")
-		got := resolveLogVis(c, cfg)
-		if strings.Join(got, ",") != "cc,impact" {
-			t.Errorf("got %v, want [cc impact]", got)
 		}
 	})
 }

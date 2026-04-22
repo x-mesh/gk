@@ -101,16 +101,33 @@ gk slog [revisions] [-- <path>...] [flags]
 ### Default visualization layers
 
 When `gk log` is invoked with no viz flag, it applies the set in `log.vis`
-(default `[cc, safety, tags-rule]`). Override rules:
+(default `[cc, safety, tags-rule]`). The resolver works in two steps:
 
-- `gk log --impact` → only `impact` for this run (any explicit viz flag
-  replaces the default; it does not add to it).
-- `gk log --vis cc,impact` → `cc` and `impact` only.
-- `gk log --vis none` → no visualizations for this run.
-- `gk log --format "%H %s"` → raw pretty-format output, no viz (the config
-  default is suppressed so user-supplied formats keep control).
-- `gk log --format "%H" --cc` → viz still applies because `--cc` is
-  explicit; `--format` is ignored by the viz renderer.
+**Step 1 — baseline**
+- `--vis <list>` replaces the baseline entirely (the "start fresh" form).
+- `--vis none` empties the baseline.
+- `--format <fmt>` with nothing else suppresses the baseline so the raw
+  pretty-format stays in control.
+- Otherwise the configured `log.vis` is the baseline.
+
+**Step 2 — individual flags layer on top**
+- `--cc`, `--impact`, `--safety`, ... (true) add the name to the set.
+- `--cc=false` removes it from the set (handy to peel one layer off the
+  default without rewriting the full list).
+
+Concrete examples:
+
+| Command | Effective set |
+|---------|---------------|
+| `gk log` | `cc, safety, tags-rule` (from config) |
+| `gk log --impact` | `cc, safety, tags-rule, impact` (default + impact) |
+| `gk log --cc=false --impact` | `safety, tags-rule, impact` (drop cc, add impact) |
+| `gk log --vis cc,impact` | `cc, impact` (replace) |
+| `gk log --vis cc,impact --trailers` | `cc, impact, trailers` |
+| `gk log --vis none` | (none) |
+| `gk log --vis none --impact` | `impact` (start empty, add impact) |
+| `gk log --format "%H %s"` | (none — raw pretty-format wins) |
+| `gk log --format "%H" --cc` | `cc` (format suppresses default; --cc re-enables one layer) |
 
 ### Since shortcuts
 

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +27,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -108,8 +110,25 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		if len(grouped.Modified) > 0 {
 			fmt.Fprintln(w, color.YellowString("modified:"))
-			for _, e := range grouped.Modified {
-				fmt.Fprintf(w, "  %s %s\n", color.YellowString(e.XY), displayPath(e))
+			modified := grouped.Modified
+			if statusVisEnabled("risk") {
+				modified = sortByRisk(cmd.Context(), runner, modified)
+			}
+			showChurn := statusVisEnabled("churn") && len(st.Entries) <= 50
+			showRisk := statusVisEnabled("risk")
+			for _, e := range modified {
+				parts := []string{fmt.Sprintf("  %s %s", color.YellowString(e.XY), displayPath(e))}
+				if showRisk {
+					if marker := riskMarker(cmd.Context(), runner, e); marker != "" {
+						parts[0] = fmt.Sprintf("  %s %s %s", color.YellowString(e.XY), marker, displayPath(e))
+					}
+				}
+				if showChurn {
+					if sl := fileChurnSparkline(cmd.Context(), runner, e.Path, 8); sl != "" {
+						parts = append(parts, faint(sl))
+					}
+				}
+				fmt.Fprintln(w, strings.Join(parts, "  "))
 			}
 		}
 		if len(grouped.Untracked) > 0 {
@@ -164,6 +183,140 @@ func displayPath(e git.StatusEntry) string {
 		return fmt.Sprintf("%s → %s", e.Orig, e.Path)
 	}
 	return e.Path
+}
+
+// fileChurnSparkline returns an N-cell sparkline of a file's recent commit
+// activity (sum of adds+dels per commit) in chronological order (oldest left,
+// newest right). Empty string when the file has no recent history.
+func fileChurnSparkline(ctx context.Context, runner *git.ExecRunner, path string, cells int) string {
+	out, _, err := runner.Run(ctx, "log", "-n", strconv.Itoa(cells), "--format=", "--numstat", "--", path)
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+	var recent []int // newest-first from git
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		cols := strings.SplitN(line, "\t", 3)
+		if len(cols) != 3 {
+			continue
+		}
+		a, _ := strconv.Atoi(cols[0])
+		d, _ := strconv.Atoi(cols[1])
+		recent = append(recent, a+d)
+	}
+	if len(recent) == 0 {
+		return ""
+	}
+	// Reverse to oldest-first.
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
+	peak := 0
+	for _, v := range recent {
+		if v > peak {
+			peak = v
+		}
+	}
+	glyphs := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+	var b strings.Builder
+	// Left-pad with ' ' so output is always <cells> wide.
+	for i := 0; i < cells-len(recent); i++ {
+		b.WriteRune(' ')
+	}
+	for _, v := range recent {
+		if v == 0 {
+			b.WriteRune(' ')
+			continue
+		}
+		idx := 0
+		if peak > 1 {
+			idx = (v - 1) * (len(glyphs) - 1) / maxIntStatus(peak-1, 1)
+		}
+		if idx >= len(glyphs) {
+			idx = len(glyphs) - 1
+		}
+		b.WriteRune(glyphs[idx])
+	}
+	return b.String()
+}
+
+// riskMarker returns "⚠" when the path looks risky (large diff or touched by
+// multiple authors recently). Empty string otherwise.
+func riskMarker(ctx context.Context, runner *git.ExecRunner, e git.StatusEntry) string {
+	score := fileRiskScore(ctx, runner, e)
+	if score >= 50 {
+		return color.New(color.FgRed, color.Bold).Sprint("⚠")
+	}
+	return ""
+}
+
+// fileRiskScore computes a lightweight risk score: current diff LOC +
+// (30-day distinct-author count × 10). Files scored >= 50 are flagged.
+func fileRiskScore(ctx context.Context, runner *git.ExecRunner, e git.StatusEntry) int {
+	// current diff size (staged or worktree, whichever is present)
+	diffSize := 0
+	for _, base := range []string{"HEAD", "--cached"} {
+		args := []string{"diff", "--numstat"}
+		if base == "--cached" {
+			args = append(args, "--cached", "--", e.Path)
+		} else {
+			args = append(args, "--", e.Path)
+		}
+		if out, _, err := runner.Run(ctx, args...); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				cols := strings.SplitN(strings.TrimSpace(line), "\t", 3)
+				if len(cols) != 3 {
+					continue
+				}
+				a, _ := strconv.Atoi(cols[0])
+				d, _ := strconv.Atoi(cols[1])
+				diffSize += a + d
+			}
+		}
+	}
+	// distinct authors in last 30 days
+	out, _, err := runner.Run(ctx, "log", "--since=30.days.ago", "--format=%an", "--", e.Path)
+	authorCount := 0
+	if err == nil {
+		authors := map[string]bool{}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				authors[line] = true
+			}
+		}
+		authorCount = len(authors)
+	}
+	return diffSize + authorCount*10
+}
+
+// sortByRisk re-orders modified entries so high-risk files rise to the top
+// of the section.
+func sortByRisk(ctx context.Context, runner *git.ExecRunner, entries []git.StatusEntry) []git.StatusEntry {
+	type scored struct {
+		entry git.StatusEntry
+		score int
+	}
+	list := make([]scored, len(entries))
+	for i, e := range entries {
+		list[i] = scored{e, fileRiskScore(ctx, runner, e)}
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].score > list[j].score })
+	out := make([]git.StatusEntry, len(list))
+	for i, s := range list {
+		out[i] = s.entry
+	}
+	return out
+}
+
+func maxIntStatus(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // conflictKindName maps porcelain XY codes for unmerged entries to a short

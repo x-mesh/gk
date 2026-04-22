@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ func init() {
 	cmd.Flags().Bool("safety", false, "prefix each commit with a rebase-safety marker (◆/◇/✎/!)")
 	cmd.Flags().Bool("hotspots", false, "mark commits that touch the repo's most-churned files")
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
+	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -74,6 +76,11 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+
+	lanes, _ := cmd.Flags().GetBool("lanes")
+	if lanes && !JSONOut() {
+		return renderLanes(cmd, runner, since, limit, args)
+	}
 
 	// When any per-commit visualization is enabled, we take over rendering
 	// instead of passing the user's pretty-format through to git log. The
@@ -151,6 +158,125 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if len(stdout) > 0 && !strings.HasSuffix(string(stdout), "\n") {
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
+	return nil
+}
+
+// renderLanes prints one horizontal row per author, marking each commit
+// with `●` on a shared time axis. When too many authors would crowd the
+// view, the tail is collapsed into a synthetic "others" lane so the top
+// contributors stay readable.
+func renderLanes(cmd *cobra.Command, runner *git.ExecRunner, since string, limit int, pathArgs []string) error {
+	ctx := cmd.Context()
+	args := []string{"log", "--format=%an%x00%cI"}
+	if limit > 0 {
+		args = append(args, "-n", strconv.Itoa(limit))
+	}
+	if since != "" {
+		args = append(args, "--since="+normalizeSince(since))
+	}
+	args = append(args, pathArgs...)
+	out, _, err := runner.Run(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("git log failed: %w", err)
+	}
+
+	type ent struct {
+		author string
+		t      time.Time
+	}
+	var entries []ent
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, parts[1])
+		if err != nil {
+			continue
+		}
+		entries = append(entries, ent{parts[0], t})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	minT, maxT := entries[0].t, entries[0].t
+	for _, e := range entries {
+		if e.t.Before(minT) {
+			minT = e.t
+		}
+		if e.t.After(maxT) {
+			maxT = e.t
+		}
+	}
+
+	order := []string{}
+	byAuthor := map[string][]time.Time{}
+	for _, e := range entries {
+		if _, ok := byAuthor[e.author]; !ok {
+			order = append(order, e.author)
+		}
+		byAuthor[e.author] = append(byAuthor[e.author], e.t)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return len(byAuthor[order[i]]) > len(byAuthor[order[j]])
+	})
+	const maxLanes = 6
+	if len(order) > maxLanes {
+		others := []time.Time{}
+		for _, a := range order[maxLanes-1:] {
+			others = append(others, byAuthor[a]...)
+		}
+		order = append(order[:maxLanes-1], "others")
+		byAuthor["others"] = others
+	}
+
+	width, _ := ui.TTYWidth()
+	if width <= 0 {
+		width = 80
+	}
+	nameWidth := 0
+	for _, a := range order {
+		if len(a) > nameWidth {
+			nameWidth = len(a)
+		}
+	}
+	if nameWidth > 15 {
+		nameWidth = 15
+	}
+	cols := width - nameWidth - 2
+	if cols < 10 {
+		cols = 10
+	}
+
+	total := maxT.Sub(minT)
+	if total <= 0 {
+		total = 1
+	}
+	w := cmd.OutOrStdout()
+	faint := color.New(color.Faint).SprintFunc()
+	for _, a := range order {
+		row := []rune(strings.Repeat("─", cols))
+		for _, t := range byAuthor[a] {
+			col := int(t.Sub(minT)) * cols / int(total)
+			if col >= cols {
+				col = cols - 1
+			}
+			if col < 0 {
+				col = 0
+			}
+			row[col] = '●'
+		}
+		name := a
+		if len(name) > nameWidth {
+			name = name[:nameWidth]
+		}
+		fmt.Fprintf(w, "%-*s %s\n", nameWidth, name, color.CyanString(string(row)))
+	}
+	axis := fmt.Sprintf("%-*s %s", nameWidth, "", faint(fmt.Sprintf("└── %s ago → now", formatAge(time.Since(minT)))))
+	fmt.Fprintln(w, axis)
 	return nil
 }
 

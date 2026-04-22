@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TODO: document `gk push`, `gk sync`, `gk precheck`, `gk preflight`, `gk doctor`, `gk hooks`, `gk undo`, `gk restore`, `gk edit-conflict`, `gk lint-commit`, `gk branch-check` in `docs/commands.md` (pre-existing gaps inherited from 0.2.0 / 0.3.0).
 
+## [0.6.0] - 2026-04-22
+
+### Added
+
+- `gk status` default rendering is now tree-based with a staleness-aware branch line. The shipped `status.vis` default is `[gauge, bar, progress, tree, staleness]`, so bare `gk status` already looks distinctly un-like `git status`: ahead/behind becomes a divergence gauge, file state becomes a stacked composition bar, cleanup reads as a progress meter, the file list is a path trie with collapsed single-child chains, and `· last commit 3d ago` plus `(14d old)` markers surface abandoned WIP automatically. The classic sectioned output is still one flag away (`gk status --vis none`).
+- `gk status --vis base` — appends a second `from <trunk> [gauge]` line on feature branches showing divergence from the repo's mainline (resolved via `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`). Suppressed on the base branch itself. One `git rev-list --left-right --count` call (~5–15 ms).
+- `gk status --vis since-push` — appends `· since push 2h (3c)` to the branch line when the current branch has unpushed commits. Age is the oldest unpushed commit; count is total unpushed. One `git rev-list @{u}..HEAD --format=%ct` call (~5 ms).
+- `gk status --vis stash` — adds a `stash: 3 entries · newest 2h · oldest 5d · ⚠ 2 overlap with dirty` summary when the stash is non-empty. Overlap warning intersects the top stash's files with current dirty paths so the common `git stash pop` footgun is visible before you trigger it. 1–2 git calls (~5–10 ms total).
+- `gk status --vis heatmap` — 2-D density grid above the entry list: rows are top-level directories, columns are `C` conflicts / `S` staged / `M` modified / `?` untracked, each cell scales ` `→`░`→`▒`→`▓`→`█` with the peak count. Purpose-built for 100+ dirty-file states where the tree scrolls off-screen. Zero extra git calls (pure aggregation over porcelain output).
+- `gk status --vis glyphs` — prepends a semantic file-kind glyph to every entry (flat + tree): `●` source · `◐` test · `◆` config · `¶` docs · `▣` binary/asset · `↻` generated/vendored · `⊙` lockfile · `·` unknown. Classification is pure path matching (lockfile > generated > test > docs > config > binary > source) so a `package-lock.json` is `⊙` not `◆ JSON` and `foo_test.go` is `◐` not `●`. Zero file I/O, zero git calls.
+- `gk status --top N` — truncates the entry list to the first N rows, sorted alphabetically for stable output, and emits a faint `… +K more (total · showing top N)` footer so the truncation is never silent. Composes with every viz layer; default `0` means unlimited.
+- `gk status --no-fetch` — skip the quiet upstream fetch for this invocation. Also honored via `GK_NO_FETCH=1` or `status.auto_fetch: false` in `.gk.yaml`. The fetch itself was introduced in v0.6.0: by default `gk status` does a short, strictly-bounded fetch of the current branch's upstream so ↑N ↓N reflects the live remote (see "Changed" below for the full contract).
+- `gk log` default rendering switches to a viz-aware pipeline. The shipped `log.vis` default is `[cc, safety, tags-rule]`, so bare `gk log` now shows a Conventional-Commits glyph column (`▲` feat · `✕` fix · `↻` refactor · `¶` docs · `·` chore · `◎` test · `↑` perf · `⊙` ci · `▣` build · `←` revert · `✧` style) with an inline-colored subject prefix and a trailing `types: feat=4 fix=1` tally, plus a left-margin rebase-safety marker (`◇` unpushed / `✎` amended / blank when already pushed), plus `──┤ vX.Y.Z (3d) ├──` rules before tagged commits.
+- `gk log` relative age column is now compact (`6d` / `3m` / `1h` / `now` / `3mo` / `2y`) instead of git's verbose `6 days ago`. Saves 8–10 characters per row and disambiguates minutes (`m`) from months (`mo`).
+- `gk log --impact` — appends an eighths-bar scaled to per-commit `+adds -dels` size.
+- `gk log --hotspots` — marks commits that touch the repo's top-10 most-churned files from the last 90 days with `🔥`.
+- `gk log --trailers` — appends a `[+Alice review:Bob]` roll-up parsed from `Co-authored-by:` / `Reviewed-by:` / `Signed-off-by:` trailers.
+- `gk log --lanes` — replaces the commit list with per-author horizontal swim-lanes on a shared time axis; top 6 authors keep their own lane, the rest collapse into an `others` lane.
+- `gk log --pulse` — prints a commit-rhythm sparkline above the log (one cell per day, `▁▂▃▄▅▆▇█` scaled to the peak, `·` for zero).
+- `gk log --calendar` — prints a 7-row × N-week heatmap above the log (`░▒▓█` scaled to the busiest bucket, capped at 26 weeks).
+- `gk log --tags-rule` — inserts a cyan `──┤ v0.4.0 (3d) ├────` separator line before any commit whose short SHA matches a tag. Handles annotated tags via `%(*objectname:short)`.
+- `gk log --cc` / `--safety` — can be combined or subtracted via append semantics: `gk log --impact` keeps the default set and adds impact; `gk log --cc=false` peels cc off the default; `gk log --vis cc,impact` replaces the default entirely.
+- `gk sw` with no argument now lists both local AND remote-only tracking branches in the picker. Local entries render with `●` in green; remote-only entries render with `○` in cyan and auto-run `git switch --track <remote>/<name>` when chosen, creating the local tracking branch in one step. `refs/remotes/*/HEAD` aliases are filtered; remote entries whose short name matches a local branch are hidden.
+- Auto-fetch progress spinner on stderr. When `gk status` fetches and the call is slow enough to notice (>150 ms), a single-line braille-dot spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) animates on stderr with a `fetching <remote>...` label. Non-TTY stderr (pipes, CI, `2>file`) disables it so pipelines stay clean.
+- `make install` / `make uninstall` targets. Default `INSTALL_NAME=gk-dev` writes to `$(PREFIX)/bin/gk-dev` so a local build never shadows the Homebrew-managed `gk`. Override with `make install INSTALL_NAME=gk` to replace both.
+- Config: `log.vis`, `status.vis`, `status.auto_fetch` keys. Both viz defaults are fully configurable via `.gk.yaml` — projects can pin their own layer set.
+
+### Changed
+
+- `gk status` now auto-fetches the current branch's upstream before reading porcelain output so `↑N ↓N` counts reflect the actual remote state, not the last-cached view. Scope is strictly bounded: single upstream ref only (no `--all`, no tags, no submodule recursion, no `FETCH_HEAD` write); 3-second hard timeout via context; `GIT_TERMINAL_PROMPT=0` + empty `SSH_ASKPASS` block credential prompts from hijacking the terminal; stderr discarded so remote chatter never interleaves with output; silent on every error path. Debounced with a per-repo marker file (`$GIT_COMMON_DIR/gk/last-fetch`) — subsequent invocations within a 3-second window skip the network round-trip entirely. Fast path checks `.git/gk/last-fetch` directly with zero git spawns, so warm calls measured at ~17 ms (vs ~60 ms cold). Opt out with `--no-fetch`, `GK_NO_FETCH=1`, or `status.auto_fetch: false`.
+- `gk status` default visualization expanded from `[gauge, bar, progress]` (v0.5.0) to `[gauge, bar, progress, tree, staleness]`. Bare `gk status` now looks distinctly un-like `git status` — see Added above.
+- `gk log` auto-detects viz intent: when the default `log.vis` is active, rendering switches from git's raw pretty-format to gk's layered pipeline. Explicit `--format <fmt>` alone suppresses the default (so the raw pretty-format stays in control); `--format` combined with an explicit viz flag preserves the viz (the user explicitly asked for both).
+- Log CC glyphs redesigned to be uniformly single-cell geometric Unicode (`▲✕↻¶·◎↑⊙▣←✧`) instead of gitmoji (`✨🐛♻📝🧹🧪🚀🤖🏗↩💄`). Emoji varied in cell width across fonts, broke column alignment, and felt tonally at odds with the rest of the CLI. Geometric glyphs stay 1 cell wide in every modern monospace font and avoid collision with the safety column's `◆/◇/✎/!` markers.
+- Log safety column no longer prints a glyph for the `already pushed` state — only `◇` (unpushed), `✎` (amended-in-last-hour), and blank. On an active branch virtually every commit is already pushed, so the old `◆` filled every row and drowned out the signal. The column width is preserved so alignment stays intact.
+- `log` viz flag semantics are append-by-default: an individual flag like `--impact` stacks on top of the configured default; `--vis <list>` replaces it entirely; `--vis none` empties the baseline. This matches user intuition ("add impact to my normal view") over v0.5.0's "explicit = replace" semantics.
+- `--vis gauge` on a clean tree now renders `[·······│·······] in sync` instead of nothing. Same for `--vis bar` → `tree: [·················] (clean)` and `--vis progress` → `clean: [██████████] 100% nothing to do`. Previously these layers silently skipped on clean trees, making users unsure whether the flag took effect.
+- `--vis safety` on a pushed commit now renders a blank column (not `◆`) so only notable push-states draw attention.
+
+### Performance
+
+- `gk status` warm-call latency improved from ~60 ms to ~17 ms via a two-step optimization: (1) upstream + git-common-dir lookup collapsed into a single `git rev-parse --abbrev-ref HEAD@{u} --git-common-dir` call, and (2) a fast-path `os.Stat` on the debounce marker that skips every git spawn when the last fetch is under 3 s old. Repeated `gk st` invocations within the debounce window now run faster than the previous no-fetch path (~21 ms) because the upstream lookup is also skipped.
+
+### Tooling
+
+- Release workflow (this skill) now runs documentation-sync verification in Step 3b before cutting the tag. Extracts every `gk <cmd>` / `--flag` token from the promoted version section and checks both `README.md` and `docs/commands.md` for coverage; missing tokens trigger an `AskUserQuestion` to either document now or track via a TODO line.
+
 ## [0.5.0] - 2026-04-22
 
 ### Added
@@ -129,7 +175,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/x-mesh/gk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/x-mesh/gk/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/x-mesh/gk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/x-mesh/gk/compare/v0.2.0...v0.3.0

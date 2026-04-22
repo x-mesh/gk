@@ -77,8 +77,8 @@ gk preflight               # run the configured check sequence
 |---|---|---|
 | `gk pull` | | Fetch + rebase onto the auto-detected base branch |
 | `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
-| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind) |
-| `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N` |
+| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
+| `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 
 ### Branches
 | Command | Alias | Description |

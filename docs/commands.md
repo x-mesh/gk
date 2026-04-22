@@ -87,6 +87,15 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--graph` | false | Include topology graph |
 | `-n, --limit <N>` | 20 | Max number of commits (0 = unlimited) |
 | `--since <duration>` | | Show commits since this time |
+| `--pulse` | false | Print a commit-rhythm sparkline above the log |
+| `--calendar` | false | Print a 7-row × N-week heatmap above the log |
+| `--tags-rule` | false | Insert a `──┤ v0.4.0 (3d ago) ├──` rule before each tagged commit |
+| `--impact` | false | Append an eighths-bar scaled to per-commit `+adds -dels` |
+| `--cc` | false | Prepend a Conventional-Commits glyph and append a type tally |
+| `--safety` | false | Prefix each commit with `◆/◇/✎` (pushed / unpushed / amended) |
+| `--hotspots` | false | Mark commits that touch the repo's top-10 most-churned files |
+| `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |
+| `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
 
 ### Since shortcuts
 
@@ -119,6 +128,14 @@ gk log main
 
 # Show commits since 3 days ago on a path
 gk log --since 3d -- internal/
+
+# Visualizations (all composable)
+gk log --pulse --since 30d                # sparkline of daily commit counts
+gk log --calendar --since 12w             # 7-row × 12-week heatmap
+gk log --tags-rule                        # separator row before each tagged commit
+gk log --cc --impact                      # CC glyphs + per-commit LOC bars
+gk log --safety --hotspots --trailers     # push state + hotspot marker + trailer roll-up
+gk log --lanes                            # author swim-lanes instead of commit list
 ```
 
 ### Notes
@@ -144,7 +161,23 @@ gk st [flags]
 
 ### Flags
 
-No command-specific flags. All global flags apply.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--vis <list>` | | Opt-in visualization layers (comma-list or repeated). Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`. |
+
+#### `--vis` values
+
+| Value | Effect |
+|-------|--------|
+| `gauge` | Replaces `↑N ↓N` with a divergence gauge `[▓▓│····]` (ahead on the left, behind on the right, upstream marker in the middle). |
+| `bar` | Stacked `[▓████▒▒░░░]` bar whose segments are proportional to conflicts/staged/modified/untracked counts. |
+| `progress` | `clean: [███░░░░░░░] 30%  stage 5 · commit 3 · resolve 1 · discard-or-track 1` — staged ratio + remaining-verb list. |
+| `types` | Extension histogram (`.ts×6 .md×2 .lock×1`). Collapses known lockfile basenames to `.lock`; dims binary/lockfile kinds. Suppressed above 40 distinct kinds. |
+| `staleness` | Annotates the branch line with `· last commit Xd ago` and untracked entries older than a day with `(14d old)`. |
+| `tree` | Replaces the flat sections with a hierarchical path trie. Single-child directory chains collapse; directory rows carry a subtree-count badge `(N)`. |
+| `conflict` | Appends `[N hunks · both modified]` to each conflicts entry. Hunk count is derived from `<<<<<<<` markers in the worktree file. |
+| `churn` | Appends an 8-cell sparkline to each modified entry (per-commit add+del totals over the file's last 8 commits). Suppressed when the dirty tree has more than 50 files. |
+| `risk` | Flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `diff LOC + distinct-authors-over-30d × 10`, threshold 50. |
 
 ### Examples
 
@@ -157,6 +190,19 @@ gk st
 
 # JSON output
 gk status --json
+
+# Single visualization
+gk status --vis bar
+
+# Multiple visualizations (either syntax works)
+gk status --vis gauge,bar,progress
+gk status --vis gauge --vis bar --vis progress
+
+# Hierarchical view with conflict detail
+gk status --vis tree,conflict
+
+# Risk-weighted sort plus churn sparklines
+gk status --vis risk,churn
 ```
 
 ### Output format
@@ -169,6 +215,8 @@ Output groups files by state:
 - **Conflicted** — files with merge/rebase conflicts
 
 Also shows ahead/behind commit counts relative to the upstream branch.
+
+When `--vis tree` is active, the flat sections are replaced by a single hierarchical tree.
 
 ### Notes
 

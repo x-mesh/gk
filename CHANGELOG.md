@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TODO: document `gk push`, `gk sync`, `gk precheck`, `gk preflight`, `gk doctor`, `gk hooks`, `gk undo`, `gk restore`, `gk edit-conflict`, `gk lint-commit`, `gk branch-check` in `docs/commands.md` (pre-existing gaps inherited from 0.2.0 / 0.3.0).
 
+## [0.5.0] - 2026-04-22
+
+### Added
+
+- `gk status --vis <list>` — opt-in visualizations for the working-tree summary. Accepts a comma-list or repeated flags; all are composable on top of the existing sectioned output.
+  - `gauge` — replaces `↑N ↓N` with a fixed-width divergence gauge `[▓▓│····]`, green ahead blocks and red behind blocks anchored at the upstream marker. Narrows to 3 slots/side under 80-col TTYs.
+  - `bar` — stacked composition bar of conflicts/staged/modified/untracked counts, each segment using a distinct block glyph (`▓█▒░`) so the bar stays readable under `--no-color`.
+  - `progress` — one-line "how close to clean" meter (staged / total) plus a remaining-verb list (`resolve N · stage N · commit N · discard-or-track N`).
+  - `types` — one-line extension histogram (`.ts×6 .md×2 .lock×1`). Collapses `package-lock.json` / `go.sum` / `Cargo.lock` / `Gemfile.lock` / `Pipfile.lock` / `poetry.lock` / `composer.lock` / `pnpm-lock.yaml` / `yarn.lock` into a single `.lock` kind; falls back to basename for extensionless files (`Makefile`, `Dockerfile`). Dims binary/lockfile kinds. Suppressed above 40 distinct kinds.
+  - `staleness` — annotates the branch line with `· last commit 3d ago` and appends `(14d old)` to untracked entries older than a day. Ages collapse to the largest unit with 1–3 digits (`45s`, `12m`, `3h`, `11d`, `6w`, `4mo`, `2y`).
+  - `tree` — replaces the flat sections with a path trie. Single-child directory chains collapse (`src/api/v2/auth.ts` renders as one leaf) to avoid deep indentation. Directory rows carry a subtree-count badge `(N)`.
+  - `conflict` — appends `[N hunks · both modified]` (or `added by them`, `deleted by us`, etc.) to each conflicts entry. Hunk count is derived from `<<<<<<<` markers in the worktree file; conflict kind maps from the porcelain XY code.
+  - `churn` — appends an 8-cell sparkline to each modified entry showing per-commit add+del totals for its last 8 commits, oldest-left / newest-right. Suppressed when the dirty tree has more than 50 files.
+  - `risk` — flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `current diff LOC + distinct-author-count-over-30d × 10`, threshold 50.
+
+- `gk log` visualization flags — all composable and independent of each other; they layer on top of the default pretty-format log.
+  - `--pulse` — commit-rhythm sparkline strip printed above the log, bucketed per day across the `--since` window. Zero-activity days render as `·`, active days scale to `▁▂▃▄▅▆▇█` relative to the peak, followed by `(N commits, peak Tue)`.
+  - `--calendar` — 7-row × N-col heatmap (Mon..Sun by ISO week) using `░▒▓█` scaled to the busiest bucket. Capped at 26 weeks for terminal sanity.
+  - `--tags-rule` — post-processes log stdout and inserts a cyan `──┤ v0.4.0 (3d ago) ├───` rule before any commit whose short-SHA matches a tag. Handles annotated tags via `%(*objectname:short)`.
+  - `--impact` — eighths-bar `████▊ +412 −38` scaled to the run's peak diff size. Numstats come from a second `git log --numstat --format=%H` pass to keep the primary record stream simple.
+  - `--cc` — Conventional-Commits glyph prefix (`✨` feat · `🐛` fix · `♻` refactor · `📝` docs · `🧹` chore · `🧪` test · `🚀` perf · `🤖` ci · `🏗` build · `↩` revert · `💄` style) + a `types: feat=4 chore=1` footer tallying the types in the visible range.
+  - `--safety` — `◆` already-pushed · `◇` unpushed · `✎` amended-in-last-hour. Batched via `git rev-list @{upstream}` and a reflog scan; no per-commit git calls.
+  - `--hotspots` — `🔥` on commits that touch any of the repo's top-10 most-touched files from the last 90 days (minimum 5 touches to qualify as a hotspot).
+  - `--trailers` — `[+Alice review:Bob]` roll-up parsed from `Co-authored-by:` / `Reviewed-by:` / `Signed-off-by:` trailers in the commit body.
+  - `--lanes` — alternate view: one horizontal swim-lane per author with `●` markers on a shared time axis. Top 6 authors keep their own lane; the tail collapses into a synthetic `others` lane. Width follows TTY (floor 10 cols), name column capped at 15 chars.
+
+- `ui.TTYWidth()` exported from `internal/ui` so subcommands can adapt layouts to the terminal width.
+
+### Changed
+
+- `gk status` branch line no longer emits `↑N ↓N` when `--vis gauge` is active — the gauge carries the same information in a richer form.
+
 ## [0.4.0] - 2026-04-22
 
 ### Added
@@ -97,7 +129,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/x-mesh/gk/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/x-mesh/gk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/x-mesh/gk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/x-mesh/gk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/x-mesh/gk/releases/tag/v0.1.0

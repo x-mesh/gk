@@ -1138,6 +1138,18 @@ func calendarLines(dates []time.Time) []string {
 	if weeks > 26 { // cap at ~6 months for terminal sanity
 		weeks = 26
 	}
+	// Adapt to the current TTY width so the grid never wraps. Each week
+	// column takes 4 cells (`W## ` header / ` X  ` data) and the "Mon "
+	// label is 4 cells; so the width budget is `(ttyW - 4) / 4`.
+	if ttyW, ok := ui.TTYWidth(); ok && ttyW > 0 {
+		widthCap := (ttyW - 4) / 4
+		if widthCap < 1 {
+			widthCap = 1
+		}
+		if widthCap < weeks {
+			weeks = widthCap
+		}
+	}
 
 	// grid[row=weekday][col=week] = count
 	grid := make([][]int, 7)

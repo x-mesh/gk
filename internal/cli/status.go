@@ -391,15 +391,30 @@ func renderStatusHeatmap(entries []git.StatusEntry) []string {
 	// regression testing and user muscle memory.
 	sort.Strings(dirOrder)
 
-	// Compute directory name column width (capped to keep layout sane).
-	nameW := 4
-	for _, d := range dirOrder {
-		if len(d) > nameW {
-			nameW = len(d)
+	// Compute directory name column width, adapting to TTY width. On
+	// 60-col terminals the whole 4-column heatmap plus the name budget
+	// must fit within the viewport or the grid wraps into garbage. Each
+	// status column takes 3 cells (`  X`) and the "heatmap:" prefix
+	// costs ~10 cells, so the budget for the name column is roughly
+	// `width - prefix(10) - 4 cols × 3 cells = width - 22`.
+	nameCap := 24
+	if ttyW, ok := ui.TTYWidth(); ok && ttyW > 0 {
+		remaining := ttyW - 22
+		if remaining < 4 {
+			remaining = 4
+		}
+		if remaining < nameCap {
+			nameCap = remaining
 		}
 	}
-	if nameW > 24 {
-		nameW = 24
+	nameW := 4
+	for _, d := range dirOrder {
+		if rlen := len([]rune(d)); rlen > nameW {
+			nameW = rlen
+		}
+	}
+	if nameW > nameCap {
+		nameW = nameCap
 	}
 
 	heat := []rune{' ', '░', '▒', '▓', '█'}
@@ -434,8 +449,12 @@ func renderStatusHeatmap(entries []git.StatusEntry) []string {
 	lines := []string{header.String()}
 	for _, d := range dirOrder {
 		displayName := d
-		if len(displayName) > nameW {
-			displayName = displayName[:nameW-1] + "…"
+		runes := []rune(d)
+		if len(runes) > nameW {
+			// Rune-aware truncation: byte slicing here would cut a multi-
+			// byte CJK/Korean path name mid-codepoint and produce `?`
+			// tofu. Trim to `nameW-1` runes and append an ellipsis.
+			displayName = string(runes[:nameW-1]) + "…"
 		}
 		var row strings.Builder
 		fmt.Fprintf(&row, "%s %-*s", faint(strings.Repeat(" ", len("heatmap:"))), nameW, displayName)
@@ -1633,13 +1652,22 @@ func subtreeCount(n *treeNode) int {
 // box-drawing glyphs. Directory lines carry a subtree-count badge; file lines
 // carry the two-letter XY porcelain code colored by category and an optional
 // "+N -N" diff-stat suffix when stats is non-nil.
+//
+// Under a narrow TTY (<60 cols) the 3-cell indent (`│  `) compresses to 2
+// cells (`│ `) so deeply-nested paths still fit. Very narrow TTYs (<40) also
+// suppress the subtree `(N)` badge which is the least load-bearing glyph.
 func renderStatusTree(w io.Writer, entries []git.StatusEntry, stats map[string]diffStat) {
 	root := buildStatusTree(entries)
 	faint := color.New(color.Faint).SprintFunc()
-	writeChildren(w, root, "", faint, stats)
+	narrow, dropBadge := false, false
+	if ttyW, ok := ui.TTYWidth(); ok && ttyW > 0 {
+		narrow = ttyW < 60
+		dropBadge = ttyW < 40
+	}
+	writeChildren(w, root, "", faint, stats, narrow, dropBadge)
 }
 
-func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string, stats map[string]diffStat) {
+func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string, stats map[string]diffStat, narrow, dropBadge bool) {
 	keys := make([]string, 0, len(n.children))
 	for k := range n.children {
 		keys = append(keys, k)
@@ -1652,25 +1680,35 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 		}
 		return keys[i] < keys[j]
 	})
+	branchMid, branchEnd := "├─ ", "└─ "
+	indentMid, indentEnd := "│  ", "   "
+	if narrow {
+		branchMid, branchEnd = "├ ", "└ "
+		indentMid, indentEnd = "│ ", "  "
+	}
 	for i, k := range keys {
 		child := n.children[k]
 		last := i == len(keys)-1
-		branch := "├─ "
-		indent := "│  "
+		branch, indent := branchMid, indentMid
 		if last {
-			branch = "└─ "
-			indent = "   "
+			branch, indent = branchEnd, indentEnd
 		}
 		if child.entry != nil {
 			useGlyphs := statusVisEnabled("glyphs")
 			stat := formatDiffStat(stats, child.entry.Path)
 			fmt.Fprintf(w, "%s%s%s%s  %s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), colorXY(child.entry.XY), displayTreeName(child), stat)
 		} else {
-			fmt.Fprintf(w, "%s%s%s/  %s\n", prefix, faint(branch),
-				color.New(color.Bold).Sprint(child.name),
-				faint(fmt.Sprintf("(%d)", subtreeCount(child))),
-			)
-			writeChildren(w, child, prefix+faint(indent), faint, stats)
+			if dropBadge {
+				fmt.Fprintf(w, "%s%s%s/\n", prefix, faint(branch),
+					color.New(color.Bold).Sprint(child.name),
+				)
+			} else {
+				fmt.Fprintf(w, "%s%s%s/  %s\n", prefix, faint(branch),
+					color.New(color.Bold).Sprint(child.name),
+					faint(fmt.Sprintf("(%d)", subtreeCount(child))),
+				)
+			}
+			writeChildren(w, child, prefix+faint(indent), faint, stats, narrow, dropBadge)
 		}
 	}
 }
@@ -1886,6 +1924,14 @@ func extOf(path string) string {
 //
 //	types: .ts×6 .md×2 .lock×1
 func renderTypesChip(entries []git.StatusEntry) string {
+	ttyW := 0
+	if w, ok := ui.TTYWidth(); ok {
+		ttyW = w
+	}
+	return renderTypesChipWithWidth(entries, ttyW)
+}
+
+func renderTypesChipWithWidth(entries []git.StatusEntry, ttyW int) string {
 	counts := map[string]int{}
 	for _, e := range entries {
 		p := e.Path
@@ -1917,15 +1963,46 @@ func renderTypesChip(entries []git.StatusEntry) string {
 	}
 
 	dim := color.New(color.Faint).SprintFunc()
-	parts := make([]string, 0, len(list))
-	for _, item := range list {
-		s := fmt.Sprintf("%s×%d", item.k, item.v)
-		if dimExts[item.k] {
-			s = dim(s)
-		}
-		parts = append(parts, s)
+	prefix := dim("types:")
+	// Budget check: under a known narrow TTY, trim tail tokens and replace
+	// them with `+N more`. Width budget = ttyW - visibleWidth(prefix) - 1
+	// (the leading space after the prefix). When ttyW == 0 we keep the
+	// historical behavior (all 8 tokens).
+	budget := 0
+	if ttyW > 0 {
+		budget = ttyW - visibleWidth(prefix) - 1
 	}
-	return fmt.Sprintf("%s %s", dim("types:"), strings.Join(parts, " "))
+	parts := make([]string, 0, len(list))
+	used := 0
+	truncated := 0
+	for idx, item := range list {
+		s := fmt.Sprintf("%s×%d", item.k, item.v)
+		styled := s
+		if dimExts[item.k] {
+			styled = dim(s)
+		}
+		cost := len(s) // raw token width; separator space handled below
+		if len(parts) > 0 {
+			cost++ // leading space separator
+		}
+		if budget > 0 && used+cost > budget {
+			truncated = len(list) - idx
+			break
+		}
+		parts = append(parts, styled)
+		used += cost
+	}
+	joined := strings.Join(parts, " ")
+	if truncated > 0 {
+		suffix := dim(fmt.Sprintf("+%d more", truncated))
+		// If even the shortest token didn't fit, still emit the suffix so
+		// the user knows the chip is present but elided.
+		if joined == "" {
+			return fmt.Sprintf("%s %s", prefix, suffix)
+		}
+		return fmt.Sprintf("%s %s %s", prefix, joined, suffix)
+	}
+	return fmt.Sprintf("%s %s", prefix, joined)
 }
 
 // renderProgressMeter returns a one-line progress indicator for how close the

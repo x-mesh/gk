@@ -582,6 +582,51 @@ func TestRenderStatusTree_Output(t *testing.T) {
 	}
 }
 
+func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	entries := []git.StatusEntry{
+		{Path: "src/api/v2/auth.ts", XY: ".M"},
+		{Path: "src/foo.ts", XY: "A."},
+	}
+	root := buildStatusTree(entries)
+	collapseSingletons(root)
+
+	faint := color.New(color.Faint).SprintFunc()
+
+	t.Run("narrow mode uses 2-cell glyphs", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		writeChildren(buf, root, "", faint, nil, true, false)
+		out := buf.String()
+		// Narrow glyphs: ├ and └ without the trailing ─ bar.
+		if strings.Contains(out, "├─") || strings.Contains(out, "└─") {
+			t.Errorf("narrow mode should not emit 3-cell glyphs, got:\n%s", out)
+		}
+		if !strings.Contains(out, "├ ") && !strings.Contains(out, "└ ") {
+			t.Errorf("narrow mode should emit 2-cell glyphs, got:\n%s", out)
+		}
+	})
+
+	t.Run("dropBadge suppresses (N) subtree count", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		writeChildren(buf, root, "", faint, nil, true, true)
+		out := buf.String()
+		if strings.Contains(out, "(") && strings.Contains(out, ")") {
+			t.Errorf("dropBadge should omit (N) badge, got:\n%s", out)
+		}
+	})
+
+	t.Run("normal mode keeps 3-cell glyphs and badge", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		writeChildren(buf, root, "", faint, nil, false, false)
+		out := buf.String()
+		if !strings.Contains(out, "├─") && !strings.Contains(out, "└─") {
+			t.Errorf("normal mode should emit 3-cell glyphs, got:\n%s", out)
+		}
+	})
+}
+
 func TestFormatAge(t *testing.T) {
 	cases := []struct {
 		dur  time.Duration
@@ -670,6 +715,26 @@ func TestRenderTypesChip(t *testing.T) {
 		}
 		if got := renderTypesChip(mk(paths...)); got != "" {
 			t.Errorf("expected empty for >40 kinds, got %q", got)
+		}
+	})
+
+	t.Run("narrow TTY drops tail tokens with +N more", func(t *testing.T) {
+		// Budget=25 fits "types:" + 2-3 tokens at most; remaining tokens
+		// collapse into "+N more".
+		paths := []string{"a.ts", "a.ts", "a.ts", "b.md", "b.md", "c.go", "d.rs", "e.py"}
+		got := renderTypesChipWithWidth(mk(paths...), 25)
+		if !strings.Contains(got, "+") || !strings.Contains(got, "more") {
+			t.Errorf("expected +N more suffix in narrow output, got %q", got)
+		}
+		if !strings.Contains(got, "types:") {
+			t.Errorf("expected types: prefix, got %q", got)
+		}
+	})
+
+	t.Run("wide TTY emits all tokens", func(t *testing.T) {
+		got := renderTypesChipWithWidth(mk("a.ts", "b.md", "c.go"), 200)
+		if strings.Contains(got, "more") {
+			t.Errorf("wide TTY should not truncate, got %q", got)
 		}
 	})
 }

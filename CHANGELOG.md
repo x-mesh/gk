@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-23
+
 ### Added
 
 - **`gk init ai`** — scaffolds `CLAUDE.md` and `AGENTS.md` in the repository root so AI coding assistants (Claude Code, Jules, Copilot Workspace, Gemini CLI, etc.) have immediate project context. Pass `--kiro` to also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants. Files are skipped (not overwritten) when they already exist; `--force` opts in to overwrite. `--out <dir>` writes to a custom directory instead of the repo root.
@@ -214,7 +216,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/x-mesh/gk/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/x-mesh/gk/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/x-mesh/gk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/x-mesh/gk/compare/v0.4.0...v0.5.0

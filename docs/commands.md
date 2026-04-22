@@ -97,6 +97,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |
 | `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
 | `--vis <list>` | `cc,safety,tags-rule` (from `log.vis`) | Visualization set (comma-list or repeated). Any explicit viz flag (`--vis` or an individual flag like `--cc`) overrides the configured default. Pass `--vis none` to disable all layers; setting `--format` alone also suppresses the default. |
+| `--legend` | false | Print a one-time glyph/color key for every active visualization layer and exit. Mirrors `gk status --legend`. |
 
 ### Default visualization layers
 
@@ -1116,6 +1117,58 @@ gk timemachine restore v1.0.0 --mode hard --autostash
 
 # Preview the plan without touching the repo
 gk timemachine restore abc1234 --mode hard --dry-run
+```
+
+---
+
+## gk init
+
+Scaffold configuration and context files into a git repository.
+
+### gk init ai
+
+Create `CLAUDE.md` and `AGENTS.md` in the repository root so AI coding assistants (Claude Code, Jules, Copilot Workspace, Gemini CLI, etc.) have immediate project context without requiring manual setup.
+
+#### Synopsis
+
+```
+gk init ai [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--force` | false | Overwrite existing files (default: skip files that already exist) |
+| `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
+| `--out <dir>` | repo root | Write files to this directory instead of the repository root |
+
+#### Generated files
+
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | Project context for Claude Code — commands, architecture, conventions, key files |
+| `AGENTS.md` | Project context for generic AI agents — build/test commands, layout, PR checklist |
+| `.kiro/steering/product.md` | Product overview and goals (only with `--kiro`) |
+| `.kiro/steering/tech.md` | Tech stack, architecture decisions, coding standards (only with `--kiro`) |
+| `.kiro/steering/structure.md` | Repository layout and import rules (only with `--kiro`) |
+
+All generated files contain commented placeholder sections. Edit them with project-specific content and commit.
+
+#### Examples
+
+```bash
+# Scaffold CLAUDE.md + AGENTS.md in the current repo
+gk init ai
+
+# Also scaffold Kiro steering documents
+gk init ai --kiro
+
+# Overwrite existing files
+gk init ai --force
+
+# Write to a specific directory
+gk init ai --out /path/to/repo
 ```
 
 ---

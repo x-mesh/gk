@@ -112,7 +112,9 @@ func TestRenderImpactBar(t *testing.T) {
 }
 
 func TestParseCommitRecords(t *testing.T) {
-	raw := "sha1fullA\x00sha1A\x00feat: x\x00Alice\x00now\x00body1\x1e\nsha2fullB\x00sha2B\x00fix: y\x00Bob\x001h\x00body2\x1e\n"
+	// The 5th field is now author-time as a unix timestamp (%at), not %ar.
+	raw := "sha1fullA\x00sha1A\x00feat: x\x00Alice\x001700000000\x00body1\x1e\n" +
+		"sha2fullB\x00sha2B\x00fix: y\x00Bob\x001700003600\x00body2\x1e\n"
 	recs := parseCommitRecords([]byte(raw))
 	if len(recs) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(recs))
@@ -120,8 +122,40 @@ func TestParseCommitRecords(t *testing.T) {
 	if recs[0].short != "sha1A" || recs[0].subject != "feat: x" {
 		t.Errorf("rec0 unexpected: %+v", recs[0])
 	}
-	if recs[1].author != "Bob" || recs[1].relDate != "1h" {
-		t.Errorf("rec1 unexpected: %+v", recs[1])
+	if recs[1].author != "Bob" {
+		t.Errorf("rec1 unexpected author: %+v", recs[1])
+	}
+	if recs[0].authorTime.Unix() != 1700000000 {
+		t.Errorf("rec0 authorTime = %d, want 1700000000", recs[0].authorTime.Unix())
+	}
+	if recs[1].authorTime.Unix() != 1700003600 {
+		t.Errorf("rec1 authorTime = %d, want 1700003600", recs[1].authorTime.Unix())
+	}
+}
+
+func TestShortAge(t *testing.T) {
+	cases := []struct {
+		offset time.Duration
+		want   string
+	}{
+		{0, "now"}, // 0 == time.Time{} fallback path for IsZero, handled separately; here check <1m path
+		{30 * time.Second, "now"},
+		{5 * time.Minute, "5m"},
+		{3 * time.Hour, "3h"},
+		{25 * time.Hour, "1d"},
+		{6 * 24 * time.Hour, "6d"},
+		{15 * 24 * time.Hour, "2w"},
+		{90 * 24 * time.Hour, "3mo"},
+		{400 * 24 * time.Hour, "1y"},
+	}
+	for _, tc := range cases {
+		got := shortAge(time.Now().Add(-tc.offset))
+		if got != tc.want {
+			t.Errorf("shortAge(now - %s) = %q, want %q", tc.offset, got, tc.want)
+		}
+	}
+	if got := shortAge(time.Time{}); got != "now" {
+		t.Errorf("shortAge(zero) = %q, want 'now'", got)
 	}
 }
 

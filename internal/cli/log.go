@@ -390,17 +390,18 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// commitRecord holds the per-commit fields we need for viz rendering. Records
-// are parsed from a single `git log` invocation with a known multi-field
-// format delimited by NUL + RS.
+// commitRecord holds the per-commit fields we need for viz rendering.
+// authorTime is the raw author timestamp; callers format it with
+// shortAge() to produce the compact column (`6d`, `3m`, `2w`).
 type commitRecord struct {
-	sha, short, subject, author, relDate, body string
+	sha, short, subject, author, body string
+	authorTime                        time.Time
 }
 
-// parseCommitRecords splits a `%H%00%h%00%s%00%an%00%ar%00%b%1e`-formatted
-// stream into structured records. Bodies may contain embedded newlines so
-// the subject/author/date fields are pulled from the first line of each
-// record; anything after the subject-line's trailing %b survives as body.
+// parseCommitRecords splits a `%H%00%h%00%s%00%an%00%at%00%b%1e`-formatted
+// stream into structured records. The date field is a unix timestamp
+// (author time). Bodies may contain embedded newlines so anything after
+// the trailing %b survives in record.body.
 func parseCommitRecords(raw []byte) []commitRecord {
 	records := strings.Split(string(raw), "\x1e")
 	out := make([]commitRecord, 0, len(records))
@@ -413,16 +414,33 @@ func parseCommitRecords(raw []byte) []commitRecord {
 		if len(f) < 6 {
 			continue
 		}
-		out = append(out, commitRecord{
+		r := commitRecord{
 			sha:     f[0],
 			short:   f[1],
 			subject: f[2],
 			author:  f[3],
-			relDate: f[4],
 			body:    f[5],
-		})
+		}
+		if secs, err := strconv.ParseInt(f[4], 10, 64); err == nil {
+			r.authorTime = time.Unix(secs, 0)
+		}
+		out = append(out, r)
 	}
 	return out
+}
+
+// shortAge formats a commit timestamp into a compact column suitable for
+// per-commit display (`now`, `3m`, `4h`, `6d`, `2w`, `3mo`, `2y`). Zero
+// or future timestamps return `now` so the column always has content.
+func shortAge(t time.Time) string {
+	if t.IsZero() {
+		return "now"
+	}
+	d := time.Since(t)
+	if d < time.Minute {
+		return "now"
+	}
+	return formatAge(d)
 }
 
 // fetchNumstats runs a separate `git log --format=%H --numstat` pass over the
@@ -802,7 +820,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 
 		line := fmt.Sprintf("%s (%s) <%s> %s",
 			color.YellowString(r.short),
-			color.GreenString(r.relDate),
+			color.GreenString(shortAge(r.authorTime)),
 			color.New(color.FgBlue, color.Bold).Sprint(r.author),
 			subject,
 		)
@@ -848,7 +866,11 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	return nil
 }
 
-const vizRecordFormat = "%H%x00%h%x00%s%x00%an%x00%ar%x00%b%x1e"
+// vizRecordFormat asks git to emit author time as a raw unix timestamp
+// (%at) rather than the verbose "X units ago" string (%ar). gk formats the
+// age itself via formatAge() so the column stays short (`6d` vs `6 days
+// ago`) in long logs.
+const vizRecordFormat = "%H%x00%h%x00%s%x00%an%x00%at%x00%b%x1e"
 
 func commitHitsHotspot(files []string, hotspots map[string]bool) bool {
 	for _, f := range files {
@@ -861,15 +883,18 @@ func commitHitsHotspot(files []string, hotspots map[string]bool) bool {
 
 // tagInfo captures the info needed to render a tag-rule separator.
 type tagInfo struct {
-	name string
-	ago  string
+	name    string
+	created time.Time
 }
 
 // fetchTags returns a map from commit short-sha → tagInfo for all tags, keyed
-// by the first 7 characters so it matches the default `%h` width.
+// by the first 7 characters so it matches the default `%h` width. Tag ages
+// come back as a unix timestamp (`%(creatordate:unix)`) and are formatted
+// by the caller via shortAge() so separator rules stay compact (`(6d)` vs
+// git's verbose `(6 days ago)`).
 func fetchTags(ctx context.Context, runner *git.ExecRunner) map[string]tagInfo {
 	out, _, err := runner.Run(ctx, "for-each-ref", "refs/tags",
-		"--format=%(refname:short)%00%(objectname:short)%00%(*objectname:short)%00%(creatordate:relative)",
+		"--format=%(refname:short)%00%(objectname:short)%00%(*objectname:short)%00%(creatordate:unix)",
 		"--sort=-creatordate")
 	if err != nil {
 		return nil
@@ -889,7 +914,11 @@ func fetchTags(ctx context.Context, runner *git.ExecRunner) map[string]tagInfo {
 		if commit == "" {
 			commit = f[1]
 		}
-		m[commit] = tagInfo{name: f[0], ago: f[3]}
+		info := tagInfo{name: f[0]}
+		if secs, err := strconv.ParseInt(strings.TrimSpace(f[3]), 10, 64); err == nil {
+			info.created = time.Unix(secs, 0)
+		}
+		m[commit] = info
 	}
 	return m
 }
@@ -931,7 +960,7 @@ func injectTagRules(ctx context.Context, runner *git.ExecRunner, stdout []byte) 
 //
 //	──┤ v0.4.0 (3 days ago) ├────────
 func renderTagRule(t tagInfo, width int) string {
-	head := fmt.Sprintf("──┤ %s (%s) ├", t.name, t.ago)
+	head := fmt.Sprintf("──┤ %s (%s) ├", t.name, shortAge(t.created))
 	// head width counts runes, not bytes.
 	headRunes := 0
 	for range head {

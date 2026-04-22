@@ -118,7 +118,11 @@ func filepathBase(p string) string {
 	return p
 }
 
-func ttyWidth() (int, bool) {
+func ttyWidth() (int, bool) { return TTYWidth() }
+
+// TTYWidth returns stdout terminal width in columns. Returns (0, false) when
+// stdout is not a TTY or the size cannot be determined.
+func TTYWidth() (int, bool) {
 	if !IsTerminal() {
 		return 0, false
 	}

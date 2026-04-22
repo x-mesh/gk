@@ -2,13 +2,20 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
+
+var statusVisFlags []string
 
 func init() {
 	cmd := &cobra.Command{
@@ -17,7 +24,17 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness")
 	rootCmd.AddCommand(cmd)
+}
+
+func statusVisEnabled(name string) bool {
+	for _, v := range statusVisFlags {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -41,13 +58,31 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if st.Upstream != "" {
 		line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
 	}
-	if st.Ahead != 0 || st.Behind != 0 {
+	if statusVisEnabled("gauge") && st.Upstream != "" {
+		line += "  " + renderDivergenceGauge(st.Ahead, st.Behind)
+	} else if st.Ahead != 0 || st.Behind != 0 {
 		line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
+	}
+	if statusVisEnabled("staleness") {
+		if ago := lastCommitAgo(cmd, runner); ago != "" {
+			line += "  " + faint("· last commit "+ago)
+		}
 	}
 	fmt.Fprintln(w, line)
 
 	// group entries by Kind
 	grouped := groupEntries(st.Entries)
+	if statusVisEnabled("bar") && len(st.Entries) > 0 {
+		fmt.Fprintln(w, renderDensityBar(grouped))
+	}
+	if statusVisEnabled("progress") && len(st.Entries) > 0 {
+		fmt.Fprintln(w, renderProgressMeter(grouped))
+	}
+	if statusVisEnabled("types") && len(st.Entries) > 0 {
+		if line := renderTypesChip(st.Entries); line != "" {
+			fmt.Fprintln(w, line)
+		}
+	}
 	if len(grouped.Unmerged) > 0 {
 		fmt.Fprintln(w, color.New(color.FgRed, color.Bold).Sprint("conflicts:"))
 		for _, e := range grouped.Unmerged {
@@ -68,8 +103,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	if len(grouped.Untracked) > 0 {
 		fmt.Fprintln(w, color.New(color.FgHiBlack).Sprint("untracked:"))
+		showAge := statusVisEnabled("staleness")
 		for _, e := range grouped.Untracked {
-			fmt.Fprintf(w, "  %s %s\n", color.New(color.FgHiBlack).Sprint("??"), e.Path)
+			suffix := ""
+			if showAge {
+				if age := untrackedAge(RepoFlag(), e.Path); age != "" {
+					suffix = "  " + faint("("+age+" old)")
+				}
+			}
+			fmt.Fprintf(w, "  %s %s%s\n", color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
 		}
 	}
 	if len(st.Entries) == 0 {
@@ -112,5 +154,330 @@ func displayPath(e git.StatusEntry) string {
 	return e.Path
 }
 
-// keep strings imported via usage
-var _ = strings.Builder{}
+// lastCommitAgo returns a short relative age ("11d", "4h", "32m") of HEAD's
+// committer date, or empty string when there is no HEAD (fresh repo), the age
+// is under 1 minute, or git fails. It calls through the runner from the
+// current command context.
+func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct", "HEAD")
+	if err != nil {
+		return ""
+	}
+	ts := strings.TrimSpace(string(out))
+	if ts == "" {
+		return ""
+	}
+	var secs int64
+	if _, err := fmt.Sscanf(ts, "%d", &secs); err != nil {
+		return ""
+	}
+	return formatAge(time.Since(time.Unix(secs, 0)))
+}
+
+// untrackedAge returns a short relative age of an untracked file's mtime,
+// suppressed under 1 day so recent scratch files don't get annotated.
+func untrackedAge(repoDir, path string) string {
+	p := path
+	if !filepath.IsAbs(p) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		p = filepath.Join(repoDir, path)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		return ""
+	}
+	age := time.Since(info.ModTime())
+	if age < 24*time.Hour {
+		return ""
+	}
+	return formatAge(age)
+}
+
+// formatAge collapses a duration into the largest unit with 1-3 significant
+// digits: 45s, 12m, 3h, 11d, 6w, 4mo, 2y.
+func formatAge(d time.Duration) string {
+	if d < time.Minute {
+		return ""
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	days := int(d.Hours() / 24)
+	if days < 14 {
+		return fmt.Sprintf("%dd", days)
+	}
+	if days < 60 {
+		return fmt.Sprintf("%dw", days/7)
+	}
+	if days < 365 {
+		return fmt.Sprintf("%dmo", days/30)
+	}
+	return fmt.Sprintf("%dy", days/365)
+}
+
+// dimExts lists extensions treated as binary/generated/lockfile; the types
+// chip dims them so a lockfile bump doesn't look as loud as a code change.
+var dimExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".ico": true, ".webp": true, ".svg": true,
+	".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".7z": true, ".rar": true,
+	".mp3": true, ".mp4": true, ".mov": true, ".wav": true,
+	".bin": true, ".so": true, ".dylib": true, ".dll": true, ".exe": true, ".a": true, ".o": true,
+	".lock": true, ".sum": true,
+}
+
+// lockfileBasenames maps well-known lock-file basenames so their extension
+// reports as ".lock" regardless of the underlying format (.json/.yaml).
+var lockfileBasenames = map[string]bool{
+	"package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true,
+	"Gemfile.lock": true, "Cargo.lock": true, "composer.lock": true,
+	"poetry.lock": true, "Pipfile.lock": true,
+}
+
+// extOf returns a short human label for a path's "kind": usually `.ts` etc.,
+// collapsing known lockfile names into `.lock`, and falling back to the
+// basename for extensionless files (`Makefile`, `Dockerfile`).
+func extOf(path string) string {
+	base := filepath.Base(path)
+	if lockfileBasenames[base] {
+		return ".lock"
+	}
+	if ext := filepath.Ext(base); ext != "" {
+		return ext
+	}
+	return base
+}
+
+// renderTypesChip returns a one-line extension histogram over the dirty
+// entries. Dim-listed extensions (binaries, lockfiles) render faint. Returns
+// empty string when the tree has more than 40 distinct kinds (signal lost).
+//
+//	types: .ts×6 .md×2 .lock×1
+func renderTypesChip(entries []git.StatusEntry) string {
+	counts := map[string]int{}
+	for _, e := range entries {
+		p := e.Path
+		if p == "" && e.Orig != "" {
+			p = e.Orig
+		}
+		counts[extOf(p)]++
+	}
+	if len(counts) == 0 || len(counts) > 40 {
+		return ""
+	}
+
+	type kv struct {
+		k string
+		v int
+	}
+	list := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		list = append(list, kv{k, v})
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].v != list[j].v {
+			return list[i].v > list[j].v
+		}
+		return list[i].k < list[j].k
+	})
+	if len(list) > 8 {
+		list = list[:8]
+	}
+
+	dim := color.New(color.Faint).SprintFunc()
+	parts := make([]string, 0, len(list))
+	for _, item := range list {
+		s := fmt.Sprintf("%s×%d", item.k, item.v)
+		if dimExts[item.k] {
+			s = dim(s)
+		}
+		parts = append(parts, s)
+	}
+	return fmt.Sprintf("%s %s", dim("types:"), strings.Join(parts, " "))
+}
+
+// renderProgressMeter returns a one-line progress indicator for how close the
+// working tree is to clean. The filled portion represents staged files (already
+// one step from committed); the verb list enumerates the remaining actions
+// bucketed by the next command the user must run.
+//
+//	clean: [███░░░░░░░] 30%  stage 5 · commit 3 · resolve 1 · discard-or-track 1
+func renderProgressMeter(g groupedEntries) string {
+	staged := len(g.Staged)
+	modified := len(g.Modified)
+	conflicts := len(g.Unmerged)
+	untracked := len(g.Untracked)
+	total := staged + modified + conflicts + untracked
+	if total == 0 {
+		return ""
+	}
+
+	width := 10
+	if w, ok := ui.TTYWidth(); ok && w < 80 {
+		width = 5
+	}
+	filled := staged * width / total
+	pct := staged * 100 / total
+
+	faint := color.New(color.Faint).SprintFunc()
+	bar := color.GreenString(strings.Repeat("█", filled)) + faint(strings.Repeat("░", width-filled))
+
+	parts := make([]string, 0, 4)
+	if conflicts > 0 {
+		parts = append(parts, fmt.Sprintf("resolve %d", conflicts))
+	}
+	if modified > 0 {
+		parts = append(parts, fmt.Sprintf("stage %d", modified))
+	}
+	if staged > 0 {
+		parts = append(parts, fmt.Sprintf("commit %d", staged))
+	}
+	if untracked > 0 {
+		parts = append(parts, fmt.Sprintf("discard-or-track %d", untracked))
+	}
+	return fmt.Sprintf("%s [%s] %d%%  %s",
+		faint("clean:"), bar, pct,
+		strings.Join(parts, faint(" · ")),
+	)
+}
+
+// renderDensityBar returns a one-line stacked composition bar of the working
+// tree state (conflicts / staged / modified / untracked). Each segment uses a
+// distinct block glyph so it remains legible without color.
+//
+//	tree: [▓▒█████▒▒░░░░░░░░░░░] 1C 5S 2M 8?  (16 files)
+func renderDensityBar(g groupedEntries) string {
+	c := len(g.Unmerged)
+	s := len(g.Staged)
+	m := len(g.Modified)
+	u := len(g.Untracked)
+	total := c + s + m + u
+	if total == 0 {
+		return ""
+	}
+
+	width := 20
+	if w, ok := ui.TTYWidth(); ok && w < 80 {
+		width = 10
+	}
+
+	// Allocate cells via largest-remainder so sum == width.
+	counts := []int{c, s, m, u}
+	cells := make([]int, len(counts))
+	frac := make([]float64, len(counts))
+	used := 0
+	for i, n := range counts {
+		raw := float64(n) / float64(total) * float64(width)
+		cells[i] = int(raw)
+		frac[i] = raw - float64(cells[i])
+		used += cells[i]
+	}
+	for used < width {
+		best := -1
+		bestF := -1.0
+		for i, f := range frac {
+			if counts[i] == 0 {
+				continue
+			}
+			if f > bestF {
+				bestF = f
+				best = i
+			}
+		}
+		if best == -1 {
+			break
+		}
+		cells[best]++
+		frac[best] = -1
+		used++
+	}
+
+	glyphs := []string{"▓", "█", "▒", "░"} // conflicts, staged, modified, untracked
+	colorFns := []func(string, ...interface{}) string{
+		color.RedString, color.GreenString, color.YellowString,
+		color.New(color.Faint).Sprintf,
+	}
+	var bar strings.Builder
+	for i, n := range cells {
+		if n == 0 {
+			continue
+		}
+		bar.WriteString(colorFns[i](strings.Repeat(glyphs[i], n)))
+	}
+
+	parts := make([]string, 0, 4)
+	if c > 0 {
+		parts = append(parts, color.RedString("%dC", c))
+	}
+	if s > 0 {
+		parts = append(parts, color.GreenString("%dS", s))
+	}
+	if m > 0 {
+		parts = append(parts, color.YellowString("%dM", m))
+	}
+	if u > 0 {
+		parts = append(parts, color.New(color.Faint).Sprintf("%d?", u))
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	return fmt.Sprintf("%s [%s] %s  %s",
+		faint("tree:"),
+		bar.String(),
+		strings.Join(parts, " "),
+		faint(fmt.Sprintf("(%d files)", total)),
+	)
+}
+
+// renderDivergenceGauge returns a compact horizontal gauge summarizing
+// ahead/behind commits relative to upstream. Wide form fills 8 slots per
+// side; narrow TTYs (<80 cols) fall back to 3 slots per side.
+//
+//	[······▓▓│········]  (↑2)
+//	[▓▓│·]  ↑2            (narrow)
+func renderDivergenceGauge(ahead, behind int) string {
+	width, ok := ui.TTYWidth()
+	narrow := ok && width < 80
+
+	perSide := 8
+	if narrow {
+		perSide = 3
+	}
+	aFill := ahead
+	if aFill > perSide {
+		aFill = perSide
+	}
+	bFill := behind
+	if bFill > perSide {
+		bFill = perSide
+	}
+	left := strings.Repeat("·", perSide-aFill) + strings.Repeat("▓", aFill)
+	right := strings.Repeat("▓", bFill) + strings.Repeat("·", perSide-bFill)
+
+	var suffix string
+	switch {
+	case ahead == 0 && behind == 0:
+		suffix = "  " + color.New(color.Faint).Sprint("in sync")
+	default:
+		parts := make([]string, 0, 2)
+		if ahead > 0 {
+			parts = append(parts, fmt.Sprintf("↑%d", ahead))
+		}
+		if behind > 0 {
+			parts = append(parts, fmt.Sprintf("↓%d", behind))
+		}
+		if narrow {
+			suffix = "  " + strings.Join(parts, " ")
+		} else {
+			suffix = "  (" + strings.Join(parts, " ") + ")"
+		}
+	}
+	return fmt.Sprintf("[%s%s%s]%s",
+		color.GreenString(left),
+		color.New(color.Faint).Sprint("│"),
+		color.RedString(right),
+		suffix,
+	)
+}

@@ -3,9 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -109,6 +114,253 @@ func TestRunStatus_Staged(t *testing.T) {
 	}
 	if !strings.Contains(out, "staged.txt") {
 		t.Errorf("expected 'staged.txt' in output, got:\n%s", out)
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	cases := []struct {
+		dur  time.Duration
+		want string
+	}{
+		{30 * time.Second, ""},
+		{2 * time.Minute, "2m"},
+		{90 * time.Minute, "1h"},
+		{25 * time.Hour, "1d"},
+		{10 * 24 * time.Hour, "10d"},
+		{20 * 24 * time.Hour, "2w"},
+		{90 * 24 * time.Hour, "3mo"},
+		{400 * 24 * time.Hour, "1y"},
+	}
+	for _, tc := range cases {
+		if got := formatAge(tc.dur); got != tc.want {
+			t.Errorf("formatAge(%s) = %q, want %q", tc.dur, got, tc.want)
+		}
+	}
+}
+
+func TestUntrackedAge(t *testing.T) {
+	dir := t.TempDir()
+	recent := filepath.Join(dir, "recent.txt")
+	old := filepath.Join(dir, "old.txt")
+	if err := os.WriteFile(recent, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// backdate old.txt by 30 days
+	past := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if got := untrackedAge(dir, "recent.txt"); got != "" {
+		t.Errorf("recent file should report empty age, got %q", got)
+	}
+	got := untrackedAge(dir, "old.txt")
+	if !strings.HasSuffix(got, "d") && !strings.HasSuffix(got, "w") && !strings.HasSuffix(got, "mo") {
+		t.Errorf("old file should report day/week/month age, got %q", got)
+	}
+}
+
+func TestRenderTypesChip(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	mk := func(paths ...string) []git.StatusEntry {
+		out := make([]git.StatusEntry, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, git.StatusEntry{Path: p})
+		}
+		return out
+	}
+
+	t.Run("basic extensions", func(t *testing.T) {
+		got := renderTypesChip(mk("a.ts", "b.ts", "c.ts", "d.md", "e.md", "x.lock"))
+		for _, want := range []string{"types:", ".ts×3", ".md×2", ".lock×1"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
+		}
+	})
+
+	t.Run("lockfile collapsed", func(t *testing.T) {
+		got := renderTypesChip(mk("package-lock.json", "go.sum", "Cargo.lock"))
+		if !strings.Contains(got, ".lock×2") {
+			t.Errorf("expected .lock to collapse to ×2 (package-lock + Cargo), got %q", got)
+		}
+	})
+
+	t.Run("no extension falls back to basename", func(t *testing.T) {
+		got := renderTypesChip(mk("Makefile", "Dockerfile"))
+		if !strings.Contains(got, "Makefile×1") || !strings.Contains(got, "Dockerfile×1") {
+			t.Errorf("expected basename fallback, got %q", got)
+		}
+	})
+
+	t.Run("too many kinds returns empty", func(t *testing.T) {
+		paths := make([]string, 0, 41)
+		for i := 0; i < 41; i++ {
+			paths = append(paths, fmt.Sprintf("f.e%d", i))
+		}
+		if got := renderTypesChip(mk(paths...)); got != "" {
+			t.Errorf("expected empty for >40 kinds, got %q", got)
+		}
+	})
+}
+
+func TestRenderProgressMeter(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	mk := func(c, s, m, u int) groupedEntries {
+		g := groupedEntries{}
+		for i := 0; i < c; i++ {
+			g.Unmerged = append(g.Unmerged, git.StatusEntry{})
+		}
+		for i := 0; i < s; i++ {
+			g.Staged = append(g.Staged, git.StatusEntry{})
+		}
+		for i := 0; i < m; i++ {
+			g.Modified = append(g.Modified, git.StatusEntry{})
+		}
+		for i := 0; i < u; i++ {
+			g.Untracked = append(g.Untracked, git.StatusEntry{})
+		}
+		return g
+	}
+
+	t.Run("empty", func(t *testing.T) {
+		if got := renderProgressMeter(groupedEntries{}); got != "" {
+			t.Errorf("expected empty for 0 entries, got %q", got)
+		}
+	})
+
+	t.Run("mixed shows verbs", func(t *testing.T) {
+		got := renderProgressMeter(mk(1, 3, 5, 1))
+		for _, want := range []string{"clean:", "30%", "resolve 1", "stage 5", "commit 3", "discard-or-track 1"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
+		}
+	})
+
+	t.Run("all staged shows 100%", func(t *testing.T) {
+		got := renderProgressMeter(mk(0, 4, 0, 0))
+		if !strings.Contains(got, "100%") {
+			t.Errorf("expected 100%% for all staged, got %q", got)
+		}
+		if strings.Contains(got, "░") {
+			t.Errorf("expected no empty cells at 100%%, got %q", got)
+		}
+	})
+}
+
+func TestRenderDensityBar(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	mk := func(c, s, m, u int) groupedEntries {
+		g := groupedEntries{}
+		for i := 0; i < c; i++ {
+			g.Unmerged = append(g.Unmerged, git.StatusEntry{Kind: git.KindUnmerged})
+		}
+		for i := 0; i < s; i++ {
+			g.Staged = append(g.Staged, git.StatusEntry{})
+		}
+		for i := 0; i < m; i++ {
+			g.Modified = append(g.Modified, git.StatusEntry{})
+		}
+		for i := 0; i < u; i++ {
+			g.Untracked = append(g.Untracked, git.StatusEntry{Kind: git.KindUntracked})
+		}
+		return g
+	}
+
+	t.Run("empty", func(t *testing.T) {
+		if got := renderDensityBar(groupedEntries{}); got != "" {
+			t.Errorf("expected empty for 0 entries, got %q", got)
+		}
+	})
+
+	t.Run("mixed", func(t *testing.T) {
+		got := renderDensityBar(mk(1, 5, 2, 8))
+		for _, want := range []string{"tree:", "1C", "5S", "2M", "8?", "16 files"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
+		}
+		// Verify total bar cells == 20 (width), composed of 4 glyph kinds.
+		totalCells := strings.Count(got, "▓") + strings.Count(got, "█") +
+			strings.Count(got, "▒") + strings.Count(got, "░")
+		if totalCells != 20 {
+			t.Errorf("expected 20 bar cells, got %d (bar=%q)", totalCells, got)
+		}
+	})
+
+	t.Run("single kind", func(t *testing.T) {
+		got := renderDensityBar(mk(0, 0, 0, 3))
+		if !strings.Contains(got, "3?") {
+			t.Errorf("expected 3? marker, got %q", got)
+		}
+		if !strings.Contains(got, strings.Repeat("░", 20)) {
+			t.Errorf("expected 20 ░ cells, got %q", got)
+		}
+	})
+}
+
+func TestRenderDivergenceGauge(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	cases := []struct {
+		name                  string
+		ahead, behind         int
+		mustContain           []string
+		mustNotContain        []string
+	}{
+		{
+			name:   "in sync",
+			ahead:  0, behind: 0,
+			mustContain:    []string{"[········│········]", "in sync"},
+			mustNotContain: []string{"↑", "↓"},
+		},
+		{
+			name:   "ahead only",
+			ahead:  2, behind: 0,
+			mustContain:    []string{"······▓▓│········", "↑2"},
+			mustNotContain: []string{"↓"},
+		},
+		{
+			name:   "behind only",
+			ahead:  0, behind: 3,
+			mustContain:    []string{"········│▓▓▓·····", "↓3"},
+			mustNotContain: []string{"↑"},
+		},
+		{
+			name:   "both",
+			ahead:  1, behind: 4,
+			mustContain: []string{"↑1", "↓4"},
+		},
+		{
+			name:   "clamp",
+			ahead:  50, behind: 0,
+			mustContain: []string{"▓▓▓▓▓▓▓▓│", "↑50"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderDivergenceGauge(tc.ahead, tc.behind)
+			for _, s := range tc.mustContain {
+				if !strings.Contains(got, s) {
+					t.Errorf("gauge missing %q\ngot: %s", s, got)
+				}
+			}
+			for _, s := range tc.mustNotContain {
+				if strings.Contains(got, s) {
+					t.Errorf("gauge should not contain %q\ngot: %s", s, got)
+				}
+			}
+		})
 	}
 }
 

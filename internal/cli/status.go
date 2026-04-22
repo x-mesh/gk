@@ -104,19 +104,27 @@ func shouldAutoFetch(cmd *cobra.Command, cfg *config.Config) bool {
 //     cannot pop an interactive prompt mid-workflow.
 //   - stderr discarded so "remote: ..." chatter never interleaves with
 //     the status output.
-//   - Debounced: a marker under $GIT_COMMON_DIR/gk/ records the last
-//     successful fetch per-remote so a burst of `st` calls only fires
-//     the network once.
+//   - Debounced: a marker under $GIT_COMMON_DIR/gk/last-fetch records
+//     the last successful fetch. A burst of `st` calls inside
+//     statusFetchDebounce only fires the network once; the fast path
+//     stat()'s the default `.git/gk/last-fetch` path so we can skip
+//     every git spawn on warm calls in the common (non-worktree) layout.
 //   - Returns silently on every error path — status always renders with
 //     whatever is already in refs/remotes/*, even offline.
 func maybeFetchUpstream(parent context.Context, repoDir string) {
-	remote, branch, ok := currentUpstream(parent, repoDir)
-	if !ok {
+	// Fast path: in a regular repo (non-worktree), .git is the common
+	// dir and we can check the debounce marker without any git spawn.
+	// On worktrees .git is a file (not a dir), this fast path misses
+	// and we fall through to the careful rev-parse below.
+	if fastPathDebounced(repoDir) {
 		return
 	}
 
-	gitDir := gitCommonDir(parent, repoDir)
-	if gitDir != "" && recentlyFetched(gitDir, remote) {
+	remote, branch, gitDir, ok := resolveUpstreamAndGitDir(parent, repoDir)
+	if !ok {
+		return
+	}
+	if gitDir != "" && recentlyFetched(gitDir) {
 		return
 	}
 
@@ -146,82 +154,94 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 		return
 	}
 	if gitDir != "" {
-		markFetch(gitDir, remote)
+		markFetch(gitDir)
 	}
 }
 
-// currentUpstream resolves the current branch's upstream into
-// (remote, short-branch) with a single `git rev-parse --abbrev-ref HEAD@{u}`
-// call. Previously this cost three separate git invocations; one process
-// spawn is ~5–15 ms on macOS so collapsing them shaves off a measurable
-// fraction of the pre-fetch overhead.
-//
-// Returns ok=false when there is no upstream configured (detached HEAD,
-// brand-new local branch, etc.) — the caller should skip fetching.
-func currentUpstream(ctx context.Context, repoDir string) (string, string, bool) {
-	c := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD@{u}")
-	c.Dir = repoDir
-	// Suppress the "no upstream" error message; we detect via exit code.
-	c.Stderr = io.Discard
-	out, err := c.Output()
-	if err != nil {
-		return "", "", false
+// fastPathDebounced short-circuits maybeFetchUpstream on warm calls by
+// stat()-ing the default marker path directly. It only succeeds when
+// `<repoDir>/.git/gk/last-fetch` exists and is recent — i.e., a regular
+// non-worktree repo that was fetched by a prior `gk status`. Worktrees
+// (where .git is a file pointing elsewhere) intentionally miss this
+// path and fall through to the rev-parse-based resolution.
+func fastPathDebounced(repoDir string) bool {
+	if repoDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return false
+		}
+		repoDir = cwd
 	}
-	full := strings.TrimSpace(string(out))
-	if full == "" {
-		return "", "", false
-	}
-	// Upstream is "<remote>/<branch>"; branches may contain "/" so split
-	// on the first separator only.
-	parts := strings.SplitN(full, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
-}
-
-// gitCommonDir returns `git rev-parse --git-common-dir`, resolved to an
-// absolute path. Worktrees share this directory so the debounce marker
-// is effective across them. Returns "" on any failure.
-func gitCommonDir(ctx context.Context, repoDir string) string {
-	c := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-	c.Dir = repoDir
-	out, err := c.Output()
-	if err != nil {
-		return ""
-	}
-	dir := strings.TrimSpace(string(out))
-	if dir == "" {
-		return ""
-	}
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(repoDir, dir)
-	}
-	return dir
-}
-
-// fetchMarkerPath returns the per-remote marker file used to debounce
-// maybeFetchUpstream. Remote names cannot contain path separators by git
-// convention so the name is safe to use verbatim.
-func fetchMarkerPath(gitDir, remote string) string {
-	return filepath.Join(gitDir, "gk", "last-fetch-"+remote)
-}
-
-// recentlyFetched reports whether the marker for this remote was touched
-// within statusFetchDebounce. Missing marker → not recent → do fetch.
-func recentlyFetched(gitDir, remote string) bool {
-	info, err := os.Stat(fetchMarkerPath(gitDir, remote))
+	marker := filepath.Join(repoDir, ".git", "gk", "last-fetch")
+	info, err := os.Stat(marker)
 	if err != nil {
 		return false
 	}
 	return time.Since(info.ModTime()) < statusFetchDebounce
 }
 
-// markFetch touches the per-remote marker so subsequent calls within the
-// debounce window skip the network round-trip. Failures are swallowed —
-// the worst case is that we fetch again on the next invocation.
-func markFetch(gitDir, remote string) {
-	path := fetchMarkerPath(gitDir, remote)
+// resolveUpstreamAndGitDir collapses the two pieces of metadata we need
+// (upstream branch + git common dir) into a single `git rev-parse` spawn.
+// Output is two lines: "<remote>/<branch>\n<path-to-common-dir>".
+//
+// Returns ok=false when the branch has no upstream configured; callers
+// skip fetching in that case. gitDir may still be non-empty for marker
+// persistence in future flows.
+func resolveUpstreamAndGitDir(ctx context.Context, repoDir string) (remote, branch, gitDir string, ok bool) {
+	c := exec.CommandContext(ctx, "git", "rev-parse",
+		"--abbrev-ref", "HEAD@{u}",
+		"--git-common-dir",
+	)
+	c.Dir = repoDir
+	c.Stderr = io.Discard
+	out, err := c.Output()
+	if err != nil {
+		return "", "", "", false
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) < 2 {
+		return "", "", "", false
+	}
+	upstream := strings.TrimSpace(lines[0])
+	gitDir = strings.TrimSpace(lines[1])
+	if gitDir != "" && !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoDir, gitDir)
+	}
+	if upstream == "" {
+		// Upstream unresolved — skip fetch, still return gitDir so
+		// callers can persist markers if they want to.
+		return "", "", gitDir, false
+	}
+	parts := strings.SplitN(upstream, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", gitDir, false
+	}
+	return parts[0], parts[1], gitDir, true
+}
+
+// fetchMarkerPath returns the single marker file used to debounce
+// maybeFetchUpstream. One marker per repo (rather than per-remote) keeps
+// the fast path trivial; the 99% case of a single `origin` upstream is
+// unaffected, and multi-remote setups simply share the debounce window.
+func fetchMarkerPath(gitDir string) string {
+	return filepath.Join(gitDir, "gk", "last-fetch")
+}
+
+// recentlyFetched reports whether the fetch marker was touched within
+// statusFetchDebounce. Missing marker → not recent → do fetch.
+func recentlyFetched(gitDir string) bool {
+	info, err := os.Stat(fetchMarkerPath(gitDir))
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < statusFetchDebounce
+}
+
+// markFetch touches the debounce marker so subsequent calls within the
+// window skip the network round-trip. Failures are swallowed — the worst
+// case is that we fetch again on the next invocation.
+func markFetch(gitDir string) {
+	path := fetchMarkerPath(gitDir)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}

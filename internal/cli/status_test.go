@@ -166,18 +166,18 @@ func TestConflictAnatomy(t *testing.T) {
 func TestFetchDebounceMarker(t *testing.T) {
 	dir := t.TempDir()
 	gkDir := filepath.Join(dir, "gk")
-	marker := fetchMarkerPath(dir, "origin")
+	marker := fetchMarkerPath(dir)
 
-	if recentlyFetched(dir, "origin") {
+	if recentlyFetched(dir) {
 		t.Fatal("no marker yet → recentlyFetched should be false")
 	}
 
 	// Mark a fresh fetch. Verify the debounce window kicks in.
-	markFetch(dir, "origin")
+	markFetch(dir)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("markFetch did not create marker under %s: %v", gkDir, err)
 	}
-	if !recentlyFetched(dir, "origin") {
+	if !recentlyFetched(dir) {
 		t.Error("just-written marker should trip the debounce")
 	}
 
@@ -186,9 +186,50 @@ func TestFetchDebounceMarker(t *testing.T) {
 	if err := os.Chtimes(marker, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if recentlyFetched(dir, "origin") {
+	if recentlyFetched(dir) {
 		t.Error("marker older than statusFetchDebounce should not trip")
 	}
+}
+
+func TestFastPathDebounced(t *testing.T) {
+	repo := t.TempDir()
+	dotGit := filepath.Join(repo, ".git")
+	if err := os.MkdirAll(dotGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no marker → not debounced", func(t *testing.T) {
+		if fastPathDebounced(repo) {
+			t.Error("expected false for missing marker")
+		}
+	})
+
+	t.Run("fresh marker → debounced", func(t *testing.T) {
+		markFetch(dotGit)
+		if !fastPathDebounced(repo) {
+			t.Error("expected true for fresh marker")
+		}
+	})
+
+	t.Run("stale marker → not debounced", func(t *testing.T) {
+		old := time.Now().Add(-statusFetchDebounce - time.Second)
+		if err := os.Chtimes(fetchMarkerPath(dotGit), old, old); err != nil {
+			t.Fatal(err)
+		}
+		if fastPathDebounced(repo) {
+			t.Error("expected false for stale marker")
+		}
+	})
+
+	t.Run("worktree layout (.git is a file) → fast path misses", func(t *testing.T) {
+		wt := t.TempDir()
+		if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /elsewhere"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if fastPathDebounced(wt) {
+			t.Error("worktree should fall through to rev-parse path")
+		}
+	})
 }
 
 func TestShouldAutoFetch(t *testing.T) {

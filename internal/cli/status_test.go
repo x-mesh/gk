@@ -48,6 +48,10 @@ func TestRunStatus_Clean(t *testing.T) {
 	}
 }
 
+// Default viz now renders the tree layout, so instead of a section
+// header (`untracked:`), we assert on the XY marker and the path
+// — both preserved under tree view. Callers who want the old layout
+// can pass `--vis=none`.
 func TestRunStatus_Untracked(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	r := testutil.NewRepo(t)
@@ -59,9 +63,6 @@ func TestRunStatus_Untracked(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "untracked:") {
-		t.Errorf("expected 'untracked:' section, got:\n%s", out)
-	}
 	if !strings.Contains(out, "newfile.txt") {
 		t.Errorf("expected 'newfile.txt' in output, got:\n%s", out)
 	}
@@ -73,11 +74,9 @@ func TestRunStatus_Untracked(t *testing.T) {
 func TestRunStatus_Modified(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	r := testutil.NewRepo(t)
-	// create and commit a file first
 	r.WriteFile("tracked.txt", "original\n")
 	r.RunGit("add", "tracked.txt")
 	r.RunGit("commit", "-m", "add tracked.txt")
-	// now modify it without staging
 	r.WriteFile("tracked.txt", "modified\n")
 
 	cmd, buf := newStatusCmd(t, r.Dir)
@@ -86,8 +85,8 @@ func TestRunStatus_Modified(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "modified:") {
-		t.Errorf("expected 'modified:' section, got:\n%s", out)
+	if !strings.Contains(out, ".M") {
+		t.Errorf("expected '.M' modified marker, got:\n%s", out)
 	}
 	if !strings.Contains(out, "tracked.txt") {
 		t.Errorf("expected 'tracked.txt' in output, got:\n%s", out)
@@ -97,11 +96,9 @@ func TestRunStatus_Modified(t *testing.T) {
 func TestRunStatus_Staged(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	r := testutil.NewRepo(t)
-	// create and commit a file first
 	r.WriteFile("staged.txt", "original\n")
 	r.RunGit("add", "staged.txt")
 	r.RunGit("commit", "-m", "add staged.txt")
-	// modify and stage
 	r.WriteFile("staged.txt", "staged content\n")
 	r.RunGit("add", "staged.txt")
 
@@ -111,8 +108,8 @@ func TestRunStatus_Staged(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "staged:") {
-		t.Errorf("expected 'staged:' section, got:\n%s", out)
+	if !strings.Contains(out, "M.") {
+		t.Errorf("expected 'M.' staged marker, got:\n%s", out)
 	}
 	if !strings.Contains(out, "staged.txt") {
 		t.Errorf("expected 'staged.txt' in output, got:\n%s", out)
@@ -284,14 +281,14 @@ func TestShouldAutoFetch(t *testing.T) {
 }
 
 func TestResolveStatusVis(t *testing.T) {
-	cfg := &config.Config{Status: config.StatusConfig{Vis: []string{"gauge", "bar", "progress"}}}
+	cfg := &config.Config{Status: config.StatusConfig{Vis: []string{"gauge", "bar", "progress", "tree", "staleness"}}}
 
 	t.Run("no flag → config default", func(t *testing.T) {
 		cmd := &cobra.Command{Use: "status"}
 		cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "")
 		got := resolveStatusVis(cmd, cfg)
-		if strings.Join(got, ",") != "gauge,bar,progress" {
-			t.Errorf("got %v, want [gauge bar progress]", got)
+		if strings.Join(got, ",") != "gauge,bar,progress,tree,staleness" {
+			t.Errorf("got %v, want [gauge bar progress tree staleness]", got)
 		}
 	})
 
@@ -684,8 +681,8 @@ func TestRunStatus_Conflict(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "conflicts:") {
-		t.Errorf("expected 'conflicts:' section, got:\n%s", out)
+	if !strings.Contains(out, "UU") {
+		t.Errorf("expected 'UU' conflict marker, got:\n%s", out)
 	}
 	if !strings.Contains(out, "conflict.txt") {
 		t.Errorf("expected 'conflict.txt' in output, got:\n%s", out)

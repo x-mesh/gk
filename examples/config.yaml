@@ -32,7 +32,7 @@ status:
   # Default visualization layers for `gk status`. Values: gauge, bar, progress,
   # types, staleness, tree, conflict, churn, risk. Override per-invocation
   # with `--vis ...` or disable all layers with `--vis none`.
-  vis: [gauge, bar, progress]
+  vis: [gauge, bar, progress, tree, staleness]
 
   # When true, `gk status` does a short, quiet fetch of the current branch's
   # upstream before reading porcelain output so that ↑N ↓N counts reflect the

@@ -94,7 +94,7 @@ func Defaults() Config {
 			Vis:    []string{"cc", "safety", "tags-rule"},
 		},
 		Status: StatusConfig{
-			Vis:       []string{"gauge", "bar", "progress"},
+			Vis:       []string{"gauge", "bar", "progress", "tree", "staleness"},
 			AutoFetch: true,
 		},
 		UI: UIConfig{

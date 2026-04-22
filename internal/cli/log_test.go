@@ -13,6 +13,95 @@ import (
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
+func TestCalendarLines(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	mon := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC) // Monday
+	dates := []time.Time{
+		mon, mon, mon, // W1 Mon = 3 (peak)
+		mon.Add(24 * time.Hour),                  // W1 Tue = 1
+		mon.Add((7 + 3) * 24 * time.Hour),        // W2 Thu
+		mon.Add((7 + 3) * 24 * time.Hour),        // W2 Thu = 2
+	}
+	lines := calendarLines(dates)
+	if len(lines) != 8 {
+		t.Fatalf("expected 8 lines (header + 7 weekdays), got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[0], "W1") || !strings.Contains(lines[0], "W2") {
+		t.Errorf("header missing week labels: %q", lines[0])
+	}
+	// Mon row should have block chars (non-zero bucket)
+	if !strings.ContainsAny(lines[1], "░▒▓█") {
+		t.Errorf("Mon row should have heat glyph, got %q", lines[1])
+	}
+}
+
+func TestCcClassify(t *testing.T) {
+	cases := []struct {
+		subject   string
+		wantType  string
+		wantGlyph string
+	}{
+		{"feat: x", "feat", "✨"},
+		{"fix(auth): y", "fix", "🐛"},
+		{"refactor!: z", "refactor", "♻"},
+		{"chore(release): v0.4.0", "chore", "🧹"},
+		{"random subject with no prefix", "", ""},
+		{"wip hack", "", ""},
+	}
+	for _, tc := range cases {
+		gotT, gotG := ccClassify(tc.subject)
+		if gotT != tc.wantType || gotG != tc.wantGlyph {
+			t.Errorf("ccClassify(%q) = (%q,%q), want (%q,%q)", tc.subject, gotT, gotG, tc.wantType, tc.wantGlyph)
+		}
+	}
+}
+
+func TestParseTrailers(t *testing.T) {
+	body := `This is a commit.
+
+Co-Authored-By: Alice <alice@ex.com>
+Reviewed-by: Bob
+Signed-off-by: Carol <c@ex.com>
+`
+	got := parseTrailers(body)
+	for _, want := range []string{"+Alice", "review:Bob"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if parseTrailers("no trailers here") != "" {
+		t.Error("expected empty for body without trailers")
+	}
+}
+
+func TestRenderImpactBar(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+	if got := renderImpactBar(0, 0, 100); got != "" {
+		t.Errorf("expected empty bar for 0 changes, got %q", got)
+	}
+	bar := renderImpactBar(50, 50, 100)
+	if !strings.ContainsAny(bar, "█▏▎▍▌▋▊▉") {
+		t.Errorf("expected block glyph, got %q", bar)
+	}
+}
+
+func TestParseCommitRecords(t *testing.T) {
+	raw := "sha1fullA\x00sha1A\x00feat: x\x00Alice\x00now\x00body1\x1e\nsha2fullB\x00sha2B\x00fix: y\x00Bob\x001h\x00body2\x1e\n"
+	recs := parseCommitRecords([]byte(raw))
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	if recs[0].short != "sha1A" || recs[0].subject != "feat: x" {
+		t.Errorf("rec0 unexpected: %+v", recs[0])
+	}
+	if recs[1].author != "Bob" || recs[1].relDate != "1h" {
+		t.Errorf("rec1 unexpected: %+v", recs[1])
+	}
+}
+
 func TestPulseLine(t *testing.T) {
 	color.NoColor = true
 	t.Cleanup(func() { color.NoColor = false })

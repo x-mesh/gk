@@ -772,8 +772,10 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 
 		var prefix, suffix strings.Builder
 		if v.safety {
-			prefix.WriteRune(rebaseSafety(ctx, runner, r.sha, pushed, amended))
-			prefix.WriteByte(' ')
+			if mark := rebaseSafety(ctx, runner, r.sha, pushed, amended); mark != ' ' {
+				prefix.WriteRune(mark)
+				prefix.WriteByte(' ')
+			}
 		}
 		subject := r.subject
 		if v.cc {

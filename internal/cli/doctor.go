@@ -11,11 +11,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 )
 
 // doctorStatus is the three-way status of a single check.
@@ -73,6 +75,8 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkConfig(cmd),
 		checkHook(ctx, runner, "commit-msg", "gk lint-commit"),
 		checkHook(ctx, runner, "pre-push", "gk push"),
+		checkBackupRefs(ctx, runner),
+		checkGitleaks(),
 	}
 
 	w := cmd.OutOrStdout()
@@ -297,4 +301,101 @@ func statusMarker(s doctorStatus) string {
 		return "✗ FAIL"
 	}
 	return "? ????"
+}
+
+// checkGitleaks detects the `gitleaks` binary and its version. gitleaks is
+// the industry-standard secret scanner; when present, gk guard (v0.9+) uses
+// it as the default `secret_patterns` rule evaluator. When missing, gk
+// falls back to the built-in keyword scanner — still functional but less
+// thorough. This is a WARN, not FAIL, so doctor does not block CI when
+// gitleaks happens to be absent.
+func checkGitleaks() doctorCheck {
+	path, err := exec.LookPath("gitleaks")
+	if err != nil {
+		return doctorCheck{
+			Name: "gitleaks", Status: statusWarn,
+			Detail: "not installed — gk guard will fall back to the built-in keyword scanner",
+			Fix:    "brew install gitleaks  # or: go install github.com/gitleaks/gitleaks/v8@latest",
+		}
+	}
+	// Best-effort version probe. Absent version is non-fatal — the presence
+	// of the binary is the main signal.
+	cmd := exec.Command(path, "version")
+	out, _ := cmd.Output()
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		version = path
+	} else {
+		version = version + " (" + path + ")"
+	}
+	return doctorCheck{Name: "gitleaks", Status: statusPass, Detail: version}
+}
+
+// checkBackupRefs summarizes the gk-managed backup refs (refs/gk/*-backup/).
+// Always PASS — it's diagnostic context, never a failure condition. Empty
+// repo shows "0 refs"; populated repos show count + age of oldest/newest by
+// kind so users can spot stale or orphaned backups at a glance.
+func checkBackupRefs(ctx context.Context, r git.Runner) doctorCheck {
+	refs, err := gitsafe.ListBackups(ctx, r)
+	if err != nil {
+		// Common outside-a-repo case surfaces the raw git message — trim to
+		// a single line and hide the full argv so the doctor table stays
+		// scannable.
+		msg := err.Error()
+		if strings.Contains(msg, "not a git repository") {
+			return doctorCheck{
+				Name: "gk backup refs", Status: statusWarn,
+				Detail: "not in a git repo",
+			}
+		}
+		// First line only, stripped.
+		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+			msg = msg[:idx]
+		}
+		return doctorCheck{
+			Name: "gk backup refs", Status: statusWarn,
+			Detail: "could not enumerate: " + strings.TrimSpace(msg),
+		}
+	}
+	if len(refs) == 0 {
+		return doctorCheck{
+			Name:   "gk backup refs",
+			Status: statusPass,
+			Detail: "0 refs (no gk undo/wipe/timemachine backups yet)",
+		}
+	}
+
+	// Tally by kind + track oldest/newest.
+	byKind := map[string]int{}
+	var oldest, newest time.Time
+	for _, b := range refs {
+		byKind[b.Kind]++
+		if b.When.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || b.When.Before(oldest) {
+			oldest = b.When
+		}
+		if b.When.After(newest) {
+			newest = b.When
+		}
+	}
+
+	parts := make([]string, 0, len(byKind)+2)
+	parts = append(parts, fmt.Sprintf("%d refs", len(refs)))
+	for kind, n := range byKind {
+		parts = append(parts, fmt.Sprintf("%s=%d", kind, n))
+	}
+	if !newest.IsZero() {
+		parts = append(parts, "newest "+humanSince(time.Since(newest)))
+	}
+	if !oldest.IsZero() && !oldest.Equal(newest) {
+		parts = append(parts, "oldest "+humanSince(time.Since(oldest)))
+	}
+
+	return doctorCheck{
+		Name:   "gk backup refs",
+		Status: statusPass,
+		Detail: strings.Join(parts, " · "),
+	}
 }

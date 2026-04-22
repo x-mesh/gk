@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,10 +25,15 @@ type hookSpec struct {
 	Script      string // POSIX shell body (without shebang / marker)
 }
 
-// knownHooks lists every hook gk can install. Keep the map iteration-order
-// stable by using a slice.
+// knownHooks lists every hook gk can install. Keep the slice order stable —
+// hooks are written in declaration order and the flag names match Name exactly.
 func knownHooks() []hookSpec {
 	return []hookSpec{
+		{
+			Name:        "pre-commit",
+			Description: "run gk guard policy rules (secret scan, …) before every commit",
+			Script:      `exec gk guard check`,
+		},
 		{
 			Name:        "commit-msg",
 			Description: "lint commit message against Conventional Commits rules",
@@ -47,14 +51,15 @@ func init() {
 	hooks := &cobra.Command{
 		Use:   "hooks",
 		Short: "Manage git hook shims that invoke gk",
-		Long: `Install or remove shim scripts under .git/hooks/ that invoke gk
-(e.g., commit-msg → gk lint-commit, pre-push → gk preflight).
+		Long: `Install or remove shim scripts under .git/hooks/ that invoke gk.
+
+  pre-commit  → gk guard check   (policy rules: secrets, size, …)
+  commit-msg  → gk lint-commit   (Conventional Commits linting)
+  pre-push    → gk preflight     (configurable preflight sequence)
 
 gk-managed hooks carry a marker comment. The installer refuses to overwrite
 any hook missing that marker unless --force is passed (which also writes a
-timestamped .bak backup).
-
-Available hooks: commit-msg, pre-push`,
+timestamped .bak backup).`,
 	}
 
 	install := &cobra.Command{
@@ -62,6 +67,7 @@ Available hooks: commit-msg, pre-push`,
 		Short: "Write shim scripts into .git/hooks/",
 		RunE:  runHooksInstall,
 	}
+	install.Flags().Bool("pre-commit", false, "install the pre-commit hook (gk guard check)")
 	install.Flags().Bool("commit-msg", false, "install the commit-msg hook")
 	install.Flags().Bool("pre-push", false, "install the pre-push hook")
 	install.Flags().Bool("all", false, "install every hook gk knows about")
@@ -73,6 +79,7 @@ Available hooks: commit-msg, pre-push`,
 		Short: "Remove gk-managed hook shims from .git/hooks/",
 		RunE:  runHooksUninstall,
 	}
+	uninstall.Flags().Bool("pre-commit", false, "remove the pre-commit hook")
 	uninstall.Flags().Bool("commit-msg", false, "remove the commit-msg hook")
 	uninstall.Flags().Bool("pre-push", false, "remove the pre-push hook")
 	uninstall.Flags().Bool("all", false, "remove every gk-managed hook")
@@ -130,22 +137,30 @@ func runHooksUninstall(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// selectHooks resolves --commit-msg/--pre-push/--all into a concrete slice.
-// Returns an error when nothing was selected.
+// selectHooks resolves --<hook-name>/--all flags into a concrete slice.
+// Flag names match hookSpec.Name exactly so adding a new hook only requires
+// registering the flag and appending to knownHooks().
 func selectHooks(cmd *cobra.Command) ([]hookSpec, error) {
 	all, _ := cmd.Flags().GetBool("all")
-	commitMsg, _ := cmd.Flags().GetBool("commit-msg")
-	prePush, _ := cmd.Flags().GetBool("pre-push")
 
-	if !all && !commitMsg && !prePush {
-		return nil, errors.New("select at least one hook (--commit-msg, --pre-push, or --all)")
-	}
-
-	picked := make([]hookSpec, 0, 2)
+	anyExplicit := false
+	picked := make([]hookSpec, 0, len(knownHooks()))
 	for _, h := range knownHooks() {
-		if all || (h.Name == "commit-msg" && commitMsg) || (h.Name == "pre-push" && prePush) {
+		flagVal, _ := cmd.Flags().GetBool(h.Name)
+		if flagVal {
+			anyExplicit = true
+		}
+		if all || flagVal {
 			picked = append(picked, h)
 		}
+	}
+
+	if !all && !anyExplicit {
+		names := make([]string, 0, len(knownHooks()))
+		for _, h := range knownHooks() {
+			names = append(names, "--"+h.Name)
+		}
+		return nil, fmt.Errorf("select at least one hook (%s, or --all)", strings.Join(names, ", "))
 	}
 	return picked, nil
 }

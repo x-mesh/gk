@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -57,10 +58,11 @@ func TestUndo_List_EmptyReflog(t *testing.T) {
 
 	r := &git.ExecRunner{Dir: repo.Dir}
 	deps := &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: nil,
-		Now:    nowFixed,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
 	}
 
 	if err := runUndoWith(cmd, deps); err != nil {
@@ -103,10 +105,11 @@ func TestUndo_List_AfterCommits(t *testing.T) {
 
 	r := &git.ExecRunner{Dir: repo.Dir}
 	deps := &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: nil,
-		Now:    nowFixed,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
 	}
 
 	if err := runUndoWith(cmd, deps); err != nil {
@@ -156,10 +159,11 @@ func TestUndo_To_ResetsHEAD(t *testing.T) {
 
 	r := &git.ExecRunner{Dir: repo.Dir}
 	deps := &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: nil,
-		Now:    nowFixed,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
 	}
 
 	if err := runUndoWith(cmd, deps); err != nil {
@@ -173,7 +177,7 @@ func TestUndo_To_ResetsHEAD(t *testing.T) {
 	}
 
 	// Backup ref must exist under refs/gk/undo-backup/main/<unix>.
-	backupRef := backupRefName("main", fixedTime)
+	backupRef := gitsafe.BackupRefName("undo", "main", fixedTime)
 	backupSHA := repo.RunGit("rev-parse", backupRef)
 	if backupSHA == "" {
 		t.Errorf("backup ref %q not found", backupRef)
@@ -209,10 +213,11 @@ func TestUndo_To_RefusesDirtyTree(t *testing.T) {
 
 	r := &git.ExecRunner{Dir: repo.Dir}
 	deps := &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: nil,
-		Now:    nowFixed,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
 	}
 
 	err := runUndoWith(cmd, deps)
@@ -266,10 +271,11 @@ func TestUndo_To_RefusesInProgressRebase(t *testing.T) {
 
 	r := &git.ExecRunner{Dir: repo.Dir}
 	deps := &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: nil,
-		Now:    nowFixed,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
 	}
 
 	err := runUndoWith(cmd, deps)
@@ -278,31 +284,6 @@ func TestUndo_To_RefusesInProgressRebase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "in-progress") {
 		t.Errorf("expected 'in-progress' in error, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TestBackupRefName — unit tests for ref name construction
-// ---------------------------------------------------------------------------
-
-func TestBackupRefName(t *testing.T) {
-	ts := time.Unix(1700000000, 0)
-
-	tests := []struct {
-		branch string
-		want   string
-	}{
-		{"main", "refs/gk/undo-backup/main/1700000000"},
-		{"feat/x", "refs/gk/undo-backup/feat-x/1700000000"},
-		{"", "refs/gk/undo-backup/detached/1700000000"},
-		{"feature/long/path", "refs/gk/undo-backup/feature-long-path/1700000000"},
-	}
-
-	for _, tc := range tests {
-		got := backupRefName(tc.branch, ts)
-		if got != tc.want {
-			t.Errorf("backupRefName(%q, ts) = %q, want %q", tc.branch, got, tc.want)
-		}
 	}
 }
 

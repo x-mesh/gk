@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -56,7 +57,7 @@ func runWipe(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(w, "actions: git reset --hard HEAD")
 	fmt.Fprintf(w, "         git %s\n", strings.Join(cleanArgs[1:], " "))
 	if !dryRun {
-		fmt.Fprintf(w, "backup:  refs/gk/wipe-backup/%s/<unix>\n", safeBranchSegment(branch))
+		fmt.Fprintf(w, "backup:  refs/gk/wipe-backup/%s/<unix>\n", gitsafe.SanitizeBranchSegment(branch))
 	}
 
 	if dryRun {
@@ -81,8 +82,20 @@ func runWipe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	backupRef := wipeBackupRefName(branch, time.Now())
-	if err := updateRef(ctx, runner, backupRef, "HEAD"); err != nil {
+	// Preflight: refuse during rebase/merge/cherry-pick even though wipe
+	// intentionally destroys dirty state. Running `reset --hard` while a
+	// rebase is in progress leaves the repo in a half-broken state.
+	rep, err := gitsafe.Check(ctx, runner, gitsafe.WithWorkDir(RepoFlag()))
+	if err != nil {
+		return err
+	}
+	if err := rep.AllowDirty().Err(); err != nil {
+		return err
+	}
+
+	restorer := gitsafe.NewRestorer(runner, time.Now, "wipe")
+	backupRef, err := restorer.Backup(ctx, branch)
+	if err != nil {
 		return fmt.Errorf("create backup ref: %w", err)
 	}
 
@@ -96,17 +109,6 @@ func runWipe(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "wiped — backup saved at %s\n", backupRef)
 	fmt.Fprintf(w, "to recover commits: git reset --hard %s\n", backupRef)
 	return nil
-}
-
-func wipeBackupRefName(branch string, now time.Time) string {
-	return fmt.Sprintf("refs/gk/wipe-backup/%s/%d", safeBranchSegment(branch), now.Unix())
-}
-
-func safeBranchSegment(branch string) string {
-	if branch == "" {
-		return "detached"
-	}
-	return strings.ReplaceAll(branch, "/", "-")
 }
 
 func displayBranch(branch string) string {

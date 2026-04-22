@@ -2,9 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -107,20 +108,29 @@ func TestWipe_NonTTYRequiresYes(t *testing.T) {
 	}
 }
 
-// TestWipeBackupRefName sanitizes the branch segment.
-func TestWipeBackupRefName(t *testing.T) {
-	ts := time.Unix(1700000000, 0)
-	cases := []struct {
-		branch, want string
-	}{
-		{"main", "refs/gk/wipe-backup/main/1700000000"},
-		{"feat/x", "refs/gk/wipe-backup/feat-x/1700000000"},
-		{"", "refs/gk/wipe-backup/detached/1700000000"},
+// TestWipe_RefusesInProgressRebase — SHARED-01 preflight addition.
+// Before the gitsafe extraction, `gk wipe` ran through even during a rebase,
+// leaving the repo half-broken. This test proves the preflight blocks.
+func TestWipe_RefusesInProgressRebase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
 	}
-	for _, tc := range cases {
-		got := wipeBackupRefName(tc.branch, ts)
-		if got != tc.want {
-			t.Errorf("wipeBackupRefName(%q) = %q, want %q", tc.branch, got, tc.want)
-		}
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "v1")
+	repo.Commit("init")
+
+	// Simulate in-progress rebase via the marker directory gitstate checks for.
+	if err := os.MkdirAll(filepath.Join(repo.Dir, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+
+	root, _ := buildWipeCmd(repo.Dir, "--yes")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected wipe to refuse during rebase, got nil")
+	}
+	if !strings.Contains(err.Error(), "in-progress") {
+		t.Errorf("expected 'in-progress' in error, got: %v", err)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
-	"github.com/x-mesh/gk/internal/gitstate"
+	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/reflog"
 	"github.com/x-mesh/gk/internal/ui"
 )
@@ -33,19 +33,21 @@ func init() {
 
 // undoDeps groups injectable dependencies for testability.
 type undoDeps struct {
-	Runner git.Runner
-	Client *git.Client
-	Picker ui.Picker
-	Now    func() time.Time
+	Runner  git.Runner
+	Client  *git.Client
+	Picker  ui.Picker
+	Now     func() time.Time
+	WorkDir string // repo root; passed to gitsafe.Check for filesystem-based state detection
 }
 
 func defaultUndoDeps(repo string) *undoDeps {
 	r := &git.ExecRunner{Dir: repo}
 	return &undoDeps{
-		Runner: r,
-		Client: git.NewClient(r),
-		Picker: ui.NewPicker(),
-		Now:    time.Now,
+		Runner:  r,
+		Client:  git.NewClient(r),
+		Picker:  ui.NewPicker(),
+		Now:     time.Now,
+		WorkDir: repo,
 	}
 }
 
@@ -85,7 +87,7 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	var target reflog.Entry
 	if to != "" {
 		// user-specified ref; resolve to sha for consistency
-		sha, err := resolveRef(ctx, d.Runner, to)
+		sha, err := gitsafe.ResolveRef(ctx, d.Runner, to)
 		if err != nil {
 			return fmt.Errorf("resolve %q: %w", to, err)
 		}
@@ -111,7 +113,11 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	}
 
 	// Safety preflight
-	if err := preflight(ctx, d); err != nil {
+	rep, err := gitsafe.Check(ctx, d.Runner, gitsafe.WithWorkDir(d.WorkDir))
+	if err != nil {
+		return err
+	}
+	if err := rep.Err(); err != nil {
 		return err
 	}
 
@@ -127,22 +133,19 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		}
 	}
 
-	// Create a backup ref so the user can restore
-	branch, _ := d.Client.CurrentBranch(ctx) // may be detached; OK, fallback below
-	backupRef := backupRefName(branch, d.Now())
-	if err := updateRef(ctx, d.Runner, backupRef, "HEAD"); err != nil {
-		return fmt.Errorf("create backup ref: %w", err)
-	}
-
-	// Perform the mixed reset — index moved, working tree preserved
-	_, stderr, err := d.Runner.Run(ctx, "reset", "--mixed", target.NewSHA)
+	// Backup current HEAD + mixed reset via gitsafe.Restorer (SHARED-04).
+	branch, _ := d.Client.CurrentBranch(ctx) // may be detached; OK, SanitizeBranchSegment handles it
+	restorer := gitsafe.NewRestorer(d.Runner, d.Now, "undo")
+	res, err := restorer.Restore(ctx, branch,
+		gitsafe.Target{SHA: target.NewSHA, Label: target.Ref, Summary: target.Summary},
+		gitsafe.StrategyMixed)
 	if err != nil {
-		return fmt.Errorf("git reset: %s: %w", strings.TrimSpace(string(stderr)), err)
+		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "undone to %s\n", shortSHA(target.NewSHA))
-	fmt.Fprintf(cmd.OutOrStdout(), "backup saved at %s\n", backupRef)
-	fmt.Fprintf(cmd.OutOrStdout(), "to revert this undo: git reset --hard %s\n", backupRef)
+	fmt.Fprintf(cmd.OutOrStdout(), "undone to %s\n", shortSHA(res.To))
+	fmt.Fprintf(cmd.OutOrStdout(), "backup saved at %s\n", res.BackupRef)
+	fmt.Fprintf(cmd.OutOrStdout(), "to revert this undo: git reset --hard %s\n", res.BackupRef)
 	return nil
 }
 
@@ -173,60 +176,6 @@ func entriesToPickerItems(entries []reflog.Entry) []ui.PickerItem {
 		})
 	}
 	return out
-}
-
-// preflight checks the working tree and in-progress state before resetting.
-// gitstate is checked first because rebase/merge conflicts also show as dirty.
-func preflight(ctx context.Context, d *undoDeps) error {
-	// Determine workDir from runner if possible
-	workDir := ""
-	if er, ok := d.Runner.(*git.ExecRunner); ok {
-		workDir = er.Dir
-	}
-	state, err := gitstate.Detect(ctx, workDir)
-	if err != nil {
-		return err
-	}
-	if state.Kind != gitstate.StateNone {
-		return fmt.Errorf("in-progress %s; run `gk continue` or `gk abort` first", state.Kind)
-	}
-
-	dirty, err := d.Client.IsDirty(ctx)
-	if err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
-	if dirty {
-		return errors.New("working tree has uncommitted changes; commit or stash first")
-	}
-	return nil
-}
-
-// resolveRef resolves a ref to its full commit SHA.
-func resolveRef(ctx context.Context, r git.Runner, ref string) (string, error) {
-	out, stderr, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// updateRef creates or updates a git ref to point at from.
-func updateRef(ctx context.Context, r git.Runner, ref, from string) error {
-	_, stderr, err := r.Run(ctx, "update-ref", ref, from)
-	if err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
-	}
-	return nil
-}
-
-// backupRefName builds a backup ref path like refs/gk/undo-backup/<branch>/<unix>.
-func backupRefName(branch string, now time.Time) string {
-	safe := branch
-	if safe == "" {
-		safe = "detached"
-	}
-	safe = strings.ReplaceAll(safe, "/", "-")
-	return fmt.Sprintf("refs/gk/undo-backup/%s/%d", safe, now.Unix())
 }
 
 // shortSHA returns the first 8 characters of a SHA, or the full string if shorter.

@@ -42,6 +42,7 @@ func init() {
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
 	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes")
+	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -65,6 +66,11 @@ func runLog(cmd *cobra.Command, args []string) error {
 		safety:   containsVis(effectiveLogVis, "safety"),
 		hotspots: containsVis(effectiveLogVis, "hotspots"),
 		trailers: containsVis(effectiveLogVis, "trailers"),
+	}
+
+	if legend, _ := cmd.Flags().GetBool("legend"); legend {
+		renderLogLegend(cmd.OutOrStdout(), viz, pulse, calendar, tagsRule)
+		return nil
 	}
 
 	if format == "" {
@@ -511,6 +517,82 @@ func isHex(s string) bool {
 // render as single cells in modern monospace fonts and that avoid collision
 // with the `--safety` column's ◆/◇/✎/! markers. The colorize function is
 // applied to the matching portion of the subject line for inline highlight.
+// renderLogLegend prints a one-time glyph/color key for every active log
+// visualization layer and exits. Mirrors the pattern of status --legend.
+func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule bool) {
+	faint := color.New(color.Faint).SprintFunc()
+	sec := func(title string) {
+		fmt.Fprintln(w, "")
+		fmt.Fprintln(w, faint("— "+title+" —"))
+	}
+
+	fmt.Fprintln(w, "gk log vocabulary")
+
+	if viz.cc {
+		sec("--vis cc — Conventional Commits column")
+		for _, ct := range ccTypes {
+			fmt.Fprintf(w, "  %s  %-10s %s\n", ct.colorize("%s", ct.glyph), ct.name, faint(ccGlyphDesc[ct.name]))
+		}
+		fmt.Fprintln(w, "  (blank)             not a Conventional Commit subject")
+	}
+
+	if viz.safety {
+		sec("--vis safety — rebase-safety left margin")
+		fmt.Fprintln(w, "  ◇  unpushed    confirmed not yet at remote")
+		fmt.Fprintln(w, "  ✎  amended     amended in the last hour (reflog)")
+		fmt.Fprintln(w, "  (blank)        pushed or upstream state unknown")
+	}
+
+	if viz.impact {
+		sec("--vis impact — eighths-bar (|+adds −dels|)")
+		fmt.Fprintln(w, "  ▏▎▍▌▋▊▇█  scaled to the peak diff size in the current view")
+	}
+
+	if viz.hotspots {
+		sec("--vis hotspots — churn marker")
+		fmt.Fprintln(w, "  🔥  file touches a top-10 most-churned path (last 90 days)")
+	}
+
+	if viz.trailers {
+		sec("--vis trailers — co-author / reviewer roll-up")
+		fmt.Fprintln(w, "  [+Alice review:Bob]  parsed from Co-authored-by / Reviewed-by trailers")
+	}
+
+	if pulse {
+		sec("--vis pulse — commit-rhythm sparkline (above the log)")
+		fmt.Fprintln(w, "  ▁▂▃▄▅▆▇█  one cell per day, scaled to the peak commit count")
+		fmt.Fprintln(w, "  ·          zero commits that day")
+	}
+
+	if calendar {
+		sec("--vis calendar — week×weekday heatmap (above the log)")
+		fmt.Fprintln(w, "  · ░ ▒ ▓ █  ascending density (last 26 weeks)")
+	}
+
+	if tagsRule {
+		sec("--vis tags-rule — version separator")
+		fmt.Fprintln(w, "  ──┤ vX.Y.Z (Nd) ├──  injected above the tagged commit")
+	}
+
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, faint("For the status vocabulary: gk status --legend"))
+}
+
+// ccGlyphDesc maps CC type names to a short human description for the legend.
+var ccGlyphDesc = map[string]string{
+	"feat":     "new feature",
+	"fix":      "bug fix",
+	"refactor": "code restructuring",
+	"docs":     "documentation only",
+	"chore":    "maintenance / tooling",
+	"test":     "tests only",
+	"perf":     "performance improvement",
+	"ci":       "CI/CD changes",
+	"build":    "build-system changes",
+	"revert":   "reverts a prior commit",
+	"style":    "formatting / style",
+}
+
 type ccType struct {
 	name, glyph string
 	colorize    func(string, ...interface{}) string

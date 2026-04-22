@@ -768,7 +768,7 @@ func renderStatusLegend(w io.Writer, vis []string) {
 		}
 	}
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, faint("For the log vocabulary: gk log --legend  (planned)"))
+	fmt.Fprintln(w, faint("For the log vocabulary: gk log --legend"))
 }
 
 // isFreshRepo reports whether HEAD has no resolvable commit yet (pre-

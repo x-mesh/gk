@@ -195,8 +195,9 @@ gk st [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`. |
+| `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`. |
 | `--no-fetch` | false | Skip the quiet upstream fetch that keeps ↑N ↓N counts current. Also honored via `GK_NO_FETCH=1` or `status.auto_fetch: false`. |
+| `--top N` | 0 (unlimited) | Limit the entry list to the first N paths (alphabetically sorted for stable output); a `… +K more (total · showing top N)` footer surfaces the hidden remainder so the truncation is never silent. Composes with every viz layer. |
 
 ### Upstream auto-fetch
 
@@ -224,6 +225,8 @@ Disable globally with `status.auto_fetch: false`, per-invocation with `--no-fetc
 | `churn` | Appends an 8-cell sparkline to each modified entry (per-commit add+del totals over the file's last 8 commits). Suppressed when the dirty tree has more than 50 files. |
 | `risk` | Flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `diff LOC + distinct-authors-over-30d × 10`, threshold 50. |
 | `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from the repo's mainline. Base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. Suppressed when the current branch *is* the base. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
+| `since-push` | Appends `· since push Xh (Nc)` to the branch line when there are unpushed commits, showing the age of the oldest one and the total unpushed count. Suppressed on up-to-date branches and when no upstream is configured. Cost: one `git rev-list @{u}..HEAD --format=%ct` call (~5 ms). |
+| `stash` | Adds a `  stash: 3 entries · newest 2h · oldest 5d · ⚠ 2 overlap with dirty` line when the stash is non-empty. Overlap warning checks whether the top stash touches any currently-dirty file (the common `git stash pop` footgun). Cost: one `git stash list` call + one `git stash show --name-only stash@{0}` when overlap-check applies (~5–10 ms total). |
 
 ### Examples
 

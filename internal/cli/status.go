@@ -22,6 +22,7 @@ import (
 
 var statusVisFlags []string
 var statusNoFetch bool
+var statusTopN int
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
@@ -46,8 +47,9 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
+	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -209,6 +211,143 @@ func startFetchSpinner(msg string) (stop func()) {
 		close(done)
 		<-stopped
 	}
+}
+
+// sincePushSuffix returns a compact "since push Xh (Nc)" fragment meant
+// to be appended to the branch line. Empty string when there are no
+// unpushed commits (or the branch has no upstream). Uses a single
+// `git rev-list @{u}..HEAD --format=%ct` call; parses the oldest
+// timestamp to compute the age.
+func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "rev-list", "@{u}..HEAD", "--format=%ct")
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+	// Output interleaves `commit <sha>` lines with `<ct>` lines when
+	// --format is used with rev-list. Collect only the pure-numeric ones.
+	oldest := int64(0)
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "commit ") {
+			continue
+		}
+		ts, err := strconv.ParseInt(line, 10, 64)
+		if err != nil {
+			continue
+		}
+		count++
+		if oldest == 0 || ts < oldest {
+			oldest = ts
+		}
+	}
+	if count == 0 || oldest == 0 {
+		return ""
+	}
+	age := shortAge(time.Unix(oldest, 0))
+	if age == "" {
+		age = "now"
+	}
+	if count == 1 {
+		return fmt.Sprintf("since push %s", age)
+	}
+	return fmt.Sprintf("since push %s (%dc)", age, count)
+}
+
+// renderStashSummary returns a compact one-liner describing the stash
+// list — count, newest/oldest age, and a warning when the stash top
+// touches any currently-dirty file (classic pop-conflict footgun).
+// Empty string when there are no stashes.
+//
+// Cost: one `git stash list --format=...` call (~3ms). Overlap check is
+// an additional `git stash show --name-only stash@{0}` only — we only
+// check the TOP stash because that's the one users pop by default.
+func renderStashSummary(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "stash", "list", "--format=%gd%x00%ct%x00%s")
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return ""
+	}
+	type stashEntry struct {
+		ref  string
+		ts   int64
+		subj string
+	}
+	var stashes []stashEntry
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "\x00", 3)
+		if len(f) != 3 {
+			continue
+		}
+		ts, _ := strconv.ParseInt(f[1], 10, 64)
+		stashes = append(stashes, stashEntry{ref: f[0], ts: ts, subj: f[2]})
+	}
+	if len(stashes) == 0 {
+		return ""
+	}
+
+	// stash list is newest-first; oldest = last entry.
+	newest := stashes[0]
+	oldest := stashes[len(stashes)-1]
+
+	faint := color.New(color.Faint).SprintFunc()
+	parts := []string{
+		faint("stash:"),
+		fmt.Sprintf("%d %s", len(stashes), pluralize(len(stashes), "entry", "entries")),
+		faint("· newest ") + shortAge(time.Unix(newest.ts, 0)),
+	}
+	if len(stashes) > 1 {
+		parts = append(parts, faint("· oldest ")+shortAge(time.Unix(oldest.ts, 0)))
+	}
+
+	// Overlap check — only for the top stash, since that's `git stash pop`'s
+	// implicit target and the most likely collision.
+	if overlap := topStashOverlap(ctx, runner); overlap > 0 {
+		parts = append(parts, color.YellowString("⚠ %d overlap with dirty", overlap))
+	}
+	return "  " + strings.Join(parts, "  ")
+}
+
+// topStashOverlap returns the number of files touched by stash@{0} that
+// are also present in the current working-tree index/status. Uses a
+// single `git stash show --name-only stash@{0}` plus `git diff --name-only
+// HEAD`. Zero on any error (overlap warning is best-effort).
+func topStashOverlap(ctx context.Context, runner *git.ExecRunner) int {
+	stashFiles, _, err := runner.Run(ctx, "stash", "show", "--name-only", "stash@{0}")
+	if err != nil {
+		return 0
+	}
+	dirtyFiles, _, err := runner.Run(ctx, "diff", "--name-only", "HEAD")
+	if err != nil {
+		return 0
+	}
+	dirtySet := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(string(dirtyFiles)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			dirtySet[line] = struct{}{}
+		}
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(stashFiles)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := dirtySet[line]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // resolveBaseBranchForStatus picks the branch to compare the current
@@ -419,12 +558,36 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			line += "  " + faint("· last commit "+ago)
 		}
 	}
+	if statusVisEnabled("since-push") {
+		if unpushed := sincePushSuffix(cmd.Context(), runner); unpushed != "" {
+			line += "  " + faint("· "+unpushed)
+		}
+	}
 	fmt.Fprintln(w, line)
+
+	if statusVisEnabled("stash") {
+		if stashLine := renderStashSummary(cmd.Context(), runner); stashLine != "" {
+			fmt.Fprintln(w, stashLine)
+		}
+	}
 
 	if statusVisEnabled("base") {
 		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
 		}
+	}
+
+	// --top N applies globally to the entry list. Sections/tree below
+	// operate on the truncated slice; a footer at the end surfaces the
+	// hidden remainder so the cut is obvious, not silently missing data.
+	hiddenByTop := 0
+	totalEntries := len(st.Entries)
+	if statusTopN > 0 && len(st.Entries) > statusTopN {
+		sortedEntries := make([]git.StatusEntry, len(st.Entries))
+		copy(sortedEntries, st.Entries)
+		sort.SliceStable(sortedEntries, func(i, j int) bool { return sortedEntries[i].Path < sortedEntries[j].Path })
+		hiddenByTop = len(sortedEntries) - statusTopN
+		st.Entries = sortedEntries[:statusTopN]
 	}
 
 	// group entries by Kind
@@ -505,6 +668,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	if len(st.Entries) == 0 {
 		fmt.Fprintln(w, faint("working tree clean"))
+	}
+	if hiddenByTop > 0 {
+		fmt.Fprintln(w, faint(fmt.Sprintf("… +%d more (%d total · showing top %d)", hiddenByTop, totalEntries, statusTopN)))
 	}
 	return nil
 }

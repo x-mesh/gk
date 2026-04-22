@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -185,6 +186,76 @@ func TestFetchDebounceMarker(t *testing.T) {
 	}
 	if recentlyFetched(dir) {
 		t.Error("marker older than statusFetchDebounce should not trip")
+	}
+}
+
+func TestSincePushSuffix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	// Set up a real upstream: bare remote + push -u. `@{u}` only resolves
+	// when the remote-tracking branch was created through a fetch or push,
+	// not just via `update-ref`. Setting the configs alone fails with
+	// "upstream branch not stored as a remote-tracking branch".
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	cmdInit := exec.Command("git", "init", "-q", "--bare", "-b", "main", bareDir)
+	if out, err := cmdInit.CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	r.RunGit("remote", "add", "origin", bareDir)
+	r.RunGit("push", "-q", "-u", "origin", "main")
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	// No unpushed commits yet.
+	if got := sincePushSuffix(context.Background(), runner); got != "" {
+		t.Errorf("no unpushed → expected empty, got %q", got)
+	}
+	// Add two unpushed commits.
+	r.WriteFile("a.txt", "a\n")
+	r.RunGit("add", "a.txt")
+	r.RunGit("commit", "-m", "unpushed 1")
+	r.WriteFile("b.txt", "b\n")
+	r.RunGit("add", "b.txt")
+	r.RunGit("commit", "-m", "unpushed 2")
+
+	got := sincePushSuffix(context.Background(), runner)
+	if !strings.Contains(got, "since push") {
+		t.Errorf("expected 'since push' prefix, got %q", got)
+	}
+	if !strings.Contains(got, "(2c)") {
+		t.Errorf("expected '(2c)' count suffix, got %q", got)
+	}
+}
+
+func TestRenderStashSummary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	r := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: r.Dir}
+
+	// No stashes yet → empty output.
+	if got := renderStashSummary(context.Background(), runner); got != "" {
+		t.Errorf("no stashes → expected empty, got %q", got)
+	}
+
+	// Create a stash.
+	r.WriteFile("x.txt", "x\n")
+	r.RunGit("add", "x.txt")
+	r.RunGit("commit", "-m", "seed")
+	r.WriteFile("x.txt", "x modified\n")
+	r.RunGit("stash", "push", "-m", "wip demo")
+
+	got := renderStashSummary(context.Background(), runner)
+	if !strings.Contains(got, "stash:") {
+		t.Errorf("expected 'stash:' marker, got %q", got)
+	}
+	if !strings.Contains(got, "1 entry") {
+		t.Errorf("expected '1 entry', got %q", got)
 	}
 }
 

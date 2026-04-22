@@ -47,7 +47,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	rootCmd.AddCommand(cmd)
@@ -211,6 +211,250 @@ func startFetchSpinner(msg string) (stop func()) {
 		close(done)
 		<-stopped
 	}
+}
+
+// fileKindGlyph returns a single-cell geometric glyph + color function for
+// the file at path, classifying it by purpose rather than by git state.
+// Chosen for semantic density: a reviewer can see at a glance whether a
+// dirty entry is production source, test, config, docs, or generated —
+// information the two-letter XY porcelain code cannot express.
+//
+//	●  source code          green
+//	◐  test file            magenta
+//	◆  config               yellow
+//	¶  docs / README        blue
+//	▣  binary / asset       faint
+//	↻  generated / vendored faint
+//	⊙  lockfile             faint
+//	·  fallback / unknown   faint
+//
+// Detection is cheap: pure path matching, no file I/O or git calls.
+// Precedence matches user intuition: a file is a test *before* it is
+// "Go source", a lockfile *before* it is "JSON", a generated path
+// *before* it is classified by extension.
+func fileKindGlyph(path string) (glyph string, paint func(format string, a ...interface{}) string) {
+	base := filepath.Base(path)
+	lower := strings.ToLower(base)
+	dir := strings.ToLower(path)
+
+	// Lockfiles (exact-name match so a pnpm-lock.yaml isn't "YAML config").
+	if lockfileBasenames[base] {
+		return "⊙", color.New(color.Faint).Sprintf
+	}
+	// Generated / vendored paths (prefix match on lowercase path).
+	generatedPrefixes := []string{"dist/", "build/", "vendor/", "node_modules/", ".next/", ".nuxt/", "target/", "out/"}
+	for _, p := range generatedPrefixes {
+		if strings.HasPrefix(dir, p) || strings.Contains(dir, "/"+p) {
+			return "↻", color.New(color.Faint).Sprintf
+		}
+	}
+	if strings.HasSuffix(lower, ".pb.go") || strings.HasSuffix(lower, "_gen.go") ||
+		strings.HasSuffix(lower, ".min.js") || strings.HasSuffix(lower, ".min.css") {
+		return "↻", color.New(color.Faint).Sprintf
+	}
+
+	// Tests (suffix/prefix heuristics across common languages).
+	if strings.HasSuffix(lower, "_test.go") ||
+		strings.HasSuffix(lower, ".test.ts") || strings.HasSuffix(lower, ".test.tsx") ||
+		strings.HasSuffix(lower, ".test.js") || strings.HasSuffix(lower, ".test.jsx") ||
+		strings.HasSuffix(lower, ".spec.ts") || strings.HasSuffix(lower, ".spec.js") ||
+		strings.HasPrefix(lower, "test_") ||
+		strings.HasSuffix(lower, "_spec.rb") ||
+		strings.Contains(dir, "/tests/") || strings.Contains(dir, "/testdata/") {
+		return "◐", color.MagentaString
+	}
+
+	// Docs (README/LICENSE/*.md/.rst/.txt/.adoc).
+	if lower == "readme" || lower == "readme.md" || lower == "license" ||
+		lower == "changelog.md" || lower == "contributing.md" {
+		return "¶", color.BlueString
+	}
+	ext := filepath.Ext(lower)
+	switch ext {
+	case ".md", ".rst", ".txt", ".adoc", ".org":
+		return "¶", color.BlueString
+	}
+
+	// Config (common formats + .env + dotfile configs at any depth).
+	switch ext {
+	case ".yml", ".yaml", ".toml", ".json", ".ini", ".conf", ".cfg", ".env":
+		return "◆", color.YellowString
+	}
+	if strings.HasPrefix(lower, ".env") || lower == "dockerfile" || lower == "makefile" || lower == ".gitignore" || lower == ".editorconfig" {
+		return "◆", color.YellowString
+	}
+
+	// Binary / asset.
+	binaryExts := map[string]bool{
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true, ".ico": true,
+		".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".7z": true, ".rar": true,
+		".mp3": true, ".mp4": true, ".mov": true, ".wav": true, ".woff": true, ".woff2": true, ".ttf": true, ".otf": true,
+		".so": true, ".dylib": true, ".dll": true, ".exe": true, ".a": true, ".o": true,
+	}
+	if binaryExts[ext] {
+		return "▣", color.New(color.Faint).Sprintf
+	}
+
+	// Source code (broad net for known languages).
+	sourceExts := map[string]bool{
+		".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true, ".mjs": true,
+		".py": true, ".rb": true, ".rs": true, ".c": true, ".cc": true, ".cpp": true, ".h": true, ".hpp": true,
+		".java": true, ".kt": true, ".scala": true, ".swift": true, ".m": true, ".mm": true,
+		".php": true, ".lua": true, ".ex": true, ".exs": true, ".erl": true, ".clj": true, ".cljs": true,
+		".hs": true, ".ml": true, ".elm": true, ".zig": true, ".nim": true, ".dart": true,
+		".sh": true, ".bash": true, ".zsh": true, ".fish": true, ".ps1": true,
+		".sql": true, ".graphql": true, ".proto": true,
+	}
+	if sourceExts[ext] {
+		return "●", color.GreenString
+	}
+
+	return "·", color.New(color.Faint).Sprintf
+}
+
+// glyphPrefix returns the colored glyph + trailing space to prepend to an
+// entry line when `--vis glyphs` is enabled; empty string otherwise. Kept
+// as a free function so every render path (flat sections + tree leaf) can
+// call it the same way.
+func glyphPrefix(path string, enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	g, paint := fileKindGlyph(path)
+	return paint(g) + " "
+}
+
+// renderStatusHeatmap produces a 2D density grid: rows = top-level
+// directory (or root), columns = status kind (C/S/M/?). Each cell's
+// glyph encodes the count — `·` for zero, then `░▒▓█` scaled to the
+// grid's peak. Designed to stay useful on 100+ dirty-file states where
+// the flat/tree listing overflows a screen: the user can see in a
+// glance which subtree has the most entries and of which kind.
+//
+// Output (NO_COLOR-safe, single-cell glyphs):
+//
+//	              C    S    M    ?
+//	src/api/      ·    ·    ▓    ░
+//	src/ui/       ·    ▒    ▓▓   ▓
+//	tests/        ·    ·    ▒    ·
+//	node_modules  ·    ·    ·    ▓▓▓
+func renderStatusHeatmap(entries []git.StatusEntry) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	type key struct {
+		dir  string
+		kind int // 0=conflict, 1=staged, 2=modified, 3=untracked
+	}
+	counts := map[key]int{}
+	dirOrder := []string{}
+	dirSeen := map[string]bool{}
+	peak := 0
+
+	classify := func(e git.StatusEntry) int {
+		if e.Kind == git.KindUnmerged {
+			return 0
+		}
+		if e.Kind == git.KindUntracked {
+			return 3
+		}
+		if len(e.XY) >= 2 && e.XY[0] != '.' && e.XY[0] != ' ' && (e.XY[1] == '.' || e.XY[1] == ' ') {
+			return 1
+		}
+		return 2
+	}
+
+	for _, e := range entries {
+		top := topDir(e.Path)
+		if !dirSeen[top] {
+			dirSeen[top] = true
+			dirOrder = append(dirOrder, top)
+		}
+		k := key{dir: top, kind: classify(e)}
+		counts[k]++
+		if counts[k] > peak {
+			peak = counts[k]
+		}
+	}
+
+	// Alphabetical row order for deterministic output; peak-dense dirs
+	// would be a nicer sort, but stable ordering matters more for
+	// regression testing and user muscle memory.
+	sort.Strings(dirOrder)
+
+	// Compute directory name column width (capped to keep layout sane).
+	nameW := 4
+	for _, d := range dirOrder {
+		if len(d) > nameW {
+			nameW = len(d)
+		}
+	}
+	if nameW > 24 {
+		nameW = 24
+	}
+
+	heat := []rune{' ', '░', '▒', '▓', '█'}
+	glyphOf := func(n int) string {
+		if n == 0 {
+			return "·"
+		}
+		if peak <= 1 {
+			return string(heat[4])
+		}
+		idx := 1 + (n-1)*(len(heat)-1)/maxIntStatus(peak-1, 1)
+		if idx >= len(heat) {
+			idx = len(heat) - 1
+		}
+		return string(heat[idx])
+	}
+
+	faint := color.New(color.Faint).SprintFunc()
+	colColors := []func(string, ...interface{}) string{
+		color.RedString, color.GreenString, color.YellowString,
+		color.New(color.Faint).Sprintf,
+	}
+	colLabels := []string{"C", "S", "M", "?"}
+
+	// Header row.
+	var header strings.Builder
+	fmt.Fprintf(&header, "%s %-*s", faint("heatmap:"), nameW, "")
+	for _, lbl := range colLabels {
+		fmt.Fprintf(&header, "  %s", faint(lbl))
+	}
+
+	lines := []string{header.String()}
+	for _, d := range dirOrder {
+		displayName := d
+		if len(displayName) > nameW {
+			displayName = displayName[:nameW-1] + "…"
+		}
+		var row strings.Builder
+		fmt.Fprintf(&row, "%s %-*s", faint(strings.Repeat(" ", len("heatmap:"))), nameW, displayName)
+		for kind := 0; kind < 4; kind++ {
+			n := counts[key{dir: d, kind: kind}]
+			cell := glyphOf(n)
+			if n > 0 {
+				cell = colColors[kind](cell)
+			} else {
+				cell = faint(cell)
+			}
+			fmt.Fprintf(&row, "  %s", cell)
+		}
+		lines = append(lines, row.String())
+	}
+	return lines
+}
+
+// topDir returns the first path segment of p, or "." for root-level
+// files. Used by renderStatusHeatmap to bucket entries into rows.
+func topDir(p string) string {
+	if p == "" {
+		return "."
+	}
+	if i := strings.IndexByte(p, '/'); i > 0 {
+		return p[:i] + "/"
+	}
+	return "."
 }
 
 // sincePushSuffix returns a compact "since push Xh (Nc)" fragment meant
@@ -607,9 +851,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(w, line)
 		}
 	}
+	if statusVisEnabled("heatmap") && len(st.Entries) > 0 {
+		for _, line := range renderStatusHeatmap(st.Entries) {
+			fmt.Fprintln(w, line)
+		}
+	}
 	if statusVisEnabled("tree") && len(st.Entries) > 0 {
 		renderStatusTree(w, st.Entries)
 	} else {
+		useGlyphs := statusVisEnabled("glyphs")
 		if len(grouped.Unmerged) > 0 {
 			fmt.Fprintln(w, color.New(color.FgRed, color.Bold).Sprint("conflicts:"))
 			showAnatomy := statusVisEnabled("conflict")
@@ -620,13 +870,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 						suffix = "  " + faint(s)
 					}
 				}
-				fmt.Fprintf(w, "  %s %s%s\n", color.RedString(e.XY), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), color.RedString(e.XY), e.Path, suffix)
 			}
 		}
 		if len(grouped.Staged) > 0 {
 			fmt.Fprintln(w, color.GreenString("staged:"))
 			for _, e := range grouped.Staged {
-				fmt.Fprintf(w, "  %s %s\n", color.GreenString(e.XY), displayPath(e))
+				fmt.Fprintf(w, "  %s%s %s\n", glyphPrefix(e.Path, useGlyphs), color.GreenString(e.XY), displayPath(e))
 			}
 		}
 		if len(grouped.Modified) > 0 {
@@ -638,10 +888,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			showChurn := statusVisEnabled("churn") && len(st.Entries) <= 50
 			showRisk := statusVisEnabled("risk")
 			for _, e := range modified {
-				parts := []string{fmt.Sprintf("  %s %s", color.YellowString(e.XY), displayPath(e))}
+				parts := []string{fmt.Sprintf("  %s%s %s", glyphPrefix(e.Path, useGlyphs), color.YellowString(e.XY), displayPath(e))}
 				if showRisk {
 					if marker := riskMarker(cmd.Context(), runner, e); marker != "" {
-						parts[0] = fmt.Sprintf("  %s %s %s", color.YellowString(e.XY), marker, displayPath(e))
+						parts[0] = fmt.Sprintf("  %s%s %s %s", glyphPrefix(e.Path, useGlyphs), color.YellowString(e.XY), marker, displayPath(e))
 					}
 				}
 				if showChurn {
@@ -662,7 +912,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 						suffix = "  " + faint("("+age+" old)")
 					}
 				}
-				fmt.Fprintf(w, "  %s %s%s\n", color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
 			}
 		}
 	}
@@ -1025,7 +1275,8 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 			indent = "   "
 		}
 		if child.entry != nil {
-			fmt.Fprintf(w, "%s%s%s  %s\n", prefix, faint(branch), colorXY(child.entry.XY), displayTreeName(child))
+			useGlyphs := statusVisEnabled("glyphs")
+			fmt.Fprintf(w, "%s%s%s%s  %s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), colorXY(child.entry.XY), displayTreeName(child))
 		} else {
 			fmt.Fprintf(w, "%s%s%s/  %s\n", prefix, faint(branch),
 				color.New(color.Bold).Sprint(child.name),
@@ -1140,10 +1391,12 @@ var dimExts = map[string]bool{
 
 // lockfileBasenames maps well-known lock-file basenames so their extension
 // reports as ".lock" regardless of the underlying format (.json/.yaml).
+// go.sum is included because it's functionally a lockfile even though
+// its extension is .sum; go.mod is intentionally omitted (manifest, not lock).
 var lockfileBasenames = map[string]bool{
 	"package-lock.json": true, "yarn.lock": true, "pnpm-lock.yaml": true,
 	"Gemfile.lock": true, "Cargo.lock": true, "composer.lock": true,
-	"poetry.lock": true, "Pipfile.lock": true,
+	"poetry.lock": true, "Pipfile.lock": true, "go.sum": true,
 }
 
 // extOf returns a short human label for a path's "kind": usually `.ts` etc.,

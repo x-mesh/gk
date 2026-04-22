@@ -189,6 +189,81 @@ func TestFetchDebounceMarker(t *testing.T) {
 	}
 }
 
+func TestFileKindGlyph(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	cases := []struct {
+		path      string
+		wantGlyph string
+	}{
+		{"src/main.go", "●"},
+		{"src/main_test.go", "◐"},
+		{"src/foo.ts", "●"},
+		{"src/foo.test.ts", "◐"},
+		{"README.md", "¶"},
+		{"docs/intro.rst", "¶"},
+		{"config.yaml", "◆"},
+		{"settings.toml", "◆"},
+		{".env", "◆"},
+		{"Makefile", "◆"},
+		{"package-lock.json", "⊙"},
+		{"go.sum", "⊙"},
+		{"dist/gen.js", "↻"},
+		{"src/api.pb.go", "↻"},
+		{"node_modules/x/index.js", "↻"},
+		{"assets/logo.png", "▣"},
+		{"unknown.xyz", "·"},
+	}
+	for _, tc := range cases {
+		g, _ := fileKindGlyph(tc.path)
+		if g != tc.wantGlyph {
+			t.Errorf("fileKindGlyph(%q) = %q, want %q", tc.path, g, tc.wantGlyph)
+		}
+	}
+}
+
+func TestTopDir(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"src/api/user.go", "src/"},
+		{"main.go", "."},
+		{"", "."},
+		{"a/b", "a/"},
+	}
+	for _, tc := range cases {
+		if got := topDir(tc.in); got != tc.want {
+			t.Errorf("topDir(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRenderStatusHeatmap(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	entries := []git.StatusEntry{
+		{Path: "src/api/a.go", XY: "M.", Kind: 0},
+		{Path: "src/api/b.go", XY: ".M", Kind: 0},
+		{Path: "src/ui/c.tsx", XY: ".M", Kind: 0},
+		{Path: "README.md", XY: "??", Kind: git.KindUntracked},
+	}
+	lines := renderStatusHeatmap(entries)
+	// Rows bucket by top-level dir: "src/" (3 files) and "." (README) → 2
+	// data rows + 1 header line = 3 total.
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (header + 2 dirs), got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[0], "heatmap:") {
+		t.Errorf("missing header marker: %q", lines[0])
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"C", "S", "M", "?", "src/", "."} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in heatmap output:\n%s", want, joined)
+		}
+	}
+}
+
 func TestSincePushSuffix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
@@ -553,8 +628,9 @@ func TestRenderTypesChip(t *testing.T) {
 
 	t.Run("lockfile collapsed", func(t *testing.T) {
 		got := renderTypesChip(mk("package-lock.json", "go.sum", "Cargo.lock"))
-		if !strings.Contains(got, ".lock×2") {
-			t.Errorf("expected .lock to collapse to ×2 (package-lock + Cargo), got %q", got)
+		// package-lock/go.sum/Cargo all collapse to ".lock".
+		if !strings.Contains(got, ".lock×3") {
+			t.Errorf("expected .lock×3 collapse, got %q", got)
 		}
 	})
 

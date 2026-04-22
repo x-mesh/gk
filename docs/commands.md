@@ -195,7 +195,7 @@ gk st [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`. |
+| `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`, `heatmap`, `glyphs`. |
 | `--no-fetch` | false | Skip the quiet upstream fetch that keeps ↑N ↓N counts current. Also honored via `GK_NO_FETCH=1` or `status.auto_fetch: false`. |
 | `--top N` | 0 (unlimited) | Limit the entry list to the first N paths (alphabetically sorted for stable output); a `… +K more (total · showing top N)` footer surfaces the hidden remainder so the truncation is never silent. Composes with every viz layer. |
 
@@ -227,6 +227,8 @@ Disable globally with `status.auto_fetch: false`, per-invocation with `--no-fetc
 | `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from the repo's mainline. Base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. Suppressed when the current branch *is* the base. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
 | `since-push` | Appends `· since push Xh (Nc)` to the branch line when there are unpushed commits, showing the age of the oldest one and the total unpushed count. Suppressed on up-to-date branches and when no upstream is configured. Cost: one `git rev-list @{u}..HEAD --format=%ct` call (~5 ms). |
 | `stash` | Adds a `  stash: 3 entries · newest 2h · oldest 5d · ⚠ 2 overlap with dirty` line when the stash is non-empty. Overlap warning checks whether the top stash touches any currently-dirty file (the common `git stash pop` footgun). Cost: one `git stash list` call + one `git stash show --name-only stash@{0}` when overlap-check applies (~5–10 ms total). |
+| `heatmap` | Prints a 2-D density grid above the entry list: rows = top-level directory, columns = `C` conflicts / `S` staged / `M` modified / `?` untracked. Each cell glyph scales (` `/`░`/`▒`/`▓`/`█`) with the peak count for the current state. Designed for large-repo triage — at 100+ dirty files the flat tree scrolls off-screen but the heatmap stays a single block. Cost: 0 (pure aggregation over porcelain output). |
+| `glyphs` | Prepends a semantic file-kind column to every entry (flat + tree): `●` source · `◐` test · `◆` config · `¶` docs · `▣` binary/asset · `↻` generated/vendored · `⊙` lockfile · `·` unknown. Kind is derived from path (extension, basename, prefix) — zero I/O, zero git calls. Combines well with the XY porcelain column: kind tells you *what* the file is for, XY tells you *what git thinks of it*. |
 
 ### Examples
 

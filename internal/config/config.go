@@ -23,8 +23,17 @@ type LogConfig struct {
 // StatusConfig controls gk status defaults. Vis is the default set of
 // visualization layers applied when the caller does not pass --vis. Pass
 // --vis none on the CLI to turn them all off for a single invocation.
+//
+// AutoFetch, when true, makes `gk status` attempt a short, quiet fetch of
+// the current branch's upstream before reading the porcelain output so
+// that ↑N ↓N counts reflect the actual remote state. Fetch is strictly
+// bounded (timeout, no prompts, no submodule recursion, no LFS side
+// effects) and silent on failure, falling back to the local cached view.
+// Disable globally with `auto_fetch: false`, per-invocation with
+// `--no-fetch`, or via `GK_NO_FETCH=1`.
 type StatusConfig struct {
-	Vis []string `mapstructure:"vis" yaml:"vis"`
+	Vis       []string `mapstructure:"vis"        yaml:"vis"`
+	AutoFetch bool     `mapstructure:"auto_fetch" yaml:"auto_fetch"`
 }
 
 // UIConfig controls terminal UI behaviour.
@@ -81,7 +90,8 @@ func Defaults() Config {
 			Limit:  20,
 		},
 		Status: StatusConfig{
-			Vis: []string{"gauge", "bar", "progress"},
+			Vis:       []string{"gauge", "bar", "progress"},
+			AutoFetch: true,
 		},
 		UI: UIConfig{
 			Color:  "auto",

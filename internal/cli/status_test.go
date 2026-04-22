@@ -163,6 +163,57 @@ func TestConflictAnatomy(t *testing.T) {
 	}
 }
 
+func TestShouldAutoFetch(t *testing.T) {
+	cfg := &config.Config{Status: config.StatusConfig{AutoFetch: true}}
+
+	t.Run("default on", func(t *testing.T) {
+		t.Setenv("GK_NO_FETCH", "")
+		statusNoFetch = false
+		cmd := &cobra.Command{Use: "status"}
+		if !shouldAutoFetch(cmd, cfg) {
+			t.Error("expected auto-fetch on by default")
+		}
+	})
+
+	t.Run("--no-fetch flag disables", func(t *testing.T) {
+		t.Setenv("GK_NO_FETCH", "")
+		statusNoFetch = true
+		t.Cleanup(func() { statusNoFetch = false })
+		cmd := &cobra.Command{Use: "status"}
+		if shouldAutoFetch(cmd, cfg) {
+			t.Error("--no-fetch should disable")
+		}
+	})
+
+	t.Run("GK_NO_FETCH=1 disables", func(t *testing.T) {
+		t.Setenv("GK_NO_FETCH", "1")
+		statusNoFetch = false
+		cmd := &cobra.Command{Use: "status"}
+		if shouldAutoFetch(cmd, cfg) {
+			t.Error("GK_NO_FETCH=1 should disable")
+		}
+	})
+
+	t.Run("GK_NO_FETCH=0 allows", func(t *testing.T) {
+		t.Setenv("GK_NO_FETCH", "0")
+		statusNoFetch = false
+		cmd := &cobra.Command{Use: "status"}
+		if !shouldAutoFetch(cmd, cfg) {
+			t.Error("GK_NO_FETCH=0 should not disable")
+		}
+	})
+
+	t.Run("config auto_fetch=false disables", func(t *testing.T) {
+		t.Setenv("GK_NO_FETCH", "")
+		statusNoFetch = false
+		off := &config.Config{Status: config.StatusConfig{AutoFetch: false}}
+		cmd := &cobra.Command{Use: "status"}
+		if shouldAutoFetch(cmd, off) {
+			t.Error("config AutoFetch=false should disable")
+		}
+	})
+}
+
 func TestResolveStatusVis(t *testing.T) {
 	cfg := &config.Config{Status: config.StatusConfig{Vis: []string{"gauge", "bar", "progress"}}}
 

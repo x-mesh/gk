@@ -27,6 +27,13 @@ status:
   # with `--vis ...` or disable all layers with `--vis none`.
   vis: [gauge, bar, progress]
 
+  # When true, `gk status` does a short, quiet fetch of the current branch's
+  # upstream before reading porcelain output so that ↑N ↓N counts reflect the
+  # live remote. Fetch is bounded (3s timeout, no prompts, no submodule
+  # recursion, silent on failure) — status always renders even offline.
+  # Disable per-invocation with `--no-fetch` or `GK_NO_FETCH=1`.
+  auto_fetch: true
+
 ui:
   # Color mode: "auto", "always", "never". NO_COLOR env is always respected.
   color: auto

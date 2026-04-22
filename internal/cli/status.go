@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,11 +21,17 @@ import (
 )
 
 var statusVisFlags []string
+var statusNoFetch bool
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
 // and read by statusVisEnabled. A nil value means "no viz" (e.g., --vis none).
 var effectiveVis []string
+
+// statusFetchTimeout is the hard ceiling on the optional upstream fetch at
+// the top of runStatus. On slow or flaky networks, status still returns
+// within this budget by falling back to the locally cached ahead/behind.
+const statusFetchTimeout = 3 * time.Second
 
 func init() {
 	cmd := &cobra.Command{
@@ -34,6 +41,7 @@ func init() {
 		RunE:    runStatus,
 	}
 	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk; pass 'none' to disable the configured default")
+	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -63,6 +71,93 @@ func statusVisEnabled(name string) bool {
 	return false
 }
 
+// shouldAutoFetch folds together every opt-out signal that disables the
+// quiet upstream fetch. Precedence: CLI flag > env var > config.
+func shouldAutoFetch(cmd *cobra.Command, cfg *config.Config) bool {
+	if statusNoFetch {
+		return false
+	}
+	if v := strings.TrimSpace(os.Getenv("GK_NO_FETCH")); v != "" && v != "0" && strings.ToLower(v) != "false" {
+		return false
+	}
+	if cfg == nil {
+		return true
+	}
+	return cfg.Status.AutoFetch
+}
+
+// maybeFetchUpstream does a best-effort, strictly-bounded fetch of the
+// current branch's upstream ref. Scope is intentionally minimal:
+//
+//   - Only the configured upstream remote + branch; no --all, no --tags,
+//     no submodule recursion, no FETCH_HEAD write (so we never contend
+//     with a parallel `gk pull`).
+//   - Hard 3s timeout via context — slow/offline networks never block
+//     status beyond that budget.
+//   - GIT_TERMINAL_PROMPT=0 + SSH_ASKPASS= empty so a stale credential
+//     cannot pop an interactive prompt mid-workflow.
+//   - stderr discarded so "remote: ..." chatter never interleaves with
+//     the status output.
+//   - Returns silently on every error path — status always renders with
+//     whatever is already in refs/remotes/*, even offline.
+func maybeFetchUpstream(parent context.Context, repoDir string) {
+	remote, branch, ok := currentUpstream(parent, repoDir)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, statusFetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git",
+		"-c", "submodule.recurse=false",
+		"fetch",
+		"--quiet",
+		"--no-tags",
+		"--no-write-fetch-head",
+		"--no-recurse-submodules",
+		remote, branch,
+	)
+	cmd.Dir = repoDir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"SSH_ASKPASS=",
+		"GCM_INTERACTIVE=never",
+	)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	_ = cmd.Run()
+}
+
+// currentUpstream resolves `branch.<HEAD>.remote` + `branch.<HEAD>.merge`
+// into (remote, short-branch) so we can fetch exactly one ref. Returns
+// ok=false when there is no upstream configured (detached HEAD, brand-new
+// local branch, etc.) — the caller should skip fetching in that case.
+func currentUpstream(ctx context.Context, repoDir string) (string, string, bool) {
+	run := func(args ...string) (string, error) {
+		c := exec.CommandContext(ctx, "git", args...)
+		c.Dir = repoDir
+		out, err := c.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	head, err := run("symbolic-ref", "--short", "HEAD")
+	if err != nil || head == "" {
+		return "", "", false
+	}
+	remote, err := run("config", "--get", "branch."+head+".remote")
+	if err != nil || remote == "" {
+		return "", "", false
+	}
+	merge, err := run("config", "--get", "branch."+head+".merge")
+	if err != nil || merge == "" {
+		return "", "", false
+	}
+	// merge is "refs/heads/<branch>"; strip the prefix.
+	branch := strings.TrimPrefix(merge, "refs/heads/")
+	if branch == "" {
+		return "", "", false
+	}
+	return remote, branch, true
+}
+
 func runStatus(cmd *cobra.Command, args []string) error {
 	if NoColorFlag() {
 		color.NoColor = true
@@ -70,6 +165,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	cfg, _ := config.Load(cmd.Flags())
 	effectiveVis = resolveStatusVis(cmd, cfg)
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+	if shouldAutoFetch(cmd, cfg) {
+		maybeFetchUpstream(cmd.Context(), RepoFlag())
+	}
 	client := git.NewClient(runner)
 	st, err := client.Status(cmd.Context())
 	if err != nil {

@@ -164,6 +164,19 @@ gk st [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vis <list>` | `gauge,bar,progress` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`. |
+| `--no-fetch` | false | Skip the quiet upstream fetch that keeps ↑N ↓N counts current. Also honored via `GK_NO_FETCH=1` or `status.auto_fetch: false`. |
+
+### Upstream auto-fetch
+
+By default, `gk status` attempts a short fetch of the current branch's upstream ref (the one recorded in `branch.<name>.remote` / `branch.<name>.merge`) before reading porcelain output, so the ↑N ↓N counts reflect the actual remote state rather than the last-cached view. The fetch is intentionally scoped and safe:
+
+- Only the single upstream ref is fetched — no `--all`, no `--tags`, no submodule recursion, no FETCH_HEAD write.
+- A 3-second hard timeout means a slow or flaky remote never blocks status beyond that budget.
+- `GIT_TERMINAL_PROMPT=0` + empty `SSH_ASKPASS` prevent credential prompts from hijacking the terminal.
+- stderr is discarded so `remote: …` chatter does not interleave with status output.
+- On any failure (offline, auth expired, timeout) the fetch is silently dropped and status renders with the local cached view.
+
+Disable globally with `status.auto_fetch: false`, per-invocation with `--no-fetch`, or via `GK_NO_FETCH=1`. When upstream is not configured (detached HEAD or brand-new branch) the fetch is skipped without network activity.
 
 #### `--vis` values
 

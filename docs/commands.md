@@ -91,7 +91,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--calendar` | false | Print a 7-row × N-week heatmap above the log |
 | `--tags-rule` | false | Insert a `──┤ v0.4.0 (3d ago) ├──` rule before each tagged commit |
 | `--impact` | false | Append an eighths-bar scaled to per-commit `+adds -dels` |
-| `--cc` | false | Prepend a Conventional-Commits glyph and append a type tally |
+| `--cc` | false | Prepend a geometric type glyph (`▲` feat · `✕` fix · `↻` refactor · `¶` docs · `·` chore · `◎` test · `↑` perf · `⊙` ci · `▣` build · `←` revert · `✧` style) + inline-color the matching subject prefix + append a `types: feat=4 fix=1` tally |
 | `--safety` | false | Prefix each commit with `◆/◇/✎` (pushed / unpushed / amended) |
 | `--hotspots` | false | Mark commits that touch the repo's top-10 most-churned files |
 | `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |

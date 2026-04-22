@@ -476,28 +476,39 @@ func isHex(s string) bool {
 	return true
 }
 
-// ccPrefix maps a conventional-commits type prefix to a glyph + ASCII
-// fallback. Returns empty glyph for unrecognized subjects.
-var ccTypes = []struct {
-	prefix, glyph, ascii string
-}{
-	{"feat", "✨", "F"},
-	{"fix", "🐛", "X"},
-	{"refactor", "♻", "R"},
-	{"docs", "📝", "D"},
-	{"test", "🧪", "T"},
-	{"chore", "🧹", "C"},
-	{"perf", "🚀", "P"},
-	{"ci", "🤖", "I"},
-	{"build", "🏗", "B"},
-	{"revert", "↩", "V"},
-	{"style", "💄", "Y"},
+// ccType holds the single-cell geometric glyph + color treatment for one
+// Conventional-Commits type. Glyphs are chosen from BMP Unicode shapes that
+// render as single cells in modern monospace fonts and that avoid collision
+// with the `--safety` column's ◆/◇/✎/! markers. The colorize function is
+// applied to the matching portion of the subject line for inline highlight.
+type ccType struct {
+	name, glyph string
+	colorize    func(string, ...interface{}) string
+}
+
+// ccTypes intentionally avoids emoji — gitmoji-style glyphs feel AI-ish,
+// vary in width across fonts, and clash with the project's otherwise
+// technical aesthetic. Each entry pairs a geometric glyph with a subject
+// color so even in --no-color mode the prefix remains legible.
+var ccTypes = []ccType{
+	{"feat", "▲", color.GreenString},
+	{"fix", "✕", color.RedString},
+	{"refactor", "↻", color.YellowString},
+	{"docs", "¶", color.BlueString},
+	{"chore", "·", color.New(color.Faint).Sprintf},
+	{"test", "◎", color.MagentaString},
+	{"perf", "↑", color.CyanString},
+	{"ci", "⊙", color.New(color.Faint).Sprintf},
+	{"build", "▣", color.CyanString},
+	{"revert", "←", color.RedString},
+	{"style", "✧", color.New(color.Faint).Sprintf},
 }
 
 var ccHeaderRE = regexp.MustCompile(`^([a-z]+)(?:\([^)]+\))?!?:\s*`)
 
-// ccClassify returns the type keyword and its glyph for a commit subject, or
-// ("", "") if the subject does not match Conventional Commits.
+// ccClassify returns the type keyword and its glyph for a commit subject,
+// or ("", "") if the subject does not match Conventional Commits. The
+// glyph is what gets prepended to the log row.
 func ccClassify(subject string) (string, string) {
 	m := ccHeaderRE.FindStringSubmatch(subject)
 	if m == nil {
@@ -505,11 +516,28 @@ func ccClassify(subject string) (string, string) {
 	}
 	t := m[1]
 	for _, entry := range ccTypes {
-		if entry.prefix == t {
+		if entry.name == t {
 			return t, entry.glyph
 		}
 	}
 	return t, "◦"
+}
+
+// ccColorize returns the subject with its leading `type` token inline-
+// highlighted in the type's signature color. Called alongside the glyph
+// prefix so the type is visible both from the margin and within the line
+// (and readable when color is available — the plain subject is unchanged
+// under `--no-color` because the color funcs no-op when NoColor is set).
+func ccColorize(subject, typeName string) string {
+	if typeName == "" || !strings.HasPrefix(subject, typeName) {
+		return subject
+	}
+	for _, entry := range ccTypes {
+		if entry.name == typeName {
+			return entry.colorize(typeName) + subject[len(typeName):]
+		}
+	}
+	return subject
 }
 
 // renderImpactBar returns an eighths-bar whose width scales with |adds+dels|
@@ -744,10 +772,12 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			prefix.WriteRune(rebaseSafety(ctx, runner, r.sha, pushed, amended))
 			prefix.WriteByte(' ')
 		}
+		subject := r.subject
 		if v.cc {
 			if ccType, glyph := ccClassify(r.subject); ccType != "" {
 				typeCounts[ccType]++
 				prefix.WriteString(glyph + " ")
+				subject = ccColorize(r.subject, ccType)
 			} else {
 				prefix.WriteString("  ")
 			}
@@ -757,7 +787,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			color.YellowString(r.short),
 			color.GreenString(r.relDate),
 			color.New(color.FgBlue, color.Bold).Sprint(r.author),
-			r.subject,
+			subject,
 		)
 		n := numstats[r.sha]
 		if v.hotspots {

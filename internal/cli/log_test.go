@@ -44,10 +44,11 @@ func TestCcClassify(t *testing.T) {
 		wantType  string
 		wantGlyph string
 	}{
-		{"feat: x", "feat", "✨"},
-		{"fix(auth): y", "fix", "🐛"},
-		{"refactor!: z", "refactor", "♻"},
-		{"chore(release): v0.4.0", "chore", "🧹"},
+		{"feat: x", "feat", "▲"},
+		{"fix(auth): y", "fix", "✕"},
+		{"refactor!: z", "refactor", "↻"},
+		{"chore(release): v0.4.0", "chore", "·"},
+		{"docs: update readme", "docs", "¶"},
 		{"random subject with no prefix", "", ""},
 		{"wip hack", "", ""},
 	}
@@ -55,6 +56,27 @@ func TestCcClassify(t *testing.T) {
 		gotT, gotG := ccClassify(tc.subject)
 		if gotT != tc.wantType || gotG != tc.wantGlyph {
 			t.Errorf("ccClassify(%q) = (%q,%q), want (%q,%q)", tc.subject, gotT, gotG, tc.wantType, tc.wantGlyph)
+		}
+	}
+}
+
+func TestCcColorize(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	// With NoColor, the colorize helper still returns the type portion
+	// verbatim, so we can assert the output composition deterministically.
+	cases := []struct {
+		subject, typeName, want string
+	}{
+		{"feat(status): add", "feat", "feat(status): add"},
+		{"fix: bug", "fix", "fix: bug"},
+		{"not a match", "feat", "not a match"},
+		{"feat: x", "", "feat: x"},
+	}
+	for _, tc := range cases {
+		if got := ccColorize(tc.subject, tc.typeName); got != tc.want {
+			t.Errorf("ccColorize(%q, %q) = %q, want %q", tc.subject, tc.typeName, got, tc.want)
 		}
 	}
 }

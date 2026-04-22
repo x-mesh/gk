@@ -61,9 +61,9 @@ func TestBranchList_Stale(t *testing.T) {
 	// With stale=0, all branches should be included.
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix) refs/heads": {
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				// two branches: main (unix=0, very old) and feature (unix=9999999999, far future)
-				Stdout: "main\x00\x001000000000\nfeature\x00\x009999999999\n",
+				Stdout: "main\x00\x001000000000\x00\nfeature\x00\x009999999999\x00\n",
 			},
 		},
 	}
@@ -86,6 +86,37 @@ func TestBranchList_Stale(t *testing.T) {
 	}
 	if !names["feature"] {
 		t.Error("expected feature with stale=0")
+	}
+}
+
+// TestListLocalBranches_GoneFlag parses the upstream:track "[gone]" marker.
+func TestListLocalBranches_GoneFlag(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: "main\x00origin/main\x001700000000\x00\n" +
+					"stale\x00origin/stale\x001700000000\x00[gone]\n" +
+					"noupstream\x00\x001700000000\x00\n",
+			},
+		},
+	}
+
+	branches, err := listLocalBranches(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("listLocalBranches: %v", err)
+	}
+	byName := map[string]branchInfo{}
+	for _, b := range branches {
+		byName[b.Name] = b
+	}
+	if byName["main"].Gone {
+		t.Error("main should not be gone")
+	}
+	if !byName["stale"].Gone {
+		t.Error("stale should be gone")
+	}
+	if byName["noupstream"].Gone {
+		t.Error("no-upstream branch should not be marked gone")
 	}
 }
 

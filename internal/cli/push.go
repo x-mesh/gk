@@ -92,10 +92,14 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Actual push
+	// Actual push — auto-set upstream when the branch has none yet.
+	hasUpstream := branchHasUpstream(ctx, runner, branch)
 	gitArgs := []string{"push"}
 	if force {
 		gitArgs = append(gitArgs, "--force-with-lease")
+	}
+	if !hasUpstream {
+		gitArgs = append(gitArgs, "--set-upstream")
 	}
 	gitArgs = append(gitArgs, remote, branch)
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
@@ -106,6 +110,13 @@ func runPush(cmd *cobra.Command, args []string) error {
 	fmt.Fprint(cmd.OutOrStdout(), string(stdout))
 	fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
 	return nil
+}
+
+// branchHasUpstream reports whether <branch>@{upstream} resolves.
+// Uses rev-parse; returns false if branch has no configured upstream.
+func branchHasUpstream(ctx context.Context, r git.Runner, branch string) bool {
+	_, _, err := r.Run(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+	return err == nil
 }
 
 // isProtected reports whether branch is in the protected list.

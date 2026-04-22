@@ -38,6 +38,14 @@ go install github.com/x-mesh/gk/cmd/gk@latest
 
 Requires **git ≥ 2.38** (for `merge-tree --write-tree`; ≥ 2.40 preferred so `gk precheck` can enumerate conflicted paths by name). Run `gk doctor` after install to verify.
 
+### oh-my-zsh users: alias conflict
+
+oh-my-zsh's `git` plugin defines `gk` as a `gitk` launcher, which shadows the `gk` binary. Drop the conflicting aliases in your `~/.zshrc` after oh-my-zsh loads:
+
+```zsh
+unalias gk gke 2>/dev/null
+```
+
 ## Quickstart
 
 ```bash
@@ -75,10 +83,11 @@ gk preflight               # run the configured check sequence
 ### Branches
 | Command | Alias | Description |
 |---|---|---|
-| `gk branch list` | | List branches with `--stale <N>` / `--merged` filters |
-| `gk branch clean` | | Delete merged branches while respecting protected list |
+| `gk branch list` | | List branches with `--stale <N>` / `--merged` / `--unmerged` / `--gone` filters |
+| `gk branch clean` | | Delete merged branches while respecting protected list; `--gone` targets branches whose upstream was deleted |
 | `gk branch pick` | | Interactive branch picker with non-TTY fallback |
 | `gk branch-check` | | Validate current branch name against configured patterns |
+| `gk switch [name]` | `gk sw` | Switch branches; `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev |
 
 ### Safety
 | Command | Description |
@@ -92,10 +101,13 @@ gk preflight               # run the configured check sequence
 | Command | Alias | Description |
 |---|---|---|
 | `gk undo` | | Reflog-based HEAD restore; leaves backup ref at `refs/gk/undo-backup/...` |
+| `gk reset` | | Hard-reset current branch to its upstream; `--to-remote` uses `<remote>/<current>` |
+| `gk wipe` | | `reset --hard` + `clean -fd`; backs up pre-wipe HEAD at `refs/gk/wipe-backup/...` |
 | `gk restore --lost` | | Surface dangling commits and blobs with cherry-pick hints |
 | `gk edit-conflict` | `gk ec` | Open `$EDITOR` at the first `<<<<<<<` marker with editor-aware cursor jump |
 | `gk continue` | | Continue interrupted rebase/merge/cherry-pick |
 | `gk abort` | | Abort interrupted rebase/merge/cherry-pick |
+| `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
 
 ### Onboarding / config
 | Command | Description |

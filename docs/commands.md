@@ -212,7 +212,11 @@ gk branch list [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--merged` | false | Only show branches merged into base |
+| `--unmerged` | false | Only show branches NOT merged into base (mirror of `--merged`) |
+| `--gone` | false | Only show branches whose upstream has been deleted on the remote |
 | `-s, --stale <N>` | 0 (all) | Only show branches with last commit older than N days |
+
+`--merged` and `--unmerged` are mutually exclusive.
 
 #### Examples
 
@@ -226,6 +230,12 @@ gk branch list --stale 30
 # List branches already merged into base
 gk branch list --merged
 
+# List branches NOT merged into base
+gk branch list --unmerged
+
+# List branches whose remote was deleted (typical after a PR merge + branch delete)
+gk branch list --gone
+
 # Combine filters
 gk branch list --stale 14 --merged
 ```
@@ -234,7 +244,7 @@ gk branch list --stale 14 --merged
 
 ### gk branch clean
 
-Delete merged local branches, skipping protected branches.
+Delete local branches, skipping protected branches.
 
 #### Synopsis
 
@@ -248,15 +258,19 @@ gk branch clean [flags]
 |------|---------|-------------|
 | `--dry-run` | false | Show what would be deleted without deleting |
 | `--force` | false | Use `git branch -D` (force delete) instead of `-d` |
+| `--gone` | false | Target branches whose upstream is gone instead of merged ones |
 
 #### Examples
 
 ```bash
-# Preview which branches would be deleted
+# Preview which merged branches would be deleted
 gk branch clean --dry-run
 
 # Delete merged branches
 gk branch clean
+
+# Clean up branches whose remote was deleted (after PR merges)
+gk branch clean --gone
 
 # Force-delete branches (even if not fully merged)
 gk branch clean --force
@@ -267,6 +281,7 @@ gk branch clean --force
 - Protected branches (`main`, `master`, `develop` by default) are never deleted.
 - Configure the protected list via `branch.protected` in your config file.
 - The currently checked-out branch is always skipped.
+- `--gone` uses the `%(upstream:track)` field of `git for-each-ref` to identify branches marked `[gone]` — typically the ones whose PR was merged and the remote branch deleted.
 
 ---
 
@@ -296,6 +311,220 @@ gk branch pick
 - Presents a filterable list of local branches using an interactive TUI prompt.
 - Falls back to a simple numbered list when running in a non-TTY environment.
 - Use `--dry-run` to see which branch would be checked out without switching.
+
+---
+
+## gk switch
+
+Switch to another local branch. When no name is given, opens an interactive picker.
+
+### Synopsis
+
+```
+gk switch [branch] [flags]
+```
+
+Alias: `gk sw`.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-c, --create` | false | Create a new branch with the given name before switching (`git switch -c`) |
+| `-f, --force` | false | Discard local changes (`git switch --discard-changes`) |
+| `--detach` | false | Detach HEAD at the ref instead of switching to a branch |
+| `-m, --main` | false | Switch to the detected main/master branch — no branch argument needed |
+| `-d, --develop` | false | Switch to the `develop` / `dev` branch — no branch argument needed |
+
+`--main` and `--develop` are mutually exclusive and incompatible with a positional `branch` argument or `--create`.
+
+### Keyword resolution
+
+`--main` resolves in this order:
+
+1. `client.DefaultBranch(remote)` (honors `refs/remotes/<remote>/HEAD`, then looks for `develop`/`main`/`master`)
+2. Local `main`
+3. Local `master`
+
+`--develop` resolves in this order:
+
+1. Local `develop`
+2. Local `dev`
+
+Both exit with an error when no candidate exists in the repo.
+
+### Examples
+
+```bash
+# Interactive picker (recent branches first)
+gk switch
+
+# Direct switch
+gk switch feat/login
+
+# Create and switch in one step
+gk switch -c feat/billing
+
+# Jump to the canonical main branch (works for both main- and master-based repos)
+gk switch -m
+
+# Jump to develop (falls back to 'dev')
+gk switch -d
+```
+
+---
+
+## gk reset
+
+Fetch the current branch's upstream and hard-reset the working tree to it. **Destructive.**
+
+### Synopsis
+
+```
+gk reset [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--to <ref>` | upstream | Override target ref (e.g. `origin/main`); default uses the configured upstream |
+| `--to-remote` | false | Reset to `<remote>/<current-branch>` regardless of configured upstream |
+| `--remote <name>` | config.remote / `origin` | Remote to fetch from |
+| `-y, --yes` | false | Skip confirmation prompt (required for non-TTY automation) |
+| `--clean` | false | Also run `git clean -fd` to remove untracked files |
+| `--dry-run` | false | Print what would happen without fetching or resetting |
+
+`--to` and `--to-remote` are mutually exclusive.
+
+### Examples
+
+```bash
+# Reset to the branch's tracked upstream (prompts for confirmation)
+gk reset
+
+# Preview without touching anything
+gk reset --dry-run
+
+# Reset to origin/<current> even if no upstream is configured
+gk reset --to-remote --yes
+
+# Reset to an explicit ref
+gk reset --to origin/main --yes
+
+# Reset and wipe untracked files in one step
+gk reset --yes --clean
+```
+
+### Notes
+
+- Requires either a TTY confirmation or `--yes`; non-TTY callers without `--yes` fail fast.
+- Runs `git fetch <remote> <ref>` before the reset so the target is up to date.
+- This command only rewrites HEAD — it does NOT create a backup ref. Use `gk undo` afterwards if you need to recover; reflog still has the pre-reset HEAD.
+
+---
+
+## gk wipe
+
+Discard ALL local changes AND untracked files. **Destructive — stronger than `gk reset`.**
+
+### Synopsis
+
+```
+gk wipe [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-y, --yes` | false | Skip confirmation prompt |
+| `--dry-run` | false | Print what would happen without wiping |
+| `--include-ignored` | false | Also remove ignored files (`git clean -fdx` instead of `-fd`) |
+
+### What it does
+
+1. Writes a backup ref at `refs/gk/wipe-backup/<branch>/<unix>` pointing at the pre-wipe HEAD.
+2. Runs `git reset --hard HEAD`.
+3. Runs `git clean -fd` (or `-fdx` with `--include-ignored`).
+
+Local commits remain recoverable via the backup ref (`git reset --hard refs/gk/wipe-backup/<branch>/<unix>`). Untracked files are **not** recoverable — they bypass git entirely.
+
+### Examples
+
+```bash
+# Preview
+gk wipe --dry-run
+
+# Non-interactive wipe
+gk wipe --yes
+
+# Also remove .gitignore'd files (e.g. build artefacts in node_modules)
+gk wipe --yes --include-ignored
+```
+
+### Notes
+
+- Use `gk reset` if you only need to rewind HEAD and keep untracked files.
+- The backup ref survives `git gc` as long as it is referenced; delete it with `git update-ref -d refs/gk/wipe-backup/<branch>/<unix>` once you no longer need it.
+
+---
+
+## gk wip
+
+Create a throwaway `--wip-- [skip ci]` commit so you can switch contexts without losing work.
+
+### Synopsis
+
+```
+gk wip
+```
+
+### What it does
+
+1. `git add -A` — stages every tracked change, including deletions.
+2. `git commit --no-verify --no-gpg-sign -m "--wip-- [skip ci]"` — skips hooks and signing for speed.
+
+If the working tree is clean (nothing to commit), it reports `nothing to wip — working tree is clean` and exits 0.
+
+### Examples
+
+```bash
+gk wip                # stash-like save without using the stash stack
+git switch other-branch
+# ... do something else, then come back ...
+gk switch -
+gk unwip              # restore the working tree
+```
+
+---
+
+## gk unwip
+
+Undo a WIP commit created by `gk wip`.
+
+### Synopsis
+
+```
+gk unwip
+```
+
+### What it does
+
+1. Reads HEAD's subject via `git log -1 --format=%s`.
+2. Refuses unless the subject starts with `--wip--`.
+3. Runs `git reset HEAD~1` so the committed changes return to the working tree.
+
+### Examples
+
+```bash
+gk unwip
+```
+
+### Notes
+
+- The refusal is intentional — `unwip` will never rewind a non-wip commit, so it is safe to run on top of a branch where you're not sure what's at HEAD.
+- Pairs with `gk wip`; these commands are not intended for stash-like stacking. Use `git stash` if you need a stack.
 
 ---
 

@@ -90,14 +90,54 @@ Update the compare links at the bottom:
 
 (For the very first release: `[${NEW_VERSION}]: https://github.com/x-mesh/gk/releases/tag/v${NEW_VERSION}`)
 
-If `## [Unreleased]` is empty (no entries since the last release), ask the user to confirm — an empty release is usually a mistake.
+If `## [Unreleased]` is empty (no entries since the last release), run the diff between `${LAST_TAG}..HEAD` to see if user-visible changes slipped in. Do **not** auto-generate CHANGELOG entries from commits — ask the user to write them. Releases without a CHANGELOG are a UX regression. If the diff is truly internal (CI, tests, tooling), confirm with the user and proceed.
 
 Today's date: use `date +%Y-%m-%d` in the running environment.
+
+## Step 3b — Documentation sync verification
+
+Every new user-facing command or flag that ships needs to appear in both `README.md` (Commands table) and `docs/commands.md` (reference section). After the CHANGELOG is promoted to the new version section, verify docs match reality.
+
+Extract command/flag tokens from the just-promoted version block:
+
+```bash
+# Everything between the new version header and the next version header.
+NEW_SECTION=$(awk "/^## \\[${NEW_VERSION}\\]/{flag=1;next}/^## \\[/{flag=0}flag" CHANGELOG.md)
+
+# Unique `gk <cmd>` and `gk <cmd> --flag` mentions.
+NEW_CMDS=$(echo "$NEW_SECTION" | grep -oE '`gk [a-z][a-z-]+( --[a-z-]+)?`' | sort -u)
+```
+
+For each token, check:
+
+1. **README.md** must contain the command or flag somewhere in the Commands tables. If missing, the README will not advertise what the release ships.
+2. **docs/commands.md** must either have a dedicated `## gk <cmd>` section or, for flags, mention the flag under the parent command's section.
+
+If anything is missing, list the gaps and use `AskUserQuestion` to offer:
+
+- **Update docs now** (recommended) — pause the release, wait for the user to update, then re-run `/release`.
+- **Proceed anyway** — append a `- TODO: document <token>` line under `## [Unreleased]` (not the version just promoted) so the gap is tracked, then continue.
+
+**Never auto-generate documentation prose.** A command's description belongs to a human editor.
+
+### Optional sanity check — binary vs docs drift
+
+```bash
+go run ./cmd/gk --help | awk '/Available Commands:/,/Flags:/' \
+  | awk 'NR>1 && $1!="Flags:" && $1!="help" && $1!="completion" && NF>0 {print $1}' \
+  | sort -u > /tmp/gk-help.txt
+grep -oE '^## gk [a-z-]+' docs/commands.md | awk '{print $3}' | sort -u > /tmp/gk-docs.txt
+comm -23 /tmp/gk-help.txt /tmp/gk-docs.txt
+```
+
+Lines in `comm` output are commands exposed by the binary but missing from `docs/commands.md`. Treat as a warning — older commands may already be undocumented; call out only newly added ones.
 
 ## Step 4 — Commit + push + tag
 
 ```bash
 git add CHANGELOG.md
+# Include any docs/README updates made during Step 3b.
+git add README.md docs/
 git commit -m "chore(release): v${NEW_VERSION}"
 git push origin main
 

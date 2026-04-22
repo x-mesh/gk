@@ -33,6 +33,25 @@ func buildPushCmd() *cobra.Command {
 // Unit tests
 // ---------------------------------------------------------------------------
 
+func TestBranchHasUpstream(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --abbrev-ref --symbolic-full-name feature@{upstream}": {
+				Stdout: "origin/feature\n",
+			},
+			"rev-parse --abbrev-ref --symbolic-full-name nope@{upstream}": {
+				ExitCode: 128, Stderr: "fatal: no upstream configured",
+			},
+		},
+	}
+	if !branchHasUpstream(context.Background(), fake, "feature") {
+		t.Error("expected feature to have upstream")
+	}
+	if branchHasUpstream(context.Background(), fake, "nope") {
+		t.Error("expected nope to NOT have upstream")
+	}
+}
+
 func TestIsProtected(t *testing.T) {
 	tests := []struct {
 		branch    string

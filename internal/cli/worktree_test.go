@@ -250,6 +250,64 @@ func TestResolveWorktreePath_NoToplevelFallsBack(t *testing.T) {
 	}
 }
 
+func TestBranchExists(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"show-ref --verify --quiet refs/heads/main":    {}, // exit 0 → exists
+			"show-ref --verify --quiet refs/heads/missing": {ExitCode: 1},
+		},
+	}
+	if !branchExists(context.Background(), fake, "main") {
+		t.Error("branchExists(main) = false, want true")
+	}
+	if branchExists(context.Background(), fake, "missing") {
+		t.Error("branchExists(missing) = true, want false")
+	}
+}
+
+func TestBranchInUse(t *testing.T) {
+	porcelain := "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /tmp/other\nHEAD def\nbranch refs/heads/feat\n"
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"worktree list --porcelain": {Stdout: porcelain},
+		},
+	}
+	if !branchInUse(context.Background(), fake, "feat") {
+		t.Error("branchInUse(feat) = false, want true")
+	}
+	if branchInUse(context.Background(), fake, "unused") {
+		t.Error("branchInUse(unused) = true, want false")
+	}
+}
+
+func TestNonEmptyDirExists(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent")
+	if got, err := nonEmptyDirExists(absent); err != nil || got {
+		t.Errorf("absent: got=%v err=%v, want (false, nil)", got, err)
+	}
+
+	emptyDir := t.TempDir()
+	if got, err := nonEmptyDirExists(emptyDir); err != nil || got {
+		t.Errorf("empty dir: got=%v err=%v, want (false, nil)", got, err)
+	}
+
+	nonEmpty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nonEmpty, "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nonEmptyDirExists(nonEmpty); err != nil || !got {
+		t.Errorf("non-empty dir: got=%v err=%v, want (true, nil)", got, err)
+	}
+
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nonEmptyDirExists(file); err != nil || !got {
+		t.Errorf("file path: got=%v err=%v, want (true, nil)", got, err)
+	}
+}
+
 func TestWorktreeTUI_NonTTYFallsBackToHelp(t *testing.T) {
 	// When stdin/stdout is not a TTY (as in `go test`), bare `gk wt`
 	// must not attempt to draw an interactive UI. Instead it prints

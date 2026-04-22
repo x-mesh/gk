@@ -563,6 +563,23 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		}
 	}
 
+	// Pre-flight: refuse up-front when the target path is non-empty or
+	// the requested new branch already exists. Without this, a
+	// `git worktree add -b <br> <path>` that aborts at the path-create
+	// step still creates `<br>` and leaves it orphaned — next retry
+	// fails with "branch already exists" and the user sees a half-
+	// completed state.
+	if exists, err := nonEmptyDirExists(resolved); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("target path already exists and is non-empty: %s", resolved)
+	}
+	if createBranch {
+		if branchExists(ctx, runner, branchName) {
+			return fmt.Errorf("branch %q already exists — re-run and choose 'check out existing' instead of 'create new branch'", branchName)
+		}
+	}
+
 	gitArgs := []string{"worktree", "add"}
 	if createBranch {
 		gitArgs = append(gitArgs, "-b", branchName, resolved)
@@ -573,10 +590,65 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		gitArgs = append(gitArgs, resolved, branchName)
 	}
 	if _, gitErr, err := runner.Run(ctx, gitArgs...); err != nil {
+		// Defensive rollback: even with the pre-flight above, a race or
+		// an unexpected git failure can still leave a new branch behind.
+		// If we asked git to create the branch and it was left dangling
+		// (no worktree entry points at it), remove it so the user's
+		// next attempt is not blocked by a phantom branch.
+		if createBranch && branchExists(ctx, runner, branchName) && !branchInUse(ctx, runner, branchName) {
+			_, _, _ = runner.Run(ctx, "branch", "-D", branchName)
+		}
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(gitErr)), err)
 	}
 	// Surface the resolved path on stderr so the user sees where it
 	// landed without polluting stdout.
 	fmt.Fprintln(os.Stderr, "added worktree at", resolved)
 	return nil
+}
+
+// nonEmptyDirExists reports whether path is a directory with at least
+// one entry. Returns false when the path does not exist. Used to avoid
+// the confusing half-succeeded worktree add — git creates the branch
+// before checking the destination, so colliding paths orphan branches.
+func nonEmptyDirExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return true, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	return len(entries) > 0, nil
+}
+
+// branchExists reports whether refs/heads/<name> resolves. Uses
+// show-ref --verify --quiet so the signal is a pure exit code without
+// stderr noise that would otherwise leak into the TUI output.
+func branchExists(ctx context.Context, runner git.Runner, name string) bool {
+	_, _, err := runner.Run(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	return err == nil
+}
+
+// branchInUse reports whether any existing worktree currently has the
+// named branch checked out. This guards the rollback step: if a parallel
+// invocation already owns the branch, we must not delete it.
+func branchInUse(ctx context.Context, runner git.Runner, name string) bool {
+	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	needle := "branch refs/heads/" + name
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == needle {
+			return true
+		}
+	}
+	return false
 }

@@ -163,6 +163,34 @@ func TestConflictAnatomy(t *testing.T) {
 	}
 }
 
+func TestFetchDebounceMarker(t *testing.T) {
+	dir := t.TempDir()
+	gkDir := filepath.Join(dir, "gk")
+	marker := fetchMarkerPath(dir, "origin")
+
+	if recentlyFetched(dir, "origin") {
+		t.Fatal("no marker yet → recentlyFetched should be false")
+	}
+
+	// Mark a fresh fetch. Verify the debounce window kicks in.
+	markFetch(dir, "origin")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("markFetch did not create marker under %s: %v", gkDir, err)
+	}
+	if !recentlyFetched(dir, "origin") {
+		t.Error("just-written marker should trip the debounce")
+	}
+
+	// Backdate the marker past the window — now it should be stale.
+	old := time.Now().Add(-statusFetchDebounce - time.Second)
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if recentlyFetched(dir, "origin") {
+		t.Error("marker older than statusFetchDebounce should not trip")
+	}
+}
+
 func TestShouldAutoFetch(t *testing.T) {
 	cfg := &config.Config{Status: config.StatusConfig{AutoFetch: true}}
 

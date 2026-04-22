@@ -33,6 +33,12 @@ var effectiveVis []string
 // within this budget by falling back to the locally cached ahead/behind.
 const statusFetchTimeout = 3 * time.Second
 
+// statusFetchDebounce skips the auto-fetch when we already fetched within
+// this window. The TTL is deliberately short — long enough to absorb a
+// burst of `st` in the same second, short enough that a user actively
+// watching for remote changes still sees them promptly.
+const statusFetchDebounce = 3 * time.Second
+
 func init() {
 	cmd := &cobra.Command{
 		Use:     "status",
@@ -98,6 +104,9 @@ func shouldAutoFetch(cmd *cobra.Command, cfg *config.Config) bool {
 //     cannot pop an interactive prompt mid-workflow.
 //   - stderr discarded so "remote: ..." chatter never interleaves with
 //     the status output.
+//   - Debounced: a marker under $GIT_COMMON_DIR/gk/ records the last
+//     successful fetch per-remote so a burst of `st` calls only fires
+//     the network once.
 //   - Returns silently on every error path — status always renders with
 //     whatever is already in refs/remotes/*, even offline.
 func maybeFetchUpstream(parent context.Context, repoDir string) {
@@ -105,6 +114,12 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 	if !ok {
 		return
 	}
+
+	gitDir := gitCommonDir(parent, repoDir)
+	if gitDir != "" && recentlyFetched(gitDir, remote) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(parent, statusFetchTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git",
@@ -124,38 +139,99 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 	)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		// Fetch failed (offline, auth, timeout). Touching the marker
+		// on failure would mask a transient issue — leave the marker
+		// alone so the next `st` retries immediately.
+		return
+	}
+	if gitDir != "" {
+		markFetch(gitDir, remote)
+	}
 }
 
-// currentUpstream resolves `branch.<HEAD>.remote` + `branch.<HEAD>.merge`
-// into (remote, short-branch) so we can fetch exactly one ref. Returns
-// ok=false when there is no upstream configured (detached HEAD, brand-new
-// local branch, etc.) — the caller should skip fetching in that case.
+// currentUpstream resolves the current branch's upstream into
+// (remote, short-branch) with a single `git rev-parse --abbrev-ref HEAD@{u}`
+// call. Previously this cost three separate git invocations; one process
+// spawn is ~5–15 ms on macOS so collapsing them shaves off a measurable
+// fraction of the pre-fetch overhead.
+//
+// Returns ok=false when there is no upstream configured (detached HEAD,
+// brand-new local branch, etc.) — the caller should skip fetching.
 func currentUpstream(ctx context.Context, repoDir string) (string, string, bool) {
-	run := func(args ...string) (string, error) {
-		c := exec.CommandContext(ctx, "git", args...)
-		c.Dir = repoDir
-		out, err := c.Output()
-		return strings.TrimSpace(string(out)), err
-	}
-	head, err := run("symbolic-ref", "--short", "HEAD")
-	if err != nil || head == "" {
+	c := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD@{u}")
+	c.Dir = repoDir
+	// Suppress the "no upstream" error message; we detect via exit code.
+	c.Stderr = io.Discard
+	out, err := c.Output()
+	if err != nil {
 		return "", "", false
 	}
-	remote, err := run("config", "--get", "branch."+head+".remote")
-	if err != nil || remote == "" {
+	full := strings.TrimSpace(string(out))
+	if full == "" {
 		return "", "", false
 	}
-	merge, err := run("config", "--get", "branch."+head+".merge")
-	if err != nil || merge == "" {
+	// Upstream is "<remote>/<branch>"; branches may contain "/" so split
+	// on the first separator only.
+	parts := strings.SplitN(full, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
-	// merge is "refs/heads/<branch>"; strip the prefix.
-	branch := strings.TrimPrefix(merge, "refs/heads/")
-	if branch == "" {
-		return "", "", false
+	return parts[0], parts[1], true
+}
+
+// gitCommonDir returns `git rev-parse --git-common-dir`, resolved to an
+// absolute path. Worktrees share this directory so the debounce marker
+// is effective across them. Returns "" on any failure.
+func gitCommonDir(ctx context.Context, repoDir string) string {
+	c := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	c.Dir = repoDir
+	out, err := c.Output()
+	if err != nil {
+		return ""
 	}
-	return remote, branch, true
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repoDir, dir)
+	}
+	return dir
+}
+
+// fetchMarkerPath returns the per-remote marker file used to debounce
+// maybeFetchUpstream. Remote names cannot contain path separators by git
+// convention so the name is safe to use verbatim.
+func fetchMarkerPath(gitDir, remote string) string {
+	return filepath.Join(gitDir, "gk", "last-fetch-"+remote)
+}
+
+// recentlyFetched reports whether the marker for this remote was touched
+// within statusFetchDebounce. Missing marker → not recent → do fetch.
+func recentlyFetched(gitDir, remote string) bool {
+	info, err := os.Stat(fetchMarkerPath(gitDir, remote))
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < statusFetchDebounce
+}
+
+// markFetch touches the per-remote marker so subsequent calls within the
+// debounce window skip the network round-trip. Failures are swallowed —
+// the worst case is that we fetch again on the next invocation.
+func markFetch(gitDir, remote string) {
+	path := fetchMarkerPath(gitDir, remote)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return
+	}
+	_ = f.Close()
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {

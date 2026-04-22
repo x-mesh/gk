@@ -528,6 +528,64 @@ gk unwip
 
 ---
 
+## gk worktree
+
+Worktree management helpers. Wraps `git worktree` with an opinionated JSON output.
+
+### Synopsis
+
+```
+gk worktree <subcommand> [flags]
+```
+
+Alias: `gk wt`.
+
+### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `list` | List worktrees (table or `--json`) |
+| `add <path> [branch]` | Create a worktree at `<path>` checking out `[branch]` (or HEAD) |
+| `remove <path>` | Remove a worktree |
+| `prune` | Prune worktree administrative records |
+
+### gk worktree add
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-b, --new` | false | Create a new branch named `[branch]` at `--from` |
+| `--from <ref>` | HEAD | Base ref for the new branch |
+| `--detach` | false | Detach HEAD in the worktree instead of tracking a branch |
+
+### gk worktree remove
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f, --force` | false | Force remove even when the worktree is dirty or locked |
+
+### Examples
+
+```bash
+# JSON list for scripts
+gk worktree list --json
+
+# Add a worktree that tracks an existing branch
+gk worktree add ../gk-feat feat/login
+
+# Create a new branch in a new worktree off HEAD
+gk worktree add -b ../gk-review feat/review
+
+# Create a new branch off a specific base
+gk worktree add -b ../gk-hotfix hotfix/1.2.3 --from origin/main
+
+# Remove cleanly
+gk worktree remove ../gk-feat
+```
+
+---
+
 ## gk continue
 
 Continue the current rebase, merge, or cherry-pick after resolving conflicts.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-23
+
 ### Added
 
 - **`gk timemachine`** — new command tree that surfaces every recoverable HEAD state (reflog + `refs/gk/*-backup/`) and lets you restore any of them safely.
@@ -207,7 +209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/x-mesh/gk/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/x-mesh/gk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/x-mesh/gk/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/x-mesh/gk/compare/v0.3.0...v0.4.0

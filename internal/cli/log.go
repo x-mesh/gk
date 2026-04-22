@@ -798,7 +798,39 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	}
 
 	w := cmd.OutOrStdout()
+
+	// Pre-scan: compute the CC type tally BEFORE rendering commits so it
+	// can anchor the top of the output as a context header. Printing it
+	// at the bottom visually parented it to the last commit row (via the
+	// 9-space indent) and hid whole-range info as a commit-level detail.
 	typeCounts := map[string]int{}
+	if v.cc {
+		for _, r := range records {
+			if t, _ := ccClassify(r.subject); t != "" {
+				typeCounts[t]++
+			}
+		}
+	}
+	if v.cc && len(typeCounts) > 0 {
+		keys := make([]string, 0, len(typeCounts))
+		for k := range typeCounts {
+			keys = append(keys, k)
+		}
+		for i := 0; i < len(keys); i++ {
+			for j := i + 1; j < len(keys); j++ {
+				if typeCounts[keys[j]] > typeCounts[keys[i]] {
+					keys[i], keys[j] = keys[j], keys[i]
+				}
+			}
+		}
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, typeCounts[k]))
+		}
+		faint := color.New(color.Faint).SprintFunc()
+		fmt.Fprintln(w, faint(fmt.Sprintf("scope: %d commits · %s", len(records), strings.Join(parts, " "))))
+	}
+
 	for _, r := range records {
 		if tagsRule {
 			if t, ok := tags[r.short]; ok {
@@ -828,7 +860,6 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		subject := r.subject
 		if v.cc {
 			if ccType, glyph := ccClassify(r.subject); ccType != "" {
-				typeCounts[ccType]++
 				prefix.WriteString(glyph + " ")
 				subject = ccColorize(r.subject, ccType)
 			} else {
@@ -860,26 +891,6 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		}
 
 		fmt.Fprintln(w, prefix.String()+line+suffix.String())
-	}
-
-	if v.cc && len(typeCounts) > 0 {
-		parts := make([]string, 0, len(typeCounts))
-		keys := make([]string, 0, len(typeCounts))
-		for k := range typeCounts {
-			keys = append(keys, k)
-		}
-		// deterministic ordering
-		for i := 0; i < len(keys); i++ {
-			for j := i + 1; j < len(keys); j++ {
-				if typeCounts[keys[j]] > typeCounts[keys[i]] {
-					keys[i], keys[j] = keys[j], keys[i]
-				}
-			}
-		}
-		for _, k := range keys {
-			parts = append(parts, fmt.Sprintf("%s=%d", k, typeCounts[k]))
-		}
-		fmt.Fprintln(w, color.New(color.Faint).Sprint("         types: "+strings.Join(parts, " ")))
 	}
 	return nil
 }

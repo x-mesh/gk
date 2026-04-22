@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="assets/gk-logo.jpeg" alt="gk" width="220">
+  <img src="assets/gk-logo.jpeg" alt="gk" width="520">
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.ko.md">한국어</a>
 </p>
 
 # gk — git helper

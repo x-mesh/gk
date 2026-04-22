@@ -94,7 +94,11 @@ func Defaults() Config {
 			Vis:    []string{"cc", "safety", "tags-rule"},
 		},
 		Status: StatusConfig{
-			Vis:       []string{"gauge", "bar", "progress", "tree", "staleness"},
+			// `bar` and `progress` overlap heavily (bar shows composition,
+			// progress shows remaining-verbs over the same counts). Drop
+			// `bar` from the default to cut a row; users who want both
+			// can add `bar` back via .gk.yaml.
+			Vis:       []string{"gauge", "progress", "tree", "staleness"},
 			AutoFetch: true,
 		},
 		UI: UIConfig{

@@ -684,7 +684,7 @@ func TestRenderProgressMeter(t *testing.T) {
 
 	t.Run("mixed shows verbs", func(t *testing.T) {
 		got := renderProgressMeter(mk(1, 3, 5, 1))
-		for _, want := range []string{"clean:", "30%", "resolve 1", "stage 5", "commit 3", "discard-or-track 1"} {
+		for _, want := range []string{"clean:", "30%", "resolve 1", "stage 5", "commit 3", "add 1"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("missing %q in %q", want, got)
 			}

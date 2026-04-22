@@ -23,6 +23,7 @@ import (
 var statusVisFlags []string
 var statusNoFetch bool
 var statusTopN int
+var statusLegend bool
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
@@ -50,6 +51,7 @@ func init() {
 	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
+	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -199,8 +201,12 @@ func startFetchSpinner(msg string) (stop func()) {
 			fmt.Fprintf(os.Stderr, "\r%s %s", spinnerFrames[i], msg)
 			select {
 			case <-done:
-				// Clear the line so nothing leaks into post-fetch output.
-				fmt.Fprint(os.Stderr, "\r\x1b[2K")
+				// Clear with BOTH strategies so legacy terminals that
+				// don't parse `\x1b[2K` (serial consoles, some CI log
+				// viewers, `script(1)` transcripts) still end clean:
+				// first overwrite with spaces, then emit the erase.
+				pad := strings.Repeat(" ", len(msg)+4)
+				fmt.Fprint(os.Stderr, "\r"+pad+"\r\x1b[2K")
 				return
 			case <-t.C:
 				i = (i + 1) % len(spinnerFrames)
@@ -470,10 +476,15 @@ func detachedShortSHA(ctx context.Context, runner *git.ExecRunner) string {
 }
 
 // sincePushSuffix returns a compact "since push Xh (Nc)" fragment meant
-// to be appended to the branch line. Empty string when there are no
-// unpushed commits (or the branch has no upstream). Uses a single
-// `git rev-list @{u}..HEAD --format=%ct` call; parses the oldest
-// timestamp to compute the age.
+// to be appended to the branch line. Three return paths:
+//   - non-empty string: there are unpushed commits, render them
+//   - "up to date" (faint): @{u} resolves AND no unpushed commits exist
+//   - empty string: unresolvable (no upstream configured, offline where
+//     refs/remotes isn't populated, or rev-list failed)
+//
+// The caller currently only renders when non-empty. Distinguishing "up
+// to date" from "can't tell" is tracked for a follow-up that threads a
+// (string, ok bool) signal; for now the zero/error cases still collapse.
 func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) string {
 	out, _, err := runner.Run(ctx, "rev-list", "@{u}..HEAD", "--format=%ct")
 	if err != nil || len(out) == 0 {
@@ -566,12 +577,117 @@ func renderStashSummary(ctx context.Context, runner *git.ExecRunner) string {
 	return "  " + strings.Join(parts, "  ")
 }
 
+// renderStatusLegend prints the glyph + color vocabulary currently in
+// scope for `gk status`. Only layers present in effectiveVis are shown
+// so the output stays relevant to what the user will actually see.
+func renderStatusLegend(w io.Writer, vis []string) {
+	faint := color.New(color.Faint).SprintFunc()
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Fprintln(w, bold("gk status vocabulary"))
+
+	enabled := func(name string) bool {
+		for _, v := range vis {
+			if v == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	sec := func(label string) {
+		fmt.Fprintln(w, "")
+		fmt.Fprintln(w, faint("— "+label+" —"))
+	}
+
+	sec("porcelain XY codes")
+	fmt.Fprintf(w, "  %s  staged change   (index side)\n", color.GreenString("A./M./R./D.."))
+	fmt.Fprintf(w, "  %s  worktree change (unstaged)\n", color.YellowString(".M/.D/.R./.T"))
+	fmt.Fprintf(w, "  %s  merge conflict\n", color.RedString("UU/AA/DD/AU/UA"))
+	fmt.Fprintf(w, "  %s  untracked\n", color.New(color.FgHiBlack).Sprint("??"))
+
+	if enabled("gauge") {
+		sec("--vis gauge — ahead/behind divergence")
+		fmt.Fprintf(w, "  [%s%s%s]  left=ahead (darker), right=behind (lighter), │ is the upstream anchor\n",
+			color.GreenString("▓▓"), color.New(color.Faint).Sprint("│"), color.RedString("▒▒"))
+	}
+	if enabled("bar") {
+		sec("--vis bar — composition")
+		fmt.Fprintf(w, "  %s conflict   %s staged   %s modified   %s untracked\n",
+			color.RedString("▓"), color.GreenString("█"), color.YellowString("▒"), color.New(color.Faint).Sprint("░"))
+	}
+	if enabled("progress") {
+		sec("--vis progress — path to clean")
+		fmt.Fprintln(w, "  filled% = staged / (total dirty)")
+		fmt.Fprintln(w, "  verbs: resolve, stage, commit, add  — each action clears its bucket")
+	}
+	if enabled("tree") {
+		sec("--vis tree")
+		fmt.Fprintln(w, "  ├─└─│  box-drawing branches; (N) badge = subtree file count")
+	}
+	if enabled("glyphs") {
+		sec("--vis glyphs — file-kind column")
+		fmt.Fprintf(w, "  %s source   %s test   %s config   %s docs   %s asset   %s generated   %s lockfile   %s unknown\n",
+			color.GreenString("●"), color.MagentaString("◐"), color.YellowString("◆"),
+			color.BlueString("¶"), color.New(color.Faint).Sprint("▣"),
+			color.New(color.Faint).Sprint("↻"), color.New(color.Faint).Sprint("⊙"),
+			color.New(color.Faint).Sprint("·"))
+	}
+	if enabled("staleness") {
+		sec("--vis staleness")
+		fmt.Fprintln(w, "  · last commit Nd  — only shown when HEAD is ≥1 day old")
+		fmt.Fprintln(w, "  (Nd old)          — per-untracked mtime, only shown when ≥1 day old")
+	}
+	if enabled("heatmap") {
+		sec("--vis heatmap — 2-D density (rows=dir, cols=C/S/M/?)")
+		fmt.Fprintln(w, "  · (zero)  ░ ▒ ▓ █ (ascending density, scaled to the peak cell)")
+	}
+	if enabled("since-push") || enabled("stash") || enabled("base") || enabled("conflict") || enabled("churn") || enabled("risk") || enabled("types") {
+		sec("other active layers")
+		if enabled("since-push") {
+			fmt.Fprintln(w, "  · since push Xh — age of oldest unpushed commit (suppressed when no upstream)")
+		}
+		if enabled("stash") {
+			fmt.Fprintln(w, "  stash: N entries — summary line; ⚠ warns if top stash overlaps a dirty file")
+		}
+		if enabled("base") {
+			fmt.Fprintln(w, "  from <trunk> [gauge] — divergence vs base_branch / refs/remotes/<r>/HEAD")
+		}
+		if enabled("conflict") {
+			fmt.Fprintln(w, "  [N hunks · both modified] — appended to conflicts section rows")
+		}
+		if enabled("churn") {
+			fmt.Fprintln(w, "  ▁▂▃▄▅▆▇█ — per-file 8-cell sparkline of last commits' add+del totals")
+		}
+		if enabled("risk") {
+			fmt.Fprintf(w, "  %s — high-risk marker (diff LOC + author diversity over 30d)\n",
+				color.New(color.FgRed, color.Bold).Sprint("⚠"))
+		}
+		if enabled("types") {
+			fmt.Fprintln(w, "  types: .ext×N chip — extension histogram over dirty entries")
+		}
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, faint("For the log vocabulary: gk log --legend  (planned)"))
+}
+
+// isFreshRepo reports whether HEAD has no resolvable commit yet (pre-
+// first-commit state right after `git init`). Callers use this to skip
+// commit-time / gauge / base-divergence rendering that would fail or
+// mislead (e.g., "clean 100%" makes no sense when there's nothing to
+// compare against).
+func isFreshRepo(ctx context.Context, runner *git.ExecRunner) bool {
+	_, _, err := runner.Run(ctx, "rev-parse", "--verify", "-q", "HEAD")
+	return err != nil
+}
+
 // topStashOverlap returns the number of files touched by stash@{0} that
-// are also present in the current working-tree index/status. Uses a
-// single `git stash show --name-only stash@{0}` plus `git diff --name-only
-// HEAD`. Zero on any error (overlap warning is best-effort).
+// are also present in the current working-tree index/status. Uses
+// `git stash show --name-status stash@{0}` so rename entries (status `R`)
+// contribute BOTH source and destination paths to the overlap set — a
+// rename-only stash would otherwise appear to touch zero files and the
+// pop-collision warning would silently miss it.
 func topStashOverlap(ctx context.Context, runner *git.ExecRunner) int {
-	stashFiles, _, err := runner.Run(ctx, "stash", "show", "--name-only", "stash@{0}")
+	stashFiles, _, err := runner.Run(ctx, "stash", "show", "--name-status", "stash@{0}")
 	if err != nil {
 		return 0
 	}
@@ -586,13 +702,25 @@ func topStashOverlap(ctx context.Context, runner *git.ExecRunner) int {
 			dirtySet[line] = struct{}{}
 		}
 	}
-	n := 0
+	// Parse --name-status lines: "<status>\t<path>" or for renames
+	// "R<score>\t<src>\t<dst>". Add every path mentioned to the stashSet.
+	stashSet := map[string]struct{}{}
 	for _, line := range strings.Split(strings.TrimSpace(string(stashFiles)), "\n") {
-		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if _, ok := dirtySet[line]; ok {
+		fields := strings.Split(line, "\t")
+		// fields[0] is the status letter (A/M/D/R/C/...), rest are paths.
+		for i := 1; i < len(fields); i++ {
+			p := strings.TrimSpace(fields[i])
+			if p != "" {
+				stashSet[p] = struct{}{}
+			}
+		}
+	}
+	n := 0
+	for path := range stashSet {
+		if _, ok := dirtySet[path]; ok {
 			n++
 		}
 	}
@@ -784,6 +912,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	cfg, _ := config.Load(cmd.Flags())
 	effectiveVis = resolveStatusVis(cmd, cfg)
+
+	// --legend short-circuits everything: print the glyph/color key for
+	// the currently-active viz set and return. Useful for first-run users
+	// or anyone wondering "what does ⊛ mean on this row?".
+	if statusLegend {
+		renderStatusLegend(cmd.OutOrStdout(), effectiveVis)
+		return nil
+	}
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	if shouldAutoFetch(cmd, cfg) {
 		maybeFetchUpstream(cmd.Context(), RepoFlag())
@@ -798,6 +934,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	bold := color.New(color.Bold).SprintFunc()
 	cyan := color.CyanString
 	faint := color.New(color.Faint).SprintFunc()
+
+	// Fresh repo (pre-first-commit): HEAD resolves to nothing, so commit-
+	// based viz (gauge, since-push, base, staleness) all silently fail.
+	// Print a one-line affirmative instead and skip the rest.
+	if isFreshRepo(cmd.Context(), runner) {
+		fmt.Fprintf(w, "%s %s  %s\n",
+			faint("branch:"),
+			bold(st.Branch),
+			faint("· no commits yet  (git add . && git commit)"),
+		)
+		if len(st.Entries) == 0 {
+			fmt.Fprintln(w, faint("working tree clean"))
+		}
+		return nil
+	}
 
 	// Detached HEAD: `git status --porcelain=v2` emits `branch.head (detached)`
 	// which, when passed to rev-list downstream, produces "ambiguous argument"
@@ -1352,10 +1503,12 @@ func colorXY(xy string) string {
 	}
 }
 
-// lastCommitAgo returns a short relative age ("11d", "4h", "32m") of HEAD's
-// committer date, or empty string when there is no HEAD (fresh repo), the age
-// is under 1 minute, or git fails. It calls through the runner from the
-// current command context.
+// lastCommitAgo returns a short relative age ("11d", "4h") of HEAD's
+// committer date, or empty string when there is no HEAD (fresh repo), git
+// fails, or the commit is under 1 day old. Active branches commit multiple
+// times per day so annotating "last commit 2h" on every `gk status` call
+// is noise — the signal only earns attention once the branch starts going
+// stale, so we suppress it for <24h ages.
 func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) string {
 	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct", "HEAD")
 	if err != nil {
@@ -1369,7 +1522,11 @@ func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) string {
 	if _, err := fmt.Sscanf(ts, "%d", &secs); err != nil {
 		return ""
 	}
-	return formatAge(time.Since(time.Unix(secs, 0)))
+	age := time.Since(time.Unix(secs, 0))
+	if age < 24*time.Hour {
+		return ""
+	}
+	return formatAge(age)
 }
 
 // untrackedAge returns a short relative age of an untracked file's mtime,
@@ -1505,7 +1662,7 @@ func renderTypesChip(entries []git.StatusEntry) string {
 // one step from committed); the verb list enumerates the remaining actions
 // bucketed by the next command the user must run.
 //
-//	clean: [███░░░░░░░] 30%  stage 5 · commit 3 · resolve 1 · discard-or-track 1
+//	clean: [███░░░░░░░] 30%  stage 5 · commit 3 · resolve 1 · add 1
 func renderProgressMeter(g groupedEntries) string {
 	staged := len(g.Staged)
 	modified := len(g.Modified)
@@ -1542,7 +1699,10 @@ func renderProgressMeter(g groupedEntries) string {
 		parts = append(parts, fmt.Sprintf("commit %d", staged))
 	}
 	if untracked > 0 {
-		parts = append(parts, fmt.Sprintf("discard-or-track %d", untracked))
+		// "add" matches git's vocabulary (`git add` both stages modified
+		// files AND tracks new ones), so the verb-list stays in one
+		// namespace instead of inventing the compound "discard-or-track".
+		parts = append(parts, fmt.Sprintf("add %d", untracked))
 	}
 	return fmt.Sprintf("%s [%s] %d%%  %s",
 		faint("clean:"), bar, pct,

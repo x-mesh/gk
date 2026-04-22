@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,104 @@ func TestRunStatus_Staged(t *testing.T) {
 	}
 	if !strings.Contains(out, "staged.txt") {
 		t.Errorf("expected 'staged.txt' in output, got:\n%s", out)
+	}
+}
+
+func TestConflictHunkCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "merge.ts")
+	body := `line1
+<<<<<<< HEAD
+ours
+=======
+theirs
+>>>>>>> branch-a
+middle
+<<<<<<< HEAD
+more-ours
+=======
+more-theirs
+>>>>>>> branch-a
+tail
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := conflictHunkCount(dir, "merge.ts"); got != 2 {
+		t.Errorf("hunks = %d, want 2", got)
+	}
+}
+
+func TestConflictAnatomy(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.ts"), []byte("<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := conflictAnatomy(dir, git.StatusEntry{XY: "UU", Path: "f.ts", Kind: git.KindUnmerged})
+	for _, want := range []string{"1 hunk", "both modified"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "hunks") {
+		t.Errorf("singular hunk should not render plural, got %q", got)
+	}
+}
+
+func TestBuildStatusTree_CollapsesSingletons(t *testing.T) {
+	entries := []git.StatusEntry{
+		{Path: "src/api/v2/auth.ts", XY: ".M", Kind: 0},
+		{Path: "src/api/user.ts", XY: ".M", Kind: 0},
+		{Path: "src/foo.ts", XY: ".M", Kind: 0},
+	}
+	root := buildStatusTree(entries)
+
+	src, ok := root.children["src"]
+	if !ok {
+		t.Fatalf("expected 'src' child, got keys: %v", keysOf(root.children))
+	}
+	// 'src' should have 2 children: 'api' (dir with 2 kids) and 'foo.ts' (leaf)
+	if len(src.children) != 2 {
+		t.Errorf("expected 2 children under src, got %d: %v", len(src.children), keysOf(src.children))
+	}
+	// 'api' should have 2 leaves: 'v2/auth.ts' (collapsed) and 'user.ts'.
+	api, ok := src.children["api"]
+	if !ok {
+		t.Fatalf("expected 'api' child, got %v", keysOf(src.children))
+	}
+	if _, ok := api.children["v2/auth.ts"]; !ok {
+		t.Errorf("expected v2/auth.ts collapsed leaf under api, got %v", keysOf(api.children))
+	}
+}
+
+func keysOf(m map[string]*treeNode) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestRenderStatusTree_Output(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	entries := []git.StatusEntry{
+		{Path: "src/api/user.ts", XY: ".M"},
+		{Path: "src/foo.ts", XY: "A."},
+		{Path: "README.md", XY: "??", Kind: git.KindUntracked},
+	}
+	buf := &bytes.Buffer{}
+	renderStatusTree(buf, entries)
+	out := buf.String()
+	for _, want := range []string{"src/", "api/", "user.ts", "foo.ts", "README.md", "├─", "└─"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 

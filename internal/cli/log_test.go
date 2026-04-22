@@ -5,11 +5,57 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+func TestPulseLine(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
+	dates := []time.Time{
+		now.Add(-6 * 24 * time.Hour),
+		now.Add(-5 * 24 * time.Hour),
+		now.Add(-5 * 24 * time.Hour),
+		now.Add(-5 * 24 * time.Hour),
+		now.Add(-2 * 24 * time.Hour),
+		now,
+	}
+
+	t.Run("basic", func(t *testing.T) {
+		got := pulseLine(dates, "1w")
+		for _, want := range []string{"pulse", "1w", "6 commits", "peak"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
+		}
+		// Zero bucket and non-zero block glyph must both appear.
+		if !strings.Contains(got, "·") {
+			t.Errorf("expected '·' for zero bucket, got %q", got)
+		}
+		if !strings.ContainsAny(got, "▁▂▃▄▅▆▇█") {
+			t.Errorf("expected block glyph for non-zero bucket, got %q", got)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		if got := pulseLine(nil, "1d"); got != "" {
+			t.Errorf("empty dates should produce empty pulse, got %q", got)
+		}
+	})
+
+	t.Run("derives label when since blank", func(t *testing.T) {
+		got := pulseLine(dates, "")
+		if !strings.Contains(got, "7d") {
+			t.Errorf("expected derived 7d label, got %q", got)
+		}
+	})
+}
 
 // TestNormalizeSince verifies the short-form since parser.
 func TestNormalizeSince(t *testing.T) {

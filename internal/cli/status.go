@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,7 +25,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -83,35 +84,46 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(w, line)
 		}
 	}
-	if len(grouped.Unmerged) > 0 {
-		fmt.Fprintln(w, color.New(color.FgRed, color.Bold).Sprint("conflicts:"))
-		for _, e := range grouped.Unmerged {
-			fmt.Fprintf(w, "  %s %s\n", color.RedString(e.XY), e.Path)
-		}
-	}
-	if len(grouped.Staged) > 0 {
-		fmt.Fprintln(w, color.GreenString("staged:"))
-		for _, e := range grouped.Staged {
-			fmt.Fprintf(w, "  %s %s\n", color.GreenString(e.XY), displayPath(e))
-		}
-	}
-	if len(grouped.Modified) > 0 {
-		fmt.Fprintln(w, color.YellowString("modified:"))
-		for _, e := range grouped.Modified {
-			fmt.Fprintf(w, "  %s %s\n", color.YellowString(e.XY), displayPath(e))
-		}
-	}
-	if len(grouped.Untracked) > 0 {
-		fmt.Fprintln(w, color.New(color.FgHiBlack).Sprint("untracked:"))
-		showAge := statusVisEnabled("staleness")
-		for _, e := range grouped.Untracked {
-			suffix := ""
-			if showAge {
-				if age := untrackedAge(RepoFlag(), e.Path); age != "" {
-					suffix = "  " + faint("("+age+" old)")
+	if statusVisEnabled("tree") && len(st.Entries) > 0 {
+		renderStatusTree(w, st.Entries)
+	} else {
+		if len(grouped.Unmerged) > 0 {
+			fmt.Fprintln(w, color.New(color.FgRed, color.Bold).Sprint("conflicts:"))
+			showAnatomy := statusVisEnabled("conflict")
+			for _, e := range grouped.Unmerged {
+				suffix := ""
+				if showAnatomy {
+					if s := conflictAnatomy(RepoFlag(), e); s != "" {
+						suffix = "  " + faint(s)
+					}
 				}
+				fmt.Fprintf(w, "  %s %s%s\n", color.RedString(e.XY), e.Path, suffix)
 			}
-			fmt.Fprintf(w, "  %s %s%s\n", color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
+		}
+		if len(grouped.Staged) > 0 {
+			fmt.Fprintln(w, color.GreenString("staged:"))
+			for _, e := range grouped.Staged {
+				fmt.Fprintf(w, "  %s %s\n", color.GreenString(e.XY), displayPath(e))
+			}
+		}
+		if len(grouped.Modified) > 0 {
+			fmt.Fprintln(w, color.YellowString("modified:"))
+			for _, e := range grouped.Modified {
+				fmt.Fprintf(w, "  %s %s\n", color.YellowString(e.XY), displayPath(e))
+			}
+		}
+		if len(grouped.Untracked) > 0 {
+			fmt.Fprintln(w, color.New(color.FgHiBlack).Sprint("untracked:"))
+			showAge := statusVisEnabled("staleness")
+			for _, e := range grouped.Untracked {
+				suffix := ""
+				if showAge {
+					if age := untrackedAge(RepoFlag(), e.Path); age != "" {
+						suffix = "  " + faint("("+age+" old)")
+					}
+				}
+				fmt.Fprintf(w, "  %s %s%s\n", color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
+			}
 		}
 	}
 	if len(st.Entries) == 0 {
@@ -152,6 +164,225 @@ func displayPath(e git.StatusEntry) string {
 		return fmt.Sprintf("%s → %s", e.Orig, e.Path)
 	}
 	return e.Path
+}
+
+// conflictKindName maps porcelain XY codes for unmerged entries to a short
+// human label describing how the file conflicts.
+func conflictKindName(xy string) string {
+	switch xy {
+	case "UU":
+		return "both modified"
+	case "AA":
+		return "both added"
+	case "DD":
+		return "both deleted"
+	case "AU":
+		return "added by us"
+	case "UA":
+		return "added by them"
+	case "DU":
+		return "deleted by us"
+	case "UD":
+		return "deleted by them"
+	}
+	return "conflict"
+}
+
+// conflictAnatomy returns a compact "[N hunks · both modified]" summary for a
+// single unmerged entry. Returns empty string if the file cannot be read
+// (e.g., deleted side) — callers render an unadorned line in that case.
+func conflictAnatomy(repoDir string, e git.StatusEntry) string {
+	kind := conflictKindName(e.XY)
+	hunks := conflictHunkCount(repoDir, e.Path)
+	if hunks == 0 {
+		return fmt.Sprintf("[%s]", kind)
+	}
+	unit := "hunks"
+	if hunks == 1 {
+		unit = "hunk"
+	}
+	return fmt.Sprintf("[%d %s · %s]", hunks, unit, kind)
+}
+
+// conflictHunkCount counts `<<<<<<<` conflict markers at line starts in the
+// worktree file. Returns 0 when the file is unreadable (deleted-side conflicts).
+func conflictHunkCount(repoDir, path string) int {
+	p := path
+	if !filepath.IsAbs(p) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		p = filepath.Join(repoDir, path)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	buf := make([]byte, 64*1024)
+	n, _ := f.Read(buf)
+	data := buf[:n]
+	// Read more if needed.
+	for n == len(buf) {
+		more := make([]byte, 64*1024)
+		n, _ = f.Read(more)
+		data = append(data, more[:n]...)
+	}
+
+	count := 0
+	start := 0
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			line := data[start:i]
+			if len(line) >= 7 && string(line[:7]) == "<<<<<<<" {
+				count++
+			}
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		line := data[start:]
+		if len(line) >= 7 && string(line[:7]) == "<<<<<<<" {
+			count++
+		}
+	}
+	return count
+}
+
+// treeNode is a lightweight path trie for renderStatusTree. Leaves hold the
+// originating StatusEntry; directories hold children keyed by segment name.
+type treeNode struct {
+	name     string
+	entry    *git.StatusEntry
+	children map[string]*treeNode
+}
+
+// buildStatusTree groups entries by path segments into a trie, collapsing
+// single-child directory chains into a single node ("api/v2/auth.ts") to
+// avoid deep indentation for a single dangling file.
+func buildStatusTree(entries []git.StatusEntry) *treeNode {
+	root := &treeNode{children: map[string]*treeNode{}}
+	for i := range entries {
+		e := entries[i]
+		path := e.Path
+		if path == "" {
+			continue
+		}
+		parts := strings.Split(path, "/")
+		cur := root
+		for j, part := range parts {
+			if j == len(parts)-1 {
+				leaf := &treeNode{name: part, entry: &entries[i]}
+				cur.children[part] = leaf
+			} else {
+				next, ok := cur.children[part]
+				if !ok {
+					next = &treeNode{name: part, children: map[string]*treeNode{}}
+					cur.children[part] = next
+				}
+				cur = next
+			}
+		}
+	}
+	collapseSingletons(root)
+	return root
+}
+
+// collapseSingletons merges a directory chain whose every descendant is a
+// singleton into a single node (api → api/v2 → api/v2/auth.ts becomes
+// "api/v2/auth.ts" as a single leaf child of the parent).
+func collapseSingletons(n *treeNode) {
+	for k, c := range n.children {
+		collapseSingletons(c)
+		if c.entry == nil && len(c.children) == 1 {
+			for gk, gc := range c.children {
+				merged := &treeNode{name: c.name + "/" + gk, entry: gc.entry, children: gc.children}
+				delete(n.children, k)
+				n.children[merged.name] = merged
+			}
+		}
+	}
+}
+
+// subtreeCount returns the number of entry leaves in this subtree.
+func subtreeCount(n *treeNode) int {
+	if n.entry != nil {
+		return 1
+	}
+	total := 0
+	for _, c := range n.children {
+		total += subtreeCount(c)
+	}
+	return total
+}
+
+// renderStatusTree writes a hierarchical tree view of the entries to w using
+// box-drawing glyphs. Directory lines carry a subtree-count badge; file lines
+// carry the two-letter XY porcelain code colored by category.
+func renderStatusTree(w io.Writer, entries []git.StatusEntry) {
+	root := buildStatusTree(entries)
+	faint := color.New(color.Faint).SprintFunc()
+	writeChildren(w, root, "", faint)
+}
+
+func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string) {
+	keys := make([]string, 0, len(n.children))
+	for k := range n.children {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := n.children[keys[i]], n.children[keys[j]]
+		// dirs first, then files; each group alphabetical.
+		if (a.entry == nil) != (b.entry == nil) {
+			return a.entry == nil
+		}
+		return keys[i] < keys[j]
+	})
+	for i, k := range keys {
+		child := n.children[k]
+		last := i == len(keys)-1
+		branch := "├─ "
+		indent := "│  "
+		if last {
+			branch = "└─ "
+			indent = "   "
+		}
+		if child.entry != nil {
+			fmt.Fprintf(w, "%s%s%s  %s\n", prefix, faint(branch), colorXY(child.entry.XY), displayTreeName(child))
+		} else {
+			fmt.Fprintf(w, "%s%s%s/  %s\n", prefix, faint(branch),
+				color.New(color.Bold).Sprint(child.name),
+				faint(fmt.Sprintf("(%d)", subtreeCount(child))),
+			)
+			writeChildren(w, child, prefix+faint(indent), faint)
+		}
+	}
+}
+
+// displayTreeName returns the leaf label, appending rename origin if present.
+func displayTreeName(n *treeNode) string {
+	if n.entry == nil {
+		return n.name
+	}
+	if n.entry.Orig != "" {
+		return fmt.Sprintf("%s → %s", n.entry.Orig, n.name)
+	}
+	return n.name
+}
+
+// colorXY picks a color for the two-letter porcelain code based on the
+// entry's broad category (conflict/staged/modified/untracked).
+func colorXY(xy string) string {
+	switch {
+	case xy == "??":
+		return color.New(color.FgHiBlack).Sprint(xy)
+	case strings.ContainsAny(xy, "Uu"):
+		return color.RedString(xy)
+	case len(xy) >= 2 && xy[0] != '.' && xy[0] != ' ' && (xy[1] == '.' || xy[1] == ' '):
+		return color.GreenString(xy)
+	default:
+		return color.YellowString(xy)
+	}
 }
 
 // lastCommitAgo returns a short relative age ("11d", "4h", "32m") of HEAD's

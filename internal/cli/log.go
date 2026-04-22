@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,7 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -27,6 +30,7 @@ func init() {
 	cmd.Flags().String("format", "", "git pretty-format string (overrides config)")
 	cmd.Flags().Bool("graph", false, "include topology graph")
 	cmd.Flags().IntP("limit", "n", 0, "max number of commits (0 = unlimited)")
+	cmd.Flags().Bool("pulse", false, "print commit-rhythm sparkline above the log")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -37,6 +41,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	format, _ := cmd.Flags().GetString("format")
 	graph, _ := cmd.Flags().GetBool("graph")
 	limit, _ := cmd.Flags().GetInt("limit")
+	pulse, _ := cmd.Flags().GetBool("pulse")
 
 	if format == "" {
 		format = cfg.Log.Format
@@ -88,11 +93,134 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if JSONOut() {
 		return writeJSONLog(cmd.OutOrStdout(), stdout)
 	}
+	if pulse && !JSONOut() {
+		if line := renderPulse(cmd.Context(), runner, since, args); line != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), line)
+		}
+	}
 	_, _ = cmd.OutOrStdout().Write(stdout)
 	if len(stdout) > 0 && !strings.HasSuffix(string(stdout), "\n") {
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
 	return nil
+}
+
+// renderPulse queries the same revision scope used for the log and aggregates
+// commit days into a compact sparkline. Returns empty string when git fails
+// or there are no commits in the window.
+//
+//	pulse 2w ▁▁▂▅█▇▃▁▁▂▄▆█▅  (128 commits, peak Tue)
+func renderPulse(ctx context.Context, runner *git.ExecRunner, since string, pathArgs []string) string {
+	args := []string{"log", "--format=%cI"}
+	if since != "" {
+		args = append(args, "--since="+normalizeSince(since))
+	}
+	args = append(args, pathArgs...)
+	out, _, err := runner.Run(ctx, args...)
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+	dates := make([]time.Time, 0, 128)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, line)
+		if err != nil {
+			continue
+		}
+		dates = append(dates, t)
+	}
+	if len(dates) == 0 {
+		return ""
+	}
+	return pulseLine(dates, since)
+}
+
+var pulseGlyphs = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// pulseLine is the pure-function core of --pulse: given commit timestamps and
+// the --since label, it produces a single-line sparkline with a
+// "(N commits, peak Weekday)" suffix. Zero-activity days render as '·'.
+func pulseLine(dates []time.Time, since string) string {
+	if len(dates) == 0 {
+		return ""
+	}
+	minT, maxT := dates[0], dates[0]
+	for _, d := range dates {
+		if d.Before(minT) {
+			minT = d
+		}
+		if d.After(maxT) {
+			maxT = d
+		}
+	}
+	startDay := time.Date(minT.Year(), minT.Month(), minT.Day(), 0, 0, 0, 0, minT.Location())
+	endDay := time.Date(maxT.Year(), maxT.Month(), maxT.Day(), 0, 0, 0, 0, maxT.Location())
+	days := int(endDay.Sub(startDay).Hours()/24) + 1
+	if days < 1 {
+		days = 1
+	}
+	if days > 180 {
+		days = 180
+	}
+
+	buckets := make([]int, days)
+	for _, d := range dates {
+		day := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, d.Location())
+		idx := int(day.Sub(startDay).Hours() / 24)
+		if idx < 0 || idx >= days {
+			continue
+		}
+		buckets[idx]++
+	}
+
+	peakIdx, peakVal := 0, 0
+	for i, v := range buckets {
+		if v > peakVal {
+			peakIdx, peakVal = i, v
+		}
+	}
+
+	var spark strings.Builder
+	for _, v := range buckets {
+		if v == 0 {
+			spark.WriteRune('·')
+			continue
+		}
+		idx := 0
+		if peakVal > 0 {
+			idx = (v - 1) * (len(pulseGlyphs) - 1) / maxInt(peakVal-1, 1)
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(pulseGlyphs) {
+			idx = len(pulseGlyphs) - 1
+		}
+		spark.WriteRune(pulseGlyphs[idx])
+	}
+
+	label := since
+	if label == "" {
+		label = fmt.Sprintf("%dd", days)
+	}
+	peakDay := startDay.Add(time.Duration(peakIdx) * 24 * time.Hour)
+	faint := color.New(color.Faint).SprintFunc()
+	return fmt.Sprintf("%s %s %s  %s",
+		faint("pulse"),
+		faint(label),
+		color.CyanString(spark.String()),
+		faint(fmt.Sprintf("(%d commits, peak %s)", len(dates), peakDay.Format("Mon"))),
+	)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 const (

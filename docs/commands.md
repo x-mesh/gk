@@ -163,7 +163,7 @@ gk st [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vis <list>` | | Opt-in visualization layers (comma-list or repeated). Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`. |
+| `--vis <list>` | `gauge,bar,progress` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`. |
 
 #### `--vis` values
 
@@ -191,8 +191,14 @@ gk st
 # JSON output
 gk status --json
 
-# Single visualization
-gk status --vis bar
+# Default viz (gauge + bar + progress)
+gk status
+
+# Disable all viz for a single run
+gk status --vis none
+
+# Override the default: only the divergence gauge
+gk status --vis gauge
 
 # Multiple visualizations (either syntax works)
 gk status --vis gauge,bar,progress

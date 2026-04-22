@@ -5,6 +5,7 @@ type Config struct {
 	BaseBranch string          `mapstructure:"base_branch" yaml:"base_branch"`
 	Remote     string          `mapstructure:"remote"      yaml:"remote"`
 	Log        LogConfig       `mapstructure:"log"         yaml:"log"`
+	Status     StatusConfig    `mapstructure:"status"      yaml:"status"`
 	UI         UIConfig        `mapstructure:"ui"          yaml:"ui"`
 	Branch     BranchConfig    `mapstructure:"branch"      yaml:"branch"`
 	Commit     CommitConfig    `mapstructure:"commit"      yaml:"commit"`
@@ -17,6 +18,13 @@ type LogConfig struct {
 	Format string `mapstructure:"format" yaml:"format"`
 	Graph  bool   `mapstructure:"graph"  yaml:"graph"`
 	Limit  int    `mapstructure:"limit"  yaml:"limit"`
+}
+
+// StatusConfig controls gk status defaults. Vis is the default set of
+// visualization layers applied when the caller does not pass --vis. Pass
+// --vis none on the CLI to turn them all off for a single invocation.
+type StatusConfig struct {
+	Vis []string `mapstructure:"vis" yaml:"vis"`
 }
 
 // UIConfig controls terminal UI behaviour.
@@ -71,6 +79,9 @@ func Defaults() Config {
 			Format: "%C(yellow)%h%C(reset) %C(green)(%ar)%C(reset) %C(bold blue)<%an>%C(reset) %s%C(auto)%d%C(reset)",
 			Graph:  false,
 			Limit:  20,
+		},
+		Status: StatusConfig{
+			Vis: []string{"gauge", "bar", "progress"},
 		},
 		UI: UIConfig{
 			Color:  "auto",

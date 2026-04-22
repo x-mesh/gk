@@ -31,6 +31,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("log.format", defaults.Log.Format)
 	v.SetDefault("log.graph", defaults.Log.Graph)
 	v.SetDefault("log.limit", defaults.Log.Limit)
+	v.SetDefault("status.vis", defaults.Status.Vis)
 	v.SetDefault("ui.color", defaults.UI.Color)
 	v.SetDefault("ui.prefer", defaults.UI.Prefer)
 	v.SetDefault("branch.stale_days", defaults.Branch.StaleDays)

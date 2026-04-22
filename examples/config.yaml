@@ -21,6 +21,12 @@ log:
   # Max commits (overridden by --limit / -n flag).
   limit: 20
 
+status:
+  # Default visualization layers for `gk status`. Values: gauge, bar, progress,
+  # types, staleness, tree, conflict, churn, risk. Override per-invocation
+  # with `--vis ...` or disable all layers with `--vis none`.
+  vis: [gauge, bar, progress]
+
 ui:
   # Color mode: "auto", "always", "never". NO_COLOR env is always respected.
   color: auto

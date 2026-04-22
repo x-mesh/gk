@@ -14,6 +14,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -160,6 +161,49 @@ func TestConflictAnatomy(t *testing.T) {
 	if strings.Contains(got, "hunks") {
 		t.Errorf("singular hunk should not render plural, got %q", got)
 	}
+}
+
+func TestResolveStatusVis(t *testing.T) {
+	cfg := &config.Config{Status: config.StatusConfig{Vis: []string{"gauge", "bar", "progress"}}}
+
+	t.Run("no flag → config default", func(t *testing.T) {
+		cmd := &cobra.Command{Use: "status"}
+		cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "")
+		got := resolveStatusVis(cmd, cfg)
+		if strings.Join(got, ",") != "gauge,bar,progress" {
+			t.Errorf("got %v, want [gauge bar progress]", got)
+		}
+	})
+
+	t.Run("--vis none → nil", func(t *testing.T) {
+		cmd := &cobra.Command{Use: "status"}
+		cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "")
+		_ = cmd.Flags().Set("vis", "none")
+		got := resolveStatusVis(cmd, cfg)
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("--vis gauge → overrides config", func(t *testing.T) {
+		cmd := &cobra.Command{Use: "status"}
+		statusVisFlags = nil
+		cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "")
+		_ = cmd.Flags().Set("vis", "gauge")
+		got := resolveStatusVis(cmd, cfg)
+		if strings.Join(got, ",") != "gauge" {
+			t.Errorf("got %v, want [gauge]", got)
+		}
+	})
+
+	t.Run("nil config → nil", func(t *testing.T) {
+		cmd := &cobra.Command{Use: "status"}
+		cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "")
+		got := resolveStatusVis(cmd, nil)
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
 }
 
 func TestBuildStatusTree_CollapsesSingletons(t *testing.T) {

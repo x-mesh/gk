@@ -14,11 +14,17 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
 var statusVisFlags []string
+
+// effectiveVis holds the resolved visualization set for the current runStatus
+// invocation. Populated at the top of runStatus from flag > config > default
+// and read by statusVisEnabled. A nil value means "no viz" (e.g., --vis none).
+var effectiveVis []string
 
 func init() {
 	cmd := &cobra.Command{
@@ -27,12 +33,29 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk; pass 'none' to disable the configured default")
 	rootCmd.AddCommand(cmd)
 }
 
+// resolveStatusVis picks the active viz set for this invocation:
+//   - if --vis is not passed, use config's status.vis (default gauge,bar,progress)
+//   - if --vis is passed with "none", disable all viz layers
+//   - otherwise, the explicit flag value wins
+func resolveStatusVis(cmd *cobra.Command, cfg *config.Config) []string {
+	if cmd.Flags().Changed("vis") {
+		if len(statusVisFlags) == 1 && statusVisFlags[0] == "none" {
+			return nil
+		}
+		return statusVisFlags
+	}
+	if cfg != nil {
+		return cfg.Status.Vis
+	}
+	return nil
+}
+
 func statusVisEnabled(name string) bool {
-	for _, v := range statusVisFlags {
+	for _, v := range effectiveVis {
 		if v == name {
 			return true
 		}
@@ -44,6 +67,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if NoColorFlag() {
 		color.NoColor = true
 	}
+	cfg, _ := config.Load(cmd.Flags())
+	effectiveVis = resolveStatusVis(cmd, cfg)
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
 	st, err := client.Status(cmd.Context())

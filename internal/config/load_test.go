@@ -31,6 +31,15 @@ func TestDefaults(t *testing.T) {
 	if len(d.Branch.Protected) == 0 {
 		t.Error("Branch.Protected: want non-empty slice")
 	}
+	wantVis := []string{"gauge", "bar", "progress"}
+	if len(d.Status.Vis) != len(wantVis) {
+		t.Fatalf("Status.Vis len: want %d, got %d (%v)", len(wantVis), len(d.Status.Vis), d.Status.Vis)
+	}
+	for i, v := range wantVis {
+		if d.Status.Vis[i] != v {
+			t.Errorf("Status.Vis[%d]: want %q, got %q", i, v, d.Status.Vis[i])
+		}
+	}
 }
 
 func TestLoadNilFlags_NoConfigFile(t *testing.T) {

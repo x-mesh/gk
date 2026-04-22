@@ -415,7 +415,23 @@ gk branch pick
 
 ## gk switch
 
-Switch to another local branch. When no name is given, opens an interactive picker.
+Switch to another branch. When no name is given, opens an interactive fzf-backed picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`).
+
+### Picker layout
+
+```
+●  feature/api-v2       → origin/feature/api-v2    2d    ← local branch (filled green)
+●  hotfix/login          -                          5h    ← local, no upstream
+○  release/v2            (from origin)              3d    ← remote-only (hollow cyan)
+○  experimental          (from origin)              1w
+```
+
+- `●` — local branch. Pass to `git switch <name>` directly.
+- `○` — exists only on a remote. `gk sw` auto-runs `git switch --track <remote>/<name>` to create the local tracking branch.
+- Remote entries whose short name already matches a local branch are hidden (avoid duplicate picks).
+- `refs/remotes/<remote>/HEAD` aliases are filtered.
+- Sorted recent-first within each group; local first, then remote-only.
+
 
 ### Synopsis
 
@@ -455,7 +471,7 @@ Both exit with an error when no candidate exists in the repo.
 ### Examples
 
 ```bash
-# Interactive picker (recent branches first)
+# Interactive picker — local + remote-only branches, recent-first
 gk switch
 
 # Direct switch
@@ -469,6 +485,9 @@ gk switch -m
 
 # Jump to develop (falls back to 'dev')
 gk switch -d
+
+# Remote-only pick becomes: git switch --track origin/release/v2
+# → local `release/v2` tracking `origin/release/v2` is created, then switched
 ```
 
 ---

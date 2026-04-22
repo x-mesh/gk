@@ -43,6 +43,49 @@ func buildSwitchCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 	return testRoot, buf
 }
 
+// TestListRemoteOnlyBranches verifies the picker ingredient:
+//   - HEAD aliases (refs/remotes/origin/HEAD) are filtered
+//   - entries whose short name matches an existing local branch are hidden
+//   - all other refs/remotes/* entries surface with a proper trackRef
+func TestListRemoteOnlyBranches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	// Simulate remote refs without needing a real remote: write packed
+	// refs under refs/remotes/origin/* pointing at the seed commit.
+	head := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+
+	repo.RunGit("update-ref", "refs/remotes/origin/HEAD", head)
+	repo.RunGit("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	repo.RunGit("update-ref", "refs/remotes/origin/main", head)
+	repo.RunGit("update-ref", "refs/remotes/origin/feature/new", head)
+	repo.RunGit("update-ref", "refs/remotes/origin/hotfix", head)
+	// Locally create one that should dedupe with origin/hotfix.
+	repo.CreateBranch("hotfix")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	locals, err := listLocalBranches(context.Background(), runner)
+	if err != nil {
+		t.Fatalf("listLocalBranches: %v", err)
+	}
+	remotes, err := listRemoteOnlyBranches(context.Background(), runner, locals)
+	if err != nil {
+		t.Fatalf("listRemoteOnlyBranches: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, r := range remotes {
+		got[r.Name] = r.TrackRef
+	}
+	// main exists locally → excluded. hotfix exists locally → excluded.
+	// HEAD alias → excluded. Only feature/new remains.
+	if len(got) != 1 || got["feature/new"] != "origin/feature/new" {
+		t.Errorf("unexpected remote-only set: %+v", got)
+	}
+}
+
 // TestSwitch_DirectByName changes branch when a name is given.
 func TestSwitch_DirectByName(t *testing.T) {
 	if testing.Short() {

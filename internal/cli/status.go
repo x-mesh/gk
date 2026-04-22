@@ -75,11 +75,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// group entries by Kind
 	grouped := groupEntries(st.Entries)
-	if statusVisEnabled("bar") && len(st.Entries) > 0 {
-		fmt.Fprintln(w, renderDensityBar(grouped))
+	if statusVisEnabled("bar") {
+		if line := renderDensityBar(grouped); line != "" {
+			fmt.Fprintln(w, line)
+		}
 	}
-	if statusVisEnabled("progress") && len(st.Entries) > 0 {
-		fmt.Fprintln(w, renderProgressMeter(grouped))
+	if statusVisEnabled("progress") {
+		if line := renderProgressMeter(grouped); line != "" {
+			fmt.Fprintln(w, line)
+		}
 	}
 	if statusVisEnabled("types") && len(st.Entries) > 0 {
 		if line := renderTypesChip(st.Entries); line != "" {
@@ -696,18 +700,23 @@ func renderProgressMeter(g groupedEntries) string {
 	conflicts := len(g.Unmerged)
 	untracked := len(g.Untracked)
 	total := staged + modified + conflicts + untracked
-	if total == 0 {
-		return ""
-	}
 
 	width := 10
 	if w, ok := ui.TTYWidth(); ok && w < 80 {
 		width = 5
 	}
+
+	faint := color.New(color.Faint).SprintFunc()
+	if total == 0 {
+		return fmt.Sprintf("%s [%s] 100%%  %s",
+			faint("clean:"),
+			color.GreenString(strings.Repeat("█", width)),
+			faint("nothing to do"),
+		)
+	}
 	filled := staged * width / total
 	pct := staged * 100 / total
 
-	faint := color.New(color.Faint).SprintFunc()
 	bar := color.GreenString(strings.Repeat("█", filled)) + faint(strings.Repeat("░", width-filled))
 
 	parts := make([]string, 0, 4)
@@ -740,13 +749,19 @@ func renderDensityBar(g groupedEntries) string {
 	m := len(g.Modified)
 	u := len(g.Untracked)
 	total := c + s + m + u
-	if total == 0 {
-		return ""
-	}
 
 	width := 20
 	if w, ok := ui.TTYWidth(); ok && w < 80 {
 		width = 10
+	}
+
+	if total == 0 {
+		faint := color.New(color.Faint).SprintFunc()
+		return fmt.Sprintf("%s [%s]  %s",
+			faint("tree:"),
+			faint(strings.Repeat("·", width)),
+			faint("(clean)"),
+		)
 	}
 
 	// Allocate cells via largest-remainder so sum == width.

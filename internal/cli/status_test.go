@@ -328,9 +328,12 @@ func TestRenderProgressMeter(t *testing.T) {
 		return g
 	}
 
-	t.Run("empty", func(t *testing.T) {
-		if got := renderProgressMeter(groupedEntries{}); got != "" {
-			t.Errorf("expected empty for 0 entries, got %q", got)
+	t.Run("empty renders 100% clean", func(t *testing.T) {
+		got := renderProgressMeter(groupedEntries{})
+		for _, want := range []string{"clean:", "100%", "nothing to do"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
 		}
 	})
 
@@ -375,9 +378,12 @@ func TestRenderDensityBar(t *testing.T) {
 		return g
 	}
 
-	t.Run("empty", func(t *testing.T) {
-		if got := renderDensityBar(groupedEntries{}); got != "" {
-			t.Errorf("expected empty for 0 entries, got %q", got)
+	t.Run("empty renders clean placeholder", func(t *testing.T) {
+		got := renderDensityBar(groupedEntries{})
+		for _, want := range []string{"tree:", "(clean)"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
 		}
 	})
 

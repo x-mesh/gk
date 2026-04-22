@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk timemachine`** — new command tree that surfaces every recoverable HEAD state (reflog + `refs/gk/*-backup/`) and lets you restore any of them safely.
+  - `gk timemachine restore <sha|ref>` — mixed/hard/soft/keep reset with an atomic backup ref written first. Flags: `--mode soft|mixed|hard|auto` · `--dry-run` · `--autostash` · `--force`. In-progress rebase/merge/cherry-pick states are refused even with `--force`. Full safety invariants live in [`docs/roadmap-v2.md`](docs/roadmap-v2.md#tm-18-runner-call-map).
+  - `gk timemachine list` — unified timeline (`reflog` + `backup` + opt-in `stash` + opt-in `dangling`) newest-first, with `--kinds`, `--limit`, `--all-branches`, `--branch`, `--since`, `--dangling-cap`, and `--json` (NDJSON) for scripting. The `dangling` source runs `git fsck --lost-found`; the default cap is 500 entries so large repos do not hang.
+  - `gk timemachine list-backups` — just the gk-managed backup refs, with `--kind` filter and `--json`.
+  - `gk timemachine show <sha|ref>` — commit header + diff stat (or `--patch`) for any timeline entry; auto-prepends a `gk backup: kind=… branch=… when=…` line when the ref is under `refs/gk/*-backup/`.
+  - Every restore prints the backup ref + a ready-to-paste `gk timemachine restore <backupRef>` revert hint.
+- **`internal/gitsafe`** — new shared package that centralizes the "backup ref + reset" dance. `gitsafe.Restorer` implements a 6-step atomic contract (snapshot → backup → autostash → reset → pop → verify) with structured `RestoreError` stages for precise failure reporting. `gitsafe.DecideStrategy` codifies the hard-reset decision table so CLI and TUI consume one contract. Used internally by `gk undo`, `gk wipe`, and `gk timemachine restore`.
+- **`internal/timemachine`** — unified `Event` stream type and source readers (`ReadHEAD`, `ReadBranches`, `ReadBackups`) plus `Merge` / `Limit` / `FilterByKind` utilities. Consumed by `gk timemachine list`.
+- **`gk guard check`** — first policies-as-code surface. Evaluates every registered rule in parallel and prints sorted violations (error → warn → info) in human or `--json` NDJSON format. Ships one rule (`secret_patterns`) that delegates to gitleaks when installed and emits an info-level no-op violation otherwise. Exit codes: 0 clean / 1 warn / 2 error.
+- **`gk guard init`** — scaffolds `.gk.yaml` in the repo root with a fully-commented `policies:` block.
+- **`gk hooks install --pre-commit`** — new hook that wires `gk guard check` as a git `pre-commit` hook so policy rules run automatically before every commit. `selectHooks` was refactored to iterate `knownHooks()` generically so future hooks only need a `hookSpec` entry and a flag — no branch edits. Every rule stub (`secret_patterns`, `max_commit_size`, `required_trailers`, `forbid_force_push_to`, `require_signed`) is commented-out so the file is valid YAML from day one and users opt in explicitly. Also documents the `.gk/allow.yaml` per-finding suppression convention. Flags: `--force` (overwrite) · `--out <path>` (custom destination).
+- **`internal/policy`** — new package hosting the `Rule` interface, `Registry`, and `Violation` schema. Rules declare `Name()` + `Evaluate(ctx, Input)`; the Registry runs them in parallel and sorts results deterministically.
+- **`internal/policy/rules.SecretPatternsRule`** — the first rule. Thin adapter: calls `scan.RunGitleaks` and maps `GitleaksFinding` → `policy.Violation`.
+- **`internal/scan`** — new package for secret-scanner adapters. Ships `FindGitleaks`, `ParseGitleaksFindings`, `RunGitleaks(ctx, opts)` (exit 1 = findings, not error), and `ErrGitleaksNotInstalled` sentinel. Per the 2026-04-22 probe, gk prefers the industry-standard gitleaks over a rebuilt scanner.
+
+### Changed
+
+- **`gk wipe` now runs a preflight check.** A repo with a rebase/merge/cherry-pick in progress used to let `gk wipe --yes` plough ahead and leave a half-broken state; it now refuses with the same `in-progress … run 'gk continue' or 'gk abort' first` message `gk undo` has always produced.
+- **`gk undo` preflight refactored** to use `internal/gitsafe`. No user-visible behavior change; the old `*git.ExecRunner` type-assertion (which silently disabled in-progress detection under `FakeRunner` in tests) was replaced with an explicit `WithWorkDir` option.
+- **`gk doctor` gains a `gk backup refs` row.** Counts refs under `refs/gk/*-backup/`, breaks down by kind (`undo`/`wipe`/`timemachine`), and surfaces the age of the oldest/newest — so a repo accumulating stale backup refs is visible at a glance.
+- **`gk doctor` gains a `gitleaks` row.** Detects the `gitleaks` binary and its version. Lays groundwork for the gk-guard secret-scanner evaluator (post-probe decision: prefer the industry-standard gitleaks over a rebuilt scanner). WARN when absent with a brew/go install suggestion.
+
+### Removed
+
+- Private `backupRefName` / `wipeBackupRefName` / `safeBranchSegment` / `updateRef` / `resolveRef` helpers in `internal/cli/` — callers now use the exported `gitsafe.BackupRefName` / `gitsafe.Restorer` / `gitsafe.ResolveRef` equivalents. Ref naming format and stdout hints are byte-compatible with v0.6.
+
+### Docs
+
+- [`docs/commands.md`](docs/commands.md) gains a full **gk timemachine** section covering `list`, `list-backups`, and `restore` with flag tables, JSON schema, and examples.
+- [`docs/roadmap-v2.md`](docs/roadmap-v2.md) remains the canonical design reference for the v2 surface (62 leaves, ship slices, Restorer runner call map, TM-14 decision table, kill criteria from the probe).
 - TODO: document `gk push`, `gk sync`, `gk precheck`, `gk preflight`, `gk doctor`, `gk hooks`, `gk undo`, `gk restore`, `gk edit-conflict`, `gk lint-commit`, `gk branch-check` in `docs/commands.md` (pre-existing gaps inherited from 0.2.0 / 0.3.0).
 
 ## [0.6.0] - 2026-04-22

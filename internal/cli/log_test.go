@@ -2,7 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -524,5 +528,121 @@ func TestLogIntegration_JSONOutput(t *testing.T) {
 	// The most recent commit should match sha3.
 	if len(entries) > 0 && entries[0].SHA != sha3 {
 		t.Errorf("entries[0].SHA = %q, want %q", entries[0].SHA, sha3)
+	}
+}
+
+// TestRebaseSafety covers all four classification branches, including the
+// critical pushedKnown=false path that was the subject of the error-vs-zero
+// bug fix (commit 93252d5).
+func TestRebaseSafety(t *testing.T) {
+	const sha = "abc1234"
+	cases := []struct {
+		name         string
+		pushed       map[string]bool
+		pushedKnown  bool
+		amended      map[string]bool
+		amendedKnown bool
+		want         rune
+	}{
+		{
+			name:         "amended takes priority over pushed",
+			pushed:       map[string]bool{sha: true},
+			pushedKnown:  true,
+			amended:      map[string]bool{sha: true},
+			amendedKnown: true,
+			want:         '✎',
+		},
+		{
+			name:         "pushedKnown=false → silent (pre-fix bug: offline showed ◇ on every row)",
+			pushed:       nil,
+			pushedKnown:  false,
+			amended:      nil,
+			amendedKnown: false,
+			want:         ' ',
+		},
+		{
+			name:         "known pushed → silent",
+			pushed:       map[string]bool{sha: true},
+			pushedKnown:  true,
+			amended:      nil,
+			amendedKnown: false,
+			want:         ' ',
+		},
+		{
+			name:         "known not-pushed → ◇",
+			pushed:       map[string]bool{},
+			pushedKnown:  true,
+			amended:      nil,
+			amendedKnown: false,
+			want:         '◇',
+		},
+		{
+			name:         "amendedKnown=false suppresses ✎ even when sha is in map",
+			pushed:       map[string]bool{},
+			pushedKnown:  true,
+			amended:      map[string]bool{sha: true},
+			amendedKnown: false,
+			want:         '◇',
+		},
+	}
+	ctx := context.Background()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// runner is never dereferenced inside rebaseSafety.
+			got := rebaseSafety(ctx, nil, sha, tc.pushed, tc.pushedKnown, tc.amended, tc.amendedKnown)
+			if got != tc.want {
+				t.Errorf("got %q (%U), want %q (%U)", got, got, tc.want, tc.want)
+			}
+		})
+	}
+}
+
+func TestCollectPushedShas_NoUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: r.Dir}
+	_, ok := collectPushedShas(context.Background(), runner)
+	if ok {
+		t.Error("no upstream configured → expected ok=false (unknown), got ok=true")
+	}
+}
+
+func TestCollectPushedShas_WithUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	r.RunGit("remote", "add", "origin", bareDir)
+	r.RunGit("push", "-q", "-u", "origin", "main")
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	m, ok := collectPushedShas(context.Background(), runner)
+	if !ok {
+		t.Fatal("upstream configured → expected ok=true")
+	}
+	if len(m) == 0 {
+		t.Error("expected at least one pushed SHA in map, got empty")
+	}
+}
+
+func TestCollectRecentlyAmended_FreshRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: r.Dir}
+	// Fresh repo: no amend/rebase entries in reflog → ok=true, empty map.
+	m, ok := collectRecentlyAmended(context.Background(), runner)
+	if !ok {
+		t.Error("valid repo → expected ok=true")
+	}
+	if len(m) != 0 {
+		t.Errorf("no amendments → expected empty map, got %v", m)
 	}
 }

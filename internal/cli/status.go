@@ -491,16 +491,30 @@ func visibleWidth(s string) int {
 	return w
 }
 
+// stripControlChars removes ASCII control characters (bytes < 0x20, including
+// ESC) from s before it is written to the terminal. Git itself rejects branch
+// names that contain control characters, so this is defence-in-depth for any
+// value that passes through external sources (e.g. commit messages, stash refs).
+func stripControlChars(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := range len(s) {
+		if s[i] >= 0x20 || s[i] == '\t' {
+			out = append(out, s[i])
+		}
+	}
+	return string(out)
+}
+
 // compactBranch returns the branch name truncated with a middle ellipsis
 // if it exceeds maxWidth. Branch names carry signal at both ends (scope
 // prefix + feature tail), so `feature/api-v2-auth-refactor` → `feat…efactor`
 // preserves both anchors rather than hard-cutting to a head-only prefix.
 // For names within the budget, returns as-is.
 func compactBranch(name string, maxWidth int) string {
-	if maxWidth <= 0 || len([]rune(name)) <= maxWidth {
+	runes := []rune(name)
+	if maxWidth <= 0 || len(runes) <= maxWidth {
 		return name
 	}
-	runes := []rune(name)
 	// Leave room for the ellipsis character (1 cell).
 	keep := maxWidth - 1
 	head := keep / 2
@@ -594,7 +608,9 @@ func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) (string, bool)
 		}
 	}
 	if count == 0 || oldest == 0 {
-		return "", true // known up-to-date
+		// Non-empty rev-list output but no parseable timestamps — treat as
+		// unknown rather than silently claiming up-to-date.
+		return "", false
 	}
 	age := shortAge(time.Unix(oldest, 0))
 	if age == "" {
@@ -1020,13 +1036,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	cyan := color.CyanString
 	faint := color.New(color.Faint).SprintFunc()
 
+	// Sanitize branch/upstream at the display boundary so that any
+	// control characters in external data cannot inject ANSI sequences.
+	displayBranch := stripControlChars(st.Branch)
+	displayUpstream := stripControlChars(st.Upstream)
+
 	// Fresh repo (pre-first-commit): HEAD resolves to nothing, so commit-
 	// based viz (gauge, since-push, base, staleness) all silently fail.
 	// Print a one-line affirmative instead and skip the rest.
 	if isFreshRepo(cmd.Context(), runner) {
 		fmt.Fprintf(w, "%s %s  %s\n",
 			faint("branch:"),
-			bold(st.Branch),
+			bold(displayBranch),
 			faint("· no commits yet  (git add . && git commit)"),
 		)
 		if len(st.Entries) == 0 {
@@ -1068,12 +1089,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		// users relied on since v0.1.
 		if statusVisEnabled("gauge") && st.Upstream != "" {
 			line = renderDivergenceGauge(st.Ahead, st.Behind) +
-				"  " + bold(compactBranch(st.Branch, 32)) +
-				compactUpstreamSuffix(st.Branch, st.Upstream, cyan, faint)
+				"  " + bold(compactBranch(displayBranch, 32)) +
+				compactUpstreamSuffix(displayBranch, displayUpstream, cyan, faint)
 		} else {
-			line = fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
+			line = fmt.Sprintf("%s %s", faint("branch:"), bold(displayBranch))
 			if st.Upstream != "" {
-				line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
+				line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(displayUpstream))
 			}
 			if st.Ahead != 0 || st.Behind != 0 {
 				line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
@@ -1174,7 +1195,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if statusVisEnabled("tree") && len(st.Entries) > 0 {
-		renderStatusTree(w, st.Entries)
+		stats := fetchDiffStats(cmd.Context(), runner)
+		renderStatusTree(w, st.Entries, stats)
 	} else {
 		useGlyphs := statusVisEnabled("glyphs")
 		if len(grouped.Unmerged) > 0 {
@@ -1384,16 +1406,63 @@ func fileRiskScore(ctx context.Context, runner *git.ExecRunner, e git.StatusEntr
 	return diffSize + authorCount*10
 }
 
-// sortByRisk re-orders modified entries so high-risk files rise to the top
-// of the section.
+// collectAuthorCounts returns path → distinct-author count over the last 30
+// days for all provided paths, using a single git log call (one __AUTHOR__
+// marker per commit) instead of one call per file.
+func collectAuthorCounts(ctx context.Context, runner *git.ExecRunner, paths []string) map[string]int {
+	if len(paths) == 0 {
+		return map[string]int{}
+	}
+	args := []string{"log", "--since=30.days.ago", "--name-only", "--format=__AUTHOR__%an", "--"}
+	args = append(args, paths...)
+	out, _, err := runner.Run(ctx, args...)
+	if err != nil {
+		return map[string]int{}
+	}
+	authorsPerFile := map[string]map[string]bool{}
+	var curAuthor string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "__AUTHOR__") {
+			curAuthor = line[len("__AUTHOR__"):]
+			continue
+		}
+		if curAuthor == "" {
+			continue
+		}
+		if authorsPerFile[line] == nil {
+			authorsPerFile[line] = map[string]bool{}
+		}
+		authorsPerFile[line][curAuthor] = true
+	}
+	result := make(map[string]int, len(authorsPerFile))
+	for p, authors := range authorsPerFile {
+		result[p] = len(authors)
+	}
+	return result
+}
+
+// sortByRisk re-orders modified entries so high-risk files rise to the top.
+// Uses 3 git calls total (2 concurrent diffs + 1 log) rather than 3N calls.
 func sortByRisk(ctx context.Context, runner *git.ExecRunner, entries []git.StatusEntry) []git.StatusEntry {
+	paths := make([]string, len(entries))
+	for i, e := range entries {
+		paths[i] = e.Path
+	}
+	diffStats := fetchDiffStats(ctx, runner)
+	authorCounts := collectAuthorCounts(ctx, runner, paths)
+
 	type scored struct {
 		entry git.StatusEntry
 		score int
 	}
 	list := make([]scored, len(entries))
 	for i, e := range entries {
-		list[i] = scored{e, fileRiskScore(ctx, runner, e)}
+		ds := diffStats[e.Path]
+		list[i] = scored{e, ds.added + ds.removed + authorCounts[e.Path]*10}
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].score > list[j].score })
 	out := make([]git.StatusEntry, len(list))
@@ -1562,14 +1631,15 @@ func subtreeCount(n *treeNode) int {
 
 // renderStatusTree writes a hierarchical tree view of the entries to w using
 // box-drawing glyphs. Directory lines carry a subtree-count badge; file lines
-// carry the two-letter XY porcelain code colored by category.
-func renderStatusTree(w io.Writer, entries []git.StatusEntry) {
+// carry the two-letter XY porcelain code colored by category and an optional
+// "+N -N" diff-stat suffix when stats is non-nil.
+func renderStatusTree(w io.Writer, entries []git.StatusEntry, stats map[string]diffStat) {
 	root := buildStatusTree(entries)
 	faint := color.New(color.Faint).SprintFunc()
-	writeChildren(w, root, "", faint)
+	writeChildren(w, root, "", faint, stats)
 }
 
-func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string) {
+func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string, stats map[string]diffStat) {
 	keys := make([]string, 0, len(n.children))
 	for k := range n.children {
 		keys = append(keys, k)
@@ -1593,13 +1663,14 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 		}
 		if child.entry != nil {
 			useGlyphs := statusVisEnabled("glyphs")
-			fmt.Fprintf(w, "%s%s%s%s  %s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), colorXY(child.entry.XY), displayTreeName(child))
+			stat := formatDiffStat(stats, child.entry.Path)
+			fmt.Fprintf(w, "%s%s%s%s  %s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), colorXY(child.entry.XY), displayTreeName(child), stat)
 		} else {
 			fmt.Fprintf(w, "%s%s%s/  %s\n", prefix, faint(branch),
 				color.New(color.Bold).Sprint(child.name),
 				faint(fmt.Sprintf("(%d)", subtreeCount(child))),
 			)
-			writeChildren(w, child, prefix+faint(indent), faint)
+			writeChildren(w, child, prefix+faint(indent), faint, stats)
 		}
 	}
 }
@@ -1613,6 +1684,79 @@ func displayTreeName(n *treeNode) string {
 		return fmt.Sprintf("%s → %s", n.entry.Orig, n.name)
 	}
 	return n.name
+}
+
+// diffStat holds the added/removed line counts for a single file derived from
+// git diff --numstat. Both fields are 0 for untracked files (not in numstat).
+type diffStat struct{ added, removed int }
+
+// parseNumstat parses the output of `git diff --numstat` into a path→diffStat
+// map. Binary files (marked "-") and malformed lines are silently skipped.
+func parseNumstat(out []byte) map[string]diffStat {
+	m := make(map[string]diffStat)
+	for _, line := range strings.Split(string(out), "\n") {
+		cols := strings.SplitN(strings.TrimSpace(line), "\t", 3)
+		if len(cols) != 3 || cols[2] == "" || cols[0] == "-" {
+			continue
+		}
+		a, err1 := strconv.Atoi(cols[0])
+		d, err2 := strconv.Atoi(cols[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		m[cols[2]] = diffStat{added: a, removed: d}
+	}
+	return m
+}
+
+// fetchDiffStats runs git diff --numstat (unstaged) and git diff --cached
+// --numstat (staged) concurrently and merges the counts. Binary files and
+// errors are silently ignored; the caller gets an empty map on total failure.
+func fetchDiffStats(ctx context.Context, runner *git.ExecRunner) map[string]diffStat {
+	type result struct{ m map[string]diffStat }
+	ch1, ch2 := make(chan result, 1), make(chan result, 1)
+
+	go func() {
+		out, _, _ := runner.Run(ctx, "diff", "--numstat")
+		ch1 <- result{m: parseNumstat(out)}
+	}()
+	go func() {
+		out, _, _ := runner.Run(ctx, "diff", "--cached", "--numstat")
+		ch2 <- result{m: parseNumstat(out)}
+	}()
+
+	r1, r2 := <-ch1, <-ch2
+	merged := r1.m
+	for p, s := range r2.m {
+		if ex, ok := merged[p]; ok {
+			merged[p] = diffStat{added: ex.added + s.added, removed: ex.removed + s.removed}
+		} else {
+			merged[p] = s
+		}
+	}
+	return merged
+}
+
+// formatDiffStat returns a colored "+N -N" suffix for path, or "" when no
+// stat is available (untracked files, binary files, errors).
+func formatDiffStat(stats map[string]diffStat, path string) string {
+	s, ok := stats[path]
+	if !ok || (s.added == 0 && s.removed == 0) {
+		return ""
+	}
+	green := color.New(color.FgGreen).SprintfFunc()
+	red := color.New(color.FgRed).SprintfFunc()
+	var parts []string
+	if s.added > 0 {
+		parts = append(parts, green("+%d", s.added))
+	}
+	if s.removed > 0 {
+		parts = append(parts, red("-%d", s.removed))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, " ")
 }
 
 // colorXY picks a color for the two-letter porcelain code based on the

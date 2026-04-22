@@ -869,6 +869,334 @@ gk config get branch.protected
 
 ---
 
+## gk guard
+
+Declarative repo policies. Rules live in `.gk.yaml` under the `policies:` block (v0.9 MVP ships the `secret_patterns` rule; more land incrementally).
+
+### gk guard check
+
+Run every registered policy rule and report violations.
+
+#### Synopsis
+
+```
+gk guard check [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Emit NDJSON violations (one per line) for scripting |
+
+#### Exit codes
+
+| Code | Condition |
+|:----:|-----------|
+| 0 | no violations (or info-only) |
+| 1 | at least one warning |
+| 2 | at least one error |
+
+#### Rules shipped in v0.9
+
+| Name | Severity | Behavior |
+|------|----------|----------|
+| `secret_patterns` | `error` | Runs `gitleaks` (when present) and maps each finding to a Violation. When gitleaks is absent, emits a single `info` Violation so users see why the rule is a no-op. `gk doctor` detects the binary. |
+
+#### Examples
+
+```bash
+# Human-readable table
+gk guard check
+
+# NDJSON for CI
+gk guard check --json | jq 'select(.severity == "error")'
+```
+
+---
+
+### gk guard init
+
+Scaffold `.gk.yaml` in the repository root with a fully-commented `policies:` block. Uncomment and tune rules you want to enforce, then run `gk guard check`.
+
+#### Synopsis
+
+```
+gk guard init [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--force` | `false` | Overwrite existing `.gk.yaml` |
+| `--out` | `<repo>/.gk.yaml` | Write to a custom path instead |
+
+#### Rules scaffolded (all commented-out)
+
+| Name | Description |
+|------|-------------|
+| `secret_patterns` | Gitleaks-backed secret scanning (full history or staged) |
+| `max_commit_size` | Reject commits above a line / file count threshold |
+| `required_trailers` | Enforce git trailers (Signed-off-by, Jira-Ticket, …) |
+| `forbid_force_push_to` | Block force-pushes to protected branches (pre-push hook) |
+| `require_signed` | Require GPG/SSH-signed commits |
+
+The generated file also includes an allow-list comment block pointing to `.gk/allow.yaml` for per-finding suppressions with justification and expiry.
+
+#### Examples
+
+```bash
+# Create .gk.yaml in the current repo
+gk guard init
+
+# Overwrite an existing file
+gk guard init --force
+
+# Preview by writing to a temp path
+gk guard init --out /tmp/gk.yaml && cat /tmp/gk.yaml
+```
+
+---
+
+## gk timemachine
+
+Browse and restore historical repo states from a unified event stream (HEAD reflog + per-branch reflogs + gk backup refs). Every restore writes a fresh backup ref first, so the operation is reversible.
+
+### gk timemachine list
+
+List timeline events newest-first.
+
+#### Synopsis
+
+```
+gk timemachine list [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kinds <list>` | `reflog,backup` | Comma-separated source kinds: `reflog`, `backup`, `stash` (opt-in), `dangling` (opt-in, expensive) |
+| `--limit N` | `50` | Max events (0 = unlimited) |
+| `--all-branches` | `false` | Include reflogs from every local branch (default: HEAD only) |
+| `--branch <name>` | `""` | Filter to a single branch (or `HEAD`); applies to reflog + backup events |
+| `--since <duration>` | `0` | Filter to events at or after (now − duration). Go duration syntax (e.g. `24h`, `168h` for a week) |
+| `--dangling-cap N` | `500` | Max dangling commits to surface when `--kinds` includes `dangling` (0 = unlimited; `git fsck` is O(objects)) |
+| `--json` | `false` | Emit NDJSON (one entry per line) for scripting |
+
+#### JSON schema
+
+Each line is a single JSON object:
+
+```json
+{"kind":"reflog","ref":"HEAD@{1}","oid":"a1b2c3d…","old_oid":"e4f5a6…","when_unix":1700000000,"when_iso":"2023-11-14T22:13:20Z","subject":"reset: moving to HEAD~1","action":"reset"}
+{"kind":"backup","ref":"refs/gk/undo-backup/main/1700000000","oid":"a1b2c3d…","when_unix":1700000000,"when_iso":"2023-11-14T22:13:20Z","subject":"undo-backup @ main","backup_kind":"undo","branch":"main"}
+```
+
+Fields `old_oid`, `action`, `backup_kind`, `branch` are omitted when empty.
+
+#### Examples
+
+```bash
+# Default view (reflog + backups, HEAD only, last 50)
+gk timemachine list
+
+# All branches, NDJSON piped into jq
+gk timemachine list --all-branches --json | jq 'select(.kind=="backup")'
+
+# Only reflog entries, deeper history
+gk timemachine list --kinds reflog --limit 200
+
+# Include the stash stack too (opt-in)
+gk timemachine list --kinds reflog,backup,stash
+
+# Only events on the `feature` branch in the last 24 hours
+gk timemachine list --branch feature --since 24h
+
+# Week's worth of backups on main
+gk timemachine list --branch main --kinds backup --since 168h
+```
+
+---
+
+### gk timemachine list-backups
+
+List gk-managed backup refs (`refs/gk/*-backup/`) newest-first. Each entry can be restored via `gk timemachine restore <ref>`.
+
+#### Synopsis
+
+```
+gk timemachine list-backups [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Emit NDJSON |
+| `--kind <name>` | `""` | Filter by kind: `undo`, `wipe`, `timemachine` |
+
+#### Examples
+
+```bash
+gk timemachine list-backups
+gk timemachine list-backups --kind undo --json
+```
+
+---
+
+### gk timemachine show
+
+Resolve a SHA or ref and print commit details + diff.
+
+#### Synopsis
+
+```
+gk timemachine show <sha|ref> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--patch` | `false` | Show full diff instead of stat only |
+
+When the ref is a gk-managed backup ref (`refs/gk/*-backup/...`), a `gk backup: kind=… branch=… when=…` descriptor line is prepended.
+
+#### Examples
+
+```bash
+# Stat-only summary for HEAD
+gk timemachine show HEAD
+
+# Full patch for an older reflog entry
+gk timemachine show HEAD@{3} --patch
+
+# Inspect a backup ref produced by gk undo
+gk timemachine show refs/gk/undo-backup/main/1700000000
+```
+
+---
+
+### gk timemachine restore
+
+Restore HEAD to the given SHA or ref. A backup ref is written at the current tip before any mutation, so every restore is reversible.
+
+#### Synopsis
+
+```
+gk timemachine restore <sha|ref> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mode soft\|mixed\|hard\|auto` | `auto` | `git reset` mode. `auto` picks Mixed on clean trees, Keep on dirty trees without autostash, Hard+stash on dirty trees with `--autostash` |
+| `--dry-run` | `false` | Print the plan and exit; do not touch the repo |
+| `--autostash` | `false` | When the tree is dirty, stash before reset and pop after |
+| `--force` | `false` | Allow hard reset on a dirty tree without autostash (discards uncommitted changes) |
+
+#### Safety invariants
+
+1. **Backup-before-restore.** A fresh ref is written at `refs/gk/timemachine-backup/<branch>/<unix>` before any HEAD motion.
+2. **In-progress guard.** Restore refuses during rebase / merge / cherry-pick / revert / bisect. `--force` does **not** override this.
+3. **Dirty-tree ordering.** With `--autostash`, the order is: backup → stash → reset → pop. If stash fails, the backup ref is rolled back and no reset is attempted.
+4. **Recovery hints.** Every failure mode surfaces the exact `gk timemachine restore <backupRef>` command to revert.
+
+#### Examples
+
+```bash
+# Restore HEAD to 3 steps back (mixed reset, safe for clean trees)
+gk timemachine restore HEAD@{3}
+
+# Hard restore to a tagged release with autostash (dirty tree OK)
+gk timemachine restore v1.0.0 --mode hard --autostash
+
+# Preview the plan without touching the repo
+gk timemachine restore abc1234 --mode hard --dry-run
+```
+
+---
+
+## gk hooks
+
+Manage git hook shim scripts under `.git/hooks/`. Each shim calls a `gk` subcommand so the hooks stay thin and the logic lives in gk.
+
+gk-managed hooks contain a marker comment. The installer refuses to overwrite a hook that lacks the marker unless `--force` is passed (which writes a timestamped `.bak` before overwriting).
+
+### gk hooks install
+
+Write one or more shim scripts into `.git/hooks/`.
+
+#### Synopsis
+
+```
+gk hooks install [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pre-commit` | `false` | Install the `pre-commit` hook → `gk guard check` |
+| `--commit-msg` | `false` | Install the `commit-msg` hook → `gk lint-commit` |
+| `--pre-push` | `false` | Install the `pre-push` hook → `gk preflight` |
+| `--all` | `false` | Install every hook gk knows about |
+| `--force` | `false` | Overwrite foreign hooks (backs up first) |
+
+#### Installed hooks
+
+| Hook | Invokes | Purpose |
+|------|---------|---------|
+| `pre-commit` | `gk guard check` | Policy rules: secrets, size, trailers |
+| `commit-msg` | `gk lint-commit --file "$1"` | Conventional Commits linting |
+| `pre-push` | `gk preflight` | Configured preflight sequence |
+
+#### Examples
+
+```bash
+# Wire up guard + commit-message linting
+gk hooks install --pre-commit --commit-msg
+
+# Full suite in one shot
+gk hooks install --all
+
+# Overwrite an existing foreign hook
+gk hooks install --pre-commit --force
+```
+
+---
+
+### gk hooks uninstall
+
+Remove gk-managed hook shims. Refuses to remove hooks not written by gk.
+
+#### Synopsis
+
+```
+gk hooks uninstall [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pre-commit` | `false` | Remove the `pre-commit` hook |
+| `--commit-msg` | `false` | Remove the `commit-msg` hook |
+| `--pre-push` | `false` | Remove the `pre-push` hook |
+| `--all` | `false` | Remove every gk-managed hook |
+
+#### Examples
+
+```bash
+gk hooks uninstall --all
+gk hooks uninstall --pre-commit
+```
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |

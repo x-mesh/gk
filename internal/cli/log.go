@@ -687,21 +687,13 @@ func collectHotspots(ctx context.Context, runner *git.ExecRunner) map[string]boo
 	}
 	// Partial sort via full sort — repos are small-ish.
 	// Keep only files with ≥5 touches to avoid marking trivial rename counts.
+	sort.Slice(list, func(i, j int) bool { return list[i].v > list[j].v })
 	result := map[string]bool{}
-	// Sort desc by count.
-	for i := 0; i < len(list); i++ {
-		for j := i + 1; j < len(list); j++ {
-			if list[j].v > list[i].v {
-				list[i], list[j] = list[j], list[i]
-			}
-		}
-		if i >= 10 {
+	for i, item := range list {
+		if i >= 10 || item.v < 5 {
 			break
 		}
-		if list[i].v < 5 {
-			break
-		}
-		result[list[i].k] = true
+		result[item.k] = true
 	}
 	return result
 }
@@ -824,13 +816,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		for k := range typeCounts {
 			keys = append(keys, k)
 		}
-		for i := 0; i < len(keys); i++ {
-			for j := i + 1; j < len(keys); j++ {
-				if typeCounts[keys[j]] > typeCounts[keys[i]] {
-					keys[i], keys[j] = keys[j], keys[i]
-				}
-			}
-		}
+		sort.Slice(keys, func(i, j int) bool { return typeCounts[keys[i]] > typeCounts[keys[j]] })
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			parts = append(parts, fmt.Sprintf("%s=%d", k, typeCounts[k]))

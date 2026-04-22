@@ -573,7 +573,7 @@ func TestRenderStatusTree_Output(t *testing.T) {
 		{Path: "README.md", XY: "??", Kind: git.KindUntracked},
 	}
 	buf := &bytes.Buffer{}
-	renderStatusTree(buf, entries)
+	renderStatusTree(buf, entries, nil)
 	out := buf.String()
 	for _, want := range []string{"src/", "api/", "user.ts", "foo.ts", "README.md", "├─", "└─"} {
 		if !strings.Contains(out, want) {
@@ -894,5 +894,119 @@ func TestRunStatus_Conflict(t *testing.T) {
 	}
 	if !strings.Contains(out, "conflict.txt") {
 		t.Errorf("expected 'conflict.txt' in output, got:\n%s", out)
+	}
+}
+
+func TestVisibleWidth(t *testing.T) {
+	cases := []struct {
+		s    string
+		want int
+	}{
+		{"", 0},
+		{"hello", 5},
+		// ANSI SGR reset around text — escape sequences must not count.
+		{"\x1b[32mok\x1b[0m", 2},
+		// Bold cyan prefix like compactBranch wraps.
+		{"\x1b[1;36mfeat/foo\x1b[0m", 8},
+		// Plain multi-rune UTF-8 (branch name with slash).
+		{"feat/my-branch", 14},
+		// Lone ESC without '[' is not a CSI sequence; counted as one rune.
+		{"\x1bX", 2},
+	}
+	for _, tc := range cases {
+		if got := visibleWidth(tc.s); got != tc.want {
+			t.Errorf("visibleWidth(%q) = %d, want %d", tc.s, got, tc.want)
+		}
+	}
+}
+
+func TestCompactBranch(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxWidth int
+		want     string
+	}{
+		// Short names are returned unchanged.
+		{"main", 32, "main"},
+		{"feat/foo", 8, "feat/foo"},
+		// Exact boundary — no truncation.
+		{"1234567", 7, "1234567"},
+		// One over — truncate with middle ellipsis (head=keep/2, tail=keep-head).
+		// keep=9, head=4, tail=5 → "feat" + "…" + "actor"
+		{"feature/api-v2-auth-refactor", 10, "feat…actor"},
+		// keep=3, head=1, tail=2 → "a" + "…" + "ij"
+		{"abcdefghij", 4, "a…ij"},
+		// maxWidth <= 0 returns original.
+		{"anything", 0, "anything"},
+	}
+	for _, tc := range cases {
+		got := compactBranch(tc.name, tc.maxWidth)
+		if got != tc.want {
+			t.Errorf("compactBranch(%q, %d) = %q, want %q", tc.name, tc.maxWidth, got, tc.want)
+		}
+	}
+}
+
+func TestCompactUpstreamSuffix(t *testing.T) {
+	// Use plain fmt functions so results are deterministic without ANSI state.
+	cyan := func(format string, a ...interface{}) string { return fmt.Sprintf(format, a...) }
+	faint := func(a ...interface{}) string { return fmt.Sprint(a...) }
+
+	cases := []struct {
+		branch   string
+		upstream string
+		wantSub  string // substring that must appear
+		wantNot  string // substring that must NOT appear (empty = skip)
+	}{
+		// Empty upstream → empty output.
+		{"main", "", "", ""},
+		// Branch name matches upstream branch → show remote only (dedup).
+		{"main", "origin/main", "origin", "main"},
+		// Branch differs from upstream branch → show full remote/branch.
+		{"feat/local", "origin/release", "origin/release", ""},
+		// Upstream without slash → render as-is.
+		{"main", "upstream", "upstream", ""},
+	}
+	for _, tc := range cases {
+		got := compactUpstreamSuffix(tc.branch, tc.upstream, cyan, faint)
+		if tc.upstream == "" {
+			if got != "" {
+				t.Errorf("empty upstream: want %q, got %q", "", got)
+			}
+			continue
+		}
+		if !strings.Contains(got, tc.wantSub) {
+			t.Errorf("compactUpstreamSuffix(%q, %q) = %q, missing %q", tc.branch, tc.upstream, got, tc.wantSub)
+		}
+		if tc.wantNot != "" && strings.Contains(got, tc.wantNot) {
+			t.Errorf("compactUpstreamSuffix(%q, %q) = %q, should NOT contain %q", tc.branch, tc.upstream, got, tc.wantNot)
+		}
+	}
+}
+
+func TestFormatDiffStat(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	cases := []struct {
+		name   string
+		stats  map[string]diffStat
+		path   string
+		wantEq string // exact expected result
+	}{
+		{"nil map", nil, "foo.go", ""},
+		{"path not in map", map[string]diffStat{"bar.go": {3, 1}}, "foo.go", ""},
+		{"zero counts", map[string]diffStat{"foo.go": {0, 0}}, "foo.go", ""},
+		{"only added", map[string]diffStat{"foo.go": {5, 0}}, "foo.go", "  +5"},
+		{"only removed", map[string]diffStat{"foo.go": {0, 3}}, "foo.go", "  -3"},
+		{"both", map[string]diffStat{"foo.go": {5, 3}}, "foo.go", "  +5 -3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatDiffStat(tc.stats, tc.path)
+			if got != tc.wantEq {
+				t.Errorf("formatDiffStat(%v) = %q, want %q", tc.stats, got, tc.wantEq)
+			}
+		})
 	}
 }

@@ -30,8 +30,14 @@ log:
 
 status:
   # Default visualization layers for `gk status`. Values: gauge, bar, progress,
-  # types, staleness, tree, conflict, churn, risk. Override per-invocation
+  # types, staleness, tree, conflict, churn, risk, base. Override per-invocation
   # with `--vis ...` or disable all layers with `--vis none`.
+  #
+  # `base` adds a second "from <trunk> [gauge]" line on feature branches,
+  # summarizing how far the current branch has diverged from the repo's
+  # canonical trunk (resolved via `base_branch` below, then refs/remotes/
+  # origin/HEAD, then main/master/develop). Off by default because it adds
+  # ~15ms per invocation (one `git rev-list --left-right --count` call).
   vis: [gauge, bar, progress, tree, staleness]
 
   # When true, `gk status` does a short, quiet fetch of the current branch's

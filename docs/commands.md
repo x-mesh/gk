@@ -223,6 +223,7 @@ Disable globally with `status.auto_fetch: false`, per-invocation with `--no-fetc
 | `conflict` | Appends `[N hunks · both modified]` to each conflicts entry. Hunk count is derived from `<<<<<<<` markers in the worktree file. |
 | `churn` | Appends an 8-cell sparkline to each modified entry (per-commit add+del totals over the file's last 8 commits). Suppressed when the dirty tree has more than 50 files. |
 | `risk` | Flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `diff LOC + distinct-authors-over-30d × 10`, threshold 50. |
+| `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from the repo's mainline. Base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. Suppressed when the current branch *is* the base. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
 
 ### Examples
 

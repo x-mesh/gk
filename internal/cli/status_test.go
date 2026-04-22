@@ -188,6 +188,43 @@ func TestFetchDebounceMarker(t *testing.T) {
 	}
 }
 
+func TestBranchDivergence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	r.CreateBranch("feature/x")
+	r.WriteFile("a.txt", "line1\n")
+	r.RunGit("add", "a.txt")
+	r.RunGit("commit", "-m", "feature commit 1")
+	r.WriteFile("a.txt", "line1\nline2\n")
+	r.RunGit("add", "a.txt")
+	r.RunGit("commit", "-m", "feature commit 2")
+	// main stays one commit behind the feature tip.
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	ahead, behind, ok := branchDivergence(context.Background(), runner, "main", "feature/x")
+	if !ok {
+		t.Fatal("branchDivergence returned ok=false")
+	}
+	if ahead != 2 || behind != 0 {
+		t.Errorf("ahead=%d behind=%d, want 2 / 0", ahead, behind)
+	}
+
+	// Push main forward and verify the "behind" branch picks that up.
+	r.Checkout("main")
+	r.WriteFile("b.txt", "mainonly\n")
+	r.RunGit("add", "b.txt")
+	r.RunGit("commit", "-m", "main-only commit")
+	ahead2, behind2, ok := branchDivergence(context.Background(), runner, "main", "feature/x")
+	if !ok {
+		t.Fatal("branchDivergence returned ok=false (2)")
+	}
+	if ahead2 != 2 || behind2 != 1 {
+		t.Errorf("ahead=%d behind=%d, want 2 / 1", ahead2, behind2)
+	}
+}
+
 func TestFastPathDebounced(t *testing.T) {
 	repo := t.TempDir()
 	dotGit := filepath.Join(repo, ".git")

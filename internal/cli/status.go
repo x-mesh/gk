@@ -46,7 +46,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVar(&statusNoFetch, "no-fetch", false, "skip the quiet upstream fetch (same as GK_NO_FETCH=1 or status.auto_fetch: false)")
 	rootCmd.AddCommand(cmd)
 }
@@ -211,6 +211,82 @@ func startFetchSpinner(msg string) (stop func()) {
 	}
 }
 
+// resolveBaseBranchForStatus picks the branch to compare the current
+// branch against for divergence reporting. Priority:
+//
+//  1. `status.base_branch` (project config) or the top-level `base_branch`
+//     — lets teams pin a canonical trunk like `develop`.
+//  2. `client.DefaultBranch(remote)` — honors refs/remotes/<remote>/HEAD.
+//  3. First of "main" / "master" / "develop" that exists locally.
+//
+// Returns empty string when nothing sensible can be resolved.
+func resolveBaseBranchForStatus(ctx context.Context, runner *git.ExecRunner, client *git.Client, cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.BaseBranch) != "" {
+		return strings.TrimSpace(cfg.BaseBranch)
+	}
+	remote := "origin"
+	if cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
+	if name, err := client.DefaultBranch(ctx, remote); err == nil && name != "" {
+		return name
+	}
+	for _, cand := range []string{"main", "master", "develop"} {
+		if localBranchExists(ctx, runner, cand) {
+			return cand
+		}
+	}
+	return ""
+}
+
+// branchDivergence returns (ahead, behind) commit counts of head versus
+// base in a single `git rev-list --left-right --count base...head` call.
+// The git output is "<behind>\t<ahead>" (left-of-base, right-of-head).
+func branchDivergence(ctx context.Context, runner *git.ExecRunner, base, head string) (ahead, behind int, ok bool) {
+	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", base+"..."+head)
+	if err != nil {
+		return 0, 0, false
+	}
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	behind, _ = strconv.Atoi(parts[0])
+	ahead, _ = strconv.Atoi(parts[1])
+	return ahead, behind, true
+}
+
+// renderBaseDivergence returns a single line summarizing how the current
+// branch has diverged from its base — `from main [..gauge..] (+3 −0)`.
+// Suppressed when:
+//   - the current branch is empty, or already is the base branch;
+//   - the base cannot be resolved (e.g., fresh repo with no mainline);
+//   - git rev-list fails for any reason (offline refs, pruned histories).
+// One `rev-list` call; ≤10 ms on typical repos.
+func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string) string {
+	if currentBranch == "" {
+		return ""
+	}
+	base := resolveBaseBranchForStatus(cmd.Context(), runner, client, cfg)
+	if base == "" || base == currentBranch {
+		return ""
+	}
+	ahead, behind, ok := branchDivergence(cmd.Context(), runner, base, currentBranch)
+	if !ok {
+		return ""
+	}
+	// renderDivergenceGauge already prints "(↑N ↓M)" or "in sync" as its
+	// suffix so no extra count string is needed here — the visual matches
+	// the branch/upstream gauge on the line above, cementing the "same
+	// semantics" reading.
+	faint := color.New(color.Faint).SprintFunc()
+	return fmt.Sprintf("  %s %s  %s",
+		faint("from"),
+		color.CyanString(base),
+		renderDivergenceGauge(ahead, behind),
+	)
+}
+
 // fastPathDebounced short-circuits maybeFetchUpstream on warm calls by
 // stat()-ing the default marker path directly. It only succeeds when
 // `<repoDir>/.git/gk/last-fetch` exists and is recent — i.e., a regular
@@ -344,6 +420,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Fprintln(w, line)
+
+	if statusVisEnabled("base") {
+		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch); baseLine != "" {
+			fmt.Fprintln(w, baseLine)
+		}
+	}
 
 	// group entries by Kind
 	grouped := groupEntries(st.Entries)

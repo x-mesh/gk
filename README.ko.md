@@ -145,6 +145,7 @@ gk preflight               # 설정된 검사 순서 실행
 | 명령어 | 설명 |
 |---|---|
 | `gk doctor` | 환경 상태 보고 (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs); `--json` for CI |
+| `gk init ai [--kiro] [--force] [--out <dir>]` | `CLAUDE.md` + `AGENTS.md` 스캐폴드 (옵션: `.kiro/steering/`). AI 코딩 어시스턴트가 즉시 프로젝트 컨텍스트를 파악할 수 있게 합니다 |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | `.git/hooks/` 아래 gk 관리 훅 심 설치 (`--pre-commit`은 `gk guard check` 연결) |
 | `gk hooks uninstall [...]` | gk 관리 훅 제거 (외부 훅은 삭제 거부) |
 | `gk config show` | 완전히 해석된 설정을 YAML로 출력 |

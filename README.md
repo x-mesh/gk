@@ -139,6 +139,7 @@ gk preflight               # run the configured check sequence
 | Command | Description |
 |---|---|
 | `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs) with fix commands; `--json` for CI |
+| `gk init ai [--kiro] [--force] [--out <dir>]` | Scaffold `CLAUDE.md` + `AGENTS.md` (and optionally `.kiro/steering/`) so AI coding assistants have immediate project context |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | Write gk-managed hook shims under `.git/hooks/` (`--pre-commit` wires `gk guard check`) |
 | `gk hooks uninstall [...]` | Remove gk-managed hooks (refuses to delete foreign ones) |
 | `gk config show` | Print fully resolved config as YAML |

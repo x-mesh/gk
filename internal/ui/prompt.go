@@ -69,6 +69,20 @@ func (p *TermPrompter) ConflictChoice(title, context string, allowed []ConflictC
 	return ConflictChoice(picked), nil
 }
 
+// Confirm shows a yes/no prompt and returns the user's choice. On a non-TTY
+// session it returns ErrNonInteractive so callers can require --yes flags.
+func Confirm(title string, defaultYes bool) (bool, error) {
+	if !IsTerminal() {
+		return false, ErrNonInteractive
+	}
+	v := defaultYes
+	form := huh.NewConfirm().Title(title).Value(&v)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return v, nil
+}
+
 // AutoPrompter returns a fixed default choice without user interaction.
 // Used in non-TTY environments (CI, piped input).
 type AutoPrompter struct {

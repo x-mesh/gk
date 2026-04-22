@@ -22,12 +22,16 @@ var (
 	rootCmd = &cobra.Command{
 		Use:           "gk",
 		Short:         "gk — git helper",
-		Long:          "A lightweight Go git helper for daily pull / log / status / branch workflows.",
+		Long:          rootLongDesc,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       "", // set by SetVersionInfo
 	}
 )
+
+// rootLongDesc is the human-readable description shown by `gk --help`.
+// SetVersionInfo prepends a `gk vX.Y.Z (...)` header at startup.
+const rootLongDesc = "A lightweight Go git helper for daily pull / log / status / branch workflows."
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&flagRepo, "repo", "", "path to git repo (default: cwd)")
@@ -41,9 +45,11 @@ func init() {
 // via init() to attach themselves: cli.Root().AddCommand(...)
 func Root() *cobra.Command { return rootCmd }
 
-// SetVersionInfo wires build-time version metadata for `gk --version` output.
+// SetVersionInfo wires build-time version metadata for `gk --version` output
+// and prepends the version line to the root help page.
 func SetVersionInfo(v, c, d string) {
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", v, c, d)
+	rootCmd.Long = fmt.Sprintf("gk %s (commit %s, built %s)\n\n%s", v, c, d, rootLongDesc)
 }
 
 // Execute runs the root command. Returns the error so main.go can set exit code.

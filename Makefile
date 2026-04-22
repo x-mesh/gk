@@ -2,10 +2,16 @@
 
 BINARY := gk
 LDFLAGS := -s -w -X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) -X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PREFIX    ?= $(HOME)/.local
+BINDIR    := $(PREFIX)/bin
 
 build:
 	go build -ldflags='$(LDFLAGS)' -o bin/$(BINARY) ./cmd/gk
 
+install: build
+	install -d $(BINDIR)
+	install -m 755 bin/$(BINARY) $(BINDIR)/$(BINARY)
+	
 test:
 	go test ./... -race -cover
 

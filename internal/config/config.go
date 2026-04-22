@@ -67,7 +67,8 @@ func Defaults() Config {
 		BaseBranch: "",
 		Remote:     "origin",
 		Log: LogConfig{
-			Format: "%h %s %cr <%an>",
+			// Color tokens require `--color=always` (or a TTY); gk handles that in runLog.
+			Format: "%C(yellow)%h%C(reset) %C(green)(%ar)%C(reset) %C(bold blue)<%an>%C(reset) %s%C(auto)%d%C(reset)",
 			Graph:  false,
 			Limit:  20,
 		},

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -52,8 +54,15 @@ func runLog(cmd *cobra.Command, args []string) error {
 	gitArgs := []string{"log"}
 	if JSONOut() {
 		// JSON 모드는 필드를 NUL로 나눠 안전 파싱
-		gitArgs = append(gitArgs, "-z", "--pretty=format:"+jsonLogFormat, "--date=iso-strict")
+		gitArgs = append(gitArgs, "-z", "--pretty=format:"+jsonLogFormat, "--date=iso-strict", "--color=never")
 	} else {
+		// git은 stdout이 파이프일 때 %C(...) 포맷 코드를 스트립한다.
+		// 우리는 버퍼로 캡처하므로 최종 출력 대상이 TTY이면 명시적으로 색상을 강제한다.
+		if logUseColor() {
+			gitArgs = append(gitArgs, "--color=always")
+		} else {
+			gitArgs = append(gitArgs, "--color=never")
+		}
 		gitArgs = append(gitArgs, "--pretty=format:"+format)
 		if graph {
 			gitArgs = append(gitArgs, "--graph", "--decorate", "--topo-order", "--abbrev-commit")
@@ -93,6 +102,18 @@ const (
 )
 
 var shortSinceRE = regexp.MustCompile(`^(\d+)\s*([smhdwMy])$`)
+
+// logUseColor decides whether git log output should include ANSI color codes.
+// Order: --no-color flag → NO_COLOR env → stdout TTY check.
+func logUseColor() bool {
+	if NoColorFlag() {
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	return ui.IsTerminal()
+}
 
 // normalizeSince converts short forms like "1w", "3d" into git-friendly strings.
 // Everything else is passed through unchanged.

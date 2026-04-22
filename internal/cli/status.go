@@ -147,7 +147,12 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 	)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
+
+	stopSpinner := startFetchSpinner("fetching " + remote + "...")
+	err := cmd.Run()
+	stopSpinner()
+
+	if err != nil {
 		// Fetch failed (offline, auth, timeout). Touching the marker
 		// on failure would mask a transient issue — leave the marker
 		// alone so the next `st` retries immediately.
@@ -155,6 +160,54 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 	}
 	if gitDir != "" {
 		markFetch(gitDir)
+	}
+}
+
+// spinnerFrames is a small braille-dot animation that's readable in
+// every modern monospace font and plays well with a short fetch window.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// spinnerStartDelay — quick fetches (e.g., local filesystem remote, or a
+// debounced skip that still reached here through an edge case) finish
+// faster than the first draw, so no spinner ever appears. This avoids
+// a flash of animation that would immediately clear.
+const spinnerStartDelay = 150 * time.Millisecond
+
+// startFetchSpinner draws a stderr-bound braille spinner until stop() is
+// called. Non-TTY stderr (pipes, CI, `2>file`) makes it a no-op so status
+// output streams stay clean. The first frame is delayed so sub-150ms
+// fetches never draw anything to clear.
+func startFetchSpinner(msg string) (stop func()) {
+	if !ui.IsStderrTerminal() {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		select {
+		case <-done:
+			return // fetch finished before we ever drew
+		case <-time.After(spinnerStartDelay):
+		}
+		t := time.NewTicker(80 * time.Millisecond)
+		defer t.Stop()
+		i := 0
+		for {
+			fmt.Fprintf(os.Stderr, "\r%s %s", spinnerFrames[i], msg)
+			select {
+			case <-done:
+				// Clear the line so nothing leaks into post-fetch output.
+				fmt.Fprint(os.Stderr, "\r\x1b[2K")
+				return
+			case <-t.C:
+				i = (i + 1) % len(spinnerFrames)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
 	}
 }
 

@@ -38,6 +38,13 @@ func IsTerminal() bool {
 	return term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stdin.Fd()))
 }
 
+// IsStderrTerminal reports whether stderr is a TTY. Used when a command
+// wants to draw progress output without polluting a piped stdout —
+// `gk status` prints porcelain to stdout but a fetch spinner to stderr.
+func IsStderrTerminal() bool {
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 // NewPrompter returns TermPrompter if stdout is a TTY, otherwise AutoPrompter(def).
 func NewPrompter(def ConflictChoice) Prompter {
 	if IsTerminal() {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -465,6 +466,48 @@ func topDir(p string) string {
 	return "."
 }
 
+// visibleWidth approximates the terminal cell width of s, subtracting ANSI
+// CSI SGR escape sequences (`\x1b[...m`) and counting runes (close enough
+// for the BMP glyphs gk uses; CJK-wide runes that exist in some branch
+// names will undercount, which only triggers a false-negative drop — we
+// keep the suffix we could have omitted, never wrap when we shouldn't).
+func visibleWidth(s string) int {
+	w := 0
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until final byte (alpha) of CSI sequence.
+			j := i + 2
+			for j < len(s) && !((s[j] >= '@' && s[j] <= '~')) {
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		w++
+		i += size
+	}
+	return w
+}
+
+// compactBranch returns the branch name truncated with a middle ellipsis
+// if it exceeds maxWidth. Branch names carry signal at both ends (scope
+// prefix + feature tail), so `feature/api-v2-auth-refactor` → `feat…efactor`
+// preserves both anchors rather than hard-cutting to a head-only prefix.
+// For names within the budget, returns as-is.
+func compactBranch(name string, maxWidth int) string {
+	if maxWidth <= 0 || len([]rune(name)) <= maxWidth {
+		return name
+	}
+	runes := []rune(name)
+	// Leave room for the ellipsis character (1 cell).
+	keep := maxWidth - 1
+	head := keep / 2
+	tail := keep - head
+	return string(runes[:head]) + "…" + string(runes[len(runes)-tail:])
+}
+
 // compactUpstreamSuffix renders the trailing "  → <remote-or-path>"
 // fragment for the gauge-head layout. Dedup rule:
 //
@@ -481,7 +524,7 @@ func compactUpstreamSuffix(branch, upstream string, cyan func(format string, a .
 	}
 	slash := strings.IndexByte(upstream, '/')
 	if slash <= 0 || slash >= len(upstream)-1 {
-		return "  " + faint("→ ") + cyan("%s", upstream)
+		return " " + faint("→") + " " + cyan("%s", upstream)
 	}
 	remote := upstream[:slash]
 	upstreamBranch := upstream[slash+1:]
@@ -489,7 +532,11 @@ func compactUpstreamSuffix(branch, upstream string, cyan func(format string, a .
 	if upstreamBranch == branch {
 		target = remote
 	}
-	return "  " + faint("→ ") + cyan("%s", target)
+	// Single-space around `→` so the arrow binds visually to the pair it
+	// connects (branch→remote reads as one unit) while the outer double-
+	// space before the suffix still separates the branch-identity block
+	// from the subsequent age ribbons.
+	return " " + faint("→") + " " + cyan("%s", target)
 }
 
 // detachedShortSHA returns the abbreviated commit id for the current HEAD
@@ -1010,7 +1057,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		// users relied on since v0.1.
 		if statusVisEnabled("gauge") && st.Upstream != "" {
 			line = renderDivergenceGauge(st.Ahead, st.Behind) +
-				"  " + bold(st.Branch) +
+				"  " + bold(compactBranch(st.Branch, 32)) +
 				compactUpstreamSuffix(st.Branch, st.Upstream, cyan, faint)
 		} else {
 			line = fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
@@ -1022,9 +1069,26 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	// C3 polish: staleness and since-push are informational tails — if
+	// appending them would overflow the TTY, drop them rather than wrap
+	// the line and destroy the gauge-head anchor. Wrapping a single-line
+	// branch header is strictly worse than dropping a secondary age.
+	ttyW, haveTTY := ui.TTYWidth()
+	wouldOverflow := func(extra string) bool {
+		if !haveTTY || ttyW <= 0 {
+			return false
+		}
+		// len() is byte-count — Unicode glyphs inflate past cell count,
+		// but the gauge/glyph glyphs we use are single-cell so treating
+		// this as an upper bound (pessimistic) is fine.
+		return visibleWidth(line)+visibleWidth(extra) > ttyW
+	}
 	if statusVisEnabled("staleness") {
 		if ago := lastCommitAgo(cmd, runner); ago != "" {
-			line += "  " + faint("· last commit "+ago)
+			extra := "  " + faint("· last commit "+ago)
+			if !wouldOverflow(extra) {
+				line += extra
+			}
 		}
 	}
 	if statusVisEnabled("since-push") && !detached {
@@ -1035,7 +1099,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 					unpushed = unpushed[:i]
 				}
 			}
-			line += "  " + faint("· "+unpushed)
+			extra := "  " + faint("· "+unpushed)
+			if !wouldOverflow(extra) {
+				line += extra
+			}
 		}
 	}
 	fmt.Fprintln(w, line)
@@ -1878,18 +1945,19 @@ func renderDivergenceGauge(ahead, behind int) string {
 	case ahead == 0 && behind == 0:
 		suffix = "  " + color.New(color.Faint).Sprint("in sync")
 	default:
+		// Behind leads when both are present — it's the actionable half
+		// (must pull/rebase before pushing). Parens dropped (refine polish
+		// Round 2): they inherited from an older rendering that needed to
+		// disambiguate a mid-line suffix, but with gauge-head layout the
+		// arrow glyphs already carry that role.
 		parts := make([]string, 0, 2)
-		if ahead > 0 {
-			parts = append(parts, fmt.Sprintf("↑%d", ahead))
-		}
 		if behind > 0 {
 			parts = append(parts, fmt.Sprintf("↓%d", behind))
 		}
-		if narrow {
-			suffix = "  " + strings.Join(parts, " ")
-		} else {
-			suffix = "  (" + strings.Join(parts, " ") + ")"
+		if ahead > 0 {
+			parts = append(parts, fmt.Sprintf("↑%d", ahead))
 		}
+		suffix = "  " + strings.Join(parts, " ")
 	}
 	return fmt.Sprintf("[%s%s%s]%s",
 		color.GreenString(left),

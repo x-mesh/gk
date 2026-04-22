@@ -10,6 +10,7 @@ type Config struct {
 	Branch     BranchConfig    `mapstructure:"branch"      yaml:"branch"`
 	Commit     CommitConfig    `mapstructure:"commit"      yaml:"commit"`
 	Push       PushConfig      `mapstructure:"push"        yaml:"push"`
+	Pull       PullConfig      `mapstructure:"pull"        yaml:"pull"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 }
 
@@ -67,6 +68,13 @@ type PushConfig struct {
 	AllowForce     bool     `mapstructure:"allow_force"     yaml:"allow_force"`
 }
 
+// PullConfig controls gk pull behaviour.
+// Strategy accepts: "rebase" (default), "merge", "ff-only", "auto".
+// "auto" reads git config pull.rebase; if unset, falls back to "rebase".
+type PullConfig struct {
+	Strategy string `mapstructure:"strategy" yaml:"strategy"`
+}
+
 // PreflightConfig controls the sequence of checks gk preflight runs.
 type PreflightConfig struct {
 	Steps []PreflightStep `mapstructure:"steps" yaml:"steps"`
@@ -120,6 +128,9 @@ func Defaults() Config {
 			Protected:      []string{"main", "master"},
 			SecretPatterns: nil, // user-added; built-ins live in internal/secrets
 			AllowForce:     false,
+		},
+		Pull: PullConfig{
+			Strategy: "rebase",
 		},
 		Preflight: PreflightConfig{
 			Steps: []PreflightStep{

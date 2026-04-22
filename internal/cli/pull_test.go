@@ -302,6 +302,130 @@ func TestRunPull_Conflict(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// resolveUpstreamFromRunner tests
+// ---------------------------------------------------------------------------
+
+func TestResolveUpstream_FallsBackToBase(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --abbrev-ref --symbolic-full-name @{u}": {ExitCode: 128, Stderr: "fatal: no upstream\n"},
+		},
+	}
+	upstream, fetchRemote, fetchBranch := resolveUpstreamFromRunner(context.Background(), fake, "origin", "main")
+	if upstream != "origin/main" {
+		t.Errorf("upstream = %q, want origin/main", upstream)
+	}
+	if fetchRemote != "origin" || fetchBranch != "main" {
+		t.Errorf("fetch = %q/%q, want origin/main", fetchRemote, fetchBranch)
+	}
+}
+
+func TestResolveUpstream_ParsesTrackingRef(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --abbrev-ref --symbolic-full-name @{u}": {Stdout: "upstream/feat/my-branch\n"},
+		},
+	}
+	upstream, fetchRemote, fetchBranch := resolveUpstreamFromRunner(context.Background(), fake, "origin", "main")
+	if upstream != "upstream/feat/my-branch" {
+		t.Errorf("upstream = %q", upstream)
+	}
+	if fetchRemote != "upstream" {
+		t.Errorf("fetchRemote = %q, want upstream", fetchRemote)
+	}
+	if fetchBranch != "feat/my-branch" {
+		t.Errorf("fetchBranch = %q, want feat/my-branch", fetchBranch)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveStrategyFromRunner tests
+// ---------------------------------------------------------------------------
+
+func TestResolveStrategy_ExplicitFlag(t *testing.T) {
+	fake := &git.FakeRunner{}
+	got := resolveStrategyFromRunner(context.Background(), "ff-only", "merge", fake)
+	if got != "ff-only" {
+		t.Errorf("strategy = %q, want ff-only", got)
+	}
+}
+
+func TestResolveStrategy_CfgOverridesGitConfig(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get pull.rebase": {Stdout: "false\n"},
+		},
+	}
+	// cfgStrategy = "rebase" should win over git config pull.rebase=false
+	got := resolveStrategyFromRunner(context.Background(), "", "rebase", fake)
+	if got != pullStrategyRebase {
+		t.Errorf("strategy = %q, want rebase", got)
+	}
+}
+
+func TestResolveStrategy_GitConfigFalse(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get pull.rebase": {Stdout: "false\n"},
+		},
+	}
+	got := resolveStrategyFromRunner(context.Background(), "", "", fake)
+	if got != pullStrategyMerge {
+		t.Errorf("strategy = %q, want merge", got)
+	}
+}
+
+func TestResolveStrategy_GitConfigTrue(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get pull.rebase": {Stdout: "true\n"},
+		},
+	}
+	got := resolveStrategyFromRunner(context.Background(), "", "", fake)
+	if got != pullStrategyRebase {
+		t.Errorf("strategy = %q, want rebase", got)
+	}
+}
+
+func TestResolveStrategy_DefaultRebase(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get pull.rebase": {ExitCode: 1},
+		},
+	}
+	got := resolveStrategyFromRunner(context.Background(), "", "", fake)
+	if got != pullStrategyRebase {
+		t.Errorf("strategy = %q, want rebase", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isFastForwardPossible tests
+// ---------------------------------------------------------------------------
+
+func TestIsFastForwardPossible_True(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"merge-base --is-ancestor HEAD origin/main": {ExitCode: 0},
+		},
+	}
+	if !isFastForwardPossible(context.Background(), fake, "origin/main") {
+		t.Error("expected ff to be possible")
+	}
+}
+
+func TestIsFastForwardPossible_False(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"merge-base --is-ancestor HEAD origin/main": {ExitCode: 1},
+		},
+	}
+	if isFastForwardPossible(context.Background(), fake, "origin/main") {
+		t.Error("expected ff to NOT be possible")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Integration test
 // ---------------------------------------------------------------------------
 

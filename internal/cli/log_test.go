@@ -46,8 +46,8 @@ func TestCcClassify(t *testing.T) {
 	}{
 		{"feat: x", "feat", "▲"},
 		{"fix(auth): y", "fix", "✕"},
-		{"refactor!: z", "refactor", "↻"},
-		{"chore(release): v0.4.0", "chore", "·"},
+		{"refactor!: z", "refactor", "⟳"},
+		{"chore(release): v0.4.0", "chore", "⊖"},
 		{"docs: update readme", "docs", "¶"},
 		{"random subject with no prefix", "", ""},
 		{"wip hack", "", ""},

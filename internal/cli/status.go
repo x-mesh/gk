@@ -313,9 +313,11 @@ func fileKindGlyph(path string) (glyph string, paint func(format string, a ...in
 }
 
 // glyphPrefix returns the colored glyph + trailing space to prepend to an
-// entry line when `--vis glyphs` is enabled; empty string otherwise. Kept
-// as a free function so every render path (flat sections + tree leaf) can
-// call it the same way.
+// entry line when `--vis glyphs` is enabled; empty string otherwise. We
+// intentionally do NOT reserve the 2-cell column when disabled — wasting
+// horizontal space on every invocation to preserve muscle memory for the
+// rare user who A/B toggles the flag would penalize the common case where
+// glyphs is either on (column always present) or off (column never).
 func glyphPrefix(path string, enabled bool) string {
 	if !enabled {
 		return ""
@@ -455,6 +457,16 @@ func topDir(p string) string {
 		return p[:i] + "/"
 	}
 	return "."
+}
+
+// detachedShortSHA returns the abbreviated commit id for the current HEAD
+// when the branch name is "(detached)". Empty string on any error.
+func detachedShortSHA(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // sincePushSuffix returns a compact "since push Xh (Nc)" fragment meant
@@ -787,23 +799,50 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	cyan := color.CyanString
 	faint := color.New(color.Faint).SprintFunc()
 
+	// Detached HEAD: `git status --porcelain=v2` emits `branch.head (detached)`
+	// which, when passed to rev-list downstream, produces "ambiguous argument"
+	// errors that get swallowed silently. We render a dedicated warning line
+	// and skip every upstream-dependent viz (gauge, since-push, base) so the
+	// user sees the failure mode explicitly rather than missing rows.
+	detached := st.Branch == "" || st.Branch == "(detached)"
 	// branch line
-	line := fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
-	if st.Upstream != "" {
-		line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
-	}
-	if statusVisEnabled("gauge") && st.Upstream != "" {
-		line += "  " + renderDivergenceGauge(st.Ahead, st.Behind)
-	} else if st.Ahead != 0 || st.Behind != 0 {
-		line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
+	var line string
+	switch {
+	case detached:
+		short := detachedShortSHA(cmd.Context(), runner)
+		if short == "" {
+			short = "?"
+		}
+		line = fmt.Sprintf("%s %s %s  %s",
+			faint("branch:"),
+			color.New(color.Faint).Sprint("HEAD @"),
+			color.YellowString(short),
+			color.New(color.FgYellow, color.Bold).Sprint("⚠ detached"),
+		)
+	default:
+		line = fmt.Sprintf("%s %s", faint("branch:"), bold(st.Branch))
+		if st.Upstream != "" {
+			line += fmt.Sprintf("  %s %s", faint("⇄"), cyan(st.Upstream))
+		}
+		if statusVisEnabled("gauge") && st.Upstream != "" {
+			line += "  " + renderDivergenceGauge(st.Ahead, st.Behind)
+		} else if st.Ahead != 0 || st.Behind != 0 {
+			line += fmt.Sprintf("  ↑%d ↓%d", st.Ahead, st.Behind)
+		}
 	}
 	if statusVisEnabled("staleness") {
 		if ago := lastCommitAgo(cmd, runner); ago != "" {
 			line += "  " + faint("· last commit "+ago)
 		}
 	}
-	if statusVisEnabled("since-push") {
+	if statusVisEnabled("since-push") && !detached {
 		if unpushed := sincePushSuffix(cmd.Context(), runner); unpushed != "" {
+			// R6: drop the "(Nc)" count when the gauge is already showing it.
+			if statusVisEnabled("gauge") {
+				if i := strings.Index(unpushed, " ("); i > 0 {
+					unpushed = unpushed[:i]
+				}
+			}
 			line += "  " + faint("· "+unpushed)
 		}
 	}
@@ -815,7 +854,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if statusVisEnabled("base") {
+	if statusVisEnabled("base") && !detached {
 		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
 		}
@@ -1625,8 +1664,13 @@ func renderDivergenceGauge(ahead, behind int) string {
 	if bFill > perSide {
 		bFill = perSide
 	}
+	// Asymmetric glyphs so direction is legible without color: ahead side
+	// uses the denser `▓` (you're pushing outward), behind side uses the
+	// lighter `▒` (upstream is filling in from the other direction). Red-
+	// green colorblind users read direction from the shape contrast, not
+	// from color.
 	left := strings.Repeat("·", perSide-aFill) + strings.Repeat("▓", aFill)
-	right := strings.Repeat("▓", bFill) + strings.Repeat("·", perSide-bFill)
+	right := strings.Repeat("▒", bFill) + strings.Repeat("·", perSide-bFill)
 
 	var suffix string
 	switch {

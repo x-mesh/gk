@@ -520,16 +520,22 @@ type ccType struct {
 // vary in width across fonts, and clash with the project's otherwise
 // technical aesthetic. Each entry pairs a geometric glyph with a subject
 // color so even in --no-color mode the prefix remains legible.
+//
+// Glyphs are deliberately disjoint from `status`'s file-kind column:
+// `↻` (status: generated) → `⟳` here; `▣` (asset) → `◫`; `⊙` (lockfile)
+// → `⊛`; `·` (unknown / separator) → `⊖`; `↑` (ahead arrow) → `▸`.
+// Only `¶` is shared because both layers mean "docs-flavored" and the
+// context (file vs commit) removes ambiguity.
 var ccTypes = []ccType{
 	{"feat", "▲", color.GreenString},
 	{"fix", "✕", color.RedString},
-	{"refactor", "↻", color.YellowString},
+	{"refactor", "⟳", color.YellowString},
 	{"docs", "¶", color.BlueString},
-	{"chore", "·", color.New(color.Faint).Sprintf},
+	{"chore", "⊖", color.New(color.Faint).Sprintf},
 	{"test", "◎", color.MagentaString},
-	{"perf", "↑", color.CyanString},
-	{"ci", "⊙", color.New(color.Faint).Sprintf},
-	{"build", "▣", color.CyanString},
+	{"perf", "▸", color.CyanString},
+	{"ci", "⊛", color.New(color.Faint).Sprintf},
+	{"build", "◫", color.CyanString},
 	{"revert", "←", color.RedString},
 	{"style", "✧", color.New(color.Faint).Sprintf},
 }
@@ -802,8 +808,20 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 
 		var prefix, suffix strings.Builder
 		if v.safety {
+			// Color by severity: `✎` amended is red-bold because force-pushing
+			// a rewritten commit can break collaborators; `◇` unpushed is
+			// yellow because it's a reminder, not a warning. Pushed commits
+			// stay blank — the whole point of the column is to draw the eye
+			// only when action is needed.
 			if mark := rebaseSafety(ctx, runner, r.sha, pushed, amended); mark != ' ' {
-				prefix.WriteRune(mark)
+				switch mark {
+				case '✎':
+					prefix.WriteString(color.New(color.FgRed, color.Bold).Sprint(string(mark)))
+				case '◇':
+					prefix.WriteString(color.YellowString(string(mark)))
+				default:
+					prefix.WriteRune(mark)
+				}
 				prefix.WriteByte(' ')
 			}
 		}
@@ -827,7 +845,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		n := numstats[r.sha]
 		if v.hotspots {
 			if commitHitsHotspot(n.files, hotspots) {
-				suffix.WriteString("  " + color.RedString("🔥"))
+				suffix.WriteString("  " + color.RedString("◉"))
 			}
 		}
 		if v.impact {

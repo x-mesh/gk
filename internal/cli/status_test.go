@@ -783,7 +783,9 @@ func TestRenderDivergenceGauge(t *testing.T) {
 		{
 			name:  "behind only",
 			ahead: 0, behind: 3,
-			mustContain:    []string{"········│▓▓▓·····", "↓3"},
+			// R3: behind side uses `▒` (lighter shade) so direction is
+			// legible without color for red-green colorblind users.
+			mustContain:    []string{"········│▒▒▒·····", "↓3"},
 			mustNotContain: []string{"↑"},
 		},
 		{

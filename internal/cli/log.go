@@ -566,17 +566,20 @@ func renderImpactBar(adds, dels, peak int) string {
 }
 
 // rebaseSafety classifies a commit by its relation to the current upstream.
+// The "already pushed" case — which is the overwhelming majority on an
+// active branch — returns a blank space on purpose: marking every pushed
+// commit with a glyph would flood the log column and drown out the cases
+// that actually deserve attention.
 //
-//	◆ already pushed (in @{u})
-//	◇ unpushed (ahead of @{u})
-//	! would be orphaned by a rebase onto @{u} (not a direct ancestor of HEAD)
-//	✎ recently amended (reflog says HEAD was rewritten within an hour)
+//	(space) already pushed (in @{u}) — default, silent state
+//	◇       unpushed (ahead of @{u}) — you still need to push this
+//	✎       recently amended (reflog says HEAD was rewritten within an hour)
 func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushed map[string]bool, amended map[string]bool) rune {
 	if amended[sha] {
 		return '✎'
 	}
 	if pushed[sha] {
-		return '◆'
+		return ' '
 	}
 	return '◇'
 }

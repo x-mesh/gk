@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-23
+
 ### Added
 
 - **`gk init config` + first-run auto-init.** A fully-commented YAML template now lands at `$XDG_CONFIG_HOME/gk/config.yaml` (fallback `~/.config/gk/config.yaml`) the first time any `gk` command runs, so users have a single, discoverable file to edit instead of guessing field names from `gk config show`. The auto-init prints one `gk: created default config at <path>` line to stderr on creation and is silent on every subsequent run. Explicit `gk init config [--force] [--out <path>]` is the discoverable counterpart — regenerate the template, write a repo-local `.gk.yaml`, or opt into `--force` for a clean reset. Disable the auto-init entirely with `GK_NO_AUTO_CONFIG=1`; write failures (read-only home, sandbox, bad XDG path) are swallowed so gk always runs. Template covers every supported section including the new `ai:` block.
@@ -246,7 +248,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/x-mesh/gk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/x-mesh/gk/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/x-mesh/gk/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/x-mesh/gk/compare/v0.6.0...v0.7.0

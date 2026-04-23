@@ -1340,6 +1340,110 @@ gk init ai --force
 gk init ai --out /path/to/repo
 ```
 
+### gk init config
+
+Write a fully-commented YAML template to `$XDG_CONFIG_HOME/gk/config.yaml` (fallback `~/.config/gk/config.yaml`) so new users have a single discoverable file to edit. The template documents every supported section (`ai`, `commit`, `log`, `status`, `branch`, `clone`, `worktree`, …) with fields commented out by default — uncomment the lines you care about.
+
+An implicit auto-init runs on every `gk` invocation and creates the same file the first time it is missing, printing one `gk: created default config at <path>` line to stderr. `gk init config` is the explicit counterpart, useful for regenerating, writing to a custom path, or producing a repo-local override file.
+
+#### Synopsis
+
+```
+gk init config [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--force` | false | Overwrite an existing file |
+| `--out <path>` | `$XDG_CONFIG_HOME/gk/config.yaml` | Write to a custom path (e.g. `.gk.yaml` for a repo-local override) |
+
+#### Examples
+
+```bash
+# Regenerate the default global config (fails if the file already exists).
+gk init config
+
+# Overwrite the existing global config with a fresh template.
+gk init config --force
+
+# Seed a repo-local override file.
+gk init config --out .gk.yaml
+
+# Disable the first-run auto-init entirely (CI, sandboxes).
+export GK_NO_AUTO_CONFIG=1
+```
+
+---
+
+## gk ai
+
+AI-assisted workflows. Subcommands drive external AI CLIs (`gemini`, `qwen`, `kiro-cli`) as providers; gk never talks to remote LLM APIs directly, so no API key lives inside gk.
+
+Provider resolution order (all commands):
+1. `--provider` flag
+2. `ai.provider` in config (`.gk.yaml` or `~/.config/gk/config.yaml`)
+3. Auto-detect in order: `gemini → qwen → kiro-cli`
+
+### gk ai commit
+
+Group working-tree changes (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply one Conventional Commit per plan. Interactive TUI review by default; `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest `refs/gk/ai-commit-backup/<branch>/<unix>` ref.
+
+#### Synopsis
+
+```
+gk ai commit [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--force` | false | Apply commits without interactive review (secret gate still blocks) |
+| `--dry-run` | false | Print the plan and exit without committing |
+| `--provider <name>` | config | Override `ai.provider` (`gemini` \| `qwen` \| `kiro`) |
+| `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |
+| `--staged-only` | false | Only consider already-staged changes |
+| `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
+| `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable) |
+| `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
+| `--ci` | false | CI mode — require `--force` or `--dry-run`, never prompt |
+| `-y`, `--yes` | false | Accept every prompt (alias for `--force` when non-TTY) |
+
+#### Safety rails (every run)
+
+| Gate | Source | Behaviour |
+|------|--------|-----------|
+| Secret scan | `internal/secrets` + `gitleaks` (when installed) | Abort on any finding; `--allow-secret-kind <kind>` opts a specific kind out |
+| Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
+| Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |
+| GPG sign | `commit.gpgsign` check | Abort if signing is on but no `user.signingkey` |
+| Backup ref | `refs/gk/ai-commit-backup/<branch>/<unix>` | Written before the first commit; `--abort` restores HEAD |
+| Conventional lint | `internal/commitlint.Parse/Lint` | Each message validated; up to 2 provider retries with feedback injected |
+| Path-rule override | `_test.go`, `docs/*.md`, CI yamls, lockfiles | Always reclassified to `test`/`docs`/`ci`/`build` even if the provider picks otherwise |
+
+#### Examples
+
+```bash
+# Preview the plan without committing.
+gk ai commit --dry-run
+
+# Force-commit with gemini, English messages.
+gk ai commit -f --provider gemini
+
+# Include a specific secret kind you've decided to allow.
+gk ai commit --allow-secret-kind generic-secret
+
+# Recover from a mid-apply failure.
+gk ai commit --abort
+
+# CI mode — force the plan without prompting.
+gk ai commit --ci --force
+```
+
+See the "AI commit" section in the main `README.md` for provider install/auth instructions (`gemini`, `qwen`, `kiro-cli`) and full config examples.
+
 ---
 
 ## gk hooks

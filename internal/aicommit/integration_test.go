@@ -151,4 +151,3 @@ func TestIntegrationPreflightBlocksDuringRebase(t *testing.T) {
 		t.Errorf("state kind: %q", state.Kind.String())
 	}
 }
-

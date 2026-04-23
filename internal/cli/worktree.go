@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,15 +27,19 @@ func init() {
 		Long: `Worktree management helpers.
 
 With no subcommand, gk opens an interactive TUI for listing, adding,
-removing, and cd'ing into worktrees. Pair with a shell alias so picked
-paths apply to the parent shell:
+removing, and entering worktrees. Picking a worktree spawns a new
+$SHELL in its directory — type 'exit' to return to the original shell.
+
+If you prefer the cd-in-place pattern, pass --print-path and wrap in
+a shell alias so the chosen path applies to the parent shell:
 
     # ~/.zshrc or ~/.bashrc
-    gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }
+    gwt() { local p="$(gk wt --print-path)"; [ -n "$p" ] && cd "$p"; }
 
 The TUI falls back to printing this help on non-interactive stdin/stdout.`,
 		RunE: runWorktreeTUI,
 	}
+	wt.Flags().Bool("print-path", false, "on 'cd', print the chosen path instead of entering a subshell (for `cd $(gk wt --print-path)` wrappers)")
 
 	list := &cobra.Command{
 		Use:   "list",
@@ -474,9 +479,15 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 		actRemove = "remove"
 		actCancel = "cancel"
 	)
+	printPath, _ := cmd.Flags().GetBool("print-path")
+
 	faint := color.New(color.Faint).SprintFunc()
+	cdHint := faint("(enter a subshell in this worktree)")
+	if printPath {
+		cdHint = faint("(print path to stdout for shell alias)")
+	}
 	items := []ui.PickerItem{
-		{Display: fmt.Sprintf("cd  %s", faint("(print path to stdout for shell alias)")), Key: actCD},
+		{Display: fmt.Sprintf("cd  %s", cdHint), Key: actCD},
 		{Display: "remove", Key: actRemove},
 		{Display: "cancel", Key: actCancel},
 	}
@@ -490,15 +501,61 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 
 	switch picked.Key {
 	case actCD:
-		// Write the chosen path to stdout so `cd $(gk wt)` can consume it.
-		// All interactive UI so far has used stderr, so stdout is clean.
-		fmt.Fprintln(cmd.OutOrStdout(), entry.Path)
-		return true, nil
+		if printPath {
+			// Scripting path: `cd $(gk wt --print-path)`. All menu
+			// rendering has been on stderr so stdout stays clean.
+			fmt.Fprintln(cmd.OutOrStdout(), entry.Path)
+			return true, nil
+		}
+		return true, enterWorktreeSubshell(cmd, entry.Path)
 	case actRemove:
 		return false, worktreeTUIRemove(ctx, runner, cmd, entry)
 	default: // cancel
 		return false, nil
 	}
+}
+
+// enterWorktreeSubshell launches $SHELL inside the worktree path and
+// blocks until the user exits it. stdin/stdout/stderr are inherited so
+// the subshell is fully interactive. On exit the caller's shell is
+// still at its original cwd — this is the standard "tool shell" pattern
+// used by nix-shell, poetry shell, etc.
+//
+// We expose the original PWD via GK_WT_PARENT_PWD so an advanced user
+// can `cd "$GK_WT_PARENT_PWD"` from within the subshell if they want
+// to peek back at the outer tree without exiting.
+func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "/bin/sh"
+	}
+	origPWD, _ := os.Getwd()
+
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s %s  %s\n",
+		bold("▸ entered"), path, faint("(type `exit` to return)"))
+
+	sub := exec.Command(sh)
+	sub.Dir = path
+	sub.Stdin = os.Stdin
+	sub.Stdout = os.Stdout
+	sub.Stderr = os.Stderr
+	sub.Env = append(os.Environ(),
+		"GK_WT_PARENT_PWD="+origPWD,
+		"GK_WT="+path,
+	)
+	// A non-zero exit from the user's shell (Ctrl+D after a failing
+	// last command, e.g.) is not our failure. Swallow *ExitError so gk
+	// returns 0 when the subshell closes cleanly from the user's POV.
+	if err := sub.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return nil
+		}
+		return fmt.Errorf("enter subshell: %w", err)
+	}
+	return nil
 }
 
 // worktreeTUIRemove removes a worktree, handling the common failure

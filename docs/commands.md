@@ -782,15 +782,21 @@ Alias: `gk wt`.
 
 Running `gk wt` or `gk worktree` without a subcommand opens an interactive picker that loops until you quit. Actions:
 
-- **cd** — prints the selected worktree's path to **stdout** so a shell alias can `cd` into it. All menu rendering stays on stderr, so `$(gk wt)` captures only the chosen path.
-- **remove** — confirm prompt → `git worktree remove <path>`.
-- **add new** — form: name, create-new-branch?, branch name, base ref. The name is resolved through the same managed-base rules as `gk worktree add` (see below).
+- **cd** — spawns a new `$SHELL` inside the selected worktree so you can work in it immediately. Type `exit` to return to your original shell at its original cwd. Inside the subshell, `$GK_WT` holds the worktree path and `$GK_WT_PARENT_PWD` holds where you came from. (See `--print-path` below for scripting workflows.)
+- **remove** — confirm prompt → `git worktree remove <path>`. Dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune. After a clean remove you're also offered to delete the branch if no other worktree holds it.
+- **add new** — form: name, create-new-branch?, branch name, base ref. The name is resolved through the same managed-base rules as `gk worktree add` (see below). Name collisions with an orphan branch surface an inline three-way choice (reuse / delete & recreate / cancel) instead of a dead-end error.
 
-Pair with a shell function so the picked path actually cd's in the parent shell:
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--print-path` | On the **cd** action, write the chosen path to stdout instead of spawning a subshell. Use this for shell-alias wrappers that need to `cd` the parent shell itself. |
+
+Shell-alias pattern (when you prefer staying in one shell):
 
 ```sh
 # ~/.zshrc or ~/.bashrc
-gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }
+gwt() { local p="$(gk wt --print-path)"; [ -n "$p" ] && cd "$p"; }
 ```
 
 On a non-interactive stdin/stdout (CI, piped input) the TUI falls back to printing this help instead of drawing a dead UI.

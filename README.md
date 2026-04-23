@@ -107,6 +107,14 @@ gk preflight               # run the configured check sequence
 | `gk branch-check` | | Validate current branch name against configured patterns |
 | `gk switch [name]` | `gk sw` | Switch branches; `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev |
 
+### Worktree
+| Command | Alias | Description |
+|---|---|---|
+| `gk worktree` (no sub) | `gk wt` | Interactive TUI — list, add, remove, and cd into worktrees. `cd` spawns a `$SHELL` in the target dir (`exit` returns). `--print-path` flips to the `gwt() { cd "$(gk wt --print-path)"; }` alias pattern. |
+| `gk worktree add <name>` | | Relative names resolve under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<repo>/<name>`); absolute paths passthrough. Orphan-branch collisions surface an inline reuse/delete/cancel prompt. |
+| `gk worktree list` | | Table or `--json` listing parsed from `git worktree list --porcelain` |
+| `gk worktree remove <path>` | | Removes worktree; dirty/locked get a force prompt, stale admin entries auto-prune |
+
 ### Safety
 | Command | Description |
 |---|---|

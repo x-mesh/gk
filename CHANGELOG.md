@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-23
+
 ### Added
 
-- **`gk wt` interactive TUI.** Running `gk wt` (or `gk worktree`) without a subcommand opens a loop over the worktree list with actions for cd / remove / add-new. The `cd` action prints the chosen path to stdout (menu UI goes to stderr), so `gwt() { local p="$(gk wt)"; [ -n "$p" ] && cd "$p"; }` in `.zshrc` turns worktree switching into a single keypress. Non-TTY callers get the usual help output.
+- **`gk wt` interactive TUI.** Running `gk wt` (or `gk worktree`) without a subcommand opens a loop over the worktree list with actions for cd / remove / add-new.
+  - **cd** spawns a fresh `$SHELL` inside the selected worktree (like `nix-shell`) — type `exit` to return to the original shell at its original cwd. Inside the subshell `$GK_WT` and `$GK_WT_PARENT_PWD` expose the path contract. Pass `--print-path` to opt into the shell-alias pattern instead: `gwt() { local p="$(gk wt --print-path)"; [ -n "$p" ] && cd "$p"; }`.
+  - **remove** understands dirty/locked/stale states: dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune; after a clean remove gk offers to delete the orphan branch.
+  - **add new** resolves orphan-branch collisions inline with a three-way choice (reuse / delete-and-recreate / cancel), so a prior failed `worktree add -b` no longer leaves users locked out.
+  - Non-TTY callers get the usual help output.
 - **`gk worktree add` managed base directory.** Relative name arguments now land under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<basename>/<name>`) instead of the caller's cwd. Absolute paths still passthrough. Two clones with the same basename (e.g. `work/gk` and `personal/gk`) can disambiguate via `worktree.project` in `.gk.yaml`. Intermediate directories are created automatically; subdir names like `feat/api` are preserved under the managed root.
 - **`gk status --xy-style labels|glyphs|raw`** — per-entry state column is now self-documenting by default. The cryptic two-letter porcelain code (`??`, `.M`, `MM`, `UU`) is replaced with word labels (`new`, `mod`, `staged`, `conflict`) on every row. Pass `--xy-style glyphs` for a compact one-cell marker (`+` `~` `●` `⚔` `#`), or `--xy-style raw` / `status.xy_style: raw` to restore the previous git-literate rendering. Glyph mode collapses states into five broad categories for dashboard density; label mode preserves per-action granularity. Also fixes a latent bug where `DD`/`AA` unmerged conflicts were colored yellow instead of red.
 - **`gk pull` post-integration summary.** Previously `gk pull` ended with a terse `integrating origin/main (ff-only)...` line even when it pulled in a dozen commits — the user had to run `git log` separately to see what actually changed. The new summary prints the pre/post HEAD range, commit count, a one-line listing of each new commit (SHA, subject, author, short age; capped at 10 with a `+N more` footer), and a `--shortstat` diff summary. When nothing changed, a single `already up to date at <sha>` line confirms HEAD. `gk pull --no-rebase` (fetch-only) now reports how many upstream commits are waiting and whether HEAD has diverged, replacing the opaque `done (fetch only)` message.
@@ -235,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/x-mesh/gk/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/x-mesh/gk/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/x-mesh/gk/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/x-mesh/gk/compare/v0.5.0...v0.6.0

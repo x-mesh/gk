@@ -109,6 +109,15 @@ gk preflight               # 설정된 검사 순서 실행
 | `gk branch-check` | | 설정된 패턴에 대해 현재 브랜치 이름 검증 |
 | `gk switch [name]` | `gk sw` | 브랜치 전환; `-m`/`--main`으로 main 이동, `-d`/`--develop`으로 develop |
 
+### Worktree
+
+| 명령어 | 별칭 | 설명 |
+|---|---|---|
+| `gk worktree` (no sub) | `gk wt` | 인터랙티브 TUI — 목록/추가/삭제/진입. `cd` 선택 시 대상 디렉토리에서 `$SHELL` 서브셸을 열고(`exit`로 복귀), `--print-path`면 alias 패턴용으로 경로만 stdout 출력 |
+| `gk worktree add <name>` | | 상대 경로는 `<worktree.base>/<worktree.project>/<name>`(기본 `~/.gk/worktree/<repo>/<name>`)에 배치, 절대 경로는 그대로 사용. 고아 브랜치 충돌 시 인라인 재사용/삭제/취소 선택 |
+| `gk worktree list` | | `git worktree list --porcelain` 파싱 결과를 테이블 또는 `--json`으로 |
+| `gk worktree remove <path>` | | 삭제; dirty/locked는 force 재확인, stale admin 엔트리는 자동 prune |
+
 ### 안전
 
 | 명령어 | 설명 |

@@ -400,8 +400,14 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
 		default:
-			// Chosen worktree — open the action submenu.
-			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, picked.Key)
+			// Chosen worktree — open the action submenu. Look up the
+			// full entry so downstream actions (remove + branch drop)
+			// see branch/locked/prunable state, not just the path.
+			entry := findWorktreeEntry(entries, picked.Key)
+			if entry == nil {
+				continue
+			}
+			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, *entry)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
@@ -410,6 +416,17 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+// findWorktreeEntry locates the entry whose Path matches path, returning
+// nil when not found (stale menu selection vs. concurrent change).
+func findWorktreeEntry(entries []WorktreeEntry, path string) *WorktreeEntry {
+	for i := range entries {
+		if entries[i].Path == path {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 // listWorktreesForTUI returns the current worktrees parsed from
@@ -451,7 +468,7 @@ func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string
 // worktreeTUIActOnEntry is the secondary picker: what to do with the
 // worktree the user just selected. Returns (done, err) — done=true
 // means the outer loop should exit (e.g. user picked "cd").
-func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, path string) (bool, error) {
+func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry) (bool, error) {
 	const (
 		actCD     = "cd"
 		actRemove = "remove"
@@ -463,7 +480,7 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 		{Display: "remove", Key: actRemove},
 		{Display: "cancel", Key: actCancel},
 	}
-	picked, err := ui.NewPicker().Pick(ctx, path, items)
+	picked, err := ui.NewPicker().Pick(ctx, entry.Path, items)
 	if err != nil {
 		if errors.Is(err, ui.ErrPickerAborted) {
 			return false, nil
@@ -475,21 +492,92 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 	case actCD:
 		// Write the chosen path to stdout so `cd $(gk wt)` can consume it.
 		// All interactive UI so far has used stderr, so stdout is clean.
-		fmt.Fprintln(cmd.OutOrStdout(), path)
+		fmt.Fprintln(cmd.OutOrStdout(), entry.Path)
 		return true, nil
 	case actRemove:
-		ok, err := ui.Confirm(fmt.Sprintf("remove %s?", path), false)
-		if err != nil || !ok {
-			return false, nil
-		}
-		if _, stderr, err := runner.Run(ctx, "worktree", "remove", path); err != nil {
-			return false, fmt.Errorf("worktree remove: %s: %w", strings.TrimSpace(string(stderr)), err)
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "removed %s\n", path)
-		return false, nil
+		return false, worktreeTUIRemove(ctx, runner, cmd, entry)
 	default: // cancel
 		return false, nil
 	}
+}
+
+// worktreeTUIRemove removes a worktree, handling the common failure
+// modes git surfaces as a terse one-line error:
+//
+//   - "is dirty" / "contains modified or untracked files" → offer --force
+//   - "is locked" → offer --force (bypasses the lock)
+//   - "is a main working tree" → refuse up front; git would anyway
+//   - "not a working tree" / stale admin entry → auto-run `worktree prune`
+//
+// After a successful removal we also offer to delete the branch that
+// was checked out, but only when no other worktree still owns it.
+// Confirm defaults to yes because the user already picked "remove" in
+// the action menu — a second No-by-default prompt feels redundant.
+func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry) error {
+	stderr := cmd.ErrOrStderr()
+
+	if entry.Bare {
+		return fmt.Errorf("cannot remove the bare/main worktree: %s", entry.Path)
+	}
+
+	ok, err := ui.Confirm(fmt.Sprintf("remove %s?", entry.Path), true)
+	if err != nil || !ok {
+		return nil
+	}
+
+	// First try: plain remove.
+	_, rerr, err := runner.Run(ctx, "worktree", "remove", entry.Path)
+	if err != nil {
+		msg := strings.ToLower(strings.TrimSpace(string(rerr)) + " " + err.Error())
+		switch {
+		case strings.Contains(msg, "dirty") ||
+			strings.Contains(msg, "contains modified") ||
+			strings.Contains(msg, "contains untracked") ||
+			strings.Contains(msg, "is locked"):
+			// Dirty or locked — surface the exact git message, then
+			// ask whether to force.
+			fmt.Fprintln(stderr, strings.TrimSpace(string(rerr)))
+			force, _ := ui.Confirm("force-remove anyway?", false)
+			if !force {
+				return nil
+			}
+			if _, rerr2, err := runner.Run(ctx, "worktree", "remove", "--force", entry.Path); err != nil {
+				return fmt.Errorf("worktree remove --force: %s: %w", strings.TrimSpace(string(rerr2)), err)
+			}
+		case strings.Contains(msg, "not a working tree") ||
+			strings.Contains(msg, "is not a working tree") ||
+			strings.Contains(msg, "already deleted"):
+			// The on-disk path is gone or never was — git's admin
+			// record is stale. Prune and treat as success.
+			fmt.Fprintln(stderr, "worktree entry is stale — pruning admin records")
+			if _, perr, err := runner.Run(ctx, "worktree", "prune", "-v"); err != nil {
+				return fmt.Errorf("worktree prune: %s: %w", strings.TrimSpace(string(perr)), err)
+			}
+		default:
+			return fmt.Errorf("worktree remove: %s: %w", strings.TrimSpace(string(rerr)), err)
+		}
+	}
+	fmt.Fprintf(stderr, "removed %s\n", entry.Path)
+
+	// Offer to delete the now-orphaned branch. Guardrails: only when
+	// we actually know the branch name and it is not checked out by
+	// another worktree.
+	if entry.Branch == "" || entry.Detached {
+		return nil
+	}
+	if branchInUse(ctx, runner, entry.Branch) {
+		return nil
+	}
+	drop, _ := ui.Confirm(fmt.Sprintf("also delete branch %q?", entry.Branch), false)
+	if !drop {
+		return nil
+	}
+	if _, berr, err := runner.Run(ctx, "branch", "-D", entry.Branch); err != nil {
+		fmt.Fprintf(stderr, "warn: branch -D %s: %s\n", entry.Branch, strings.TrimSpace(string(berr)))
+		return nil
+	}
+	fmt.Fprintf(stderr, "deleted branch %s\n", entry.Branch)
+	return nil
 }
 
 // worktreeTUIAdd collects a worktree name + branch choice from the user

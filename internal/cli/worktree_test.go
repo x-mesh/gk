@@ -308,6 +308,33 @@ func TestNonEmptyDirExists(t *testing.T) {
 	}
 }
 
+func TestFindWorktreeEntry(t *testing.T) {
+	entries := []WorktreeEntry{
+		{Path: "/a", Branch: "main"},
+		{Path: "/b", Branch: "feat"},
+	}
+	if got := findWorktreeEntry(entries, "/b"); got == nil || got.Branch != "feat" {
+		t.Errorf("hit: got %+v", got)
+	}
+	if got := findWorktreeEntry(entries, "/missing"); got != nil {
+		t.Errorf("miss: got %+v, want nil", got)
+	}
+}
+
+func TestWorktreeTUIRemove_BareRefuses(t *testing.T) {
+	// Bare worktrees must be refused up front — git would anyway,
+	// but the message is clearer coming from gk.
+	runner := &git.ExecRunner{Dir: t.TempDir()}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	buf := &bytes.Buffer{}
+	cmd.SetErr(buf)
+	err := worktreeTUIRemove(context.Background(), runner, cmd, WorktreeEntry{Path: "/tmp/fake", Bare: true})
+	if err == nil || !strings.Contains(err.Error(), "bare") {
+		t.Errorf("expected bare-refusal error, got %v", err)
+	}
+}
+
 func TestWorktreeTUI_NonTTYFallsBackToHelp(t *testing.T) {
 	// When stdin/stdout is not a TTY (as in `go test`), bare `gk wt`
 	// must not attempt to draw an interactive UI. Instead it prints

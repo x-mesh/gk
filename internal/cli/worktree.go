@@ -662,9 +662,32 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 	} else if exists {
 		return fmt.Errorf("target path already exists and is non-empty: %s", resolved)
 	}
-	if createBranch {
-		if branchExists(ctx, runner, branchName) {
-			return fmt.Errorf("branch %q already exists — re-run and choose 'check out existing' instead of 'create new branch'", branchName)
+	if createBranch && branchExists(ctx, runner, branchName) {
+		// Conflict resolution: creating a branch that already exists
+		// would fail deep inside `git worktree add -b`. Handle it here
+		// so the user has real choices instead of a dead-end error.
+		// A branch already in use by another worktree cannot be either
+		// re-used (git refuses) or silently deleted (would strand the
+		// other worktree), so we bail out cleanly in that case.
+		if branchInUse(ctx, runner, branchName) {
+			return fmt.Errorf("branch %q is checked out in another worktree — pick a different name or remove that worktree first", branchName)
+		}
+		resolution, err := promptOrphanBranchResolution(branchName, orphanBranchTip(ctx, runner, branchName))
+		if err != nil {
+			return err
+		}
+		switch resolution {
+		case orphanReuse:
+			// Switch modes: check out the existing branch instead of
+			// recreating it. The git command below already handles
+			// `worktree add <path> <branch>` when createBranch=false.
+			createBranch = false
+		case orphanDelete:
+			if _, berr, err := runner.Run(ctx, "branch", "-D", branchName); err != nil {
+				return fmt.Errorf("branch -D %s: %s: %w", branchName, strings.TrimSpace(string(berr)), err)
+			}
+		case orphanCancel:
+			return nil
 		}
 	}
 
@@ -692,6 +715,76 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 	// landed without polluting stdout.
 	fmt.Fprintln(os.Stderr, "added worktree at", resolved)
 	return nil
+}
+
+// orphanResolution enumerates the choices presented when the user asks
+// for a new branch whose name already exists as an orphan (branch
+// present, not checked out in any worktree — typically left behind by a
+// previous failed `worktree add`).
+type orphanResolution int
+
+const (
+	orphanCancel orphanResolution = iota
+	orphanReuse
+	orphanDelete
+)
+
+// promptOrphanBranchResolution asks the user what to do with an orphan
+// branch that collides with their requested new name. The tip preview
+// (e.g. "a12bc3f4 fix: something · 2h") helps decide whether it is safe
+// to delete. On a non-TTY session this returns orphanCancel so callers
+// surface a clear error rather than guessing.
+func promptOrphanBranchResolution(name, tip string) (orphanResolution, error) {
+	if !ui.IsTerminal() {
+		return orphanCancel, fmt.Errorf("branch %q already exists (orphan) — re-run interactively to resolve, or delete with `git branch -D %s`", name, name)
+	}
+	var picked string
+	title := fmt.Sprintf("branch %q already exists (orphan — no worktree uses it)", name)
+	desc := tip
+	if desc == "" {
+		desc = "choose how to proceed"
+	}
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(title).
+			Description(desc).
+			Options(
+				huh.NewOption("check out the existing branch in the new worktree", "reuse"),
+				huh.NewOption(fmt.Sprintf("delete %q and create a fresh branch", name), "delete"),
+				huh.NewOption("cancel", "cancel"),
+			).
+			Value(&picked),
+	))
+	if err := form.Run(); err != nil {
+		return orphanCancel, err
+	}
+	switch picked {
+	case "reuse":
+		return orphanReuse, nil
+	case "delete":
+		return orphanDelete, nil
+	default:
+		return orphanCancel, nil
+	}
+}
+
+// orphanBranchTip returns a single-line preview of the branch's tip
+// commit ("a12bc3f  fix: X  · 2h") for the orphan-branch prompt.
+// Silent empty-string on failure — the prompt still works, just without
+// the age cue.
+func orphanBranchTip(ctx context.Context, runner git.Runner, branch string) string {
+	out, _, err := runner.Run(ctx, "log", "-1",
+		"--format=%h\x1f%s\x1f%ar",
+		"refs/heads/"+branch,
+	)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\x1f", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	return fmt.Sprintf("tip: %s  %s  · %s", parts[0], parts[1], parts[2])
 }
 
 // nonEmptyDirExists reports whether path is a directory with at least

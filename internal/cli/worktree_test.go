@@ -321,6 +321,45 @@ func TestFindWorktreeEntry(t *testing.T) {
 	}
 }
 
+func TestOrphanBranchTip_Formats(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"log -1 --format=%h\x1f%s\x1f%ar refs/heads/feat": {
+				Stdout: "abc1234\x1ffix: handle X\x1f2 hours ago\n",
+			},
+		},
+	}
+	got := orphanBranchTip(context.Background(), fake, "feat")
+	for _, want := range []string{"abc1234", "fix: handle X", "2 hours ago"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestOrphanBranchTip_EmptyOnError(t *testing.T) {
+	fake := &git.FakeRunner{
+		DefaultResp: git.FakeResponse{ExitCode: 128},
+	}
+	if got := orphanBranchTip(context.Background(), fake, "none"); got != "" {
+		t.Errorf("expected empty on error, got %q", got)
+	}
+}
+
+func TestPromptOrphanBranchResolution_NonTTYSurfacesError(t *testing.T) {
+	// Tests run without a real TTY, so the interactive path short-
+	// circuits with a helpful error pointing at `git branch -D`.
+	_, err := promptOrphanBranchResolution("ai-commit", "tip: abc  feat: X  · 2h")
+	if err == nil {
+		t.Fatal("expected non-TTY error, got nil")
+	}
+	for _, want := range []string{"ai-commit", "git branch -D"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %q", want, err.Error())
+		}
+	}
+}
+
 func TestWorktreeTUIRemove_BareRefuses(t *testing.T) {
 	// Bare worktrees must be refused up front — git would anyway,
 	// but the message is clearer coming from gk.

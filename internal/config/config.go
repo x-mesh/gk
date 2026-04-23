@@ -14,6 +14,40 @@ type Config struct {
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
+	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
+}
+
+// AIConfig controls `gk ai` subcommands. Enabled is the master switch;
+// flipping it false (or exporting GK_AI_DISABLE=1 which viper maps to
+// this field) disables every `gk ai *` subcommand with a clear error.
+// Provider is the default AI CLI to use when --provider is not passed;
+// empty means auto-detect (gemini → qwen → kiro-cli). Lang is the
+// default message/output language (BCP-47 short code). Commit holds
+// `gk ai commit` settings; future ai features add sibling structs.
+type AIConfig struct {
+	Enabled  bool           `mapstructure:"enabled"  yaml:"enabled"`
+	Provider string         `mapstructure:"provider" yaml:"provider"`
+	Lang     string         `mapstructure:"lang"     yaml:"lang"`
+	Commit   AICommitConfig `mapstructure:"commit"   yaml:"commit"`
+}
+
+// AICommitConfig controls `gk ai commit`. Mode is the default execution
+// mode ("interactive" | "force" | "dry-run"); CLI flags override it.
+// DenyPaths is a list of glob patterns (filepath.Match syntax) applied
+// to every WIP file before it leaves the process — matches are either
+// dropped silently or abort the run, never forwarded to the provider.
+// AllowRemote gates providers whose Locality() is "remote"; when false
+// only local providers may run (the policy layer may enforce this too).
+// Trailer and Audit are opt-in telemetry knobs, both default off.
+type AICommitConfig struct {
+	Mode        string   `mapstructure:"mode"         yaml:"mode"`
+	MaxGroups   int      `mapstructure:"max_groups"   yaml:"max_groups"`
+	MaxTokens   int      `mapstructure:"max_tokens"   yaml:"max_tokens"`
+	Timeout     string   `mapstructure:"timeout"      yaml:"timeout"`
+	DenyPaths   []string `mapstructure:"deny_paths"   yaml:"deny_paths"`
+	AllowRemote bool     `mapstructure:"allow_remote" yaml:"allow_remote"`
+	Trailer     bool     `mapstructure:"trailer"      yaml:"trailer"`
+	Audit       bool     `mapstructure:"audit"        yaml:"audit"`
 }
 
 // LogConfig controls git log output format. Vis is the default set of
@@ -105,11 +139,11 @@ type PreflightConfig struct {
 //     Supported values: "hooks-install" (invokes `gk hooks install --all`)
 //     and "doctor" (invokes `gk doctor`). Default empty — opt-in only.
 type CloneConfig struct {
-	DefaultProtocol string                `mapstructure:"default_protocol" yaml:"default_protocol"`
-	DefaultHost     string                `mapstructure:"default_host"     yaml:"default_host"`
-	Root            string                `mapstructure:"root"             yaml:"root"`
-	Hosts           map[string]HostAlias  `mapstructure:"hosts"            yaml:"hosts"`
-	PostActions     []string              `mapstructure:"post_actions"     yaml:"post_actions"`
+	DefaultProtocol string               `mapstructure:"default_protocol" yaml:"default_protocol"`
+	DefaultHost     string               `mapstructure:"default_host"     yaml:"default_host"`
+	Root            string               `mapstructure:"root"             yaml:"root"`
+	Hosts           map[string]HostAlias `mapstructure:"hosts"            yaml:"hosts"`
+	PostActions     []string             `mapstructure:"post_actions"     yaml:"post_actions"`
 }
 
 // HostAlias names a custom clone shorthand like `gl:` or `work:`.
@@ -205,6 +239,33 @@ func Defaults() Config {
 		Worktree: WorktreeConfig{
 			Base:    "~/.gk/worktree",
 			Project: "",
+		},
+		AI: AIConfig{
+			Enabled:  true,
+			Provider: "",
+			Lang:     "en",
+			Commit: AICommitConfig{
+				Mode:      "interactive",
+				MaxGroups: 10,
+				MaxTokens: 24000,
+				Timeout:   "30s",
+				DenyPaths: []string{
+					".env",
+					".env.*",
+					"*.pem",
+					"id_rsa*",
+					"credentials.json",
+					"*.pfx",
+					"*.kdbx",
+					"*.keystore",
+					"service-account*.json",
+					"terraform.tfstate",
+					"terraform.tfstate.*",
+				},
+				AllowRemote: true,
+				Trailer:     false,
+				Audit:       false,
+			},
 		},
 	}
 }

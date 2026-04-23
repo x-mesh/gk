@@ -77,6 +77,9 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkHook(ctx, runner, "pre-push", "gk push"),
 		checkBackupRefs(ctx, runner),
 		checkGitleaks(),
+		checkAIProvider("gemini"),
+		checkAIProvider("qwen"),
+		checkAIProvider("kiro-cli"),
 	}
 
 	w := cmd.OutOrStdout()

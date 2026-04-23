@@ -1,0 +1,181 @@
+package aicommit
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/x-mesh/gk/internal/git"
+)
+
+// buildV2 splices a sequence of porcelain v2 records into the NUL-terminated
+// format that `git status --porcelain=v2 -z` emits.
+func buildV2(records ...string) string {
+	var b strings.Builder
+	for _, r := range records {
+		b.WriteString(r)
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+func TestGatherWIPOrdinary(t *testing.T) {
+	stdout := buildV2(
+		"1 M. N... 100644 100644 100644 aaa bbb internal/cli/root.go",
+		"1 .M N... 100644 100644 100644 aaa bbb cmd/gk/main.go",
+		"? build/output.log",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries: want 3, got %d (%+v)", len(entries), entries)
+	}
+
+	if entries[0].Path != "internal/cli/root.go" || !entries[0].Staged || entries[0].Unstaged {
+		t.Errorf("staged modify: %+v", entries[0])
+	}
+	if entries[1].Path != "cmd/gk/main.go" || entries[1].Staged || !entries[1].Unstaged {
+		t.Errorf("unstaged modify: %+v", entries[1])
+	}
+	if entries[2].Status != "untracked" || entries[2].Path != "build/output.log" {
+		t.Errorf("untracked: %+v", entries[2])
+	}
+}
+
+func TestGatherWIPScopeStagedOnly(t *testing.T) {
+	stdout := buildV2(
+		"1 M. N... 100644 100644 100644 aaa bbb a.go",
+		"1 .M N... 100644 100644 100644 aaa bbb b.go",
+		"? c.go",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{Scope: ScopeStagedOnly})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "a.go" {
+		t.Errorf("ScopeStagedOnly: want [a.go], got %+v", entries)
+	}
+}
+
+func TestGatherWIPScopeUnstagedOnly(t *testing.T) {
+	stdout := buildV2(
+		"1 M. N... 100644 100644 100644 aaa bbb a.go",
+		"1 MM N... 100644 100644 100644 aaa bbb b.go",
+		"? c.go",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{Scope: ScopeUnstagedOnly})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	// b.go has both sides modified, c.go is untracked → both included.
+	// a.go is staged-only → dropped.
+	if len(entries) != 2 {
+		t.Fatalf("len: want 2, got %d (%+v)", len(entries), entries)
+	}
+	if entries[0].Path != "b.go" || entries[1].Path != "c.go" {
+		t.Errorf("ScopeUnstagedOnly order/paths: %+v", entries)
+	}
+}
+
+func TestGatherWIPRenameRecord(t *testing.T) {
+	stdout := buildV2(
+		"2 R. N... 100644 100644 100644 aaa bbb R85 internal/cli/ai_old.go",
+		"internal/cli/ai.go",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries: %+v", entries)
+	}
+	got := entries[0]
+	if got.Status != "renamed" || got.Path != "internal/cli/ai_old.go" || got.OrigPath != "internal/cli/ai.go" {
+		t.Errorf("rename record: %+v", got)
+	}
+}
+
+func TestGatherWIPDenyPaths(t *testing.T) {
+	stdout := buildV2(
+		"1 .M N... 100644 100644 100644 aaa bbb .env",
+		"1 .M N... 100644 100644 100644 aaa bbb configs/secret.pem",
+		"1 .M N... 100644 100644 100644 aaa bbb internal/cli/ai.go",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{
+		DenyPaths: []string{".env", "*.pem"},
+	})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries: %+v", entries)
+	}
+	denied := map[string]string{}
+	for _, e := range entries {
+		denied[e.Path] = e.DeniedBy
+	}
+	if denied[".env"] != ".env" {
+		t.Errorf(".env should be denied by .env glob, got %q", denied[".env"])
+	}
+	if denied["configs/secret.pem"] != "*.pem" {
+		t.Errorf("*.pem glob should match basename, got %q", denied["configs/secret.pem"])
+	}
+	if denied["internal/cli/ai.go"] != "" {
+		t.Errorf("plain source file should not be denied, got %q", denied["internal/cli/ai.go"])
+	}
+}
+
+func TestGatherWIPBadRecordReturnsError(t *testing.T) {
+	stdout := buildV2("X bogus record")
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	_, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err == nil {
+		t.Fatal("want parse error for unknown record type")
+	}
+}
+
+func TestGatherWIPRunnerError(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {
+				Stderr:   "fatal: not a git repository",
+				ExitCode: 128,
+			},
+		},
+	}
+	_, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err == nil {
+		t.Fatal("want error when git status fails")
+	}
+}

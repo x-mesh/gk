@@ -145,17 +145,108 @@ gk preflight               # run the configured check sequence
 | `gk abort` | | Abort interrupted rebase/merge/cherry-pick |
 | `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
 
+### AI
+| Command | Description |
+|---|---|
+| `gk ai commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
+
 ### Onboarding / config
 | Command | Description |
 |---|---|
-| `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs) with fix commands; `--json` for CI |
+| `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers) with fix commands; `--json` for CI |
 | `gk init ai [--kiro] [--force] [--out <dir>]` | Scaffold `CLAUDE.md` + `AGENTS.md` (and optionally `.kiro/steering/`) so AI coding assistants have immediate project context |
+| `gk init config [--force] [--out <path>]` | Scaffold the commented YAML template at `$XDG_CONFIG_HOME/gk/config.yaml` (also auto-created on first `gk` run; skip with `GK_NO_AUTO_CONFIG=1`) |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | Write gk-managed hook shims under `.git/hooks/` (`--pre-commit` wires `gk guard check`) |
 | `gk hooks uninstall [...]` | Remove gk-managed hooks (refuses to delete foreign ones) |
 | `gk config show` | Print fully resolved config as YAML |
 | `gk config get <key>` | Print a single config value by dot-path |
 
 See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.md](CHANGELOG.md) for per-release details.
+
+## AI commit
+
+`gk ai commit` analyses the current working tree (staged + unstaged + untracked), groups the changes into semantic commit plans via an external AI CLI, and applies one Conventional Commit per plan.
+
+### Provider setup
+
+`gk ai commit` drives **already-installed** AI CLI binaries — it never talks to remote LLM APIs directly, so no API key lives inside `gk`.
+
+| Provider | Install | Auth |
+|---|---|---|
+| `gemini` (Google) | `npm i -g @google/gemini-cli` or `brew install gemini-cli` | `export GEMINI_API_KEY=...` or run `gemini` once for OAuth |
+| `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` or `export DASHSCOPE_API_KEY=...` |
+| `kiro-cli` (AWS Kiro headless — note: **not** the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
+
+Run `gk doctor` to verify each provider's install + auth status.
+
+### Flags
+
+```
+gk ai commit [flags]
+
+      --abort                      restore HEAD to the latest ai-commit backup ref and exit
+      --allow-secret-kind strings  suppress secret findings of the given kind (repeatable)
+      --ci                         CI mode — require --force or --dry-run, never prompt
+      --dry-run                    show the plan and exit without committing
+  -f, --force                      apply commits without interactive review
+      --include-unstaged           include unstaged + untracked changes (default true)
+      --lang string                override ai.lang (en|ko|...)
+      --provider string            override ai.provider (gemini|qwen|kiro)
+      --staged-only                only consider already-staged changes
+  -y, --yes                        accept every prompt (alias for --force when non-TTY)
+```
+
+### Config
+
+```yaml
+# .gk.yaml (or ~/.config/gk/config.yaml)
+ai:
+  enabled: true              # master off-switch; GK_AI_DISABLE=1 also disables
+  provider: ""               # "" = auto-detect (gemini → qwen → kiro-cli)
+  lang: "en"                 # message language (BCP-47 short)
+  commit:
+    mode: "interactive"      # interactive | force | dry-run (CLI flags override)
+    max_groups: 10
+    max_tokens: 24000
+    timeout: "30s"
+    allow_remote: true       # set false to block all three shipped providers (Locality=remote)
+    trailer: false           # true → append "AI-Assisted-By: <provider>@<version>" to each commit
+    audit: false             # true → append JSONL to .git/gk-ai-commit/audit.jsonl
+    deny_paths:              # globs always skipped before anything leaves the process
+      - ".env"
+      - ".env.*"
+      - "*.pem"
+      - "id_rsa*"
+      - "credentials.json"
+      - "*.pfx"
+      - "*.kdbx"
+      - "*.keystore"
+      - "service-account*.json"
+      - "terraform.tfstate"
+      - "terraform.tfstate.*"
+```
+
+### Safety rails (every run)
+
+- **Secret gate** — runs `internal/secrets.Scan` plus `gitleaks` (when installed) over the payload; any finding aborts, even with `--force`. Use `--allow-secret-kind <kind>` per-run to whitelist a specific kind.
+- **Deny paths** — matching files (`.env`, private keys, tfstate, …) are dropped before the payload leaves the process.
+- **Git-state guard** — refuses to run mid-rebase / mid-merge / mid-cherry-pick so `MERGE_MSG` is never overwritten.
+- **Backup ref** — each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing; `gk ai commit --abort` restores HEAD there.
+- **Conventional lint loop** — `internal/commitlint.Parse/Lint` validates every message; failures trigger up to two provider retries with feedback injected into the prompt.
+- **Path-rule override** — `_test.go`, `docs/*.md`, `.github/workflows/*.yml`, and lockfiles are always reclassified to `test`/`docs`/`ci`/`build` even if the provider picks a different type.
+
+### Quick example
+
+```bash
+# Dry-run: see the plan without committing.
+gk ai commit --dry-run
+
+# Commit one-shot (no TUI).
+gk ai commit --force --provider gemini
+
+# Recover from a partial failure.
+gk ai commit --abort
+```
 
 ## Global flags
 

@@ -142,11 +142,17 @@ gk preflight               # 설정된 검사 순서 실행
 | `gk abort` | | 중단된 rebase/merge/cherry-pick 취소 |
 | `gk wip` / `gk unwip` | | 컨텍스트 전환용 임시 WIP 커밋 |
 
+### AI
+
+| 명령어 | 설명 |
+|---|---|
+| `gk ai commit` | WIP(staged+unstaged+untracked)를 AI CLI로 의미 있는 커밋 그룹으로 분할하고 Conventional Commit 메시지로 적용. `-f/--force` 리뷰 스킵, `--dry-run` 미리보기, `--abort` 마지막 백업 ref로 HEAD 복원. 아래 **AI commit** 섹션 참조 |
+
 ### 온보딩 / 설정
 
 | 명령어 | 설명 |
 |---|---|
-| `gk doctor` | 환경 상태 보고 (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs); `--json` for CI |
+| `gk doctor` | 환경 상태 보고 (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers); `--json` for CI |
 | `gk init ai [--kiro] [--force] [--out <dir>]` | `CLAUDE.md` + `AGENTS.md` 스캐폴드 (옵션: `.kiro/steering/`). AI 코딩 어시스턴트가 즉시 프로젝트 컨텍스트를 파악할 수 있게 합니다 |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | `.git/hooks/` 아래 gk 관리 훅 심 설치 (`--pre-commit`은 `gk guard check` 연결) |
 | `gk hooks uninstall [...]` | gk 관리 훅 제거 (외부 훅은 삭제 거부) |
@@ -154,6 +160,91 @@ gk preflight               # 설정된 검사 순서 실행
 | `gk config get <key>` | 점 경로로 단일 설정 값 출력 |
 
 전체 플래그 참조는 [docs/commands.md](docs/commands.md), 릴리즈별 상세 내용은 [CHANGELOG.md](CHANGELOG.md)를 참조하세요.
+
+## AI commit
+
+`gk ai commit`은 현재 작업 트리(staged + unstaged + untracked)를 외부 AI CLI에 위임해 의미 있는 커밋 단위로 분할하고, 각 그룹별로 Conventional Commit 하나씩 생성·적용합니다.
+
+### Provider 설치
+
+`gk ai commit`은 이미 설치된 AI CLI 바이너리를 subprocess로 호출합니다. gk 내부에 API key를 보관하지 않습니다.
+
+| Provider | 설치 | 인증 |
+|---|---|---|
+| `gemini` (Google) | `npm i -g @google/gemini-cli` 또는 `brew install gemini-cli` | `export GEMINI_API_KEY=...` 또는 `gemini` 최초 실행 시 OAuth |
+| `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` 또는 `export DASHSCOPE_API_KEY=...` |
+| `kiro-cli` (AWS Kiro — **`kiro` IDE 런처와 다름**) | [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) 또는 IDE OAuth |
+
+`gk doctor` 출력에서 각 provider 설치/인증 상태를 확인할 수 있습니다.
+
+### 플래그
+
+```
+gk ai commit [flags]
+
+      --abort                      마지막 ai-commit 백업 ref로 HEAD 복원 후 종료
+      --allow-secret-kind strings  지정한 종류의 secret 검출을 무시 (반복 가능)
+      --ci                         CI 모드: --force 또는 --dry-run 필수, 프롬프트 금지
+      --dry-run                    플랜만 출력하고 커밋하지 않음
+  -f, --force                      대화형 리뷰 없이 바로 커밋
+      --include-unstaged           unstaged + untracked 포함 (기본값)
+      --lang string                ai.lang 오버라이드 (en|ko|...)
+      --provider string            ai.provider 오버라이드 (gemini|qwen|kiro)
+      --staged-only                스테이지된 변경만 대상
+  -y, --yes                        모든 프롬프트 자동 수락 (비-TTY에선 --force 별칭)
+```
+
+### 설정
+
+```yaml
+# .gk.yaml (또는 ~/.config/gk/config.yaml)
+ai:
+  enabled: true              # 전역 off-switch. GK_AI_DISABLE=1 로도 비활성화 가능
+  provider: ""               # "" = 자동 감지 (gemini → qwen → kiro-cli)
+  lang: "en"                 # 메시지 언어 (BCP-47)
+  commit:
+    mode: "interactive"      # interactive | force | dry-run (CLI 플래그가 오버라이드)
+    max_groups: 10
+    max_tokens: 24000
+    timeout: "30s"
+    allow_remote: true       # false 이면 remote Locality provider 전체 차단
+    trailer: false           # true 이면 각 커밋에 "AI-Assisted-By: <provider>@<version>" trailer
+    audit: false             # true 이면 .git/gk-ai-commit/audit.jsonl 에 JSONL 기록
+    deny_paths:              # 프로세스를 떠나기 전 무조건 스킵되는 glob 목록
+      - ".env"
+      - ".env.*"
+      - "*.pem"
+      - "id_rsa*"
+      - "credentials.json"
+      - "*.pfx"
+      - "*.kdbx"
+      - "*.keystore"
+      - "service-account*.json"
+      - "terraform.tfstate"
+      - "terraform.tfstate.*"
+```
+
+### 안전 장치
+
+- **Secret gate**: `internal/secrets.Scan` + `gitleaks`(설치된 경우) 이중 검사. 발견 시 `--force` 여부와 무관하게 abort. 특정 종류만 무시하려면 `--allow-secret-kind <kind>`.
+- **Deny paths**: 매칭된 파일은 provider에 전달되지 않음.
+- **git-state 차단**: rebase/merge/cherry-pick 진행 중이면 실행 거부. `MERGE_MSG` 덮어쓰기 방지.
+- **Backup ref**: 시작 시 `refs/gk/ai-commit-backup/<branch>/<unix>` 기록. 실패 시 `gk ai commit --abort`로 복원.
+- **Conventional lint 루프**: 생성된 메시지를 `commitlint.Lint`로 검증. 실패 시 2회까지 provider에 retry (이전 lint 이슈를 프롬프트에 주입).
+- **Path-rule override**: `_test.go`, `docs/*.md`, CI yaml, 잠금 파일은 provider가 다른 type으로 분류해도 각각 `test`/`docs`/`ci`/`build`로 재지정.
+
+### 간단 예시
+
+```bash
+# 계획만 보기
+gk ai commit --dry-run
+
+# 바로 커밋 (TUI 없이)
+gk ai commit --force --provider gemini
+
+# 중간 실패 복구
+gk ai commit --abort
+```
 
 ## 전역 플래그
 

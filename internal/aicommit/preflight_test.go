@@ -21,8 +21,13 @@ func TestPreflightDisabledByConfig(t *testing.T) {
 
 func TestPreflightDisabledByEnv(t *testing.T) {
 	err := Preflight(context.Background(), PreflightInput{
-		AI:        config.AIConfig{Enabled: true},
-		EnvLookup: func(k string) string { if k == "GK_AI_DISABLE" { return "1" }; return "" },
+		AI: config.AIConfig{Enabled: true},
+		EnvLookup: func(k string) string {
+			if k == "GK_AI_DISABLE" {
+				return "1"
+			}
+			return ""
+		},
 	})
 	if !errors.Is(err, ErrAIDisabled) {
 		t.Errorf("want ErrAIDisabled, got %v", err)

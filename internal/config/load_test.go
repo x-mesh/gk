@@ -140,6 +140,125 @@ func TestLoadFlagPriority(t *testing.T) {
 	}
 }
 
+func TestAIDefaults(t *testing.T) {
+	d := config.Defaults()
+	if !d.AI.Enabled {
+		t.Error("AI.Enabled: want true")
+	}
+	if d.AI.Lang != "en" {
+		t.Errorf("AI.Lang: want %q, got %q", "en", d.AI.Lang)
+	}
+	if d.AI.Provider != "" {
+		t.Errorf("AI.Provider default: want empty (auto-detect), got %q", d.AI.Provider)
+	}
+	if d.AI.Commit.Mode != "interactive" {
+		t.Errorf("AI.Commit.Mode: want %q, got %q", "interactive", d.AI.Commit.Mode)
+	}
+	if d.AI.Commit.MaxGroups != 10 {
+		t.Errorf("AI.Commit.MaxGroups: want 10, got %d", d.AI.Commit.MaxGroups)
+	}
+	if d.AI.Commit.Trailer {
+		t.Error("AI.Commit.Trailer: want false (opt-in only)")
+	}
+	if d.AI.Commit.Audit {
+		t.Error("AI.Commit.Audit: want false (opt-in only)")
+	}
+	if len(d.AI.Commit.DenyPaths) == 0 {
+		t.Error("AI.Commit.DenyPaths: want non-empty default (secret-bearing paths)")
+	}
+	for _, want := range []string{".env", "*.pem", "id_rsa*"} {
+		if !containsString(d.AI.Commit.DenyPaths, want) {
+			t.Errorf("AI.Commit.DenyPaths missing %q", want)
+		}
+	}
+}
+
+func TestLoadAIFromLocalYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+
+	yamlContent := "ai:\n  provider: qwen\n  lang: ko\n  commit:\n    mode: force\n    trailer: true\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Provider != "qwen" {
+		t.Errorf("AI.Provider: want %q, got %q", "qwen", cfg.AI.Provider)
+	}
+	if cfg.AI.Lang != "ko" {
+		t.Errorf("AI.Lang: want %q, got %q", "ko", cfg.AI.Lang)
+	}
+	if cfg.AI.Commit.Mode != "force" {
+		t.Errorf("AI.Commit.Mode: want %q, got %q", "force", cfg.AI.Commit.Mode)
+	}
+	if !cfg.AI.Commit.Trailer {
+		t.Error("AI.Commit.Trailer: want true (set in yaml)")
+	}
+	// Untouched fields keep their defaults.
+	if cfg.AI.Commit.MaxGroups != 10 {
+		t.Errorf("AI.Commit.MaxGroups: default should persist, got %d", cfg.AI.Commit.MaxGroups)
+	}
+}
+
+func TestLoadAIEnvOverride(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_AI_PROVIDER", "gemini")
+	t.Setenv("GK_AI_COMMIT_TRAILER", "true")
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Provider != "gemini" {
+		t.Errorf("AI.Provider from env: want %q, got %q", "gemini", cfg.AI.Provider)
+	}
+	if !cfg.AI.Commit.Trailer {
+		t.Error("AI.Commit.Trailer: env GK_AI_COMMIT_TRAILER=true should flip to true")
+	}
+}
+
+func TestLoadAIFlagBeatsEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_AI_PROVIDER", "qwen")
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("ai.provider", "", "ai provider")
+	if err := fs.Set("ai.provider", "gemini"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(fs)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Provider != "gemini" {
+		t.Errorf("AI.Provider: want %q (flag wins), got %q", "gemini", cfg.AI.Provider)
+	}
+}
+
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 // mustRunInDir executes a command in the given directory and fails the test on error.
 func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	t.Helper()

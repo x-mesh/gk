@@ -42,6 +42,17 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("clone.default_protocol", defaults.Clone.DefaultProtocol)
 	v.SetDefault("clone.default_host", defaults.Clone.DefaultHost)
 	v.SetDefault("worktree.base", defaults.Worktree.Base)
+	v.SetDefault("ai.enabled", defaults.AI.Enabled)
+	v.SetDefault("ai.provider", defaults.AI.Provider)
+	v.SetDefault("ai.lang", defaults.AI.Lang)
+	v.SetDefault("ai.commit.mode", defaults.AI.Commit.Mode)
+	v.SetDefault("ai.commit.max_groups", defaults.AI.Commit.MaxGroups)
+	v.SetDefault("ai.commit.max_tokens", defaults.AI.Commit.MaxTokens)
+	v.SetDefault("ai.commit.timeout", defaults.AI.Commit.Timeout)
+	v.SetDefault("ai.commit.deny_paths", defaults.AI.Commit.DenyPaths)
+	v.SetDefault("ai.commit.allow_remote", defaults.AI.Commit.AllowRemote)
+	v.SetDefault("ai.commit.trailer", defaults.AI.Commit.Trailer)
+	v.SetDefault("ai.commit.audit", defaults.AI.Commit.Audit)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()

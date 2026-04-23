@@ -4,11 +4,16 @@ All subcommands accept the following global flags:
 
 | Flag | Description |
 |------|-------------|
+| `-d, --debug` | Emit diagnostic logs (subprocess invocations, retry reasons, timings) to stderr. Also honored via `GK_DEBUG=1`. Each log line is prefixed with `[debug +N.NNNs]` showing elapsed time since the first debug call, so a glance reveals where wall time is being spent. |
 | `--dry-run` | Print actions without executing |
 | `--json` | JSON output where supported |
 | `--no-color` | Disable color output |
 | `--repo <path>` | Path to git repo (default: current directory) |
 | `--verbose` | Verbose output |
+
+### Progress feedback for long operations
+
+Operations that would otherwise hang the terminal silently while gk waits on an external process (`git fetch`, AI provider CLIs, gitleaks scan) now render a braille-dot spinner on stderr. The first frame is delayed 150ms, so sub-150ms calls never flash a spinner that would only clear itself. Spinners are suppressed when stderr is not a TTY (pipes, CI, `2>file`), and a line announcing each long stage is printed before the spinner starts so the transcript stays readable even without the animation.
 
 ---
 

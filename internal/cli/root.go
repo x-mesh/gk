@@ -7,7 +7,12 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"sync"
+	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +23,13 @@ var (
 	flagDryRun  bool
 	flagJSON    bool
 	flagNoColor bool
+	flagDebug   bool
+
+	// debugStart is captured the first time Dbg() fires so every
+	// subsequent log line carries an elapsed-since-start offset, which
+	// makes the time distribution between stages easy to eyeball.
+	debugStart     time.Time
+	debugStartOnce sync.Once
 
 	rootCmd = &cobra.Command{
 		Use:           "gk",
@@ -39,6 +51,12 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "print actions without executing")
 	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "json output where supported")
 	rootCmd.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable color output")
+	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "emit diagnostic logs (subprocess invocations, retry reasons, timings) to stderr")
+	// GK_DEBUG=1 env var is honored so users can opt in without every
+	// subcommand needing to pass -d by hand.
+	if v := os.Getenv("GK_DEBUG"); v == "1" || v == "true" {
+		flagDebug = true
+	}
 }
 
 // Root returns the cobra root command. Used by subcommands in other files
@@ -61,3 +79,39 @@ func Verbose() bool     { return flagVerbose }
 func DryRun() bool      { return flagDryRun }
 func JSONOut() bool     { return flagJSON }
 func NoColorFlag() bool { return flagNoColor }
+func Debug() bool       { return flagDebug }
+
+// debugWriter is the sink for Dbg lines. Production uses os.Stderr;
+// tests override it via SetDebugWriter to assert on emitted log lines.
+var debugWriter io.Writer = os.Stderr
+
+// SetDebugWriter overrides the destination for Dbg output. Returns the
+// previous writer so callers can restore on cleanup. Safe to call from
+// tests; not intended for runtime use.
+func SetDebugWriter(w io.Writer) io.Writer {
+	prev := debugWriter
+	debugWriter = w
+	return prev
+}
+
+// Dbg emits a diagnostic line to stderr (or SetDebugWriter target) when
+// --debug / -d / GK_DEBUG=1 is active. No-op otherwise — so it is safe
+// to pepper hot paths with Dbg calls without any runtime cost in the
+// common case.
+//
+// Each line is prefixed with an elapsed-since-first-call duration so a
+// user can eyeball "which stage spent the time":
+//
+//	[debug +0.003s] ai commit: provider=gemini
+//	[debug +0.042s] ai commit: classify ok — 3 groups
+//	[debug +2.815s] ai commit: compose(1/3) attempt=1 type=feat scope=api
+func Dbg(format string, args ...interface{}) {
+	if !flagDebug {
+		return
+	}
+	debugStartOnce.Do(func() { debugStart = time.Now() })
+	elapsed := time.Since(debugStart).Seconds()
+	faint := color.New(color.Faint).SprintFunc()
+	prefix := faint(fmt.Sprintf("[debug +%6.3fs] ", elapsed))
+	fmt.Fprintf(debugWriter, "%s%s\n", prefix, fmt.Sprintf(format, args...))
+}

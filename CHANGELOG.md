@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Global `-d, --debug` flag (and `GK_DEBUG=1` env var).** Every subcommand gains a diagnostic log channel to stderr. Lines are tagged with `[debug +N.NNNs]` showing elapsed time since the first debug call, so wall time attribution is immediate — e.g. `[debug +0.042s] ai commit: classify ok — 3 groups` vs `[debug +2.815s] ai commit: compose ok — 3 message(s) in 2.773s` tells you the model call is the hot path. `gk ai commit` also installs a `provider.ExecHook` under debug so every provider CLI invocation is logged with duration and exit status.
+- **Spinner feedback for long stages in `gk ai commit`.** Previously the command sat silently while the classifier or composer waited on an external AI CLI. Now each stage (secret-gate scan, classify, compose) prints a status line and starts a 150ms-delayed braille spinner on stderr, reusing the pattern from `gk status`'s quiet fetch. Non-TTY stderr (CI, piped output) stays clean — the status lines remain but the animation is suppressed. Spinner code lives in `internal/ui/spinner.go` and is available for future long-running commands.
+
 ## [0.10.0] - 2026-04-23
 
 ### Added

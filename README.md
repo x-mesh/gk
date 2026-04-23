@@ -252,6 +252,7 @@ gk ai commit --abort
 
 | Flag | Description |
 |---|---|
+| `-d, --debug` | Emit diagnostic logs to stderr (also via `GK_DEBUG=1`). Each line carries an elapsed-since-start prefix, so you can see at a glance which stage is spending wall time. |
 | `--dry-run` | Print actions without executing |
 | `--json` | JSON output where supported |
 | `--no-color` | Disable color output |

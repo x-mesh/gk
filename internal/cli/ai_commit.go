@@ -58,6 +58,20 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 
+	// Install the provider-exec debug hook under --debug. The hook is
+	// package-scope on the provider pkg, so this only needs to happen
+	// once per process — subsequent invocations just overwrite the
+	// same var harmlessly.
+	if Debug() {
+		provider.ExecHook = func(name string, args []string, dur time.Duration, err error) {
+			status := "ok"
+			if err != nil {
+				status = fmt.Sprintf("err=%v", err)
+			}
+			Dbg("exec: %s %v  (%s, %s)", name, args, dur.Round(time.Millisecond), status)
+		}
+	}
+
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
 		return fmt.Errorf("ai commit: load config: %w", err)
@@ -83,6 +97,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("ai commit: provider: %w", err)
 	}
+	Dbg("ai commit: provider=%s lang=%s scope=%s", prov.Name(), ai.Lang, ai.Commit.DenyPaths)
 
 	if err := aicommit.Preflight(ctx, aicommit.PreflightInput{
 		Runner:      runner,
@@ -93,6 +108,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}); err != nil {
 		return fmt.Errorf("ai commit: preflight: %w", err)
 	}
+	Dbg("ai commit: preflight ok")
 
 	// Gather WIP.
 	scope := aicommit.ScopeAll
@@ -113,13 +129,18 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: no working-tree changes to commit")
 		return nil
 	}
+	Dbg("ai commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
-	// Secret gate.
+	// Secret gate. gitleaks + internal/secrets can take a noticeable
+	// beat on large diffs; show a spinner so the user knows gk is
+	// actively guarding the payload rather than hung.
+	stopGate := ui.StartSpinner("scanning payload for secrets...")
 	payload := summariseForSecretScan(files)
 	findings, err := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,
 	}, nil)
+	stopGate()
 	if err != nil {
 		return err
 	}
@@ -128,17 +149,24 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ai commit: aborted due to %d secret finding(s); fix or --allow-secret-kind <kind>",
 			len(findings))
 	}
+	Dbg("ai commit: secret-gate clean")
 
-	// Classify.
+	// Classify — the first provider call. Spinner advertises we are
+	// waiting on the AI CLI, not stuck.
+	fmt.Fprintf(cmd.ErrOrStderr(), "ai commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
+	stopClassify := ui.StartSpinner(fmt.Sprintf("classify — %s", prov.Name()))
+	classifyStart := time.Now()
 	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
 		AllowedTypes:    cfg.Commit.Types,
 		AllowedScopes:   allowedScopesFromFiles(files),
 		Lang:            ai.Lang,
 		HybridFileLimit: 5,
 	})
+	stopClassify()
 	if err != nil {
 		return fmt.Errorf("ai commit: classify: %w", err)
 	}
+	Dbg("ai commit: classify ok — %d group(s) in %s", len(groups), time.Since(classifyStart).Round(time.Millisecond))
 	if len(groups) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: nothing to commit after filtering")
 		return nil
@@ -149,6 +177,9 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "ai commit: composing %d message(s)...\n", len(groups))
+	stopCompose := ui.StartSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
+	composeStart := time.Now()
 	messages, err := aicommit.ComposeAll(ctx, prov, groups, diffs, aicommit.ComposeOptions{
 		MaxAttempts:      3,
 		AllowedTypes:     cfg.Commit.Types,
@@ -156,9 +187,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		MaxSubjectLength: cfg.Commit.MaxSubjectLength,
 		Lang:             ai.Lang,
 	})
+	stopCompose()
 	if err != nil {
 		return fmt.Errorf("ai commit: compose: %w", err)
 	}
+	Dbg("ai commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
 
 	// Review.
 	reviewOpts := aicommit.ReviewOptions{

@@ -7,7 +7,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 )
+
+// ExecHook, when non-nil, is called after every ExecRunner.Run with the
+// command, duration, and final error. It is intended for debug logging
+// from higher layers (cli/root.go wires it to Dbg) without forcing the
+// provider package to depend on the cli package. stdin is not passed —
+// it can contain the user's diff and must never leak through debug
+// logs by default.
+var ExecHook func(name string, args []string, dur time.Duration, err error)
 
 // CommandRunner executes an external program and returns its captured
 // stdout / stderr. Adapters use this instead of exec.CommandContext so
@@ -36,22 +45,34 @@ func (ExecRunner) Run(ctx context.Context, name string, args []string, stdin []b
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
+	start := time.Now()
 	err := cmd.Run()
+	dur := time.Since(start)
 	stdout := outBuf.Bytes()
 	stderr := errBuf.Bytes()
 
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return stdout, stderr, &ExecError{
+			wrapped := &ExecError{
 				Code:   exit.ExitCode(),
 				Name:   name,
 				Args:   args,
 				Stderr: string(stderr),
 			}
+			if ExecHook != nil {
+				ExecHook(name, args, dur, wrapped)
+			}
+			return stdout, stderr, wrapped
 		}
 		// ctx cancelled or binary missing → return raw err
+		if ExecHook != nil {
+			ExecHook(name, args, dur, err)
+		}
 		return stdout, stderr, err
+	}
+	if ExecHook != nil {
+		ExecHook(name, args, dur, nil)
 	}
 	return stdout, stderr, nil
 }

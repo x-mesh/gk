@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-23
+
 ### Added
 
 - **Global `-d, --debug` flag (and `GK_DEBUG=1` env var).** Every subcommand gains a diagnostic log channel to stderr, rendered in dim gray so the stream visually recedes behind real command output. Lines are tagged with `[debug +N.NNNs]` showing elapsed time since the first debug call, so wall time attribution is immediate — e.g. `[debug +0.042s] ai commit: classify ok — 3 groups` vs `[debug +2.815s] ai commit: compose ok — 3 message(s) in 2.773s` tells you the model call is the hot path. Root-level `PersistentPreRunE` installs two subprocess hooks (`git.ExecHook` and `provider.ExecHook`) on every invocation, so every git command and every AI CLI call is logged with its argv, duration, and exit status — no per-command opt-in. Stage boundaries are annotated in `pull` (base/upstream/strategy resolution, dirty check, ff-optimization), `push` (protected/secret-scan/argv), `clone` (spec→URL→target), `worktree add` (raw→resolved→managed layout), and `ai commit` (provider/preflight/gather/gate/classify/compose).
@@ -253,7 +255,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/x-mesh/gk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/x-mesh/gk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/x-mesh/gk/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/x-mesh/gk/compare/v0.7.0...v0.8.0

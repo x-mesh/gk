@@ -84,8 +84,10 @@ func runClone(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	Dbg("clone: spec=%q → url=%s host=%s owner=%s repo=%s", spec, url, meta.Host, meta.Owner, meta.Repo)
 
 	target := computeCloneTarget(cfg.Clone, explicitTarget, meta)
+	Dbg("clone: target=%q (explicit=%q root=%q)", target, explicitTarget, cfg.Clone.Root)
 
 	out := cmd.OutOrStdout()
 	faint := color.New(color.Faint).SprintFunc()

@@ -58,20 +58,6 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 
-	// Install the provider-exec debug hook under --debug. The hook is
-	// package-scope on the provider pkg, so this only needs to happen
-	// once per process — subsequent invocations just overwrite the
-	// same var harmlessly.
-	if Debug() {
-		provider.ExecHook = func(name string, args []string, dur time.Duration, err error) {
-			status := "ok"
-			if err != nil {
-				status = fmt.Sprintf("err=%v", err)
-			}
-			Dbg("exec: %s %v  (%s, %s)", name, args, dur.Round(time.Millisecond), status)
-		}
-	}
-
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
 		return fmt.Errorf("ai commit: load config: %w", err)

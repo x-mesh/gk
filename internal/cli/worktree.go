@@ -219,6 +219,7 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	Dbg("worktree add: raw=%q resolved=%q managed=%v", rawPath, resolvedPath, resolvedPath != rawPath)
 	// Only create intermediate dirs when the path was rewritten through
 	// the managed layout. An absolute path is the user's responsibility.
 	if resolvedPath != rawPath {

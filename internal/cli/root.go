@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/git"
 )
 
 var (
@@ -56,6 +60,13 @@ func init() {
 	// subcommand needing to pass -d by hand.
 	if v := os.Getenv("GK_DEBUG"); v == "1" || v == "true" {
 		flagDebug = true
+	}
+	// Install subprocess hooks once per process invocation before the
+	// selected subcommand runs. Flag parsing happens before PreRun, so
+	// by the time this fires flagDebug reflects the -d / GK_DEBUG state.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		installDebugHooks()
+		return nil
 	}
 }
 
@@ -100,7 +111,10 @@ func SetDebugWriter(w io.Writer) io.Writer {
 // common case.
 //
 // Each line is prefixed with an elapsed-since-first-call duration so a
-// user can eyeball "which stage spent the time":
+// user can eyeball "which stage spent the time", and the entire line
+// (prefix + body) is rendered in dim gray so debug output visually
+// separates from the command's real output even when the two are
+// interleaved on stderr:
 //
 //	[debug +0.003s] ai commit: provider=gemini
 //	[debug +0.042s] ai commit: classify ok — 3 groups
@@ -111,7 +125,48 @@ func Dbg(format string, args ...interface{}) {
 	}
 	debugStartOnce.Do(func() { debugStart = time.Now() })
 	elapsed := time.Since(debugStart).Seconds()
-	faint := color.New(color.Faint).SprintFunc()
-	prefix := faint(fmt.Sprintf("[debug +%6.3fs] ", elapsed))
-	fmt.Fprintf(debugWriter, "%s%s\n", prefix, fmt.Sprintf(format, args...))
+	line := fmt.Sprintf("[debug +%6.3fs] ", elapsed) + fmt.Sprintf(format, args...)
+	// Whole line faint so it recedes next to real command output.
+	fmt.Fprintln(debugWriter, color.New(color.Faint).Sprint(line))
+}
+
+// installDebugHooks wires subprocess-level debug logging into the git
+// and AI provider runners when --debug / -d is active. Called from the
+// root PersistentPreRunE so every subcommand gets the coverage without
+// individual opt-in.
+//
+// Both hooks are package-level vars in their respective runners; they
+// are nil in production (no overhead) unless this function installs a
+// closure. Since Dbg is a no-op when flagDebug is false, it would be
+// safe to always install — but wiring only under the flag keeps the
+// normal path completely allocation-free.
+func installDebugHooks() {
+	if !flagDebug {
+		return
+	}
+	git.ExecHook = func(args []string, dur time.Duration, err error) {
+		status := "ok"
+		if err != nil {
+			// Truncate noisy stderrs so a 10KB git error doesn't
+			// flood the debug log — the full message still goes
+			// through the real return path.
+			msg := err.Error()
+			if len(msg) > 120 {
+				msg = msg[:120] + "…"
+			}
+			status = "err=" + msg
+		}
+		Dbg("git %s  (%s, %s)", strings.Join(args, " "), dur.Round(time.Millisecond), status)
+	}
+	provider.ExecHook = func(name string, args []string, dur time.Duration, err error) {
+		status := "ok"
+		if err != nil {
+			msg := err.Error()
+			if len(msg) > 120 {
+				msg = msg[:120] + "…"
+			}
+			status = "err=" + msg
+		}
+		Dbg("exec %s %s  (%s, %s)", name, strings.Join(args, " "), dur.Round(time.Millisecond), status)
+	}
 }

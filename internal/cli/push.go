@@ -76,12 +76,15 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	Dbg("push: remote=%s branch=%s force=%v protected=%v", remote, branch, force, isProtected(branch, cfg.Push.Protected))
+
 	// Secret scan
 	if !skipScan {
 		findings, err := scanCommitsToPush(ctx, runner, remote, branch)
 		if err != nil {
 			return fmt.Errorf("secret scan: %w", err)
 		}
+		Dbg("push: secret-scan — %d finding(s)", len(findings))
 		if len(findings) > 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "potential secrets detected:")
 			for _, f := range findings {
@@ -90,6 +93,8 @@ func runPush(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.ErrOrStderr(), "  use --skip-scan to override (not recommended)")
 			return fmt.Errorf("aborting push")
 		}
+	} else {
+		Dbg("push: secret-scan skipped (--skip-scan)")
 	}
 
 	// Actual push — auto-set upstream when the branch has none yet.
@@ -102,6 +107,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		gitArgs = append(gitArgs, "--set-upstream")
 	}
 	gitArgs = append(gitArgs, remote, branch)
+	Dbg("push: hasUpstream=%v argv=%v", hasUpstream, gitArgs)
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	if err != nil {
 		fmt.Fprint(cmd.ErrOrStderr(), string(stderr))

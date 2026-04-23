@@ -99,6 +99,9 @@ func runPullCore(cmd *cobra.Command) error {
 			return fmt.Errorf("could not determine base branch: %w (use --base)", err)
 		}
 		base = detected
+		Dbg("pull: auto-detected base=%s via remote=%s", base, remote)
+	} else {
+		Dbg("pull: base=%s (explicit)", base)
 	}
 
 	// 2) validate ref name (argv injection defence)
@@ -108,6 +111,7 @@ func runPullCore(cmd *cobra.Command) error {
 
 	// 3) resolve upstream: prefer tracking @{u}, fall back to remote/base
 	upstream, fetchRemote, fetchBranch := resolveUpstream(ctx, runner, remote, base)
+	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s", upstream, fetchRemote, fetchBranch)
 	fmt.Fprintf(os.Stderr, "fetching %s...\n", upstream)
 
 	// 4) dirty check
@@ -115,6 +119,7 @@ func runPullCore(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	Dbg("pull: dirty=%v autostash=%v", dirty, autostash)
 
 	var stashed bool
 	if dirty {
@@ -128,6 +133,7 @@ func runPullCore(cmd *cobra.Command) error {
 			return fmt.Errorf("stash failed: %w", err)
 		}
 		stashed = true
+		Dbg("pull: autostashed working tree")
 	}
 
 	// 5) fetch
@@ -148,6 +154,7 @@ func runPullCore(cmd *cobra.Command) error {
 
 	// 6) resolve strategy
 	strategy := resolveStrategy(ctx, strategyFlag, cfg, runner)
+	Dbg("pull: strategy=%s (flag=%q cfg=%q)", strategy, strategyFlag, cfg.Pull.Strategy)
 
 	// Capture pre-integration HEAD so we can summarize what the
 	// integration actually pulled in. Failure to read HEAD is tolerated —
@@ -159,6 +166,7 @@ func runPullCore(cmd *cobra.Command) error {
 	//    end-state, no rebase process overhead).
 	if strategy == pullStrategyRebase && isFastForwardPossible(ctx, runner, upstream) {
 		strategy = pullStrategyFFOnly
+		Dbg("pull: ff-possible — substituting merge --ff-only for rebase")
 	}
 
 	// 8) integrate

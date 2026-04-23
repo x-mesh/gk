@@ -4,7 +4,7 @@ All subcommands accept the following global flags:
 
 | Flag | Description |
 |------|-------------|
-| `-d, --debug` | Emit diagnostic logs (subprocess invocations, retry reasons, timings) to stderr. Also honored via `GK_DEBUG=1`. Each log line is prefixed with `[debug +N.NNNs]` showing elapsed time since the first debug call, so a glance reveals where wall time is being spent. |
+| `-d, --debug` | Emit diagnostic logs (every git + AI-provider subprocess invocation with its duration and exit status, plus stage boundaries per command: base/upstream/strategy resolution in `pull`, URL resolution in `clone`, path resolution in `worktree add`, secret-scan results in `push`, etc.) to stderr in dim gray. Also honored via `GK_DEBUG=1`. Each log line is prefixed with `[debug +N.NNNs]` showing elapsed time since the first debug call, so a glance reveals where wall time is being spent. |
 | `--dry-run` | Print actions without executing |
 | `--json` | JSON output where supported |
 | `--no-color` | Disable color output |

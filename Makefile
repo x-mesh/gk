@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet tidy clean install uninstall release-snapshot help
+.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install uninstall release-snapshot help
 
 BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
@@ -23,6 +23,22 @@ uninstall:
 test:
 	go test ./... -race -cover
 
+test-pbt:
+	go test ./internal/ai/provider/ -race -run "Property" -count=1 -v
+	go test ./internal/aicommit/ -race -run "Property" -count=1 -v
+
+test-provider:
+	go test ./internal/ai/provider/ -race -cover -count=1 -v
+
+test-privacy:
+	go test ./internal/aicommit/ -race -run "Redact|Privacy|Gate" -count=1 -v
+
+test-cli:
+	go test ./internal/cli/ -race -cover -count=1
+
+test-integration:
+	go test ./internal/cli/ -race -run "Integration" -count=1 -v
+
 lint:
 	golangci-lint run
 
@@ -43,7 +59,14 @@ release-snapshot:
 	goreleaser release --snapshot --clean
 
 help:
-	@echo "Targets: build, install, uninstall, test, lint, fmt, vet, tidy, clean, release-snapshot"
+	@echo "Targets: build, install, uninstall, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, clean, release-snapshot"
+	@echo ""
+	@echo "  test              run all tests"
+	@echo "  test-pbt          property-based tests only (provider + privacy gate)"
+	@echo "  test-provider     AI provider package tests (nvidia, fallback, factory)"
+	@echo "  test-privacy      Privacy Gate tests (redaction, threshold, audit)"
+	@echo "  test-cli          CLI package tests (all commands)"
+	@echo "  test-integration  integration tests (privacy gate + fallback chain e2e)"
 	@echo ""
 	@echo "install writes: $(BINDIR)/$(INSTALL_NAME)"
 	@echo "  (the Homebrew 'gk' in /opt/homebrew/bin stays untouched)"

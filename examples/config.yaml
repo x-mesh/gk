@@ -117,15 +117,23 @@ ai:
   # disables every `gk ai *` subcommand with a clear error.
   enabled: true
 
-  # Default provider. Empty = auto-detect in order: gemini → qwen → kiro-cli.
-  # Override per-invocation with `--provider gemini|qwen|kiro`.
+  # Default provider. Empty = auto-detect in order: nvidia → gemini → qwen → kiro-cli.
+  # Override per-invocation with `--provider nvidia|gemini|qwen|kiro`.
   #
   # Install hints:
+  #   nvidia   — no binary needed; set NVIDIA_API_KEY env var
   #   gemini   — npm i -g @google/gemini-cli  (auth: GEMINI_API_KEY or OAuth)
   #   qwen     — npm i -g @qwen-code/qwen-code (auth: qwen auth qwen-oauth)
   #   kiro-cli — https://kiro.dev/docs/cli/installation (note: NOT the `kiro`
   #              IDE launcher; the headless binary is `kiro-cli`)
-  # provider: kiro
+  # provider: nvidia
+
+  # NVIDIA provider settings. Uses the OpenAI-compatible Chat Completions API
+  # directly over HTTP — no external binary required. Auth: NVIDIA_API_KEY env var.
+  nvidia:
+    # model: "meta/llama-3.1-8b-instruct"  # default
+    # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"  # default
+    # timeout: "60s"  # default
 
   # Commit-message language. BCP-47 short code. Override via `--lang`.
   lang: en

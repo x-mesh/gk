@@ -30,15 +30,15 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 		opts.Runner = ExecRunner{}
 	}
 	if opts.Name != "" {
-		return build(opts.Name, opts.Runner)
+		return Build(opts.Name, opts.Runner)
 	}
 	order := opts.AutoOrder
 	if len(order) == 0 {
-		order = []string{"gemini", "qwen", "kiro"}
+		order = []string{"nvidia", "gemini", "qwen", "kiro"}
 	}
 	var probeErrs []error
 	for _, n := range order {
-		p, err := build(n, opts.Runner)
+		p, err := Build(n, opts.Runner)
 		if err != nil {
 			probeErrs = append(probeErrs, err)
 			continue
@@ -53,9 +53,12 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 		order, errors.Join(probeErrs...))
 }
 
-// build constructs the concrete adapter by name.
-func build(name string, runner CommandRunner) (Provider, error) {
+// Build constructs the concrete adapter by name. Exported so callers
+// (e.g. FallbackChain builder) can construct individual providers.
+func Build(name string, runner CommandRunner) (Provider, error) {
 	switch name {
+	case "nvidia":
+		return NewNvidia(), nil
 	case "gemini":
 		g := NewGemini()
 		g.Runner = runner
@@ -69,6 +72,6 @@ func build(name string, runner CommandRunner) (Provider, error) {
 		k.Runner = runner
 		return k, nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want gemini|qwen|kiro)", name)
+		return nil, fmt.Errorf("unknown provider %q (want nvidia|gemini|qwen|kiro)", name)
 	}
 }

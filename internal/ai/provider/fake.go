@@ -17,14 +17,20 @@ type Fake struct {
 	ComposeResponses  []ComposeResult
 	ComposeErrs       []error
 
+	// Summarizer support.
+	SummarizeResponses []SummarizeResult
+	SummarizeErrs      []error
+
 	// Observation hooks; zero values are ignored.
-	OnClassify func(ClassifyInput)
-	OnCompose  func(ComposeInput)
+	OnClassify  func(ClassifyInput)
+	OnCompose   func(ComposeInput)
+	OnSummarize func(SummarizeInput)
 
-	Calls []string // "Available" | "Classify" | "Compose"
+	Calls []string // "Available" | "Classify" | "Compose" | "Summarize"
 
-	classifyIdx int
-	composeIdx  int
+	classifyIdx  int
+	composeIdx   int
+	summarizeIdx int
 }
 
 // NewFake returns a Fake that claims to be a local provider named
@@ -81,4 +87,25 @@ func (f *Fake) Compose(_ context.Context, in ComposeInput) (ComposeResult, error
 	return resp, err
 }
 
+func (f *Fake) Summarize(_ context.Context, in SummarizeInput) (SummarizeResult, error) {
+	f.Calls = append(f.Calls, "Summarize")
+	if f.OnSummarize != nil {
+		f.OnSummarize(in)
+	}
+	idx := f.summarizeIdx
+	f.summarizeIdx++
+	var (
+		resp SummarizeResult
+		err  error
+	)
+	if idx < len(f.SummarizeResponses) {
+		resp = f.SummarizeResponses[idx]
+	}
+	if idx < len(f.SummarizeErrs) {
+		err = f.SummarizeErrs[idx]
+	}
+	return resp, err
+}
+
 var _ Provider = (*Fake)(nil)
+var _ Summarizer = (*Fake)(nil)

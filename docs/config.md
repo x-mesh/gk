@@ -264,6 +264,69 @@ branch:
     - develop
 ```
 
+### `ai.nvidia.model`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `meta/llama-3.1-8b-instruct` |
+
+LLM model identifier sent in the Chat Completions request. Any model available on the NVIDIA API can be used.
+
+```yaml
+ai:
+  nvidia:
+    model: "meta/llama-3.1-8b-instruct"
+```
+
+---
+
+### `ai.nvidia.endpoint`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `https://integrate.api.nvidia.com/v1/chat/completions` |
+
+Chat Completions API URL. Override when using a self-hosted or proxy endpoint.
+
+```yaml
+ai:
+  nvidia:
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+```
+
+---
+
+### `ai.nvidia.timeout`
+
+| | |
+|-|-|
+| Type | string (Go duration) |
+| Default | `60s` |
+
+HTTP request timeout as a Go duration string (e.g. `30s`, `2m`). This is the total deadline across all retries.
+
+```yaml
+ai:
+  nvidia:
+    timeout: "60s"
+```
+
+---
+
+### `NVIDIA_API_KEY` (environment variable)
+
+Required when using the nvidia provider. Set this to your NVIDIA API key:
+
+```bash
+export NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxx
+```
+
+The nvidia provider reads this variable at runtime and sends it as a Bearer token in the Authorization header. When unset, `gk ai` falls back to the next provider in the auto-detect order.
+
+---
+
 ## Inspecting the Resolved Config
 
 To see the final merged configuration that gk will use:

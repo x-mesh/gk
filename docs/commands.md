@@ -1384,12 +1384,12 @@ export GK_NO_AUTO_CONFIG=1
 
 ## gk ai
 
-AI-assisted workflows. Subcommands drive external AI CLIs (`gemini`, `qwen`, `kiro-cli`) as providers; gk never talks to remote LLM APIs directly, so no API key lives inside gk.
+AI-assisted workflows. The nvidia provider calls the NVIDIA Chat Completions API directly over HTTP; other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses. No API key lives inside gk — nvidia reads `NVIDIA_API_KEY` from the environment.
 
 Provider resolution order (all commands):
 1. `--provider` flag
 2. `ai.provider` in config (`.gk.yaml` or `~/.config/gk/config.yaml`)
-3. Auto-detect in order: `gemini → qwen → kiro-cli`
+3. Auto-detect in order: `nvidia → gemini → qwen → kiro-cli`
 
 ### gk ai commit
 
@@ -1448,6 +1448,144 @@ gk ai commit --ci --force
 ```
 
 See the "AI commit" section in the main `README.md` for provider install/auth instructions (`gemini`, `qwen`, `kiro-cli`) and full config examples.
+
+---
+
+### gk ai pr
+
+Generate a structured PR description from the current branch's commits relative to the base branch.
+
+#### Synopsis
+
+```
+gk ai pr [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output <target>` | `stdout` | Where to send the result: `stdout` or `clipboard` |
+| `--dry-run` | false | Print the prompt that would be sent without calling the provider |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+| `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |
+
+#### What it does
+
+1. Computes the diff range from `merge-base(HEAD, base_branch)..HEAD`.
+2. Collects commit messages in that range.
+3. Calls the provider's Summarize capability with Kind="pr".
+4. Outputs a PR body containing: Summary, Changes, Risk Assessment, and Test Plan.
+
+If the current branch has no commits ahead of the base branch, prints a message and exits with code 0.
+
+#### Examples
+
+```bash
+# Generate PR description to stdout
+gk ai pr
+
+# Copy to clipboard
+gk ai pr --output clipboard
+
+# Preview the prompt without calling the provider
+gk ai pr --dry-run
+
+# Use a specific provider and language
+gk ai pr --provider nvidia --lang ko
+```
+
+---
+
+### gk ai review
+
+AI-powered code review on staged changes or a commit range.
+
+#### Synopsis
+
+```
+gk ai review [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--range <ref1>..<ref2>` | | Review the diff between two refs instead of staged changes |
+| `--format <fmt>` | `text` | Output format: `text` or `json` |
+| `--dry-run` | false | Print the prompt that would be sent without calling the provider |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+
+#### What it does
+
+1. Without `--range`: reviews the staged diff (`git diff --cached`).
+2. With `--range`: reviews the diff between the two specified refs.
+3. Calls the provider's Summarize capability with Kind="review".
+4. Outputs file-level comments with severity (info/warning/error) and suggested fixes.
+
+If the diff is empty, prints a message indicating no changes to review and exits with code 0.
+
+#### Examples
+
+```bash
+# Review staged changes
+gk ai review
+
+# Review a commit range
+gk ai review --range main..HEAD
+
+# JSON output for tooling
+gk ai review --format json
+
+# Preview the prompt
+gk ai review --dry-run
+```
+
+---
+
+### gk ai changelog
+
+Generate a changelog from a range of commits, grouped by Conventional Commit type.
+
+#### Synopsis
+
+```
+gk ai changelog [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from <ref>` | latest tag | Start of the commit range (default: latest tag reachable from HEAD) |
+| `--to <ref>` | `HEAD` | End of the commit range |
+| `--format <fmt>` | `markdown` | Output format: `markdown` or `json` |
+| `--dry-run` | false | Print the prompt that would be sent without calling the provider |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+
+#### What it does
+
+1. Collects commits in the `--from..--to` range.
+2. Calls the provider's Summarize capability with Kind="changelog".
+3. Outputs entries grouped by type: Features, Bug Fixes, Documentation, etc.
+
+If no commits exist in the specified range, prints a message and exits with code 0.
+
+#### Examples
+
+```bash
+# Changelog from latest tag to HEAD (markdown)
+gk ai changelog
+
+# Changelog between specific refs
+gk ai changelog --from v1.0.0 --to v1.1.0
+
+# JSON output
+gk ai changelog --format json
+
+# Preview the prompt
+gk ai changelog --dry-run
+```
 
 ---
 

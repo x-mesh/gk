@@ -29,6 +29,16 @@ type AIConfig struct {
 	Provider string         `mapstructure:"provider" yaml:"provider"`
 	Lang     string         `mapstructure:"lang"     yaml:"lang"`
 	Commit   AICommitConfig `mapstructure:"commit"   yaml:"commit"`
+	Nvidia   AINvidiaConfig `mapstructure:"nvidia"   yaml:"nvidia"`
+}
+
+// AINvidiaConfig controls the NVIDIA AI provider. Model overrides the
+// default LLM model identifier; Endpoint overrides the default Chat
+// Completions API URL; Timeout is a Go duration string for HTTP requests.
+type AINvidiaConfig struct {
+	Model    string `mapstructure:"model"    yaml:"model"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
 }
 
 // AICommitConfig controls `gk ai commit`. Mode is the default execution
@@ -265,6 +275,9 @@ func Defaults() Config {
 				AllowRemote: true,
 				Trailer:     false,
 				Audit:       false,
+			},
+			Nvidia: AINvidiaConfig{
+				Timeout: "60s",
 			},
 		},
 	}

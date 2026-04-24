@@ -156,6 +156,9 @@ gk preflight               # 설정된 검사 순서 실행
 | 명령어 | 설명 |
 |---|---|
 | `gk ai commit` | WIP(staged+unstaged+untracked)를 AI CLI로 의미 있는 커밋 그룹으로 분할하고 Conventional Commit 메시지로 적용. `-f/--force` 리뷰 스킵, `--dry-run` 미리보기, `--abort` 마지막 백업 ref로 HEAD 복원. 아래 **AI commit** 섹션 참조 |
+| `gk ai pr` | 브랜치 커밋으로부터 구조화된 PR 설명(Summary, Changes, Risk Assessment, Test Plan) 생성. `--output clipboard`으로 클립보드 복사; `--dry-run`으로 프롬프트 미리보기 |
+| `gk ai review` | staged 변경(`git diff --cached`) 또는 커밋 범위(`--range ref1..ref2`)에 대한 AI 코드 리뷰. `--format json`으로 구조화된 출력 |
+| `gk ai changelog` | 커밋 범위에서 Conventional Commit 타입별로 그룹화된 changelog 생성. `--from`/`--to` ref 지정; 기본값은 최신 태그..HEAD |
 
 ### 온보딩 / 설정
 
@@ -181,9 +184,14 @@ gk preflight               # 설정된 검사 순서 실행
 
 | Provider | 설치 | 인증 |
 |---|---|---|
+| `nvidia` (NVIDIA) — **기본값** | 바이너리 불필요 | `export NVIDIA_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` 또는 `brew install gemini-cli` | `export GEMINI_API_KEY=...` 또는 `gemini` 최초 실행 시 OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` 또는 `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro — **`kiro` IDE 런처와 다름**) | [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) 또는 IDE OAuth |
+
+> **nvidia**는 NVIDIA Chat Completions API를 HTTP로 직접 호출합니다 — 외부 바이너리가 필요 없습니다. 다른 provider(`gemini`, `qwen`, `kiro-cli`)는 외부 CLI subprocess로 구동됩니다.
+
+자동 감지 순서 (`ai.provider`가 비어있을 때): **nvidia → gemini → qwen → kiro-cli**. 명시적 `--provider`가 없으면 **Fallback Chain**이 순서대로 사용 가능한 provider를 시도하며, 실패 시 자동으로 다음 provider로 전환합니다.
 
 `gk doctor` 출력에서 각 provider 설치/인증 상태를 확인할 수 있습니다.
 
@@ -210,8 +218,12 @@ gk ai commit [flags]
 # .gk.yaml (또는 ~/.config/gk/config.yaml)
 ai:
   enabled: true              # 전역 off-switch. GK_AI_DISABLE=1 로도 비활성화 가능
-  provider: ""               # "" = 자동 감지 (gemini → qwen → kiro-cli)
+  provider: ""               # "" = 자동 감지 (nvidia → gemini → qwen → kiro-cli)
   lang: "en"                 # 메시지 언어 (BCP-47)
+  nvidia:                    # NVIDIA provider — HTTP 직접 호출, 바이너리 불필요
+    # model: "meta/llama-3.1-8b-instruct"  # 기본값
+    # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+    # timeout: "60s"
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI 플래그가 오버라이드)
     max_groups: 10
@@ -237,6 +249,7 @@ ai:
 ### 안전 장치
 
 - **Secret gate**: `internal/secrets.Scan` + `gitleaks`(설치된 경우) 이중 검사. 발견 시 `--force` 여부와 무관하게 abort. 특정 종류만 무시하려면 `--allow-secret-kind <kind>`.
+- **Privacy Gate**: remote provider(`Locality=remote`)에 대해 outbound payload에서 secret, deny_paths 매칭, 민감 패턴을 자동으로 redact합니다. 매칭된 내용은 토큰화된 placeholder(`[SECRET_1]`, `[PATH_1]`)로 치환됩니다. 단일 payload에서 10개 초과 secret 감지 시 abort. `gk ai` 하위 명령에 `--show-prompt`를 사용하면 redact된 payload를 확인할 수 있습니다. `ai.commit.audit` 활성화 시 `.gk/ai-audit.jsonl`에 audit 로깅.
 - **Deny paths**: 매칭된 파일은 provider에 전달되지 않음.
 - **git-state 차단**: rebase/merge/cherry-pick 진행 중이면 실행 거부. `MERGE_MSG` 덮어쓰기 방지.
 - **Backup ref**: 시작 시 `refs/gk/ai-commit-backup/<branch>/<unix>` 기록. 실패 시 `gk ai commit --abort`로 복원.
@@ -255,6 +268,47 @@ gk ai commit --force --provider gemini
 # 중간 실패 복구
 gk ai commit --abort
 ```
+
+## AI pr / review / changelog
+
+이 명령들은 provider의 **Summarizer** 기능을 사용합니다. 현재 `nvidia` provider만 Summarizer를 구현하며, 다른 provider는 향후 릴리즈에서 지원 예정입니다.
+
+### `gk ai pr`
+
+현재 브랜치의 커밋으로부터 base 브랜치 대비 구조화된 PR 설명을 생성합니다.
+
+```bash
+gk ai pr                          # stdout으로 출력
+gk ai pr --output clipboard       # 클립보드에 복사
+gk ai pr --dry-run                # 프롬프트 미리보기
+gk ai pr --provider nvidia --lang ko
+```
+
+플래그: `--output` (stdout|clipboard), `--dry-run`, `--provider`, `--lang`
+
+### `gk ai review`
+
+staged 변경 또는 커밋 범위에 대한 AI 코드 리뷰.
+
+```bash
+gk ai review                      # staged diff 리뷰
+gk ai review --range main..HEAD   # 커밋 범위 리뷰
+gk ai review --format json        # 구조화된 JSON 출력
+```
+
+플래그: `--range`, `--format` (text|json), `--dry-run`, `--provider`
+
+### `gk ai changelog`
+
+커밋 범위에서 Conventional Commit 타입별로 그룹화된 changelog를 생성합니다.
+
+```bash
+gk ai changelog                   # 최신 태그..HEAD, markdown
+gk ai changelog --from v1.0.0 --to v1.1.0
+gk ai changelog --format json
+```
+
+플래그: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`
 
 ## 전역 플래그
 

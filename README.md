@@ -149,6 +149,9 @@ gk preflight               # run the configured check sequence
 | Command | Description |
 |---|---|
 | `gk ai commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
+| `gk ai pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
+| `gk ai review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
+| `gk ai changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
 
 ### Onboarding / config
 | Command | Description |
@@ -173,9 +176,14 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 
 | Provider | Install | Auth |
 |---|---|---|
+| `nvidia` (NVIDIA) — **default** | No binary needed | `export NVIDIA_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` or `brew install gemini-cli` | `export GEMINI_API_KEY=...` or run `gemini` once for OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` or `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro headless — note: **not** the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
+
+> **nvidia** calls the NVIDIA Chat Completions API directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
+
+Auto-detect order (when `ai.provider` is empty): **nvidia → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
 
 Run `gk doctor` to verify each provider's install + auth status.
 
@@ -202,8 +210,12 @@ gk ai commit [flags]
 # .gk.yaml (or ~/.config/gk/config.yaml)
 ai:
   enabled: true              # master off-switch; GK_AI_DISABLE=1 also disables
-  provider: ""               # "" = auto-detect (gemini → qwen → kiro-cli)
+  provider: ""               # "" = auto-detect (nvidia → gemini → qwen → kiro-cli)
   lang: "en"                 # message language (BCP-47 short)
+  nvidia:                    # NVIDIA provider — HTTP direct, no binary needed
+    # model: "meta/llama-3.1-8b-instruct"  # default
+    # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+    # timeout: "60s"
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI flags override)
     max_groups: 10
@@ -229,6 +241,7 @@ ai:
 ### Safety rails (every run)
 
 - **Secret gate** — runs `internal/secrets.Scan` plus `gitleaks` (when installed) over the payload; any finding aborts, even with `--force`. Use `--allow-secret-kind <kind>` per-run to whitelist a specific kind.
+- **Privacy Gate** — for remote providers (`Locality=remote`), automatically redacts secrets, deny_paths matches, and sensitive patterns from the outbound payload. Replaces matches with tokenized placeholders (`[SECRET_1]`, `[PATH_1]`). Aborts if >10 secrets detected. Use `--show-prompt` on any `gk ai` subcommand to inspect the redacted payload. Audit logging to `.gk/ai-audit.jsonl` when `ai.commit.audit` is enabled.
 - **Deny paths** — matching files (`.env`, private keys, tfstate, …) are dropped before the payload leaves the process.
 - **Git-state guard** — refuses to run mid-rebase / mid-merge / mid-cherry-pick so `MERGE_MSG` is never overwritten.
 - **Backup ref** — each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing; `gk ai commit --abort` restores HEAD there.
@@ -247,6 +260,47 @@ gk ai commit --force --provider gemini
 # Recover from a partial failure.
 gk ai commit --abort
 ```
+
+## AI pr / review / changelog
+
+These commands use the provider's **Summarizer** capability. Currently only the `nvidia` provider implements Summarizer; other providers will gain support in future releases.
+
+### `gk ai pr`
+
+Generate a structured PR description from the current branch's commits relative to the base branch.
+
+```bash
+gk ai pr                          # output to stdout
+gk ai pr --output clipboard       # copy to clipboard
+gk ai pr --dry-run                # preview the prompt
+gk ai pr --provider nvidia --lang ko
+```
+
+Flags: `--output` (stdout|clipboard), `--dry-run`, `--provider`, `--lang`
+
+### `gk ai review`
+
+AI-powered code review on staged changes or a commit range.
+
+```bash
+gk ai review                      # review staged diff
+gk ai review --range main..HEAD   # review a commit range
+gk ai review --format json        # structured JSON output
+```
+
+Flags: `--range`, `--format` (text|json), `--dry-run`, `--provider`
+
+### `gk ai changelog`
+
+Generate a changelog from a range of commits, grouped by Conventional Commit type.
+
+```bash
+gk ai changelog                   # latest tag..HEAD, markdown
+gk ai changelog --from v1.0.0 --to v1.1.0
+gk ai changelog --format json
+```
+
+Flags: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`
 
 ## Global flags
 

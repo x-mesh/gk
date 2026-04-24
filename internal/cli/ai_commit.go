@@ -76,14 +76,25 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Resolve provider first so Preflight can query Locality / Available.
-	prov, err := provider.NewProvider(ctx, provider.FactoryOptions{
-		Name:   ai.Provider,
-		Runner: provider.ExecRunner{},
-	})
-	if err != nil {
-		return fmt.Errorf("ai commit: provider: %w", err)
+	// Fallback Chain when no explicit provider; single provider otherwise.
+	var prov provider.Provider
+	if ai.Provider == "" {
+		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
+		if fcErr != nil {
+			return fmt.Errorf("ai commit: %w", fcErr)
+		}
+		prov = fc
+	} else {
+		p, pErr := provider.NewProvider(ctx, provider.FactoryOptions{
+			Name:   ai.Provider,
+			Runner: provider.ExecRunner{},
+		})
+		if pErr != nil {
+			return fmt.Errorf("ai commit: provider: %w", pErr)
+		}
+		prov = p
 	}
-	Dbg("ai commit: provider=%s lang=%s scope=%s", prov.Name(), ai.Lang, ai.Commit.DenyPaths)
+	Dbg("ai commit: provider=%s model=%s lang=%s scope=%s", prov.Name(), providerModel(prov), ai.Lang, ai.Commit.DenyPaths)
 
 	if err := aicommit.Preflight(ctx, aicommit.PreflightInput{
 		Runner:      runner,
@@ -136,6 +147,15 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 			len(findings))
 	}
 	Dbg("ai commit: secret-gate clean")
+
+	// Privacy Gate: redact payload for remote providers.
+	redactedPayload, _, pgErr := applyPrivacyGate(prov, payload, ai)
+	if pgErr != nil {
+		return fmt.Errorf("ai commit: privacy gate: %w", pgErr)
+	}
+
+	// --show-prompt: display redacted payload.
+	showPromptIfRequested(cmd, redactedPayload)
 
 	// Classify — the first provider call. Spinner advertises we are
 	// waiting on the AI CLI, not stuck.
@@ -374,6 +394,22 @@ func filterKept(messages []aicommit.Message, decisions []aicommit.ReviewDecision
 		}
 	}
 	return out
+}
+
+// providerModel returns the model identifier for debug logging.
+// For nvidia it reads the Model field; for others returns "n/a".
+func providerModel(p provider.Provider) string {
+	if nv, ok := p.(*provider.Nvidia); ok {
+		if nv.Model != "" {
+			return nv.Model
+		}
+		return "meta/llama-3.1-8b-instruct"
+	}
+	// FallbackChain: check the first provider.
+	if fc, ok := p.(*provider.FallbackChain); ok && len(fc.Providers) > 0 {
+		return providerModel(fc.Providers[0])
+	}
+	return "n/a"
 }
 
 // readProviderVersion tries `<provider> --version`; returns "unknown"

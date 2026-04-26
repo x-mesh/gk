@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release workflow for gk — bumps version, updates CHANGELOG, tags, pushes, and monitors GitHub Actions until the Homebrew tap (x-mesh/homebrew-tap) is updated. Use when the user says "release", "cut a release", "ship v0.x", or "/release".
+description: Release workflow for gk — bumps version, updates CHANGELOG, auto-syncs README + docs/commands.md for any new commands/flags, tags, pushes, and monitors GitHub Actions until the Homebrew tap (x-mesh/homebrew-tap) is updated. Use when the user says "release", "cut a release", "ship v0.x", or "/release".
 ---
 
 # Release workflow for gk
@@ -94,9 +94,11 @@ If `## [Unreleased]` is empty (no entries since the last release), run the diff 
 
 Today's date: use `date +%Y-%m-%d` in the running environment.
 
-## Step 3b — Documentation sync verification
+## Step 3b — Documentation sync (auto-update by default)
 
-Every new user-facing command or flag that ships needs to appear in both `README.md` (Commands table) and `docs/commands.md` (reference section). After the CHANGELOG is promoted to the new version section, verify docs match reality.
+Every new user-facing command or flag that ships needs to appear in both `README.md` (Commands table) and `docs/commands.md` (reference section). After the CHANGELOG is promoted to the new version section, **scan for gaps and write the docs in the same release commit by default** — releasing with code/docs drift is a UX regression.
+
+### 1. Detect gaps
 
 Extract command/flag tokens from the just-promoted version block:
 
@@ -108,29 +110,59 @@ NEW_SECTION=$(awk "/^## \\[${NEW_VERSION}\\]/{flag=1;next}/^## \\[/{flag=0}flag"
 NEW_CMDS=$(echo "$NEW_SECTION" | grep -oE '`gk [a-z][a-z-]+( --[a-z-]+)?`' | sort -u)
 ```
 
-For each token, check:
-
-1. **README.md** must contain the command or flag somewhere in the Commands tables. If missing, the README will not advertise what the release ships.
-2. **docs/commands.md** must either have a dedicated `## gk <cmd>` section or, for flags, mention the flag under the parent command's section.
-
-If anything is missing, list the gaps and use `AskUserQuestion` to offer:
-
-- **Update docs now** (recommended) — pause the release, wait for the user to update, then re-run `/release`.
-- **Proceed anyway** — append a `- TODO: document <token>` line under `## [Unreleased]` (not the version just promoted) so the gap is tracked, then continue.
-
-**Never auto-generate documentation prose.** A command's description belongs to a human editor.
-
-### Optional sanity check — binary vs docs drift
+Also diff against the binary surface to catch tokens the CHANGELOG missed:
 
 ```bash
 go run ./cmd/gk --help | awk '/Available Commands:/,/Flags:/' \
   | awk 'NR>1 && $1!="Flags:" && $1!="help" && $1!="completion" && NF>0 {print $1}' \
   | sort -u > /tmp/gk-help.txt
 grep -oE '^## gk [a-z-]+' docs/commands.md | awk '{print $3}' | sort -u > /tmp/gk-docs.txt
-comm -23 /tmp/gk-help.txt /tmp/gk-docs.txt
+comm -23 /tmp/gk-help.txt /tmp/gk-docs.txt   # commands in binary, missing in docs
 ```
 
-Lines in `comm` output are commands exposed by the binary but missing from `docs/commands.md`. Treat as a warning — older commands may already be undocumented; call out only newly added ones.
+For each gap, check:
+
+1. **README.md** — Commands table contains the command or flag.
+2. **docs/commands.md** — either a `## gk <cmd>` section, or the flag mentioned under its parent command.
+
+### 2. Default action — write the docs draft, then show the diff
+
+When gaps exist, **draft the missing entries automatically** and proceed. The draft is a starting point, not the final word; the user reviews via the eventual `git diff` and can amend before the release commit.
+
+Pull facts from these structured sources, in this order. Prefer transcription over invention:
+
+| Source | Use for |
+|---|---|
+| `go run ./cmd/gk <cmd> --help` | Synopsis, flag table (name, default, one-line description) |
+| The promoted CHANGELOG section | The "what's new" framing (one-liner per command) |
+| Cobra `Use` / `Short` / `Long` strings in source | Authoritative description prose |
+| Recent commits touching the new code path | Motivation / context for non-obvious choices |
+
+Drafting rules:
+
+- **Transcribe, don't editorialize.** A flag's description should match `--help` output, not paraphrase it.
+- **Match existing style.** Read the surrounding section's heading depth, table format, and example block layout before writing — consistency beats elegance.
+- **Keep prose terse.** One paragraph of intent, one synopsis block, one flag table, one short examples block. No marketing language.
+- **Mark uncertainty.** If a behavior is unclear from `--help` and source, leave a `<!-- review: <question> -->` HTML comment instead of guessing — easier to grep than to debug a wrong claim.
+- **Never invent flags or behaviors.** If a token from the CHANGELOG has no `--help` or source backing, surface it to the user instead of fabricating docs.
+
+After drafting, surface a diff summary so the user can intervene:
+
+> Drafted docs for `gk <cmd>` and `--<flag>` in README.md and docs/commands.md. Review the staged diff before the release commit lands. Tell me to revise or revert if anything is off.
+
+### 3. When to ask first instead of auto-writing
+
+Skip the auto-draft and use `AskUserQuestion` only when:
+
+- The new command's purpose is genuinely unclear from `--help` and recent commits (rare — usually means the code itself is under-documented).
+- The CHANGELOG entry uses prose the user hand-tuned (e.g. marketing voice for a flagship feature) and the docs need to match that voice.
+- The user has explicitly said "I'll write the docs" earlier in the session.
+
+In those cases the existing options apply: pause and wait, or append a `- TODO: document <token>` line under `## [Unreleased]` and proceed.
+
+### 4. Boundaries
+
+Auto-drafting is scoped to **transcribing structured surface**. It is not a license to write tutorials, ADRs, or rationale narratives — those still belong to a human editor. If the gap is bigger than "this flag is missing from the table," ask first.
 
 ## Step 4 — Commit + push + tag
 

@@ -113,6 +113,16 @@ func (n *Nvidia) Summarize(ctx context.Context, in SummarizeInput) (SummarizeRes
 	return SummarizeResult{Text: content, Model: model, TokensUsed: tokens}, nil
 }
 
+// SuggestGitignore implements GitignoreSuggester.
+func (n *Nvidia) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
+	userPrompt := gitignoreUserPromptPrefix + projectInfo
+	content, _, _, err := n.invoke(ctx, gitignoreSystemPrompt, userPrompt, false)
+	if err != nil {
+		return nil, err
+	}
+	return parseGitignoreLines(content), nil
+}
+
 // ── Chat Completions data models ─────────────────────────────────────
 
 type chatRequest struct {

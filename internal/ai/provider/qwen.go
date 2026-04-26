@@ -173,3 +173,13 @@ func (q *Qwen) binary() string {
 }
 
 var _ Provider = (*Qwen)(nil)
+
+// SuggestGitignore implements GitignoreSuggester.
+func (q *Qwen) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
+	prompt := gitignoreSystemPrompt + "\n\n" + gitignoreUserPromptPrefix + projectInfo
+	raw, err := q.invoke(ctx, prompt, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseGitignoreLines(raw.text), nil
+}

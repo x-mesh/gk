@@ -196,3 +196,13 @@ func concatFileDiffs(files []FileChange) []byte {
 }
 
 var _ Provider = (*Gemini)(nil)
+
+// SuggestGitignore implements GitignoreSuggester.
+func (g *Gemini) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
+	prompt := gitignoreSystemPrompt + "\n\n" + gitignoreUserPromptPrefix + projectInfo
+	raw, err := g.invoke(ctx, prompt, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseGitignoreLines(string(raw.responseText())), nil
+}

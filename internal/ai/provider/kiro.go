@@ -103,3 +103,13 @@ func (k *Kiro) binary() string {
 }
 
 var _ Provider = (*Kiro)(nil)
+
+// SuggestGitignore implements GitignoreSuggester.
+func (k *Kiro) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
+	prompt := gitignoreSystemPrompt + "\n\n" + gitignoreUserPromptPrefix + projectInfo
+	raw, err := k.invoke(ctx, prompt, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseGitignoreLines(string(raw)), nil
+}

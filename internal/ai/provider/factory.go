@@ -34,7 +34,7 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 	}
 	order := opts.AutoOrder
 	if len(order) == 0 {
-		order = []string{"nvidia", "gemini", "qwen", "kiro"}
+		order = []string{"nvidia", "groq", "gemini", "qwen", "kiro"}
 	}
 	var probeErrs []error
 	for _, n := range order {
@@ -59,6 +59,8 @@ func Build(name string, runner CommandRunner) (Provider, error) {
 	switch name {
 	case "nvidia":
 		return NewNvidia(), nil
+	case "groq":
+		return NewGroq(), nil
 	case "gemini":
 		g := NewGemini()
 		g.Runner = runner
@@ -72,6 +74,6 @@ func Build(name string, runner CommandRunner) (Provider, error) {
 		k.Runner = runner
 		return k, nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want nvidia|gemini|qwen|kiro)", name)
+		return nil, fmt.Errorf("unknown provider %q (want nvidia|groq|gemini|qwen|kiro)", name)
 	}
 }

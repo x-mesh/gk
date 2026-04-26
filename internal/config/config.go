@@ -30,12 +30,20 @@ type AIConfig struct {
 	Lang     string         `mapstructure:"lang"     yaml:"lang"`
 	Commit   AICommitConfig `mapstructure:"commit"   yaml:"commit"`
 	Nvidia   AINvidiaConfig `mapstructure:"nvidia"   yaml:"nvidia"`
+	Groq     AIGroqConfig   `mapstructure:"groq"     yaml:"groq"`
 }
 
 // AINvidiaConfig controls the NVIDIA AI provider. Model overrides the
 // default LLM model identifier; Endpoint overrides the default Chat
 // Completions API URL; Timeout is a Go duration string for HTTP requests.
 type AINvidiaConfig struct {
+	Model    string `mapstructure:"model"    yaml:"model"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+}
+
+// AIGroqConfig controls the Groq AI provider.
+type AIGroqConfig struct {
 	Model    string `mapstructure:"model"    yaml:"model"`
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
@@ -277,6 +285,9 @@ func Defaults() Config {
 				Audit:       false,
 			},
 			Nvidia: AINvidiaConfig{
+				Timeout: "60s",
+			},
+			Groq: AIGroqConfig{
 				Timeout: "60s",
 			},
 		},

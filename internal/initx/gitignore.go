@@ -42,6 +42,7 @@ var IDEPatterns = []string{
 	".idea/",
 	".vscode/",
 	".cursor/",
+	".claude/",
 	".kiro/",
 	".xm/",
 	".omc/",

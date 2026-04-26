@@ -1,13 +1,19 @@
 package cli
 
 import (
+	"context"
 	_ "embed"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/initx"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 //go:embed templates/ai/CLAUDE.md
@@ -25,38 +31,219 @@ var kiroTechTemplate string
 //go:embed templates/ai/kiro-structure.md
 var kiroStructureTemplate string
 
+// validOnlyValues는 --only 플래그에 허용되는 값 목록이다.
+var validOnlyValues = map[string]bool{
+	"gitignore": true,
+	"config":    true,
+	"ai":        true,
+}
+
 func init() {
 	initCmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize gk scaffolding in a repository",
-		Long: `gk init scaffolds configuration and context files into a git repository.
-Use a subcommand to choose which kind of scaffolding you need.
+		Long: `gk init analyzes the project and scaffolds .gitignore, .gk.yaml, and
+AI context files (CLAUDE.md, AGENTS.md) in one step.
+
+Use --only to generate a specific subset, --dry-run to preview, and
+--force to overwrite existing files.
 `,
+		RunE: runInit,
 	}
+	initCmd.Flags().String("only", "", "generate only the specified target (gitignore, config, ai)")
+	initCmd.Flags().Bool("force", false, "overwrite existing files instead of merging")
+	initCmd.Flags().Bool("kiro", false, "also scaffold .kiro/steering/ documents")
 
-	initAICmd := &cobra.Command{
-		Use:   "ai",
-		Short: "Scaffold AI context files (CLAUDE.md, AGENTS.md)",
-		Long: `Creates CLAUDE.md and AGENTS.md in the repository root (or --out path)
-so that AI coding assistants have immediate project context.
+	// deprecated alias: gk init ai
+	initCmd.AddCommand(&cobra.Command{
+		Use:    "ai",
+		Short:  "Scaffold AI context files (deprecated: use gk init --only ai)",
+		Hidden: true,
+		RunE:   runInitAIDeprecated,
+	})
 
-Pass --kiro to also scaffold .kiro/steering/ documents (product.md, tech.md,
-structure.md) for Kiro-compatible assistants.
-
-Exits non-zero when a target file already exists; pass --force to overwrite.
-`,
-		RunE: runInitAI,
+	// deprecated alias: gk init config
+	deprecatedConfigCmd := &cobra.Command{
+		Use:    "config",
+		Short:  "Scaffold global config (deprecated: use gk config init)",
+		Hidden: true,
+		RunE:   runInitConfigDeprecated,
 	}
-	initAICmd.Flags().Bool("force", false, "overwrite existing files")
-	initAICmd.Flags().Bool("kiro", false, "also scaffold .kiro/steering/ documents")
-	initAICmd.Flags().String("out", "", "write files to this directory instead of repo root")
+	deprecatedConfigCmd.Flags().Bool("force", false, "overwrite an existing file")
+	deprecatedConfigCmd.Flags().String("out", "", "write to this path instead of the global default")
+	initCmd.AddCommand(deprecatedConfigCmd)
 
-	initCmd.AddCommand(initAICmd)
 	rootCmd.AddCommand(initCmd)
 }
 
+func runInit(cmd *cobra.Command, args []string) error {
+	only, _ := cmd.Flags().GetString("only")
+	force, _ := cmd.Flags().GetBool("force")
+	kiro, _ := cmd.Flags().GetBool("kiro")
+	dryRun, _ := cmd.Root().PersistentFlags().GetBool("dry-run")
+
+	dir := RepoFlag()
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("gk init: cannot determine working directory: %w", err)
+		}
+	}
+
+	// --only 유효성 검사
+	if only != "" && !validOnlyValues[only] {
+		return fmt.Errorf("gk init: invalid --only value %q (valid: gitignore, config, ai)", only)
+	}
+
+	// .git 미존재 시 git init 자동 실행
+	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
+		gitRunner := &git.ExecRunner{Dir: dir}
+		if _, _, err := gitRunner.Run(context.Background(), "init"); err != nil {
+			return fmt.Errorf("gk init: git init: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "initialized git repository")
+	}
+
+	// 프로젝트 분석
+	gitRunner := &git.ExecRunner{Dir: dir}
+	result, err := initx.AnalyzeProject(dir, gitRunner)
+	if err != nil {
+		return fmt.Errorf("gk init: analyze: %w", err)
+	}
+
+	// InitPlan 생성
+	plan := buildInitPlan(dir, result, only, force, kiro)
+
+	// AI provider가 있으면 gitignore 패턴 추가 제안
+	if only == "" || only == "gitignore" {
+		aiPatterns := suggestAIGitignore(dir, result)
+		if len(aiPatterns) > 0 && plan.Gitignore != nil {
+			aiSection := initx.FormatAISuggestedSection(aiPatterns)
+			plan.Gitignore.Content += "\n" + aiSection
+			// AI 제안이 추가되면 skip → merge로 승격
+			if plan.Gitignore.Action == initx.ActionSkip {
+				plan.Gitignore.Action = initx.ActionMerge
+			}
+		}
+	}
+
+	// TTY 환경이고 dry-run이 아니면 TUI 표시
+	if ui.IsTerminal() && !dryRun {
+		plan, err = RunInitTUI(result, plan)
+		if err != nil {
+			return fmt.Errorf("gk init: tui: %w", err)
+		}
+	}
+
+	// 실행
+	return initx.ExecutePlan(plan, cmd.OutOrStdout(), dryRun)
+}
+
+// buildInitPlan은 분석 결과와 플래그를 기반으로 InitPlan을 구성한다.
+func buildInitPlan(dir string, result *initx.AnalysisResult, only string, force, kiro bool) *initx.InitPlan {
+	plan := &initx.InitPlan{}
+
+	if only == "" || only == "gitignore" {
+		plan.Gitignore = buildGitignorePlan(dir, result, force)
+	}
+	if only == "" || only == "config" {
+		plan.Config = buildConfigPlan(dir, result, force)
+	}
+	if only == "" || only == "ai" {
+		plan.AIFiles = buildAIFilesPlan(dir, result, force, kiro)
+	}
+
+	return plan
+}
+
+func buildGitignorePlan(dir string, result *initx.AnalysisResult, force bool) *initx.FilePlan {
+	path := filepath.Join(dir, ".gitignore")
+	generated := initx.GenerateGitignore(result)
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		// 파일 없음 → 새로 생성
+		return &initx.FilePlan{Path: path, Content: generated, Action: initx.ActionCreate}
+	}
+
+	if force {
+		return &initx.FilePlan{Path: path, Content: generated, Action: initx.ActionOverwrite}
+	}
+
+	// 병합
+	merged, added := initx.MergeGitignore(string(existing), generated)
+	if len(added) == 0 {
+		return &initx.FilePlan{Path: path, Content: string(existing), Action: initx.ActionSkip}
+	}
+	return &initx.FilePlan{Path: path, Content: merged, Action: initx.ActionMerge}
+}
+
+func buildConfigPlan(dir string, result *initx.AnalysisResult, force bool) *initx.FilePlan {
+	path := filepath.Join(dir, ".gk.yaml")
+	generated := initx.GenerateConfig(result)
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return &initx.FilePlan{Path: path, Content: generated, Action: initx.ActionCreate}
+	}
+
+	if force {
+		return &initx.FilePlan{Path: path, Content: generated, Action: initx.ActionOverwrite}
+	}
+
+	merged, added, mergeErr := initx.MergeConfig(existing, []byte(generated))
+	if mergeErr != nil {
+		// 파싱 실패 시 skip
+		return &initx.FilePlan{Path: path, Content: string(existing), Action: initx.ActionSkip}
+	}
+	if len(added) == 0 {
+		return &initx.FilePlan{Path: path, Content: string(existing), Action: initx.ActionSkip}
+	}
+	return &initx.FilePlan{Path: path, Content: string(merged), Action: initx.ActionMerge}
+}
+
+func buildAIFilesPlan(dir string, result *initx.AnalysisResult, force, kiro bool) []initx.FilePlan {
+	aiFiles := initx.GenerateAIContext(result, initx.AIContextOptions{IncludeKiro: kiro})
+
+	var plans []initx.FilePlan
+	for _, af := range aiFiles {
+		path := filepath.Join(dir, af.Path)
+		_, err := os.Stat(path)
+		switch {
+		case err != nil: // 파일 없음
+			plans = append(plans, initx.FilePlan{Path: path, Content: af.Content, Action: initx.ActionCreate})
+		case force:
+			plans = append(plans, initx.FilePlan{Path: path, Content: af.Content, Action: initx.ActionOverwrite})
+		default:
+			plans = append(plans, initx.FilePlan{Path: path, Content: af.Content, Action: initx.ActionSkip})
+		}
+	}
+	return plans
+}
+
+// --- Deprecated alias handlers ---
+
+func runInitAIDeprecated(cmd *cobra.Command, args []string) error {
+	fmt.Fprintln(cmd.ErrOrStderr(), `"gk init ai" is deprecated, use "gk init --only ai"`)
+
+	// 부모 initCmd의 RunE를 --only ai로 실행
+	parent := cmd.Parent()
+	if err := parent.Flags().Set("only", "ai"); err != nil {
+		return err
+	}
+	return runInit(parent, nil)
+}
+
+func runInitConfigDeprecated(cmd *cobra.Command, args []string) error {
+	fmt.Fprintln(cmd.ErrOrStderr(), `"gk init config" is deprecated, use "gk config init"`)
+	return runConfigInit(cmd, args)
+}
+
+// --- Legacy helpers (kept for backward compat, used by deprecated alias) ---
+
 // detectProjectType inspects dir for well-known manifest files and returns a
-// short language/runtime identifier. The first match wins.
+// short language/runtime identifier. Superseded by initx.AnalyzeProject.
 func detectProjectType(dir string) string {
 	manifests := []struct {
 		file string
@@ -76,78 +263,32 @@ func detectProjectType(dir string) string {
 	return "unknown"
 }
 
-// writeScaffoldFile writes content to path. If the file already exists and
-// force is false it prints a "skipped" notice and returns nil. Otherwise it
-// creates (or overwrites) the file and prints "created".
-func writeScaffoldFile(cmd *cobra.Command, path, content string, force bool) error {
-	_, statErr := os.Stat(path)
-	if statErr == nil && !force {
-		fmt.Fprintf(cmd.OutOrStdout(), "skipped: %s\n", path)
+// suggestAIGitignore는 AI provider를 사용하여 프로젝트에 맞는 추가 gitignore 패턴을 제안한다.
+// provider가 없거나 실패하면 빈 목록을 반환한다 (graceful degradation).
+func suggestAIGitignore(dir string, result *initx.AnalysisResult) []string {
+	ctx := context.Background()
+
+	// config에서 ai.provider 설정을 읽어서 사용
+	cfg, _ := config.Load(nil)
+	opts := provider.FactoryOptions{}
+	if cfg != nil && cfg.AI.Provider != "" {
+		opts.Name = cfg.AI.Provider
+	}
+
+	p, err := provider.NewProvider(ctx, opts)
+	if err != nil {
+		Dbg("ai gitignore: no provider available: %v", err)
 		return nil
 	}
-	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("init ai: stat %s: %w", path, statErr)
+
+	gs, ok := p.(provider.GitignoreSuggester)
+	if !ok {
+		Dbg("ai gitignore: provider %q does not support GitignoreSuggester", p.Name())
+		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("init ai: mkdir %s: %w", filepath.Dir(path), err)
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("init ai: write %s: %w", path, err)
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "created: %s\n", path)
-	return nil
-}
-
-func runInitAI(cmd *cobra.Command, _ []string) error {
-	outDir, _ := cmd.Flags().GetString("out")
-	force, _ := cmd.Flags().GetBool("force")
-	kiro, _ := cmd.Flags().GetBool("kiro")
-
-	if outDir == "" {
-		outDir = RepoFlag()
-	}
-	if outDir == "" {
-		var err error
-		outDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("init ai: cannot determine working directory: %w", err)
-		}
-	}
-
-	_ = detectProjectType(outDir) // available for future template per-language customisation
-
-	coreFiles := []struct {
-		name    string
-		content string
-	}{
-		{"CLAUDE.md", claudeMDTemplate},
-		{"AGENTS.md", agentsMDTemplate},
-	}
-	for _, f := range coreFiles {
-		if err := writeScaffoldFile(cmd, filepath.Join(outDir, f.name), f.content, force); err != nil {
-			return err
-		}
-	}
-
-	if kiro {
-		kiroFiles := []struct {
-			name    string
-			content string
-		}{
-			{filepath.Join(".kiro", "steering", "product.md"), kiroProductTemplate},
-			{filepath.Join(".kiro", "steering", "tech.md"), kiroTechTemplate},
-			{filepath.Join(".kiro", "steering", "structure.md"), kiroStructureTemplate},
-		}
-		for _, f := range kiroFiles {
-			if err := writeScaffoldFile(cmd, filepath.Join(outDir, f.name), f.content, force); err != nil {
-				return err
-			}
-		}
-	}
-
-	fmt.Fprintln(cmd.OutOrStdout(), "next: edit the scaffolded files with project-specific context, then commit them")
-	return nil
+	Dbg("ai gitignore: using provider %q", p.Name())
+	patterns := initx.SuggestGitignorePatterns(ctx, gs, dir, result)
+	Dbg("ai gitignore: got %d patterns", len(patterns))
+	return patterns
 }

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-04-26
+
+### Fixed
+
+- **Secret-gate false positives on `generic-secret`.** The catch-all `key/secret/token=...` regex was firing on obvious placeholders in checked-in samples and templates. The scan now skips lines containing `your_`, `your-`, `<your`, `example`, `placeholder`, `xxx`, `changeme`, `replace_me`, `todo`, `fixme`, `dummy`, `sample`, `test_key`, `test_secret`, `fake_key`, or `fake_secret`. Real-key patterns (AKIA, ghp_, sk-…) are unaffected — they ride dedicated kinds, not `generic-secret`.
+- **`gk ai commit` aborting on test fixtures.** The `isTestFile` check used by the secret gate now recognizes `_test.rs`, `_test.py`, `_spec.rb`, `*.test.tsx`, `*.test.jsx`, plus any path under `testdata/`, `tests/`, `__tests__/`, `fixtures/`, or `test_fixtures/`. Files whose basename contains `test`, `mock`, `fake`, `fixture`, `example`, `redact`, `sample`, `stub`, or `dummy` are also treated as fixtures. Mock data and redaction examples no longer block commit runs.
+
+### Changed
+
+- **`gk init` default IDE gitignore patterns include `.claude/`** alongside `.idea/`, `.vscode/`, `.cursor/`, `.kiro/`, `.xm/`, `.omc/`. New repos scaffolded with `gk init` won't accidentally check in their per-IDE Claude Code settings.
+
+### Docs
+
+- **Linux manual-download instructions** added to both `README.md` and `README.ko.md`. Homebrew remains the recommended path on macOS, but Linux users now have a copy-pasteable curl-and-tar one-liner (amd64 + arm64) plus a manual three-step fallback.
+- **`README.ko.md` synced with v0.13.0.** Adds the Groq provider row, updates the auto-detect order to `nvidia → groq → gemini → qwen → kiro-cli`, and lists the `ai.groq:` block in the example `.gk.yaml`. The `--provider` flag enumeration is also brought into line.
+- **`/release` skill (`.claude/skills/release/SKILL.md`) auto-syncs README + docs/commands.md by default** when the CHANGELOG promotion exposes a missing command or flag. The skill drafts entries from structured sources (`gk <cmd> --help`, the promoted CHANGELOG section, Cobra `Use`/`Short`/`Long` strings, recent commits) and surfaces the diff for review before the release commit. The previous "ask first, never auto-generate prose" rule is replaced with transcription guidance — match flag descriptions to `--help`, mark uncertainty with `<!-- review: ... -->` instead of guessing, and never invent flags that have no source backing. Auto-drafting stays scoped to structured surface; tutorials and rationale narratives still belong to a human editor.
+
 ## [0.13.0] - 2026-04-26
 
 ### Added
@@ -312,7 +329,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/x-mesh/gk/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/x-mesh/gk/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/x-mesh/gk/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/x-mesh/gk/compare/v0.10.0...v0.11.0

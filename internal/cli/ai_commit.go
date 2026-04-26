@@ -334,11 +334,38 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 // contain intentional fake secrets (e.g. _test.go, .test.ts).
 func isTestFile(path string) bool {
 	base := filepath.Base(path)
-	return strings.HasSuffix(base, "_test.go") ||
+	lower := strings.ToLower(base)
+
+	// 언어별 테스트 파일 suffix
+	if strings.HasSuffix(base, "_test.go") ||
 		strings.HasSuffix(base, ".test.ts") ||
 		strings.HasSuffix(base, ".test.js") ||
+		strings.HasSuffix(base, ".test.tsx") ||
+		strings.HasSuffix(base, ".test.jsx") ||
 		strings.HasSuffix(base, ".spec.ts") ||
-		strings.HasSuffix(base, ".spec.js")
+		strings.HasSuffix(base, ".spec.js") ||
+		strings.HasSuffix(base, "_test.rs") ||
+		strings.HasSuffix(base, "_test.py") ||
+		strings.HasSuffix(base, "_spec.rb") {
+		return true
+	}
+
+	// 테스트/mock/fixture/example 관련 파일명 패턴
+	for _, kw := range []string{"test", "mock", "fake", "fixture", "example", "redact", "sample", "stub", "dummy"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+
+	// testdata/, tests/, __tests__/ 등 테스트 디렉토리 내 파일
+	dir := strings.ToLower(filepath.Dir(path))
+	for _, seg := range []string{"testdata", "tests", "__tests__", "test_fixtures", "fixtures"} {
+		if strings.Contains(dir, seg) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func renderFindings(out interface{ Write(p []byte) (int, error) }, findings []aicommit.SecretFinding) {

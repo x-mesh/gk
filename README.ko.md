@@ -37,6 +37,28 @@ brew install x-mesh/tap/gk
 brew upgrade x-mesh/tap/gk
 ```
 
+### Linux / 수동 다운로드
+
+[GitHub Releases](https://github.com/x-mesh/gk/releases/latest)에서 최신 바이너리를 다운로드하세요:
+
+```bash
+# amd64
+curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_amd64.tar.gz | tar xz -C /usr/local/bin gk
+
+# arm64
+curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_arm64.tar.gz | tar xz -C /usr/local/bin gk
+```
+
+또는 수동으로:
+
+```bash
+# 1. https://github.com/x-mesh/gk/releases/latest 에서
+# 2. gk_<version>_linux_amd64.tar.gz (또는 arm64) 다운로드
+# 3. 압축 해제 후 PATH에 이동:
+tar xzf gk_*.tar.gz
+sudo mv gk /usr/local/bin/
+```
+
 ### go install
 
 ```bash
@@ -185,13 +207,14 @@ gk preflight               # 설정된 검사 순서 실행
 | Provider | 설치 | 인증 |
 |---|---|---|
 | `nvidia` (NVIDIA) — **기본값** | 바이너리 불필요 | `export NVIDIA_API_KEY=...` |
+| `groq` (Groq) | 바이너리 불필요 | `export GROQ_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` 또는 `brew install gemini-cli` | `export GEMINI_API_KEY=...` 또는 `gemini` 최초 실행 시 OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` 또는 `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro — **`kiro` IDE 런처와 다름**) | [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) 또는 IDE OAuth |
 
-> **nvidia**는 NVIDIA Chat Completions API를 HTTP로 직접 호출합니다 — 외부 바이너리가 필요 없습니다. 다른 provider(`gemini`, `qwen`, `kiro-cli`)는 외부 CLI subprocess로 구동됩니다.
+> **nvidia**와 **groq**는 각각의 Chat Completions API를 HTTP로 직접 호출합니다 — 외부 바이너리가 필요 없습니다. 다른 provider(`gemini`, `qwen`, `kiro-cli`)는 외부 CLI subprocess로 구동됩니다.
 
-자동 감지 순서 (`ai.provider`가 비어있을 때): **nvidia → gemini → qwen → kiro-cli**. 명시적 `--provider`가 없으면 **Fallback Chain**이 순서대로 사용 가능한 provider를 시도하며, 실패 시 자동으로 다음 provider로 전환합니다.
+자동 감지 순서 (`ai.provider`가 비어있을 때): **nvidia → groq → gemini → qwen → kiro-cli**. 명시적 `--provider`가 없으면 **Fallback Chain**이 순서대로 사용 가능한 provider를 시도하며, 실패 시 자동으로 다음 provider로 전환합니다.
 
 `gk doctor` 출력에서 각 provider 설치/인증 상태를 확인할 수 있습니다.
 
@@ -207,7 +230,7 @@ gk ai commit [flags]
   -f, --force                      대화형 리뷰 없이 바로 커밋
       --include-unstaged           unstaged + untracked 포함 (기본값)
       --lang string                ai.lang 오버라이드 (en|ko|...)
-      --provider string            ai.provider 오버라이드 (gemini|qwen|kiro)
+      --provider string            ai.provider 오버라이드 (nvidia|groq|gemini|qwen|kiro)
       --staged-only                스테이지된 변경만 대상
   -y, --yes                        모든 프롬프트 자동 수락 (비-TTY에선 --force 별칭)
 ```
@@ -218,11 +241,15 @@ gk ai commit [flags]
 # .gk.yaml (또는 ~/.config/gk/config.yaml)
 ai:
   enabled: true              # 전역 off-switch. GK_AI_DISABLE=1 로도 비활성화 가능
-  provider: ""               # "" = 자동 감지 (nvidia → gemini → qwen → kiro-cli)
+  provider: ""               # "" = 자동 감지 (nvidia → groq → gemini → qwen → kiro-cli)
   lang: "en"                 # 메시지 언어 (BCP-47)
   nvidia:                    # NVIDIA provider — HTTP 직접 호출, 바이너리 불필요
     # model: "meta/llama-3.1-8b-instruct"  # 기본값
     # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+    # timeout: "60s"
+  groq:                      # Groq provider — HTTP 직접 호출 (OpenAI 호환), 바이너리 불필요
+    # model: "llama-3.3-70b-versatile"  # 기본값
+    # endpoint: "https://api.groq.com/openai/v1/chat/completions"
     # timeout: "60s"
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI 플래그가 오버라이드)

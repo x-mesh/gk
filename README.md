@@ -37,6 +37,28 @@ brew install x-mesh/tap/gk
 brew upgrade x-mesh/tap/gk
 ```
 
+### Linux / manual download
+
+Download the latest binary from [GitHub Releases](https://github.com/x-mesh/gk/releases/latest):
+
+```bash
+# amd64
+curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_amd64.tar.gz | tar xz -C /usr/local/bin gk
+
+# arm64
+curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_arm64.tar.gz | tar xz -C /usr/local/bin gk
+```
+
+Or manually:
+
+```bash
+# 1. Go to https://github.com/x-mesh/gk/releases/latest
+# 2. Download gk_<version>_linux_amd64.tar.gz (or arm64)
+# 3. Extract and move to PATH:
+tar xzf gk_*.tar.gz
+sudo mv gk /usr/local/bin/
+```
+
 ### go install
 
 ```bash

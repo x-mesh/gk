@@ -968,6 +968,7 @@ gk config <subcommand> [flags]
 |-----------|-------------|
 | `show` | Print the fully resolved configuration as YAML |
 | `get <key>` | Print a single config value by dot-notation key |
+| `init` | Scaffold the default `~/.config/gk/config.yaml` template (or a repo-local `.gk.yaml` via `--out`) |
 | `set <key> <value>` | Not yet implemented |
 
 ---
@@ -1041,6 +1042,45 @@ gk config get branch.protected
 
 - Keys use dot notation matching the YAML structure (e.g., `log.format`, `branch.stale_days`).
 - Returns exit code 4 if the key is unknown.
+
+---
+
+### gk config init
+
+Write a fully-commented YAML template that documents every supported field (`ai`, `commit`, `log`, `status`, `branch`, `clone`, `worktree`, …). Without `--out`, the file lands at `$XDG_CONFIG_HOME/gk/config.yaml` (fallback `~/.config/gk/config.yaml`). Existing files are never overwritten unless `--force` is passed.
+
+A silent auto-init runs on every `gk` invocation and creates the same file the first time it is missing. `gk config init` is the explicit, discoverable counterpart — useful for regenerating, writing to a custom path, or producing a repo-local override file.
+
+`gk init config` is preserved as a backward-compatible alias and now delegates to this command.
+
+#### Synopsis
+
+```
+gk config init [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--force` | false | Overwrite an existing file |
+| `--out <path>` | `$XDG_CONFIG_HOME/gk/config.yaml` | Write to a custom path (e.g. `.gk.yaml` for a repo-local override) |
+
+#### Examples
+
+```bash
+# Regenerate the default global config (fails if the file already exists).
+gk config init
+
+# Overwrite the existing global config with a fresh template.
+gk config init --force
+
+# Seed a repo-local override file.
+gk config init --out .gk.yaml
+
+# Disable the first-run auto-init entirely (CI, sandboxes).
+export GK_NO_AUTO_CONFIG=1
+```
 
 ---
 
@@ -1297,99 +1337,79 @@ gk timemachine restore abc1234 --mode hard --dry-run
 
 ## gk init
 
-Scaffold configuration and context files into a git repository.
+One-shot project bootstrap. Analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds the three artifacts a new repo usually needs:
 
-### gk init ai
+1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when an AI provider is available (`GitignoreSuggester` capability).
+2. `.gk.yaml` — repo-local gk configuration with a sensible default `ai.commit.deny_paths` block.
+3. AI context files — `.kiro/steering/{product,tech,structure}.md` when `--kiro` is passed (`CLAUDE.md` / `AGENTS.md` are intentionally left to the assistants themselves).
 
-Create `CLAUDE.md` and `AGENTS.md` in the repository root so AI coding assistants (Claude Code, Jules, Copilot Workspace, Gemini CLI, etc.) have immediate project context without requiring manual setup.
+The default flow opens an interactive [huh](https://github.com/charmbracelet/huh) form that previews the analysis and the planned writes, then asks for confirmation. Non-TTY callers (CI, piped output) fall back to the plan-write path automatically; `--dry-run` previews the plan and exits without writing.
 
-#### Synopsis
+### Synopsis
 
 ```
-gk init ai [flags]
+gk init [flags]
 ```
 
-#### Flags
+### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--force` | false | Overwrite existing files (default: skip files that already exist) |
+| `--force` | false | Overwrite existing files instead of merging or skipping |
 | `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
-| `--out <dir>` | repo root | Write files to this directory instead of the repository root |
+| `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, or `ai` |
+| `--dry-run` (global) | false | Print the plan without touching the filesystem |
 
-#### Generated files
+### Generated files
 
-| File | Purpose |
-|------|---------|
-| `CLAUDE.md` | Project context for Claude Code — commands, architecture, conventions, key files |
-| `AGENTS.md` | Project context for generic AI agents — build/test commands, layout, PR checklist |
-| `.kiro/steering/product.md` | Product overview and goals (only with `--kiro`) |
-| `.kiro/steering/tech.md` | Tech stack, architecture decisions, coding standards (only with `--kiro`) |
-| `.kiro/steering/structure.md` | Repository layout and import rules (only with `--kiro`) |
+| File | Trigger | Purpose |
+|------|---------|---------|
+| `.gitignore` | always (unless `--only` filters) | Baseline rules + AI-suggested project-specific patterns |
+| `.gk.yaml` | always (unless `--only` filters) | Repo-local config with `ai.commit.deny_paths` baseline |
+| `.kiro/steering/product.md` | `--kiro` | Product overview and goals |
+| `.kiro/steering/tech.md` | `--kiro` | Tech stack, architecture decisions, coding standards |
+| `.kiro/steering/structure.md` | `--kiro` | Repository layout and import rules |
 
-All generated files contain commented placeholder sections. Edit them with project-specific content and commit.
+`CLAUDE.md` and `AGENTS.md` are no longer scaffolded — Claude Code and Jules generate (and continually refresh) their own context files, so a static template would be stale before its first commit.
 
-#### Examples
-
-```bash
-# Scaffold CLAUDE.md + AGENTS.md in the current repo
-gk init ai
-
-# Also scaffold Kiro steering documents
-gk init ai --kiro
-
-# Overwrite existing files
-gk init ai --force
-
-# Write to a specific directory
-gk init ai --out /path/to/repo
-```
-
-### gk init config
-
-Write a fully-commented YAML template to `$XDG_CONFIG_HOME/gk/config.yaml` (fallback `~/.config/gk/config.yaml`) so new users have a single discoverable file to edit. The template documents every supported section (`ai`, `commit`, `log`, `status`, `branch`, `clone`, `worktree`, …) with fields commented out by default — uncomment the lines you care about.
-
-An implicit auto-init runs on every `gk` invocation and creates the same file the first time it is missing, printing one `gk: created default config at <path>` line to stderr. `gk init config` is the explicit counterpart, useful for regenerating, writing to a custom path, or producing a repo-local override file.
-
-#### Synopsis
-
-```
-gk init config [flags]
-```
-
-#### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--force` | false | Overwrite an existing file |
-| `--out <path>` | `$XDG_CONFIG_HOME/gk/config.yaml` | Write to a custom path (e.g. `.gk.yaml` for a repo-local override) |
-
-#### Examples
+### Examples
 
 ```bash
-# Regenerate the default global config (fails if the file already exists).
-gk init config
+# Full bootstrap — open the TUI and confirm.
+gk init
 
-# Overwrite the existing global config with a fresh template.
-gk init config --force
+# Add Kiro steering documents.
+gk init --kiro
 
-# Seed a repo-local override file.
-gk init config --out .gk.yaml
+# Only generate the gitignore (skip config + AI context).
+gk init --only gitignore
 
-# Disable the first-run auto-init entirely (CI, sandboxes).
-export GK_NO_AUTO_CONFIG=1
+# CI / unattended use — preview, then force-write.
+gk init --dry-run
+gk init --force --only config
 ```
+
+### Backward compatibility
+
+| Old form | New form | Status |
+|----------|----------|--------|
+| `gk init ai` | `gk init` (or `gk init --kiro`) | Available as a hidden alias for compatibility; the `CLAUDE.md`/`AGENTS.md` scaffolds are no longer emitted |
+| `gk init config` | `gk config init` | Backward-compatible alias delegates to the canonical command |
 
 ---
 
 ## gk ai
 
-AI-assisted workflows. The nvidia provider calls the NVIDIA Chat Completions API directly over HTTP; other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses. No API key lives inside gk — nvidia reads `NVIDIA_API_KEY` from the environment.
+AI-assisted workflows. The `nvidia` and `groq` providers call their respective Chat Completions APIs directly over HTTP; other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses. No API key lives inside gk — credentials are read from `NVIDIA_API_KEY`, `GROQ_API_KEY`, or each CLI's own auth path.
 
 Provider resolution order (all commands):
 1. `--provider` flag
 2. `ai.provider` in config (`.gk.yaml` or `~/.config/gk/config.yaml`)
-3. Auto-detect in order: `nvidia → gemini → qwen → kiro-cli`
+3. Auto-detect in order: `nvidia → groq → gemini → qwen → kiro-cli`
+
+Optional capabilities exposed via type-asserted interfaces:
+- **`Summarizer`** — pre-summarize oversized diffs before classification (currently `nvidia`, `groq`).
+- **`GitignoreSuggester`** — suggest project-specific `.gitignore` patterns from filesystem context. Used by `gk init`. Implemented for `nvidia`, `groq`, `gemini`, `qwen`, `kiro`.
 
 ### gk ai commit
 
@@ -1407,7 +1427,7 @@ gk ai commit [flags]
 |------|---------|-------------|
 | `-f`, `--force` | false | Apply commits without interactive review (secret gate still blocks) |
 | `--dry-run` | false | Print the plan and exit without committing |
-| `--provider <name>` | config | Override `ai.provider` (`gemini` \| `qwen` \| `kiro`) |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 | `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |
 | `--staged-only` | false | Only consider already-staged changes |
 | `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
@@ -1467,7 +1487,7 @@ gk ai pr [flags]
 |------|---------|-------------|
 | `--output <target>` | `stdout` | Where to send the result: `stdout` or `clipboard` |
 | `--dry-run` | false | Print the prompt that would be sent without calling the provider |
-| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 | `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |
 
 #### What it does
@@ -1514,7 +1534,7 @@ gk ai review [flags]
 | `--range <ref1>..<ref2>` | | Review the diff between two refs instead of staged changes |
 | `--format <fmt>` | `text` | Output format: `text` or `json` |
 | `--dry-run` | false | Print the prompt that would be sent without calling the provider |
-| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 
 #### What it does
 
@@ -1561,7 +1581,7 @@ gk ai changelog [flags]
 | `--to <ref>` | `HEAD` | End of the commit range |
 | `--format <fmt>` | `markdown` | Output format: `markdown` or `json` |
 | `--dry-run` | false | Print the prompt that would be sent without calling the provider |
-| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `gemini` \| `qwen` \| `kiro`) |
+| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 
 #### What it does
 

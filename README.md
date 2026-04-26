@@ -157,8 +157,8 @@ gk preflight               # run the configured check sequence
 | Command | Description |
 |---|---|
 | `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers) with fix commands; `--json` for CI |
-| `gk init ai [--kiro] [--force] [--out <dir>]` | Scaffold `CLAUDE.md` + `AGENTS.md` (and optionally `.kiro/steering/`) so AI coding assistants have immediate project context |
-| `gk init config [--force] [--out <path>]` | Scaffold the commented YAML template at `$XDG_CONFIG_HOME/gk/config.yaml` (also auto-created on first `gk` run; skip with `GK_NO_AUTO_CONFIG=1`) |
+| `gk init [--only <target>] [--kiro] [--force]` | Analyze the project and scaffold `.gitignore`, `.gk.yaml`, and AI context files (`CLAUDE.md`, `AGENTS.md`) in one step. `--only gitignore\|config\|ai` narrows the run; `--kiro` also writes `.kiro/steering/`; an interactive huh form previews the plan before writing |
+| `gk config init [--force] [--out <path>]` | Scaffold the commented YAML template at `$XDG_CONFIG_HOME/gk/config.yaml` (also auto-created on first `gk` run; skip with `GK_NO_AUTO_CONFIG=1`). Replaces `gk init config`, which remains as a backward-compatible alias |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | Write gk-managed hook shims under `.git/hooks/` (`--pre-commit` wires `gk guard check`) |
 | `gk hooks uninstall [...]` | Remove gk-managed hooks (refuses to delete foreign ones) |
 | `gk config show` | Print fully resolved config as YAML |
@@ -177,13 +177,14 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 | Provider | Install | Auth |
 |---|---|---|
 | `nvidia` (NVIDIA) — **default** | No binary needed | `export NVIDIA_API_KEY=...` |
+| `groq` (Groq) | No binary needed | `export GROQ_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` or `brew install gemini-cli` | `export GEMINI_API_KEY=...` or run `gemini` once for OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` or `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro headless — note: **not** the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
 
-> **nvidia** calls the NVIDIA Chat Completions API directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
+> **nvidia** and **groq** call their respective Chat Completions APIs directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
 
-Auto-detect order (when `ai.provider` is empty): **nvidia → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
+Auto-detect order (when `ai.provider` is empty): **nvidia → groq → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
 
 Run `gk doctor` to verify each provider's install + auth status.
 
@@ -199,7 +200,7 @@ gk ai commit [flags]
   -f, --force                      apply commits without interactive review
       --include-unstaged           include unstaged + untracked changes (default true)
       --lang string                override ai.lang (en|ko|...)
-      --provider string            override ai.provider (gemini|qwen|kiro)
+      --provider string            override ai.provider (nvidia|groq|gemini|qwen|kiro)
       --staged-only                only consider already-staged changes
   -y, --yes                        accept every prompt (alias for --force when non-TTY)
 ```
@@ -210,11 +211,15 @@ gk ai commit [flags]
 # .gk.yaml (or ~/.config/gk/config.yaml)
 ai:
   enabled: true              # master off-switch; GK_AI_DISABLE=1 also disables
-  provider: ""               # "" = auto-detect (nvidia → gemini → qwen → kiro-cli)
+  provider: ""               # "" = auto-detect (nvidia → groq → gemini → qwen → kiro-cli)
   lang: "en"                 # message language (BCP-47 short)
   nvidia:                    # NVIDIA provider — HTTP direct, no binary needed
     # model: "meta/llama-3.1-8b-instruct"  # default
     # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+    # timeout: "60s"
+  groq:                      # Groq provider — HTTP direct (OpenAI-compatible), no binary needed
+    # model: "llama-3.3-70b-versatile"  # default
+    # endpoint: "https://api.groq.com/openai/v1/chat/completions"
     # timeout: "60s"
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI flags override)

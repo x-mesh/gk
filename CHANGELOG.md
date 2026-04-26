@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-26
+
+### Added
+
+- **`gk init` redesigned as a one-shot project bootstrap.** Running `gk init` now analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds three artifacts in a single pass: a `.gitignore` baseline (language/IDE/security rules, optionally augmented by AI-suggested project-specific patterns via the new `GitignoreSuggester` capability), a repo-local `.gk.yaml` with sensible defaults including the `ai.commit.deny_paths` baseline, and (with `--kiro`) `.kiro/steering/{product,tech,structure}.md` for Kiro-compatible assistants. An interactive [huh](https://github.com/charmbracelet/huh) form previews the analysis result and the planned writes before anything touches the filesystem; non-TTY callers (CI, piped output) fall back automatically. Use `--only gitignore|config|ai` to run a single target, `--dry-run` to preview, `--force` to overwrite. `CLAUDE.md` and `AGENTS.md` are no longer scaffolded — Claude Code and Jules generate (and continually refresh) their own context files, so a static template would be stale before its first commit.
+- **`internal/initx` package** — `analyzer.go` (filesystem-driven detection of language stack / frameworks / build tools / CI configs), `configgen.go` (`.gk.yaml` rendering from `AnalysisResult`), `gitignore.go` (language/IDE/security baseline), `ai_gitignore.go` (provider-suggested augmentation), `aictx.go` (Kiro steering files), and `writer.go` (atomic write with skip-if-exists semantics). Each module is independently testable and consumed by `gk init`.
+- **`gk config init`** — relocated `gk init config` under the canonical `config` namespace. Same flags (`--force`, `--out <path>`), same auto-init behavior on first `gk` run. `gk init config` is preserved as a backward-compatible alias and now delegates to this command.
+- **Groq AI provider** (`internal/ai/provider/groq.go`) — HTTP provider talking to the Groq Chat Completions API (OpenAI-compatible). Reads `GROQ_API_KEY` from the environment; default model `llama-3.3-70b-versatile`. Slotted into the auto-detect order **after** `nvidia` and **before** the CLI-shelling providers: `nvidia → groq → gemini → qwen → kiro-cli`. Implements `Classifier`, `Summarizer`, and `GitignoreSuggester` capabilities by sharing the HTTP invoke path with `Nvidia`.
+- **`GitignoreSuggester` optional capability** (`internal/ai/provider/gitignore.go`) — providers can suggest project-specific `.gitignore` patterns from a filesystem snapshot. Implemented for `nvidia`, `groq`, `gemini`, `qwen`, and `kiro`. The system prompt is conservative — only patterns that are NOT already covered by the standard language/IDE/security baseline. Detected via type assertion, mirroring the `Summarizer` pattern, so providers without the capability are skipped silently.
+
+### Changed
+
+- **Secret-gate findings now carry the originating file path and a file-relative line number** for built-in scanner hits. The aggregated diff payload is parsed for `### path` and `diff --git a/X b/X` headers and each builtin finding is mapped back to its file. Brings parity with the `gitleaks` adapter, which already reported per-file location. Output is now navigable when the gate aborts a `gk ai commit` run.
+- **Auto-detect provider order** is now `nvidia → groq → gemini → qwen → kiro-cli` (was `nvidia → gemini → qwen → kiro-cli`). HTTP providers come first because they have no install-time prerequisites beyond an environment variable.
+- **`AIConfig` gains an `AIGroqConfig` block** (`model`, `endpoint`, `timeout`) parallel to `AINvidiaConfig`. Default timeout is 60s; defaults are written into `Defaults()` so the field is always present even when the user has not configured it.
+- **README provider table and config snippets** now list `groq` alongside `nvidia` as a no-binary HTTP option, with the corresponding `ai.groq:` block in the example `.gk.yaml`.
+
+### Internal
+
+- The `gk init ai` subcommand survives as a hidden alias for backward compatibility, but no longer emits `CLAUDE.md` / `AGENTS.md` — those files are now self-managed by the assistants themselves.
+- `init_config.go` is reduced to a one-line backward-compat shim (`var runInitConfig = runConfigInit`) so existing tests continue to compile.
+
 ## [0.12.0] - 2026-04-26
 
 ### Added
@@ -290,7 +312,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/x-mesh/gk/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/x-mesh/gk/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/x-mesh/gk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/x-mesh/gk/compare/v0.9.0...v0.10.0

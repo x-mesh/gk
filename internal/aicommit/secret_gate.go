@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/x-mesh/gk/internal/scan"
 	"github.com/x-mesh/gk/internal/secrets"
@@ -63,6 +64,7 @@ func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl
 	var out []SecretFinding
 
 	builtin := secrets.Scan(payload, opts.ExtraPatterns)
+	fileMap := buildLineToFileMap(payload)
 	for _, f := range builtin {
 		if allow[f.Kind] {
 			continue
@@ -70,7 +72,8 @@ func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl
 		out = append(out, SecretFinding{
 			Source: "builtin",
 			Kind:   f.Kind,
-			Line:   f.Line,
+			File:   fileMap.fileAt(f.Line),
+			Line:   fileMap.relLine(f.Line),
 			Sample: f.Sample,
 		})
 	}
@@ -132,4 +135,69 @@ func dedupeFindings(in []SecretFinding) []SecretFinding {
 		out = append(out, f)
 	}
 	return out
+}
+
+// lineFileMap은 aggregated diff의 줄 번호를 파일 경로로 매핑한다.
+// diff 헤더 ("diff --git a/X b/X" 또는 "--- a/X")를 파싱하여
+// 각 줄이 어떤 파일에 속하는지 추적한다.
+type lineFileMap struct {
+	// entries는 (startLine, file) 쌍의 정렬된 목록이다.
+	// startLine은 1-based.
+	entries []lineFileEntry
+}
+
+type lineFileEntry struct {
+	startLine int
+	file      string
+}
+
+// diffHeaderRE matches "diff --git a/path b/path".
+var diffHeaderRE = regexp.MustCompile(`^diff --git a/(.+?) b/`)
+
+// fileHeaderRE matches "### path" (summariseForSecretScan format)
+// or "--- path (status)" (concatFileDiffs format).
+var fileHeaderRE = regexp.MustCompile(`^(?:### |--- )(.+?)(?:\s*\(.*\))?$`)
+
+// buildLineToFileMap은 payload를 파싱하여 lineFileMap을 생성한다.
+// "### path" (secret scan payload) 또는 "diff --git a/X b/X" (unified diff) 형식을 인식한다.
+func buildLineToFileMap(payload string) lineFileMap {
+	var m lineFileMap
+	for i, line := range strings.Split(payload, "\n") {
+		lineNum := i + 1 // 1-based
+		if groups := diffHeaderRE.FindStringSubmatch(line); len(groups) > 1 {
+			m.entries = append(m.entries, lineFileEntry{startLine: lineNum, file: groups[1]})
+		} else if groups := fileHeaderRE.FindStringSubmatch(line); len(groups) > 1 {
+			m.entries = append(m.entries, lineFileEntry{startLine: lineNum, file: groups[1]})
+		}
+	}
+	return m
+}
+
+// fileAt는 주어진 줄 번호가 속하는 파일 경로를 반환한다.
+func (m *lineFileMap) fileAt(line int) string {
+	var best string
+	for _, e := range m.entries {
+		if e.startLine <= line {
+			best = e.file
+		} else {
+			break
+		}
+	}
+	return best
+}
+
+// relLine은 주어진 전체 줄 번호를 파일 내 상대 줄 번호로 변환한다.
+func (m *lineFileMap) relLine(line int) int {
+	var bestStart int
+	for _, e := range m.entries {
+		if e.startLine <= line {
+			bestStart = e.startLine
+		} else {
+			break
+		}
+	}
+	if bestStart == 0 {
+		return line
+	}
+	return line - bestStart + 1
 }

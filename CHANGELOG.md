@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-26
+
+### Added
+
+- **`gk ai pr`** — generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from the commits on the current branch. `--output clipboard` copies the result directly via the platform clipboard; `--dry-run` previews the redacted prompt without invoking the provider; `--lang` controls the output language. Pulls the same provider/privacy-gate plumbing as `gk ai commit` so secrets and `deny_paths` matches never leave the machine.
+- **`gk ai review`** — AI-powered code review on the staged diff (`git diff --cached`) or an arbitrary range (`--range ref1..ref2`). Returns a per-file finding list with severity (`error` / `warn` / `info`), a one-line rationale, and an optional fix suggestion. `--format json` emits NDJSON for CI consumption; the default human format groups findings under their file headers.
+- **`gk ai changelog`** — generate a Keep-a-Changelog-style block grouped by Conventional Commit type from a commit range. Defaults to `<latest-tag>..HEAD`; override via `--from` / `--to`. Useful for drafting release notes — the output is meant as a starting point for human editing, not the final word.
+- **NVIDIA provider** (`internal/ai/provider/nvidia.go`) — first-class HTTP provider that calls the NVIDIA Chat Completions API directly. No external binary required; reads `NVIDIA_API_KEY` from the environment. Now the **default** in the auto-detect chain (`nvidia → gemini → qwen → kiro-cli`), so a fresh install with the API key set works out of the box. Implements both `Classifier` and the new `Summarizer` capability.
+- **Privacy Gate for remote providers.** Every payload routed to a `Locality=remote` provider passes through the gate, which redacts `internal/secrets` matches and `deny_paths` glob hits with tokenized placeholders (`[SECRET_1]`, `[PATH_1]`) before the prompt leaves the machine. Aborts when more than 10 secrets are detected (signal that something is fundamentally wrong). Use the new global `--show-prompt` flag on any `gk ai` subcommand to inspect the exact redacted payload that would be sent.
+- **Provider Fallback Chain.** When no explicit `--provider` is given, gk tries each available provider in auto-detect order and moves to the next on failure (network error, missing API key, CLI not installed, exhausted quota). The chain is short-circuited only by user-cancelable errors (e.g. user denies the privacy-gate confirmation). Restored after the v0.11.x revert; `internal/ai/provider/fallback.go` is now covered by dedicated tests.
+- **Summarizer capability.** Providers that opt in (currently only `nvidia`) can pre-summarize oversized diffs before classification, so very large working trees no longer overflow the model's context window. Other providers will gain support in future releases.
+- **`--show-prompt`** — global flag on the `gk ai` command tree. Prints the exact (privacy-gate-redacted) payload that would be sent to the provider and exits without making the network call. Useful for auditing what gk is about to share and for debugging prompt regressions.
+
+### Changed
+
+- **`gk ai commit` classifier prompt prefers fewer groups.** The system instruction now explicitly tells the classifier to keep related changes (implementation + its config + its docs) in a single group and to split only when files serve clearly different purposes. Reduces the rate of overzealous splits where a single coherent change was sliced into 3-4 noise commits.
+- **Secret scan skips test files.** `summariseForSecretScan` now ignores files matching `_test.go`, `*.test.ts`, `*.test.js`, `*.spec.ts`, `*.spec.js`. Unit tests for the scanner itself contain intentional fake secrets (e.g. `AKIA…` strings as test fixtures), and the previous behavior aborted `gk ai commit` whenever those files appeared in the working tree. The files are still passed to the AI classifier — only the gate skips them.
+- **`gk doctor` now reports an `nvidia` provider row** alongside `gemini`, `qwen`, and `kiro-cli`. Detects whether `NVIDIA_API_KEY` is set in the environment and surfaces a one-line auth hint when it is not.
+
+### Performance
+
+- **AI provider call path tightened.** `internal/ai/provider/httpclient.go` consolidates request construction and response parsing for HTTP-backed providers (currently nvidia), trimming a hot allocation per call. CLI-shelling providers (`gemini`, `qwen`, `kiro`) had their `runner` factored out so subprocess spawn + stdin pipe + stdout drain reuse a single `runner.Exec` path instead of duplicating boilerplate per provider.
+
+### Fixed
+
+- **Privacy gate now applies to all remote providers**, not just `gk ai commit`. Earlier, `gk ai pr` / `gk ai review` / `gk ai changelog` could route raw diffs straight to a remote model on certain code paths. Every `gk ai` subcommand now goes through the same gate.
+
+### Internal
+
+- `internal/ai/provider/factory.go` — provider construction unified behind a single factory; covers nvidia, gemini, qwen, kiro, fake, and the fallback wrapper.
+- `internal/aicommit/privacy_gate.go` — extracted from `ai_commit.go` so the gate is shared by every `gk ai` subcommand.
+- Test coverage: new tests for `factory`, `fallback`, `httpclient`, `nvidia`, `summarizer`, `privacy_gate`, `ai_changelog`, `ai_pr`, `ai_review`, and a top-level `ai_integration_test.go` that wires a fake provider through the full `commit/pr/review/changelog` paths.
+- `gopkg.in/yaml.v3` and related dependencies vendored via `go.mod`; `Makefile` gains a property-based-test build target.
+- Repo-local `.gk.yaml` — ships an explicit `ai.commit.deny_paths` baseline (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.pfx`, `*.kdbx`, `*.keystore`, `service-account*.json`, `terraform.tfstate*`) so the gate has a sensible default even before users edit their config.
+
 ## [0.11.0] - 2026-04-23
 
 ### Added
@@ -255,7 +290,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/x-mesh/gk/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/x-mesh/gk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/x-mesh/gk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/x-mesh/gk/compare/v0.8.0...v0.9.0

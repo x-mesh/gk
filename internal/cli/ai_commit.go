@@ -313,6 +313,12 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 		if f.DeniedBy != "" || f.IsBinary {
 			continue
 		}
+		// Skip test files — they contain intentional fake secrets for
+		// scanner unit tests. These files are still included in the AI
+		// classification; only the secret scan skips them.
+		if isTestFile(f.Path) {
+			continue
+		}
 		content, err := os.ReadFile(filepath.Clean(f.Path))
 		if err != nil {
 			continue
@@ -322,6 +328,17 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// isTestFile returns true for files that are test sources and may
+// contain intentional fake secrets (e.g. _test.go, .test.ts).
+func isTestFile(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasSuffix(base, "_test.go") ||
+		strings.HasSuffix(base, ".test.ts") ||
+		strings.HasSuffix(base, ".test.js") ||
+		strings.HasSuffix(base, ".spec.ts") ||
+		strings.HasSuffix(base, ".spec.js")
 }
 
 func renderFindings(out interface{ Write(p []byte) (int, error) }, findings []aicommit.SecretFinding) {

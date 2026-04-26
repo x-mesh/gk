@@ -268,3 +268,58 @@ func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 		t.Fatalf("command %s %v in %s failed: %v\n%s", name, args, dir, err, out)
 	}
 }
+
+func TestNvidiaDefaults(t *testing.T) {
+	d := config.Defaults()
+	if d.AI.Nvidia.Timeout != "60s" {
+		t.Errorf("AI.Nvidia.Timeout: want %q, got %q", "60s", d.AI.Nvidia.Timeout)
+	}
+	if d.AI.Nvidia.Model != "" {
+		t.Errorf("AI.Nvidia.Model: want empty (use provider default), got %q", d.AI.Nvidia.Model)
+	}
+	if d.AI.Nvidia.Endpoint != "" {
+		t.Errorf("AI.Nvidia.Endpoint: want empty (use provider default), got %q", d.AI.Nvidia.Endpoint)
+	}
+}
+
+func TestLoadNvidiaFromLocalYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+
+	yamlContent := `ai:
+  nvidia:
+    model: "nvidia/llama-3.1-nemotron-70b-instruct"
+    endpoint: "https://custom.nvidia.api/v1/chat/completions"
+    timeout: "120s"
+`
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Nvidia.Model != "nvidia/llama-3.1-nemotron-70b-instruct" {
+		t.Errorf("AI.Nvidia.Model: want %q, got %q",
+			"nvidia/llama-3.1-nemotron-70b-instruct", cfg.AI.Nvidia.Model)
+	}
+	if cfg.AI.Nvidia.Endpoint != "https://custom.nvidia.api/v1/chat/completions" {
+		t.Errorf("AI.Nvidia.Endpoint: want custom endpoint, got %q", cfg.AI.Nvidia.Endpoint)
+	}
+	if cfg.AI.Nvidia.Timeout != "120s" {
+		t.Errorf("AI.Nvidia.Timeout: want %q, got %q", "120s", cfg.AI.Nvidia.Timeout)
+	}
+}

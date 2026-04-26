@@ -23,6 +23,8 @@ const systemPrompt = `You are a Conventional Commits writer embedded in the "gk"
 func buildClassifyUserPrompt(in ClassifyInput, aggregateDiff string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Task: classify the following working-tree changes into 1..%d semantic commit groups.\n", defaultMaxGroups(in))
+	fmt.Fprintln(&b, "Prefer FEWER groups — only split when files serve clearly different purposes.")
+	fmt.Fprintln(&b, "Related changes (e.g. implementation + its config + its docs) belong in ONE group.")
 	fmt.Fprintf(&b, "Language for rationale: %s\n", fallback(in.Lang, "en"))
 	fmt.Fprintf(&b, "Allowed Conventional Commit types: %s\n", strings.Join(in.AllowedTypes, ", "))
 	if len(in.AllowedScopes) > 0 {

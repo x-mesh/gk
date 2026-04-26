@@ -28,7 +28,7 @@ func TestAICmdHelp(t *testing.T) {
 		t.Fatalf("ai.Help(): %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"AI-powered", "gemini", "qwen", "kiro-cli"} {
+	for _, want := range []string{"AI-powered", "nvidia", "gemini", "qwen", "kiro", "Privacy Gate", "Fallback Chain"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help output missing %q\n---\n%s", want, out)
 		}
@@ -38,5 +38,16 @@ func TestAICmdHelp(t *testing.T) {
 func TestAICmdExportedAccessor(t *testing.T) {
 	if AICmd() != aiCmd {
 		t.Error("AICmd() should return the package-level aiCmd")
+	}
+}
+
+func TestAICmdShowPromptFlag(t *testing.T) {
+	cmd := AICmd()
+	f := cmd.PersistentFlags().Lookup("show-prompt")
+	if f == nil {
+		t.Fatal("--show-prompt persistent flag not found on ai command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--show-prompt default: want %q, got %q", "false", f.DefValue)
 	}
 }

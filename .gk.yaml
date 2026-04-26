@@ -1,0 +1,18 @@
+# gk repo-local config — overrides ~/.config/gk/config.yaml
+# See docs/config.md for all fields.
+
+ai:
+  commit:
+    deny_paths:
+      # ── default deny list (secrets / credentials) ──
+      - ".env"
+      - ".env.*"
+      - "*.pem"
+      - "id_rsa*"
+      - "credentials.json"
+      - "*.pfx"
+      - "*.kdbx"
+      - "*.keystore"
+      - "service-account*.json"
+      - "terraform.tfstate"
+      - "terraform.tfstate.*"

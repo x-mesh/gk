@@ -41,6 +41,10 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 	for i, line := range lines {
 		for _, p := range BuiltinPatterns {
 			if m := p.Regex.FindString(line); m != "" {
+				// generic-secret은 false positive가 많으므로 placeholder 필터 적용
+				if p.Kind == "generic-secret" && isPlaceholder(line) {
+					continue
+				}
 				out = append(out, Finding{Kind: p.Kind, Line: i + 1, Sample: mask(m)})
 			}
 		}
@@ -59,6 +63,23 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 		}
 	}
 	return out
+}
+
+// isPlaceholder returns true for lines that contain example/placeholder values.
+// Only applied to generic-secret to reduce false positives.
+func isPlaceholder(line string) bool {
+	lower := strings.ToLower(line)
+	for _, kw := range []string{
+		"example", "placeholder", "your_", "your-", "xxx", "changeme",
+		"replace_me", "todo", "fixme", "insert_", "dummy", "sample",
+		"test_key", "test_secret", "fake_key", "fake_secret",
+		"<your", "\"your", "'your",
+	} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // CompilePatterns compiles user-supplied regex strings.

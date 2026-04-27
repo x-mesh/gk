@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-04-28
+
 ### Added
 
 - **`gk ship` release automation.** 새 명령은 `status`, `dry-run`, `squash`, `auto`, `patch|minor|major` 모드를 지원하고, clean/base-branch 확인, 최신 tag 기준 SemVer bump 추론(`feat` → minor, breaking → major, 그 외 patch), local-only squash, configured preflight 실행, `VERSION`/`package.json`/`marketplace.json` version bump, `CHANGELOG.md [Unreleased]` 승격, release commit, annotated tag 생성, branch/tag push까지 묶습니다. `v*` tag push는 기존 GitHub Actions release workflow를 트리거하므로 GoReleaser 기반 GitHub Release/Homebrew tap 배포까지 이어집니다.

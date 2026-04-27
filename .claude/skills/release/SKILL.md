@@ -1,274 +1,227 @@
 ---
 name: release
-description: Release workflow for gk — bumps version, updates CHANGELOG, auto-syncs README + docs/commands.md for any new commands/flags, tags, pushes, and monitors GitHub Actions until the Homebrew tap (x-mesh/homebrew-tap) is updated. Use when the user says "release", "cut a release", "ship v0.x", or "/release".
+description: Release workflow for gk — auto-infers version bump and CHANGELOG from working tree, single-confirm gate, then commits/tags/pushes/watches and verifies the Homebrew tap. Use when the user says "release", "cut a release", "ship v0.x", or "/release".
 ---
 
 # Release workflow for gk
 
-Invoke when the user asks to cut a new release (`/release`, "새 버전 내자", "v0.2.0 릴리즈" 등).
+The goal is a green GitHub Release page **AND** an updated `x-mesh/homebrew-tap/Formula/gk.rb`. Anything short of that is incomplete.
 
-The goal is a green GitHub Release page **AND** an updated `x-mesh/homebrew-tap/Formula/gk.rb` that `brew install x-mesh/tap/gk` picks up. Anything short of that is incomplete.
+## Operating principle
 
-## Prerequisites (fail fast if missing)
+**Defaults-first, single-gate.** Auto-infer every decision (version bump, CHANGELOG body, commit structure), present them in one summary, ask once. Don't fan out into 4 separate `AskUserQuestion` calls. Don't create a `TaskList` — the flow is linear.
 
-Run these checks first. Abort with a clear error if any fails.
+When in doubt: pick the safe default (e.g. include uncommitted work, treat surface removal as breaking) and let the user override at the single gate.
 
-```bash
-# Working tree clean
-[ -z "$(git status --porcelain)" ] || { echo "working tree not clean — commit or stash first"; exit 1; }
+## Phase 1 — PREFLIGHT (one bash call)
 
-# On main
-[ "$(git branch --show-current)" = "main" ] || { echo "must be on main branch"; exit 1; }
-
-# Up-to-date with origin/main
-git fetch origin main --quiet
-LOCAL=$(git rev-parse main)
-REMOTE=$(git rev-parse origin/main)
-[ "$LOCAL" = "$REMOTE" ] || { echo "main is not in sync with origin/main — pull or push first"; exit 1; }
-
-# gh CLI auth
-gh auth status >/dev/null 2>&1 || { echo "gh CLI not authenticated"; exit 1; }
-
-# HOMEBREW_TAP_GITHUB_TOKEN secret exists on x-mesh/gk
-gh secret list -R x-mesh/gk | grep -q HOMEBREW_TAP_GITHUB_TOKEN || {
-  echo "HOMEBREW_TAP_GITHUB_TOKEN secret missing. See docs/RELEASING.md"
-  exit 1
-}
-```
-
-If any check fails, stop and report — do not proceed.
-
-## Step 1 — Pick the new version
-
-Determine the latest tag:
+Collect everything needed for inference in a single shell run. Abort with one-line summary on any prereq failure.
 
 ```bash
-LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
-echo "Last release: ${LAST_TAG:-<none>}"
+set -e
+git fetch origin main --quiet 2>/dev/null
+echo "=== prereqs ==="
+[ -z "$(git status --porcelain | grep -v '^??')" ] && echo "tree=clean" || echo "tree=dirty"
+echo "branch=$(git branch --show-current)"
+[ "$(git rev-parse main 2>/dev/null)" = "$(git rev-parse origin/main 2>/dev/null)" ] && echo "sync=ok" || echo "sync=behind"
+gh auth status >/dev/null 2>&1 && echo "gh=ok" || echo "gh=fail"
+command -v golangci-lint >/dev/null && echo "lint=ok" || echo "lint=missing"
+gh secret list -R x-mesh/gk 2>/dev/null | grep -q HOMEBREW_TAP_GITHUB_TOKEN && echo "secret=ok" || echo "secret=missing"
+
+echo "=== context ==="
+echo "last_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)"
+echo "today=$(date +%Y-%m-%d)"
+echo "=== diff stat ==="
+git diff --shortstat
+git diff --cached --shortstat
+echo "=== unreleased section ==="
+awk '/^## \[Unreleased\]/{flag=1;next}/^## \[/{flag=0}flag' CHANGELOG.md | sed '/^$/d' | head -20
 ```
 
-Use `AskUserQuestion` to pick the bump. Print the last tag in the markdown BEFORE the prompt (the question field is invisible on dark terminals). Options:
+Hard requirements: `branch=main`, `sync=ok`, `gh=ok`, `secret=ok`, `lint=ok`. Abort if any fails.
 
-- `patch` — bug fixes only (v0.1.0 → v0.1.1)
-- `minor` — new features, backward compatible (v0.1.0 → v0.2.0)
-- `major` — breaking changes (v0.1.0 → v1.0.0)
-- `explicit` — user types exact version (Other)
+`tree=dirty` is **not** a failure — just a fact for inference (Phase 2).
 
-Compute `NEW_VERSION` from the choice. Strip leading `v`.
+## Phase 2 — PROPOSE (auto-infer, no questions)
 
-## Step 2 — Local validation
+Decide three things from the Phase 1 output. **Do not call AskUserQuestion for these — pick defaults.** The user can override at Phase 3.
 
-Run the full validation gauntlet. **Abort on any failure.**
+### Version bump
 
-```bash
-go vet ./...
-go test ./... -race -cover
-# golangci-lint is optional — skip cleanly if missing
-command -v golangci-lint >/dev/null && golangci-lint run || echo "(golangci-lint skipped)"
-command -v goreleaser >/dev/null && goreleaser check || echo "(goreleaser skipped)"
-```
-
-If tests fail, surface the failure concisely and stop. Do not tag a broken tree.
-
-## Step 3 — Update CHANGELOG.md
-
-The file follows Keep a Changelog. Transform in-place:
-
-```
-## [Unreleased]                          ## [Unreleased]
-                                →
-<entries>                                ## [${NEW_VERSION}] - YYYY-MM-DD
-                                         <entries>
-```
-
-Update the compare links at the bottom:
-
-```
-[Unreleased]: https://github.com/x-mesh/gk/compare/v${NEW_VERSION}...HEAD
-[${NEW_VERSION}]: https://github.com/x-mesh/gk/compare/${LAST_TAG}...v${NEW_VERSION}
-```
-
-(For the very first release: `[${NEW_VERSION}]: https://github.com/x-mesh/gk/releases/tag/v${NEW_VERSION}`)
-
-If `## [Unreleased]` is empty (no entries since the last release), run the diff between `${LAST_TAG}..HEAD` to see if user-visible changes slipped in. Do **not** auto-generate CHANGELOG entries from commits — ask the user to write them. Releases without a CHANGELOG are a UX regression. If the diff is truly internal (CI, tests, tooling), confirm with the user and proceed.
-
-Today's date: use `date +%Y-%m-%d` in the running environment.
-
-## Step 3b — Documentation sync (auto-update by default)
-
-Every new user-facing command or flag that ships needs to appear in both `README.md` (Commands table) and `docs/commands.md` (reference section). After the CHANGELOG is promoted to the new version section, **scan for gaps and write the docs in the same release commit by default** — releasing with code/docs drift is a UX regression.
-
-### 1. Detect gaps
-
-Extract command/flag tokens from the just-promoted version block:
-
-```bash
-# Everything between the new version header and the next version header.
-NEW_SECTION=$(awk "/^## \\[${NEW_VERSION}\\]/{flag=1;next}/^## \\[/{flag=0}flag" CHANGELOG.md)
-
-# Unique `gk <cmd>` and `gk <cmd> --flag` mentions.
-NEW_CMDS=$(echo "$NEW_SECTION" | grep -oE '`gk [a-z][a-z-]+( --[a-z-]+)?`' | sort -u)
-```
-
-Also diff against the binary surface to catch tokens the CHANGELOG missed:
-
-```bash
-go run ./cmd/gk --help | awk '/Available Commands:/,/Flags:/' \
-  | awk 'NR>1 && $1!="Flags:" && $1!="help" && $1!="completion" && NF>0 {print $1}' \
-  | sort -u > /tmp/gk-help.txt
-grep -oE '^## gk [a-z-]+' docs/commands.md | awk '{print $3}' | sort -u > /tmp/gk-docs.txt
-comm -23 /tmp/gk-help.txt /tmp/gk-docs.txt   # commands in binary, missing in docs
-```
-
-For each gap, check:
-
-1. **README.md** — Commands table contains the command or flag.
-2. **docs/commands.md** — either a `## gk <cmd>` section, or the flag mentioned under its parent command.
-
-### 2. Default action — write the docs draft, then show the diff
-
-When gaps exist, **draft the missing entries automatically** and proceed. The draft is a starting point, not the final word; the user reviews via the eventual `git diff` and can amend before the release commit.
-
-Pull facts from these structured sources, in this order. Prefer transcription over invention:
-
-| Source | Use for |
+| Signal | Bump |
 |---|---|
-| `go run ./cmd/gk <cmd> --help` | Synopsis, flag table (name, default, one-line description) |
-| The promoted CHANGELOG section | The "what's new" framing (one-liner per command) |
-| Cobra `Use` / `Short` / `Long` strings in source | Authoritative description prose |
-| Recent commits touching the new code path | Motivation / context for non-obvious choices |
+| `[Unreleased]` has `Removed`, `(breaking)`, `!:` commits, or removed public surface (deleted exported symbol, deleted command/flag) | **minor** in 0.x, **major** in 1.x+ |
+| `[Unreleased]` has `Added` or `Changed` (new feature, behavior change) | **minor** |
+| Only `Fixed` / `Docs` / `Internal` | **patch** |
+| `[Unreleased]` empty AND working tree has code changes | infer from diff: new file with new symbols → minor; bug fix → patch; surface removal → minor (0.x) |
+| `[Unreleased]` empty AND tree clean | abort: nothing to release |
 
-Drafting rules:
+If the user passed `/release patch|minor|major|X.Y.Z`, that overrides the inference. Otherwise compute `NEW_VERSION` from `LAST_TAG` + bump.
 
-- **Transcribe, don't editorialize.** A flag's description should match `--help` output, not paraphrase it.
-- **Match existing style.** Read the surrounding section's heading depth, table format, and example block layout before writing — consistency beats elegance.
-- **Keep prose terse.** One paragraph of intent, one synopsis block, one flag table, one short examples block. No marketing language.
-- **Mark uncertainty.** If a behavior is unclear from `--help` and source, leave a `<!-- review: <question> -->` HTML comment instead of guessing — easier to grep than to debug a wrong claim.
-- **Never invent flags or behaviors.** If a token from the CHANGELOG has no `--help` or source backing, surface it to the user instead of fabricating docs.
+### CHANGELOG body
 
-After drafting, surface a diff summary so the user can intervene:
+- If `[Unreleased]` has entries → promote as-is.
+- If empty + uncommitted changes → draft entries from `git diff` + commit messages, matching existing style (bold lead-in noun phrase, one paragraph each, no marketing voice). Cite the renamed/added/removed surface concretely.
+- Mark uncertainty with `<!-- review: ... -->` rather than guessing.
 
-> Drafted docs for `gk <cmd>` and `--<flag>` in README.md and docs/commands.md. Review the staged diff before the release commit lands. Tell me to revise or revert if anything is off.
+### Commit structure
 
-### 3. When to ask first instead of auto-writing
+- **Tree dirty + code changes** → 2 commits: a `feat(...)` / `fix(...)` / `refactor(...)!:` for the substantive change, then `chore(release): vX.Y.Z` for CHANGELOG.
+- **Tree dirty + only README/docs/CHANGELOG changes** → 1 commit `chore(release): vX.Y.Z`.
+- **Tree clean** → 1 commit `chore(release): vX.Y.Z` for the CHANGELOG bump.
 
-Skip the auto-draft and use `AskUserQuestion` only when:
+### Docs sync
 
-- The new command's purpose is genuinely unclear from `--help` and recent commits (rare — usually means the code itself is under-documented).
-- The CHANGELOG entry uses prose the user hand-tuned (e.g. marketing voice for a flagship feature) and the docs need to match that voice.
-- The user has explicitly said "I'll write the docs" earlier in the session.
+For every `gk <cmd>` or `--<flag>` token in the new CHANGELOG section, verify it appears in `README.md` and `docs/commands.md`. Auto-draft any gap from `gk <cmd> --help` + Cobra `Use`/`Short`/`Long`. **Transcribe — don't editorialize.** Stay scoped to structured surface (synopsis, flag table); no tutorials or rationale.
 
-In those cases the existing options apply: pause and wait, or append a `- TODO: document <token>` line under `## [Unreleased]` and proceed.
+If a token has no `--help` backing, surface it at Phase 3 instead of fabricating.
 
-### 4. Boundaries
+## Phase 3 — CONFIRM (single AskUserQuestion)
 
-Auto-drafting is scoped to **transcribing structured surface**. It is not a license to write tutorials, ADRs, or rationale narratives — those still belong to a human editor. If the gap is bigger than "this flag is missing from the table," ask first.
+Show the inference summary in markdown above the prompt (the `question` field is invisible on dark terminals), then ask once.
 
-## Step 4 — Commit + push + tag
+Format:
 
-```bash
-git add CHANGELOG.md
-# Include any docs/README updates made during Step 3b.
-git add README.md docs/
-git commit -m "chore(release): v${NEW_VERSION}"
-git push origin main
+```
+## Release plan: vX.Y.Z
 
-git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
-git push origin "v${NEW_VERSION}"
+**Bump**: {patch|minor|major} (last: vA.B.C)  ← reason
+**CHANGELOG diff**:
+  +## [X.Y.Z] - YYYY-MM-DD
+  +### Changed
+  +- ...
+
+**Commits to land** (2):
+  1. feat(...): ... — N files
+  2. chore(release): vX.Y.Z — CHANGELOG.md
+
+**Docs gaps**: none / drafted for `gk foo`, `--bar`
+**Will run**: go vet + go test -race → 2 commits → tag → push → watch → verify tap
 ```
 
-## Step 5 — Watch the release workflow
+Then `AskUserQuestion` with three options:
 
-Tag push triggers `.github/workflows/release.yml`. Poll:
+- **진행 (Recommended)** — execute Phase 4-5 as proposed
+- **수정** — user types what to change (bump, CHANGELOG wording, commit message, etc.); re-propose
+- **취소** — abort
+
+If the user picks "수정", treat their next message as the override and loop back to Phase 3 with the corrected plan. Don't re-ask everything from scratch — only re-summarize the changed parts.
+
+## Phase 4 — EXECUTE (linear, fail-loud)
+
+Run sequentially. On any failure, surface the error and stop — do not auto-retry except where noted.
 
 ```bash
-# wait a beat for GH to register the workflow run
+# Validate
+golangci-lint run
+go test ./... -race -cover
+command -v goreleaser >/dev/null && goreleaser check || true
+```
+
+If `golangci-lint` is not installed, abort with:
+> `golangci-lint not found — install via: brew install golangci-lint`
+
+If tests or lint fail: report the failing package + first failed test line, stop. Do not tag.
+
+```bash
+# Edit CHANGELOG.md (promote [Unreleased] → [X.Y.Z], update compare links)
+# Edit README.md / docs/* if Phase 2 drafted any doc gaps
+
+# Stage + commit (1 or 2 commits per Phase 2)
+git add <feature files>
+git commit -m "<feat/fix/refactor message>"   # only if tree was dirty with code
+git add CHANGELOG.md README.md docs/
+git commit -m "chore(release): vX.Y.Z"
+
+git push origin main
+git tag -a "vX.Y.Z" -m "vX.Y.Z"
+git push origin "vX.Y.Z"
+```
+
+Use `git add <specific files>` not `git add -A` — secrets/binaries leak that way.
+
+## Phase 5 — VERIFY (one watch, one verify)
+
+```bash
 sleep 5
 RUN_ID=$(gh run list -R x-mesh/gk --workflow release --limit 1 --json databaseId --jq '.[0].databaseId')
 gh run watch "$RUN_ID" -R x-mesh/gk --exit-status
 ```
 
-If `gh run watch` returns non-zero, diagnose:
+On non-zero exit, fetch the failure log and match against the table below. Retry up to 2× via `gh run rerun $RUN_ID --failed`, then escalate.
 
-```bash
-gh run view "$RUN_ID" -R x-mesh/gk --log-failed | grep -E "error|fail|401|403|404|422" | tail -20
-```
-
-Common failure modes and fixes:
-
-| Error | Fix |
+| Error pattern | Fix |
 |---|---|
-| `401 Bad credentials` on tap API | `HOMEBREW_TAP_GITHUB_TOKEN` missing or expired — regenerate PAT, re-run `gh secret set`, then `gh run rerun $RUN_ID --failed` |
-| `403 Resource not accessible by PAT` | PAT lacks `contents: write` on `x-mesh/homebrew-tap`. Recreate fine-grained PAT with the right scope. |
-| `422 already_exists` on asset upload | Previous partial release left stale assets. `gh release delete v${NEW_VERSION} -R x-mesh/gk --yes`, then `gh run rerun $RUN_ID --failed`. Do NOT delete the tag. |
-| `goreleaser check` fails | Fix `.goreleaser.yaml`, amend tag commit, force-push tag. (Rare — `goreleaser check` also runs locally in step 2.) |
+| `401 Bad credentials` (tap API) | `HOMEBREW_TAP_GITHUB_TOKEN` expired — regenerate PAT, `gh secret set`, rerun |
+| `403 Resource not accessible` | PAT lacks `contents: write` on `x-mesh/homebrew-tap`. Recreate fine-grained PAT |
+| `422 already_exists` (asset upload) | Stale partial release. `gh release delete vX.Y.Z -R x-mesh/gk --yes`, rerun. Do NOT delete the tag |
+| `goreleaser check` fails | Fix `.goreleaser.yaml`, amend tag commit, force-push tag |
 
-Retry up to 2 times, then escalate to the user with the concrete error.
-
-## Step 6 — Verify the tap
+Then a single verify command:
 
 ```bash
-# Formula file exists in tap
-gh api repos/x-mesh/homebrew-tap/contents/Formula/gk.rb --jq '.download_url'
-
-# Release has all 5 assets (4 archives + checksums.txt)
-gh release view "v${NEW_VERSION}" -R x-mesh/gk --json assets --jq '.assets | length'
-# should print 5
+gh release view "vX.Y.Z" -R x-mesh/gk --json assets --jq '{count: (.assets|length), names: [.assets[].name]}' \
+  && gh api repos/x-mesh/homebrew-tap/contents/Formula/gk.rb --jq '.content' | base64 -d | grep -E "version|url" | head -5
 ```
 
-If either check fails, the tap did NOT update — report the issue to the user.
+Expect 5 assets (4 archives + `checksums.txt`) and the formula `version "X.Y.Z"`.
 
-## Step 7 — Report
-
-Final summary to the user:
+## Phase 6 — Report
 
 ```
-✅ Released v${NEW_VERSION}
+✅ Released vX.Y.Z
 
-Install:
-  brew install x-mesh/tap/gk
-  # or upgrade existing:
-  brew upgrade x-mesh/tap/gk
+  brew install x-mesh/tap/gk     # new
+  brew upgrade x-mesh/tap/gk     # existing
+  gk --version                   # expect: gk version vX.Y.Z
 
-Verify:
-  gk --version    # expect: gk version v${NEW_VERSION}
-
-Links:
-  Release: https://github.com/x-mesh/gk/releases/tag/v${NEW_VERSION}
-  Formula: https://github.com/x-mesh/homebrew-tap/blob/main/Formula/gk.rb
+Release: https://github.com/x-mesh/gk/releases/tag/vX.Y.Z
+Formula: https://github.com/x-mesh/homebrew-tap/blob/main/Formula/gk.rb
 ```
 
 ## Arguments
 
-If the user passed an argument to `/release` (e.g. `/release minor` or `/release 0.2.0`):
-- `patch` / `minor` / `major` → skip the AskUserQuestion in Step 1, use directly
-- Looks like `X.Y.Z` or `vX.Y.Z` → use as the explicit version
-- Otherwise → proceed with the interactive flow
+| Input | Effect |
+|---|---|
+| (none) | full auto-infer |
+| `patch` / `minor` / `major` | override bump, still auto-infer everything else |
+| `X.Y.Z` or `vX.Y.Z` | override version exactly |
+| `--dry-run` (after the version) | run Phases 1-3 and stop before any commit/push |
 
 ## Rollback
 
-If the release is broken after publish (e.g. wrong content, bad binary):
+If a published release is bad:
 
 ```bash
-gh release delete "v${NEW_VERSION}" -R x-mesh/gk --yes
-git tag -d "v${NEW_VERSION}"
-git push origin ":refs/tags/v${NEW_VERSION}"
-# manually remove Formula/gk.rb entry in x-mesh/homebrew-tap if present
+gh release delete "vX.Y.Z" -R x-mesh/gk --yes
+git tag -d "vX.Y.Z"
+git push origin ":refs/tags/vX.Y.Z"
+# manually edit Formula/gk.rb in x-mesh/homebrew-tap if it landed
 ```
 
 Then fix the underlying issue and re-run `/release` with the same version.
 
-## Boundaries — what NOT to do
+## Hard boundaries
 
-- **Never force-push main.** If push is rejected, ask the user to resolve — don't work around.
-- **Never skip tests** with `--no-verify` or equivalent. If tests fail, the release is cancelled.
-- **Never commit to `x-mesh/homebrew-tap` directly.** goreleaser is the only writer — bypassing it creates drift.
-- **Never delete the tag remotely** unless the user explicitly requests rollback (Step 7 above).
-- **Never bump to a version ≤ last tag.** Abort with a clear error.
+- **Never force-push main.** If push is rejected, stop and ask.
+- **Never skip tests** with `--no-verify`. If they fail, the release is cancelled.
+- **Never commit to `x-mesh/homebrew-tap` directly.** goreleaser is the only writer.
+- **Never delete the tag remotely** unless the user invoked rollback explicitly.
+- **Never bump to a version ≤ last tag.**
+- **Never use `git add -A`** — stage specific files only.
+
+## Anti-patterns (do not do these)
+
+- ❌ Calling `AskUserQuestion` 4× (release strategy / bump / CHANGELOG / commit structure). Combine into one Phase-3 gate.
+- ❌ Creating a `TaskList`. The flow is linear; status is communicated in text.
+- ❌ Splitting prereqs into 5 separate bash calls. One shell block does it.
+- ❌ Asking the user to write the CHANGELOG body. Auto-draft from diff, let them amend at Phase 3.
+- ❌ Verbose mid-flow narration ("now I'll commit", "now I'll push"). State the plan once at Phase 3, then execute quietly and report at Phase 6.
+- ❌ Re-reading CHANGELOG / running `gh release view` 3 different ways. One read, one write, one verify.
 
 ## Future-proofing
 
-`goreleaser` will eventually deprecate the `brews:` block in favor of `homebrew_casks:`. When that happens:
-1. Update `.goreleaser.yaml` accordingly
-2. Update this skill's failure-mode table if the error shape changes
-3. Re-verify with a snapshot: `goreleaser release --snapshot --clean`
+`goreleaser` will eventually deprecate `brews:` for `homebrew_casks:`. When that happens:
+1. Update `.goreleaser.yaml`
+2. Update Phase 5's failure-mode table if error shapes change
+3. Verify locally: `goreleaser release --snapshot --clean`

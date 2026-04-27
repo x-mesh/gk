@@ -30,10 +30,10 @@ by default; use --format json for structured output.`,
 	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	cmd.Flags().String("provider", "", "override ai.provider")
 
-	aiCmd.AddCommand(cmd)
+	rootCmd.AddCommand(cmd)
 }
 
-// aiReviewFlags captures CLI flags for `gk ai review`.
+// aiReviewFlags captures CLI flags for `gk review`.
 type aiReviewFlags struct {
 	rangeRef string // e.g. "main..HEAD"; empty = staged diff
 	format   string // "text" | "json"
@@ -58,7 +58,7 @@ func runAIReview(cmd *cobra.Command, _ []string) error {
 
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
-		return fmt.Errorf("ai review: load config: %w", err)
+		return fmt.Errorf("review: load config: %w", err)
 	}
 
 	flags := readAIReviewFlags(cmd)
@@ -75,7 +75,7 @@ func runAIReview(cmd *cobra.Command, _ []string) error {
 	if ai.Provider == "" {
 		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 		if fcErr != nil {
-			return fmt.Errorf("ai review: %w", fcErr)
+			return fmt.Errorf("review: %w", fcErr)
 		}
 		prov = fc
 	} else {
@@ -84,7 +84,7 @@ func runAIReview(cmd *cobra.Command, _ []string) error {
 			Runner: provider.ExecRunner{},
 		})
 		if pErr != nil {
-			return fmt.Errorf("ai review: provider: %w", pErr)
+			return fmt.Errorf("review: provider: %w", pErr)
 		}
 		prov = p
 	}
@@ -116,28 +116,28 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	// Compute diff: --range or staged.
 	var diff string
 	if flags.rangeRef != "" {
-		Dbg("ai review: using range diff %s", flags.rangeRef)
+		Dbg("review: using range diff %s", flags.rangeRef)
 		out, _, err := deps.Runner.Run(ctx, "diff", flags.rangeRef)
 		if err != nil {
-			return fmt.Errorf("ai review: diff %s: %w", flags.rangeRef, err)
+			return fmt.Errorf("review: diff %s: %w", flags.rangeRef, err)
 		}
 		diff = string(out)
 	} else {
-		Dbg("ai review: using staged diff")
+		Dbg("review: using staged diff")
 		out, _, err := deps.Runner.Run(ctx, "diff", "--cached")
 		if err != nil {
-			return fmt.Errorf("ai review: staged diff: %w", err)
+			return fmt.Errorf("review: staged diff: %w", err)
 		}
 		diff = string(out)
 	}
 
 	// Edge case: empty diff.
 	if strings.TrimSpace(diff) == "" {
-		fmt.Fprintln(deps.Out, "ai review: no changes to review")
+		fmt.Fprintln(deps.Out, "review: no changes to review")
 		return nil
 	}
 
-	Dbg("ai review: diff length=%d bytes", len(diff))
+	Dbg("review: diff length=%d bytes", len(diff))
 
 	// Dry-run: show what would be sent.
 	if flags.dryRun {
@@ -155,7 +155,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	// Privacy Gate: redact diff for remote providers.
 	redactedDiff, _, err := applyPrivacyGate(deps.Provider, diff, deps.AI)
 	if err != nil {
-		return fmt.Errorf("ai review: privacy gate: %w", err)
+		return fmt.Errorf("review: privacy gate: %w", err)
 	}
 
 	// --show-prompt: display redacted payload.
@@ -166,7 +166,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	// Type-assert Summarizer.
 	sum, ok := deps.Provider.(provider.Summarizer)
 	if !ok {
-		return fmt.Errorf("ai review: provider %q does not support Summarize", deps.Provider.Name())
+		return fmt.Errorf("review: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
 	// Call Summarize.
@@ -176,7 +176,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 		Lang: fallbackLang(deps.Lang),
 	})
 	if err != nil {
-		return fmt.Errorf("ai review: summarize: %w", err)
+		return fmt.Errorf("review: summarize: %w", err)
 	}
 
 	// Output based on --format.

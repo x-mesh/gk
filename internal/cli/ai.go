@@ -11,39 +11,9 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 )
 
-var aiCmd = &cobra.Command{
-	Use:   "ai",
-	Short: "AI-assisted workflows",
-	Long: `AI-powered helpers for common git tasks.
-
-Subcommands:
-  commit      Generate and apply Conventional Commit messages
-  pr          Generate a structured PR description
-  review      AI-powered code review on staged or range diff
-  changelog   Generate a changelog from a range of commits
-
-Provider selection (auto-detect order: nvidia → gemini → qwen → kiro):
-  nvidia uses the NVIDIA Chat Completions API via HTTP (default).
-  gemini, qwen, kiro-cli shell out to their respective CLI binaries.
-  Override with --provider on any subcommand.
-
-Remote providers (Locality=remote) pass through a Privacy Gate that
-redacts secrets and deny_paths before the payload leaves the machine.
-Use --show-prompt to inspect the redacted payload.
-
-When no explicit --provider is given, a Fallback Chain tries each
-available provider in auto-detect order, moving to the next on failure.
-`,
-}
-
 func init() {
-	aiCmd.PersistentFlags().Bool("show-prompt", false, "display the redacted payload sent to the provider")
-	rootCmd.AddCommand(aiCmd)
+	rootCmd.PersistentFlags().Bool("show-prompt", false, "display the redacted payload sent to the provider")
 }
-
-// AICmd exposes the `gk ai` group so subcommands in other files can
-// register themselves. Mirrors the Root()/rootCmd pattern.
-func AICmd() *cobra.Command { return aiCmd }
 
 // ── Privacy Gate helper ──────────────────────────────────────────────
 

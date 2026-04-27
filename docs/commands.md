@@ -1398,7 +1398,7 @@ gk init --force --only config
 
 ---
 
-## gk ai
+## AI-powered commands
 
 AI-assisted workflows. The `nvidia` and `groq` providers call their respective Chat Completions APIs directly over HTTP; other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses. No API key lives inside gk — credentials are read from `NVIDIA_API_KEY`, `GROQ_API_KEY`, or each CLI's own auth path.
 
@@ -1411,14 +1411,14 @@ Optional capabilities exposed via type-asserted interfaces:
 - **`Summarizer`** — pre-summarize oversized diffs before classification (currently `nvidia`, `groq`).
 - **`GitignoreSuggester`** — suggest project-specific `.gitignore` patterns from filesystem context. Used by `gk init`. Implemented for `nvidia`, `groq`, `gemini`, `qwen`, `kiro`.
 
-### gk ai commit
+### gk commit
 
 Group working-tree changes (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply one Conventional Commit per plan. Interactive TUI review by default; `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest `refs/gk/ai-commit-backup/<branch>/<unix>` ref.
 
 #### Synopsis
 
 ```
-gk ai commit [flags]
+gk commit [flags]
 ```
 
 #### Flags
@@ -1452,33 +1452,33 @@ gk ai commit [flags]
 
 ```bash
 # Preview the plan without committing.
-gk ai commit --dry-run
+gk commit --dry-run
 
 # Force-commit with gemini, English messages.
-gk ai commit -f --provider gemini
+gk commit -f --provider gemini
 
 # Include a specific secret kind you've decided to allow.
-gk ai commit --allow-secret-kind generic-secret
+gk commit --allow-secret-kind generic-secret
 
 # Recover from a mid-apply failure.
-gk ai commit --abort
+gk commit --abort
 
 # CI mode — force the plan without prompting.
-gk ai commit --ci --force
+gk commit --ci --force
 ```
 
 See the "AI commit" section in the main `README.md` for provider install/auth instructions (`gemini`, `qwen`, `kiro-cli`) and full config examples.
 
 ---
 
-### gk ai pr
+### gk pr
 
 Generate a structured PR description from the current branch's commits relative to the base branch.
 
 #### Synopsis
 
 ```
-gk ai pr [flags]
+gk pr [flags]
 ```
 
 #### Flags
@@ -1503,28 +1503,28 @@ If the current branch has no commits ahead of the base branch, prints a message 
 
 ```bash
 # Generate PR description to stdout
-gk ai pr
+gk pr
 
 # Copy to clipboard
-gk ai pr --output clipboard
+gk pr --output clipboard
 
 # Preview the prompt without calling the provider
-gk ai pr --dry-run
+gk pr --dry-run
 
 # Use a specific provider and language
-gk ai pr --provider nvidia --lang ko
+gk pr --provider nvidia --lang ko
 ```
 
 ---
 
-### gk ai review
+### gk review
 
 AI-powered code review on staged changes or a commit range.
 
 #### Synopsis
 
 ```
-gk ai review [flags]
+gk review [flags]
 ```
 
 #### Flags
@@ -1549,28 +1549,28 @@ If the diff is empty, prints a message indicating no changes to review and exits
 
 ```bash
 # Review staged changes
-gk ai review
+gk review
 
 # Review a commit range
-gk ai review --range main..HEAD
+gk review --range main..HEAD
 
 # JSON output for tooling
-gk ai review --format json
+gk review --format json
 
 # Preview the prompt
-gk ai review --dry-run
+gk review --dry-run
 ```
 
 ---
 
-### gk ai changelog
+### gk changelog
 
 Generate a changelog from a range of commits, grouped by Conventional Commit type.
 
 #### Synopsis
 
 ```
-gk ai changelog [flags]
+gk changelog [flags]
 ```
 
 #### Flags
@@ -1595,16 +1595,16 @@ If no commits exist in the specified range, prints a message and exits with code
 
 ```bash
 # Changelog from latest tag to HEAD (markdown)
-gk ai changelog
+gk changelog
 
 # Changelog between specific refs
-gk ai changelog --from v1.0.0 --to v1.1.0
+gk changelog --from v1.0.0 --to v1.1.0
 
 # JSON output
-gk ai changelog --format json
+gk changelog --format json
 
 # Preview the prompt
-gk ai changelog --dry-run
+gk changelog --dry-run
 ```
 
 ---

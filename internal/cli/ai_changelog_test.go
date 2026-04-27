@@ -14,9 +14,9 @@ import (
 // ---------- 10.1 / 10.5: command registration & flag parsing ----------
 
 func TestAIChangelogRegistered(t *testing.T) {
-	found, _, err := rootCmd.Find([]string{"ai", "changelog"})
+	found, _, err := rootCmd.Find([]string{"changelog"})
 	if err != nil {
-		t.Fatalf("rootCmd.Find(ai changelog): %v", err)
+		t.Fatalf("rootCmd.Find(changelog): %v", err)
 	}
 	if found.Use != "changelog" {
 		t.Errorf("Use: want %q, got %q", "changelog", found.Use)
@@ -25,7 +25,7 @@ func TestAIChangelogRegistered(t *testing.T) {
 
 func TestAIChangelogHelpListsFlags(t *testing.T) {
 	buf := &bytes.Buffer{}
-	found, _, err := rootCmd.Find([]string{"ai", "changelog"})
+	found, _, err := rootCmd.Find([]string{"changelog"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}

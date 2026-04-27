@@ -13,7 +13,7 @@ import (
 //
 // The file is append-only; a new entry is written per applied commit
 // (so a 3-group run produces 3 entries sharing a RunID). Consumers
-// can group by RunID to reconstruct a single `gk ai commit` execution.
+// can group by RunID to reconstruct a single `gk commit` execution.
 type AuditEntry struct {
 	TS         time.Time `json:"ts"`
 	RunID      string    `json:"run_id"`

@@ -13,9 +13,9 @@ import (
 // ---------- 9.1 / 9.5: command registration & flag parsing ----------
 
 func TestAIReviewRegistered(t *testing.T) {
-	found, _, err := rootCmd.Find([]string{"ai", "review"})
+	found, _, err := rootCmd.Find([]string{"review"})
 	if err != nil {
-		t.Fatalf("rootCmd.Find(ai review): %v", err)
+		t.Fatalf("rootCmd.Find(review): %v", err)
 	}
 	if found.Use != "review" {
 		t.Errorf("Use: want %q, got %q", "review", found.Use)
@@ -24,7 +24,7 @@ func TestAIReviewRegistered(t *testing.T) {
 
 func TestAIReviewHelpListsFlags(t *testing.T) {
 	buf := &bytes.Buffer{}
-	found, _, err := rootCmd.Find([]string{"ai", "review"})
+	found, _, err := rootCmd.Find([]string{"review"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}

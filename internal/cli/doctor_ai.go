@@ -6,7 +6,7 @@ import (
 	"os/exec"
 )
 
-// checkAIProvider emits one doctorCheck row per AI CLI that `gk ai
+// checkAIProvider emits one doctorCheck row per AI CLI that `gk
 // commit` can drive. Missing binaries are WARN (optional dependency),
 // present-but-unauthenticated is WARN too, and only an outright probe
 // failure surfaces as FAIL.

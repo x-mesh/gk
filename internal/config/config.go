@@ -17,13 +17,14 @@ type Config struct {
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 }
 
-// AIConfig controls `gk ai` subcommands. Enabled is the master switch;
-// flipping it false (or exporting GK_AI_DISABLE=1 which viper maps to
-// this field) disables every `gk ai *` subcommand with a clear error.
+// AIConfig controls AI-powered subcommands (commit, pr, review,
+// changelog). Enabled is the master switch; flipping it false (or
+// exporting GK_AI_DISABLE=1 which viper maps to this field) disables
+// every AI subcommand with a clear error.
 // Provider is the default AI CLI to use when --provider is not passed;
 // empty means auto-detect (gemini → qwen → kiro-cli). Lang is the
 // default message/output language (BCP-47 short code). Commit holds
-// `gk ai commit` settings; future ai features add sibling structs.
+// `gk commit` settings; future ai features add sibling structs.
 type AIConfig struct {
 	Enabled  bool           `mapstructure:"enabled"  yaml:"enabled"`
 	Provider string         `mapstructure:"provider" yaml:"provider"`
@@ -49,7 +50,7 @@ type AIGroqConfig struct {
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
 }
 
-// AICommitConfig controls `gk ai commit`. Mode is the default execution
+// AICommitConfig controls `gk commit`. Mode is the default execution
 // mode ("interactive" | "force" | "dry-run"); CLI flags override it.
 // DenyPaths is a list of glob patterns (filepath.Match syntax) applied
 // to every WIP file before it leaves the process — matches are either

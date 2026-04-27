@@ -7,10 +7,10 @@ import (
 )
 
 func TestAICommitRegistered(t *testing.T) {
-	// rootCmd should resolve "ai commit" via AICmd().
-	found, _, err := rootCmd.Find([]string{"ai", "commit"})
+	// rootCmd should resolve "commit" directly.
+	found, _, err := rootCmd.Find([]string{"commit"})
 	if err != nil {
-		t.Fatalf("rootCmd.Find(ai commit): %v", err)
+		t.Fatalf("rootCmd.Find(commit): %v", err)
 	}
 	if found.Use != "commit" {
 		t.Errorf("Use: want %q, got %q", "commit", found.Use)
@@ -19,7 +19,7 @@ func TestAICommitRegistered(t *testing.T) {
 
 func TestAICommitHelpListsFlags(t *testing.T) {
 	buf := &bytes.Buffer{}
-	found, _, err := rootCmd.Find([]string{"ai", "commit"})
+	found, _, err := rootCmd.Find([]string{"commit"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestAICommitHelpListsFlags(t *testing.T) {
 }
 
 func TestReadAICommitFlagsMutualExclusion(t *testing.T) {
-	found, _, _ := rootCmd.Find([]string{"ai", "commit"})
+	found, _, _ := rootCmd.Find([]string{"commit"})
 	_ = found.Flags().Set("staged-only", "true")
 	_ = found.Flags().Set("include-unstaged", "true")
 	_, err := readAICommitFlags(found)

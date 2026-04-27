@@ -13,9 +13,9 @@ import (
 // ---------- 8.1 / 8.5: command registration & flag parsing ----------
 
 func TestAIPRRegistered(t *testing.T) {
-	found, _, err := rootCmd.Find([]string{"ai", "pr"})
+	found, _, err := rootCmd.Find([]string{"pr"})
 	if err != nil {
-		t.Fatalf("rootCmd.Find(ai pr): %v", err)
+		t.Fatalf("rootCmd.Find(pr): %v", err)
 	}
 	if found.Use != "pr" {
 		t.Errorf("Use: want %q, got %q", "pr", found.Use)
@@ -24,7 +24,7 @@ func TestAIPRRegistered(t *testing.T) {
 
 func TestAIPRHelpListsFlags(t *testing.T) {
 	buf := &bytes.Buffer{}
-	found, _, err := rootCmd.Find([]string{"ai", "pr"})
+	found, _, err := rootCmd.Find([]string{"pr"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}

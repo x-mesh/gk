@@ -72,7 +72,7 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 // call ApplyMessages, but TreeBefore is returned for the audit trail.
 //
 // On the first error the function returns the partial result (commits
-// already made remain in history; caller can use BackupRef + `gk ai
+// already made remain in history; caller can use BackupRef + `gk
 // commit --abort` to restore).
 func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, opts ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{}
@@ -123,7 +123,7 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 }
 
 // AbortRestore resets HEAD back to the given backup ref with a hard
-// reset. Intended for `gk ai commit --abort` after partial failure.
+// reset. Intended for `gk commit --abort` after partial failure.
 // Empty backupRef is a no-op returning nil — callers should branch on
 // that case to print a friendly "nothing to abort" message.
 func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) error {

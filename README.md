@@ -170,10 +170,10 @@ gk preflight               # run the configured check sequence
 ### AI
 | Command | Description |
 |---|---|
-| `gk ai commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
-| `gk ai pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
-| `gk ai review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
-| `gk ai changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
+| `gk commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
+| `gk pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
+| `gk review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
+| `gk changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
 
 ### Onboarding / config
 | Command | Description |
@@ -190,11 +190,11 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 
 ## AI commit
 
-`gk ai commit` analyses the current working tree (staged + unstaged + untracked), groups the changes into semantic commit plans via an external AI CLI, and applies one Conventional Commit per plan.
+`gk commit` analyses the current working tree (staged + unstaged + untracked), groups the changes into semantic commit plans via an external AI CLI, and applies one Conventional Commit per plan.
 
 ### Provider setup
 
-`gk ai commit` drives **already-installed** AI CLI binaries — it never talks to remote LLM APIs directly, so no API key lives inside `gk`.
+`gk commit` drives **already-installed** AI CLI binaries — it never talks to remote LLM APIs directly, so no API key lives inside `gk`.
 
 | Provider | Install | Auth |
 |---|---|---|
@@ -213,7 +213,7 @@ Run `gk doctor` to verify each provider's install + auth status.
 ### Flags
 
 ```
-gk ai commit [flags]
+gk commit [flags]
 
       --abort                      restore HEAD to the latest ai-commit backup ref and exit
       --allow-secret-kind strings  suppress secret findings of the given kind (repeatable)
@@ -268,10 +268,10 @@ ai:
 ### Safety rails (every run)
 
 - **Secret gate** — runs `internal/secrets.Scan` plus `gitleaks` (when installed) over the payload; any finding aborts, even with `--force`. Use `--allow-secret-kind <kind>` per-run to whitelist a specific kind.
-- **Privacy Gate** — for remote providers (`Locality=remote`), automatically redacts secrets, deny_paths matches, and sensitive patterns from the outbound payload. Replaces matches with tokenized placeholders (`[SECRET_1]`, `[PATH_1]`). Aborts if >10 secrets detected. Use `--show-prompt` on any `gk ai` subcommand to inspect the redacted payload. Audit logging to `.gk/ai-audit.jsonl` when `ai.commit.audit` is enabled.
+- **Privacy Gate** — for remote providers (`Locality=remote`), automatically redacts secrets, deny_paths matches, and sensitive patterns from the outbound payload. Replaces matches with tokenized placeholders (`[SECRET_1]`, `[PATH_1]`). Aborts if >10 secrets detected. Use `--show-prompt` on any subcommand to inspect the redacted payload. Audit logging to `.gk/ai-audit.jsonl` when `ai.commit.audit` is enabled.
 - **Deny paths** — matching files (`.env`, private keys, tfstate, …) are dropped before the payload leaves the process.
 - **Git-state guard** — refuses to run mid-rebase / mid-merge / mid-cherry-pick so `MERGE_MSG` is never overwritten.
-- **Backup ref** — each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing; `gk ai commit --abort` restores HEAD there.
+- **Backup ref** — each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing; `gk commit --abort` restores HEAD there.
 - **Conventional lint loop** — `internal/commitlint.Parse/Lint` validates every message; failures trigger up to two provider retries with feedback injected into the prompt.
 - **Path-rule override** — `_test.go`, `docs/*.md`, `.github/workflows/*.yml`, and lockfiles are always reclassified to `test`/`docs`/`ci`/`build` even if the provider picks a different type.
 
@@ -279,52 +279,52 @@ ai:
 
 ```bash
 # Dry-run: see the plan without committing.
-gk ai commit --dry-run
+gk commit --dry-run
 
 # Commit one-shot (no TUI).
-gk ai commit --force --provider gemini
+gk commit --force --provider gemini
 
 # Recover from a partial failure.
-gk ai commit --abort
+gk commit --abort
 ```
 
-## AI pr / review / changelog
+## pr / review / changelog
 
 These commands use the provider's **Summarizer** capability. Currently only the `nvidia` provider implements Summarizer; other providers will gain support in future releases.
 
-### `gk ai pr`
+### `gk pr`
 
 Generate a structured PR description from the current branch's commits relative to the base branch.
 
 ```bash
-gk ai pr                          # output to stdout
-gk ai pr --output clipboard       # copy to clipboard
-gk ai pr --dry-run                # preview the prompt
-gk ai pr --provider nvidia --lang ko
+gk pr                          # output to stdout
+gk pr --output clipboard       # copy to clipboard
+gk pr --dry-run                # preview the prompt
+gk pr --provider nvidia --lang ko
 ```
 
 Flags: `--output` (stdout|clipboard), `--dry-run`, `--provider`, `--lang`
 
-### `gk ai review`
+### `gk review`
 
 AI-powered code review on staged changes or a commit range.
 
 ```bash
-gk ai review                      # review staged diff
-gk ai review --range main..HEAD   # review a commit range
-gk ai review --format json        # structured JSON output
+gk review                      # review staged diff
+gk review --range main..HEAD   # review a commit range
+gk review --format json        # structured JSON output
 ```
 
 Flags: `--range`, `--format` (text|json), `--dry-run`, `--provider`
 
-### `gk ai changelog`
+### `gk changelog`
 
 Generate a changelog from a range of commits, grouped by Conventional Commit type.
 
 ```bash
-gk ai changelog                   # latest tag..HEAD, markdown
-gk ai changelog --from v1.0.0 --to v1.1.0
-gk ai changelog --format json
+gk changelog                   # latest tag..HEAD, markdown
+gk changelog --from v1.0.0 --to v1.1.0
+gk changelog --format json
 ```
 
 Flags: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`

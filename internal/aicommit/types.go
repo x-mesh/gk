@@ -1,4 +1,4 @@
-// Package aicommit implements `gk ai commit` — WIP clustering into
+// Package aicommit implements `gk commit` — WIP clustering into
 // semantic file groups, Conventional Commit message generation via an
 // external AI CLI provider, and safe multi-commit application.
 package aicommit

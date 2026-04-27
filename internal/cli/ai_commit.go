@@ -49,7 +49,7 @@ backup ref created at the start of the most recent run.
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
 
-	aiCmd.AddCommand(cmd)
+	rootCmd.AddCommand(cmd)
 }
 
 func runAICommit(cmd *cobra.Command, _ []string) error {
@@ -60,7 +60,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
-		return fmt.Errorf("ai commit: load config: %w", err)
+		return fmt.Errorf("commit: load config: %w", err)
 	}
 
 	flags, err := readAICommitFlags(cmd)
@@ -81,7 +81,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if ai.Provider == "" {
 		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 		if fcErr != nil {
-			return fmt.Errorf("ai commit: %w", fcErr)
+			return fmt.Errorf("commit: %w", fcErr)
 		}
 		prov = fc
 	} else {
@@ -90,11 +90,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 			Runner: provider.ExecRunner{},
 		})
 		if pErr != nil {
-			return fmt.Errorf("ai commit: provider: %w", pErr)
+			return fmt.Errorf("commit: provider: %w", pErr)
 		}
 		prov = p
 	}
-	Dbg("ai commit: provider=%s model=%s lang=%s scope=%s", prov.Name(), providerModel(prov), ai.Lang, ai.Commit.DenyPaths)
+	Dbg("commit: provider=%s model=%s lang=%s scope=%s", prov.Name(), providerModel(prov), ai.Lang, ai.Commit.DenyPaths)
 
 	if err := aicommit.Preflight(ctx, aicommit.PreflightInput{
 		Runner:      runner,
@@ -103,9 +103,9 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		Provider:    prov,
 		AllowRemote: ai.Commit.AllowRemote,
 	}); err != nil {
-		return fmt.Errorf("ai commit: preflight: %w", err)
+		return fmt.Errorf("commit: preflight: %w", err)
 	}
-	Dbg("ai commit: preflight ok")
+	Dbg("commit: preflight ok")
 
 	// Gather WIP.
 	scope := aicommit.ScopeAll
@@ -123,10 +123,10 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: no working-tree changes to commit")
+		fmt.Fprintln(cmd.OutOrStdout(), "commit: no working-tree changes to commit")
 		return nil
 	}
-	Dbg("ai commit: gather ok — %d file(s) in scope=%v", len(files), scope)
+	Dbg("commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
 	// Secret gate. gitleaks + internal/secrets can take a noticeable
 	// beat on large diffs; show a spinner so the user knows gk is
@@ -143,15 +143,15 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	if len(findings) > 0 {
 		renderFindings(cmd.ErrOrStderr(), findings)
-		return fmt.Errorf("ai commit: aborted due to %d secret finding(s); fix or --allow-secret-kind <kind>",
+		return fmt.Errorf("commit: aborted due to %d secret finding(s); fix or --allow-secret-kind <kind>",
 			len(findings))
 	}
-	Dbg("ai commit: secret-gate clean")
+	Dbg("commit: secret-gate clean")
 
 	// Privacy Gate: redact payload for remote providers.
 	redactedPayload, _, pgErr := applyPrivacyGate(prov, payload, ai)
 	if pgErr != nil {
-		return fmt.Errorf("ai commit: privacy gate: %w", pgErr)
+		return fmt.Errorf("commit: privacy gate: %w", pgErr)
 	}
 
 	// --show-prompt: display redacted payload.
@@ -159,7 +159,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	// Classify — the first provider call. Spinner advertises we are
 	// waiting on the AI CLI, not stuck.
-	fmt.Fprintf(cmd.ErrOrStderr(), "ai commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
+	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
 	stopClassify := ui.StartSpinner(fmt.Sprintf("classify — %s", prov.Name()))
 	classifyStart := time.Now()
 	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
@@ -170,11 +170,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	})
 	stopClassify()
 	if err != nil {
-		return fmt.Errorf("ai commit: classify: %w", err)
+		return fmt.Errorf("commit: classify: %w", err)
 	}
-	Dbg("ai commit: classify ok — %d group(s) in %s", len(groups), time.Since(classifyStart).Round(time.Millisecond))
+	Dbg("commit: classify ok — %d group(s) in %s", len(groups), time.Since(classifyStart).Round(time.Millisecond))
 	if len(groups) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: nothing to commit after filtering")
+		fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after filtering")
 		return nil
 	}
 
@@ -183,7 +183,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "ai commit: composing %d message(s)...\n", len(groups))
+	fmt.Fprintf(cmd.ErrOrStderr(), "commit: composing %d message(s)...\n", len(groups))
 	stopCompose := ui.StartSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
 	composeStart := time.Now()
 	messages, err := aicommit.ComposeAll(ctx, prov, groups, diffs, aicommit.ComposeOptions{
@@ -195,9 +195,9 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	})
 	stopCompose()
 	if err != nil {
-		return fmt.Errorf("ai commit: compose: %w", err)
+		return fmt.Errorf("commit: compose: %w", err)
 	}
-	Dbg("ai commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
+	Dbg("commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
 
 	// Review.
 	reviewOpts := aicommit.ReviewOptions{
@@ -207,11 +207,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	decisions, err := aicommit.ReviewPlan(messages, reviewOpts)
 	if err != nil {
-		return fmt.Errorf("ai commit: review: %w", err)
+		return fmt.Errorf("commit: review: %w", err)
 	}
 	kept := filterKept(messages, decisions)
 	if len(kept) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: no groups were kept after review")
+		fmt.Fprintln(cmd.OutOrStdout(), "commit: no groups were kept after review")
 		return nil
 	}
 
@@ -223,7 +223,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	result, err := aicommit.ApplyMessages(ctx, runner, kept, applyOpts)
 	if err != nil {
 		printBackupHint(cmd.ErrOrStderr(), result.BackupRef)
-		return fmt.Errorf("ai commit: apply: %w", err)
+		return fmt.Errorf("commit: apply: %w", err)
 	}
 
 	// Audit (opt-in).
@@ -235,20 +235,20 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// runAICommitAbort implements `gk ai commit --abort`.
+// runAICommitAbort implements `gk commit --abort`.
 func runAICommitAbort(ctx context.Context, cmd *cobra.Command, runner git.Runner) error {
 	latest, err := latestAICommitBackupRef(ctx, runner)
 	if err != nil {
 		return err
 	}
 	if latest == "" {
-		fmt.Fprintln(cmd.OutOrStdout(), "ai commit: no backup ref found — nothing to abort")
+		fmt.Fprintln(cmd.OutOrStdout(), "commit: no backup ref found — nothing to abort")
 		return nil
 	}
 	if err := aicommit.AbortRestore(ctx, runner, latest); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "ai commit: restored HEAD to %s\n", latest)
+	fmt.Fprintf(cmd.OutOrStdout(), "commit: restored HEAD to %s\n", latest)
 	return nil
 }
 
@@ -369,7 +369,7 @@ func isTestFile(path string) bool {
 }
 
 func renderFindings(out interface{ Write(p []byte) (int, error) }, findings []aicommit.SecretFinding) {
-	fmt.Fprintln(out, "ai commit: secret findings detected — aborting:")
+	fmt.Fprintln(out, "commit: secret findings detected — aborting:")
 	for _, f := range findings {
 		fmt.Fprintf(out, "  [%s] %s @ %s:%d — %s\n", f.Source, f.Kind, f.File, f.Line, f.Sample)
 	}
@@ -470,16 +470,16 @@ func printBackupHint(out interface{ Write(p []byte) (int, error) }, backup strin
 	if backup == "" {
 		return
 	}
-	fmt.Fprintf(out, "\nhint: run `gk ai commit --abort` to restore HEAD to %s\n", backup)
+	fmt.Fprintf(out, "\nhint: run `gk commit --abort` to restore HEAD to %s\n", backup)
 }
 
 // printApplySummary prints the final commit list (or dry-run plan).
 func printApplySummary(out interface{ Write(p []byte) (int, error) }, kept []aicommit.Message, res aicommit.ApplyResult, dryRun bool) {
 	if dryRun {
-		fmt.Fprintf(out, "ai commit: dry-run — %d commit(s) would be made (backup ref: %s)\n", len(kept), res.BackupRef)
+		fmt.Fprintf(out, "commit: dry-run — %d commit(s) would be made (backup ref: %s)\n", len(kept), res.BackupRef)
 		return
 	}
-	fmt.Fprintf(out, "ai commit: created %d commit(s) (backup ref: %s)\n", len(kept), res.BackupRef)
+	fmt.Fprintf(out, "commit: created %d commit(s) (backup ref: %s)\n", len(kept), res.BackupRef)
 	for i, m := range kept {
 		sha := ""
 		if i < len(res.CommitShas) {
@@ -559,7 +559,7 @@ func latestAICommitBackupRef(ctx context.Context, runner git.Runner) (string, er
 }
 
 // newRunID returns a short hex id that groups AuditEntries from one
-// `gk ai commit` invocation. Not a real UUID — just enough entropy to
+// `gk commit` invocation. Not a real UUID — just enough entropy to
 // avoid collisions across concurrent runs on the same machine.
 func newRunID() string {
 	var buf [8]byte

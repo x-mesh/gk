@@ -33,10 +33,10 @@ to copy directly.`,
 	cmd.Flags().String("provider", "", "override ai.provider")
 	cmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 
-	aiCmd.AddCommand(cmd)
+	rootCmd.AddCommand(cmd)
 }
 
-// aiPRFlags captures CLI flags for `gk ai pr`.
+// aiPRFlags captures CLI flags for `gk pr`.
 type aiPRFlags struct {
 	output   string // "stdout" | "clipboard"
 	dryRun   bool
@@ -61,7 +61,7 @@ func runAIPR(cmd *cobra.Command, _ []string) error {
 
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
-		return fmt.Errorf("ai pr: load config: %w", err)
+		return fmt.Errorf("pr: load config: %w", err)
 	}
 
 	flags := readAIPRFlags(cmd)
@@ -81,7 +81,7 @@ func runAIPR(cmd *cobra.Command, _ []string) error {
 	if ai.Provider == "" {
 		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 		if fcErr != nil {
-			return fmt.Errorf("ai pr: %w", fcErr)
+			return fmt.Errorf("pr: %w", fcErr)
 		}
 		prov = fc
 	} else {
@@ -90,7 +90,7 @@ func runAIPR(cmd *cobra.Command, _ []string) error {
 			Runner: provider.ExecRunner{},
 		})
 		if pErr != nil {
-			return fmt.Errorf("ai pr: provider: %w", pErr)
+			return fmt.Errorf("pr: provider: %w", pErr)
 		}
 		prov = p
 	}
@@ -133,44 +133,44 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 		}
 		detected, err := client.DefaultBranch(ctx, remote)
 		if err != nil {
-			return fmt.Errorf("ai pr: %w", err)
+			return fmt.Errorf("pr: %w", err)
 		}
 		base = detected
 	}
-	Dbg("ai pr: base_branch=%s", base)
+	Dbg("pr: base_branch=%s", base)
 
 	// Compute merge-base.
 	mbOut, _, err := deps.Runner.Run(ctx, "merge-base", "HEAD", base)
 	if err != nil {
-		return fmt.Errorf("ai pr: merge-base: %w", err)
+		return fmt.Errorf("pr: merge-base: %w", err)
 	}
 	mergeBase := strings.TrimSpace(string(mbOut))
 	if mergeBase == "" {
-		return fmt.Errorf("ai pr: could not determine merge-base between HEAD and %s", base)
+		return fmt.Errorf("pr: could not determine merge-base between HEAD and %s", base)
 	}
-	Dbg("ai pr: merge_base=%s", mergeBase)
+	Dbg("pr: merge_base=%s", mergeBase)
 
 	// Collect diff and commits.
 	diffOut, _, err := deps.Runner.Run(ctx, "diff", mergeBase+"..HEAD")
 	if err != nil {
-		return fmt.Errorf("ai pr: diff: %w", err)
+		return fmt.Errorf("pr: diff: %w", err)
 	}
 	diff := string(diffOut)
 
 	logOut, _, err := deps.Runner.Run(ctx, "log", "--oneline", mergeBase+"..HEAD")
 	if err != nil {
-		return fmt.Errorf("ai pr: log: %w", err)
+		return fmt.Errorf("pr: log: %w", err)
 	}
 	commitLines := strings.TrimSpace(string(logOut))
 
 	// Edge case: no commits ahead of base.
 	if diff == "" || commitLines == "" {
-		fmt.Fprintln(deps.Out, "ai pr: no commits ahead of base branch — nothing to summarize")
+		fmt.Fprintln(deps.Out, "pr: no commits ahead of base branch — nothing to summarize")
 		return nil
 	}
 
 	commits := strings.Split(commitLines, "\n")
-	Dbg("ai pr: %d commit(s) in range %s..HEAD", len(commits), mergeBase[:minLen(len(mergeBase), 8)])
+	Dbg("pr: %d commit(s) in range %s..HEAD", len(commits), mergeBase[:minLen(len(mergeBase), 8)])
 
 	// Dry-run: show what would be sent.
 	if flags.dryRun {
@@ -187,7 +187,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	// Privacy Gate: redact diff for remote providers.
 	redactedDiff, _, err := applyPrivacyGate(deps.Provider, diff, deps.AI)
 	if err != nil {
-		return fmt.Errorf("ai pr: privacy gate: %w", err)
+		return fmt.Errorf("pr: privacy gate: %w", err)
 	}
 
 	// --show-prompt: display redacted payload.
@@ -198,7 +198,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	// Type-assert Summarizer.
 	sum, ok := deps.Provider.(provider.Summarizer)
 	if !ok {
-		return fmt.Errorf("ai pr: provider %q does not support Summarize", deps.Provider.Name())
+		return fmt.Errorf("pr: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
 	// Call Summarize.
@@ -209,7 +209,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 		Lang:    fallbackLang(deps.Lang),
 	})
 	if err != nil {
-		return fmt.Errorf("ai pr: summarize: %w", err)
+		return fmt.Errorf("pr: summarize: %w", err)
 	}
 
 	// Output.
@@ -220,11 +220,11 @@ func outputPRResult(out, errOut io.Writer, text, mode string) error {
 	switch mode {
 	case "clipboard":
 		if err := copyToClipboard(text); err != nil {
-			fmt.Fprintf(errOut, "ai pr: clipboard unavailable (%v), falling back to stdout\n", err)
+			fmt.Fprintf(errOut, "pr: clipboard unavailable (%v), falling back to stdout\n", err)
 			fmt.Fprint(out, text)
 			return nil
 		}
-		fmt.Fprintln(out, "ai pr: PR description copied to clipboard")
+		fmt.Fprintln(out, "pr: PR description copied to clipboard")
 	default: // "stdout"
 		fmt.Fprint(out, text)
 	}

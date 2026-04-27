@@ -177,10 +177,10 @@ gk preflight               # 설정된 검사 순서 실행
 
 | 명령어 | 설명 |
 |---|---|
-| `gk ai commit` | WIP(staged+unstaged+untracked)를 AI CLI로 의미 있는 커밋 그룹으로 분할하고 Conventional Commit 메시지로 적용. `-f/--force` 리뷰 스킵, `--dry-run` 미리보기, `--abort` 마지막 백업 ref로 HEAD 복원. 아래 **AI commit** 섹션 참조 |
-| `gk ai pr` | 브랜치 커밋으로부터 구조화된 PR 설명(Summary, Changes, Risk Assessment, Test Plan) 생성. `--output clipboard`으로 클립보드 복사; `--dry-run`으로 프롬프트 미리보기 |
-| `gk ai review` | staged 변경(`git diff --cached`) 또는 커밋 범위(`--range ref1..ref2`)에 대한 AI 코드 리뷰. `--format json`으로 구조화된 출력 |
-| `gk ai changelog` | 커밋 범위에서 Conventional Commit 타입별로 그룹화된 changelog 생성. `--from`/`--to` ref 지정; 기본값은 최신 태그..HEAD |
+| `gk commit` | WIP(staged+unstaged+untracked)를 AI CLI로 의미 있는 커밋 그룹으로 분할하고 Conventional Commit 메시지로 적용. `-f/--force` 리뷰 스킵, `--dry-run` 미리보기, `--abort` 마지막 백업 ref로 HEAD 복원. 아래 **AI commit** 섹션 참조 |
+| `gk pr` | 브랜치 커밋으로부터 구조화된 PR 설명(Summary, Changes, Risk Assessment, Test Plan) 생성. `--output clipboard`으로 클립보드 복사; `--dry-run`으로 프롬프트 미리보기 |
+| `gk review` | staged 변경(`git diff --cached`) 또는 커밋 범위(`--range ref1..ref2`)에 대한 AI 코드 리뷰. `--format json`으로 구조화된 출력 |
+| `gk changelog` | 커밋 범위에서 Conventional Commit 타입별로 그룹화된 changelog 생성. `--from`/`--to` ref 지정; 기본값은 최신 태그..HEAD |
 
 ### 온보딩 / 설정
 
@@ -198,11 +198,11 @@ gk preflight               # 설정된 검사 순서 실행
 
 ## AI commit
 
-`gk ai commit`은 현재 작업 트리(staged + unstaged + untracked)를 외부 AI CLI에 위임해 의미 있는 커밋 단위로 분할하고, 각 그룹별로 Conventional Commit 하나씩 생성·적용합니다.
+`gk commit`은 현재 작업 트리(staged + unstaged + untracked)를 외부 AI CLI에 위임해 의미 있는 커밋 단위로 분할하고, 각 그룹별로 Conventional Commit 하나씩 생성·적용합니다.
 
 ### Provider 설치
 
-`gk ai commit`은 이미 설치된 AI CLI 바이너리를 subprocess로 호출합니다. gk 내부에 API key를 보관하지 않습니다.
+`gk commit`은 이미 설치된 AI CLI 바이너리를 subprocess로 호출합니다. gk 내부에 API key를 보관하지 않습니다.
 
 | Provider | 설치 | 인증 |
 |---|---|---|
@@ -221,7 +221,7 @@ gk preflight               # 설정된 검사 순서 실행
 ### 플래그
 
 ```
-gk ai commit [flags]
+gk commit [flags]
 
       --abort                      마지막 ai-commit 백업 ref로 HEAD 복원 후 종료
       --allow-secret-kind strings  지정한 종류의 secret 검출을 무시 (반복 가능)
@@ -276,10 +276,10 @@ ai:
 ### 안전 장치
 
 - **Secret gate**: `internal/secrets.Scan` + `gitleaks`(설치된 경우) 이중 검사. 발견 시 `--force` 여부와 무관하게 abort. 특정 종류만 무시하려면 `--allow-secret-kind <kind>`.
-- **Privacy Gate**: remote provider(`Locality=remote`)에 대해 outbound payload에서 secret, deny_paths 매칭, 민감 패턴을 자동으로 redact합니다. 매칭된 내용은 토큰화된 placeholder(`[SECRET_1]`, `[PATH_1]`)로 치환됩니다. 단일 payload에서 10개 초과 secret 감지 시 abort. `gk ai` 하위 명령에 `--show-prompt`를 사용하면 redact된 payload를 확인할 수 있습니다. `ai.commit.audit` 활성화 시 `.gk/ai-audit.jsonl`에 audit 로깅.
+- **Privacy Gate**: remote provider(`Locality=remote`)에 대해 outbound payload에서 secret, deny_paths 매칭, 민감 패턴을 자동으로 redact합니다. 매칭된 내용은 토큰화된 placeholder(`[SECRET_1]`, `[PATH_1]`)로 치환됩니다. 단일 payload에서 10개 초과 secret 감지 시 abort. `--show-prompt`를 사용하면 redact된 payload를 확인할 수 있습니다. `ai.commit.audit` 활성화 시 `.gk/ai-audit.jsonl`에 audit 로깅.
 - **Deny paths**: 매칭된 파일은 provider에 전달되지 않음.
 - **git-state 차단**: rebase/merge/cherry-pick 진행 중이면 실행 거부. `MERGE_MSG` 덮어쓰기 방지.
-- **Backup ref**: 시작 시 `refs/gk/ai-commit-backup/<branch>/<unix>` 기록. 실패 시 `gk ai commit --abort`로 복원.
+- **Backup ref**: 시작 시 `refs/gk/ai-commit-backup/<branch>/<unix>` 기록. 실패 시 `gk commit --abort`로 복원.
 - **Conventional lint 루프**: 생성된 메시지를 `commitlint.Lint`로 검증. 실패 시 2회까지 provider에 retry (이전 lint 이슈를 프롬프트에 주입).
 - **Path-rule override**: `_test.go`, `docs/*.md`, CI yaml, 잠금 파일은 provider가 다른 type으로 분류해도 각각 `test`/`docs`/`ci`/`build`로 재지정.
 
@@ -287,52 +287,52 @@ ai:
 
 ```bash
 # 계획만 보기
-gk ai commit --dry-run
+gk commit --dry-run
 
 # 바로 커밋 (TUI 없이)
-gk ai commit --force --provider gemini
+gk commit --force --provider gemini
 
 # 중간 실패 복구
-gk ai commit --abort
+gk commit --abort
 ```
 
-## AI pr / review / changelog
+## pr / review / changelog
 
 이 명령들은 provider의 **Summarizer** 기능을 사용합니다. 현재 `nvidia` provider만 Summarizer를 구현하며, 다른 provider는 향후 릴리즈에서 지원 예정입니다.
 
-### `gk ai pr`
+### `gk pr`
 
 현재 브랜치의 커밋으로부터 base 브랜치 대비 구조화된 PR 설명을 생성합니다.
 
 ```bash
-gk ai pr                          # stdout으로 출력
-gk ai pr --output clipboard       # 클립보드에 복사
-gk ai pr --dry-run                # 프롬프트 미리보기
-gk ai pr --provider nvidia --lang ko
+gk pr                          # stdout으로 출력
+gk pr --output clipboard       # 클립보드에 복사
+gk pr --dry-run                # 프롬프트 미리보기
+gk pr --provider nvidia --lang ko
 ```
 
 플래그: `--output` (stdout|clipboard), `--dry-run`, `--provider`, `--lang`
 
-### `gk ai review`
+### `gk review`
 
 staged 변경 또는 커밋 범위에 대한 AI 코드 리뷰.
 
 ```bash
-gk ai review                      # staged diff 리뷰
-gk ai review --range main..HEAD   # 커밋 범위 리뷰
-gk ai review --format json        # 구조화된 JSON 출력
+gk review                      # staged diff 리뷰
+gk review --range main..HEAD   # 커밋 범위 리뷰
+gk review --format json        # 구조화된 JSON 출력
 ```
 
 플래그: `--range`, `--format` (text|json), `--dry-run`, `--provider`
 
-### `gk ai changelog`
+### `gk changelog`
 
 커밋 범위에서 Conventional Commit 타입별로 그룹화된 changelog를 생성합니다.
 
 ```bash
-gk ai changelog                   # 최신 태그..HEAD, markdown
-gk ai changelog --from v1.0.0 --to v1.1.0
-gk ai changelog --format json
+gk changelog                   # 최신 태그..HEAD, markdown
+gk changelog --from v1.0.0 --to v1.1.0
+gk changelog --format json
 ```
 
 플래그: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`

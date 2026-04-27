@@ -323,7 +323,7 @@ Required when using the nvidia provider. Set this to your NVIDIA API key:
 export NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxx
 ```
 
-The nvidia provider reads this variable at runtime and sends it as a Bearer token in the Authorization header. When unset, `gk ai` falls back to the next provider in the auto-detect order.
+The nvidia provider reads this variable at runtime and sends it as a Bearer token in the Authorization header. When unset, `gk` falls back to the next provider in the auto-detect order.
 
 ---
 

@@ -31,10 +31,10 @@ for structured output.`,
 	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	cmd.Flags().String("provider", "", "override ai.provider")
 
-	aiCmd.AddCommand(cmd)
+	rootCmd.AddCommand(cmd)
 }
 
-// aiChangelogFlags captures CLI flags for `gk ai changelog`.
+// aiChangelogFlags captures CLI flags for `gk changelog`.
 type aiChangelogFlags struct {
 	from     string // start ref; empty = latest tag
 	to       string // end ref; empty = HEAD
@@ -61,7 +61,7 @@ func runAIChangelog(cmd *cobra.Command, _ []string) error {
 
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
-		return fmt.Errorf("ai changelog: load config: %w", err)
+		return fmt.Errorf("changelog: load config: %w", err)
 	}
 
 	flags := readAIChangelogFlags(cmd)
@@ -78,7 +78,7 @@ func runAIChangelog(cmd *cobra.Command, _ []string) error {
 	if ai.Provider == "" {
 		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 		if fcErr != nil {
-			return fmt.Errorf("ai changelog: %w", fcErr)
+			return fmt.Errorf("changelog: %w", fcErr)
 		}
 		prov = fc
 	} else {
@@ -87,7 +87,7 @@ func runAIChangelog(cmd *cobra.Command, _ []string) error {
 			Runner: provider.ExecRunner{},
 		})
 		if pErr != nil {
-			return fmt.Errorf("ai changelog: provider: %w", pErr)
+			return fmt.Errorf("changelog: provider: %w", pErr)
 		}
 		prov = p
 	}
@@ -120,11 +120,11 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	if from == "" {
 		out, _, err := deps.Runner.Run(ctx, "describe", "--tags", "--abbrev=0")
 		if err != nil {
-			return fmt.Errorf("ai changelog: no tags found — use --from to specify a start ref")
+			return fmt.Errorf("changelog: no tags found — use --from to specify a start ref")
 		}
 		from = strings.TrimSpace(string(out))
 		if from == "" {
-			return fmt.Errorf("ai changelog: no tags found — use --from to specify a start ref")
+			return fmt.Errorf("changelog: no tags found — use --from to specify a start ref")
 		}
 	}
 
@@ -133,23 +133,23 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	if to == "" {
 		to = "HEAD"
 	}
-	Dbg("ai changelog: range=%s..%s", from, to)
+	Dbg("changelog: range=%s..%s", from, to)
 
 	// Collect commits.
 	logOut, _, err := deps.Runner.Run(ctx, "log", "--oneline", from+".."+to)
 	if err != nil {
-		return fmt.Errorf("ai changelog: git log: %w", err)
+		return fmt.Errorf("changelog: git log: %w", err)
 	}
 	commitLines := strings.TrimSpace(string(logOut))
 
 	// Edge case: no commits in range.
 	if commitLines == "" {
-		fmt.Fprintln(deps.Out, "ai changelog: no commits in range — nothing to summarize")
+		fmt.Fprintln(deps.Out, "changelog: no commits in range — nothing to summarize")
 		return nil
 	}
 
 	commits := strings.Split(commitLines, "\n")
-	Dbg("ai changelog: %d commit(s) in range %s..%s", len(commits), from, to)
+	Dbg("changelog: %d commit(s) in range %s..%s", len(commits), from, to)
 
 	// Dry-run: show what would be sent.
 	if flags.dryRun {
@@ -167,7 +167,7 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	commitPayload := strings.Join(commits, "\n")
 	redactedPayload, _, err := applyPrivacyGate(deps.Provider, commitPayload, deps.AI)
 	if err != nil {
-		return fmt.Errorf("ai changelog: privacy gate: %w", err)
+		return fmt.Errorf("changelog: privacy gate: %w", err)
 	}
 	redactedCommits := strings.Split(redactedPayload, "\n")
 
@@ -179,7 +179,7 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	// Type-assert Summarizer.
 	sum, ok := deps.Provider.(provider.Summarizer)
 	if !ok {
-		return fmt.Errorf("ai changelog: provider %q does not support Summarize", deps.Provider.Name())
+		return fmt.Errorf("changelog: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
 	// Call Summarize.
@@ -189,7 +189,7 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 		Lang:    fallbackLang(deps.Lang),
 	})
 	if err != nil {
-		return fmt.Errorf("ai changelog: summarize: %w", err)
+		return fmt.Errorf("changelog: summarize: %w", err)
 	}
 
 	// Output based on --format (both markdown and json output raw text as-is).

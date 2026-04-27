@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-04-27
+
+### Changed
+
+- **`gk ai <subcommand>`가 `gk <subcommand>`로 평탄화되었습니다 (breaking).** `commit`, `pr`, `review`, `changelog`이 root command에 직접 위치합니다 — `gk commit`, `gk pr`, `gk review`, `gk changelog`. 4개 명령은 non-AI counterpart가 없어 namespacing 이득이 없었고 `ai` 글자의 마찰만 남았기 때문입니다. `--show-prompt` flag도 root persistent flag로 이동되어 모든 상위 명령에서 redacted-payload audit를 그대로 사용 가능합니다. 에러 메시지 prefix도 개정되었습니다 (`"ai commit: ..."` → `"commit: ..."`). `README.md`, `README.ko.md`, `docs/commands.md`, `docs/config.md` 모두 새 명령 형태로 갱신되었습니다.
+
+### Removed
+
+- **`gk ai` parent command 및 `AICmd()` exported accessor.** alias는 제공하지 않습니다 — `gk ai commit` 등을 쓰던 스크립트/CI는 새 top-level 형태로 수정해야 합니다. rename은 mechanical하므로 sed 수준 교체(`gk ai ` → `gk `)로 충분합니다.
+
 ## [0.13.1] - 2026-04-26
 
 ### Fixed
@@ -329,7 +339,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/x-mesh/gk/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/x-mesh/gk/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/x-mesh/gk/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/x-mesh/gk/compare/v0.11.0...v0.12.0

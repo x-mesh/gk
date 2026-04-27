@@ -61,7 +61,7 @@ func TestNewRunIDIsHex(t *testing.T) {
 	// Either hex (16 chars) or time-based fallback starting with 't'.
 	if id[0] != 't' {
 		for _, r := range id {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 				t.Errorf("non-hex rune in runID: %q", id)
 				break
 			}

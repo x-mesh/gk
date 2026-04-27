@@ -41,7 +41,7 @@ func TestSeverity_String(t *testing.T) {
 
 func TestSeverity_SortOrder(t *testing.T) {
 	// Error < Warn < Info so the worst violations sort first.
-	if !(SeverityError < SeverityWarn && SeverityWarn < SeverityInfo) {
+	if SeverityError >= SeverityWarn || SeverityWarn >= SeverityInfo {
 		t.Errorf("severity ordering broken: error=%d warn=%d info=%d",
 			SeverityError, SeverityWarn, SeverityInfo)
 	}

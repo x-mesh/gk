@@ -264,9 +264,9 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 //
 //  1. absolute path → use as-is (user intent is explicit)
 //  2. relative path → <base>/<project>/<input>, where:
-//       base    = cfg.Worktree.Base (default "~/.gk/worktree"), ~ expanded
-//       project = cfg.Worktree.Project (explicit), else basename of the
-//                 git toplevel directory for the current repo
+//     base    = cfg.Worktree.Base (default "~/.gk/worktree"), ~ expanded
+//     project = cfg.Worktree.Project (explicit), else basename of the
+//     git toplevel directory for the current repo
 //
 // When the managed base cannot be resolved (empty config, no home dir,
 // no git toplevel) the raw input is returned so git falls back to
@@ -644,7 +644,7 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 // the `cd` action in the outer loop.
 func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) error {
 	var name string
-	var createBranch bool = true
+	var createBranch = true
 	var branchName string
 	var fromRef string
 

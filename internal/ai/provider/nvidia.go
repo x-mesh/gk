@@ -28,11 +28,11 @@ const (
 // only an API key is required.
 type Nvidia struct {
 	Client    HTTPClient
-	Endpoint  string            // default: defaultNvidiaEndpoint
-	Model     string            // default: defaultNvidiaModel
-	APIKey    string            // from NVIDIA_API_KEY env
-	Timeout   time.Duration     // default: 60s
-	MaxRetry  int               // default: 3
+	Endpoint  string        // default: defaultNvidiaEndpoint
+	Model     string        // default: defaultNvidiaModel
+	APIKey    string        // from NVIDIA_API_KEY env
+	Timeout   time.Duration // default: 60s
+	MaxRetry  int           // default: 3
 	EnvLookup func(string) string
 	// SleepFn overrides the default sleepCtx for testing. When nil,
 	// sleepCtx is used. Returns true if the full duration elapsed.
@@ -128,7 +128,7 @@ func (n *Nvidia) SuggestGitignore(ctx context.Context, projectInfo string) ([]st
 type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []chatMessage   `json:"messages"`
-	ResponseFormat *responseFormat  `json:"response_format,omitempty"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	Temperature    float64         `json:"temperature,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 }

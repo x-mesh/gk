@@ -111,7 +111,6 @@ type aiReviewDeps struct {
 	ErrOut   io.Writer
 }
 
-
 func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags) error {
 	// Compute diff: --range or staged.
 	var diff string

@@ -451,7 +451,7 @@ func visibleWidth(s string) int {
 		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
 			// Skip until final byte (alpha) of CSI sequence.
 			j := i + 2
-			for j < len(s) && !((s[j] >= '@' && s[j] <= '~')) {
+			for j < len(s) && (s[j] < '@' || s[j] > '~') {
 				j++
 			}
 			i = j + 1
@@ -859,6 +859,7 @@ func branchDivergence(ctx context.Context, runner *git.ExecRunner, base, head st
 //   - the current branch is empty, or already is the base branch;
 //   - the base cannot be resolved (e.g., fresh repo with no mainline);
 //   - git rev-list fails for any reason (offline refs, pruned histories).
+//
 // One `rev-list` call; ≤10 ms on typical repos.
 func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string) string {
 	if currentBranch == "" {
@@ -1768,16 +1769,16 @@ const xyCellWidthLabels = 8
 // renderXY returns a styled, width-stable cell for the two-letter
 // porcelain code. The style argument picks one of:
 //
-//   "labels" — word label (`new`, `mod`, `staged`, `conflict`), padded to 8 cells
-//   "glyphs" — single-cell category marker (+ ~ ● ⚔ #)
-//   "raw"    — literal two-character git code (`??`, `.M`, `UU`), unchanged
+//	"labels" — word label (`new`, `mod`, `staged`, `conflict`), padded to 8 cells
+//	"glyphs" — single-cell category marker (+ ~ ● ⚔ #)
+//	"raw"    — literal two-character git code (`??`, `.M`, `UU`), unchanged
 //
 // The color follows the existing semantic map (dim gray for untracked,
 // red for conflicts, green for staged-only, yellow otherwise). Callers
 // that previously wrapped the code in color.GreenString etc. should
 // drop that wrapper — renderXY owns color selection.
 func renderXY(xy, style string) string {
-	body := xy
+	var body string
 	switch style {
 	case xyStyleGlyphs:
 		body = xyGlyph(xy)
@@ -1788,10 +1789,6 @@ func renderXY(xy, style string) string {
 	}
 	return applyXYColor(xy, body)
 }
-
-// colorXY preserves the historical entry point for callers that want the
-// raw two-char code colored by category. New code should use renderXY.
-func colorXY(xy string) string { return applyXYColor(xy, xy) }
 
 // applyXYColor wraps body in the semantic color for xy. Body may be the
 // raw code, a word label, or a glyph — color is picked off the XY

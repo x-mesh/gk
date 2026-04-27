@@ -13,7 +13,7 @@ import (
 // PrivacyGateOptions configures the Redact function.
 type PrivacyGateOptions struct {
 	DenyPaths      []string         // glob patterns (filepath.Match syntax)
-	SecretPatterns []*regexp.Regexp  // extra patterns beyond built-in
+	SecretPatterns []*regexp.Regexp // extra patterns beyond built-in
 	AuditEnabled   bool
 	AuditPath      string // ".gk/ai-audit.jsonl"
 	MaxSecrets     int    // default: 10, abort threshold
@@ -42,7 +42,6 @@ var builtinSecretPatterns = []*regexp.Regexp{
 var builtinMultiLinePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----`),
 }
-
 
 // Redact scans payload for deny_paths matches and secret patterns,
 // replacing each with a numbered placeholder. Returns the redacted

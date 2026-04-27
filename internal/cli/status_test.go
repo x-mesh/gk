@@ -1142,11 +1142,11 @@ func TestXYStyle(t *testing.T) {
 
 	t.Run("normalizeXYStyle defends against bad input", func(t *testing.T) {
 		cases := map[string]string{
-			"LABELS":  xyStyleLabels,
-			"glyphs":  xyStyleGlyphs,
-			"raw":     xyStyleRaw,
-			"":        xyStyleLabels,
-			"bogus":   xyStyleLabels,
+			"LABELS": xyStyleLabels,
+			"glyphs": xyStyleGlyphs,
+			"raw":    xyStyleRaw,
+			"":       xyStyleLabels,
+			"bogus":  xyStyleLabels,
 			"  raw ": xyStyleRaw,
 		}
 		for in, want := range cases {

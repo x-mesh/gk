@@ -154,8 +154,8 @@ func TestNvidiaSummarize_NoJSONResponseFormat(t *testing.T) {
 
 func TestNvidiaSummarize_PromptContainsKindContent(t *testing.T) {
 	tests := []struct {
-		kind     string
-		wantSub  string // substring expected in the user prompt
+		kind    string
+		wantSub string // substring expected in the user prompt
 	}{
 		{"pr", "Pull Request"},
 		{"review", "code review"},

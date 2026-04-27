@@ -145,7 +145,7 @@ func typesOrDefault(r *AnalysisResult) []string {
 func buildPreflightSteps(r *AnalysisResult) []preflightStepCfg {
 	var steps []preflightStepCfg
 	for _, s := range r.Preflight {
-		steps = append(steps, preflightStepCfg{Name: s.Name, Command: s.Command})
+		steps = append(steps, preflightStepCfg(s))
 	}
 	if len(steps) == 0 {
 		// 기본 steps

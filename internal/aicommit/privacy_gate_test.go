@@ -122,7 +122,6 @@ func TestRedactSecretThresholdNotExceeded(t *testing.T) {
 	}
 }
 
-
 func TestRedactAuditLogging(t *testing.T) {
 	tmpDir := t.TempDir()
 	auditPath := filepath.Join(tmpDir, ".gk", "ai-audit.jsonl")
@@ -231,8 +230,6 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy5AoV7
 		t.Error("expected PEM finding")
 	}
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Property-Based Tests (Task 6.6 & 6.7)

@@ -26,8 +26,8 @@ type FilePlan struct {
 
 // InitPlan은 실제로 생성/수정할 파일 목록과 내용을 담는다.
 type InitPlan struct {
-	Gitignore *FilePlan  // nil이면 건너뜀
-	Config    *FilePlan  // nil이면 건너뜀
+	Gitignore *FilePlan // nil이면 건너뜀
+	Config    *FilePlan // nil이면 건너뜀
 	AIFiles   []FilePlan
 }
 

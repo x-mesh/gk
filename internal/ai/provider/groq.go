@@ -44,7 +44,7 @@ func NewGroq() *Groq {
 	return g
 }
 
-func (g *Groq) Name() string     { return "groq" }
+func (g *Groq) Name() string       { return "groq" }
 func (g *Groq) Locality() Locality { return LocalityRemote }
 
 func (g *Groq) Available(_ context.Context) error {

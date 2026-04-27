@@ -56,8 +56,8 @@ func TestAIChangelogCoreHappyPath(t *testing.T) {
 
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"describe --tags --abbrev=0":    {Stdout: "v1.0.0\n"},
-			"log --oneline v1.0.0..HEAD":    {Stdout: "abc1234 feat: add foo\ndef5678 fix: bar"},
+			"describe --tags --abbrev=0": {Stdout: "v1.0.0\n"},
+			"log --oneline v1.0.0..HEAD": {Stdout: "abc1234 feat: add foo\ndef5678 fix: bar"},
 		},
 	}
 	out := &bytes.Buffer{}

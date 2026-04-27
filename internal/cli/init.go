@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,21 +14,6 @@ import (
 	"github.com/x-mesh/gk/internal/initx"
 	"github.com/x-mesh/gk/internal/ui"
 )
-
-//go:embed templates/ai/CLAUDE.md
-var claudeMDTemplate string
-
-//go:embed templates/ai/AGENTS.md
-var agentsMDTemplate string
-
-//go:embed templates/ai/kiro-product.md
-var kiroProductTemplate string
-
-//go:embed templates/ai/kiro-tech.md
-var kiroTechTemplate string
-
-//go:embed templates/ai/kiro-structure.md
-var kiroStructureTemplate string
 
 // validOnlyValues는 --only 플래그에 허용되는 값 목록이다.
 var validOnlyValues = map[string]bool{

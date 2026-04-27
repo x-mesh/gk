@@ -303,9 +303,9 @@ var logVizNames = []string{
 //
 //  1. Baseline. Priority order:
 //     - `--vis <list>` replaces the baseline entirely (intentional
-//       "start fresh" semantic); `--vis none` empties the baseline.
+//     "start fresh" semantic); `--vis none` empties the baseline.
 //     - `--format <fmt>` alone suppresses the baseline so the raw
-//       git pretty-format keeps control.
+//     git pretty-format keeps control.
 //     - Otherwise the configured default (cfg.Log.Vis) is the baseline.
 //
 //  2. Individual flags layer on top of the baseline:
@@ -321,7 +321,7 @@ func resolveLogVis(cmd *cobra.Command, cfg *config.Config) []string {
 	switch {
 	case cmd.Flags().Changed("vis"):
 		slice, _ := cmd.Flags().GetStringSlice("vis")
-		if !(len(slice) == 1 && slice[0] == "none") {
+		if len(slice) != 1 || slice[0] != "none" {
 			for _, v := range slice {
 				effective = appendUnique(effective, v)
 			}
@@ -384,16 +384,6 @@ type logVizFlags struct {
 
 func (v logVizFlags) any() bool {
 	return v.impact || v.cc || v.safety || v.hotspots || v.trailers
-}
-
-// must unwraps a cobra flag getter that cannot fail because we registered
-// the flag with the expected type earlier.
-func must[T any](v T, err error) T {
-	if err != nil {
-		var zero T
-		return zero
-	}
-	return v
 }
 
 // commitRecord holds the per-commit fields we need for viz rendering.

@@ -212,9 +212,9 @@ func TestAIPRCoreExplicitBaseBranch(t *testing.T) {
 
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"merge-base HEAD develop":          {Stdout: "def5678\n"},
-			"diff def5678..HEAD":               {Stdout: "some diff"},
-			"log --oneline def5678..HEAD":       {Stdout: "def5678 chore: update"},
+			"merge-base HEAD develop":     {Stdout: "def5678\n"},
+			"diff def5678..HEAD":          {Stdout: "some diff"},
+			"log --oneline def5678..HEAD": {Stdout: "def5678 chore: update"},
 		},
 	}
 	out := &bytes.Buffer{}
@@ -281,8 +281,8 @@ type providerOnly struct {
 	name string
 }
 
-func (p *providerOnly) Name() string                { return p.name }
-func (p *providerOnly) Locality() provider.Locality  { return provider.LocalityLocal }
+func (p *providerOnly) Name() string                      { return p.name }
+func (p *providerOnly) Locality() provider.Locality       { return provider.LocalityLocal }
 func (p *providerOnly) Available(_ context.Context) error { return nil }
 func (p *providerOnly) Classify(_ context.Context, _ provider.ClassifyInput) (provider.ClassifyResult, error) {
 	return provider.ClassifyResult{}, nil

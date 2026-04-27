@@ -158,7 +158,7 @@ func TestProperty2_ConventionalCommitRatioAndTypeSorting(t *testing.T) {
 		fake := &git.FakeRunner{
 			Responses: map[string]git.FakeResponse{
 				"log --format=%s -200": {Stdout: logOutput},
-				"branch -a":           {Stdout: "* main\n"},
+				"branch -a":            {Stdout: "* main\n"},
 			},
 		}
 

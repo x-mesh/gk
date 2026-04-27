@@ -197,16 +197,15 @@ type nonSummarizerFake struct {
 	name string
 }
 
-func (n *nonSummarizerFake) Name() string                                                  { return n.name }
-func (n *nonSummarizerFake) Locality() Locality                                            { return LocalityLocal }
-func (n *nonSummarizerFake) Available(_ context.Context) error                             { return nil }
+func (n *nonSummarizerFake) Name() string                      { return n.name }
+func (n *nonSummarizerFake) Locality() Locality                { return LocalityLocal }
+func (n *nonSummarizerFake) Available(_ context.Context) error { return nil }
 func (n *nonSummarizerFake) Classify(_ context.Context, _ ClassifyInput) (ClassifyResult, error) {
 	return ClassifyResult{}, errors.New("not implemented")
 }
 func (n *nonSummarizerFake) Compose(_ context.Context, _ ComposeInput) (ComposeResult, error) {
 	return ComposeResult{}, errors.New("not implemented")
 }
-
 
 // ── Task 7.5: [PBT] Property 7 — Fallback Chain 순서 보장 및 단일 시도 ──
 // Feature: nvidia-ai-provider, Property 7: Fallback Chain 순서 보장 및 단일 시도

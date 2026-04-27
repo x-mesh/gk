@@ -63,7 +63,12 @@ func (g *Groq) Compose(ctx context.Context, in ComposeInput) (ComposeResult, err
 }
 
 func (g *Groq) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
-	return g.nv.Summarize(ctx, in)
+	res, err := g.nv.Summarize(ctx, in)
+	if err != nil {
+		return SummarizeResult{}, err
+	}
+	res.Provider = g.Name()
+	return res, nil
 }
 
 func (g *Groq) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {

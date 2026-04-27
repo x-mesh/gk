@@ -87,13 +87,10 @@ func fallback(s, d string) string {
 }
 
 func defaultMaxGroups(in ClassifyInput) int {
-	// Soft cap mirrored from config. The factor of 1 (= one commit per
-	// file in the worst case) keeps the prompt bounded without being
-	// over-prescriptive.
-	if n := len(in.Files); n < 10 {
+	if n := len(in.Files); n < 4 {
 		return n
 	}
-	return 10
+	return 3
 }
 
 // summarizeSystemPrompt frames the Summarize task. Unlike the commit
@@ -131,6 +128,14 @@ func buildSummarizeUserPrompt(in SummarizeInput) string {
 		fmt.Fprintln(&b, "Group entries by Conventional Commit type:")
 		fmt.Fprintln(&b, "  Features, Bug Fixes, Performance, Refactoring, Documentation, Tests, Chores")
 		fmt.Fprintln(&b, "Use bullet points for each entry.")
+
+	case "merge-plan":
+		fmt.Fprintf(&b, "Task: generate a merge plan in %s.\n", lang)
+		fmt.Fprintln(&b, "Format the response for a terminal CLI, not for Markdown rendering.")
+		fmt.Fprintln(&b, "Use plain text and ASCII-style tables only. Do not use Markdown headings, fences, bold, or emoji.")
+		fmt.Fprintln(&b, "Explain what will be merged, risk level, files to inspect, and any conflict-resolution guidance.")
+		fmt.Fprintln(&b, "Prefer compact sections with labels like SUMMARY, RISK, INSPECT, NEXT.")
+		fmt.Fprintln(&b, "If conflicts are listed, do not claim the merge is safe; provide concrete next steps.")
 
 	default:
 		fmt.Fprintf(&b, "Task: summarize the following changes in %s.\n", lang)

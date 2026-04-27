@@ -82,6 +82,7 @@ unalias gk gke 2>/dev/null
 gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
 gk pull                      # fetch + rebase, auto-detects upstream
 gk pull --strategy ff-only   # fast-forward only; errors if histories diverged
+gk merge main                # precheck + merge main into current branch
 gk sync                      # fetch + fast-forward only (never rebases)
 gk status                    # concise working-tree summary
 gk log                       # short, colorful commit log
@@ -107,6 +108,7 @@ gk hooks install --all       # wire commit-msg + pre-push + pre-commit hooks
 gk lint-commit --staged    # validate commit message vs Conventional Commits
 gk branch-check            # enforce branch naming rules
 gk preflight               # run the configured check sequence
+gk ship dry-run           # preview squash/version/changelog/tag/push plan
 ```
 
 ## Commands
@@ -116,6 +118,7 @@ gk preflight               # run the configured check sequence
 |---|---|---|
 | `gk clone <owner/repo \| alias:owner/repo \| url>` | | Clone with short-form URL expansion. Bare `owner/repo` expands to `git@github.com:owner/repo.git` (ssh default, configurable). `--ssh`/`--https` override. `clone.hosts` maps aliases (`gl:`, `work:`). Optional `clone.root` + `clone.post_actions: [hooks-install, doctor]`. |
 | `gk pull` | | Fetch + integrate upstream. `--strategy rebase\|merge\|ff-only\|auto`; resolves `@{u}` first; auto-switches to `--ff-only` when HEAD is already an ancestor |
+| `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
 | `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
 | `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Pass `-f`/`--fetch` to refresh ↑N ↓N from the remote. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
@@ -141,6 +144,7 @@ gk preflight               # run the configured check sequence
 | Command | Description |
 |---|---|
 | `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease` |
+| `gk ship` | Release ship gate: status/dry-run/squash modes, SemVer inference, version/CHANGELOG release commit, guarded branch/tag push. Tag push triggers the release workflow |
 | `gk precheck <target>` | Dry-run merge conflict scan via `git merge-tree`; exit 3 on conflicts; `--json` for CI |
 | `gk preflight` | Run configured check sequence (`commit-lint`, `branch-check`, `no-conflict`, or shell commands) |
 | `gk lint-commit` | Validate commit message against Conventional Commits; `--staged`, `--file PATH`, `<rev-range>` |

@@ -105,9 +105,8 @@ func TestClassifyLLMInvokedForDiverseSet(t *testing.T) {
 	}
 }
 
-func TestClassifyPathRuleOverrideMovesTestOutOfFeat(t *testing.T) {
+func TestClassifyKeepsAuxiliaryTestWithFeatureGroup(t *testing.T) {
 	p := provider.NewFake()
-	// Provider deliberately lumps a test file into feat.
 	p.ClassifyResponses = []provider.ClassifyResult{{
 		Groups: []provider.Group{{
 			Type:  "feat",
@@ -125,21 +124,60 @@ func TestClassifyPathRuleOverrideMovesTestOutOfFeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	// After override: one feat group with main.go, one test group with *_test.go
-	var featFiles, testFiles []string
-	for _, g := range groups {
-		switch g.Type {
-		case "feat":
-			featFiles = g.Files
-		case "test":
-			testFiles = g.Files
-		}
+	if len(groups) != 1 {
+		t.Fatalf("groups: %+v", groups)
 	}
-	if len(featFiles) != 1 || featFiles[0] != "cmd/gk/main.go" {
-		t.Errorf("feat group files: %+v", featFiles)
+	if groups[0].Type != "feat" {
+		t.Fatalf("group type = %q, want feat", groups[0].Type)
 	}
-	if len(testFiles) != 1 || testFiles[0] != "internal/cli/foo_test.go" {
-		t.Errorf("test group files: %+v (want foo_test.go moved here)", testFiles)
+	if len(groups[0].Files) != 2 {
+		t.Fatalf("files = %+v, want implementation + test together", groups[0].Files)
+	}
+}
+
+func TestClassifyPathRuleOverrideMovesStandaloneTestOutOfFeat(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{{
+			Type:  "feat",
+			Files: []string{"internal/cli/foo_test.go"},
+		}},
+	}}
+	files := []FileChange{{Path: "internal/cli/foo_test.go"}}
+	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 0,
+		AllowedTypes:    []string{"feat", "test"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Type != "test" {
+		t.Fatalf("groups = %+v, want single test group", groups)
+	}
+}
+
+func TestClassifyKeepsAuxiliaryDocsWithFeatureGroup(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{{
+			Type:  "feat",
+			Files: []string{"internal/cli/ship.go", "README.md", "docs/commands.md"},
+		}},
+	}}
+	files := []FileChange{
+		{Path: "internal/cli/ship.go"},
+		{Path: "README.md"},
+		{Path: "docs/commands.md"},
+	}
+	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 1,
+		AllowedTypes:    []string{"feat", "docs"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Type != "feat" {
+		t.Fatalf("groups = %+v, want single feat group", groups)
 	}
 }
 

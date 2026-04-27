@@ -126,6 +126,9 @@ func TestFallbackChain_SummarizeSuccess(t *testing.T) {
 	if res.Text != "summary" {
 		t.Errorf("Text = %q, want %q", res.Text, "summary")
 	}
+	if res.Provider != "first" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "first")
+	}
 }
 
 func TestFallbackChain_SummarizeSkipsNonSummarizer(t *testing.T) {
@@ -143,6 +146,9 @@ func TestFallbackChain_SummarizeSkipsNonSummarizer(t *testing.T) {
 	}
 	if res.Text != "ok" {
 		t.Errorf("Text = %q, want %q", res.Text, "ok")
+	}
+	if res.Provider != "second" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "second")
 	}
 }
 

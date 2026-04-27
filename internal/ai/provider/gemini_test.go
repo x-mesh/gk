@@ -69,6 +69,43 @@ func TestGeminiComposeSuccessMarkdownFence(t *testing.T) {
 	}
 }
 
+func TestGeminiSummarizeSuccess(t *testing.T) {
+	envelope := `{"response":"\u001b[1mRisk: low\u001b[0m\nInspect: file.go","stats":{"models":{"gemini-3-flash-preview":{"tokens":{"total":77}}}}}`
+	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: []byte(envelope)}}}
+	g := &Gemini{Runner: runner, Binary: "gemini"}
+	res, err := g.Summarize(context.Background(), SummarizeInput{
+		Kind:    "merge-plan",
+		Diff:    "Target: main\nPrecheck: clean\n",
+		Commits: []string{"abc123 feat: incoming"},
+		Lang:    "en",
+	})
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if res.Text != "Risk: low\nInspect: file.go" {
+		t.Errorf("Text = %q", res.Text)
+	}
+	if res.Model != "gemini-3-flash-preview" {
+		t.Errorf("Model = %q", res.Model)
+	}
+	if res.TokensUsed != 77 {
+		t.Errorf("TokensUsed = %d", res.TokensUsed)
+	}
+	if res.Provider != "gemini" {
+		t.Errorf("Provider = %q", res.Provider)
+	}
+	call := runner.Calls[0]
+	if !strings.Contains(call.Args[1], "Task: generate a merge plan") {
+		t.Errorf("prompt missing merge-plan task: %q", call.Args[1])
+	}
+	if !strings.Contains(call.Args[1], "Target: main") {
+		t.Errorf("diff not embedded in prompt")
+	}
+	if len(call.Stdin) != 0 {
+		t.Errorf("summarize should not duplicate diff on stdin")
+	}
+}
+
 func TestGeminiEmptyResponseIsError(t *testing.T) {
 	runner := &FakeCommandRunner{
 		Responses: []FakeCommandResponse{{Stdout: []byte(`{"response":""}`)}},

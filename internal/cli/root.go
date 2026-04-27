@@ -167,6 +167,18 @@ func installDebugHooks() {
 			}
 			status = "err=" + msg
 		}
-		Dbg("exec %s %s  (%s, %s)", name, strings.Join(args, " "), dur.Round(time.Millisecond), status)
+		Dbg("exec %s %s  (%s, %s)", name, strings.Join(debugProviderArgs(args), " "), dur.Round(time.Millisecond), status)
 	}
+}
+
+func debugProviderArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if len(arg) > 160 || strings.Contains(arg, "\n") {
+			out = append(out, fmt.Sprintf("<%d-char prompt>", len(arg)))
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }

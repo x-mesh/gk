@@ -45,6 +45,46 @@ func TestQwenReturnsErrOnIsError(t *testing.T) {
 	}
 }
 
+func TestQwenSummarizeSuccess(t *testing.T) {
+	events := `[{"type":"assistant","text":"\u001b[1mRisk: low\u001b[0m\nInspect: file.go","model":"qwen3-coder"}]`
+	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: []byte(events)}}}
+	q := &Qwen{Runner: runner, Binary: "qwen", EnvLookup: func(string) string { return "x" }}
+	res, err := q.Summarize(context.Background(), SummarizeInput{
+		Kind:    "merge-plan",
+		Diff:    "Target: main\nPrecheck: clean\n",
+		Commits: []string{"abc123 feat: incoming"},
+		Lang:    "en",
+	})
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if res.Text != "Risk: low\nInspect: file.go" {
+		t.Errorf("Text = %q", res.Text)
+	}
+	if res.Model != "qwen3-coder" {
+		t.Errorf("Model = %q", res.Model)
+	}
+	if res.Provider != "qwen" {
+		t.Errorf("Provider = %q", res.Provider)
+	}
+	call := runner.Calls[0]
+	if !strings.Contains(call.Args[0], "Task: generate a merge plan") {
+		t.Errorf("prompt missing merge-plan task: %q", call.Args[0])
+	}
+	if !strings.Contains(call.Args[0], "Target: main") {
+		t.Errorf("diff not embedded in prompt")
+	}
+	if call.Args[4] != summarizeSystemPrompt {
+		t.Errorf("system prompt = %q", call.Args[4])
+	}
+	if call.Args[5] != "--approval-mode" || call.Args[6] != "plan" {
+		t.Errorf("approval args = %v", call.Args)
+	}
+	if len(call.Stdin) != 0 {
+		t.Errorf("summarize should not duplicate diff on stdin")
+	}
+}
+
 func TestQwenAvailableWithoutEnvReturnsUnauth(t *testing.T) {
 	// Fake LookPath via Binary path — we can't mock exec.LookPath here,
 	// so use the actual `go` binary as a stand-in that exists on PATH.

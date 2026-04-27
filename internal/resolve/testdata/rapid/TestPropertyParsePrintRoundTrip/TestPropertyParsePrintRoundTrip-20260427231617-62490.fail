@@ -1,0 +1,15 @@
+# 2026/04/27 23:16:17.179839 [TestPropertyParsePrintRoundTrip] [rapid] draw seg_count: 1
+# 2026/04/27 23:16:17.179842 [TestPropertyParsePrintRoundTrip] [rapid] draw is_hunk: false
+# 2026/04/27 23:16:17.179844 [TestPropertyParsePrintRoundTrip] [rapid] draw ctx_lines: 1
+# 2026/04/27 23:16:17.179893 [TestPropertyParsePrintRoundTrip] [rapid] draw line: ""
+# 2026/04/27 23:16:17.179897 [TestPropertyParsePrintRoundTrip] Segment count mismatch: 1 vs 0
+# 
+v0.4.8#6836235538402220943
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

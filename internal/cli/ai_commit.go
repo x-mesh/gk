@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	Dbg("commit: preflight ok")
 
+	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner)
+	if err != nil {
+		return err
+	}
+
 	// Gather WIP.
 	scope := aicommit.ScopeAll
 	switch {
@@ -122,6 +128,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	files = appendWIPCommitFiles(files, wipCommit.Files)
 	if len(files) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no working-tree changes to commit")
 		return nil
@@ -179,7 +186,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Compose (per group) with commitlint retry.
-	diffs, err := collectGroupDiffs(ctx, runner, groups)
+	diffs, err := collectGroupDiffs(ctx, runner, groups, wipCommit)
 	if err != nil {
 		return err
 	}
@@ -215,6 +222,10 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	if err := unwrapWIPCommitBeforeApply(ctx, runner, wipCommit, flags, cmd.OutOrStdout()); err != nil {
+		return err
+	}
+
 	// Apply.
 	applyOpts := aicommit.ApplyOptions{DryRun: flags.dryRun}
 	if ai.Commit.Trailer {
@@ -232,6 +243,93 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 
 	printApplySummary(cmd.OutOrStdout(), kept, result, flags.dryRun)
+	return nil
+}
+
+type wipCommitForAICommit struct {
+	Present bool
+	Files   []aicommit.FileChange
+}
+
+func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner) (wipCommitForAICommit, error) {
+	subjOut, _, err := runner.Run(ctx, "log", "-1", "--format=%s")
+	if err != nil {
+		return wipCommitForAICommit{}, nil
+	}
+	subject := strings.TrimSpace(string(subjOut))
+	if !strings.HasPrefix(subject, "--wip--") {
+		return wipCommitForAICommit{}, nil
+	}
+	out, _, err := runner.Run(ctx, "diff", "--name-status", "HEAD~1..HEAD")
+	if err != nil {
+		return wipCommitForAICommit{}, fmt.Errorf("commit: inspect WIP commit: %w", err)
+	}
+	return wipCommitForAICommit{
+		Present: true,
+		Files:   parseWIPCommitNameStatus(string(out)),
+	}, nil
+}
+
+func parseWIPCommitNameStatus(out string) []aicommit.FileChange {
+	var files []aicommit.FileChange
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		code := parts[0]
+		path := parts[len(parts)-1]
+		status := "modified"
+		switch code[0] {
+		case 'A':
+			status = "added"
+		case 'D':
+			status = "deleted"
+		case 'R':
+			status = "renamed"
+		case 'C':
+			status = "copied"
+		}
+		files = append(files, aicommit.FileChange{
+			Path:   path,
+			Status: status,
+			Staged: true,
+		})
+	}
+	return files
+}
+
+func appendWIPCommitFiles(files, wipFiles []aicommit.FileChange) []aicommit.FileChange {
+	if len(wipFiles) == 0 {
+		return files
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		seen[f.Path] = true
+	}
+	for _, f := range wipFiles {
+		if seen[f.Path] {
+			continue
+		}
+		files = append(files, f)
+	}
+	return files
+}
+
+func unwrapWIPCommitBeforeApply(ctx context.Context, runner git.Runner, wipCommit wipCommitForAICommit, flags aiCommitFlags, out io.Writer) error {
+	if !wipCommit.Present || flags.dryRun {
+		return nil
+	}
+	if _, stderr, err := runner.Run(ctx, "reset", "HEAD~1"); err != nil {
+		return fmt.Errorf("commit: unwrap WIP commit: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+	if out != nil {
+		fmt.Fprintln(out, "commit: unwrapped WIP commit after AI plan; rewriting it as regular commit(s)")
+	}
 	return nil
 }
 
@@ -401,14 +499,28 @@ func topLevelDirSimple(p string) string {
 // collectGroupDiffs runs `git diff --cached` / `git diff` per group
 // file set. Binary files fall back to `--stat`-only output so the
 // provider sees a stub instead of junk bytes.
-func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider.Group) (map[string]string, error) {
+func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider.Group, wipCommit wipCommitForAICommit) (map[string]string, error) {
 	diffs := map[string]string{}
 	for _, g := range groups {
+		var b strings.Builder
+		if wipCommit.Present {
+			args := append([]string{"diff", "HEAD~1..HEAD", "--"}, g.Files...)
+			wipDiff, _, _ := runner.Run(ctx, args...)
+			b.Write(wipDiff)
+			if len(wipDiff) > 0 && !strings.HasSuffix(string(wipDiff), "\n") {
+				b.WriteByte('\n')
+			}
+		}
 		args := append([]string{"diff", "--cached", "--"}, g.Files...)
 		cached, _, _ := runner.Run(ctx, args...)
 		unstagedArgs := append([]string{"diff", "--"}, g.Files...)
 		unstaged, _, _ := runner.Run(ctx, unstagedArgs...)
-		diffs[groupKeyLocal(g)] = string(cached) + "\n" + string(unstaged)
+		b.Write(cached)
+		if len(cached) > 0 && !strings.HasSuffix(string(cached), "\n") {
+			b.WriteByte('\n')
+		}
+		b.Write(unstaged)
+		diffs[groupKeyLocal(g)] = b.String()
 	}
 	return diffs, nil
 }

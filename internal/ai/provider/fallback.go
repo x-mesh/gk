@@ -113,6 +113,9 @@ func (fc *FallbackChain) Summarize(ctx context.Context, in SummarizeInput) (Summ
 		tried++
 		res, err := s.Summarize(ctx, in)
 		if err == nil {
+			if res.Provider == "" {
+				res.Provider = p.Name()
+			}
 			return res, nil
 		}
 		fc.dbg("fallback: %s failed: %v", p.Name(), err)

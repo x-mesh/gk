@@ -110,7 +110,7 @@ func (n *Nvidia) Summarize(ctx context.Context, in SummarizeInput) (SummarizeRes
 	if err != nil {
 		return SummarizeResult{}, err
 	}
-	return SummarizeResult{Text: content, Model: model, TokensUsed: tokens}, nil
+	return SummarizeResult{Text: content, Model: model, TokensUsed: tokens, Provider: n.Name()}, nil
 }
 
 // SuggestGitignore implements GitignoreSuggester.
@@ -385,8 +385,42 @@ func truncateBody(b []byte) string {
 	return string(b[:max]) + "…"
 }
 
+// AnalyzeBranches implements BranchAnalyzer.
+func (n *Nvidia) AnalyzeBranches(ctx context.Context, in BranchAnalysisInput) (BranchAnalysisResult, error) {
+	userPrompt := buildBranchAnalysisUserPrompt(in)
+	content, model, tokens, err := n.invoke(ctx, branchAnalysisSystemPrompt, userPrompt, true)
+	if err != nil {
+		return BranchAnalysisResult{}, err
+	}
+	res, err := parseBranchAnalysisResponse([]byte(content))
+	if err != nil {
+		return BranchAnalysisResult{}, err
+	}
+	res.Model = model
+	res.TokensUsed = tokens
+	return res, nil
+}
+
+// ResolveConflicts implements ConflictResolver.
+func (n *Nvidia) ResolveConflicts(ctx context.Context, in ConflictResolutionInput) (ConflictResolutionResult, error) {
+	userPrompt := buildConflictResolutionUserPrompt(in)
+	content, model, tokens, err := n.invoke(ctx, conflictResolutionSystemPrompt, userPrompt, true)
+	if err != nil {
+		return ConflictResolutionResult{}, err
+	}
+	res, err := parseConflictResolutionResponse([]byte(content))
+	if err != nil {
+		return ConflictResolutionResult{}, err
+	}
+	res.Model = model
+	res.TokensUsed = tokens
+	return res, nil
+}
+
 // Compile-time interface checks.
 var (
-	_ Provider   = (*Nvidia)(nil)
-	_ Summarizer = (*Nvidia)(nil)
+	_ Provider         = (*Nvidia)(nil)
+	_ Summarizer       = (*Nvidia)(nil)
+	_ BranchAnalyzer   = (*Nvidia)(nil)
+	_ ConflictResolver = (*Nvidia)(nil)
 )

@@ -18,3 +18,4 @@ coverage.out
 # Compiled binaries at root (for local dev)
 /gk
 .kiro/
+.cache/

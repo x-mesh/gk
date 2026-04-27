@@ -98,6 +98,20 @@ func (q *Qwen) Compose(ctx context.Context, in ComposeInput) (ComposeResult, err
 	return res, nil
 }
 
+// Summarize implements Summarizer.
+func (q *Qwen) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
+	prompt := buildSummarizeUserPrompt(in)
+	raw, err := q.invokeWithSystem(ctx, prompt, summarizeSystemPrompt, nil)
+	if err != nil {
+		return SummarizeResult{}, err
+	}
+	return SummarizeResult{
+		Text:     stripANSI(raw.text),
+		Model:    raw.model,
+		Provider: q.Name(),
+	}, nil
+}
+
 // qwenEvent models one element of the stream-json array qwen emits.
 // Only fields we care about are listed; extras are skipped.
 type qwenEvent struct {
@@ -118,10 +132,15 @@ type qwenParsed struct {
 }
 
 func (q *Qwen) invoke(ctx context.Context, userPrompt string, stdinExtra []byte) (qwenParsed, error) {
+	return q.invokeWithSystem(ctx, userPrompt, systemPrompt, stdinExtra)
+}
+
+func (q *Qwen) invokeWithSystem(ctx context.Context, userPrompt, sysPrompt string, stdinExtra []byte) (qwenParsed, error) {
 	args := []string{
 		userPrompt,
 		"-o", "json",
-		"--system-prompt", systemPrompt,
+		"--system-prompt", sysPrompt,
+		"--approval-mode", "plan",
 	}
 	stdout, stderr, err := q.Runner.Run(ctx, q.binary(), args, stdinExtra, nil)
 	if err != nil && len(stdout) == 0 {
@@ -172,7 +191,10 @@ func (q *Qwen) binary() string {
 	return q.Binary
 }
 
-var _ Provider = (*Qwen)(nil)
+var (
+	_ Provider   = (*Qwen)(nil)
+	_ Summarizer = (*Qwen)(nil)
+)
 
 // SuggestGitignore implements GitignoreSuggester.
 func (q *Qwen) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {

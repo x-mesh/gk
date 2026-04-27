@@ -18,10 +18,25 @@ func TestNvidiaImplementsSummarizer(t *testing.T) {
 	}
 }
 
-func TestGeminiDoesNotImplementSummarizer(t *testing.T) {
-	var p Provider = &Gemini{}
+func TestKiroImplementsSummarizer(t *testing.T) {
+	var p Provider = NewKiro()
+	if _, ok := p.(Summarizer); !ok {
+		t.Error("*Kiro does not implement Summarizer")
+	}
+}
+
+func TestGeminiImplementsSummarizer(t *testing.T) {
+	var p Provider = NewGemini()
 	if _, ok := p.(Summarizer); ok {
-		t.Error("*Gemini unexpectedly implements Summarizer")
+		return
+	}
+	t.Error("*Gemini does not implement Summarizer")
+}
+
+func TestQwenImplementsSummarizer(t *testing.T) {
+	var p Provider = NewQwen()
+	if _, ok := p.(Summarizer); !ok {
+		t.Error("*Qwen does not implement Summarizer")
 	}
 }
 

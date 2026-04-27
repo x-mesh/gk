@@ -110,12 +110,18 @@ func tryJSONDecode(s string, v any) error {
 // fenceRE matches optional ```json ... ``` or ``` ... ``` wrappers.
 var fenceRE = regexp.MustCompile("^```(?:json|JSON)?\\s*([\\s\\S]*?)\\s*```$")
 
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
 // stripFences removes a surrounding markdown code fence when present.
 func stripFences(s string) string {
 	if m := fenceRE.FindStringSubmatch(s); m != nil {
 		return strings.TrimSpace(m[1])
 	}
 	return s
+}
+
+func stripANSI(s string) string {
+	return ansiRE.ReplaceAllString(s, "")
 }
 
 // firstJSONObject returns the first balanced {...} block in s.

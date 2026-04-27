@@ -2,8 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/x-mesh/gk/internal/aicommit"
+	"github.com/x-mesh/gk/internal/git"
 )
 
 func TestAICommitRegistered(t *testing.T) {
@@ -66,5 +70,75 @@ func TestNewRunIDIsHex(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestInspectWIPCommitForAICommitIncludesFiles(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"log -1 --format=%s":              {Stdout: "--wip-- [skip ci]\n"},
+		"diff --name-status HEAD~1..HEAD": {Stdout: "M\tinternal/cli/merge.go\nA\tnew.go\n"},
+	}}
+
+	wip, err := inspectWIPCommitForAICommit(context.Background(), runner)
+	if err != nil {
+		t.Fatalf("inspectWIPCommitForAICommit: %v", err)
+	}
+	if !wip.Present {
+		t.Fatal("expected WIP commit")
+	}
+	if len(wip.Files) != 2 {
+		t.Fatalf("expected 2 files, got %#v", wip.Files)
+	}
+	if wip.Files[0].Path != "internal/cli/merge.go" || wip.Files[0].Status != "modified" {
+		t.Fatalf("unexpected first file: %#v", wip.Files[0])
+	}
+}
+
+func TestAppendWIPCommitFilesDedupesCurrentFiles(t *testing.T) {
+	files := appendWIPCommitFiles([]aicommit.FileChange{
+		{Path: "current.go", Status: "modified"},
+	}, []aicommit.FileChange{
+		{Path: "current.go", Status: "modified"},
+		{Path: "wip.go", Status: "added"},
+	})
+	if len(files) != 2 {
+		t.Fatalf("expected deduped files, got %#v", files)
+	}
+	if files[1].Path != "wip.go" {
+		t.Fatalf("expected WIP file appended, got %#v", files)
+	}
+}
+
+func TestUnwrapWIPCommitBeforeApplySkipsDryRun(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"reset HEAD~1": {Stdout: ""},
+	}}
+
+	err := unwrapWIPCommitBeforeApply(context.Background(), runner, wipCommitForAICommit{Present: true}, aiCommitFlags{dryRun: true}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("unwrapWIPCommitBeforeApply: %v", err)
+	}
+	calls := joinedShipCalls(runner.Calls)
+	if strings.Contains(calls, "reset HEAD~1") {
+		t.Fatalf("dry-run should not reset, calls:\n%s", calls)
+	}
+}
+
+func TestUnwrapWIPCommitBeforeApplyResetsAfterPlan(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"reset HEAD~1": {Stdout: ""},
+	}}
+	var out bytes.Buffer
+
+	err := unwrapWIPCommitBeforeApply(context.Background(), runner, wipCommitForAICommit{Present: true}, aiCommitFlags{}, &out)
+	if err != nil {
+		t.Fatalf("unwrapWIPCommitBeforeApply: %v", err)
+	}
+	calls := joinedShipCalls(runner.Calls)
+	if !strings.Contains(calls, "reset HEAD~1") {
+		t.Fatalf("expected WIP reset, calls:\n%s", calls)
+	}
+	if !strings.Contains(out.String(), "after AI plan") {
+		t.Fatalf("expected after-plan output, got %q", out.String())
 	}
 }

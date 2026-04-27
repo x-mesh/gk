@@ -186,10 +186,8 @@ func heuristicGroups(files []FileChange) []provider.Group {
 	return groups
 }
 
-// overrideWithPathRules mutates groups so any file whose heuristic
-// type differs from the group's LLM-picked type is moved into its own
-// heuristic group. This protects against the common hallucination
-// where an LLM classifies `_test.go` as `feat`.
+// overrideWithPathRules corrects obvious LLM type mistakes without
+// splitting auxiliary files away from the feature they document/test.
 func overrideWithPathRules(groups []provider.Group, files []FileChange) []provider.Group {
 	if len(groups) == 0 {
 		return groups
@@ -216,10 +214,10 @@ func overrideWithPathRules(groups []provider.Group, files []FileChange) []provid
 
 	rationale := map[key]string{}
 	for _, g := range groups {
+		primary := groupHasPrimaryFile(g)
 		for _, p := range g.Files {
 			ht := heuristicType(p)
-			if ht != "" && ht != g.Type {
-				// override: move this file into the heuristic-typed group.
+			if ht != "" && ht != g.Type && !isAuxiliaryForPrimaryGroup(ht, primary) {
 				addTo(ht, "", p)
 				rationale[key{typ: ht}] = "path-rule override"
 				continue
@@ -241,6 +239,22 @@ func overrideWithPathRules(groups []provider.Group, files []FileChange) []provid
 		})
 	}
 	return out
+}
+
+func groupHasPrimaryFile(g provider.Group) bool {
+	for _, p := range g.Files {
+		if heuristicType(p) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isAuxiliaryForPrimaryGroup(heuristic string, hasPrimary bool) bool {
+	if !hasPrimary {
+		return false
+	}
+	return heuristic == "docs" || heuristic == "test"
 }
 
 // toProviderFiles converts []FileChange → []provider.FileChange.

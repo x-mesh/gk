@@ -56,6 +56,41 @@ func TestKiroComposePlainTextFallback(t *testing.T) {
 	}
 }
 
+func TestKiroSummarizeSuccess(t *testing.T) {
+	runner := &FakeCommandRunner{
+		Responses: []FakeCommandResponse{{Stdout: []byte("\x1b[1mRisk: low\x1b[0m\nInspect: file.go\n")}},
+	}
+	k := &Kiro{Runner: runner, Binary: "kiro-cli"}
+	res, err := k.Summarize(context.Background(), SummarizeInput{
+		Kind:    "merge-plan",
+		Diff:    "Target: main\nPrecheck: clean\n",
+		Commits: []string{"abc123 feat: incoming"},
+		Lang:    "en",
+	})
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if !strings.Contains(res.Text, "Risk: low") {
+		t.Errorf("summary text: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "\x1b[") {
+		t.Errorf("summary should strip ANSI escapes: %q", res.Text)
+	}
+	if res.Provider != "kiro" {
+		t.Errorf("Provider = %q", res.Provider)
+	}
+	call := runner.Calls[0]
+	if !strings.Contains(call.Args[3], "Task: generate a merge plan") {
+		t.Errorf("prompt missing merge-plan task: %q", call.Args[3])
+	}
+	if !strings.Contains(call.Args[3], "Target: main") {
+		t.Errorf("prompt argument should include diff payload")
+	}
+	if len(call.Stdin) != 0 {
+		t.Errorf("summarize should not duplicate diff on stdin")
+	}
+}
+
 func TestKiroEmptyResponseErrors(t *testing.T) {
 	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: nil}}}
 	k := &Kiro{Runner: runner, Binary: "kiro-cli"}

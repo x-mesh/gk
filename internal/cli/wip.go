@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,9 +41,10 @@ act on non-WIP commits.`,
 
 func runWip(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
-	ctx := cmd.Context()
-	w := cmd.OutOrStdout()
+	return createWipCommit(cmd.Context(), runner, cmd.OutOrStdout())
+}
 
+func createWipCommit(ctx context.Context, runner git.Runner, w io.Writer) error {
 	if _, stderr, err := runner.Run(ctx, "add", "-A"); err != nil {
 		return fmt.Errorf("git add -A: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}

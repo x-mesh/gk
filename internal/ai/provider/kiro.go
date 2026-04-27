@@ -78,6 +78,16 @@ func (k *Kiro) Compose(ctx context.Context, in ComposeInput) (ComposeResult, err
 	return parseComposeResponse(raw)
 }
 
+// Summarize implements Summarizer.
+func (k *Kiro) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
+	prompt := summarizeSystemPrompt + "\n\n" + buildSummarizeUserPrompt(in)
+	raw, err := k.invoke(ctx, prompt, nil)
+	if err != nil {
+		return SummarizeResult{}, err
+	}
+	return SummarizeResult{Text: stripANSI(string(raw)), Provider: k.Name()}, nil
+}
+
 func (k *Kiro) invoke(ctx context.Context, userPrompt string, stdinExtra []byte) ([]byte, error) {
 	args := []string{
 		"chat",
@@ -103,6 +113,7 @@ func (k *Kiro) binary() string {
 }
 
 var _ Provider = (*Kiro)(nil)
+var _ Summarizer = (*Kiro)(nil)
 
 // SuggestGitignore implements GitignoreSuggester.
 func (k *Kiro) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {

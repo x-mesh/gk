@@ -104,6 +104,9 @@ func (f *Fake) Summarize(_ context.Context, in SummarizeInput) (SummarizeResult,
 	if idx < len(f.SummarizeErrs) {
 		err = f.SummarizeErrs[idx]
 	}
+	if resp.Provider == "" {
+		resp.Provider = f.Name()
+	}
 	return resp, err
 }
 

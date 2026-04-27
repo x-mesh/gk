@@ -95,6 +95,21 @@ func (g *Gemini) Compose(ctx context.Context, in ComposeInput) (ComposeResult, e
 	return res, nil
 }
 
+// Summarize implements Summarizer.
+func (g *Gemini) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
+	prompt := summarizeSystemPrompt + "\n\n" + buildSummarizeUserPrompt(in)
+	raw, err := g.invoke(ctx, prompt, nil)
+	if err != nil {
+		return SummarizeResult{}, err
+	}
+	return SummarizeResult{
+		Text:       stripANSI(string(raw.responseText())),
+		Model:      raw.Model,
+		TokensUsed: raw.Tokens,
+		Provider:   g.Name(),
+	}, nil
+}
+
 // geminiResponse models the -o json envelope. Unknown fields are dropped.
 type geminiResponse struct {
 	SessionID string `json:"session_id"`
@@ -194,6 +209,8 @@ func concatFileDiffs(files []FileChange) []byte {
 	}
 	return []byte(b.String())
 }
+
+var _ Summarizer = (*Gemini)(nil)
 
 var _ Provider = (*Gemini)(nil)
 

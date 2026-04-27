@@ -17,6 +17,90 @@ Operations that would otherwise hang the terminal silently while gk waits on an 
 
 ---
 
+## gk ship
+
+Run the final release gate: require a clean working tree, infer or accept the next SemVer tag, optionally squash local-only commits, bump release metadata, promote `CHANGELOG.md`'s `[Unreleased]` notes, create an annotated tag, and push the branch plus tag. In this repository, pushing `v*` tags triggers the GitHub Actions release workflow and GoReleaser publishes the GitHub Release plus Homebrew tap update.
+
+### Synopsis
+
+```
+gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
+```
+
+### Modes
+
+| Mode | Description |
+|------|-------------|
+| `gk ship` | Interactive release: print the plan, run preflight, update metadata, commit, tag, push |
+| `gk ship auto` | Same as default, but skips confirmation (`--yes`) |
+| `gk ship status` | Read-only summary of commits since the latest tag and the inferred next tag |
+| `gk ship dry-run` | Full plan preview without preflight, metadata writes, tag, or push |
+| `gk ship squash` | Squash commits since the latest tag into one local commit; no bump, tag, or push |
+| `gk ship patch\|minor\|major` | Release with an explicit bump type |
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--version <vX.Y.Z>` | auto | Explicit release version; `v` prefix is optional |
+| `--major` | false | Bump the latest tag by one major version |
+| `--minor` | false | Bump the latest tag by one minor version |
+| `--patch` | false | Bump the latest tag by one patch version |
+| `--no-release` | false | Push the branch without creating or pushing a release tag |
+| `--push` | true | Push the branch and release tag; pass `--push=false` to tag locally only |
+| `--skip-preflight` | false | Skip configured preflight checks |
+| `--allow-dirty` | false | Allow shipping with a dirty working tree |
+| `--allow-non-base` | false | Allow release tags from a non-base branch |
+| `-y`, `--yes` | false | Skip the final confirmation prompt |
+| `--dry-run` | false | Print the ship plan without tagging or pushing |
+
+### Metadata updates
+
+`gk ship` bumps the first version file it finds in this order:
+
+1. `VERSION`
+2. `package.json`
+3. `marketplace.json`
+
+If no version file exists, the release is tag-only. When `CHANGELOG.md` contains a non-empty `## [Unreleased]` section, `gk ship` promotes that section into `## [X.Y.Z] - YYYY-MM-DD` and commits the metadata before tagging.
+
+### Version inference
+
+When no explicit version or bump flag is provided, `gk ship` reads commits since the latest tag:
+
+| Commit shape | Bump |
+|--------------|------|
+| `feat!:` or `BREAKING CHANGE:` | major |
+| `feat:` / `feat(scope):` | minor |
+| everything else | patch |
+
+### Examples
+
+```bash
+# Preview the release without mutating anything
+gk ship dry-run
+
+# Read current ship status
+gk ship status
+
+# Ship an inferred release after confirmation
+gk ship
+
+# Non-interactive patch release
+gk ship patch --yes
+
+# Use an exact version
+gk ship --version 0.15.0 --yes
+
+# Squash local-only commits since the latest tag
+gk ship squash --yes
+
+# Push branch only, no tag/release
+gk ship --no-release --yes
+```
+
+---
+
 ## gk pull
 
 Fetch and rebase the current branch onto the base branch.
@@ -86,6 +170,64 @@ updated 6ab13b03 → 67208ff8  (+3 commits · ff-only)
 - `gk pull --no-rebase` (fetch-only) reports waiting commits:
   - `fetched origin/main: +2 commits waiting  (run gk pull to integrate)` when only behind.
   - `fetched origin/main: ↑N local · ↓M upstream  (diverged — run gk pull to rebase/merge)` when both sides have diverged.
+
+---
+
+## gk merge
+
+Precheck, explain, and merge a target branch into the current branch. `gk merge` runs the same merge-tree conflict scan as `gk precheck`, prints an AI-assisted merge plan by default, then invokes `git merge` with guarded defaults.
+
+### Synopsis
+
+```
+gk merge <target> [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ff-only` | false | Allow only fast-forward merges |
+| `--no-ff` | false | Create a merge commit even when fast-forward is possible |
+| `--no-commit` | false | Perform the merge but stop before creating the commit |
+| `--squash` | false | Squash changes from target without creating a merge commit |
+| `--skip-precheck` | false | Skip the merge-tree conflict precheck |
+| `--autostash` | false | Stash tracked changes before merge and pop afterwards |
+| `--no-ai` | false | Skip the merge plan summary |
+| `--plan-only` | false | Print the merge plan without running `git merge` |
+| `--provider <name>` | config | Override `ai.provider` for the merge plan |
+
+### Merge plan
+
+`gk merge` builds a plan from:
+
+- merge-tree conflict results
+- `git log --oneline HEAD..<target>`
+- `git diff --stat HEAD..<target>`
+- `git diff --name-status HEAD..<target>`
+
+When an AI summarizer is available, the payload goes through the same privacy gate as other AI commands and is summarized as a merge plan. If no provider is available, gk prints a local fallback plan from the same git facts. If conflicts are predicted, the plan is printed and the actual merge is blocked.
+
+### Examples
+
+```bash
+# Precheck, then merge main into the current branch
+gk merge main
+
+# Explain what would merge, without touching the tree
+gk merge main --plan-only
+
+# Fast-forward only
+gk merge origin/main --ff-only
+
+# Prepare a squash merge
+gk merge feature/foo --squash
+
+# Merge with tracked local changes
+gk merge main --autostash
+```
+
+Automatic conflict correction is intentionally not part of the default path. A future `--ai-resolve` should require explicit opt-in because it mutates user code and can silently choose the wrong semantic side.
 
 ---
 

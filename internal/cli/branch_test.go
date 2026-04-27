@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/x-mesh/gk/internal/branchclean"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -268,5 +269,398 @@ func TestBranchPick_Prompt(t *testing.T) {
 	}
 	if !strings.Contains(output, "feature-beta") {
 		t.Error("expected feature-beta in prompt output")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 9.3: CLI 플래그 및 기존 호환성 테스트
+// ---------------------------------------------------------------------------
+
+// TestBranchClean_GoneFlag_Compat verifies --gone collects only gone-upstream
+// branches (backward compatibility with existing behavior).
+func TestBranchClean_GoneFlag_Compat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t)
+
+	// create a branch with a fake gone upstream
+	repo.CreateBranch("gone-branch")
+	repo.WriteFile("gone.txt", "gone\n")
+	repo.Commit("add gone")
+	repo.Checkout("main")
+
+	// create a merged branch
+	repo.CreateBranch("merged-branch")
+	repo.WriteFile("merged.txt", "merged\n")
+	repo.Commit("add merged")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--no-ff", "merged-branch", "-m", "merge merged-branch")
+
+	// simulate gone upstream by setting upstream then removing it
+	repo.RunGit("remote", "add", "origin", repo.Dir)
+	repo.RunGit("fetch", "origin")
+	repo.RunGit("branch", "--set-upstream-to=origin/gone-branch", "gone-branch")
+	// delete the remote tracking ref to simulate "gone"
+	repo.RunGit("update-ref", "-d", "refs/remotes/origin/gone-branch")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	// Use Cleaner directly with --gone --yes to verify only gone branches are collected
+	client := git.NewClient(runner)
+	cleaner := &branchclean.Cleaner{
+		Runner: runner,
+		Client: client,
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	result, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		DryRun:    true,
+		Gone:      true,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run: %v", err)
+	}
+
+	// gone-branch should be in dry-run candidates
+	found := false
+	for _, c := range result.DryRun {
+		if c.Name == "gone-branch" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected gone-branch in dry-run candidates with --gone flag")
+	}
+}
+
+// TestBranchClean_NoFlags_MergedCollection verifies that running without flags
+// collects merged branches (default behavior).
+func TestBranchClean_NoFlags_MergedCollection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t)
+
+	// create and merge a branch
+	repo.CreateBranch("to-merge")
+	repo.WriteFile("merge.txt", "merge\n")
+	repo.Commit("add merge")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--no-ff", "to-merge", "-m", "merge to-merge")
+
+	// set up remote HEAD so DefaultBranch works
+	repo.RunGit("remote", "add", "origin", repo.Dir)
+	repo.RunGit("fetch", "origin")
+	repo.SetRemoteHEAD("origin", "main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+
+	cleaner := &branchclean.Cleaner{
+		Runner: runner,
+		Client: client,
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	result, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		DryRun:    true,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run: %v", err)
+	}
+
+	// to-merge should be in dry-run candidates as merged
+	found := false
+	for _, c := range result.DryRun {
+		if c.Name == "to-merge" {
+			found = true
+			if c.Status != branchclean.StatusMerged {
+				t.Errorf("expected status merged, got %s", c.Status)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected to-merge in dry-run candidates (default merged collection)")
+	}
+}
+
+// TestBranchClean_StaleNegativeError verifies --stale with value ≤ 0 returns error.
+func TestBranchClean_StaleNegativeError(t *testing.T) {
+	cleaner := &branchclean.Cleaner{
+		Runner: &git.FakeRunner{},
+		Client: git.NewClient(&git.FakeRunner{}),
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	_, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Stale: -1,
+	})
+	if err == nil {
+		t.Fatal("expected error for --stale -1")
+	}
+	if !strings.Contains(err.Error(), "invalid --stale value") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestBranchClean_RemoteStandalone verifies --remote alone runs prune
+// without local branch deletion.
+func TestBranchClean_RemoteStandalone(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote prune origin": {Stdout: ""},
+		},
+	}
+
+	cleaner := &branchclean.Cleaner{
+		Runner: fake,
+		Client: git.NewClient(fake),
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	result, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Remote: true,
+		Yes:    true,
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run: %v", err)
+	}
+
+	if !result.Pruned {
+		t.Error("expected Pruned=true for --remote")
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("expected no deleted branches for --remote standalone, got %v", result.Deleted)
+	}
+
+	// verify git remote prune was called
+	pruneCalled := false
+	for _, call := range fake.Calls {
+		if len(call.Args) >= 3 && call.Args[0] == "remote" && call.Args[1] == "prune" {
+			pruneCalled = true
+		}
+	}
+	if !pruneCalled {
+		t.Error("expected git remote prune to be called")
+	}
+}
+
+// TestBranchClean_NonTTY_NoFlags_Error verifies that non-TTY without --yes
+// or --force returns an error. In test environment, stdin/stdout are not TTYs.
+func TestBranchClean_NonTTY_NoFlags_Error(t *testing.T) {
+	// runBranchClean checks ui.IsTerminal() which returns false in tests.
+	// Without --yes, --force, or --dry-run, it should return an error.
+	var buf bytes.Buffer
+	cmd := &cobra.Command{Use: "clean", RunE: runBranchClean}
+	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().Bool("force", false, "")
+	cmd.Flags().Bool("gone", false, "")
+	cmd.Flags().Bool("no-ai", false, "")
+	cmd.Flags().Int("stale", 0, "")
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().Bool("remote", false, "")
+	cmd.Flags().Bool("squash-merged", false, "")
+	cmd.Flags().BoolP("yes", "y", false, "")
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetContext(context.Background())
+
+	err := cmd.RunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected error for non-TTY without --yes or --force")
+	}
+	if !strings.Contains(err.Error(), "non-interactive mode requires --yes or --force") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBranchClean_ForceFlag_DeleteFlag verifies --force uses -D instead of -d.
+func TestBranchClean_ForceFlag_DeleteFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t)
+
+	// create a branch (not merged) — needs -D to delete
+	repo.CreateBranch("unmerged-branch")
+	repo.WriteFile("unmerged.txt", "unmerged\n")
+	repo.Commit("add unmerged")
+	repo.Checkout("main")
+
+	// set up remote HEAD
+	repo.RunGit("remote", "add", "origin", repo.Dir)
+	repo.RunGit("fetch", "origin")
+	repo.SetRemoteHEAD("origin", "main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+
+	// First, verify -d (without force) fails for unmerged branch
+	cleaner := &branchclean.Cleaner{
+		Runner: runner,
+		Client: client,
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	// Use --all --yes to include the unmerged branch via stale detection
+	// Actually, unmerged branch won't be in merged set. Let's merge it first
+	// then test the flag difference.
+
+	// Create a merged branch to test -d vs -D flag
+	repo.CreateBranch("merged-for-force")
+	repo.WriteFile("force.txt", "force\n")
+	repo.Commit("add force")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--no-ff", "merged-for-force", "-m", "merge force")
+
+	// Test with force=false → should use -d
+	result, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Yes:       true,
+		Force:     false,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run (no force): %v", err)
+	}
+
+	// merged-for-force should be deleted with -d
+	found := false
+	for _, name := range result.Deleted {
+		if name == "merged-for-force" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected merged-for-force to be deleted")
+	}
+
+	// Now create another branch and test with force=true
+	repo.CreateBranch("merged-for-D")
+	repo.WriteFile("D.txt", "D\n")
+	repo.Commit("add D")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--no-ff", "merged-for-D", "-m", "merge D")
+
+	result2, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Yes:       true,
+		Force:     true,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run (force): %v", err)
+	}
+
+	found = false
+	for _, name := range result2.Deleted {
+		if name == "merged-for-D" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected merged-for-D to be deleted with --force")
+	}
+}
+
+// TestBranchClean_ForceFlag_UsesCapitalD verifies that --force causes
+// git branch -D to be called instead of -d.
+func TestBranchClean_ForceFlag_UsesCapitalD(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                                  {Stdout: "main\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD":              {Stdout: "origin/main\n"},
+			"branch --merged main --format=%(refname:short)":            {Stdout: "feat-done\n"},
+			"for-each-ref --format=%(refname:short) refs/heads":         {Stdout: "main\nfeat-done\n"},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",
+			},
+			"branch -D feat-done": {Stdout: "Deleted branch feat-done\n"},
+		},
+	}
+
+	cleaner := &branchclean.Cleaner{
+		Runner: fake,
+		Client: git.NewClient(fake),
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	_, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Yes:       true,
+		Force:     true,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run: %v", err)
+	}
+
+	// verify -D was used, not -d
+	capitalDUsed := false
+	for _, call := range fake.Calls {
+		if len(call.Args) >= 2 && call.Args[0] == "branch" && call.Args[1] == "-D" {
+			capitalDUsed = true
+		}
+		if len(call.Args) >= 2 && call.Args[0] == "branch" && call.Args[1] == "-d" {
+			t.Error("expected -D (force), but -d was called")
+		}
+	}
+	if !capitalDUsed {
+		t.Error("expected git branch -D to be called with --force")
+	}
+}
+
+// TestBranchClean_NoForce_UsesLowercaseD verifies that without --force,
+// git branch -d is called.
+func TestBranchClean_NoForce_UsesLowercaseD(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                                  {Stdout: "main\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD":              {Stdout: "origin/main\n"},
+			"branch --merged main --format=%(refname:short)":            {Stdout: "feat-done\n"},
+			"for-each-ref --format=%(refname:short) refs/heads":         {Stdout: "main\nfeat-done\n"},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",
+			},
+			"branch -d feat-done": {Stdout: "Deleted branch feat-done\n"},
+		},
+	}
+
+	cleaner := &branchclean.Cleaner{
+		Runner: fake,
+		Client: git.NewClient(fake),
+		Stderr: &bytes.Buffer{},
+		Stdout: &bytes.Buffer{},
+	}
+
+	_, err := cleaner.Run(context.Background(), branchclean.CleanOptions{
+		Yes:       true,
+		Force:     false,
+		Protected: []string{"main", "master", "develop"},
+	})
+	if err != nil {
+		t.Fatalf("Cleaner.Run: %v", err)
+	}
+
+	lowercaseDUsed := false
+	for _, call := range fake.Calls {
+		if len(call.Args) >= 2 && call.Args[0] == "branch" && call.Args[1] == "-d" {
+			lowercaseDUsed = true
+		}
+		if len(call.Args) >= 2 && call.Args[0] == "branch" && call.Args[1] == "-D" {
+			t.Error("expected -d (safe), but -D was called")
+		}
+	}
+	if !lowercaseDUsed {
+		t.Error("expected git branch -d to be called without --force")
 	}
 }

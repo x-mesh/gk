@@ -24,4 +24,5 @@ type SummarizeResult struct {
 	Text       string // free-form text (not JSON)
 	Model      string
 	TokensUsed int
+	Provider   string
 }

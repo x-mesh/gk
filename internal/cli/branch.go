@@ -14,8 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/branchclean"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -42,6 +45,12 @@ func init() {
 	cleanCmd.Flags().Bool("dry-run", false, "show what would be deleted")
 	cleanCmd.Flags().Bool("force", false, "use git branch -D")
 	cleanCmd.Flags().Bool("gone", false, "target branches whose upstream is gone instead of merged ones")
+	cleanCmd.Flags().Bool("no-ai", false, "disable AI analysis")
+	cleanCmd.Flags().Int("stale", 0, "include branches with last commit older than N days")
+	cleanCmd.Flags().Bool("all", false, "include merged, gone, stale, and squash-merged branches")
+	cleanCmd.Flags().Bool("remote", false, "run git remote prune")
+	cleanCmd.Flags().Bool("squash-merged", false, "include squash-merged branches")
+	cleanCmd.Flags().BoolP("yes", "y", false, "skip TUI confirmation")
 
 	pickCmd := &cobra.Command{
 		Use:   "pick",
@@ -179,74 +188,154 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 }
 
 func runBranchClean(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
 	cfg, _ := config.Load(cmd.Flags())
 
+	// 플래그 읽기
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
 	goneMode, _ := cmd.Flags().GetBool("gone")
+	noAI, _ := cmd.Flags().GetBool("no-ai")
+	stale, _ := cmd.Flags().GetInt("stale")
+	all, _ := cmd.Flags().GetBool("all")
+	remote, _ := cmd.Flags().GetBool("remote")
+	squashMerged, _ := cmd.Flags().GetBool("squash-merged")
+	yes, _ := cmd.Flags().GetBool("yes")
 
-	// protected set
-	protected := map[string]bool{}
-	for _, p := range cfg.Branch.Protected {
-		protected[p] = true
-	}
-	// current branch is always protected
-	if cur, err := client.CurrentBranch(cmd.Context()); err == nil {
-		protected[cur] = true
+	// --stale 유효성 검사
+	if stale < 0 {
+		return fmt.Errorf("gk branch clean: invalid --stale value: must be > 0")
 	}
 
-	var targets []string
-	if goneMode {
-		branches, err := listLocalBranches(cmd.Context(), runner)
-		if err != nil {
-			return err
+	// TTY 감지: non-TTY + !yes + !force + !dryRun → 에러
+	isTTY := ui.IsTerminal()
+	if !isTTY && !yes && !force && !dryRun {
+		return fmt.Errorf("gk branch clean: non-interactive mode requires --yes or --force")
+	}
+
+	// CleanOptions 매핑
+	opts := branchclean.CleanOptions{
+		DryRun:       dryRun,
+		Force:        force,
+		Yes:          yes,
+		NoAI:         noAI,
+		Gone:         goneMode,
+		Stale:        stale,
+		All:          all,
+		SquashMerged: squashMerged,
+		Remote:       remote,
+		RemoteName:   cfg.Remote,
+		Protected:    cfg.Branch.Protected,
+		StaleDays:    cfg.Branch.StaleDays,
+		Lang:         cfg.AI.Lang,
+	}
+
+	// AI provider 구성
+	var prov provider.Provider
+	if cfg.AI.Enabled && !noAI {
+		factoryOpts := provider.FactoryOptions{
+			Runner: provider.ExecRunner{},
 		}
-		for _, b := range branches {
-			if !b.Gone || protected[b.Name] {
-				continue
+		if cfg.AI.Provider != "" {
+			factoryOpts.Name = cfg.AI.Provider
+		}
+		p, err := provider.NewProvider(ctx, factoryOpts)
+		if err == nil {
+			// BranchAnalyzer type assertion으로 AI 지원 여부 확인
+			if _, ok := p.(provider.BranchAnalyzer); ok {
+				prov = p
 			}
-			targets = append(targets, b.Name)
 		}
-	} else {
-		base, err := client.DefaultBranch(cmd.Context(), cfg.Remote)
-		if err != nil {
-			return fmt.Errorf("could not determine default branch: %w", err)
-		}
-		protected[base] = true
-		merged, err := mergedBranches(cmd.Context(), runner, base)
-		if err != nil {
-			return err
-		}
-		for name := range merged {
-			if protected[name] {
-				continue
-			}
-			targets = append(targets, name)
-		}
+		// provider 생성 실패 시 AI 없이 진행 (graceful)
 	}
-	sort.Strings(targets)
 
-	if len(targets) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no branches to clean")
+	cleaner := &branchclean.Cleaner{
+		Runner:   runner,
+		Client:   client,
+		Provider: prov,
+		Stderr:   cmd.ErrOrStderr(),
+		Stdout:   cmd.OutOrStdout(),
+	}
+
+	result, err := cleaner.Run(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	w := cmd.OutOrStdout()
+
+	// dry-run 결과 출력
+	if dryRun {
+		if len(result.DryRun) == 0 {
+			fmt.Fprintln(w, "no branches to clean")
+			return nil
+		}
+		for _, c := range result.DryRun {
+			fmt.Fprintf(w, "would delete: %s\n", c.Name)
+		}
 		return nil
 	}
 
-	for _, t := range targets {
-		if dryRun {
-			fmt.Fprintf(cmd.OutOrStdout(), "would delete: %s\n", t)
-			continue
+	// --remote만 단독 실행 시
+	if result.Pruned && len(result.Deleted) == 0 && len(result.DryRun) == 0 && len(result.Failed) == 0 {
+		return nil
+	}
+
+	// TUI 모드: TTY + !yes + candidates가 있는 경우
+	// Cleaner.Run이 --yes 모드에서 이미 삭제를 수행했으므로,
+	// TUI는 --yes가 아닌 경우에만 필요하다.
+	// Cleaner.Run은 !yes일 때 toDelete가 비어있으므로 삭제를 수행하지 않는다.
+	// 이 경우 candidates를 다시 빌드하여 TUI를 표시해야 한다.
+	if isTTY && !yes && !dryRun {
+		// Cleaner.Run에서 candidates를 가져오기 위해 dry-run으로 한번 더 실행
+		dryOpts := opts
+		dryOpts.DryRun = true
+		dryResult, err := cleaner.Run(ctx, dryOpts)
+		if err != nil {
+			return err
 		}
-		flag := "-d"
+		if len(dryResult.DryRun) == 0 {
+			fmt.Fprintln(w, "no branches to clean")
+			return nil
+		}
+
+		selected, err := RunCleanTUI(dryResult.DryRun)
+		if err != nil {
+			return err
+		}
+		if len(selected) == 0 {
+			fmt.Fprintln(w, "no branches selected")
+			return nil
+		}
+
+		// 선택된 브랜치 삭제
+		deleteFlag := "-d"
 		if force {
-			flag = "-D"
+			deleteFlag = "-D"
 		}
-		if _, stderr, err := runner.Run(cmd.Context(), "branch", flag, t); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to delete %s: %s\n", t, strings.TrimSpace(string(stderr)))
-			continue
+		for _, name := range selected {
+			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, strings.TrimSpace(string(stderr)))
+				continue
+			}
+			fmt.Fprintf(w, "deleted: %s\n", name)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "deleted: %s\n", t)
+		return nil
+	}
+
+	// --yes 모드 결과 출력
+	if len(result.Deleted) == 0 && len(result.Failed) == 0 {
+		fmt.Fprintln(w, "no branches to clean")
+		return nil
+	}
+	for _, name := range result.Deleted {
+		fmt.Fprintf(w, "deleted: %s\n", name)
 	}
 	return nil
 }

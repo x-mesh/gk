@@ -26,6 +26,7 @@ var statusFetch bool
 var statusTopN int
 var statusLegend bool
 var statusXYStyleFlag string
+var statusVerbose int
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
@@ -60,6 +61,7 @@ func init() {
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().StringVar(&statusXYStyleFlag, "xy-style", "", "per-entry state column: 'labels' (new/mod/staged/conflict, default), 'glyphs' (+ ~ ● ⚔ #), or 'raw' (git's two-char code like ??/.M/UU)")
+	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "show a richer status summary; repeat for diagnostic details")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -1122,6 +1124,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(w, line)
 
+	allGrouped := groupEntries(st.Entries)
+	if statusVerbose > 0 {
+		renderStatusVerboseSummary(w, cmd, runner, cfg, st, allGrouped)
+	}
+
 	if statusVisEnabled("stash") {
 		if stashLine := renderStashSummary(cmd.Context(), runner); stashLine != "" {
 			fmt.Fprintln(w, stashLine)
@@ -1237,6 +1244,98 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(w, faint(fmt.Sprintf("… +%d more (%d total · showing top %d)", hiddenByTop, totalEntries, statusTopN)))
 	}
 	return nil
+}
+
+func renderStatusVerboseSummary(
+	w io.Writer,
+	cmd *cobra.Command,
+	runner git.Runner,
+	cfg *config.Config,
+	st *git.Status,
+	g groupedEntries,
+) {
+	ctx := cmd.Context()
+	total := len(st.Entries)
+	cleanPct := 1.0
+	if total > 0 {
+		cleanPct = float64(len(g.Staged)) / float64(total)
+	}
+
+	upstream := stripControlChars(st.Upstream)
+	if upstream == "" {
+		upstream = "(none)"
+	}
+	upstreamNote := "local branch"
+	if st.Upstream != "" {
+		upstreamNote = "in sync"
+		if st.Ahead != 0 || st.Behind != 0 {
+			upstreamNote = fmt.Sprintf("↑%d ↓%d", st.Ahead, st.Behind)
+		}
+	}
+
+	fetchMode := "local refs"
+	fetchNote := "pass --fetch to refresh upstream"
+	if shouldAutoFetch(cmd, cfg) {
+		fetchMode = "refreshed"
+		fetchNote = "bounded upstream fetch before status"
+	}
+
+	treeValue := "clean"
+	if total > 0 {
+		treeValue = fmt.Sprintf("%d files", total)
+	}
+	treeNote := fmt.Sprintf("%d staged · %d modified · %d untracked · %d conflicts",
+		len(g.Staged), len(g.Modified), len(g.Untracked), len(g.Unmerged))
+	cleanBar := ui.ProgressBar(cleanPct, 28)
+	if NoColorFlag() {
+		cleanBar = ui.PlainProgressBar(cleanPct, 28)
+	}
+
+	rows := []ui.SummaryRow{
+		{Key: "repo", Value: repoDisplayPath()},
+		{Key: "head", Value: statusHeadSummary(ctx, runner)},
+		{Key: "upstream", Value: upstream, Note: upstreamNote},
+		{Key: "refs", Value: fetchMode, Note: fetchNote},
+		{Key: "tree", Value: treeValue, Note: treeNote},
+		{Key: "clean", Value: cleanBar},
+	}
+	if statusVerbose > 1 {
+		rows = append(rows,
+			ui.SummaryRow{Key: "vis", Value: strings.Join(effectiveVis, ",")},
+			ui.SummaryRow{Key: "xy-style", Value: effectiveXYStyle},
+		)
+	}
+
+	block := ui.SummaryTable(rows)
+	if NoColorFlag() {
+		block = ui.PlainSummaryTable(rows)
+	}
+	if block != "" {
+		fmt.Fprintln(w, block)
+	}
+}
+
+func statusHeadSummary(ctx context.Context, runner git.Runner) string {
+	out, _, err := runner.Run(ctx, "log", "-1", "--pretty=format:%h %s")
+	if err != nil {
+		return "?"
+	}
+	s := stripControlChars(strings.TrimSpace(string(out)))
+	if s == "" {
+		return "?"
+	}
+	return s
+}
+
+func repoDisplayPath() string {
+	if repo := RepoFlag(); repo != "" {
+		return repo
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return "."
+	}
+	return wd
 }
 
 type groupedEntries struct {

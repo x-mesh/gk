@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 const (
@@ -22,6 +24,8 @@ const (
 	pullStrategyFFOnly = "ff-only"
 	pullStrategyAuto   = "auto"
 )
+
+var pullVerbose int
 
 // ConflictError is returned by runPullCore when a rebase conflict is detected.
 // The caller (runPull) should exit with Code instead of printing an error.
@@ -59,6 +63,7 @@ Fast-forward optimisation (D):
 	cmd.Flags().String("strategy", "", "pull strategy: rebase|merge|ff-only|auto")
 	cmd.Flags().Bool("no-rebase", false, "fetch only, do not integrate (skip rebase/merge)")
 	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration and pop after")
+	cmd.Flags().CountVarP(&pullVerbose, "verbose", "v", "show upstream, strategy, and integration details; repeat for diagnostics")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -148,12 +153,25 @@ func runPullCore(cmd *cobra.Command) error {
 		if stashed {
 			popStashBestEffort(ctx, runner)
 		}
+		if pullVerbose > 0 {
+			renderPullVerbosePlan(cmd.ErrOrStderr(), pullPlan{
+				Repo:        repoDisplayPath(),
+				Upstream:    upstream,
+				FetchRemote: fetchRemote,
+				FetchBranch: fetchBranch,
+				Dirty:       dirty,
+				Autostash:   autostash,
+				Stashed:     stashed,
+				NoRebase:    true,
+				PreHEAD:     headRev(ctx, runner),
+			})
+		}
 		renderFetchOnlySummary(cmd, runner, upstream)
 		return nil
 	}
 
 	// 6) resolve strategy
-	strategy := resolveStrategy(ctx, strategyFlag, cfg, runner)
+	strategy, strategySource := resolveStrategyWithSource(ctx, strategyFlag, cfg, runner)
 	Dbg("pull: strategy=%s (flag=%q cfg=%q)", strategy, strategyFlag, cfg.Pull.Strategy)
 
 	// Capture pre-integration HEAD so we can summarize what the
@@ -164,9 +182,30 @@ func runPullCore(cmd *cobra.Command) error {
 	// 7) D — fast-forward optimisation: if HEAD is already an ancestor of the
 	//    upstream and strategy is rebase, substitute merge --ff-only (same
 	//    end-state, no rebase process overhead).
+	requestedStrategy := strategy
+	ffOptimized := false
 	if strategy == pullStrategyRebase && isFastForwardPossible(ctx, runner, upstream) {
 		strategy = pullStrategyFFOnly
+		ffOptimized = true
 		Dbg("pull: ff-possible — substituting merge --ff-only for rebase")
+	}
+
+	if pullVerbose > 0 {
+		renderPullVerbosePlan(cmd.ErrOrStderr(), pullPlan{
+			Repo:              repoDisplayPath(),
+			Upstream:          upstream,
+			FetchRemote:       fetchRemote,
+			FetchBranch:       fetchBranch,
+			Dirty:             dirty,
+			Autostash:         autostash,
+			Stashed:           stashed,
+			RequestedStrategy: requestedStrategy,
+			Strategy:          strategy,
+			StrategySource:    strategySource,
+			FFOptimized:       ffOptimized,
+			PreHEAD:           preHEAD,
+			NoRebase:          noRebase,
+		})
 	}
 
 	// 8) integrate
@@ -227,7 +266,8 @@ func resolveUpstreamFromRunner(ctx context.Context, runner git.Runner, remote, b
 //  3. git config pull.rebase
 //  4. default: rebase
 func resolveStrategy(ctx context.Context, flag string, cfg *config.Config, runner *git.ExecRunner) string {
-	return resolveStrategyFromRunner(ctx, flag, cfg.Pull.Strategy, runner)
+	strategy, _ := resolveStrategyWithSource(ctx, flag, cfg, runner)
+	return strategy
 }
 
 // resolveStrategyFromRunner is the testable core of resolveStrategy; it
@@ -249,6 +289,24 @@ func resolveStrategyFromRunner(ctx context.Context, flag, cfgStrategy string, ru
 		}
 	}
 	return pullStrategyRebase
+}
+
+func resolveStrategyWithSource(ctx context.Context, flag string, cfg *config.Config, runner git.Runner) (string, string) {
+	if flag != "" && flag != pullStrategyAuto {
+		return flag, "--strategy"
+	}
+	if cfg.Pull.Strategy != "" && cfg.Pull.Strategy != pullStrategyAuto {
+		return cfg.Pull.Strategy, ".gk.yaml pull.strategy"
+	}
+	if out, _, err := runner.Run(ctx, "config", "--get", "pull.rebase"); err == nil {
+		switch strings.TrimSpace(string(out)) {
+		case "true", "1", "yes":
+			return pullStrategyRebase, "git config pull.rebase"
+		case "false", "0", "no":
+			return pullStrategyMerge, "git config pull.rebase"
+		}
+	}
+	return pullStrategyRebase, "default"
 }
 
 // isFastForwardPossible reports whether HEAD is an ancestor of upstream,
@@ -320,6 +378,63 @@ func popStash(ctx context.Context, r git.Runner) error {
 // Ten entries is enough to recognise a sprint's worth of catch-up without
 // overflowing a terminal; the `+N more` footer advertises the remainder.
 const pullCommitLimit = 10
+
+type pullPlan struct {
+	Repo              string
+	Upstream          string
+	FetchRemote       string
+	FetchBranch       string
+	Dirty             bool
+	Autostash         bool
+	Stashed           bool
+	RequestedStrategy string
+	Strategy          string
+	StrategySource    string
+	FFOptimized       bool
+	PreHEAD           string
+	NoRebase          bool
+}
+
+func renderPullVerbosePlan(w io.Writer, plan pullPlan) {
+	dirty := "clean"
+	dirtyNote := ""
+	if plan.Dirty {
+		dirty = "dirty"
+		if plan.Stashed {
+			dirtyNote = "autostashed"
+		} else if plan.Autostash {
+			dirtyNote = "autostash requested"
+		}
+	}
+
+	strategy := plan.Strategy
+	strategyNote := plan.StrategySource
+	if plan.FFOptimized {
+		strategy = plan.RequestedStrategy + " → " + plan.Strategy
+		strategyNote = "fast-forward possible"
+	}
+	if plan.NoRebase {
+		strategy = "fetch-only"
+		strategyNote = "--no-rebase"
+	}
+
+	rows := []ui.SummaryRow{
+		{Key: "repo", Value: plan.Repo},
+		{Key: "upstream", Value: plan.Upstream, Note: "fetch " + plan.FetchRemote + " " + plan.FetchBranch},
+		{Key: "strategy", Value: strategy, Note: strategyNote},
+		{Key: "dirty", Value: dirty, Note: dirtyNote},
+	}
+	if plan.PreHEAD != "" {
+		rows = append(rows, ui.SummaryRow{Key: "head", Value: shortSHA(plan.PreHEAD)})
+	}
+	block := ui.SummaryTable(rows)
+	if NoColorFlag() {
+		block = ui.PlainSummaryTable(rows)
+	}
+	if block != "" {
+		fmt.Fprintln(w, block)
+	}
+}
 
 // renderPullSummary prints a compact block describing what the
 // integration actually changed — range, commit count, one-line subject

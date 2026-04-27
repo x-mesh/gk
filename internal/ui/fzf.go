@@ -21,10 +21,14 @@ var ErrPickerAborted = errors.New("picker aborted")
 // shown in the fzf --preview pane (empty → no preview for this row).
 // Key is a stable value returned by the picker (usually equal to Display
 // but may be a hash/ref so the caller can look up richer data).
+// Cells, when non-empty, lets table-style pickers (TablePicker) render
+// the row split into columns. Pickers that don't support columns
+// (FzfPicker, FallbackPicker) ignore Cells and fall back to Display.
 type PickerItem struct {
 	Display string
 	Preview string
 	Key     string
+	Cells   []string
 }
 
 // Picker selects one item from a list.

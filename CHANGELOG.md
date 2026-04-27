@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-04-27
+
+### Internal
+
+- **Dead code 제거.** `internal/cli/init.go`의 미사용 `//go:embed templates/ai/{CLAUDE,AGENTS,kiro-*}.md` directive 16줄, `internal/initx/aictx.go`의 미사용 `claudeMDTemplate` / `agentsMDTemplate` raw string 변수 약 160줄 (`kiro*Template` 3종은 v0.13.0의 `gk init --kiro`에서 사용 중이므로 유지), `internal/cli/log.go`의 미사용 `must` 제네릭 헬퍼, `internal/cli/status.go`의 미사용 `colorXY` 한 줄 함수가 모두 v0.13.0 redesign 이후 호출처가 사라진 dead code였습니다. 외부 동작에 영향 없음.
+- **`golangci-lint --fix` 적용.** `staticcheck QF1001`(De Morgan 단순화)을 `internal/cli/log.go:resolveLogVis`, `internal/cli/status.go:454`, `internal/cli/ai_commit_test.go:64`에 적용 (semantic equivalent). gofmt 정렬을 `internal/aicommit/privacy_gate{,_test}.go`, `internal/ai/provider/{groq,nvidia,fallback_test,summarizer_test}.go`, `internal/cli/{log,status,worktree,ai_review,init,ai_commit_test,ai_changelog_test,ai_pr_test,status_test}.go`, `internal/initx/{aictx,configgen,writer,writer_test,analyzer_test}.go`, `internal/policy/policy_test.go`에 일괄 복원 — 이전 formatter run으로 드리프트했던 struct field 주석 정렬을 canonical 형태로 통일.
+
+### Tooling
+
+- **`/release` skill을 defaults-first single-gate 흐름으로 재작성** (`.claude/skills/release/SKILL.md`). Phase 1-6 (PREFLIGHT / PROPOSE / CONFIRM / EXECUTE / VERIFY / REPORT) 구조로 정리하고, 이전에 4번 호출되던 `AskUserQuestion`(release 전략 / 버전 / CHANGELOG / 커밋 구조)을 Phase 3 단일 게이트로 통합. 버전 bump · CHANGELOG 본문 · 커밋 구조를 working tree와 `[Unreleased]` 상태에서 자동 추론하고 사용자는 한 번만 확정합니다. 또한 `golangci-lint`를 hard preflight requirement로 추가. binary에는 포함되지 않는 개발 도구 변경입니다.
+
 ## [0.14.0] - 2026-04-27
 
 ### Changed
@@ -339,7 +350,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/x-mesh/gk/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/x-mesh/gk/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/x-mesh/gk/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/x-mesh/gk/compare/v0.12.0...v0.13.0

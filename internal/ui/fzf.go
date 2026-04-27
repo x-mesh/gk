@@ -46,10 +46,17 @@ func FzfAvailable() bool {
 	return err == nil
 }
 
-// NewPicker returns FzfPicker when fzf is usable, else FallbackPicker.
+// NewPicker returns the active picker for the current environment.
+// Resolution order:
+//  1. TablePicker — when stdout/stdin are a TTY (the common case)
+//  2. FallbackPicker — non-TTY: numbered list on stderr
+//
+// FzfPicker remains in this package for callers that need a fuzzy
+// search out of the box, but the default path now flows through
+// bubbletea so picker UX stays consistent with the rest of gk.
 func NewPicker() Picker {
-	if FzfAvailable() {
-		return &FzfPicker{}
+	if IsTerminal() {
+		return &TablePicker{}
 	}
 	return &FallbackPicker{In: os.Stdin, Out: os.Stderr}
 }

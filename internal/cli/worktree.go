@@ -379,18 +379,28 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 
 		items := make([]ui.PickerItem, 0, len(entries)+2)
 		for _, e := range entries {
-			label := worktreeTUILabel(e, bold, faint)
+			branch, flags := worktreeRowParts(e)
 			items = append(items, ui.PickerItem{
-				Display: label,
+				Display: worktreeTUILabel(e, bold, faint),
+				Cells:   []string{bold(branch), faint(e.Path), flags},
 				Key:     e.Path,
 			})
 		}
 		items = append(items,
-			ui.PickerItem{Display: faint("[+] add new worktree"), Key: keyAddNew},
-			ui.PickerItem{Display: faint("[q] quit"), Key: keyQuit},
+			ui.PickerItem{
+				Display: faint("[+] add new worktree"),
+				Cells:   []string{faint("[+] add new worktree"), "", ""},
+				Key:     keyAddNew,
+			},
+			ui.PickerItem{
+				Display: faint("[q] quit"),
+				Cells:   []string{faint("[q] quit"), "", ""},
+				Key:     keyQuit,
+			},
 		)
 
-		picked, err := ui.NewPicker().Pick(ctx, "worktree", items)
+		picker := &ui.TablePicker{Headers: []string{"BRANCH", "PATH", "FLAGS"}}
+		picked, err := picker.Pick(ctx, "worktree", items)
 		if err != nil {
 			if errors.Is(err, ui.ErrPickerAborted) {
 				return nil
@@ -449,8 +459,22 @@ func listWorktreesForTUI(ctx context.Context, runner *git.ExecRunner) ([]Worktre
 // worktreeTUILabel formats one row for the picker. The branch (or
 // "(detached)"/"(bare)") is bolded so it scans first; path is faint.
 // Flags like [locked] / [prunable] append as red-on-default suffixes.
+// Used as the single-column Display fallback when the active picker
+// can't render Cells (FallbackPicker / FzfPicker).
 func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string) string {
-	var branch string
+	branch, flags := worktreeRowParts(e)
+	tail := ""
+	if flags != "" {
+		tail = "  " + flags
+	}
+	return fmt.Sprintf("%-20s  %s%s", bold(branch), faint(e.Path), tail)
+}
+
+// worktreeRowParts splits a WorktreeEntry into the branch label and the
+// flag suffix used by both the table-cell layout and the legacy single-
+// column label. Keeping the formatting in one place ensures both paths
+// stay in sync.
+func worktreeRowParts(e WorktreeEntry) (branch, flags string) {
 	switch {
 	case e.Bare:
 		branch = "(bare)"
@@ -461,14 +485,15 @@ func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string
 	default:
 		branch = "-"
 	}
-	tail := ""
+	var parts []string
 	if e.Locked {
-		tail += "  " + color.RedString("[locked]")
+		parts = append(parts, color.RedString("[locked]"))
 	}
 	if e.Prunable {
-		tail += "  " + color.RedString("[prunable]")
+		parts = append(parts, color.RedString("[prunable]"))
 	}
-	return fmt.Sprintf("%-20s  %s%s", bold(branch), faint(e.Path), tail)
+	flags = strings.Join(parts, " ")
+	return branch, flags
 }
 
 // worktreeTUIActOnEntry is the secondary picker: what to do with the

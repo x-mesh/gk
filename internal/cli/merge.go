@@ -410,10 +410,7 @@ func resolveMergePlanProvider(ctx context.Context, ai config.AIConfig) (provider
 	if ai.Provider == "" {
 		return buildFallbackChain(nil, provider.ExecRunner{})
 	}
-	return provider.NewProvider(ctx, provider.FactoryOptions{
-		Name:   ai.Provider,
-		Runner: provider.ExecRunner{},
-	})
+	return provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
 }
 
 func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string, conflicts []string) error {
@@ -452,7 +449,8 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 			if result.Provider != "" {
 				providerName = result.Provider
 			}
-			text = renderAIMergePlanHeader(target, current, providerName, len(conflicts), !NoColorFlag()) + "\n" + cleanMergePlanSummary(result.Text)
+			summary := decorateMergePlanSummary(cleanMergePlanSummary(result.Text), len(conflicts), !NoColorFlag())
+			text = renderAIMergePlanHeader(target, current, providerName, len(conflicts), !NoColorFlag()) + "\n" + summary
 		}
 	}
 writePlan:
@@ -571,6 +569,114 @@ func currentMergeBranch(ctx context.Context, client *git.Client) string {
 		return "HEAD"
 	}
 	return strings.TrimSpace(current)
+}
+
+// decorateMergePlanSummary colour-codes the cleaned AI summary and
+// appends a clear verdict line so the user can tell at a glance
+// whether anything needs attention. Section labels (SUMMARY / RISK /
+// INSPECT / NEXT) get a cyan header tint; the line after RISK is
+// scanned for low/moderate/high keywords and tinted accordingly.
+func decorateMergePlanSummary(text string, conflictCount int, colorize bool) string {
+	if !colorize {
+		return text + "\n" + plainVerdict(text, conflictCount)
+	}
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	low := color.New(color.FgGreen, color.Bold).SprintFunc()
+	med := color.New(color.FgYellow, color.Bold).SprintFunc()
+	high := color.New(color.FgRed, color.Bold).SprintFunc()
+
+	lines := strings.Split(text, "\n")
+	prevHeader := ""
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case "SUMMARY", "RISK", "INSPECT", "NEXT":
+			lines[i] = header(trimmed)
+			prevHeader = trimmed
+			continue
+		}
+		if prevHeader == "RISK" && trimmed != "" {
+			lower := strings.ToLower(trimmed)
+			switch {
+			case strings.Contains(lower, "high") || strings.Contains(lower, "severe") || strings.Contains(lower, "critical"):
+				lines[i] = high(line)
+			case strings.Contains(lower, "moderate") || strings.Contains(lower, "medium"):
+				lines[i] = med(line)
+			case strings.Contains(lower, "low") || strings.Contains(lower, "minor") || strings.Contains(lower, "none") || strings.Contains(lower, "no risk"):
+				lines[i] = low(line)
+			}
+			prevHeader = "" // only colour the first non-empty line under RISK
+		}
+	}
+	return strings.Join(lines, "\n") + "\n\n" + colorVerdict(text, conflictCount)
+}
+
+// colorVerdict prints a single "✓ ..." or "⚠ ..." line below the AI
+// summary so the user doesn't have to read the whole block to know
+// whether to proceed.
+func colorVerdict(text string, conflictCount int) string {
+	good := color.New(color.FgGreen, color.Bold).SprintFunc()
+	warn := color.New(color.FgYellow, color.Bold).SprintFunc()
+	bad := color.New(color.FgRed, color.Bold).SprintFunc()
+
+	if conflictCount > 0 {
+		return bad(fmt.Sprintf("✗ %d conflict(s) — resolve with `gk resolve` before merging", conflictCount))
+	}
+	severity := detectMergeRisk(text)
+	switch severity {
+	case "high":
+		return bad("⚠ AI flagged HIGH risk — review the INSPECT/NEXT sections before merging")
+	case "moderate":
+		return warn("⚠ AI flagged MODERATE risk — review the INSPECT/NEXT sections before merging")
+	default:
+		return good("✓ no conflicts detected and no notable risk — safe to merge")
+	}
+}
+
+func plainVerdict(text string, conflictCount int) string {
+	if conflictCount > 0 {
+		return fmt.Sprintf("✗ %d conflict(s) — resolve with `gk resolve` before merging", conflictCount)
+	}
+	switch detectMergeRisk(text) {
+	case "high":
+		return "⚠ AI flagged HIGH risk — review the INSPECT/NEXT sections before merging"
+	case "moderate":
+		return "⚠ AI flagged MODERATE risk — review the INSPECT/NEXT sections before merging"
+	default:
+		return "✓ no conflicts detected and no notable risk — safe to merge"
+	}
+}
+
+// detectMergeRisk scans the line(s) immediately under the RISK section
+// for severity keywords. Returns "low" for unknown / "none" / missing.
+func detectMergeRisk(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "RISK" {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			body := strings.ToLower(strings.TrimSpace(lines[j]))
+			if body == "" {
+				continue
+			}
+			// Stop when we reach the next section header.
+			if body == "summary" || body == "inspect" || body == "next" {
+				break
+			}
+			switch {
+			case strings.Contains(body, "high") || strings.Contains(body, "severe") || strings.Contains(body, "critical"):
+				return "high"
+			case strings.Contains(body, "moderate") || strings.Contains(body, "medium"):
+				return "moderate"
+			case strings.Contains(body, "low") || strings.Contains(body, "minor") || strings.Contains(body, "none") || strings.Contains(body, "no risk"):
+				return "low"
+			}
+			break
+		}
+		break
+	}
+	return "low"
 }
 
 func cleanMergePlanSummary(text string) string {

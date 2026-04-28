@@ -17,6 +17,14 @@ type FactoryOptions struct {
 	Name      string
 	AutoOrder []string // default: ["gemini", "qwen", "kiro"]
 	Runner    CommandRunner
+	// Model optionally overrides the adapter's default model id.
+	// Honoured by HTTP-based adapters (anthropic, openai, groq, nvidia);
+	// CLI adapters (gemini, qwen, kiro) ignore it because the CLI binary
+	// owns its own model selection.
+	Model string
+	// Endpoint optionally overrides the adapter's default endpoint URL.
+	// Same applicability as Model.
+	Endpoint string
 }
 
 // NewProvider returns a ready-to-use Provider. When Name is set, the
@@ -30,7 +38,7 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 		opts.Runner = ExecRunner{}
 	}
 	if opts.Name != "" {
-		return Build(opts.Name, opts.Runner)
+		return buildWithOpts(opts.Name, opts)
 	}
 	order := opts.AutoOrder
 	if len(order) == 0 {
@@ -56,15 +64,53 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 // Build constructs the concrete adapter by name. Exported so callers
 // (e.g. FallbackChain builder) can construct individual providers.
 func Build(name string, runner CommandRunner) (Provider, error) {
+	return buildWithOpts(name, FactoryOptions{Runner: runner})
+}
+
+// buildWithOpts is the inner constructor that honours model/endpoint
+// overrides for HTTP-based adapters. Build keeps the simpler signature
+// for callers that only need the default config.
+func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
+	runner := opts.Runner
 	switch name {
 	case "anthropic", "claude":
-		return NewAnthropic(), nil
+		a := NewAnthropic()
+		if opts.Model != "" {
+			a.Model = opts.Model
+		}
+		if opts.Endpoint != "" {
+			a.Endpoint = opts.Endpoint
+		}
+		return a, nil
 	case "openai":
-		return NewOpenAI(), nil
+		o := NewOpenAI()
+		if opts.Model != "" {
+			o.Model = opts.Model
+		}
+		if opts.Endpoint != "" {
+			o.Endpoint = opts.Endpoint
+		}
+		o.nv = o.toNvidia() // re-wire after override
+		return o, nil
 	case "nvidia":
-		return NewNvidia(), nil
+		n := NewNvidia()
+		if opts.Model != "" {
+			n.Model = opts.Model
+		}
+		if opts.Endpoint != "" {
+			n.Endpoint = opts.Endpoint
+		}
+		return n, nil
 	case "groq":
-		return NewGroq(), nil
+		g := NewGroq()
+		if opts.Model != "" {
+			g.Model = opts.Model
+		}
+		if opts.Endpoint != "" {
+			g.Endpoint = opts.Endpoint
+		}
+		g.nv = g.toNvidia()
+		return g, nil
 	case "gemini":
 		g := NewGemini()
 		g.Runner = runner

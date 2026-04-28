@@ -242,13 +242,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	// AI provider 구성
 	var prov provider.Provider
 	if cfg.AI.Enabled && !noAI {
-		factoryOpts := provider.FactoryOptions{
-			Runner: provider.ExecRunner{},
-		}
-		if cfg.AI.Provider != "" {
-			factoryOpts.Name = cfg.AI.Provider
-		}
-		p, err := provider.NewProvider(ctx, factoryOpts)
+		p, err := provider.NewProvider(ctx, aiFactoryOptions(cfg))
 		if err == nil {
 			// BranchAnalyzer type assertion으로 AI 지원 여부 확인
 			if _, ok := p.(provider.BranchAnalyzer); ok {

@@ -71,10 +71,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 				prov = fc
 			}
 		} else {
-			p, pErr := provider.NewProvider(ctx, provider.FactoryOptions{
-				Name:   cfg.AI.Provider,
-				Runner: provider.ExecRunner{},
-			})
+			p, pErr := provider.NewProvider(ctx, aiFactoryOptions(cfg))
 			if pErr == nil {
 				prov = p
 			}

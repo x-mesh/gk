@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
+	"time"
 )
 
 // checkAIProvider emits one doctorCheck row per AI CLI that `gk
@@ -51,23 +54,83 @@ func checkAIProvider(name string) doctorCheck {
 }
 
 // checkAIAPIProvider reports on HTTP-API providers (no binary on disk —
-// just an API key in the environment). Pass the canonical env var; the
-// row is named "ai api: <provider>" so it slots cleanly next to the
-// CLI rows in the doctor output.
-func checkAIAPIProvider(name, envKey string) doctorCheck {
-	if os.Getenv(envKey) != "" {
+// just an API key in the environment). Beyond the env-var check it also
+// pings the provider's endpoint with a short-timeout GET so the user
+// sees whether the API is actually reachable from this machine — the
+// most common failure (proxy, DNS, captive portal) wouldn't surface
+// until the first real `gk commit`.
+//
+// Probe interpretation:
+//
+//	200 / 401 / 403 / 404 / 405 → endpoint reachable (any response is enough)
+//	5xx                         → endpoint is up but degraded
+//	dial / timeout / TLS errors → network blocked
+func checkAIAPIProvider(name, envKey, endpoint string) doctorCheck {
+	if os.Getenv(envKey) == "" {
+		return doctorCheck{
+			Name:   "ai api: " + name,
+			Status: statusWarn,
+			Detail: envKey + " not set",
+			Fix:    "export " + envKey + "=...  # then `gk commit --provider " + name + "`",
+		}
+	}
+	if endpoint == "" {
+		// No probe configured for this provider — the env-var presence
+		// is the best we can do without a network round-trip.
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusPass,
 			Detail: envKey + " set",
 		}
 	}
-	return doctorCheck{
-		Name:   "ai api: " + name,
-		Status: statusWarn,
-		Detail: envKey + " not set",
-		Fix:    "export " + envKey + "=...  # then `gk commit --provider " + name + "`",
+
+	reachable, status, err := probeAIAPI(endpoint)
+	switch {
+	case reachable:
+		return doctorCheck{
+			Name:   "ai api: " + name,
+			Status: statusPass,
+			Detail: fmt.Sprintf("%s set · endpoint %d", envKey, status),
+		}
+	case err != nil:
+		return doctorCheck{
+			Name:   "ai api: " + name,
+			Status: statusWarn,
+			Detail: fmt.Sprintf("%s set · probe failed: %v", envKey, err),
+			Fix:    "check network/proxy reachability to " + endpoint,
+		}
+	default:
+		return doctorCheck{
+			Name:   "ai api: " + name,
+			Status: statusWarn,
+			Detail: fmt.Sprintf("%s set · endpoint returned %d", envKey, status),
+			Fix:    "the provider returned a server error — try again later or check the provider's status page",
+		}
 	}
+}
+
+// probeAIAPI sends a short-timeout, unauthenticated GET to endpoint and
+// returns (reachable, status, error). reachable is true for any 4xx
+// other than network failure — those mean the request reached a real
+// server and was rejected by it. 5xx is *not* reachable for our
+// purposes since the endpoint is misbehaving.
+func probeAIAPI(endpoint string) (reachable bool, status int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if rErr != nil {
+		return false, 0, rErr
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, dErr := client.Do(req)
+	if dErr != nil {
+		return false, 0, dErr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+		return true, resp.StatusCode, nil
+	}
+	return false, resp.StatusCode, nil
 }
 
 // providerAuthHint returns (ok, remediation). Heuristic only — we do

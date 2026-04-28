@@ -83,10 +83,7 @@ func runAIChangelog(cmd *cobra.Command, _ []string) error {
 		}
 		prov = fc
 	} else {
-		p, pErr := provider.NewProvider(ctx, provider.FactoryOptions{
-			Name:   ai.Provider,
-			Runner: provider.ExecRunner{},
-		})
+		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
 		if pErr != nil {
 			return fmt.Errorf("changelog: provider: %w", pErr)
 		}

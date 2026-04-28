@@ -252,14 +252,9 @@ func detectProjectType(dir string) string {
 func suggestAIGitignore(dir string, result *initx.AnalysisResult) []string {
 	ctx := context.Background()
 
-	// config에서 ai.provider 설정을 읽어서 사용
+	// config에서 ai.provider + 모델/엔드포인트 override를 읽어서 사용
 	cfg, _ := config.Load(nil)
-	opts := provider.FactoryOptions{}
-	if cfg != nil && cfg.AI.Provider != "" {
-		opts.Name = cfg.AI.Provider
-	}
-
-	p, err := provider.NewProvider(ctx, opts)
+	p, err := provider.NewProvider(ctx, aiFactoryOptions(cfg))
 	if err != nil {
 		Dbg("ai gitignore: no provider available: %v", err)
 		return nil

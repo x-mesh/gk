@@ -26,12 +26,29 @@ type Config struct {
 // default message/output language (BCP-47 short code). Commit holds
 // `gk commit` settings; future ai features add sibling structs.
 type AIConfig struct {
-	Enabled  bool           `mapstructure:"enabled"  yaml:"enabled"`
-	Provider string         `mapstructure:"provider" yaml:"provider"`
-	Lang     string         `mapstructure:"lang"     yaml:"lang"`
-	Commit   AICommitConfig `mapstructure:"commit"   yaml:"commit"`
-	Nvidia   AINvidiaConfig `mapstructure:"nvidia"   yaml:"nvidia"`
-	Groq     AIGroqConfig   `mapstructure:"groq"     yaml:"groq"`
+	Enabled   bool              `mapstructure:"enabled"   yaml:"enabled"`
+	Provider  string            `mapstructure:"provider"  yaml:"provider"`
+	Lang      string            `mapstructure:"lang"      yaml:"lang"`
+	Commit    AICommitConfig    `mapstructure:"commit"    yaml:"commit"`
+	Anthropic AIAnthropicConfig `mapstructure:"anthropic" yaml:"anthropic"`
+	OpenAI    AIOpenAIConfig    `mapstructure:"openai"    yaml:"openai"`
+	Nvidia    AINvidiaConfig    `mapstructure:"nvidia"    yaml:"nvidia"`
+	Groq      AIGroqConfig      `mapstructure:"groq"      yaml:"groq"`
+}
+
+// AIAnthropicConfig controls the Claude provider. Empty fields fall
+// back to the adapter defaults.
+type AIAnthropicConfig struct {
+	Model    string `mapstructure:"model"    yaml:"model"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+}
+
+// AIOpenAIConfig controls the OpenAI provider.
+type AIOpenAIConfig struct {
+	Model    string `mapstructure:"model"    yaml:"model"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
 }
 
 // AINvidiaConfig controls the NVIDIA AI provider. Model overrides the

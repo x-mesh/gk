@@ -76,14 +76,23 @@ type AIGroqConfig struct {
 // only local providers may run (the policy layer may enforce this too).
 // Trailer and Audit are opt-in telemetry knobs, both default off.
 type AICommitConfig struct {
-	Mode        string   `mapstructure:"mode"         yaml:"mode"`
-	MaxGroups   int      `mapstructure:"max_groups"   yaml:"max_groups"`
-	MaxTokens   int      `mapstructure:"max_tokens"   yaml:"max_tokens"`
-	Timeout     string   `mapstructure:"timeout"      yaml:"timeout"`
-	DenyPaths   []string `mapstructure:"deny_paths"   yaml:"deny_paths"`
-	AllowRemote bool     `mapstructure:"allow_remote" yaml:"allow_remote"`
-	Trailer     bool     `mapstructure:"trailer"      yaml:"trailer"`
-	Audit       bool     `mapstructure:"audit"        yaml:"audit"`
+	Mode        string         `mapstructure:"mode"         yaml:"mode"`
+	MaxGroups   int            `mapstructure:"max_groups"   yaml:"max_groups"`
+	MaxTokens   int            `mapstructure:"max_tokens"   yaml:"max_tokens"`
+	Timeout     string         `mapstructure:"timeout"      yaml:"timeout"`
+	DenyPaths   []string       `mapstructure:"deny_paths"   yaml:"deny_paths"`
+	AllowRemote bool           `mapstructure:"allow_remote" yaml:"allow_remote"`
+	Trailer     bool           `mapstructure:"trailer"      yaml:"trailer"`
+	Audit       bool           `mapstructure:"audit"        yaml:"audit"`
+	Privacy     PrivacyConfig  `mapstructure:"privacy"      yaml:"privacy"`
+}
+
+// PrivacyConfig tunes the Privacy Gate that runs before remote AI
+// providers see any payload. MaxSecrets is the abort threshold for the
+// builtin regex-based secret count (default 10); set to a negative value
+// to disable the abort while still redacting matches.
+type PrivacyConfig struct {
+	MaxSecrets int `mapstructure:"max_secrets" yaml:"max_secrets"`
 }
 
 // LogConfig controls git log output format. Vis is the default set of

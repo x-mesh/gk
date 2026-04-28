@@ -55,6 +55,17 @@ func GatherWIP(ctx context.Context, runner git.Runner, opts GatherOptions) ([]Fi
 		if denyGlob := matchDeny(e.Path, opts.DenyPaths); denyGlob != "" {
 			e.DeniedBy = denyGlob
 		}
+		// Binary detection — sniff the on-disk file so downstream stages
+		// (summariseForSecretScan, concatFileDiffs, prompt builders) can
+		// skip blobs like __pycache__/*.pyc, *.so, images. Without this
+		// the IsBinary flag is always false and binary content leaks into
+		// LLM payloads, blowing up token budgets and producing garbage in
+		// --show-prompt output.
+		if e.DeniedBy == "" {
+			if isBin, _ := DetectBinary(e.Path); isBin {
+				e.IsBinary = true
+			}
+		}
 		out = append(out, e)
 	}
 	return out, nil

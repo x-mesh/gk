@@ -154,8 +154,9 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	Dbg("commit: secret-gate clean")
 
 	// Privacy Gate: redact payload for remote providers.
-	redactedPayload, _, pgErr := applyPrivacyGate(prov, payload, ai)
+	redactedPayload, pgFindings, pgErr := applyPrivacyGate(prov, payload, ai)
 	if pgErr != nil {
+		renderPrivacyFindings(cmd.ErrOrStderr(), pgFindings)
 		return fmt.Errorf("commit: privacy gate: %w", pgErr)
 	}
 

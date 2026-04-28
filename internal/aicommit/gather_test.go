@@ -2,6 +2,8 @@ package aicommit
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -177,5 +179,57 @@ func TestGatherWIPRunnerError(t *testing.T) {
 	_, err := GatherWIP(context.Background(), fake, GatherOptions{})
 	if err == nil {
 		t.Fatal("want error when git status fails")
+	}
+}
+
+// TestGatherWIPDetectsBinary guards against a regression where IsBinary
+// stayed false for every entry because GatherWIP forgot to call
+// DetectBinary. Without this flag the downstream summariseForSecretScan
+// and concatFileDiffs gates were no-ops, leaking __pycache__/*.pyc and
+// other binary blobs into LLM payloads (blowing up token budgets and
+// producing garbage in --show-prompt output).
+func TestGatherWIPDetectsBinary(t *testing.T) {
+	dir := t.TempDir()
+
+	textPath := filepath.Join(dir, "hello.txt")
+	if err := os.WriteFile(textPath, []byte("hello world\n"), 0o644); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+
+	binPath := filepath.Join(dir, "blob.bin")
+	binContent := []byte{0x00, 0x01, 0x02, 0x03, 'a', 'b', 0x00, 0xff, 0xfe}
+	if err := os.WriteFile(binPath, binContent, 0o644); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+
+	cwd, _ := os.Getwd()
+	defer os.Chdir(cwd)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	stdout := buildV2(
+		"? hello.txt",
+		"? blob.bin",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, e := range entries {
+		got[e.Path] = e.IsBinary
+	}
+	if got["hello.txt"] {
+		t.Errorf("hello.txt: want IsBinary=false, got true")
+	}
+	if !got["blob.bin"] {
+		t.Errorf("blob.bin: want IsBinary=true, got false")
 	}
 }

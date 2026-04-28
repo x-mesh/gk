@@ -195,10 +195,13 @@ func filterGeminiStderr(stderr []byte) []byte {
 }
 
 // concatFileDiffs stitches per-file DiffHints into a single payload.
+// Skips binary files defensively — gather.go is the source of truth for
+// IsBinary, but enforcing it here means a buggy gather pipeline can never
+// silently leak binary blobs into an LLM prompt.
 func concatFileDiffs(files []FileChange) []byte {
 	var b strings.Builder
 	for _, f := range files {
-		if f.DiffHint == "" {
+		if f.IsBinary || f.DiffHint == "" {
 			continue
 		}
 		fmt.Fprintf(&b, "--- %s (%s)\n", f.Path, f.Status)

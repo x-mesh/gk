@@ -97,6 +97,7 @@ func (g *Groq) toNvidia() *Nvidia {
 		Timeout:  g.Timeout,
 		MaxRetry: g.MaxRetry,
 		SleepFn:  g.SleepFn,
+		Brand:    "groq",
 		EnvLookup: func(key string) string {
 			// Nvidia의 apiKey()가 NVIDIA_API_KEY를 찾으므로,
 			// Groq의 API key를 NVIDIA_API_KEY로 매핑

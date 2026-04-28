@@ -16,51 +16,87 @@ type PrivacyGateOptions struct {
 	SecretPatterns []*regexp.Regexp // extra patterns beyond built-in
 	AuditEnabled   bool
 	AuditPath      string // ".gk/ai-audit.jsonl"
-	MaxSecrets     int    // default: 10, abort threshold
+	MaxSecrets     int    // default: 10, abort threshold (use -1 to disable)
 }
 
 // RedactFinding records one redaction event.
+//
+// Line is the 1-based line number within the full payload (the blob the
+// gate scanned). When the payload is the `### <path>\n<contents>` shape
+// produced by summariseForSecretScan, File and FileLine resolve back to
+// the source file and its in-file line so error reporting can point the
+// user at the original location.
 type RedactFinding struct {
-	Kind        string `json:"kind"`        // "secret" | "path" | "pii"
-	Original    string `json:"original"`    // masked sample (first 4 chars + "***")
-	Placeholder string `json:"placeholder"` // "[SECRET_1]", "[PATH_1]"
-	Line        int    `json:"line"`
+	Kind        string `json:"kind"`              // "secret" | "path" | "pii"
+	Original    string `json:"original"`          // masked sample (first 4 chars + "***")
+	Placeholder string `json:"placeholder"`       // "[SECRET_1]", "[PATH_1]"
+	Line        int    `json:"line"`              // line within the redacted payload
+	File        string `json:"file,omitempty"`    // resolved source file (may be "")
+	FileLine    int    `json:"file_line,omitempty"` // 1-based line within File
+	Pattern     string `json:"pattern,omitempty"` // regex/source that matched
+}
+
+// namedPattern pairs a regex with a stable label so findings can carry
+// a human-meaningful "what matched" hint instead of the raw expression.
+type namedPattern struct {
+	name string
+	re   *regexp.Regexp
 }
 
 // builtinSecretPatterns are compiled once at init time.
-// These are single-line patterns applied per line.
-var builtinSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(api[_\-]?key|apikey)\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?`),
-	regexp.MustCompile(`(?i)(token|bearer)\s*[:=]\s*['"]?([A-Za-z0-9_\-\.]{20,})['"]?`),
-	regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[:=]\s*['"]?(\S{8,})['"]?`),
-	regexp.MustCompile(`(?i)(AKIA[0-9A-Z]{16})`),
-	regexp.MustCompile(`(?i)(secret|private[_\-]?key)\s*[:=]\s*['"]?(\S{10,})['"]?`),
+//
+// Each pattern uses a "quoted-or-bare" alternation so values inside
+// quotes can include broader characters (dots for JWTs, punctuation
+// for passwords) while bare values are restricted to a tight key-safe
+// alphabet (`A-Za-z0-9_-`). This keeps real secrets in matched while
+// excluding common false positives like Rust/Python method chains
+// (`let token = self.foo.bar()`) and struct-field assignments
+// (`access_token: token_file.access_token`) where dots / parens / etc.
+// drift the value off the secret-charset.
+var builtinSecretPatterns = []namedPattern{
+	{"api_key", regexp.MustCompile(`(?i)(api[_\-]?key|apikey)\s*[:=]\s*(?:["']([A-Za-z0-9_\-]{20,})["']|([A-Za-z0-9_\-]{20,}))`)},
+	{"token", regexp.MustCompile(`(?i)(token|bearer)\s*[:=]\s*(?:["']([A-Za-z0-9_\-\.]{20,})["']|([A-Za-z0-9_\-]{20,}))`)},
+	{"password", regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[:=]\s*(?:["'](\S{8,})["']|([A-Za-z0-9_\-!@#$%^&*+=]{8,}))`)},
+	{"aws_access_key", regexp.MustCompile(`(?i)(AKIA[0-9A-Z]{16})`)},
+	{"secret_or_private_key", regexp.MustCompile(`(?i)(secret|private[_\-]?key)\s*[:=]\s*(?:["'](\S{10,})["']|([A-Za-z0-9_\-]{10,}))`)},
 }
 
 // builtinMultiLinePatterns match across line boundaries (e.g. PEM blocks).
 // Applied to the full payload before line-by-line processing.
-var builtinMultiLinePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----`),
+var builtinMultiLinePatterns = []namedPattern{
+	{"pem_block", regexp.MustCompile(`-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----`)},
 }
+
+// payloadFileHeaderRE matches the "### <path>" headers emitted by
+// summariseForSecretScan, used to map a blob line back to (file, fileLine).
+var payloadFileHeaderRE = regexp.MustCompile(`^### (.+)$`)
 
 // Redact scans payload for deny_paths matches and secret patterns,
 // replacing each with a numbered placeholder. Returns the redacted
 // payload, a slice of findings, and an error if the secret count
 // exceeds MaxSecrets.
+//
+// When the threshold is exceeded, the returned findings slice is still
+// populated so callers can render a detailed report. Set MaxSecrets to
+// a negative value to disable the abort while keeping redaction.
 func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, error) {
 	maxSecrets := opts.MaxSecrets
 	if maxSecrets == 0 {
 		maxSecrets = 10
 	}
 
-	allPatterns := append(builtinSecretPatterns[:len(builtinSecretPatterns):len(builtinSecretPatterns)], opts.SecretPatterns...)
+	custom := make([]namedPattern, 0, len(opts.SecretPatterns))
+	for _, re := range opts.SecretPatterns {
+		custom = append(custom, namedPattern{name: "custom", re: re})
+	}
+	allPatterns := append(builtinSecretPatterns[:len(builtinSecretPatterns):len(builtinSecretPatterns)], custom...)
 
 	var findings []RedactFinding
 	secretIdx, pathIdx := 0, 0
 
 	// Phase 1: multi-line patterns (e.g. PEM blocks) on the full payload.
 	for _, pat := range builtinMultiLinePatterns {
-		matches := pat.FindAllString(payload, -1)
+		matches := pat.re.FindAllString(payload, -1)
 		for _, m := range matches {
 			if !strings.Contains(payload, m) {
 				continue
@@ -70,34 +106,53 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 			// Determine the line number of the match start.
 			lineNum := strings.Count(payload[:strings.Index(payload, m)], "\n") + 1
 			payload = strings.Replace(payload, m, placeholder, 1)
-			findings = append(findings, RedactFinding{
+			f := RedactFinding{
 				Kind:        "secret",
 				Original:    maskOriginal(m),
 				Placeholder: placeholder,
 				Line:        lineNum,
-			})
+				Pattern:     pat.name,
+			}
+			findings = append(findings, f)
 		}
 	}
 
 	// Phase 2: line-by-line processing for single-line patterns.
 	lines := strings.Split(payload, "\n")
 
+	// Track the most recent "### <path>" header so single-line findings
+	// can resolve back to the source file. fileLine counts non-header
+	// lines since the last header.
+	var currentFile string
+	var currentFileLine int
+
 	for i := range lines {
 		lineNum := i + 1
 
+		if h := payloadFileHeaderRE.FindStringSubmatch(lines[i]); h != nil {
+			currentFile = h[1]
+			currentFileLine = 0
+			continue
+		}
+		currentFileLine++
+
 		// Check deny_paths globs against path-like tokens in the line.
 		if len(opts.DenyPaths) > 0 {
-			lines[i], findings, pathIdx = redactPaths(lines[i], lineNum, opts.DenyPaths, findings, pathIdx)
+			lines[i], findings, pathIdx = redactPaths(lines[i], lineNum, opts.DenyPaths, findings, pathIdx, currentFile, currentFileLine)
 		}
 
 		// Check secret patterns (built-in + custom).
-		lines[i], findings, secretIdx = redactSecrets(lines[i], lineNum, allPatterns, findings, secretIdx)
+		lines[i], findings, secretIdx = redactSecrets(lines[i], lineNum, allPatterns, findings, secretIdx, currentFile, currentFileLine)
 
 		// Abort early if too many secrets.
-		if secretIdx > maxSecrets {
+		if maxSecrets >= 0 && secretIdx > maxSecrets {
 			return "", findings, fmt.Errorf("aicommit: privacy gate: %d secrets detected (threshold %d) — aborting", secretIdx, maxSecrets)
 		}
 	}
+
+	// Resolve File/FileLine for multi-line findings (PEM blocks etc.) by
+	// walking the original payload's headers up to each finding's line.
+	resolveMultilineFindingFiles(payload, findings)
 
 	redacted := strings.Join(lines, "\n")
 
@@ -110,9 +165,46 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 	return redacted, findings, nil
 }
 
+// resolveMultilineFindingFiles backfills File/FileLine for any finding
+// whose File is empty (i.e. recorded by Phase 1, before per-line
+// header tracking ran). Cheap because findings is small.
+func resolveMultilineFindingFiles(payload string, findings []RedactFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	needs := false
+	for _, f := range findings {
+		if f.File == "" {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return
+	}
+	lines := strings.Split(payload, "\n")
+	for i := range findings {
+		if findings[i].File != "" {
+			continue
+		}
+		var file string
+		fileLine := 0
+		for li := 0; li < len(lines) && li+1 <= findings[i].Line; li++ {
+			if h := payloadFileHeaderRE.FindStringSubmatch(lines[li]); h != nil {
+				file = h[1]
+				fileLine = 0
+				continue
+			}
+			fileLine++
+		}
+		findings[i].File = file
+		findings[i].FileLine = fileLine
+	}
+}
+
 // redactPaths replaces path-like tokens matching any deny glob with
 // [PATH_N] placeholders.
-func redactPaths(line string, lineNum int, denyPaths []string, findings []RedactFinding, idx int) (string, []RedactFinding, int) {
+func redactPaths(line string, lineNum int, denyPaths []string, findings []RedactFinding, idx int, file string, fileLine int) (string, []RedactFinding, int) {
 	tokens := extractPathTokens(line)
 	for _, tok := range tokens {
 		if matchDenyGlob(tok, denyPaths) {
@@ -124,6 +216,9 @@ func redactPaths(line string, lineNum int, denyPaths []string, findings []Redact
 				Original:    maskOriginal(tok),
 				Placeholder: placeholder,
 				Line:        lineNum,
+				File:        file,
+				FileLine:    fileLine,
+				Pattern:     "deny_path",
 			})
 		}
 	}
@@ -131,9 +226,9 @@ func redactPaths(line string, lineNum int, denyPaths []string, findings []Redact
 }
 
 // redactSecrets replaces secret pattern matches with [SECRET_N] placeholders.
-func redactSecrets(line string, lineNum int, patterns []*regexp.Regexp, findings []RedactFinding, idx int) (string, []RedactFinding, int) {
+func redactSecrets(line string, lineNum int, patterns []namedPattern, findings []RedactFinding, idx int, file string, fileLine int) (string, []RedactFinding, int) {
 	for _, pat := range patterns {
-		matches := pat.FindAllString(line, -1)
+		matches := pat.re.FindAllString(line, -1)
 		for _, m := range matches {
 			if !strings.Contains(line, m) {
 				continue // already replaced by a previous pattern
@@ -146,6 +241,9 @@ func redactSecrets(line string, lineNum int, patterns []*regexp.Regexp, findings
 				Original:    maskOriginal(m),
 				Placeholder: placeholder,
 				Line:        lineNum,
+				File:        file,
+				FileLine:    fileLine,
+				Pattern:     pat.name,
 			})
 		}
 	}

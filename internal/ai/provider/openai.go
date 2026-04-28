@@ -100,6 +100,7 @@ func (o *OpenAI) toNvidia() *Nvidia {
 		Timeout:  o.Timeout,
 		MaxRetry: o.MaxRetry,
 		SleepFn:  o.SleepFn,
+		Brand:    "openai",
 		EnvLookup: func(key string) string {
 			if key == "NVIDIA_API_KEY" {
 				return o.apiKey()

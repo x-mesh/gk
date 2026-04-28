@@ -37,6 +37,20 @@ type Nvidia struct {
 	// SleepFn overrides the default sleepCtx for testing. When nil,
 	// sleepCtx is used. Returns true if the full duration elapsed.
 	SleepFn func(ctx context.Context, d time.Duration) bool
+	// Brand overrides the prefix used in error messages. Empty defaults
+	// to "nvidia". Groq and OpenAI delegate HTTP invoke through Nvidia
+	// for OpenAI-compatible Chat Completions; setting Brand="groq" /
+	// "openai" keeps error messages truthful about which provider
+	// actually returned the failure.
+	Brand string
+}
+
+// brand returns the prefix to use in error messages.
+func (n *Nvidia) brand() string {
+	if n.Brand != "" {
+		return n.Brand
+	}
+	return "nvidia"
 }
 
 // NewNvidia returns a Nvidia adapter with sensible defaults.
@@ -190,7 +204,7 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("nvidia: marshal request: %w", err)
+		return "", "", 0, fmt.Errorf("%s: marshal request: %w", n.brand(), err)
 	}
 
 	deadline := time.Now().Add(n.timeout())
@@ -206,19 +220,19 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 			if lastErr != nil {
 				return "", "", 0, lastErr
 			}
-			return "", "", 0, fmt.Errorf("nvidia: %w", ctx.Err())
+			return "", "", 0, fmt.Errorf("%s: %w", n.brand(), ctx.Err())
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
-			return "", "", 0, fmt.Errorf("nvidia: build request: %w", err)
+			return "", "", 0, fmt.Errorf("%s: build request: %w", n.brand(), err)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := n.Client.Do(ctx, req)
 		if err != nil {
-			lastErr = fmt.Errorf("nvidia: http call: %w", err)
+			lastErr = fmt.Errorf("%s: http call: %w", n.brand(), err)
 			// Network error on first attempt → no retry for non-server errors.
 			if attempt == maxRetry {
 				return "", "", 0, lastErr
@@ -273,11 +287,11 @@ func (n *Nvidia) handleResponse(resp *http.Response) (content, model string, tok
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("nvidia: read body: %w", err)
+		return "", "", 0, fmt.Errorf("%s: read body: %w", n.brand(), err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", 0, fmt.Errorf("nvidia: HTTP %d: %s", resp.StatusCode, truncateBody(body))
+		return "", "", 0, fmt.Errorf("%s: HTTP %d: %s", n.brand(), resp.StatusCode, truncateBody(body))
 	}
 
 	var parsed chatResponse

@@ -1,4 +1,4 @@
-.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install uninstall release-snapshot help
+.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install uninstall release-snapshot check help
 
 BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
@@ -47,6 +47,12 @@ test-integration:
 lint:
 	golangci-lint run
 
+# `make check` mirrors what the CI jobs run end-to-end (vet → build → test
+# → lint). Run this before `gk ship` to catch lint/format regressions
+# locally instead of waiting for the CI lint job to fail post-tag.
+check: vet build test lint
+	@echo "check: ok"
+
 fmt:
 	gofmt -s -w .
 	go mod tidy
@@ -64,7 +70,9 @@ release-snapshot:
 	goreleaser release --snapshot --clean
 
 help:
-	@echo "Targets: build, install, uninstall, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, clean, release-snapshot"
+	@echo "Targets: build, install, uninstall, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, check, clean, release-snapshot"
+	@echo ""
+	@echo "  check             vet + build + test + lint — same gates the CI runs"
 	@echo ""
 	@echo "  test              run all tests"
 	@echo "  test-pbt          property-based tests only (provider + privacy gate)"

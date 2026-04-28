@@ -62,8 +62,17 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 }
 
 // ApplyMessages creates one commit per Message. Files from each group
-// are staged with `git add -- <files>` (note the double-dash so
-// filenames starting with `-` are not misread) then committed.
+// are staged with `git add -A -- <files>` — `-A` so unstaged deletions
+// and renames stage alongside additions/modifications (plain `git add`
+// skips removed paths and fails with "pathspec did not match any
+// files"); the trailing `--` keeps filenames starting with `-` from
+// being misread.
+//
+// Files whose deletion is already fully staged (porcelain "D ": gone
+// from working tree AND from index, only present in HEAD) are excluded
+// from the `git add` invocation — `git add -A` on them still fails the
+// pathspec check because nothing matches. The follow-up `git commit --
+// <files>` picks the deletion up via the staged HEAD diff.
 //
 // Tree-OID guard: ApplyMessages records `git write-tree` before any
 // commit and again after all commits. A mismatch between TreeBefore
@@ -88,16 +97,24 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 		result.TreeBefore = strings.TrimSpace(string(before))
 	}
 
+	stagedDeletes, err := stagedDeletedPaths(ctx, runner)
+	if err != nil {
+		return result, err
+	}
+
 	for _, m := range messages {
 		if opts.DryRun {
 			result.CommitShas = append(result.CommitShas, "")
 			continue
 		}
 
-		addArgs := append([]string{"add", "--"}, m.Group.Files...)
-		if _, stderr, err := runner.Run(ctx, addArgs...); err != nil {
-			return result, fmt.Errorf("aicommit: git add %v: %w (stderr=%s)",
-				m.Group.Files, err, string(stderr))
+		toAdd := filterStaged(m.Group.Files, stagedDeletes)
+		if len(toAdd) > 0 {
+			addArgs := append([]string{"add", "-A", "--"}, toAdd...)
+			if _, stderr, err := runner.Run(ctx, addArgs...); err != nil {
+				return result, fmt.Errorf("aicommit: git add %v: %w (stderr=%s)",
+					toAdd, err, string(stderr))
+			}
 		}
 
 		msg := formatCommitMessage(m, opts.Trailer)
@@ -240,6 +257,48 @@ func parseCommitSha(stdout string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// stagedDeletedPaths returns the set of paths whose deletion is fully
+// staged (HEAD has them, index does not, working tree does not). On
+// these paths `git add -A -- <p>` fails with "pathspec did not match
+// any files"; the caller filters them out before staging and relies on
+// the subsequent `git commit -- <p>` to pick the deletion up via the
+// HEAD diff.
+//
+// Uses `--no-renames` so a rename's "from" path shows up here as a
+// deletion — staying consistent with how plain `git add` would view it
+// (rename detection is a diff-time heuristic, not a working-copy fact).
+func stagedDeletedPaths(ctx context.Context, runner git.Runner) (map[string]struct{}, error) {
+	out, _, err := runner.Run(ctx, "diff", "--cached", "--no-renames",
+		"--diff-filter=D", "--name-only", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("aicommit: list staged deletions: %w", err)
+	}
+	set := map[string]struct{}{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	return set, nil
+}
+
+// filterStaged drops paths from files that are present in skip.
+// Preserves the input order of the survivors so commit args remain
+// deterministic.
+func filterStaged(files []string, skip map[string]struct{}) []string {
+	if len(skip) == 0 {
+		return files
+	}
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if _, gone := skip[f]; gone {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // Satisfy a lint check that we use the provider package (Messages

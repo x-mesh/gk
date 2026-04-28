@@ -4,7 +4,12 @@ BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
 # Override via `make install INSTALL_NAME=gk` to replace both.
 INSTALL_NAME ?= gk-dev
-LDFLAGS := -s -w -X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) -X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) \
+	-X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo none) \
+	-X main.date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
+	-X main.branch=$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown) \
+	-X main.worktree=$(shell basename "$$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo unknown)
 PREFIX    ?= $(HOME)/.local
 BINDIR    := $(PREFIX)/bin
 

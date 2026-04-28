@@ -4,7 +4,20 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/fatih/color"
 )
+
+// withNoColor disables fatih/color's ANSI escapes for the duration of
+// a test so string-equality assertions stay stable regardless of the
+// runtime TTY detection (which other tests in the same package may
+// have flipped on).
+func withNoColor(t *testing.T) {
+	t.Helper()
+	prev := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prev })
+}
 
 func TestWithHint_Nil(t *testing.T) {
 	if WithHint(nil, "irrelevant") != nil {
@@ -51,6 +64,7 @@ func TestHintFrom_NoHint(t *testing.T) {
 }
 
 func TestFormatError_NoHint(t *testing.T) {
+	withNoColor(t)
 	got := FormatError(errors.New("boom"))
 	want := "gk: boom"
 	if got != want {
@@ -59,6 +73,7 @@ func TestFormatError_NoHint(t *testing.T) {
 }
 
 func TestFormatError_WithHint(t *testing.T) {
+	withNoColor(t)
 	err := WithHint(errors.New("boom"), "try: gk abort")
 	got := FormatError(err)
 

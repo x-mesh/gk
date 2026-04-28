@@ -15,7 +15,7 @@ func TestSetVersionInfo_PrependsHeader(t *testing.T) {
 		rootCmd.Long = origLong
 	})
 
-	SetVersionInfo("v9.9.9", "deadbee", "2026-01-01T00:00:00Z")
+	SetVersionInfo("v9.9.9", "deadbee", "2026-01-01T00:00:00Z", "", "")
 
 	if !strings.Contains(rootCmd.Version, "v9.9.9") {
 		t.Errorf("Version missing tag: %q", rootCmd.Version)

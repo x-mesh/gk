@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/fatih/color"
 )
 
 // hintError wraps an error with a short "next step" hint rendered after the
@@ -42,15 +44,18 @@ func HintFrom(err error) string {
 // FormatError returns the user-facing representation of an error raised by
 // cli.Execute. Renders as:
 //
-//	gk: <error message>
-//	  hint: <hint>  (when present)
+//	gk: <error message>          (red)
+//	  hint: <hint>                (magenta label, faint body)
 func FormatError(err error) string {
 	if err == nil {
 		return ""
 	}
-	out := "gk: " + err.Error()
+	prefix := color.New(color.FgRed, color.Bold).Sprint("gk:")
+	out := prefix + " " + err.Error()
 	if h := HintFrom(err); h != "" {
-		out += "\n  hint: " + h
+		hintLabel := color.New(color.FgMagenta, color.Bold).Sprint("hint:")
+		hintBody := color.New(color.Faint).Sprint(h)
+		out += "\n  " + hintLabel + " " + hintBody
 	}
 	return out
 }

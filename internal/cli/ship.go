@@ -394,7 +394,10 @@ func autoCleanShipCommitLint(ctx context.Context, deps shipDeps, plan shipPlan) 
 	if err := runShipSquash(ctx, deps.Runner, plan); err != nil {
 		return false, WithHint(
 			fmt.Errorf("ship: auto cleanup failed: %w", err),
-			"run `gk commit` or `gk ship squash` manually, then retry `gk ship`",
+			"choose one:\n"+
+				"    • gk ship --skip-preflight     # ship now, leave the lint violations in history\n"+
+				"    • gk ship squash               # rewrite local release commits (force-push needed if already pushed)\n"+
+				"    • gk commit --amend            # tidy the offending commit messages by hand, then retry `gk ship`",
 		)
 	}
 	return true, nil

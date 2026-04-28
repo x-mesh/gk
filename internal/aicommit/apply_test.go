@@ -2,12 +2,22 @@ package aicommit
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/git"
 )
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
 
 func TestApplyMessagesCreatesCommitPerGroup(t *testing.T) {
 	fake := &git.FakeRunner{
@@ -36,11 +46,11 @@ func TestApplyMessagesCreatesCommitPerGroup(t *testing.T) {
 		t.Errorf("TreeBefore: %q", res.TreeBefore)
 	}
 
-	// Verify 2 `git add -- a.go` and 2 `git commit -m ... --` calls.
+	// Verify 2 `git add -A -- a.go` and 2 `git commit -m ... --` calls.
 	addCalls, commitCalls := 0, 0
 	for _, c := range fake.Calls {
 		switch {
-		case len(c.Args) >= 2 && c.Args[0] == "add" && c.Args[1] == "--":
+		case len(c.Args) >= 3 && c.Args[0] == "add" && c.Args[1] == "-A" && c.Args[2] == "--":
 			addCalls++
 		case len(c.Args) >= 1 && c.Args[0] == "commit":
 			commitCalls++
@@ -82,7 +92,7 @@ func TestApplyMessagesAddFailureAborts(t *testing.T) {
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
 			"rev-parse HEAD":                    {Stdout: "abc\n"},
 			"write-tree":                        {Stdout: "t\n"},
-			"add -- bad.go": {
+			"add -A -- bad.go": {
 				Stderr:   "fatal: pathspec 'bad.go' did not match any files",
 				ExitCode: 128,
 			},
@@ -97,6 +107,117 @@ func TestApplyMessagesAddFailureAborts(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pathspec") {
 		t.Errorf("error should include stderr: %v", err)
+	}
+}
+
+// TestApplyMessagesStagesUnstagedDeletion covers the path where the
+// user removed a tracked file from disk but hadn't run `git rm` — the
+// index still has the entry, working tree doesn't (porcelain " D"). On
+// these `git add -A -- <path>` matches the index entry and stages the
+// deletion. The earlier bug (pre-`-A`) silently lost the deletion; this
+// guards the fix.
+func TestApplyMessagesStagesUnstagedDeletion(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD":                          {Stdout: "main\n"},
+			"rev-parse HEAD":                                             {Stdout: "abc\n"},
+			"write-tree":                                                 {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 2222222] chore: drop\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore", Files: []string{"gone.go"}}, Subject: "drop unused"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	var saw bool
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 4 && c.Args[0] == "add" && c.Args[1] == "-A" && c.Args[2] == "--" && c.Args[3] == "gone.go" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("expected `git add -A -- gone.go`, got calls=%+v", fake.Calls)
+	}
+}
+
+// TestApplyMessagesSkipsAddForFullyStagedDeletion guards the
+// 2026-04-29 regression: when a tracked file is already fully staged
+// for deletion (porcelain "D " — gone from working tree AND from
+// index), `git add -A -- <path>` fails with "pathspec did not match
+// any files". The fix excludes such paths from the add invocation;
+// `git commit -- <path>` still picks up the deletion via HEAD diff.
+func TestApplyMessagesSkipsAddForFullyStagedDeletion(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {
+				Stdout: "removed.go\x00",
+			},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 3333333] chore: drop\n"},
+	}
+	// Group mixes a fully-staged-deletion path with a normal one. Only
+	// the normal path should reach `git add`; both reach `git commit`.
+	msgs := []Message{
+		{
+			Group:   provider.Group{Type: "chore", Files: []string{"removed.go", "kept.go"}},
+			Subject: "tidy",
+		},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	var addArgs, commitArgs []string
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 1 && c.Args[0] == "add" {
+			addArgs = c.Args
+		}
+		if len(c.Args) >= 1 && c.Args[0] == "commit" {
+			commitArgs = c.Args
+		}
+	}
+	// add must be called with kept.go only — never removed.go.
+	want := []string{"add", "-A", "--", "kept.go"}
+	if !reflect.DeepEqual(addArgs, want) {
+		t.Errorf("add args = %v, want %v", addArgs, want)
+	}
+	// commit still references both paths.
+	if !contains(commitArgs, "removed.go") || !contains(commitArgs, "kept.go") {
+		t.Errorf("commit args missing one of the files: %v", commitArgs)
+	}
+}
+
+// TestApplyMessagesSkipsAddEntirelyWhenAllStagedDeleted exercises the
+// edge case where every file in a group is already fully staged for
+// deletion — `git add` should not be invoked at all (zero pathspecs
+// would otherwise stage every dirty file in the repo).
+func TestApplyMessagesSkipsAddEntirelyWhenAllStagedDeleted(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {
+				Stdout: "a\x00b\x00",
+			},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 4444444] chore: drop\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore", Files: []string{"a", "b"}}, Subject: "drop"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 1 && c.Args[0] == "add" {
+			t.Errorf("git add must not be invoked when all files are fully staged-deleted, got %v", c.Args)
+		}
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/commitlint"
@@ -208,7 +209,7 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 			return err
 		}
 		if cleaned {
-			fmt.Fprintln(deps.Out, "ship: cleaned release commits before preflight")
+			fmt.Fprintln(deps.Out, color.New(color.FgYellow).Sprint("ship: cleaned release commits before preflight"))
 			plan, err = buildShipPlan(ctx, deps.Runner, deps.Config, flags)
 			if err != nil {
 				return err
@@ -235,14 +236,18 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		if _, stderr, err := deps.Runner.Run(ctx, "commit", "-m", "release: "+plan.NextTag); err != nil {
 			return fmt.Errorf("ship: release commit: %s: %w", strings.TrimSpace(string(stderr)), err)
 		}
-		fmt.Fprintf(deps.Out, "committed release metadata: %s\n", plan.NextTag)
+		ok := color.New(color.FgGreen, color.Bold).SprintFunc()
+		tag := color.New(color.FgMagenta, color.Bold).SprintFunc()
+		fmt.Fprintf(deps.Out, "%s committed release metadata: %s\n", ok("✓"), tag(plan.NextTag))
 	}
 
 	if !flags.noRelease {
 		if _, stderr, err := deps.Runner.Run(ctx, "tag", "-a", plan.NextTag, "-m", "Release "+plan.NextTag); err != nil {
 			return fmt.Errorf("ship: create tag: %s: %w", strings.TrimSpace(string(stderr)), err)
 		}
-		fmt.Fprintf(deps.Out, "tagged %s\n", plan.NextTag)
+		ok := color.New(color.FgGreen, color.Bold).SprintFunc()
+		tag := color.New(color.FgMagenta, color.Bold).SprintFunc()
+		fmt.Fprintf(deps.Out, "%s tagged %s\n", ok("✓"), tag(plan.NextTag))
 	}
 
 	if flags.push {
@@ -251,8 +256,13 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		}
 	}
 
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	good := color.New(color.FgGreen, color.Bold).SprintFunc()
+	tag := color.New(color.FgMagenta, color.Bold).SprintFunc()
+	fmt.Fprintln(deps.Out, header("─── Ship complete ────────────────────────────"))
+	fmt.Fprintf(deps.Out, "  %s shipped %s on %s\n", good("✓"), tag(plan.NextTag), color.New(color.Bold).Sprint(plan.Branch))
 	if !flags.noRelease && flags.push {
-		fmt.Fprintf(deps.Out, "release workflow triggered by tag push: %s\n", plan.NextTag)
+		fmt.Fprintf(deps.Out, "  %s release workflow triggered by tag push: %s\n", good("→"), tag(plan.NextTag))
 	}
 	return nil
 }
@@ -395,17 +405,18 @@ func runShipPreflight(ctx context.Context, deps shipDeps, plan shipPlan, flags s
 			fmt.Fprintf(deps.Out, "  %-22s %s\n", name, resolveDescription(step.Command))
 			continue
 		}
+		ok := color.New(color.FgGreen, color.Bold).SprintFunc()
 		if step.Command == "commit-lint" {
 			if err := runShipCommitLint(ctx, deps.Runner, deps.Config, plan); err != nil {
 				return fmt.Errorf("ship: preflight failed at step %q: %w", name, err)
 			}
-			fmt.Fprintf(deps.Out, "ok %-22s\n", name)
+			fmt.Fprintf(deps.Out, "  %s %-22s\n", ok("✓"), name)
 			continue
 		}
 		if err := runStep(ctx, deps.Runner, deps.Config, step); err != nil {
 			return fmt.Errorf("ship: preflight failed at step %q: %w", name, err)
 		}
-		fmt.Fprintf(deps.Out, "ok %-22s\n", name)
+		fmt.Fprintf(deps.Out, "  %s %-22s\n", ok("✓"), name)
 	}
 	return nil
 }
@@ -544,30 +555,40 @@ func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan 
 }
 
 func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
-	fmt.Fprintln(w, "Ship plan")
-	fmt.Fprintf(w, "  Branch:    %s\n", plan.Branch)
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	label := color.New(color.Faint).SprintFunc()
+	value := color.New(color.FgWhite, color.Bold).SprintFunc()
+	tag := color.New(color.FgMagenta, color.Bold).SprintFunc()
+	skip := color.New(color.FgYellow).SprintFunc()
+
+	fmt.Fprintln(w, header("─── Ship plan ────────────────────────────────"))
+	fmt.Fprintf(w, "  %s   %s\n", label("Branch:   "), value(plan.Branch))
 	if plan.Base != "" {
-		fmt.Fprintf(w, "  Base:      %s\n", plan.Base)
+		fmt.Fprintf(w, "  %s   %s\n", label("Base:     "), value(plan.Base))
 	}
-	fmt.Fprintf(w, "  Remote:    %s\n", plan.Remote)
-	fmt.Fprintf(w, "  Commits:   %d since %s\n", plan.CommitCount, plan.LatestTag)
+	fmt.Fprintf(w, "  %s   %s\n", label("Remote:   "), value(plan.Remote))
+	fmt.Fprintf(w, "  %s   %s\n", label("Commits:  "), value(fmt.Sprintf("%d since %s", plan.CommitCount, plan.LatestTag)))
 	if flags.noRelease {
-		fmt.Fprintln(w, "  Release:   no")
+		fmt.Fprintf(w, "  %s   %s\n", label("Release:  "), skip("no"))
 	} else {
-		fmt.Fprintf(w, "  Bump:      %s\n", plan.Bump)
-		fmt.Fprintf(w, "  Next tag:  %s\n", plan.NextTag)
+		fmt.Fprintf(w, "  %s   %s\n", label("Bump:     "), value(plan.Bump))
+		fmt.Fprintf(w, "  %s   %s\n", label("Next tag: "), tag(plan.NextTag))
 	}
 	if plan.VersionFile != "" {
-		fmt.Fprintf(w, "  Version:   %s\n", plan.VersionFile)
+		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), value(plan.VersionFile))
 	} else {
-		fmt.Fprintln(w, "  Version:   tag-only")
+		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), label("tag-only"))
 	}
 	if plan.Changelog != "" {
-		fmt.Fprintf(w, "  Changelog: %s\n", plan.Changelog)
+		fmt.Fprintf(w, "  %s   %s\n", label("Changelog:"), label(plan.Changelog))
 	}
-	fmt.Fprintf(w, "  Push:      %v\n", flags.push)
+	pushVal := value("true")
+	if !flags.push {
+		pushVal = skip("false")
+	}
+	fmt.Fprintf(w, "  %s   %s\n", label("Push:     "), pushVal)
 	if flags.skipPreflight {
-		fmt.Fprintln(w, "  Preflight: skipped")
+		fmt.Fprintf(w, "  %s   %s\n", label("Preflight:"), skip("skipped"))
 	}
 }
 

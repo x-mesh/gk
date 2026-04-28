@@ -99,6 +99,10 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			checkInProgressOp(gitDir),
 			checkUnmergedPaths(ctx, runner),
 			checkDirtyTree(ctx, runner),
+			checkGitignore(RepoFlag()),
+			checkStagedSize(ctx, runner),
+			checkUntrackedNoise(ctx, runner),
+			checkStashBacklog(ctx, runner),
 		)
 	}
 

@@ -335,7 +335,17 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 			return shipPlan{}, err
 		}
 		if _, _, err := r.Run(ctx, "rev-parse", "--verify", "refs/tags/"+nextTag); err == nil {
-			return shipPlan{}, fmt.Errorf("ship: tag %s already exists", nextTag)
+			return shipPlan{}, WithHint(
+				fmt.Errorf("ship: tag %s already exists locally", nextTag),
+				"delete with `git tag -d "+nextTag+"` (only if it hasn't been pushed) or pick a different version with --version")
+		}
+		// Also check the remote — catching this in plan saves the user
+		// from a mid-ship push rejection that leaves the local repo
+		// with an orphan tag and main already pushed.
+		if remoteHasTag(ctx, r, remote, nextTag) {
+			return shipPlan{}, WithHint(
+				fmt.Errorf("ship: tag %s already exists on remote %q", nextTag, remote),
+				"someone else already shipped "+nextTag+" — pull first, then bump (e.g. `gk ship --patch`) or pick a specific version with --version")
 		}
 	}
 
@@ -352,6 +362,23 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 		VersionFile: versionFile,
 		Changelog:   changelog,
 	}, nil
+}
+
+// remoteHasTag returns true when the remote already advertises the
+// given tag. Empty / errored ls-remote output is treated as "no" — the
+// later push will surface real network failures, this check is only a
+// soft guard to fail fast on the duplicate-tag case.
+func remoteHasTag(ctx context.Context, r git.Runner, remote, tag string) bool {
+	if remote == "" || tag == "" {
+		return false
+	}
+	out, _, err := r.Run(ctx, "ls-remote", "--tags", "--exit-code", remote, "refs/tags/"+tag)
+	if err != nil {
+		// `ls-remote --exit-code` returns 2 when no matching ref is
+		// found; either way "absent" is the safe interpretation here.
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func runShipPreflight(ctx context.Context, deps shipDeps, plan shipPlan, flags shipFlags) error {

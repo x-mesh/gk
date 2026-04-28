@@ -41,8 +41,12 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 	for i, line := range lines {
 		for _, p := range BuiltinPatterns {
 			if m := p.Regex.FindString(line); m != "" {
-				// generic-secret은 false positive가 많으므로 placeholder 필터 적용
-				if p.Kind == "generic-secret" && isPlaceholder(line) {
+				// Placeholder filter — apply to high-volume false-positive
+				// kinds. generic-secret is regex-broad; aws-access-key is
+				// fixed-shape but AWS docs themselves use AKIAIOSFODNN7EXAMPLE
+				// as the canonical sample, so any line containing
+				// "example"/"dummy"/etc. is overwhelmingly fixture data.
+				if (p.Kind == "generic-secret" || p.Kind == "aws-access-key") && isPlaceholder(line) {
 					continue
 				}
 				out = append(out, Finding{Kind: p.Kind, Line: i + 1, Sample: mask(m)})

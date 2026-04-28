@@ -18,7 +18,7 @@ func (f fakeGitleaks) Run(context.Context) ([]scan.GitleaksFinding, error) {
 }
 
 func TestScanPayloadBuiltinOnly(t *testing.T) {
-	payload := "api_key: \"AKIAIOSFODNN7EXAMPLE\"\n"
+	payload := "api_key: \"AKIA1234567890ABCDEF\"\n"
 	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{}, fakeGitleaks{})
 	if err != nil {
 		t.Fatalf("ScanPayload: %v", err)
@@ -32,7 +32,7 @@ func TestScanPayloadBuiltinOnly(t *testing.T) {
 }
 
 func TestScanPayloadAllowKindsSuppresses(t *testing.T) {
-	payload := "AKIAIOSFODNN7EXAMPLE\n"
+	payload := "AKIA1234567890ABCDEF\n"
 	got, err := ScanPayload(context.Background(), payload,
 		SecretGateOptions{AllowKinds: []string{"aws-access-key"}}, fakeGitleaks{})
 	if err != nil {

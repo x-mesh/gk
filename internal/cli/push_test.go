@@ -114,7 +114,7 @@ Author: gk-test <test@example.com>
 
 diff --git a/config.go b/config.go
 +++ b/config.go
-+AWS_KEY=AKIAIOSFODNN7EXAMPLE
++AWS_KEY=AKIA1234567890ABCDEF
 `,
 			},
 		},
@@ -151,7 +151,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	repo := testutil.NewRepo(t)
 
 	// Write a file containing an AWS access key
-	repo.WriteFile("secrets.env", "AWS_KEY=AKIAIOSFODNN7EXAMPLE\n")
+	repo.WriteFile("secrets.env", "AWS_KEY=AKIA1234567890ABCDEF\n")
 	repo.Commit("feat: add secrets file")
 
 	// Build a push command targeting the test repo's ExecRunner
@@ -186,7 +186,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"rev-parse --verify origin/main^{commit}": {ExitCode: 128, Stderr: "unknown"},
 			"log -p --no-color HEAD": {
-				Stdout: "AWS_KEY=AKIAIOSFODNN7EXAMPLE\n",
+				Stdout: "AWS_KEY=AKIA1234567890ABCDEF\n",
 			},
 			"symbolic-ref --short HEAD": {Stdout: "main\n"},
 		},

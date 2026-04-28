@@ -186,7 +186,15 @@ func (m *lineFileMap) fileAt(line int) string {
 	return best
 }
 
-// relLine은 주어진 전체 줄 번호를 파일 내 상대 줄 번호로 변환한다.
+// relLine converts a 1-based blob line number into the equivalent
+// 1-based line number within the file that owns it.
+//
+// summariseForSecretScan emits "### <path>" as a header, then the file
+// content starts on the *next* blob line. So if the header sits at blob
+// line H, the file's line 1 lives at blob line H+1, line 2 at H+2, etc.
+// The mapping is therefore `blob - H` — not `blob - H + 1`, which would
+// off-by-one every reported finding (was reporting line 47 for what is
+// actually line 46 in the source file).
 func (m *lineFileMap) relLine(line int) int {
 	var bestStart int
 	for _, e := range m.entries {
@@ -199,5 +207,5 @@ func (m *lineFileMap) relLine(line int) int {
 	if bestStart == 0 {
 		return line
 	}
-	return line - bestStart + 1
+	return line - bestStart
 }

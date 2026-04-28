@@ -280,12 +280,16 @@ func TestRedactStillMatchesQuotedSecrets(t *testing.T) {
 		name string
 		line string
 	}{
-		{"quoted api_key", `api_key = "sk_live_abcdefghijklmnop1234"`},
-		{"quoted JWT token", `token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig"`},
-		{"quoted password with punctuation", `password = "P@ssw0rd-with!punct"`},
-		{"quoted secret", `secret = "my-very-long-secret-value"`},
-		{"bare api_key key-safe", `api_key = sk_live_abcdefghijklmnop1234`},
-		{"bare token key-safe", `token = ghp_xxxxxxxxxxxxxxxxxxxxxxxx`},
+		// Fixture values include "example"/"dummy"/"sample" so the
+		// secrets.Scan placeholder filter recognises them as fake during
+		// gk push / gk ship — otherwise the very test that guards against
+		// false positives becomes a false-positive in CI.
+		{"quoted api_key", `api_key = "example_fake_key_abcdefghij1234"`},
+		{"quoted JWT token", `token = "eyJhbExample.payload.sig_dummy_token_here"`},
+		{"quoted password with punctuation", `password = "Example-P@ssw0rd-fake!"`},
+		{"quoted secret", `secret = "example-fake-secret-value-1234"`},
+		{"bare api_key key-safe", `api_key = example_fake_key_abcdefghij1234`},
+		{"bare token key-safe", `token = ghp_dummy_xxxxxxxxxxxxxxxxxx`},
 		{"AWS access key", `aws_key = AKIAIOSFODNN7EXAMPLE`},
 	}
 	for _, tc := range cases {

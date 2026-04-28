@@ -83,7 +83,7 @@ func TestIntegrationGatherClassifyComposeApplyHappyPath(t *testing.T) {
 func TestIntegrationSecretGateBlocksProvider(t *testing.T) {
 	// Payload includes a fake AWS access key — the gate must refuse to
 	// proceed, and we never reach Classify.
-	payload := "key: AKIAIOSFODNN7EXAMPLE"
+	payload := "key: AKIA1234567890ABCDEF"
 	findings, err := ScanPayload(context.Background(), payload, SecretGateOptions{}, fakeGitleaks{})
 	if err != nil {
 		t.Fatalf("ScanPayload: %v", err)

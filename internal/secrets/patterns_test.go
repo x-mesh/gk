@@ -14,8 +14,12 @@ func TestScan_BuiltinPatterns(t *testing.T) {
 		wantFound bool
 	}{
 		{
-			name:      "aws-access-key",
-			input:     "export AWS_KEY=AKIAIOSFODNN7EXAMPLE",
+			name: "aws-access-key",
+			// Use AKIA1234567890ABCDEF instead of AKIAIOSFODNN7EXAMPLE —
+			// the latter trips the isPlaceholder filter (contains EXAMPLE)
+			// since aws-access-key now opts into the same placeholder
+			// suppression as generic-secret.
+			input:     "export AWS_KEY=AKIA1234567890ABCDEF",
 			wantKind:  "aws-access-key",
 			wantFound: true,
 		},
@@ -86,7 +90,7 @@ func TestScan_BuiltinPatterns(t *testing.T) {
 func TestScan_MultiLineMultiplefindings(t *testing.T) {
 	blob := strings.Join([]string{
 		"normal line",
-		"export KEY=AKIAIOSFODNN7EXAMPLE",
+		"export KEY=AKIA1234567890ABCDEF",
 		"another normal line",
 		"token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
 	}, "\n")

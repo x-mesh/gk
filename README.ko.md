@@ -82,6 +82,7 @@ unalias gk gke 2>/dev/null
 gk clone JINWOO-J/playground # git@github.com:JINWOO-J/playground.git로 확장
 gk pull                      # fetch + rebase, upstream 자동 감지
 gk pull --strategy ff-only   # fast-forward only; 히스토리 분기 시 에러
+gk merge main                # main 브랜치를 현재 브랜치로 병합 (precheck 포함)
 gk sync                      # fetch + fast-forward only (rebase 없음)
 gk status                    # 간결한 작업 트리 요약
 gk log                       # 짧고 컬러풀한 커밋 로그
@@ -107,6 +108,7 @@ gk hooks install --all       # commit-msg + pre-push + pre-commit 훅 연결
 gk lint-commit --staged    # Conventional Commits 기준으로 커밋 메시지 검증
 gk branch-check            # 브랜치 이름 규칙 적용
 gk preflight               # 설정된 검사 순서 실행
+gk ship dry-run            # squash/version/changelog/tag/push 플랜 미리보기
 ```
 
 ## 명령어
@@ -117,6 +119,7 @@ gk preflight               # 설정된 검사 순서 실행
 |---|---|---|
 | `gk clone <owner/repo \| alias:owner/repo \| url>` | | 단축 URL 확장 clone. `owner/repo`는 기본 `git@github.com:owner/repo.git` (ssh, 설정 가능). `--ssh`/`--https` override. `clone.hosts`로 alias(`gl:`, `work:`). `clone.root`, `clone.post_actions: [hooks-install, doctor]` 옵션 지원. |
 | `gk pull` | | fetch + upstream 통합. `--strategy rebase\|merge\|ff-only\|auto`; `@{u}` 우선 해석; HEAD가 이미 ancestor이면 `--ff-only`로 자동 전환 |
+| `gk merge <target>` | | 대상 브랜치를 현재 브랜치로 병합 (precheck + AI plan 포함). `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` 지원 |
 | `gk sync` | | fetch + fast-forward only; `--all`로 모든 추적 브랜치 |
 | `gk status` | `gk st` | 간결한 작업 트리 상태. `-f`/`--fetch`로 ↑N ↓N을 원격에서 갱신. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` 오버레이 |
 | `gk log` | `gk slog` | 짧은 컬러 커밋 로그. `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` 시각화 |
@@ -145,6 +148,7 @@ gk preflight               # 설정된 검사 순서 실행
 | 명령어 | 설명 |
 |---|---|
 | `gk push` | 가드된 push: 시크릿 스캔 + 보호 브랜치 적용; `--force`는 `--force-with-lease`로 라우팅 |
+| `gk ship` | 릴리즈 ship 게이트: status/dry-run/squash 모드, SemVer 추론, 버전/CHANGELOG 릴리즈 커밋, 가드된 브랜치/태그 push. 태그 push가 릴리즈 워크플로 트리거 |
 | `gk precheck <target>` | `git merge-tree`로 드라이런 충돌 스캔; 충돌 시 exit 3; CI용 `--json` |
 | `gk preflight` | 설정된 검사 순서 실행 (`commit-lint`, `branch-check`, `no-conflict`, 또는 쉘 명령) |
 | `gk lint-commit` | Conventional Commits 기준으로 커밋 메시지 검증; `--staged`, `--file PATH`, `<rev-range>` |
@@ -187,8 +191,8 @@ gk preflight               # 설정된 검사 순서 실행
 | 명령어 | 설명 |
 |---|---|
 | `gk doctor` | 환경 상태 보고 (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers); `--json` for CI |
-| `gk init ai [--kiro] [--force] [--out <dir>]` | `CLAUDE.md` + `AGENTS.md` 스캐폴드 (옵션: `.kiro/steering/`). AI 코딩 어시스턴트가 즉시 프로젝트 컨텍스트를 파악할 수 있게 합니다 |
-| `gk init config [--force] [--out <path>]` | `$XDG_CONFIG_HOME/gk/config.yaml`에 주석 달린 YAML 템플릿 스캐폴드 (첫 `gk` 실행 시 자동 생성; `GK_NO_AUTO_CONFIG=1`로 비활성화) |
+| `gk init [--only <target>] [--kiro] [--force]` | 프로젝트 분석 후 `.gitignore`, `.gk.yaml`, AI 컨텍스트 파일(`CLAUDE.md`, `AGENTS.md`)을 한 번에 스캐폴드. `--only gitignore\|config\|ai`로 범위 제한; `--kiro`는 `.kiro/steering/`도 함께 작성. 인터랙티브 huh 폼이 작성 전 플랜을 미리 보여줌 |
+| `gk config init [--force] [--out <path>]` | `$XDG_CONFIG_HOME/gk/config.yaml`에 주석 달린 YAML 템플릿 스캐폴드 (첫 `gk` 실행 시 자동 생성; `GK_NO_AUTO_CONFIG=1`로 비활성화). `gk init config` 별칭은 호환용으로 유지 |
 | `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | `.git/hooks/` 아래 gk 관리 훅 심 설치 (`--pre-commit`은 `gk guard check` 연결) |
 | `gk hooks uninstall [...]` | gk 관리 훅 제거 (외부 훅은 삭제 거부) |
 | `gk config show` | 완전히 해석된 설정을 YAML로 출력 |
@@ -206,15 +210,17 @@ gk preflight               # 설정된 검사 순서 실행
 
 | Provider | 설치 | 인증 |
 |---|---|---|
-| `nvidia` (NVIDIA) — **기본값** | 바이너리 불필요 | `export NVIDIA_API_KEY=...` |
+| `anthropic` (Anthropic Claude) — **기본값** | 바이너리 불필요 | `export ANTHROPIC_API_KEY=...` |
+| `openai` (OpenAI) | 바이너리 불필요 | `export OPENAI_API_KEY=...` |
+| `nvidia` (NVIDIA) | 바이너리 불필요 | `export NVIDIA_API_KEY=...` |
 | `groq` (Groq) | 바이너리 불필요 | `export GROQ_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` 또는 `brew install gemini-cli` | `export GEMINI_API_KEY=...` 또는 `gemini` 최초 실행 시 OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` 또는 `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro — **`kiro` IDE 런처와 다름**) | [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) 또는 IDE OAuth |
 
-> **nvidia**와 **groq**는 각각의 Chat Completions API를 HTTP로 직접 호출합니다 — 외부 바이너리가 필요 없습니다. 다른 provider(`gemini`, `qwen`, `kiro-cli`)는 외부 CLI subprocess로 구동됩니다.
+> **anthropic**, **openai**, **nvidia**, **groq**는 각각의 Messages / Chat Completions API를 HTTP로 직접 호출합니다 — 외부 바이너리가 필요 없습니다. 다른 provider(`gemini`, `qwen`, `kiro-cli`)는 외부 CLI subprocess로 구동됩니다.
 
-자동 감지 순서 (`ai.provider`가 비어있을 때): **nvidia → groq → gemini → qwen → kiro-cli**. 명시적 `--provider`가 없으면 **Fallback Chain**이 순서대로 사용 가능한 provider를 시도하며, 실패 시 자동으로 다음 provider로 전환합니다.
+자동 감지 순서 (`ai.provider`가 비어있을 때): **anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli**. 명시적 `--provider`가 없으면 **Fallback Chain**이 순서대로 사용 가능한 provider를 시도하며, 실패 시 자동으로 다음 provider로 전환합니다.
 
 `gk doctor` 출력에서 각 provider 설치/인증 상태를 확인할 수 있습니다.
 
@@ -230,7 +236,7 @@ gk commit [flags]
   -f, --force                      대화형 리뷰 없이 바로 커밋
       --include-unstaged           unstaged + untracked 포함 (기본값)
       --lang string                ai.lang 오버라이드 (en|ko|...)
-      --provider string            ai.provider 오버라이드 (nvidia|groq|gemini|qwen|kiro)
+      --provider string            ai.provider 오버라이드 (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                스테이지된 변경만 대상
   -y, --yes                        모든 프롬프트 자동 수락 (비-TTY에선 --force 별칭)
 ```
@@ -241,8 +247,16 @@ gk commit [flags]
 # .gk.yaml (또는 ~/.config/gk/config.yaml)
 ai:
   enabled: true              # 전역 off-switch. GK_AI_DISABLE=1 로도 비활성화 가능
-  provider: ""               # "" = 자동 감지 (nvidia → groq → gemini → qwen → kiro-cli)
+  provider: ""               # "" = 자동 감지 (anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli)
   lang: "en"                 # 메시지 언어 (BCP-47)
+  anthropic:                 # Anthropic Claude — HTTP 직접 호출 (Messages API), 바이너리 불필요
+    # model: "claude-sonnet-4-5-20250929"  # 기본값
+    # endpoint: "https://api.anthropic.com/v1/messages"
+    # timeout: "60s"
+  openai:                    # OpenAI — HTTP 직접 호출 (Chat Completions), 바이너리 불필요
+    # model: "gpt-4o-mini"  # 기본값
+    # endpoint: "https://api.openai.com/v1/chat/completions"
+    # timeout: "60s"
   nvidia:                    # NVIDIA provider — HTTP 직접 호출, 바이너리 불필요
     # model: "meta/llama-3.1-8b-instruct"  # 기본값
     # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -298,7 +312,7 @@ gk commit --abort
 
 ## pr / review / changelog
 
-이 명령들은 provider의 **Summarizer** 기능을 사용합니다. 현재 `nvidia` provider만 Summarizer를 구현하며, 다른 provider는 향후 릴리즈에서 지원 예정입니다.
+이 명령들은 provider의 **Summarizer** 기능을 사용합니다. 모든 내장 provider(`anthropic`, `openai`, `nvidia`, `groq`, `gemini`, `qwen`, `kiro-cli`)가 Summarizer를 구현합니다.
 
 ### `gk pr`
 

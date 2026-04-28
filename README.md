@@ -202,15 +202,17 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 
 | Provider | Install | Auth |
 |---|---|---|
-| `nvidia` (NVIDIA) — **default** | No binary needed | `export NVIDIA_API_KEY=...` |
+| `anthropic` (Anthropic Claude) — **default** | No binary needed | `export ANTHROPIC_API_KEY=...` |
+| `openai` (OpenAI) | No binary needed | `export OPENAI_API_KEY=...` |
+| `nvidia` (NVIDIA) | No binary needed | `export NVIDIA_API_KEY=...` |
 | `groq` (Groq) | No binary needed | `export GROQ_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` or `brew install gemini-cli` | `export GEMINI_API_KEY=...` or run `gemini` once for OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` or `export DASHSCOPE_API_KEY=...` |
 | `kiro-cli` (AWS Kiro headless — note: **not** the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
 
-> **nvidia** and **groq** call their respective Chat Completions APIs directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
+> **anthropic**, **openai**, **nvidia**, and **groq** call their respective Messages / Chat Completions APIs directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
 
-Auto-detect order (when `ai.provider` is empty): **nvidia → groq → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
+Auto-detect order (when `ai.provider` is empty): **anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
 
 Run `gk doctor` to verify each provider's install + auth status.
 
@@ -226,7 +228,7 @@ gk commit [flags]
   -f, --force                      apply commits without interactive review
       --include-unstaged           include unstaged + untracked changes (default true)
       --lang string                override ai.lang (en|ko|...)
-      --provider string            override ai.provider (nvidia|groq|gemini|qwen|kiro)
+      --provider string            override ai.provider (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                only consider already-staged changes
   -y, --yes                        accept every prompt (alias for --force when non-TTY)
 ```
@@ -237,8 +239,16 @@ gk commit [flags]
 # .gk.yaml (or ~/.config/gk/config.yaml)
 ai:
   enabled: true              # master off-switch; GK_AI_DISABLE=1 also disables
-  provider: ""               # "" = auto-detect (nvidia → groq → gemini → qwen → kiro-cli)
+  provider: ""               # "" = auto-detect (anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli)
   lang: "en"                 # message language (BCP-47 short)
+  anthropic:                 # Anthropic Claude — HTTP direct (Messages API), no binary needed
+    # model: "claude-sonnet-4-5-20250929"  # default
+    # endpoint: "https://api.anthropic.com/v1/messages"
+    # timeout: "60s"
+  openai:                    # OpenAI — HTTP direct (Chat Completions), no binary needed
+    # model: "gpt-4o-mini"  # default
+    # endpoint: "https://api.openai.com/v1/chat/completions"
+    # timeout: "60s"
   nvidia:                    # NVIDIA provider — HTTP direct, no binary needed
     # model: "meta/llama-3.1-8b-instruct"  # default
     # endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -294,7 +304,7 @@ gk commit --abort
 
 ## pr / review / changelog
 
-These commands use the provider's **Summarizer** capability. Currently only the `nvidia` provider implements Summarizer; other providers will gain support in future releases.
+These commands use the provider's **Summarizer** capability. All shipped providers (`anthropic`, `openai`, `nvidia`, `groq`, `gemini`, `qwen`, `kiro-cli`) implement Summarizer.
 
 ### `gk pr`
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // DivergedError is returned when a branch cannot be fast-forwarded because
@@ -108,21 +109,33 @@ func runSyncCore(cmd *cobra.Command) error {
 
 	var stashed bool
 	if dirty {
-		if !autostash {
+		switch {
+		case autostash:
+			if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk sync autostash"); err != nil {
+				return fmt.Errorf("stash failed: %w", err)
+			}
+			stashed = true
+		case ui.IsTerminal():
+			ok, perr := promptStashDirty(ctx, runner, "gk sync autostash")
+			if perr != nil {
+				if errors.Is(perr, errSkipDirty) {
+					return WithHint(
+						errors.New("working tree has uncommitted changes"),
+						hintCommand("gk sync --autostash"),
+					)
+				}
+				return perr
+			}
+			stashed = ok
+		default:
 			return WithHint(
 				errors.New("working tree has uncommitted changes"),
 				hintCommand("gk sync --autostash"),
 			)
 		}
-		if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk sync autostash"); err != nil {
-			return fmt.Errorf("stash failed: %w", err)
+		if stashed {
+			defer popStashBestEffort(ctx, runner)
 		}
-		stashed = true
-		defer func() {
-			if stashed {
-				popStashBestEffort(ctx, runner)
-			}
-		}()
 	}
 
 	// 3) decide which branches to sync

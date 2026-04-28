@@ -128,17 +128,32 @@ func runPullCore(cmd *cobra.Command) error {
 
 	var stashed bool
 	if dirty {
-		if !autostash {
+		switch {
+		case autostash:
+			if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk pull autostash"); err != nil {
+				return fmt.Errorf("stash failed: %w", err)
+			}
+			stashed = true
+			Dbg("pull: autostashed working tree (--autostash)")
+		case ui.IsTerminal():
+			ok, perr := promptStashDirty(ctx, runner, "gk pull autostash")
+			if perr != nil {
+				if errors.Is(perr, errSkipDirty) {
+					return WithHint(
+						errors.New("working tree has uncommitted changes"),
+						hintCommand("gk pull --autostash"),
+					)
+				}
+				return perr
+			}
+			stashed = ok
+			Dbg("pull: autostashed working tree (interactive prompt)")
+		default:
 			return WithHint(
 				errors.New("working tree has uncommitted changes"),
 				hintCommand("gk pull --autostash"),
 			)
 		}
-		if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk pull autostash"); err != nil {
-			return fmt.Errorf("stash failed: %w", err)
-		}
-		stashed = true
-		Dbg("pull: autostashed working tree")
 	}
 
 	// 5) fetch — when --verbose, stream git's progress into a viewport

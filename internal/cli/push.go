@@ -108,6 +108,22 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 	gitArgs = append(gitArgs, remote, branch)
 	Dbg("push: hasUpstream=%v argv=%v", hasUpstream, gitArgs)
+
+	// --verbose mode streams git's progress (objects/deltas/refs) into a
+	// scrollable viewport so the user can watch the push proceed.
+	if Verbose() && ui.IsTerminal() {
+		args := []string{}
+		if RepoFlag() != "" {
+			args = append(args, "-C", RepoFlag())
+		}
+		args = append(args, gitArgs...)
+		title := fmt.Sprintf("pushing %s → %s", branch, remote)
+		if err := ui.RunCommandStreamTUI(ctx, title, "git", args...); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	if err != nil {
 		fmt.Fprint(cmd.ErrOrStderr(), string(stderr))

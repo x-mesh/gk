@@ -75,10 +75,27 @@ func init() {
 func Root() *cobra.Command { return rootCmd }
 
 // SetVersionInfo wires build-time version metadata for `gk --version` output
-// and prepends the version line to the root help page.
-func SetVersionInfo(v, c, d string) {
-	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", v, c, d)
-	rootCmd.Long = fmt.Sprintf("gk %s (commit %s, built %s)\n\n%s", v, c, d, rootLongDesc)
+// and prepends the version line to the root help page. branch + worktree
+// are surfaced when known so users can tell which checkout produced the
+// binary they're running — invaluable when juggling multiple gk worktrees.
+func SetVersionInfo(v, c, d, b, w string) {
+	suffix := buildSuffix(b, w)
+	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s%s)", v, c, d, suffix)
+	rootCmd.Long = fmt.Sprintf("gk %s (commit %s, built %s%s)\n\n%s", v, c, d, suffix, rootLongDesc)
+}
+
+func buildSuffix(branch, worktree string) string {
+	parts := []string{}
+	if branch != "" && branch != "unknown" {
+		parts = append(parts, "branch "+branch)
+	}
+	if worktree != "" && worktree != "unknown" {
+		parts = append(parts, "worktree "+worktree)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ", " + strings.Join(parts, ", ")
 }
 
 // Execute runs the root command. Returns the error so main.go can set exit code.

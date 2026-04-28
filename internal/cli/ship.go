@@ -44,6 +44,7 @@ when the repository has tag-based release automation.`,
 	cmd.Flags().Bool("allow-non-base", false, "allow release tags from a non-base branch")
 	cmd.Flags().BoolP("yes", "y", false, "skip the final confirmation prompt")
 	cmd.Flags().Bool("dry-run", false, "print the ship plan without tagging or pushing")
+	cmd.Flags().Bool("no-fetch", false, "skip the up-front `git fetch --tags` (use a stale local view)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -58,6 +59,7 @@ type shipFlags struct {
 	allowNonBase  bool
 	yes           bool
 	dryRun        bool
+	noFetch       bool
 }
 
 type shipMode string
@@ -121,6 +123,7 @@ func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
 	f.allowNonBase, _ = cmd.Flags().GetBool("allow-non-base")
 	f.yes, _ = cmd.Flags().GetBool("yes")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
+	f.noFetch, _ = cmd.Flags().GetBool("no-fetch")
 	if DryRun() {
 		f.dryRun = true
 	}
@@ -271,6 +274,21 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 	remote := cfg.Remote
 	if remote == "" {
 		remote = "origin"
+	}
+
+	// Sync remote tags up front so the next-tag inference and the
+	// duplicate-tag check both see whatever someone else may have
+	// already pushed. Without this, a stale local view bumps to
+	// (e.g.) v0.2.0 only to be rejected later when push tries to
+	// publish a tag that already exists on origin. Failures here are
+	// not fatal — offline / restricted setups still need to ship.
+	if !flags.noFetch {
+		stop := ui.StartBubbleSpinner(fmt.Sprintf("ship: fetching tags from %s", remote))
+		_, _, fetchErr := r.Run(ctx, "fetch", "--tags", "--prune-tags", remote)
+		stop()
+		if fetchErr != nil {
+			Dbg("ship: fetch --tags failed (continuing): %v", fetchErr)
+		}
 	}
 
 	statusOut, _, err := r.Run(ctx, "status", "--porcelain")

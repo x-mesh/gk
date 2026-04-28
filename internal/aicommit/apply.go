@@ -153,13 +153,15 @@ func currentBranch(ctx context.Context, runner git.Runner) (string, error) {
 // Commits order: "<type>(<scope>): <subject>\n\n<body>\n\n<footers>\n\n<trailer>".
 func formatCommitMessage(m Message, trailer string) string {
 	var b strings.Builder
-	// Header.
+	// Header. Strip any leading Conventional-Commits prefix the LLM
+	// tucked onto Subject so we don't double up to "build: build: ...".
+	subject := stripConventionalPrefix(m.Subject, m.Group.Type, m.Group.Scope)
 	b.WriteString(m.Group.Type)
 	if m.Group.Scope != "" {
 		b.WriteString("(" + m.Group.Scope + ")")
 	}
 	b.WriteString(": ")
-	b.WriteString(m.Subject)
+	b.WriteString(subject)
 
 	if m.Body != "" {
 		b.WriteString("\n\n")
@@ -180,6 +182,44 @@ func formatCommitMessage(m Message, trailer string) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// stripConventionalPrefix removes a leading "<type>(<scope>)?(!)?: " from
+// subject when it duplicates the (type, scope) we're about to prepend.
+// Match is case-insensitive on type and tolerates a missing or different
+// scope to catch the LLM's most common variants. Only strips a single
+// occurrence so legitimate ":" inside the subject is preserved.
+func stripConventionalPrefix(subject, gType, gScope string) string {
+	s := strings.TrimLeft(subject, " \t")
+	if gType == "" {
+		return s
+	}
+	lower := strings.ToLower(s)
+	tlower := strings.ToLower(gType)
+	if !strings.HasPrefix(lower, tlower) {
+		return s
+	}
+	rest := s[len(gType):]
+	// Optional "(scope)" — accept any scope, not just the matching one.
+	if strings.HasPrefix(rest, "(") {
+		if i := strings.Index(rest, ")"); i > 0 {
+			rest = rest[i+1:]
+		}
+	}
+	// Optional breaking-change "!".
+	rest = strings.TrimPrefix(rest, "!")
+	if !strings.HasPrefix(rest, ": ") && !strings.HasPrefix(rest, ":") {
+		return s
+	}
+	rest = strings.TrimPrefix(rest, ":")
+	rest = strings.TrimLeft(rest, " ")
+	if rest == "" {
+		// Subject was *only* the prefix — keep the original so we don't
+		// emit an empty subject; lint will surface it as a real issue.
+		return s
+	}
+	_ = gScope // accepted but not required to match
+	return rest
 }
 
 // parseCommitSha pulls the short SHA out of `git commit` stdout.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -214,6 +215,10 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	decisions, err := aicommit.ReviewPlan(messages, reviewOpts)
 	if err != nil {
+		if errors.Is(err, aicommit.ErrReviewAborted) {
+			fmt.Fprintln(cmd.ErrOrStderr(), "commit: review aborted")
+			return nil
+		}
 		return fmt.Errorf("commit: review: %w", err)
 	}
 	kept := filterKept(messages, decisions)
@@ -539,15 +544,25 @@ func groupKeyLocal(g provider.Group) string {
 }
 
 // filterKept returns the subset of messages that survived review.
+// EditedSubject / EditedBody overrides from the review TUI are applied
+// in place so the committed message reflects the user's edits.
 func filterKept(messages []aicommit.Message, decisions []aicommit.ReviewDecision) []aicommit.Message {
 	out := messages[:0:0]
 	for i, d := range decisions {
 		if i >= len(messages) {
 			break
 		}
-		if d.Keep {
-			out = append(out, messages[i])
+		if !d.Keep {
+			continue
 		}
+		m := messages[i]
+		if d.EditedSubject != "" {
+			m.Subject = d.EditedSubject
+		}
+		if d.EditedBody != "" {
+			m.Body = d.EditedBody
+		}
+		out = append(out, m)
 	}
 	return out
 }

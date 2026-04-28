@@ -1,6 +1,7 @@
 package aicommit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +88,63 @@ func ReviewPlan(messages []Message, opts ReviewOptions) ([]ReviewDecision, error
 	return decisions, nil
 }
 
+// splitCommitMessage parses a textarea-edited message back into subject
+// + body. The first line is the subject (trimmed of CR for Windows
+// line endings); everything after the first blank line is the body.
+// When there's no blank separator, anything past the first line is
+// treated as body so the user's edits aren't silently dropped.
+func splitCommitMessage(s string) (subject, body string) {
+	lines := strings.Split(s, "\n")
+	if len(lines) == 0 {
+		return "", ""
+	}
+	subject = strings.TrimRight(lines[0], "\r")
+	if len(lines) == 1 {
+		return subject, ""
+	}
+	rest := lines[1:]
+	// Skip leading blank lines so a single blank separator after the
+	// subject doesn't leak into the body as a leading newline.
+	for len(rest) > 0 && strings.TrimSpace(rest[0]) == "" {
+		rest = rest[1:]
+	}
+	body = strings.TrimRight(strings.Join(rest, "\n"), "\n")
+	return subject, body
+}
+
+// renderMessageBody composes the per-message detail block shown inside
+// the review TUI's scrollable viewport: file list, then the body. Kept
+// independent of printSummary so review can show one message at a time
+// while printSummary still gives the user a top-of-loop overview.
+func renderMessageBody(m Message) string {
+	var b strings.Builder
+	if len(m.Group.Files) > 0 {
+		b.WriteString("Files:\n")
+		for _, f := range m.Group.Files {
+			fmt.Fprintf(&b, "  • %s\n", f)
+		}
+	}
+	if m.Body != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(strings.TrimSpace(m.Body))
+		b.WriteString("\n")
+	}
+	if len(m.Footers) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		for _, f := range m.Footers {
+			fmt.Fprintf(&b, "%s: %s\n", f.Token, f.Value)
+		}
+	}
+	if b.Len() == 0 {
+		b.WriteString("(no body)")
+	}
+	return b.String()
+}
+
 // printSummary writes a tabular preview of the plan to out. Callers
 // can tee this into a log before prompting.
 func printSummary(out io.Writer, messages []Message) error {
@@ -116,20 +174,69 @@ func printSummary(out io.Writer, messages []Message) error {
 	return nil
 }
 
-// defaultPrompter uses ui.Confirm for a simple Keep-or-Drop decision.
-// The richer keymap (regenerate / edit / view diff) lives behind a
-// huh form invoked from the CLI wire-up; v1 ships with the minimal
-// flow to get the feature out the door.
+// defaultPrompter offers keep / edit / regen / drop on a TablePicker
+// and surfaces a textarea editor when the user picks "edit". A single
+// CLI flow now covers the path that used to need huh forms.
 type defaultPrompter struct{}
 
 func (defaultPrompter) Prompt(index, total int, m Message) (ReviewDecision, error) {
-	title := fmt.Sprintf("[%d/%d] apply %s: %s ?", index, total, m.Group.Type, m.Subject)
-	ok, err := ui.Confirm(title, true)
-	if err != nil {
-		return ReviewDecision{}, err
+	current := m
+	for {
+		title := fmt.Sprintf("[%d/%d] %s: %s", index, total, current.Group.Type, current.Subject)
+		body := renderMessageBody(current)
+		options := []ui.ScrollSelectOption{
+			{Key: "k", Value: "keep", Display: "keep — apply as proposed", IsDefault: true},
+			{Key: "e", Value: "edit", Display: "edit — modify subject/body before applying"},
+			{Key: "r", Value: "regen", Display: "regen — ask the model for a new draft"},
+			{Key: "d", Value: "drop", Display: "drop — skip this commit group"},
+		}
+		choice, err := ui.ScrollSelectTUI(context.Background(), title, body, options)
+		if err != nil {
+			if errors.Is(err, ui.ErrPickerAborted) {
+				return ReviewDecision{}, ErrReviewAborted
+			}
+			return ReviewDecision{}, err
+		}
+
+		switch choice {
+		case "", "keep":
+			if choice == "" {
+				return ReviewDecision{}, ErrReviewAborted
+			}
+			// Edits applied in a previous loop iteration are surfaced
+			// here via current.Subject / current.Body.
+			d := ReviewDecision{Keep: true}
+			if current.Subject != m.Subject {
+				d.EditedSubject = current.Subject
+			}
+			if current.Body != m.Body {
+				d.EditedBody = current.Body
+			}
+			return d, nil
+		case "drop":
+			return ReviewDecision{Drop: true}, nil
+		case "regen":
+			return ReviewDecision{Regenerate: true}, nil
+		case "edit":
+			initial := current.Subject
+			if strings.TrimSpace(current.Body) != "" {
+				initial += "\n\n" + current.Body
+			}
+			edited, err := ui.EditTextTUI(context.Background(),
+				"edit commit message",
+				"first line is the subject · blank line, then body · ctrl+d save · esc cancel",
+				initial, 80, 16)
+			if err != nil {
+				if errors.Is(err, ui.ErrPickerAborted) {
+					// User backed out of editing — return to the review
+					// menu without committing the partial change.
+					continue
+				}
+				return ReviewDecision{}, err
+			}
+			current.Subject, current.Body = splitCommitMessage(edited)
+			// Loop back to the review screen so the user can confirm
+			// (keep), drop, regen, or re-edit the new draft.
+		}
 	}
-	if !ok {
-		return ReviewDecision{Drop: true}, nil
-	}
-	return ReviewDecision{Keep: true}, nil
 }

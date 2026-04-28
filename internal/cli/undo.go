@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -20,14 +21,24 @@ func init() {
 	cmd := &cobra.Command{
 		Use:   "undo",
 		Short: "Pick a recent reflog entry to restore HEAD to",
-		Long: "Reads git reflog, lets you pick a past state, and runs `git reset --mixed`\n" +
-			"to that point after recording a backup ref. Working tree is always preserved.",
+		Long: `Reads git reflog, lets you pick a past state, and resets to that point after
+recording a backup ref.
+
+Reset modes:
+  default  --mixed  HEAD moves, index updated, working tree preserved
+                    (your file edits become unstaged changes — no data loss)
+  --hard           HEAD moves, index *and* working tree updated to that point
+                    (file edits at that point are restored, current edits gone)
+
+Use --hard when you really want to "go back to that exact moment"; the default
+errs on the safe side.`,
 		RunE: runUndo,
 	}
 	cmd.Flags().Bool("list", false, "print reflog entries only (don't prompt or reset)")
 	cmd.Flags().Int("limit", 20, "max reflog entries to show")
 	cmd.Flags().Bool("yes", false, "skip confirmation prompt")
 	cmd.Flags().String("to", "", "undo directly to a ref (e.g. HEAD@{3}) without picker")
+	cmd.Flags().Bool("hard", false, "discard working-tree changes and restore the picked state exactly (DANGEROUS)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -65,6 +76,7 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	limit, _ := cmd.Flags().GetInt("limit")
 	yes, _ := cmd.Flags().GetBool("yes")
 	to, _ := cmd.Flags().GetString("to")
+	hard, _ := cmd.Flags().GetBool("hard")
 
 	if limit <= 0 {
 		limit = 20
@@ -112,18 +124,84 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		target = entries[i]
 	}
 
-	// Safety preflight
+	// Safety preflight. Dirty trees aren't a hard stop — let the user
+	// resolve the situation in-line: stash + auto-pop (the safe path),
+	// continue without stashing (advanced), or cancel.
 	rep, err := gitsafe.Check(ctx, d.Runner, gitsafe.WithWorkDir(d.WorkDir))
 	if err != nil {
 		return err
 	}
-	if err := rep.Err(); err != nil {
-		return err
-	}
+	stashed := false
+	if dirtyErr := rep.Err(); dirtyErr != nil {
+		if !ui.IsTerminal() || yes {
+			return WithHint(dirtyErr,
+				"stash or commit first, then re-run gk undo")
+		}
+		statusOut, _, _ := d.Runner.Run(ctx, "status", "--short")
+		body := strings.TrimRight(string(statusOut), "\n")
+		if body == "" {
+			body = "(git status --short returned no output, but the safety check flagged the tree as dirty)"
+		}
+		body += "\n\n" + dirtyErr.Error()
 
+		options := []ui.ScrollSelectOption{
+			{Key: "s", Value: "stash", Display: "stash & continue — restore with `git stash pop` after undo", IsDefault: true},
+			{Key: "c", Value: "cancel", Display: "cancel undo"},
+		}
+		choice, perr := ui.ScrollSelectTUI(ctx, "working tree is dirty", body, options)
+		if perr != nil {
+			if errors.Is(perr, ui.ErrPickerAborted) {
+				fmt.Fprintln(cmd.OutOrStdout(), "aborted")
+				return nil
+			}
+			return perr
+		}
+		switch choice {
+		case "stash":
+			if _, errOut, sErr := d.Runner.Run(ctx, "stash", "push", "--include-untracked", "-m", "gk-undo-autostash"); sErr != nil {
+				return WithHint(
+					fmt.Errorf("stash before undo: %s: %w", strings.TrimSpace(string(errOut)), sErr),
+					"git failed to write the index. common causes:\n"+
+						"  - another git process is running (rebase/merge/commit in progress)\n"+
+						"  - a stale lock file: `ls .git/index.lock` and remove it if no git is running\n"+
+						"  - filesystem permissions / read-only mount\n"+
+						"  - in-progress operation: try `gk abort` first\n"+
+						"resolve the underlying issue, then re-run `gk undo`")
+			}
+			stashed = true
+			defer func() {
+				if _, errOut, pErr := d.Runner.Run(ctx, "stash", "pop"); pErr != nil {
+					reason := strings.TrimSpace(string(errOut))
+					// Indent multi-line git output so it stands apart
+					// from the recovery instructions.
+					indented := "    " + strings.ReplaceAll(reason, "\n", "\n    ")
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"\nwarning: stash pop failed — your changes are still safe at stash@{0}.\n"+
+							"git said:\n%s\n\n"+
+							"recover when you're ready:\n"+
+							"  1. inspect the stash:   git stash show -p stash@{0}\n"+
+							"  2. resolve the blocker (e.g. delete or rename conflicting untracked files)\n"+
+							"  3. re-apply:           git stash pop\n",
+						indented)
+				}
+			}()
+		default: // "cancel" or empty
+			fmt.Fprintln(cmd.OutOrStdout(), "aborted")
+			return nil
+		}
+	}
+	_ = stashed
+
+	mode := "mixed"
+	modeNote := "(working tree preserved — current edits become unstaged)"
+	if hard {
+		mode = "hard"
+		modeNote = "(working tree DISCARDED — current edits gone, files restored to that state)"
+	}
 	if !yes && ui.IsTerminal() {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"will reset HEAD to %s (%s). continue? [y/N] ", shortSHA(target.NewSHA), target.Summary)
+			"will reset --%s HEAD to %s (%s).\n  %s\ncontinue? [y/N] ",
+			mode, shortSHA(target.NewSHA), target.Summary, modeNote)
 		var ans string
 		_, _ = fmt.Fscanln(cmd.InOrStdin(), &ans)
 		ans = strings.ToLower(strings.TrimSpace(ans))
@@ -133,19 +211,26 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		}
 	}
 
-	// Backup current HEAD + mixed reset via gitsafe.Restorer (SHARED-04).
+	// Backup current HEAD + reset via gitsafe.Restorer (SHARED-04).
+	strategy := gitsafe.StrategyMixed
+	if hard {
+		strategy = gitsafe.StrategyHard
+	}
 	branch, _ := d.Client.CurrentBranch(ctx) // may be detached; OK, SanitizeBranchSegment handles it
 	restorer := gitsafe.NewRestorer(d.Runner, d.Now, "undo")
 	res, err := restorer.Restore(ctx, branch,
 		gitsafe.Target{SHA: target.NewSHA, Label: target.Ref, Summary: target.Summary},
-		gitsafe.StrategyMixed)
+		strategy)
 	if err != nil {
 		return err
 	}
 
+	hintLabel := color.New(color.FgMagenta, color.Bold).Sprint("hint:")
+	cmdStyle := color.New(color.Faint).SprintFunc()
 	fmt.Fprintf(cmd.OutOrStdout(), "undone to %s\n", shortSHA(res.To))
 	fmt.Fprintf(cmd.OutOrStdout(), "backup saved at %s\n", res.BackupRef)
-	fmt.Fprintf(cmd.OutOrStdout(), "to revert this undo: git reset --hard %s\n", res.BackupRef)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s to revert this undo, run → %s\n",
+		hintLabel, cmdStyle("git reset --hard "+res.BackupRef))
 	return nil
 }
 

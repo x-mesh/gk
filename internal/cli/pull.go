@@ -141,12 +141,28 @@ func runPullCore(cmd *cobra.Command) error {
 		Dbg("pull: autostashed working tree")
 	}
 
-	// 5) fetch
-	if err := client.Fetch(ctx, fetchRemote, fetchBranch, false); err != nil {
+	// 5) fetch — when --verbose, stream git's progress into a viewport
+	// so the user sees objects/deltas in real time. Default path keeps
+	// the quieter spinner-based fetch via client.Fetch.
+	var fetchErr error
+	if Verbose() && ui.IsTerminal() {
+		args := []string{"-C", RepoFlag()}
+		if RepoFlag() == "" {
+			args = []string{}
+		}
+		args = append(args, "fetch", fetchRemote)
+		if fetchBranch != "" {
+			args = append(args, fetchBranch)
+		}
+		fetchErr = ui.RunCommandStreamTUI(ctx, "fetching "+upstream, "git", args...)
+	} else {
+		fetchErr = client.Fetch(ctx, fetchRemote, fetchBranch, false)
+	}
+	if fetchErr != nil {
 		if stashed {
 			popStashBestEffort(ctx, runner)
 		}
-		return fmt.Errorf("fetch failed: %w", err)
+		return fmt.Errorf("fetch failed: %w", fetchErr)
 	}
 
 	if noRebase {

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -22,31 +24,79 @@ type TablePicker struct {
 }
 
 type tablePickerModel struct {
-	t       table.Model
-	items   []PickerItem
-	chosen  int
-	aborted bool
-	width   int
+	t            table.Model
+	items        []PickerItem // visible rows after filtering
+	all          []PickerItem // original list — kept verbatim for re-filter
+	chosen       int          // index into items at the moment of selection
+	chosenItem   PickerItem   // resolved item (so we don't have to re-index)
+	aborted      bool
+	width        int
+	filterInput  textinput.Model
+	filterActive bool // true while the user is typing into the filter box
 }
 
-func (m tablePickerModel) Init() tea.Cmd { return nil }
+func (m tablePickerModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Filter mode is sticky — typing replaces table navigation
+		// except for the few keys we explicitly forward (arrows, enter,
+		// esc).
+		if m.filterActive {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				m.aborted = true
+				return m, tea.Quit
+			case tea.KeyEsc:
+				// Clear the filter and exit filter mode.
+				m.filterInput.SetValue("")
+				m.filterInput.Blur()
+				m.filterActive = false
+				m.applyFilter()
+				return m, nil
+			case tea.KeyEnter:
+				// Lock in whatever the cursor is on right now.
+				if len(m.items) == 0 {
+					return m, nil
+				}
+				m.chosen = m.t.Cursor()
+				m.chosenItem = m.items[m.chosen]
+				return m, tea.Quit
+			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
+				var cmd tea.Cmd
+				m.t, cmd = m.t.Update(msg)
+				return m, cmd
+			}
+			// Forward everything else to the textinput, then refresh
+			// the filtered row set.
+			var cmd tea.Cmd
+			m.filterInput, cmd = m.filterInput.Update(msg)
+			m.applyFilter()
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "esc", "q":
 			m.aborted = true
 			return m, tea.Quit
 		case "enter":
+			if len(m.items) == 0 {
+				return m, nil
+			}
 			m.chosen = m.t.Cursor()
+			m.chosenItem = m.items[m.chosen]
 			return m, tea.Quit
+		case "/":
+			m.filterActive = true
+			m.filterInput.Focus()
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.t.SetWidth(msg.Width)
-		// Leave room for the help line + padding.
-		h := msg.Height - 4
+		// Leave room for filter line + help line + padding.
+		h := msg.Height - 5
 		if h < 5 {
 			h = 5
 		}
@@ -58,11 +108,61 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// applyFilter rebuilds the visible row list from the filter query.
+// Empty query → everything; otherwise case-insensitive substring match
+// on each cell (Display + every entry in Cells).
+func (m *tablePickerModel) applyFilter() {
+	q := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
+	if q == "" {
+		m.items = m.all
+	} else {
+		filtered := make([]PickerItem, 0, len(m.all))
+		for _, it := range m.all {
+			if itemMatchesFilter(it, q) {
+				filtered = append(filtered, it)
+			}
+		}
+		m.items = filtered
+	}
+	rows := make([]table.Row, len(m.items))
+	colCount := len(m.t.Columns())
+	for i, it := range m.items {
+		row := make(table.Row, colCount)
+		for j := 0; j < colCount; j++ {
+			row[j] = pickerCell(it, j)
+		}
+		rows[i] = row
+	}
+	m.t.SetRows(rows)
+	if m.t.Cursor() >= len(rows) {
+		m.t.SetCursor(0)
+	}
+}
+
+func itemMatchesFilter(it PickerItem, q string) bool {
+	if strings.Contains(strings.ToLower(it.Display), q) {
+		return true
+	}
+	for _, c := range it.Cells {
+		if strings.Contains(strings.ToLower(c), q) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m tablePickerModel) View() string {
-	help := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241")).
-		Render("↑/↓ navigate · enter select · esc/q cancel")
-	return m.t.View() + "\n" + help
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	var filterLine string
+	if m.filterActive {
+		filterLine = "filter: " + m.filterInput.View()
+	} else if v := m.filterInput.Value(); v != "" {
+		filterLine = hintStyle.Render("filter: " + v + "  (press / to edit)")
+	} else {
+		filterLine = hintStyle.Render("press / to filter")
+	}
+	help := hintStyle.Render("↑/↓ navigate · enter select · / filter · esc/q cancel")
+	return filterLine + "\n" + m.t.View() + "\n" + help
 }
 
 // Pick renders the items as a bubbles/table and returns the selected
@@ -138,8 +238,20 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		Bold(true)
 	t.SetStyles(styles)
 
+	filter := textinput.New()
+	filter.Placeholder = "type to filter…"
+	filter.Prompt = ""
+	filter.CharLimit = 64
+	filter.Width = 40
+
 	prog := tea.NewProgram(
-		tablePickerModel{t: t, items: items, chosen: -1},
+		tablePickerModel{
+			t:           t,
+			items:       items,
+			all:         items,
+			chosen:      -1,
+			filterInput: filter,
+		},
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
 		tea.WithInputTTY(),
@@ -158,7 +270,7 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	if m.aborted || m.chosen < 0 {
 		return PickerItem{}, ErrPickerAborted
 	}
-	return items[m.chosen], nil
+	return m.chosenItem, nil
 }
 
 func pickerCell(it PickerItem, idx int) string {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -26,9 +27,9 @@ func FormatHunkDiff(hunk resolve.ConflictHunk) string {
 	return b.String()
 }
 
-// RunResolveTUI는 huh 기반 form을 표시하여 각 충돌 영역의 해결 방법을 선택한다.
-// aiResolutions가 nil이면 ours/theirs만 표시한다.
-// 반환값은 파일별 FileResolution 목록이다.
+// RunResolveTUI walks each conflict hunk and asks the user to pick a
+// resolution. Long hunks scroll inside ui.ScrollSelectTUI's viewport,
+// so the diff stays visible while the user decides.
 func RunResolveTUI(
 	files []resolve.ConflictFile,
 	aiResolutions map[string][]resolve.HunkResolution,
@@ -50,33 +51,37 @@ func RunResolveTUI(
 			diff := FormatHunkDiff(*seg.Hunk)
 			title := fmt.Sprintf("%s — conflict %d", cf.Path, hunkIdx+1)
 
-			var items []ui.PickerItem
+			var options []ui.ScrollSelectOption
 			if aiRes != nil && hunkIdx < len(aiRes) {
 				ai := aiRes[hunkIdx]
-				items = []ui.PickerItem{
-					{Key: "ours", Display: fmt.Sprintf("ours — keep local (%s)", ai.Rationale)},
-					{Key: "theirs", Display: fmt.Sprintf("theirs — accept remote (%s)", ai.Rationale)},
-					{Key: "merged", Display: fmt.Sprintf("merged — AI combined (%s)", ai.Rationale)},
+				options = []ui.ScrollSelectOption{
+					{Key: "o", Value: "ours", Display: fmt.Sprintf("ours — keep local (%s)", ai.Rationale)},
+					{Key: "t", Value: "theirs", Display: fmt.Sprintf("theirs — accept remote (%s)", ai.Rationale)},
+					{Key: "m", Value: "merged", Display: fmt.Sprintf("merged — AI combined (%s)", ai.Rationale)},
+				}
+				// Mark whichever option matches the AI recommendation
+				// as the enter-default so the happy path is one keystroke.
+				rec := strings.ToLower(string(ai.Strategy))
+				for i := range options {
+					if options[i].Value == rec {
+						options[i].IsDefault = true
+						break
+					}
 				}
 			} else {
-				items = []ui.PickerItem{
-					{Key: "ours", Display: "ours — keep local changes"},
-					{Key: "theirs", Display: "theirs — accept remote changes"},
+				options = []ui.ScrollSelectOption{
+					{Key: "o", Value: "ours", Display: "ours — keep local changes"},
+					{Key: "t", Value: "theirs", Display: "theirs — accept remote changes"},
 				}
 			}
 
-			// Print the diff once before the picker so the user sees the
-			// hunk while choosing — TablePicker doesn't have a description
-			// pane like huh.NewSelect.
-			fmt.Println(title)
-			fmt.Println(diff)
-
-			picker := &ui.TablePicker{}
-			pick, err := picker.Pick(context.Background(), title, items)
+			choice, err := ui.ScrollSelectTUI(context.Background(), title, diff, options)
 			if err != nil {
+				if errors.Is(err, ui.ErrPickerAborted) {
+					return nil, err
+				}
 				return nil, err
 			}
-			choice := pick.Key
 
 			hr := resolve.HunkResolution{Strategy: resolve.Strategy(choice)}
 			switch choice {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -47,10 +48,18 @@ const preferredGitMinor = 40
 func init() {
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Report the health of the gk environment (git, pager, editor, config, hooks)",
+		Short: "Report the health of the gk environment (git, pager, editor, config, hooks, repo state)",
 		Long: `Runs a set of non-invasive environment checks and prints a PASS/WARN/FAIL
 report with copy-paste remediation hints. Intended to be the first command a
 new user runs after installing gk.
+
+Also includes repo-state diagnostics that catch the common "git can't write
+the index" and "you're stuck mid-rebase" situations:
+  - stale .git/index.lock
+  - in-progress rebase/merge/cherry-pick/bisect
+  - unmerged paths
+
+With --fix, doctor walks each finding and offers to repair it interactively.
 
 Exit codes:
   0  no FAIL rows
@@ -58,14 +67,17 @@ Exit codes:
 		RunE: runDoctor,
 	}
 	cmd.Flags().Bool("json", false, "emit machine-readable JSON")
+	cmd.Flags().Bool("fix", false, "after reporting, walk each finding and offer to repair it")
 	rootCmd.AddCommand(cmd)
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
+	fix, _ := cmd.Flags().GetBool("fix")
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	ctx := cmd.Context()
+	gitDir := resolveGitDir(ctx, runner)
 
 	checks := []doctorCheck{
 		checkGitVersion(ctx, runner),
@@ -81,6 +93,14 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkAIProvider("qwen"),
 		checkAIProvider("kiro-cli"),
 	}
+	if gitDir != "" {
+		checks = append(checks,
+			checkRepoLockFile(gitDir),
+			checkInProgressOp(gitDir),
+			checkUnmergedPaths(ctx, runner),
+			checkDirtyTree(ctx, runner),
+		)
+	}
 
 	w := cmd.OutOrStdout()
 	if asJSON {
@@ -91,6 +111,12 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		}
 	} else {
 		writeDoctorTable(w, checks)
+	}
+
+	if fix && !asJSON && gitDir != "" {
+		if err := runDoctorFix(ctx, cmd, runner, gitDir, checks); err != nil {
+			return err
+		}
 	}
 
 	for _, c := range checks {
@@ -278,30 +304,70 @@ func countStatus(checks []doctorCheck, s doctorStatus) int {
 	return n
 }
 
-// writeDoctorTable renders an aligned table to w.
+// writeDoctorTable renders an aligned, coloured table grouped by
+// "Environment" (toolchain — git/pager/editor/AI providers) and
+// "Repository state" (lock/in-progress/dirty). Colours follow the
+// usual traffic-light convention: green PASS / yellow WARN / red FAIL.
 func writeDoctorTable(w io.Writer, checks []doctorCheck) {
 	const nameCol = 22
+
+	envChecks := make([]doctorCheck, 0, len(checks))
+	repoChecks := make([]doctorCheck, 0)
 	for _, c := range checks {
-		marker := statusMarker(c.Status)
-		fmt.Fprintf(w, "%s  %-*s  %s\n", marker, nameCol, c.Name, c.Detail)
-		if c.Fix != "" {
-			fmt.Fprintf(w, "     %-*s  fix: %s\n", nameCol, "", c.Fix)
+		if strings.HasPrefix(c.Name, "repo:") {
+			repoChecks = append(repoChecks, c)
+		} else {
+			envChecks = append(envChecks, c)
 		}
 	}
+
+	header := color.New(color.Bold, color.FgCyan).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+	fixLabel := color.New(color.FgMagenta).SprintFunc()
+
+	render := func(title string, group []doctorCheck) {
+		if len(group) == 0 {
+			return
+		}
+		fmt.Fprintln(w, header("─── "+title+" "+strings.Repeat("─", 50-len(title))))
+		for _, c := range group {
+			marker := statusMarker(c.Status)
+			fmt.Fprintf(w, "%s  %-*s  %s\n", marker, nameCol, c.Name, c.Detail)
+			if c.Fix != "" {
+				fmt.Fprintf(w, "     %-*s  %s %s\n", nameCol, "", fixLabel("fix:"), faint(c.Fix))
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	render("Environment", envChecks)
+	render("Repository state", repoChecks)
+
 	pass := countStatus(checks, statusPass)
 	warn := countStatus(checks, statusWarn)
 	fail := countStatus(checks, statusFail)
-	fmt.Fprintf(w, "\n%d PASS · %d WARN · %d FAIL\n", pass, warn, fail)
+	passColor := color.New(color.FgGreen).SprintFunc()
+	warnColor := color.New(color.FgYellow).SprintFunc()
+	failColor := color.New(color.FgRed).SprintFunc()
+	fmt.Fprintf(w, "%s · %s · %s\n",
+		passColor(fmt.Sprintf("%d PASS", pass)),
+		warnColor(fmt.Sprintf("%d WARN", warn)),
+		failColor(fmt.Sprintf("%d FAIL", fail)))
+
+	if fail+warn > 0 {
+		hintColor := color.New(color.FgCyan).SprintFunc()
+		fmt.Fprintln(w, hintColor("→ run `gk doctor --fix` to walk each finding interactively"))
+	}
 }
 
 func statusMarker(s doctorStatus) string {
 	switch s {
 	case statusPass:
-		return "✓ PASS"
+		return color.New(color.FgGreen, color.Bold).Sprint("✓ PASS")
 	case statusWarn:
-		return "⚠ WARN"
+		return color.New(color.FgYellow, color.Bold).Sprint("⚠ WARN")
 	case statusFail:
-		return "✗ FAIL"
+		return color.New(color.FgRed, color.Bold).Sprint("✗ FAIL")
 	}
 	return "? ????"
 }

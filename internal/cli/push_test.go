@@ -330,3 +330,50 @@ func TestPush_ProtectedForceWrongConfirm(t *testing.T) {
 		t.Error("wrong confirmation should not match branch name")
 	}
 }
+
+// TestScanDiffAdditions_SkipsTestFilesAndRemovals guards two false-positive
+// classes that hit the user during a v0.17.x release:
+//   1. removal lines ("-old fixture") were flagged even though the secret is
+//      already in the base branch and not new content.
+//   2. test files were scanned, so deliberate fake secrets in *_test.go
+//      fixtures (added to verify pattern detection) blocked every release
+//      that touched the secret-scanner tests.
+func TestScanDiffAdditions_SkipsTestFilesAndRemovals(t *testing.T) {
+	diff := `commit deadbeef
+diff --git a/internal/secrets/patterns_test.go b/internal/secrets/patterns_test.go
++++ b/internal/secrets/patterns_test.go
+@@ -10,3 +10,4 @@
++    input: "AKIA1234567890ABCDEF",
++    wantFound: true,
+diff --git a/src/config.go b/src/config.go
++++ b/src/config.go
+@@ -5,2 +5,3 @@
+-    api_key = "OLD_REMOVED_SECRET_VALUE"
++    api_key = "AKIA1234567890ABCDEF"
+`
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (only the +api_key in src/config.go), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Kind != "aws-access-key" {
+		t.Errorf("want aws-access-key, got %s", findings[0].Kind)
+	}
+}
+
+// TestScanDiffAdditions_IgnoresContextAndMetadata confirms that hunk
+// headers, "diff --git" lines, "+++"/"---" markers, and context lines do
+// not feed into the scanner.
+func TestScanDiffAdditions_IgnoresContextAndMetadata(t *testing.T) {
+	diff := `diff --git a/notes.md b/notes.md
+index abc..def
+--- a/notes.md
++++ b/notes.md
+@@ -1,2 +1,3 @@
+ context: api_key = "AKIA1234567890ABCDEF"
++harmless added text
+`
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 0 {
+		t.Errorf("context line should not be flagged, got %+v", findings)
+	}
+}

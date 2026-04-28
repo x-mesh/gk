@@ -27,13 +27,13 @@ type PrivacyGateOptions struct {
 // the source file and its in-file line so error reporting can point the
 // user at the original location.
 type RedactFinding struct {
-	Kind        string `json:"kind"`              // "secret" | "path" | "pii"
-	Original    string `json:"original"`          // masked sample (first 4 chars + "***")
-	Placeholder string `json:"placeholder"`       // "[SECRET_1]", "[PATH_1]"
-	Line        int    `json:"line"`              // line within the redacted payload
-	File        string `json:"file,omitempty"`    // resolved source file (may be "")
+	Kind        string `json:"kind"`                // "secret" | "path" | "pii"
+	Original    string `json:"original"`            // masked sample (first 4 chars + "***")
+	Placeholder string `json:"placeholder"`         // "[SECRET_1]", "[PATH_1]"
+	Line        int    `json:"line"`                // line within the redacted payload
+	File        string `json:"file,omitempty"`      // resolved source file (may be "")
 	FileLine    int    `json:"file_line,omitempty"` // 1-based line within File
-	Pattern     string `json:"pattern,omitempty"` // regex/source that matched
+	Pattern     string `json:"pattern,omitempty"`   // regex/source that matched
 }
 
 // namedPattern pairs a regex with a stable label so findings can carry

@@ -93,6 +93,7 @@ func TestScanLost_ParsesOutput(t *testing.T) {
 
 	if commitEntry == nil {
 		t.Fatal("expected a commit entry")
+		return // unreachable; staticcheck SA5011 needs the explicit terminator
 	}
 	if commitEntry.Subject != "wip: save progress" {
 		t.Errorf("commit subject: got %q, want %q", commitEntry.Subject, "wip: save progress")
@@ -103,6 +104,7 @@ func TestScanLost_ParsesOutput(t *testing.T) {
 
 	if blobEntry == nil {
 		t.Fatal("expected a blob entry")
+		return // unreachable; staticcheck SA5011 needs the explicit terminator
 	}
 	if blobEntry.When != 0 {
 		t.Errorf("blob When should be 0, got %d", blobEntry.When)

@@ -71,7 +71,6 @@ func TestProperty1_ParseCherryOutputAccuracy(t *testing.T) {
 	})
 }
 
-
 // --- Unit tests for ParseCherryOutput ---
 
 func TestParseCherryOutput_Empty(t *testing.T) {
@@ -155,9 +154,9 @@ func TestDetectSquashMerged_SkipsProtected(t *testing.T) {
 func TestDetectSquashMerged_ClassifiesCorrectly(t *testing.T) {
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"cherry main feat/done": {Stdout: "- abc123\n- def456\n"},
+			"cherry main feat/done":    {Stdout: "- abc123\n- def456\n"},
 			"cherry main feat/partial": {Stdout: "+ abc123\n- def456\n"},
-			"cherry main feat/new":  {Stdout: "+ abc123\n+ def456\n"},
+			"cherry main feat/new":     {Stdout: "+ abc123\n+ def456\n"},
 		},
 	}
 	d := &SquashDetector{Runner: runner}

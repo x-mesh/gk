@@ -177,7 +177,6 @@ func runSyncCore(cmd *cobra.Command) error {
 
 	// 5) pop stash (only if still stashed; defer handles error paths)
 	if stashed {
-		stashed = false
 		if err := popStash(ctx, runner); err != nil {
 			return fmt.Errorf("stash pop failed: %w", err)
 		}

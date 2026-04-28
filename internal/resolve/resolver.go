@@ -35,14 +35,6 @@ func (r *Resolver) readFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// writeFile은 WriteFile 필드가 nil이면 os.WriteFile을 사용한다.
-func (r *Resolver) writeFile(path string, data []byte, perm os.FileMode) error {
-	if r.WriteFile != nil {
-		return r.WriteFile(path, data, perm)
-	}
-	return os.WriteFile(path, data, perm)
-}
-
 // CollectConflictedFiles는 git status에서 unmerged 파일 경로를 수집한다.
 func (r *Resolver) CollectConflictedFiles(ctx context.Context) ([]string, error) {
 	stdout, _, err := r.Runner.Run(ctx, "status", "--porcelain=v2")

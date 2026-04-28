@@ -92,7 +92,6 @@ func TestProperty2_BranchAnalysisResultJSONRoundTrip(t *testing.T) {
 	})
 }
 
-
 // ── Task 5.5: Unit tests — BranchAnalyzer type assertion 및 Nvidia 구현 ──
 
 func TestBranchAnalyzer_NvidiaSatisfiesInterface(t *testing.T) {

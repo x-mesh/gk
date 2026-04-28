@@ -71,9 +71,9 @@ func startBubbleSpinnerTo(w io.Writer, msg string) (stop func()) {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			close(done)   // unblock the start-delay select
-			prog.Kill()   // cancel ctx — graceful exit if prog.Run is in progress
-			<-stopped     // wait for the goroutine
+			close(done) // unblock the start-delay select
+			prog.Kill() // cancel ctx — graceful exit if prog.Run is in progress
+			<-stopped   // wait for the goroutine
 			// Belt-and-suspenders clear so legacy terminals that don't
 			// parse `\x1b[2K` (serial consoles, some CI log viewers)
 			// still end clean: overwrite with spaces first, then emit

@@ -177,9 +177,9 @@ func TestStateKindToOpType(t *testing.T) {
 		{gitstate.StateRebaseMerge, "rebase"},
 		{gitstate.StateRebaseApply, "rebase"},
 		{gitstate.StateCherryPick, "cherry-pick"},
-		{gitstate.StateNone, "merge"},       // default
-		{gitstate.StateRevert, "merge"},     // default
-		{gitstate.StateBisect, "merge"},     // default
+		{gitstate.StateNone, "merge"},   // default
+		{gitstate.StateRevert, "merge"}, // default
+		{gitstate.StateBisect, "merge"}, // default
 	}
 	for _, tt := range tests {
 		got := stateKindToOpType(tt.kind)
@@ -197,6 +197,15 @@ func TestResolveStrategyAI_NoProvider(t *testing.T) {
 	cmd, _, _ := rootCmd.Find([]string{"resolve"})
 	_ = cmd.Flags().Set("strategy", "ai")
 	defer func() { _ = cmd.Flags().Set("strategy", "") }()
+
+	// flagRepo is package-global and gets clobbered by sibling tests
+	// (reset_test.go etc.) that point it at a tempdir which has since
+	// been cleaned up. Without this reset the test fails with a stale
+	// "chdir: no such file or directory" instead of the AI-related
+	// error the assertion is actually probing for.
+	prevRepo := flagRepo
+	flagRepo = ""
+	defer func() { flagRepo = prevRepo }()
 
 	// In test env, no AI provider is available. The command should error
 	// about requiring an AI provider.

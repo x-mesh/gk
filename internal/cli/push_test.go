@@ -333,11 +333,11 @@ func TestPush_ProtectedForceWrongConfirm(t *testing.T) {
 
 // TestScanDiffAdditions_SkipsTestFilesAndRemovals guards two false-positive
 // classes that hit the user during a v0.17.x release:
-//   1. removal lines ("-old fixture") were flagged even though the secret is
-//      already in the base branch and not new content.
-//   2. test files were scanned, so deliberate fake secrets in *_test.go
-//      fixtures (added to verify pattern detection) blocked every release
-//      that touched the secret-scanner tests.
+//  1. removal lines ("-old fixture") were flagged even though the secret is
+//     already in the base branch and not new content.
+//  2. test files were scanned, so deliberate fake secrets in *_test.go
+//     fixtures (added to verify pattern detection) blocked every release
+//     that touched the secret-scanner tests.
 func TestScanDiffAdditions_SkipsTestFilesAndRemovals(t *testing.T) {
 	diff := `commit deadbeef
 diff --git a/internal/secrets/patterns_test.go b/internal/secrets/patterns_test.go

@@ -35,8 +35,8 @@ type BranchAnalysisInput struct {
 // BranchAnalysis는 브랜치 하나의 AI 분석 결과이다.
 type BranchAnalysis struct {
 	Name       string `json:"name"`
-	Category   string `json:"category"`    // "completed", "experiment", "in_progress", "preserve"
-	Summary    string `json:"summary"`     // 최대 80자
+	Category   string `json:"category"` // "completed", "experiment", "in_progress", "preserve"
+	Summary    string `json:"summary"`  // 최대 80자
 	SafeDelete bool   `json:"safe_delete"`
 }
 

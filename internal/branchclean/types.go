@@ -52,7 +52,7 @@ type CleanOptions struct {
 	Yes          bool
 	NoAI         bool
 	Gone         bool
-	Stale        int  // 0이면 비활성
+	Stale        int // 0이면 비활성
 	All          bool
 	SquashMerged bool
 	Remote       bool // remote-tracking refs 정리 (git remote prune)

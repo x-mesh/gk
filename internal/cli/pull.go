@@ -290,19 +290,9 @@ func resolveUpstreamFromRunner(ctx context.Context, runner git.Runner, remote, b
 	return remote + "/" + base, remote, base
 }
 
-// resolveStrategy determines the effective pull strategy using the priority chain:
-//
-//  1. explicit --strategy flag
-//  2. pull.strategy in .gk.yaml (when not empty / not "auto")
-//  3. git config pull.rebase
-//  4. default: rebase
-func resolveStrategy(ctx context.Context, flag string, cfg *config.Config, runner *git.ExecRunner) string {
-	strategy, _ := resolveStrategyWithSource(ctx, flag, cfg, runner)
-	return strategy
-}
-
-// resolveStrategyFromRunner is the testable core of resolveStrategy; it
-// accepts a git.Runner and the raw config strategy string.
+// resolveStrategyFromRunner is the testable core of the strategy
+// resolution chain (--strategy → pull.strategy → git config pull.rebase
+// → rebase default); it accepts a git.Runner and the raw config string.
 func resolveStrategyFromRunner(ctx context.Context, flag, cfgStrategy string, runner git.Runner) string {
 	if flag != "" && flag != pullStrategyAuto {
 		return flag

@@ -50,8 +50,12 @@ func TestRunShipCoreDryRunDoesNotTagOrPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runShipCore: %v", err)
 	}
-	if !strings.Contains(out.String(), "Next tag:  v1.2.4") {
-		t.Fatalf("expected next tag in output, got:\n%s", out.String())
+	// renderShipPlan formats labels with `%s   %s` so the spacing between
+	// "Next tag:" and the value can shift when label widths change. Use a
+	// loose contains check that doesn't break on column alignment edits.
+	got := out.String()
+	if !strings.Contains(got, "Next tag:") || !strings.Contains(got, "v1.2.4") {
+		t.Fatalf("expected next tag in output, got:\n%s", got)
 	}
 	for _, call := range runner.Calls {
 		if len(call.Args) > 0 && (call.Args[0] == "tag" || call.Args[0] == "push") {

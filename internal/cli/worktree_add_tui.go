@@ -79,11 +79,11 @@ func newAddModel() addModel {
 	// Validate: blank is allowed for fromRef.
 
 	return addModel{
-		step:   stepName,
-		name:   name,
-		branch: branch,
+		step:    stepName,
+		name:    name,
+		branch:  branch,
 		fromRef: fromRef,
-		create: true,
+		create:  true,
 	}
 }
 

@@ -28,10 +28,10 @@ type ConflictHunkInput struct {
 
 // ConflictResolutionInput은 ConflictResolver.ResolveConflicts의 입력이다.
 type ConflictResolutionInput struct {
-	FilePath      string             `json:"file_path"`
+	FilePath      string              `json:"file_path"`
 	Hunks         []ConflictHunkInput `json:"hunks"`
-	OperationType string             `json:"operation_type"` // "merge", "rebase", "cherry-pick"
-	Lang          string             `json:"lang"`
+	OperationType string              `json:"operation_type"` // "merge", "rebase", "cherry-pick"
+	Lang          string              `json:"lang"`
 }
 
 // ConflictResolutionOutput은 하나의 충돌 영역에 대한 AI 해결 제안이다.

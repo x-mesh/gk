@@ -19,10 +19,10 @@ func FormatHunkDiff(hunk resolve.ConflictHunk) string {
 	green := color.New(color.FgGreen)
 	red := color.New(color.FgRed)
 	for _, line := range hunk.Ours {
-		green.Fprintf(&b, "- %s\n", line)
+		_, _ = green.Fprintf(&b, "- %s\n", line)
 	}
 	for _, line := range hunk.Theirs {
-		red.Fprintf(&b, "+ %s\n", line)
+		_, _ = red.Fprintf(&b, "+ %s\n", line)
 	}
 	return b.String()
 }

@@ -223,20 +223,20 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 
 	// CleanOptions 매핑
 	opts := branchclean.CleanOptions{
-		DryRun:       dryRun,
-		Force:        force,
-		Yes:          yes,
-		NoAI:         noAI,
-		Gone:         goneMode,
-		Stale:        stale,
-		All:          all,
+		DryRun:        dryRun,
+		Force:         force,
+		Yes:           yes,
+		NoAI:          noAI,
+		Gone:          goneMode,
+		Stale:         stale,
+		All:           all,
 		SquashMerged:  squashMerged,
 		Remote:        remote,
 		IncludeRemote: includeRemote,
 		RemoteName:    cfg.Remote,
-		Protected:    cfg.Branch.Protected,
-		StaleDays:    cfg.Branch.StaleDays,
-		Lang:         cfg.AI.Lang,
+		Protected:     cfg.Branch.Protected,
+		StaleDays:     cfg.Branch.StaleDays,
+		Lang:          cfg.AI.Lang,
 	}
 
 	// AI provider 구성

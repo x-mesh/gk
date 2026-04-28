@@ -114,7 +114,7 @@ func TestCollectGone_Basic(t *testing.T) {
 
 func TestCollectStale_Basic(t *testing.T) {
 	now := time.Now()
-	old := now.AddDate(0, 0, -60) // 60 days ago
+	old := now.AddDate(0, 0, -60)   // 60 days ago
 	recent := now.AddDate(0, 0, -5) // 5 days ago
 
 	runner := &git.FakeRunner{
@@ -150,7 +150,7 @@ func TestCollectAll_MergedAndGone(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD": {Stdout: "main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
 				Stdout: fmt.Sprintf("feat/merged\x00%d\nmain\x00%d\n", now.Unix(), now.Unix()),
@@ -192,7 +192,7 @@ func TestCollectAll_Deduplicates(t *testing.T) {
 	old := now.AddDate(0, 0, -60)
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD": {Stdout: "main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
 				Stdout: fmt.Sprintf("feat/both\x00%d\nmain\x00%d\n", old.Unix(), now.Unix()),

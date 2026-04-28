@@ -39,6 +39,7 @@ The TUI falls back to printing this help on non-interactive stdin/stdout.`,
 		RunE: runWorktreeTUI,
 	}
 	wt.Flags().Bool("print-path", false, "on 'cd', print the chosen path instead of entering a subshell (for `cd $(gk wt --print-path)` wrappers)")
+	wt.Flags().BoolP("global", "g", false, "list every gk-managed worktree across all projects (toggle inside the TUI with 'g')")
 
 	list := &cobra.Command{
 		Use:   "list",
@@ -360,6 +361,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	cfg, _ := config.Load(cmd.Flags())
 	stderr := cmd.ErrOrStderr()
 
+	startGlobal, _ := cmd.Flags().GetBool("global")
+
 	// Menu action sentinels. Using clearly reserved keys avoids any
 	// collision with a real worktree path a user might pick.
 	const (
@@ -367,24 +370,74 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		keyQuit   = "__gk_quit__"
 	)
 
-	for {
-		entries, err := listWorktreesForTUI(ctx, runner)
-		if err != nil {
-			return err
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+
+	// Toggleable state shared between the picker call and the 'g'
+	// extra-key callback: which entries are currently shown, and what
+	// project they belong to (only used in global mode).
+	global := startGlobal
+
+	type rowSource struct {
+		entries []WorktreeEntry
+		// projectByPath surfaces the owning project slug for the global
+		// mode rendering. Empty in local mode.
+		projectByPath map[string]string
+	}
+
+	loadRows := func() (rowSource, error) {
+		if global {
+			gws, gErr := listGlobalWorktrees(ctx, cfg)
+			if gErr != nil {
+				return rowSource{}, gErr
+			}
+			rs := rowSource{
+				entries:       make([]WorktreeEntry, 0, len(gws)),
+				projectByPath: make(map[string]string, len(gws)),
+			}
+			for _, gw := range gws {
+				rs.entries = append(rs.entries, gw.Entry)
+				rs.projectByPath[gw.Entry.Path] = gw.Project
+			}
+			return rs, nil
 		}
+		ents, lErr := listWorktreesForTUI(ctx, runner)
+		if lErr != nil {
+			return rowSource{}, lErr
+		}
+		return rowSource{entries: ents}, nil
+	}
 
-		bold := color.New(color.Bold).SprintFunc()
-		faint := color.New(color.Faint).SprintFunc()
-
-		items := make([]ui.PickerItem, 0, len(entries)+2)
-		for _, e := range entries {
+	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
+		if global {
+			headers = []string{"PROJECT", "BRANCH", "PATH", "FLAGS"}
+			items = make([]ui.PickerItem, 0, len(rs.entries)+1)
+			for _, e := range rs.entries {
+				branch, flagsPlain := worktreeRowPartsPlain(e)
+				items = append(items, ui.PickerItem{
+					Display: worktreeTUILabel(e, bold, faint),
+					Cells:   []string{rs.projectByPath[e.Path], branch, e.Path, flagsPlain},
+					Key:     e.Path,
+				})
+			}
+			// global mode hides [+] add — adds belong to the current
+			// repo and would surprise the user when scrolling other
+			// projects' worktrees.
+			items = append(items, ui.PickerItem{
+				Display: faint("[q] quit"),
+				Cells:   []string{"", "[q] quit", "", ""},
+				Key:     keyQuit,
+			})
+			return items, headers
+		}
+		headers = []string{"BRANCH", "PATH", "FLAGS"}
+		items = make([]ui.PickerItem, 0, len(rs.entries)+2)
+		for _, e := range rs.entries {
 			branch, flagsPlain := worktreeRowPartsPlain(e)
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				// Cells stay plain so bubbles/table's runewidth-based
-				// truncation measures visible width correctly.
-				Cells: []string{branch, e.Path, flagsPlain},
-				Key:   e.Path,
+				Cells:   []string{branch, e.Path, flagsPlain},
+				Key:     e.Path,
 			})
 		}
 		items = append(items,
@@ -399,8 +452,33 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				Key:     keyQuit,
 			},
 		)
+		return items, headers
+	}
 
-		picker := &ui.TablePicker{Headers: []string{"BRANCH", "PATH", "FLAGS"}}
+	for {
+		rs, err := loadRows()
+		if err != nil {
+			return err
+		}
+
+		items, headers := buildItems(rs)
+		picker := &ui.TablePicker{
+			Headers: headers,
+			Extras: []ui.TablePickerExtraKey{{
+				Key:  "g",
+				Help: "g toggle global",
+				OnPress: func() ([]ui.PickerItem, []string, error) {
+					global = !global
+					rs2, gErr := loadRows()
+					if gErr != nil {
+						return nil, nil, gErr
+					}
+					rs = rs2
+					its, hdrs := buildItems(rs2)
+					return its, hdrs, nil
+				},
+			}},
+		}
 		picked, err := picker.Pick(ctx, "worktree", items)
 		if err != nil {
 			if errors.Is(err, ui.ErrPickerAborted) {
@@ -420,7 +498,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			// Chosen worktree — open the action submenu. Look up the
 			// full entry so downstream actions (remove + branch drop)
 			// see branch/locked/prunable state, not just the path.
-			entry := findWorktreeEntry(entries, picked.Key)
+			entry := findWorktreeEntry(rs.entries, picked.Key)
 			if entry == nil {
 				continue
 			}
@@ -433,6 +511,73 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+// globalWorktree pairs a parsed WorktreeEntry with the gk project slug
+// it belongs to, so the global-mode picker can prefix the row.
+type globalWorktree struct {
+	Project string
+	Entry   WorktreeEntry
+}
+
+// listGlobalWorktrees scans the gk-managed base directory (default
+// ~/.gk/worktree) and returns one row per real git worktree found.
+// Implementation:
+//  1. read first-level dirs (= project slugs)
+//  2. for each project, run `git -C <first-wt> worktree list --porcelain`
+//     once and keep the entries whose paths fall under the project dir.
+//
+// This is one git invocation per project (not per worktree), so a few
+// hundred worktrees still load in well under a second.
+func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorktree, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	base := expandHome(cfg.Worktree.Base)
+	if base == "" {
+		base = expandHome("~/.gk/worktree")
+	}
+	projects, err := os.ReadDir(base)
+	if err != nil {
+		// Missing base is normal on a fresh install — return an empty
+		// list rather than failing the picker.
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scan worktree base %q: %w", base, err)
+	}
+
+	var out []globalWorktree
+	for _, proj := range projects {
+		if !proj.IsDir() {
+			continue
+		}
+		projectDir := filepath.Join(base, proj.Name())
+		wts, _ := os.ReadDir(projectDir)
+		var firstWT string
+		for _, wt := range wts {
+			if wt.IsDir() {
+				firstWT = filepath.Join(projectDir, wt.Name())
+				break
+			}
+		}
+		if firstWT == "" {
+			continue
+		}
+		r := &git.ExecRunner{Dir: firstWT}
+		stdout, _, lErr := r.Run(ctx, "worktree", "list", "--porcelain")
+		if lErr != nil {
+			// Not a real git worktree (or stale), skip silently.
+			continue
+		}
+		for _, e := range parseWorktreePorcelain(string(stdout)) {
+			if !strings.HasPrefix(e.Path, projectDir+string(os.PathSeparator)) && e.Path != projectDir {
+				continue
+			}
+			out = append(out, globalWorktree{Project: proj.Name(), Entry: e})
+		}
+	}
+	return out, nil
 }
 
 // findWorktreeEntry locates the entry whose Path matches path, returning

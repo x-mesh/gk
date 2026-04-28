@@ -13,6 +13,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// TablePickerExtraKey binds a custom keystroke to a callback that
+// can replace the entire data set on the fly — items + headers. Use
+// it for actions that change *what's listed* (e.g. "g toggle global").
+// The user must press the key while the filter prompt is *not*
+// focused; filter typing always wins.
+type TablePickerExtraKey struct {
+	Key     string
+	Help    string
+	OnPress func() (items []PickerItem, headers []string, err error)
+}
+
 // TablePicker is a bubbletea-based replacement for FzfPicker. Items
 // with PickerItem.Cells render as multi-column rows; otherwise the
 // row falls back to PickerItem.Display in a single column. Headers
@@ -21,6 +32,7 @@ import (
 type TablePicker struct {
 	Headers []string
 	Height  int // 0 → auto (min(items+headers+1, 12))
+	Extras  []TablePickerExtraKey
 }
 
 type tablePickerModel struct {
@@ -33,6 +45,9 @@ type tablePickerModel struct {
 	width        int
 	filterInput  textinput.Model
 	filterActive bool // true while the user is typing into the filter box
+	extras       []TablePickerExtraKey
+	headers      []string
+	errMsg       string
 }
 
 func (m tablePickerModel) Init() tea.Cmd { return textinput.Blink }
@@ -91,6 +106,26 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterActive = true
 			m.filterInput.Focus()
 			return m, nil
+		default:
+			s := msg.String()
+			for _, ex := range m.extras {
+				if s != ex.Key {
+					continue
+				}
+				items, headers, err := ex.OnPress()
+				if err != nil {
+					m.errMsg = err.Error()
+					return m, nil
+				}
+				m.errMsg = ""
+				m.all = items
+				if headers != nil {
+					m.headers = headers
+					m.t.SetColumns(buildColumnsFromHeaders(items, headers))
+				}
+				m.applyFilter()
+				return m, nil
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -139,6 +174,28 @@ func (m *tablePickerModel) applyFilter() {
 	}
 }
 
+// buildColumnsFromHeaders rebuilds table.Column slice from a fresh
+// header list, sized to fit the widest cell content per column. Used
+// by ExtraKey callbacks that replace the column structure (e.g. local
+// vs global modes that surface different column sets).
+func buildColumnsFromHeaders(items []PickerItem, headers []string) []table.Column {
+	colCount := len(headers)
+	cols := make([]table.Column, colCount)
+	for i := 0; i < colCount; i++ {
+		w := lipgloss.Width(headers[i])
+		for _, it := range items {
+			if l := lipgloss.Width(pickerCell(it, i)); l > w {
+				w = l
+			}
+		}
+		if w < 6 {
+			w = 6
+		}
+		cols[i] = table.Column{Title: headers[i], Width: w}
+	}
+	return cols
+}
+
 func itemMatchesFilter(it PickerItem, q string) bool {
 	if strings.Contains(strings.ToLower(it.Display), q) {
 		return true
@@ -161,8 +218,17 @@ func (m tablePickerModel) View() string {
 	} else {
 		filterLine = hintStyle.Render("press / to filter")
 	}
-	help := hintStyle.Render("↑/↓ navigate · enter select · / filter · esc/q cancel")
-	return filterLine + "\n" + m.t.View() + "\n" + help
+	helpLine := "↑/↓ navigate · enter select · / filter · esc/q cancel"
+	for _, ex := range m.extras {
+		helpLine = ex.Help + " · " + helpLine
+	}
+	help := hintStyle.Render(helpLine)
+	out := filterLine + "\n" + m.t.View() + "\n" + help
+	if m.errMsg != "" {
+		out += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
+			Render("✗ "+m.errMsg)
+	}
+	return out
 }
 
 // Pick renders the items as a bubbles/table and returns the selected
@@ -251,6 +317,8 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 			all:         items,
 			chosen:      -1,
 			filterInput: filter,
+			extras:      p.Extras,
+			headers:     headers,
 		},
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),

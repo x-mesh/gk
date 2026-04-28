@@ -8,6 +8,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // Cleaner는 브랜치 정리의 전체 흐름을 orchestrate한다.
@@ -216,7 +217,9 @@ func (c *Cleaner) runAIAnalysis(
 		})
 	}
 
+	stopSpinner := ui.StartBubbleSpinner(fmt.Sprintf("branch clean — analyzing %d branch(es) with AI", len(input.Branches)))
 	aiResult, err := analyzer.AnalyzeBranches(ctx, input)
+	stopSpinner()
 	if err != nil {
 		if c.Stderr != nil {
 			fmt.Fprintf(c.Stderr, "warning: AI analysis failed, falling back to rule-based: %v\n", err)

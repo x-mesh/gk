@@ -272,7 +272,9 @@ func suggestAIGitignore(dir string, result *initx.AnalysisResult) []string {
 	}
 
 	Dbg("ai gitignore: using provider %q", p.Name())
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("ai gitignore — asking %s for project-specific patterns", p.Name()))
 	patterns := initx.SuggestGitignorePatterns(ctx, gs, dir, result)
+	stop()
 	Dbg("ai gitignore: got %d patterns", len(patterns))
 	return patterns
 }

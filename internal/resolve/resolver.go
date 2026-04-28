@@ -11,6 +11,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // Resolver는 충돌 해결의 전체 흐름을 orchestrate한다.
@@ -150,7 +151,9 @@ func (r *Resolver) ResolveWithAI(
 		Lang:          lang,
 	}
 
+	stopSpinner := ui.StartBubbleSpinner(fmt.Sprintf("ai resolve — analyzing %d hunk(s) in %s", len(hunks), cf.Path))
 	result, err := resolver.ResolveConflicts(ctx, input)
+	stopSpinner()
 	if err != nil {
 		if r.Stderr != nil {
 			fmt.Fprintf(r.Stderr, "warning: gk resolve: AI analysis failed for %s: %v\n", cf.Path, err)

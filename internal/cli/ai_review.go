@@ -11,6 +11,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -169,11 +170,13 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	}
 
 	// Call Summarize.
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", deps.Provider.Name()))
 	result, err := sum.Summarize(ctx, provider.SummarizeInput{
 		Kind: "review",
 		Diff: redactedDiff,
 		Lang: fallbackLang(deps.Lang),
 	})
+	stop()
 	if err != nil {
 		return fmt.Errorf("review: summarize: %w", err)
 	}

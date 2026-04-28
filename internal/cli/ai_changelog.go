@@ -11,6 +11,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -183,11 +184,13 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	}
 
 	// Call Summarize.
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("changelog — drafting via %s", deps.Provider.Name()))
 	result, err := sum.Summarize(ctx, provider.SummarizeInput{
 		Kind:    "changelog",
 		Commits: redactedCommits,
 		Lang:    fallbackLang(deps.Lang),
 	})
+	stop()
 	if err != nil {
 		return fmt.Errorf("changelog: summarize: %w", err)
 	}

@@ -109,8 +109,11 @@ func runReset(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := client.Fetch(ctx, fetchRemote, fetchRef, false); err != nil {
-		return fmt.Errorf("fetch failed: %w", err)
+	stopFetch := ui.StartBubbleSpinner(fmt.Sprintf("reset — fetching %s/%s", fetchRemote, fetchRef))
+	fetchErr := client.Fetch(ctx, fetchRemote, fetchRef, false)
+	stopFetch()
+	if fetchErr != nil {
+		return fmt.Errorf("fetch failed: %w", fetchErr)
 	}
 
 	if _, stderr, err := runner.Run(ctx, "reset", "--hard", target); err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -202,12 +203,14 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	}
 
 	// Call Summarize.
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("pr — drafting summary via %s", deps.Provider.Name()))
 	result, err := sum.Summarize(ctx, provider.SummarizeInput{
 		Kind:    "pr",
 		Diff:    redactedDiff,
 		Commits: commits,
 		Lang:    fallbackLang(deps.Lang),
 	})
+	stop()
 	if err != nil {
 		return fmt.Errorf("pr: summarize: %w", err)
 	}

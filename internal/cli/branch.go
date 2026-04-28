@@ -49,6 +49,7 @@ func init() {
 	cleanCmd.Flags().Int("stale", 0, "include branches with last commit older than N days")
 	cleanCmd.Flags().Bool("all", false, "include merged, gone, stale, and squash-merged branches")
 	cleanCmd.Flags().Bool("remote", false, "run git remote prune")
+	cleanCmd.Flags().Bool("include-remote", false, "include remote-only branches as candidates (deleted via git push --delete)")
 	cleanCmd.Flags().Bool("squash-merged", false, "include squash-merged branches")
 	cleanCmd.Flags().BoolP("yes", "y", false, "skip TUI confirmation")
 
@@ -205,6 +206,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	stale, _ := cmd.Flags().GetInt("stale")
 	all, _ := cmd.Flags().GetBool("all")
 	remote, _ := cmd.Flags().GetBool("remote")
+	includeRemote, _ := cmd.Flags().GetBool("include-remote")
 	squashMerged, _ := cmd.Flags().GetBool("squash-merged")
 	yes, _ := cmd.Flags().GetBool("yes")
 
@@ -228,9 +230,10 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		Gone:         goneMode,
 		Stale:        stale,
 		All:          all,
-		SquashMerged: squashMerged,
-		Remote:       remote,
-		RemoteName:   cfg.Remote,
+		SquashMerged:  squashMerged,
+		Remote:        remote,
+		IncludeRemote: includeRemote,
+		RemoteName:    cfg.Remote,
 		Protected:    cfg.Branch.Protected,
 		StaleDays:    cfg.Branch.StaleDays,
 		Lang:         cfg.AI.Lang,
@@ -293,9 +296,11 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	// Cleaner.Run은 !yes일 때 toDelete가 비어있으므로 삭제를 수행하지 않는다.
 	// 이 경우 candidates를 다시 빌드하여 TUI를 표시해야 한다.
 	if isTTY && !yes && !dryRun {
-		// Cleaner.Run에서 candidates를 가져오기 위해 dry-run으로 한번 더 실행
+		// Always pull remote-only candidates so the in-TUI 'i' toggle
+		// can reveal them without an extra round-trip to git.
 		dryOpts := opts
 		dryOpts.DryRun = true
+		dryOpts.IncludeRemote = true
 		dryResult, err := cleaner.Run(ctx, dryOpts)
 		if err != nil {
 			return err
@@ -305,7 +310,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		selected, err := RunCleanTUI(dryResult.DryRun)
+		selected, err := RunCleanTUI(dryResult.DryRun, includeRemote)
 		if err != nil {
 			return err
 		}
@@ -314,12 +319,28 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		// 선택된 브랜치 삭제
+		// 선택된 브랜치 삭제 — local은 git branch -d/-D, remote-only는
+		// git push <remote> --delete <name>.
 		deleteFlag := "-d"
 		if force {
 			deleteFlag = "-D"
 		}
-		for _, name := range selected {
+		for _, key := range selected {
+			name, isRemote, remoteName := ParseCandidateKey(key)
+			if isRemote {
+				if remoteName == "" {
+					remoteName = cfg.Remote
+					if remoteName == "" {
+						remoteName = "origin"
+					}
+				}
+				if _, stderr, derr := runner.Run(ctx, "push", remoteName, "--delete", name); derr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s/%s: %s\n", remoteName, name, strings.TrimSpace(string(stderr)))
+					continue
+				}
+				fmt.Fprintf(w, "deleted: %s/%s\n", remoteName, name)
+				continue
+			}
 			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, strings.TrimSpace(string(stderr)))
 				continue

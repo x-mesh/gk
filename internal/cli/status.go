@@ -161,7 +161,7 @@ func maybeFetchUpstream(parent context.Context, repoDir string) {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
-	stopSpinner := ui.StartSpinner("fetching " + remote + "...")
+	stopSpinner := ui.StartBubbleSpinner("fetching " + remote + "...")
 	err := cmd.Run()
 	stopSpinner()
 

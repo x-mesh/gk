@@ -111,19 +111,43 @@ func TestPickerCell_UsesCellsWhenSet(t *testing.T) {
 	}
 }
 
-func TestDistributeColumnWidths_GivesSlackToWidest(t *testing.T) {
+func TestDistributeColumnWidths_ProportionalSplit(t *testing.T) {
 	cols := []table.Column{
 		{Title: "A", Width: 5},
 		{Title: "B", Width: 20},
 		{Title: "C", Width: 8},
 	}
 	out := distributeColumnWidths(cols, 80)
-	// Sum + padding = 5+20+8 + 2*3 = 39, slack = 41 → goes to col B
-	if out[1].Width != 20+41 {
-		t.Fatalf("expected col B width 61, got %d", out[1].Width)
+	// Sum + padding = 5+20+8 + 2*3 = 39, slack = 41, weightSum = 33.
+	// Shares: A = 41*5/33 = 6, B = 41*20/33 = 24. C absorbs the rest = 41-6-24 = 11.
+	if out[0].Width != 5+6 {
+		t.Fatalf("col A: expected 11, got %d", out[0].Width)
 	}
-	if out[0].Width != 5 || out[2].Width != 8 {
-		t.Fatalf("non-widest cols changed: %+v", out)
+	if out[1].Width != 20+24 {
+		t.Fatalf("col B: expected 44, got %d", out[1].Width)
+	}
+	if out[2].Width != 8+11 {
+		t.Fatalf("col C: expected 19, got %d", out[2].Width)
+	}
+	// Total widths + padding must equal the requested terminal width.
+	got := 0
+	for _, c := range out {
+		got += c.Width + 2
+	}
+	if got != 80 {
+		t.Fatalf("widths + padding != 80: %d", got)
+	}
+}
+
+func TestDistributeColumnWidths_EvenSplitWhenAllZero(t *testing.T) {
+	cols := []table.Column{
+		{Title: "A", Width: 0},
+		{Title: "B", Width: 0},
+	}
+	out := distributeColumnWidths(cols, 20)
+	// Slack = 20 - 0 - 4 (padding) = 16, even split = 8 each.
+	if out[0].Width != 8 || out[1].Width != 8 {
+		t.Fatalf("expected 8/8, got %d/%d", out[0].Width, out[1].Width)
 	}
 }
 

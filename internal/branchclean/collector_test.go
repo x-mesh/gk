@@ -18,8 +18,8 @@ import (
 func TestCollectMerged_Basic(t *testing.T) {
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"branch --merged main --format=%(refname:short)": {
-				Stdout: "feat/done\nfix/old\nmain\n",
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
+				Stdout: "feat/done\x001700000000\nfix/old\x001700000000\nmain\x001700000000\n",
 			},
 		},
 	}
@@ -46,7 +46,7 @@ func TestCollectMerged_Basic(t *testing.T) {
 func TestCollectMerged_EmptyOutput(t *testing.T) {
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"branch --merged main --format=%(refname:short)": {Stdout: ""},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: ""},
 		},
 	}
 	c := &Collector{Runner: runner, Client: git.NewClient(runner)}
@@ -63,7 +63,7 @@ func TestCollectMerged_EmptyOutput(t *testing.T) {
 func TestCollectMerged_GitError(t *testing.T) {
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"branch --merged main --format=%(refname:short)": {
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
 				Stderr:   "fatal: not a git repository",
 				ExitCode: 128,
 			},
@@ -152,8 +152,8 @@ func TestCollectAll_MergedAndGone(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --short HEAD": {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
-			"branch --merged main --format=%(refname:short)": {
-				Stdout: "feat/merged\nmain\n",
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
+				Stdout: fmt.Sprintf("feat/merged\x00%d\nmain\x00%d\n", now.Unix(), now.Unix()),
 			},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/gone\x00origin/feat/gone\x00%d\x00[gone]\nfeat/merged\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n",
@@ -194,8 +194,8 @@ func TestCollectAll_Deduplicates(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --short HEAD": {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
-			"branch --merged main --format=%(refname:short)": {
-				Stdout: "feat/both\nmain\n",
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
+				Stdout: fmt.Sprintf("feat/both\x00%d\nmain\x00%d\n", old.Unix(), now.Unix()),
 			},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/both\x00origin/feat/both\x00%d\x00[gone]\nmain\x00origin/main\x00%d\x00\n",

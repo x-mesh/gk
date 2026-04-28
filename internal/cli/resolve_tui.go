@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/resolve"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // FormatHunkDiff는 충돌 영역을 색상 구분된 diff 형식으로 포맷한다.
@@ -49,34 +50,33 @@ func RunResolveTUI(
 			diff := FormatHunkDiff(*seg.Hunk)
 			title := fmt.Sprintf("%s — conflict %d", cf.Path, hunkIdx+1)
 
-			var choice string
-			var opts []huh.Option[string]
-
+			var items []ui.PickerItem
 			if aiRes != nil && hunkIdx < len(aiRes) {
 				ai := aiRes[hunkIdx]
-				opts = append(opts,
-					huh.NewOption(fmt.Sprintf("ours — keep local (%s)", ai.Rationale), "ours"),
-					huh.NewOption(fmt.Sprintf("theirs — accept remote (%s)", ai.Rationale), "theirs"),
-					huh.NewOption(fmt.Sprintf("merged — AI combined (%s)", ai.Rationale), "merged"),
-				)
-				choice = string(ai.Strategy) // AI 추천을 기본 선택으로
+				items = []ui.PickerItem{
+					{Key: "ours", Display: fmt.Sprintf("ours — keep local (%s)", ai.Rationale)},
+					{Key: "theirs", Display: fmt.Sprintf("theirs — accept remote (%s)", ai.Rationale)},
+					{Key: "merged", Display: fmt.Sprintf("merged — AI combined (%s)", ai.Rationale)},
+				}
 			} else {
-				opts = append(opts,
-					huh.NewOption("ours — keep local changes", "ours"),
-					huh.NewOption("theirs — accept remote changes", "theirs"),
-				)
+				items = []ui.PickerItem{
+					{Key: "ours", Display: "ours — keep local changes"},
+					{Key: "theirs", Display: "theirs — accept remote changes"},
+				}
 			}
 
-			sel := huh.NewSelect[string]().
-				Title(title).
-				Description(diff).
-				Options(opts...).
-				Value(&choice)
+			// Print the diff once before the picker so the user sees the
+			// hunk while choosing — TablePicker doesn't have a description
+			// pane like huh.NewSelect.
+			fmt.Println(title)
+			fmt.Println(diff)
 
-			form := huh.NewForm(huh.NewGroup(sel))
-			if err := form.Run(); err != nil {
+			picker := &ui.TablePicker{}
+			pick, err := picker.Pick(context.Background(), title, items)
+			if err != nil {
 				return nil, err
 			}
+			choice := pick.Key
 
 			hr := resolve.HunkResolution{Strategy: resolve.Strategy(choice)}
 			switch choice {

@@ -73,28 +73,94 @@ func (c *Collector) CollectAll(ctx context.Context, opts CleanOptions) ([]Branch
 		all = append(all, stale...)
 	}
 
-	return DeduplicateEntries(all), nil
+	// remote-only 브랜치 수집
+	if opts.IncludeRemote || opts.All {
+		remotes, err := c.CollectRemoteOnly(ctx, remote, protected)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, remotes...)
+	}
+
+	deduped := DeduplicateEntries(all)
+	// Enrich each entry with the branch's reflog-derived creation date.
+	// Done after dedup so we don't pay the per-branch fork twice.
+	for i := range deduped {
+		deduped[i].CreatedAt = branchCreatedAt(ctx, c.Runner, deduped[i].Name)
+	}
+	return deduped, nil
+}
+
+// branchCreatedAt parses the oldest entry of a branch's reflog to find
+// when the ref itself was first written. Returns zero when reflog is
+// disabled, expired, or the branch doesn't exist. Differs from
+// LastCommitDate when a branch is created from an older base commit.
+func branchCreatedAt(ctx context.Context, runner git.Runner, branch string) time.Time {
+	stdout, _, err := runner.Run(ctx, "reflog", "show", "--date=unix", branch)
+	if err != nil {
+		return time.Time{}
+	}
+	lines := strings.Split(strings.TrimRight(string(stdout), "\n"), "\n")
+	if len(lines) == 0 {
+		return time.Time{}
+	}
+	// Reflog is newest-first → the oldest entry (= creation) is the
+	// last printed line. Format: "<sha> branch@{<unix>}: action: ...".
+	last := lines[len(lines)-1]
+	open := strings.Index(last, "@{")
+	if open < 0 {
+		return time.Time{}
+	}
+	close := strings.Index(last[open:], "}")
+	if close < 0 {
+		return time.Time{}
+	}
+	ts := last[open+2 : open+close]
+	n, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || n <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(n, 0)
 }
 
 // CollectMerged는 base branch에 merged된 브랜치를 수집한다.
 func (c *Collector) CollectMerged(ctx context.Context, base string, protected map[string]bool) ([]BranchEntry, error) {
-	stdout, stderr, err := c.Runner.Run(ctx, "branch", "--merged", base, "--format=%(refname:short)")
+	// Pull committerdate alongside the name so the picker can show
+	// accurate "Nd ago" labels — without it, LastCommitDate stays at
+	// time.Time{} and time.Since() saturates to ~292y.
+	stdout, stderr, err := c.Runner.Run(ctx,
+		"for-each-ref",
+		"--merged="+base,
+		"--format=%(refname:short)%00%(committerdate:unix)",
+		"refs/heads",
+	)
 	if err != nil {
-		return nil, fmt.Errorf("gk branch clean: branch --merged: %s: %w", strings.TrimSpace(string(stderr)), err)
+		return nil, fmt.Errorf("gk branch clean: for-each-ref --merged: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 
 	var entries []BranchEntry
 	for _, line := range strings.Split(strings.TrimRight(string(stdout), "\n"), "\n") {
-		name := strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 2)
+		name := strings.TrimSpace(parts[0])
 		if name == "" {
 			continue
 		}
 		if protected[name] {
 			continue
 		}
+		var lastCommit time.Time
+		if len(parts) > 1 {
+			if n, err := strconv.ParseInt(parts[1], 10, 64); err == nil && n > 0 {
+				lastCommit = time.Unix(n, 0)
+			}
+		}
 		entries = append(entries, BranchEntry{
-			Name:   name,
-			Status: StatusMerged,
+			Name:           name,
+			Status:         StatusMerged,
+			LastCommitDate: lastCommit,
 		})
 	}
 	return entries, nil
@@ -118,6 +184,70 @@ func (c *Collector) CollectGone(ctx context.Context, protected map[string]bool) 
 			LastCommitDate: b.lastCommit,
 			Gone:           true,
 			Status:         StatusGone,
+		})
+	}
+	return entries, nil
+}
+
+// CollectRemoteOnly returns remote branches whose name doesn't exist as
+// a local branch (excluding the remote's HEAD pointer). The cleaner
+// deletes these via `git push <remote> --delete <name>`.
+func (c *Collector) CollectRemoteOnly(ctx context.Context, remote string, protected map[string]bool) ([]BranchEntry, error) {
+	if remote == "" {
+		remote = "origin"
+	}
+	stdout, stderr, err := c.Runner.Run(ctx,
+		"for-each-ref",
+		"--format=%(refname:short)%00%(committerdate:unix)",
+		"refs/remotes/"+remote,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gk branch clean: for-each-ref refs/remotes: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+
+	// Build a set of local branch names so we can skip any remote that
+	// has a corresponding local checkout.
+	locals := map[string]bool{}
+	if lb, err := listBranches(ctx, c.Runner); err == nil {
+		for _, b := range lb {
+			locals[b.name] = true
+		}
+	}
+
+	var entries []BranchEntry
+	prefix := remote + "/"
+	for _, line := range strings.Split(strings.TrimRight(string(stdout), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 2)
+		full := strings.TrimSpace(parts[0])
+		if full == "" {
+			continue
+		}
+		// "origin/HEAD" is a symbolic ref, not a real branch.
+		if strings.HasSuffix(full, "/HEAD") {
+			continue
+		}
+		short := strings.TrimPrefix(full, prefix)
+		if short == full {
+			continue
+		}
+		if locals[short] || protected[short] {
+			continue
+		}
+		var lastCommit time.Time
+		if len(parts) > 1 {
+			if n, err := strconv.ParseInt(parts[1], 10, 64); err == nil && n > 0 {
+				lastCommit = time.Unix(n, 0)
+			}
+		}
+		entries = append(entries, BranchEntry{
+			Name:           short,
+			Status:         StatusRemoteOnly,
+			LastCommitDate: lastCommit,
+			IsRemote:       true,
+			RemoteName:     remote,
 		})
 	}
 	return entries, nil

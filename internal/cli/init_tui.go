@@ -1,35 +1,33 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/charmbracelet/huh"
-
 	"github.com/x-mesh/gk/internal/initx"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
-// RunInitTUI는 huh form을 표시하여 사용자가 분석 결과를 확인·수정할 수 있게 한다.
-// 사용자가 확인하면 plan을 그대로 반환하고, 취소하면 모든 항목을 Skip으로 변경한다.
+// RunInitTUI prints the analysis summary and asks the user to confirm.
+// On cancel/non-TTY-without-confirm, every plan entry is set to Skip.
 func RunInitTUI(result *initx.AnalysisResult, plan *initx.InitPlan) (*initx.InitPlan, error) {
 	summary := buildSummary(result, plan)
 
-	var confirm bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewNote().
-				Title("gk init — project analysis").
-				Description(summary),
-			huh.NewConfirm().
-				Title("proceed with initialization?").
-				Value(&confirm),
-		),
-	)
+	// Note-style header lives outside the bubbletea program so the user
+	// can scroll through the analysis even after the confirm exits.
+	fmt.Fprintln(os.Stderr, "gk init — project analysis")
+	fmt.Fprintln(os.Stderr, summary)
 
-	if err := form.Run(); err != nil {
+	confirm, err := ui.ConfirmTUI(context.Background(), "proceed with initialization?", "", false)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return skipAll(plan), nil
+		}
 		return nil, err
 	}
-
 	if !confirm {
 		return skipAll(plan), nil
 	}

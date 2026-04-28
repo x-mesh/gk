@@ -31,7 +31,7 @@ func buildSwitchCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 	sw.Flags().BoolP("force", "f", false, "")
 	sw.Flags().Bool("detach", false, "")
 	sw.Flags().BoolP("main", "m", false, "")
-	sw.Flags().BoolP("develop", "d", false, "")
+	sw.Flags().Bool("develop", false, "")
 
 	testRoot.AddCommand(sw)
 

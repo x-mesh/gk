@@ -73,6 +73,11 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	if len(items) == 0 {
 		return PickerItem{}, errors.New("no items to pick")
 	}
+	if !IsTerminal() {
+		// Non-TTY callers must use FallbackPicker explicitly; bubbletea
+		// would block trying to open /dev/tty.
+		return PickerItem{}, ErrNonInteractive
+	}
 
 	colCount := 1
 	for _, it := range items {
@@ -166,30 +171,46 @@ func pickerCell(it PickerItem, idx int) string {
 	return ""
 }
 
-// distributeColumnWidths reflows column widths to fill the terminal,
-// giving the slack to the widest column (typically the path column).
-// Honours bubbles/table's per-cell padding so the result stays inside
-// the viewport.
+// distributeColumnWidths reflows column widths to fill the terminal.
+// Slack is split *proportionally* to each column's current (content-
+// derived) width so a wide BRANCH column also expands when UPSTREAM is
+// the longest — instead of one column hoarding the slack. The last
+// column absorbs any rounding remainder so widths sum exactly to total.
+// Honours bubbles/table's per-cell padding.
 func distributeColumnWidths(cols []table.Column, total int) []table.Column {
 	if total <= 0 || len(cols) == 0 {
 		return cols
 	}
 	const padding = 2
+	out := make([]table.Column, len(cols))
+	copy(out, cols)
+
 	sum := 0
-	for _, c := range cols {
+	for _, c := range out {
 		sum += c.Width + padding
 	}
 	if sum >= total {
-		return cols
+		return out
 	}
-	idx := 0
-	for i := range cols {
-		if cols[i].Width > cols[idx].Width {
-			idx = i
+	slack := total - sum
+
+	weightSum := 0
+	for _, c := range out {
+		weightSum += c.Width
+	}
+	if weightSum == 0 {
+		share := slack / len(out)
+		for i := range out {
+			out[i].Width += share
 		}
+		return out
 	}
-	out := make([]table.Column, len(cols))
-	copy(out, cols)
-	out[idx].Width += total - sum
+	given := 0
+	for i := 0; i < len(out)-1; i++ {
+		share := slack * out[i].Width / weightSum
+		out[i].Width += share
+		given += share
+	}
+	out[len(out)-1].Width += slack - given
 	return out
 }

@@ -30,7 +30,7 @@ func init() {
 	cmd.Flags().BoolP("force", "f", false, "discard local changes (git switch --discard-changes)")
 	cmd.Flags().Bool("detach", false, "detach HEAD at the ref instead of switching to a branch")
 	cmd.Flags().BoolP("main", "m", false, "switch to the detected main/master branch")
-	cmd.Flags().BoolP("develop", "d", false, "switch to the develop/dev branch")
+	cmd.Flags().Bool("develop", false, "switch to the develop/dev branch")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -242,29 +242,35 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			continue
 		}
 		ups := b.Upstream
-		trail := "-"
+		trailPlain := "-"
 		if ups != "" {
-			trail = "→ " + ups
+			trailPlain = "→ " + ups
 		}
+		trailColored := trailPlain
 		if b.Gone {
-			trail = faint("(gone)")
+			trailPlain = "(gone)"
+			trailColored = faint("(gone)")
 		}
+		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
 			Key: keyLocalPrefix + b.Name,
+			// Cells stay plain so bubbles/table's runewidth-based
+			// truncation measures visible width correctly.
+			Cells: []string{"● " + b.Name, trailPlain, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %s",
-				color.GreenString("●"),
-				b.Name, trail, shortAge(b.LastCommit),
+				color.GreenString("●"), b.Name, trailColored, age,
 			),
 		})
 	}
 	for _, r := range remotes {
+		age := shortAge(r.LastCommit)
+		trailPlain := "(from " + r.Remote + ")"
+		trailColored := faint(trailPlain)
 		items = append(items, ui.PickerItem{
-			Key: keyRemotePrefix + r.TrackRef,
+			Key:   keyRemotePrefix + r.TrackRef,
+			Cells: []string{"○ " + r.Name, trailPlain, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %s",
-				color.CyanString("○"),
-				r.Name,
-				faint("(from "+r.Remote+")"),
-				shortAge(r.LastCommit),
+				color.CyanString("○"), r.Name, trailColored, age,
 			),
 		})
 	}
@@ -273,7 +279,8 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		return switchPick{}, errors.New("no other branches to switch to")
 	}
 
-	choice, err := ui.NewPicker().Pick(ctx, "switch", items)
+	picker := &ui.TablePicker{Headers: []string{"BRANCH", "UPSTREAM", "AGE"}}
+	choice, err := picker.Pick(ctx, "switch", items)
 	if err != nil {
 		if errors.Is(err, ui.ErrPickerAborted) {
 			return switchPick{}, WithHint(errors.New("aborted"), "pass a branch name directly: gk switch <name>")

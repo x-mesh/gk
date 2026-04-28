@@ -138,7 +138,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// Secret gate. gitleaks + internal/secrets can take a noticeable
 	// beat on large diffs; show a spinner so the user knows gk is
 	// actively guarding the payload rather than hung.
-	stopGate := ui.StartSpinner("scanning payload for secrets...")
+	stopGate := ui.StartBubbleSpinner("scanning payload for secrets...")
 	payload := summariseForSecretScan(files)
 	findings, err := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
@@ -167,7 +167,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// Classify — the first provider call. Spinner advertises we are
 	// waiting on the AI CLI, not stuck.
 	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
-	stopClassify := ui.StartSpinner(fmt.Sprintf("classify — %s", prov.Name()))
+	stopClassify := ui.StartBubbleSpinner(fmt.Sprintf("classify — %s", prov.Name()))
 	classifyStart := time.Now()
 	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
 		AllowedTypes:    cfg.Commit.Types,
@@ -191,7 +191,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "commit: composing %d message(s)...\n", len(groups))
-	stopCompose := ui.StartSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
+	stopCompose := ui.StartBubbleSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
 	composeStart := time.Now()
 	messages, err := aicommit.ComposeAll(ctx, prov, groups, diffs, aicommit.ComposeOptions{
 		MaxAttempts:      3,

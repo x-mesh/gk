@@ -1,10 +1,11 @@
 package ui
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 
-	"github.com/charmbracelet/huh"
 	"golang.org/x/term"
 )
 
@@ -53,41 +54,32 @@ func NewPrompter(def ConflictChoice) Prompter {
 	return &AutoPrompter{Default: def}
 }
 
-// TermPrompter renders interactive huh prompts on a real TTY.
+// TermPrompter renders interactive bubbletea prompts on a real TTY.
 type TermPrompter struct{}
 
-func (p *TermPrompter) ConflictChoice(title, context string, allowed []ConflictChoice) (ConflictChoice, error) {
+func (p *TermPrompter) ConflictChoice(promptTitle, promptContext string, allowed []ConflictChoice) (ConflictChoice, error) {
 	if !IsTerminal() {
 		return "", ErrNonInteractive
 	}
-	var picked string
-	options := make([]huh.Option[string], 0, len(allowed))
-	for _, c := range allowed {
-		options = append(options, huh.NewOption(string(c), string(c)))
+	if promptContext != "" {
+		fmt.Fprintln(os.Stderr, promptContext)
 	}
-	form := huh.NewSelect[string]().
-		Title(title).
-		Description(context).
-		Options(options...).
-		Value(&picked)
-	if err := form.Run(); err != nil {
+	items := make([]PickerItem, 0, len(allowed))
+	for _, c := range allowed {
+		items = append(items, PickerItem{Key: string(c), Display: string(c)})
+	}
+	picker := &TablePicker{}
+	pick, err := picker.Pick(context.Background(), promptTitle, items)
+	if err != nil {
 		return "", err
 	}
-	return ConflictChoice(picked), nil
+	return ConflictChoice(pick.Key), nil
 }
 
 // Confirm shows a yes/no prompt and returns the user's choice. On a non-TTY
 // session it returns ErrNonInteractive so callers can require --yes flags.
 func Confirm(title string, defaultYes bool) (bool, error) {
-	if !IsTerminal() {
-		return false, ErrNonInteractive
-	}
-	v := defaultYes
-	form := huh.NewConfirm().Title(title).Value(&v)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return v, nil
+	return ConfirmTUI(context.Background(), title, "", defaultYes)
 }
 
 // AutoPrompter returns a fixed default choice without user interaction.

@@ -579,7 +579,7 @@ func TestBranchClean_ForceFlag_UsesCapitalD(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --short HEAD":                                  {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD":              {Stdout: "origin/main\n"},
-			"branch --merged main --format=%(refname:short)":            {Stdout: "feat-done\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat-done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short) refs/heads":         {Stdout: "main\nfeat-done\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",
@@ -626,7 +626,7 @@ func TestBranchClean_NoForce_UsesLowercaseD(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --short HEAD":                                  {Stdout: "main\n"},
 			"symbolic-ref --short refs/remotes/origin/HEAD":              {Stdout: "origin/main\n"},
-			"branch --merged main --format=%(refname:short)":            {Stdout: "feat-done\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat-done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short) refs/heads":         {Stdout: "main\nfeat-done\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",

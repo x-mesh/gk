@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
@@ -379,22 +378,24 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 
 		items := make([]ui.PickerItem, 0, len(entries)+2)
 		for _, e := range entries {
-			branch, flags := worktreeRowParts(e)
+			branch, flagsPlain := worktreeRowPartsPlain(e)
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				Cells:   []string{bold(branch), faint(e.Path), flags},
-				Key:     e.Path,
+				// Cells stay plain so bubbles/table's runewidth-based
+				// truncation measures visible width correctly.
+				Cells: []string{branch, e.Path, flagsPlain},
+				Key:   e.Path,
 			})
 		}
 		items = append(items,
 			ui.PickerItem{
 				Display: faint("[+] add new worktree"),
-				Cells:   []string{faint("[+] add new worktree"), "", ""},
+				Cells:   []string{"[+] add new worktree", "", ""},
 				Key:     keyAddNew,
 			},
 			ui.PickerItem{
 				Display: faint("[q] quit"),
-				Cells:   []string{faint("[q] quit"), "", ""},
+				Cells:   []string{"[q] quit", "", ""},
 				Key:     keyQuit,
 			},
 		)
@@ -471,10 +472,25 @@ func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string
 }
 
 // worktreeRowParts splits a WorktreeEntry into the branch label and the
-// flag suffix used by both the table-cell layout and the legacy single-
-// column label. Keeping the formatting in one place ensures both paths
-// stay in sync.
+// (ANSI-coloured) flag suffix used by the legacy single-column label
+// (FzfPicker/FallbackPicker fallback path).
 func worktreeRowParts(e WorktreeEntry) (branch, flags string) {
+	branch, _ = worktreeRowPartsPlain(e)
+	var parts []string
+	if e.Locked {
+		parts = append(parts, color.RedString("[locked]"))
+	}
+	if e.Prunable {
+		parts = append(parts, color.RedString("[prunable]"))
+	}
+	flags = strings.Join(parts, " ")
+	return branch, flags
+}
+
+// worktreeRowPartsPlain returns the branch label and the flag suffix
+// without ANSI styling. TablePicker cells use this so width-based
+// truncation (runewidth.Truncate) measures visible characters only.
+func worktreeRowPartsPlain(e WorktreeEntry) (branch, flags string) {
 	switch {
 	case e.Bare:
 		branch = "(bare)"
@@ -487,10 +503,10 @@ func worktreeRowParts(e WorktreeEntry) (branch, flags string) {
 	}
 	var parts []string
 	if e.Locked {
-		parts = append(parts, color.RedString("[locked]"))
+		parts = append(parts, "[locked]")
 	}
 	if e.Prunable {
-		parts = append(parts, color.RedString("[prunable]"))
+		parts = append(parts, "[prunable]")
 	}
 	flags = strings.Join(parts, " ")
 	return branch, flags
@@ -665,64 +681,20 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 
 // worktreeTUIAdd collects a worktree name + branch choice from the user
 // and dispatches to git worktree add via the managed-path resolver.
-// huh forms render on stderr by default, so stdout stays reserved for
-// the `cd` action in the outer loop.
+// addModel renders on stderr so stdout stays reserved for the `cd`
+// action in the outer loop.
 func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) error {
-	var name string
-	var createBranch = true
-	var branchName string
-	var fromRef string
-
-	nameForm := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("worktree name").
-			Description("relative → placed under the managed base; absolute → used as-is").
-			Value(&name).
-			Validate(func(s string) error {
-				if strings.TrimSpace(s) == "" {
-					return fmt.Errorf("name is required")
-				}
-				return nil
-			}),
-		huh.NewConfirm().
-			Title("create a new branch?").
-			Description("no → check out an existing branch").
-			Value(&createBranch),
-	))
-	if err := nameForm.Run(); err != nil {
-		return err
-	}
-	name = strings.TrimSpace(name)
-
-	branchPrompt := "branch name"
-	branchDesc := "existing branch to check out"
-	if createBranch {
-		branchDesc = "name of the new branch"
-		branchName = filepath.Base(name) // sensible default: "feat/api" → "api"
-	}
-	branchForm := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title(branchPrompt).Description(branchDesc).Value(&branchName),
-	))
-	if err := branchForm.Run(); err != nil {
-		return err
-	}
-	branchName = strings.TrimSpace(branchName)
-	if branchName == "" {
-		return fmt.Errorf("branch name is required")
-	}
-
-	if createBranch {
-		fromForm := huh.NewForm(huh.NewGroup(
-			huh.NewInput().
-				Title("base ref").
-				Description("blank = HEAD; e.g. origin/main").
-				Value(&fromRef),
-		))
-		if err := fromForm.Run(); err != nil {
-			return err
+	inputs, err := runWorktreeAddTUI(ctx)
+	if err != nil {
+		if errors.Is(err, errAddCancelled) {
+			return nil
 		}
-		fromRef = strings.TrimSpace(fromRef)
+		return err
 	}
+	name := inputs.Name
+	createBranch := inputs.CreateBranch
+	branchName := inputs.BranchName
+	fromRef := inputs.FromRef
 
 	resolved, err := resolveWorktreePath(ctx, runner, cfg, name)
 	if err != nil {
@@ -821,27 +793,25 @@ func promptOrphanBranchResolution(name, tip string) (orphanResolution, error) {
 	if !ui.IsTerminal() {
 		return orphanCancel, fmt.Errorf("branch %q already exists (orphan) — re-run interactively to resolve, or delete with `git branch -D %s`", name, name)
 	}
-	var picked string
 	title := fmt.Sprintf("branch %q already exists (orphan — no worktree uses it)", name)
 	desc := tip
 	if desc == "" {
 		desc = "choose how to proceed"
 	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title(title).
-			Description(desc).
-			Options(
-				huh.NewOption("check out the existing branch in the new worktree", "reuse"),
-				huh.NewOption(fmt.Sprintf("delete %q and create a fresh branch", name), "delete"),
-				huh.NewOption("cancel", "cancel"),
-			).
-			Value(&picked),
-	))
-	if err := form.Run(); err != nil {
+	items := []ui.PickerItem{
+		{Key: "reuse", Display: "check out the existing branch in the new worktree"},
+		{Key: "delete", Display: fmt.Sprintf("delete %q and create a fresh branch", name)},
+		{Key: "cancel", Display: "cancel"},
+	}
+	picker := &ui.TablePicker{Headers: []string{title + " — " + desc}}
+	choice, err := picker.Pick(context.Background(), "orphan branch", items)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return orphanCancel, nil
+		}
 		return orphanCancel, err
 	}
-	switch picked {
+	switch choice.Key {
 	case "reuse":
 		return orphanReuse, nil
 	case "delete":

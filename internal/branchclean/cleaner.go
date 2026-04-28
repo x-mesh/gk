@@ -55,7 +55,7 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	}
 
 	// --remote만 단독 실행 시 로컬 정리 없이 반환
-	if opts.Remote && !opts.Gone && !opts.All && opts.Stale == 0 && !opts.SquashMerged {
+	if opts.Remote && !opts.Gone && !opts.All && opts.Stale == 0 && !opts.SquashMerged && !opts.IncludeRemote {
 		// merged 기본 동작도 건너뛰려면 다른 플래그가 없어야 함
 		// 하지만 기본 동작은 merged 수집이므로, --remote만 있으면 로컬 정리 skip
 		return result, nil
@@ -155,12 +155,28 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	}
 
 	// 삭제 실행
+	// Index candidates by name so we can route remote vs local deletion.
+	cmap := map[string]CleanCandidate{}
+	for _, c := range candidates {
+		cmap[c.Name] = c
+	}
 	deleteFlag := "-d"
 	if opts.Force {
 		deleteFlag = "-D"
 	}
 	for _, name := range toDelete {
-		_, stderr, err := c.Runner.Run(ctx, "branch", deleteFlag, name)
+		cand := cmap[name]
+		var stderr []byte
+		var err error
+		if cand.IsRemote {
+			rn := cand.RemoteName
+			if rn == "" {
+				rn = remote
+			}
+			_, stderr, err = c.Runner.Run(ctx, "push", rn, "--delete", name)
+		} else {
+			_, stderr, err = c.Runner.Run(ctx, "branch", deleteFlag, name)
+		}
 		if err != nil {
 			result.Failed[name] = fmt.Errorf("gk branch clean: delete %s: %s: %w", name, strings.TrimSpace(string(stderr)), err)
 			if c.Stderr != nil {

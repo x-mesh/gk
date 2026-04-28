@@ -436,7 +436,7 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
 			goto writePlan
 		}
-		stopSpinner := ui.StartSpinner(fmt.Sprintf("merge plan — %s", deps.Provider.Name()))
+		stopSpinner := ui.StartBubbleSpinner(fmt.Sprintf("merge plan — %s", deps.Provider.Name()))
 		result, err := sum.Summarize(ctx, provider.SummarizeInput{
 			Kind:    "merge-plan",
 			Diff:    redacted,

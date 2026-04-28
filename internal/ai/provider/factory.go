@@ -34,7 +34,7 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 	}
 	order := opts.AutoOrder
 	if len(order) == 0 {
-		order = []string{"nvidia", "groq", "gemini", "qwen", "kiro"}
+		order = []string{"anthropic", "openai", "nvidia", "groq", "gemini", "qwen", "kiro"}
 	}
 	var probeErrs []error
 	for _, n := range order {
@@ -57,6 +57,10 @@ func NewProvider(ctx context.Context, opts FactoryOptions) (Provider, error) {
 // (e.g. FallbackChain builder) can construct individual providers.
 func Build(name string, runner CommandRunner) (Provider, error) {
 	switch name {
+	case "anthropic", "claude":
+		return NewAnthropic(), nil
+	case "openai":
+		return NewOpenAI(), nil
 	case "nvidia":
 		return NewNvidia(), nil
 	case "groq":
@@ -74,6 +78,6 @@ func Build(name string, runner CommandRunner) (Provider, error) {
 		k.Runner = runner
 		return k, nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want nvidia|groq|gemini|qwen|kiro)", name)
+		return nil, fmt.Errorf("unknown provider %q (want anthropic|openai|nvidia|groq|gemini|qwen|kiro)", name)
 	}
 }

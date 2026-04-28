@@ -29,7 +29,7 @@ func TestNewProviderByName(t *testing.T) {
 }
 
 func TestNewProviderUnknown(t *testing.T) {
-	_, err := NewProvider(context.Background(), FactoryOptions{Name: "claude", Runner: &FakeCommandRunner{}})
+	_, err := NewProvider(context.Background(), FactoryOptions{Name: "definitely-not-a-provider", Runner: &FakeCommandRunner{}})
 	if err == nil {
 		t.Fatal("want error for unknown provider")
 	}

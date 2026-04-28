@@ -50,6 +50,26 @@ func checkAIProvider(name string) doctorCheck {
 	}
 }
 
+// checkAIAPIProvider reports on HTTP-API providers (no binary on disk —
+// just an API key in the environment). Pass the canonical env var; the
+// row is named "ai api: <provider>" so it slots cleanly next to the
+// CLI rows in the doctor output.
+func checkAIAPIProvider(name, envKey string) doctorCheck {
+	if os.Getenv(envKey) != "" {
+		return doctorCheck{
+			Name:   "ai api: " + name,
+			Status: statusPass,
+			Detail: envKey + " set",
+		}
+	}
+	return doctorCheck{
+		Name:   "ai api: " + name,
+		Status: statusWarn,
+		Detail: envKey + " not set",
+		Fix:    "export " + envKey + "=...  # then `gk commit --provider " + name + "`",
+	}
+}
+
 // providerAuthHint returns (ok, remediation). Heuristic only — we do
 // not spawn subprocesses here so false-negatives turn into runtime
 // errors with a clearer message later on.

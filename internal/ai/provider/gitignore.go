@@ -31,12 +31,26 @@ that are specific to this project but NOT covered by standard language/IDE/secur
 `
 
 // parseGitignoreLines는 AI 응답에서 gitignore 패턴을 추출한다.
-// 모든 provider adapter에서 공통으로 사용한다.
+// 모든 provider adapter에서 공통으로 사용한다. CLI 어댑터(gemini/qwen/
+// kiro)는 stdout을 색칠해서 보내기도 하므로 ANSI escape와 흔한 마크다운
+// 장식("- ", "* ", "> ")은 라인 단위로 정리한 뒤 받아들인다.
 func parseGitignoreLines(content string) []string {
+	content = stripANSI(content)
 	var patterns []string
-	for _, line := range strings.Split(content, "\n") {
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(stripANSI(raw))
+		// Trim common markdown bullet / quote prefixes the model
+		// sometimes adds (e.g. "- node_modules/", "> node_modules/").
+		line = strings.TrimLeft(line, "-*•> \t")
 		line = strings.TrimSpace(line)
+		// Drop fenced code blocks, comments, and any leftover ANSI
+		// remnants that survived the strip pass.
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		// A pattern with whitespace inside is almost always prose
+		// ("AI-suggested entries:") rather than a real glob.
+		if strings.ContainsAny(line, " \t") {
 			continue
 		}
 		patterns = append(patterns, line)

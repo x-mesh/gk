@@ -159,6 +159,42 @@ func checkStashBacklog(ctx context.Context, runner git.Runner) doctorCheck {
 	}
 }
 
+// branchTrackingMaxBranches caps how many divergent untracked branches the
+// detail line lists before collapsing into "+N more"; keeps the doctor
+// table from blowing out on repos with many local branches.
+const branchTrackingMaxBranches = 3
+
+// checkBranchTracking flags local branches whose @{upstream} is unset but
+// whose same-named remote ref (e.g., origin/main) exists and differs.
+// Pure read of cached refs — no network. Branches without a same-named
+// remote ref (fork/personal) are intentionally ignored to avoid false
+// positives on forks where divergence is the expected steady state.
+func checkBranchTracking(ctx context.Context, runner git.Runner, remote string) doctorCheck {
+	if remote == "" {
+		remote = "origin"
+	}
+	offenders := scanUntrackedDivergent(ctx, runner, remote)
+	if len(offenders) == 0 {
+		return doctorCheck{Name: "repo: branch tracking", Status: statusPass, Detail: "all tracked or in sync with same-named remote"}
+	}
+
+	previews := make([]string, 0, len(offenders))
+	for i, o := range offenders {
+		if i == branchTrackingMaxBranches {
+			previews = append(previews, fmt.Sprintf("+%d more", len(offenders)-branchTrackingMaxBranches))
+			break
+		}
+		previews = append(previews, fmt.Sprintf("%s (↑%d ↓%d → %s)", o.Branch, o.Ahead, o.Behind, o.Implicit))
+	}
+	first := offenders[0]
+	return doctorCheck{
+		Name:   "repo: branch tracking",
+		Status: statusWarn,
+		Detail: fmt.Sprintf("%d untracked branch(es) diverge from %s: %s", len(offenders), remote, strings.Join(previews, ", ")),
+		Fix:    fmt.Sprintf("git branch --set-upstream-to=%s %s", first.Implicit, first.Branch),
+	}
+}
+
 // humanSize renders a byte count with at most one decimal place using
 // binary prefixes (KiB/MiB/GiB) — same convention as `du -h`.
 func humanSize(n int64) string {

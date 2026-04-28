@@ -841,7 +841,7 @@ func resolveBaseBranchForStatus(ctx context.Context, runner *git.ExecRunner, cli
 // branchDivergence returns (ahead, behind) commit counts of head versus
 // base in a single `git rev-list --left-right --count base...head` call.
 // The git output is "<behind>\t<ahead>" (left-of-base, right-of-head).
-func branchDivergence(ctx context.Context, runner *git.ExecRunner, base, head string) (ahead, behind int, ok bool) {
+func branchDivergence(ctx context.Context, runner git.Runner, base, head string) (ahead, behind int, ok bool) {
 	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", base+"..."+head)
 	if err != nil {
 		return 0, 0, false
@@ -853,6 +853,139 @@ func branchDivergence(ctx context.Context, runner *git.ExecRunner, base, head st
 	behind, _ = strconv.Atoi(parts[0])
 	ahead, _ = strconv.Atoi(parts[1])
 	return ahead, behind, true
+}
+
+// untrackedDivergent represents a local branch with no @{u} configured
+// whose same-named remote ref differs from the branch tip.
+type untrackedDivergent struct {
+	Branch        string
+	Implicit      string // e.g. "origin/main"
+	Ahead, Behind int
+}
+
+// scanUntrackedDivergent walks every local branch and reports those that
+// satisfy: no upstream configured + a same-named remote ref exists +
+// the two refs differ. Pure cached-ref scan (for-each-ref + rev-parse +
+// rev-list); no fetch. Branches without a same-named remote ref are
+// intentionally skipped — those are the fork/personal-branch case.
+func scanUntrackedDivergent(ctx context.Context, r git.Runner, remote string) []untrackedDivergent {
+	if remote == "" {
+		remote = "origin"
+	}
+	out, _, err := r.Run(ctx,
+		"for-each-ref",
+		"--format=%(refname:short)%00%(upstream:short)",
+		"refs/heads",
+	)
+	if err != nil {
+		return nil
+	}
+	var result []untrackedDivergent
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		branch, upstream := parts[0], parts[1]
+		if upstream != "" {
+			continue
+		}
+		implicit := remote + "/" + branch
+		if !git.RefExists(ctx, r, "refs/remotes/"+implicit) {
+			continue
+		}
+		ahead, behind, ok := branchDivergence(ctx, r, implicit, branch)
+		if !ok || (ahead == 0 && behind == 0) {
+			continue
+		}
+		result = append(result, untrackedDivergent{
+			Branch: branch, Implicit: implicit, Ahead: ahead, Behind: behind,
+		})
+	}
+	return result
+}
+
+// renderOtherUntrackedHint summarizes untracked-divergent branches *other*
+// than the one already covered by renderUntrackedRemoteHint. Surfaces the
+// case where the current branch is fine (e.g. develop tracks origin/develop)
+// but a sibling branch (e.g. main) has silently fallen out of sync. Returns
+// "" when nothing to show.
+func renderOtherUntrackedHint(items []untrackedDivergent) string {
+	if len(items) == 0 {
+		return ""
+	}
+	warn := color.New(color.FgYellow).SprintFunc()
+	cyan := color.CyanString
+	faint := color.New(color.Faint).SprintFunc()
+	if len(items) == 1 {
+		o := items[0]
+		return fmt.Sprintf("  %s %s%s %s↑%d ↓%d  %s",
+			warn("⚠"),
+			faint("untracked: "),
+			cyan(o.Branch),
+			faint("differs from "+o.Implicit+" "),
+			o.Ahead, o.Behind,
+			faint("(`gk doctor --fix` to repair)"),
+		)
+	}
+	// Multiple offenders — name the first two, collapse the rest.
+	previews := make([]string, 0, len(items))
+	for i, o := range items {
+		if i == 2 {
+			previews = append(previews, fmt.Sprintf("+%d more", len(items)-2))
+			break
+		}
+		previews = append(previews, fmt.Sprintf("%s ↑%d ↓%d", o.Branch, o.Ahead, o.Behind))
+	}
+	return fmt.Sprintf("  %s %s%s  %s",
+		warn("⚠"),
+		faint(fmt.Sprintf("%d untracked branches diverge: ", len(items))),
+		faint(strings.Join(previews, ", ")),
+		faint("(`gk doctor --fix` to repair)"),
+	)
+}
+
+// renderUntrackedRemoteHint returns a one-line hint when the current branch
+// has no upstream configured but a same-named remote-tracking ref exists
+// locally and diverges from HEAD. Returns "" when:
+//   - branch is empty / detached
+//   - the same-named remote ref is absent (fork / personal branch case)
+//   - HEAD == remote ref (nothing to warn about)
+//   - rev-list fails for any reason (offline with pruned cache, etc.)
+//
+// Uses cached refs only — no network. The fix command shown is the literal
+// `git branch --set-upstream-to=...` so the user can copy-paste it; gk does
+// not auto-apply it (constraint: no implicit git config writes).
+func renderUntrackedRemoteHint(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, branch string) string {
+	if branch == "" {
+		return ""
+	}
+	remote := "origin"
+	if cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
+	implicit := remote + "/" + branch
+	if !git.RefExists(ctx, runner, "refs/remotes/"+implicit) {
+		return ""
+	}
+	ahead, behind, ok := branchDivergence(ctx, runner, implicit, "HEAD")
+	if !ok || (ahead == 0 && behind == 0) {
+		return ""
+	}
+	warn := color.New(color.FgYellow).SprintFunc()
+	cyan := color.CyanString
+	faint := color.New(color.Faint).SprintFunc()
+	return fmt.Sprintf("  %s %s %s %s↑%d ↓%d  %s",
+		warn("⚠"),
+		faint("untracked —"),
+		cyan(implicit),
+		faint("differs "),
+		ahead, behind,
+		faint("fix: git branch --set-upstream-to="+implicit+" "+branch),
+	)
 }
 
 // renderBaseDivergence returns a single line summarizing how the current
@@ -1123,6 +1256,38 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Fprintln(w, line)
+
+	// Untracked-with-divergent-remote hint: when @{u} is unconfigured but
+	// the same-named remote ref (e.g., origin/main) is cached and differs
+	// from HEAD, surface a single-line warning so the user notices that
+	// the local branch silently fell out of sync. Suppressed for fork
+	// branches (no same-named remote ref) and SHA-equal cases (no diff).
+	if !detached && st.Upstream == "" && st.Branch != "" {
+		if hint := renderUntrackedRemoteHint(cmd.Context(), runner, cfg, st.Branch); hint != "" {
+			fmt.Fprintln(w, hint)
+		}
+	}
+
+	// Sibling-branch hint: even when the current branch is fine, a sibling
+	// branch (e.g. main) without an upstream may have silently fallen out
+	// of sync with its same-named remote ref. Scan once and surface a one-
+	// line summary so the user notices without having to run `gk doctor`.
+	if !detached {
+		remote := "origin"
+		if cfg != nil && cfg.Remote != "" {
+			remote = cfg.Remote
+		}
+		others := scanUntrackedDivergent(cmd.Context(), runner, remote)
+		filtered := others[:0]
+		for _, o := range others {
+			if o.Branch != st.Branch {
+				filtered = append(filtered, o)
+			}
+		}
+		if hint := renderOtherUntrackedHint(filtered); hint != "" {
+			fmt.Fprintln(w, hint)
+		}
+	}
 
 	allGrouped := groupEntries(st.Entries)
 	if statusVerbose > 0 {

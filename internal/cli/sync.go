@@ -63,6 +63,12 @@ type syncReport struct {
 	Upstream string
 	From     string // short SHA before
 	To       string // short SHA after
+
+	// Implicit holds the same-named remote ref (e.g. "origin/main") when
+	// Status == "no-upstream" and that ref exists locally and differs from
+	// the branch HEAD. Empty otherwise — render skips the hint line.
+	Implicit                      string
+	ImplicitAhead, ImplicitBehind int
 }
 
 func runSyncCore(cmd *cobra.Command) error {
@@ -157,9 +163,22 @@ func runSyncCore(cmd *cobra.Command) error {
 	// 4) sync each
 	var reports []syncReport
 	var divergedCount int
+	remote := "origin"
+	if cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
 	for _, bt := range targets {
 		if bt.Upstream == "" {
-			reports = append(reports, syncReport{Branch: bt.Name, Status: "no-upstream"})
+			rep := syncReport{Branch: bt.Name, Status: "no-upstream"}
+			implicit := remote + "/" + bt.Name
+			if git.RefExists(ctx, runner, "refs/remotes/"+implicit) {
+				if ahead, behind, ok := branchDivergence(ctx, runner, implicit, bt.Name); ok && (ahead+behind) > 0 {
+					rep.Implicit = implicit
+					rep.ImplicitAhead = ahead
+					rep.ImplicitBehind = behind
+				}
+			}
+			reports = append(reports, rep)
 			continue
 		}
 		rep, err := syncOne(ctx, runner, bt.Name, bt.Upstream, bt.Name == currentBranch)
@@ -295,7 +314,12 @@ func writeSyncReport(w interface{ Write(p []byte) (int, error) }, reports []sync
 		case "fast-forwarded":
 			fmt.Fprintf(w, "→ %-28s %s → %s  (%s)\n", r.Branch, r.From, r.To, r.Upstream)
 		case "no-upstream":
-			fmt.Fprintf(w, "? %-28s no upstream configured — skipped\n", r.Branch)
+			if r.Implicit != "" {
+				fmt.Fprintf(w, "? %-28s no upstream — %s differs ↑%d ↓%d\n", r.Branch, r.Implicit, r.ImplicitAhead, r.ImplicitBehind)
+				fmt.Fprintf(w, "  %-28s fix: git branch --set-upstream-to=%s %s\n", "", r.Implicit, r.Branch)
+			} else {
+				fmt.Fprintf(w, "? %-28s no upstream configured — skipped\n", r.Branch)
+			}
 		case "diverged":
 			fmt.Fprintf(w, "! %-28s diverged from %s — use `gk pull`\n", r.Branch, r.Upstream)
 		}

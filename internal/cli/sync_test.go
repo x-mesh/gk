@@ -232,3 +232,104 @@ func TestSyncCmd_MutexFlags(t *testing.T) {
 func execRunnerFor(r *testutil.Repo) *git.ExecRunner {
 	return &git.ExecRunner{Dir: r.Dir}
 }
+
+// untrackedDownstream returns a downstream repo whose `main` has the
+// origin/main ref cached but lacks a configured upstream — exactly the
+// scenario where mem-mesh's main fell out of sync silently. The upstream
+// is advanced past the downstream by one commit so origin/main is "ahead".
+func untrackedDownstream(t *testing.T) (*testutil.Repo, *testutil.Repo) {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hello\n")
+	upstream.Commit("feat: a")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// Intentionally NOT setting upstream.
+
+	// upstream advances → origin/main now ahead by 1 after the next fetch.
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+	return upstream, downstream
+}
+
+func TestSyncCmd_NoUpstream_ImplicitDivergence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	_, downstream := untrackedDownstream(t)
+
+	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("expected no error (skip), got: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "no upstream") {
+		t.Errorf("expected 'no upstream' marker, got:\n%s", out)
+	}
+	if !strings.Contains(out, "origin/main differs") {
+		t.Errorf("expected divergence detail, got:\n%s", out)
+	}
+	if !strings.Contains(out, "↑0 ↓1") {
+		t.Errorf("expected '↑0 ↓1' (origin ahead by 1), got:\n%s", out)
+	}
+	if !strings.Contains(out, "fix: git branch --set-upstream-to=origin/main main") {
+		t.Errorf("expected fix command, got:\n%s", out)
+	}
+	if strings.Contains(out, "skipped") {
+		t.Errorf("legacy 'skipped' phrasing should not appear when implicit divergence detected, got:\n%s", out)
+	}
+}
+
+func TestSyncCmd_NoUpstream_EqualToImplicit_KeepsLegacyPhrasing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hi\n")
+	upstream.Commit("feat: a")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// Same SHA, no upstream set → should NOT emit the new hint.
+
+	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("err: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no upstream configured — skipped") {
+		t.Errorf("expected legacy 'skipped' phrasing for equal SHA, got:\n%s", out)
+	}
+	if strings.Contains(out, "differs") {
+		t.Errorf("hint should not fire when SHAs match, got:\n%s", out)
+	}
+}
+
+func TestSyncCmd_NoUpstream_ForkBranch_NoSameNamedRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hi\n")
+	repo.Commit("init")
+	// No origin → no remote refs cached at all.
+
+	root, buf := buildSyncCmd(repo.Dir, "--no-fetch")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("err: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no upstream configured — skipped") {
+		t.Errorf("expected legacy 'skipped' phrasing for fork-style branch, got:\n%s", out)
+	}
+	if strings.Contains(out, "differs") {
+		t.Errorf("hint should be silent when same-named remote ref is absent, got:\n%s", out)
+	}
+}

@@ -97,6 +97,10 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkAIProvider("qwen"),
 		checkAIProvider("kiro-cli"),
 	}
+	remote := "origin"
+	if cfg, _ := config.Load(cmd.Flags()); cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
 	if gitDir != "" {
 		checks = append(checks,
 			checkRepoLockFile(gitDir),
@@ -107,6 +111,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			checkStagedSize(ctx, runner),
 			checkUntrackedNoise(ctx, runner),
 			checkStashBacklog(ctx, runner),
+			checkBranchTracking(ctx, runner, remote),
 		)
 	}
 
@@ -122,7 +127,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 
 	if fix && !asJSON && gitDir != "" {
-		if err := runDoctorFix(ctx, cmd, runner, gitDir, checks); err != nil {
+		if err := runDoctorFix(ctx, cmd, runner, gitDir, remote, checks); err != nil {
 			return err
 		}
 	}

@@ -148,21 +148,27 @@ func checkDirtyTree(ctx context.Context, runner git.Runner) doctorCheck {
 // the repo is re-checked so a fix that uncovers (or unblocks) the next
 // finding is acted on too — e.g. resolving conflicts unblocks the
 // stash step that follows.
-func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gitDir string, _ []doctorCheck) error {
+func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gitDir, remote string, _ []doctorCheck) error {
 	if !ui.IsTerminal() {
 		fmt.Fprintln(cmd.ErrOrStderr(), "doctor --fix needs a TTY")
 		return nil
 	}
+	if remote == "" {
+		remote = "origin"
+	}
 
-	// Limit to a small number of passes so a stubborn finding can't
-	// loop forever. Three is plenty for the current finding set.
-	const maxPasses = 3
+	// Cap passes so a stubborn finding can't loop forever. The branch-
+	// tracking handler walks one offender per pass, so allow extra room
+	// when many local branches need re-tracking — most repos have <10
+	// local branches, so 8 is plenty without being unbounded.
+	const maxPasses = 8
 	for pass := 0; pass < maxPasses; pass++ {
 		fresh := []doctorCheck{
 			checkRepoLockFile(gitDir),
 			checkInProgressOp(gitDir),
 			checkUnmergedPaths(ctx, runner),
 			checkDirtyTree(ctx, runner),
+			checkBranchTracking(ctx, runner, remote),
 		}
 		acted := false
 		stop := false
@@ -180,6 +186,8 @@ func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gi
 				err = promptFixUnmerged(ctx, cmd, runner)
 			case "repo: working tree":
 				err = promptFixDirty(ctx, cmd, runner)
+			case "repo: branch tracking":
+				err = promptFixBranchTracking(ctx, cmd, runner, remote)
 			}
 			if errors.Is(err, errSkipFix) {
 				// User skipped or the op can't proceed without manual
@@ -337,6 +345,119 @@ func promptFixInProgress(ctx context.Context, cmd *cobra.Command, runner git.Run
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "no abort handled the in-progress op — try `gk abort` directly")
 	return nil
+}
+
+// promptFixBranchTracking offers to repair the first untracked-divergent
+// branch found by scanUntrackedDivergent. The multi-pass loop in
+// runDoctorFix re-scans after each fix, so multiple offenders are walked
+// one prompt at a time.
+//
+// Safety model:
+//   - Ahead == 0 (origin moved, local stayed): offer "set tracking + ff" — no
+//     local commit can be lost.
+//   - Ahead > 0 (local has commits not on origin): offer "set tracking only"
+//     — never reset, so the user's commits stay intact. They can then run
+//     `gk pull` to rebase/merge.
+//
+// All actions are explicit user choices (TTY prompt) — no implicit git
+// config writes happen on a non-interactive `gk doctor` run.
+func promptFixBranchTracking(ctx context.Context, cmd *cobra.Command, runner git.Runner, remote string) error {
+	if remote == "" {
+		remote = "origin"
+	}
+	offenders := scanUntrackedDivergent(ctx, runner, remote)
+	if len(offenders) == 0 {
+		return nil
+	}
+	o := offenders[0]
+	cur, _ := currentBranchName(ctx, runner)
+	isCurrent := cur == o.Branch
+
+	body := fmt.Sprintf("Branch %q has no upstream configured.\nremote: %s differs from local by ↑%d ↓%d.\n",
+		o.Branch, o.Implicit, o.Ahead, o.Behind)
+	if len(offenders) > 1 {
+		body += fmt.Sprintf("\n(+%d more untracked-divergent branch(es) — they'll be offered one at a time.)", len(offenders)-1)
+	}
+
+	options := []ui.ScrollSelectOption{}
+	if o.Ahead == 0 {
+		options = append(options, ui.ScrollSelectOption{
+			Key:       "f",
+			Value:     "ff",
+			Display:   fmt.Sprintf("set tracking + fast-forward to %s (no local commits to lose)", o.Implicit),
+			IsDefault: true,
+		})
+	} else {
+		body += fmt.Sprintf("\n⚠ %d local commit(s) not on %s — fast-forward would discard them. Suggested: set tracking only, then `gk pull` to rebase/merge.", o.Ahead, o.Implicit)
+	}
+	options = append(options,
+		ui.ScrollSelectOption{
+			Key:       "t",
+			Value:     "track",
+			Display:   fmt.Sprintf("set tracking only — `git branch --set-upstream-to=%s %s`", o.Implicit, o.Branch),
+			IsDefault: o.Ahead > 0,
+		},
+		ui.ScrollSelectOption{
+			Key:     "s",
+			Value:   "skip",
+			Display: "skip this branch",
+		},
+	)
+
+	choice, err := ui.ScrollSelectTUI(ctx, "fix: branch tracking", body, options)
+	if err != nil || choice == "skip" || choice == "" {
+		return errSkipFix
+	}
+	if applyErr := applyBranchTrackingFix(ctx, runner, choice, o, isCurrent); applyErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "branch tracking fix failed: %v\n", applyErr)
+		return errSkipFix
+	}
+	switch choice {
+	case "ff":
+		fmt.Fprintf(cmd.OutOrStdout(), "set tracking + fast-forwarded: %s → %s\n", o.Branch, o.Implicit)
+	case "track":
+		fmt.Fprintf(cmd.OutOrStdout(), "set tracking: %s → %s (run `gk pull` to integrate origin)\n", o.Branch, o.Implicit)
+	}
+	return nil
+}
+
+// applyBranchTrackingFix performs the chosen git operation. Split out from
+// the prompt so the git plumbing is testable without a TTY.
+//   - choice == "track": only `git branch --set-upstream-to=<implicit> <branch>`
+//   - choice == "ff":    set-upstream-to, then fast-forward — `merge --ff-only`
+//     when fixing the current branch (working-tree consistency), or
+//     `update-ref` when fixing a non-current branch.
+func applyBranchTrackingFix(ctx context.Context, runner git.Runner, choice string, o untrackedDivergent, isCurrent bool) error {
+	if _, _, err := runner.Run(ctx, "branch", "--set-upstream-to="+o.Implicit, o.Branch); err != nil {
+		return fmt.Errorf("set-upstream-to %s: %w", o.Implicit, err)
+	}
+	if choice != "ff" {
+		return nil
+	}
+	if isCurrent {
+		if _, stderr, err := runner.Run(ctx, "merge", "--ff-only", o.Implicit); err != nil {
+			return fmt.Errorf("merge --ff-only %s: %w (%s)", o.Implicit, err, strings.TrimSpace(string(stderr)))
+		}
+		return nil
+	}
+	sha, _, err := runner.Run(ctx, "rev-parse", o.Implicit)
+	if err != nil {
+		return fmt.Errorf("rev-parse %s: %w", o.Implicit, err)
+	}
+	if _, stderr, err := runner.Run(ctx, "update-ref", "refs/heads/"+o.Branch, strings.TrimSpace(string(sha))); err != nil {
+		return fmt.Errorf("update-ref %s: %w (%s)", o.Branch, err, strings.TrimSpace(string(stderr)))
+	}
+	return nil
+}
+
+// currentBranchName returns the short branch name HEAD points at, or ""
+// when HEAD is detached (or the call fails).
+func currentBranchName(ctx context.Context, runner git.Runner) (string, error) {
+	out, _, err := runner.Run(ctx, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func promptFixDirty(ctx context.Context, cmd *cobra.Command, runner git.Runner) error {

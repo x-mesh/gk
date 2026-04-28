@@ -1156,3 +1156,126 @@ func TestXYStyle(t *testing.T) {
 		}
 	})
 }
+
+// renderUntrackedRemoteHint surfaces silent divergence on branches without
+// a configured @{u} — the mem-mesh-main scenario. The three cases cover
+// the full decision matrix: tracked / untracked-divergent / fork.
+
+func TestRenderUntrackedRemoteHint_TrackedSilent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	_, downstream := setupTrackingDownstream(t)
+
+	got := renderUntrackedRemoteHint(context.Background(), execRunnerFor(downstream), nil, "main")
+	if got != "" {
+		t.Errorf("hint should stay silent for tracked branch, got: %q", got)
+	}
+}
+
+func TestRenderUntrackedRemoteHint_UntrackedDivergent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	_, downstream := untrackedDownstream(t)
+
+	got := renderUntrackedRemoteHint(context.Background(), execRunnerFor(downstream), nil, "main")
+	if !strings.Contains(got, "origin/main") {
+		t.Errorf("hint should reference origin/main, got: %q", got)
+	}
+	if !strings.Contains(got, "↑0 ↓1") {
+		t.Errorf("hint should report ↑0 ↓1, got: %q", got)
+	}
+	if !strings.Contains(got, "set-upstream-to=origin/main main") {
+		t.Errorf("hint should suggest the fix command, got: %q", got)
+	}
+}
+
+// TestStatus_SiblingUntrackedDivergent reproduces the mem-mesh scenario:
+// the user is on `develop` (which tracks origin/develop and is in sync) but
+// `main` has no upstream and silently diverges from origin/main. status must
+// surface this so the user notices without running doctor explicitly.
+func TestStatus_SiblingUntrackedDivergent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "a\n")
+	upstream.Commit("feat: a")
+	upstream.RunGit("checkout", "-b", "develop")
+	upstream.WriteFile("d.txt", "d\n")
+	upstream.Commit("feat: develop")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	// main: snapshot (no upstream).
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// develop: tracking + in sync.
+	downstream.RunGit("checkout", "-b", "develop", "origin/develop")
+	downstream.RunGit("branch", "--set-upstream-to=origin/develop", "develop")
+
+	// upstream advances main → origin/main pulls ahead by 1.
+	upstream.RunGit("checkout", "main")
+	upstream.WriteFile("b.txt", "b\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+	// downstream stays on develop; main is left behind in silence.
+
+	cmd, buf := newStatusCmd(t, downstream.Dir)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "untracked: main") {
+		t.Errorf("expected sibling-branch hint mentioning 'main', got:\n%s", out)
+	}
+	if !strings.Contains(out, "↑0 ↓1") {
+		t.Errorf("expected ↑0 ↓1 for main, got:\n%s", out)
+	}
+}
+
+func TestRenderOtherUntrackedHint_Empty(t *testing.T) {
+	if got := renderOtherUntrackedHint(nil); got != "" {
+		t.Errorf("expected empty for no offenders, got %q", got)
+	}
+}
+
+func TestRenderOtherUntrackedHint_Multiple(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	items := []untrackedDivergent{
+		{Branch: "main", Implicit: "origin/main", Ahead: 0, Behind: 4},
+		{Branch: "feat/x", Implicit: "origin/feat/x", Ahead: 2, Behind: 1},
+		{Branch: "docs", Implicit: "origin/docs", Ahead: 0, Behind: 3},
+	}
+	got := renderOtherUntrackedHint(items)
+	if !strings.Contains(got, "3 untracked branches diverge") {
+		t.Errorf("expected count summary, got: %q", got)
+	}
+	if !strings.Contains(got, "main ↑0 ↓4") || !strings.Contains(got, "feat/x ↑2 ↓1") {
+		t.Errorf("expected first two named, got: %q", got)
+	}
+	if !strings.Contains(got, "+1 more") {
+		t.Errorf("expected '+1 more' collapse, got: %q", got)
+	}
+}
+
+func TestRenderUntrackedRemoteHint_ForkSilent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hi\n")
+	repo.Commit("init")
+
+	got := renderUntrackedRemoteHint(context.Background(), execRunnerFor(repo), nil, "main")
+	if got != "" {
+		t.Errorf("hint should stay silent without a same-named remote ref, got: %q", got)
+	}
+}

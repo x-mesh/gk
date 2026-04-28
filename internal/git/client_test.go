@@ -456,6 +456,22 @@ func TestCheckRefFormat_Invalid(t *testing.T) {
 	}
 }
 
+// ---- RefExists ----
+
+func TestRefExists_Present(t *testing.T) {
+	r := fakeWithResponse("rev-parse --verify --quiet refs/remotes/origin/main", FakeResponse{Stdout: "abc1234\n"})
+	if !RefExists(context.Background(), r, "refs/remotes/origin/main") {
+		t.Error("expected RefExists=true when rev-parse succeeds")
+	}
+}
+
+func TestRefExists_Absent(t *testing.T) {
+	r := fakeWithResponse("rev-parse --verify --quiet refs/remotes/origin/missing", FakeResponse{ExitCode: 1})
+	if RefExists(context.Background(), r, "refs/remotes/origin/missing") {
+		t.Error("expected RefExists=false when rev-parse exits non-zero")
+	}
+}
+
 // ---- UnmergedEntry (coverage for 'u' records) ----
 
 func TestStatus_UnmergedEntry(t *testing.T) {

@@ -119,9 +119,9 @@ func TestApplyMessagesAddFailureAborts(t *testing.T) {
 func TestApplyMessagesStagesUnstagedDeletion(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --quiet --short HEAD":                          {Stdout: "main\n"},
-			"rev-parse HEAD":                                             {Stdout: "abc\n"},
-			"write-tree":                                                 {Stdout: "t\n"},
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
 			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
 		},
 		DefaultResp: git.FakeResponse{Stdout: "[main 2222222] chore: drop\n"},

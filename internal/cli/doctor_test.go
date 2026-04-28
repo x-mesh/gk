@@ -241,6 +241,141 @@ func TestDoctorCmd_Runs(t *testing.T) {
 	}
 }
 
+// checkBranchTracking — exercise the full execution path against a real repo.
+
+func TestCheckBranchTracking_AllTracked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	_, downstream := setupTrackingDownstream(t)
+
+	c := checkBranchTracking(context.Background(), execRunnerFor(downstream), "origin")
+	if c.Status != statusPass {
+		t.Errorf("want PASS for fully-tracked repo, got %s — %s", c.Status, c.Detail)
+	}
+}
+
+func TestCheckBranchTracking_UntrackedDivergent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	_, downstream := untrackedDownstream(t)
+
+	c := checkBranchTracking(context.Background(), execRunnerFor(downstream), "origin")
+	if c.Status != statusWarn {
+		t.Fatalf("want WARN for untracked-divergent main, got %s — %s", c.Status, c.Detail)
+	}
+	if !strings.Contains(c.Detail, "main") {
+		t.Errorf("detail should name the offending branch, got: %s", c.Detail)
+	}
+	if !strings.Contains(c.Fix, "set-upstream-to=origin/main") {
+		t.Errorf("fix should suggest set-upstream-to, got: %s", c.Fix)
+	}
+}
+
+func TestCheckBranchTracking_ForkBranchIgnored(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hi\n")
+	repo.Commit("init")
+	// No origin remote → no same-named remote refs cached.
+
+	c := checkBranchTracking(context.Background(), execRunnerFor(repo), "origin")
+	if c.Status != statusPass {
+		t.Errorf("want PASS when no same-named remote ref exists (fork case), got %s — %s", c.Status, c.Detail)
+	}
+}
+
+// applyBranchTrackingFix — exercise the git plumbing without TUI.
+
+func TestApplyBranchTrackingFix_TrackOnly_PreservesLocalCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "a\n")
+	upstream.Commit("feat: a")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// add a local commit so we are ahead of origin
+	downstream.WriteFile("local.txt", "x\n")
+	localSHA := downstream.Commit("local: keep me")
+	// origin advances
+	upstream.WriteFile("b.txt", "b\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+	// main is untracked + ahead 1 / behind 1.
+
+	o := untrackedDivergent{Branch: "main", Implicit: "origin/main", Ahead: 1, Behind: 1}
+	if err := applyBranchTrackingFix(context.Background(), execRunnerFor(downstream), "track", o, true); err != nil {
+		t.Fatalf("applyBranchTrackingFix: %v", err)
+	}
+	upstreamRef := strings.TrimSpace(downstream.RunGit("rev-parse", "--abbrev-ref", "main@{upstream}"))
+	if upstreamRef != "origin/main" {
+		t.Errorf("expected upstream=origin/main, got %q", upstreamRef)
+	}
+	head := strings.TrimSpace(downstream.RunGit("rev-parse", "HEAD"))
+	if head != localSHA {
+		t.Errorf("local commit was disturbed: HEAD=%s want=%s", head, localSHA)
+	}
+}
+
+func TestApplyBranchTrackingFix_FastForward_NonCurrent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "a\n")
+	upstream.Commit("feat: a")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// downstream creates and stays on a different branch
+	downstream.RunGit("checkout", "-b", "develop")
+	// origin/main advances → main is behind.
+	upstream.WriteFile("b.txt", "b\n")
+	upstreamHead := upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+
+	o := untrackedDivergent{Branch: "main", Implicit: "origin/main", Ahead: 0, Behind: 1}
+	// isCurrent=false because we're sitting on develop, fixing main.
+	if err := applyBranchTrackingFix(context.Background(), execRunnerFor(downstream), "ff", o, false); err != nil {
+		t.Fatalf("applyBranchTrackingFix: %v", err)
+	}
+	mainSHA := strings.TrimSpace(downstream.RunGit("rev-parse", "main"))
+	if mainSHA != upstreamHead {
+		t.Errorf("main was not fast-forwarded: %s != %s", mainSHA, upstreamHead)
+	}
+	upstreamRef := strings.TrimSpace(downstream.RunGit("rev-parse", "--abbrev-ref", "main@{upstream}"))
+	if upstreamRef != "origin/main" {
+		t.Errorf("expected upstream=origin/main, got %q", upstreamRef)
+	}
+}
+
+func TestApplyBranchTrackingFix_FastForward_Current(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	_, downstream := untrackedDownstream(t)
+	upstreamSHA := strings.TrimSpace(downstream.RunGit("rev-parse", "origin/main"))
+
+	o := untrackedDivergent{Branch: "main", Implicit: "origin/main", Ahead: 0, Behind: 1}
+	if err := applyBranchTrackingFix(context.Background(), execRunnerFor(downstream), "ff", o, true); err != nil {
+		t.Fatalf("applyBranchTrackingFix: %v", err)
+	}
+	head := strings.TrimSpace(downstream.RunGit("rev-parse", "HEAD"))
+	if head != upstreamSHA {
+		t.Errorf("HEAD not fast-forwarded: %s != %s", head, upstreamSHA)
+	}
+}
+
 func TestDoctorCmd_JSON(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

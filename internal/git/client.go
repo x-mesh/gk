@@ -334,3 +334,11 @@ func (c *Client) CheckRefFormat(ctx context.Context, ref string) error {
 	}
 	return nil
 }
+
+// RefExists reports whether a ref resolves locally — used to test for cached
+// remote-tracking refs (e.g. "refs/remotes/origin/main") without touching
+// the network. Wraps `git rev-parse --verify --quiet <ref>`.
+func RefExists(ctx context.Context, r Runner, ref string) bool {
+	_, _, err := r.Run(ctx, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}

@@ -149,3 +149,63 @@ func TestFormatCommitMessageJoinsCleanly(t *testing.T) {
 		t.Errorf("trailer should be at end, got:\n%s", got)
 	}
 }
+
+// TestFormatCommitMessage_StripsDuplicatedPrefix guards against the
+// "build: build: ..." style header that surfaces when the LLM tucks the
+// Conventional Commits header onto Subject and the formatter prepends
+// it again.
+func TestFormatCommitMessage_StripsDuplicatedPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		group   provider.Group
+		subject string
+		want    string
+	}{
+		{
+			name:    "type only",
+			group:   provider.Group{Type: "build"},
+			subject: "build: embed branch and worktree name",
+			want:    "build: embed branch and worktree name",
+		},
+		{
+			name:    "type with scope",
+			group:   provider.Group{Type: "refactor", Scope: "internal"},
+			subject: "refactor(internal): improve dirty-tree UX",
+			want:    "refactor(internal): improve dirty-tree UX",
+		},
+		{
+			name:    "scope mismatch still strips",
+			group:   provider.Group{Type: "feat", Scope: "ai"},
+			subject: "feat(internal): add provider factory",
+			want:    "feat(ai): add provider factory",
+		},
+		{
+			name:    "case-insensitive type",
+			group:   provider.Group{Type: "fix"},
+			subject: "Fix: handle nil pointer",
+			want:    "fix: handle nil pointer",
+		},
+		{
+			name:    "no prefix to strip",
+			group:   provider.Group{Type: "feat"},
+			subject: "add provider factory",
+			want:    "feat: add provider factory",
+		},
+		{
+			name:    "subject is *only* prefix — keep as-is",
+			group:   provider.Group{Type: "feat"},
+			subject: "feat:",
+			want:    "feat: feat:",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatCommitMessage(Message{Group: tc.group, Subject: tc.subject}, "")
+			// Compare just the header (first line).
+			line := strings.SplitN(got, "\n", 2)[0]
+			if line != tc.want {
+				t.Errorf("header = %q, want %q", line, tc.want)
+			}
+		})
+	}
+}

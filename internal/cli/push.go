@@ -153,6 +153,13 @@ func isProtected(branch string, list []string) bool {
 
 // scanCommitsToPush fetches the range "remote/branch..HEAD" diff and scans it.
 // If the upstream ref is missing, scans all commits reachable from HEAD.
+//
+// Only added (`+`) lines from non-test files are scanned. This mirrors
+// what gitleaks-style scanners do — removals already exist in the base
+// branch (so flagging them again is noise), and test files routinely
+// contain intentional fake secrets used to verify detection logic.
+// Without these filters every fixture cleanup commit becomes a ship
+// blocker, which we hit immediately after tightening the privacy gate.
 func scanCommitsToPush(ctx context.Context, r git.Runner, remote, branch string) ([]secrets.Finding, error) {
 	ref := remote + "/" + branch
 	_, _, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
@@ -164,5 +171,49 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, remote, branch string)
 	if lerr != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), lerr)
 	}
-	return secrets.Scan(string(stdout), nil), nil
+	return scanDiffAdditions(string(stdout)), nil
+}
+
+// scanDiffAdditions parses a unified diff (e.g. `git log -p` output) and
+// runs secrets.Scan over the added content of each file, after dropping
+// test files. Returns findings whose Line refers to the relevant blob
+// position so existing renderers keep working.
+func scanDiffAdditions(diff string) []secrets.Finding {
+	var b strings.Builder
+	currentFile := ""
+	skip := false
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			// "diff --git a/path b/path" — extract the b/ path.
+			if idx := strings.Index(line, " b/"); idx > 0 {
+				currentFile = line[idx+len(" b/"):]
+			} else {
+				currentFile = ""
+			}
+			skip = isTestFile(currentFile)
+			b.WriteString("### " + currentFile + "\n")
+		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "),
+			strings.HasPrefix(line, "@@ "), strings.HasPrefix(line, "index "),
+			strings.HasPrefix(line, "new file mode"), strings.HasPrefix(line, "deleted file mode"),
+			strings.HasPrefix(line, "similarity index"), strings.HasPrefix(line, "rename "),
+			strings.HasPrefix(line, "Binary files"):
+			// Diff metadata — skip but keep blob in step.
+			b.WriteString("\n")
+		case strings.HasPrefix(line, "+"):
+			if skip {
+				b.WriteString("\n")
+				continue
+			}
+			b.WriteString(strings.TrimPrefix(line, "+") + "\n")
+		default:
+			// Commit log header lines, removal lines (`-...`), context
+			// lines (` ...`), and blank separators all collapse to empty
+			// rows so secrets.Scan never sees them but blob line numbers
+			// still line up with `git log -p` output (handy for debugging
+			// regressions like the one this code path was added to fix).
+			b.WriteString("\n")
+		}
+	}
+	return secrets.Scan(b.String(), nil)
 }

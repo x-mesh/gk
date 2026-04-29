@@ -1,0 +1,127 @@
+package resolve
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/x-mesh/gk/internal/gitstate"
+)
+
+func TestFormatStuckGuidance_None(t *testing.T) {
+	got := FormatStuckGuidance(gitstate.RebaseStuck{Reason: gitstate.RebaseStuckNone})
+	if got != "" {
+		t.Errorf("None reason: want empty string, got %q", got)
+	}
+}
+
+func TestFormatStuckGuidance_PrefixAlwaysPresent(t *testing.T) {
+	cases := []gitstate.RebaseStuckReason{
+		gitstate.RebaseStuckEmptyCommit,
+		gitstate.RebaseStuckEdit,
+		gitstate.RebaseStuckExec,
+		gitstate.RebaseStuckUnknown,
+	}
+	const prefix = "gk resolve: rebase is in progress but no conflicted files found."
+	for _, r := range cases {
+		got := FormatStuckGuidance(gitstate.RebaseStuck{Reason: r})
+		if !strings.HasPrefix(got, prefix) {
+			t.Errorf("Reason=%s: missing prefix\n--- got ---\n%s", r, got)
+		}
+	}
+}
+
+func TestFormatStuckGuidance_EmptyCommitRecommendsSkip(t *testing.T) {
+	stuck := gitstate.RebaseStuck{
+		Reason:     gitstate.RebaseStuckEmptyCommit,
+		StoppedSHA: "c613c80fc327d1c90c36c93259332ecb202f79d0",
+	}
+	got := FormatStuckGuidance(stuck)
+	if !strings.Contains(got, "empty/redundant commit at c613c80") {
+		t.Errorf("missing reason detail with short sha:\n%s", got)
+	}
+	if !strings.Contains(got, "git rebase --skip") {
+		t.Errorf("missing --skip option:\n%s", got)
+	}
+	if !strings.Contains(got, "git rebase --skip      # drop the current commit and move on  (recommended)") {
+		t.Errorf("--skip should be marked recommended:\n%s", got)
+	}
+	// All three resume commands plus gk continue must appear.
+	for _, want := range []string{"git rebase --skip", "git rebase --continue", "git rebase --abort", "gk continue"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in output:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatStuckGuidance_EditRecommendsContinue(t *testing.T) {
+	stuck := gitstate.RebaseStuck{
+		Reason:     gitstate.RebaseStuckEdit,
+		StoppedSHA: "abcdef1234567890",
+		LastDoneOp: "edit",
+	}
+	got := FormatStuckGuidance(stuck)
+	if !strings.Contains(got, "paused for editing at abcdef1 (edit)") {
+		t.Errorf("missing edit reason detail:\n%s", got)
+	}
+	if !strings.Contains(got, "git rebase --continue") {
+		t.Errorf("missing --continue option:\n%s", got)
+	}
+	// Recommended marker must be on --continue, not --skip.
+	if strings.Contains(got, "git rebase --skip") && strings.Contains(got, "--skip      # drop the current commit and move on  (recommended)") {
+		t.Errorf("--skip should not be recommended for Edit reason:\n%s", got)
+	}
+	wantRecommended := "git rebase --continue  # use the current state as-is (creates an empty commit if needed)  (recommended)"
+	if !strings.Contains(got, wantRecommended) {
+		t.Errorf("--continue should be recommended for Edit:\n%s", got)
+	}
+}
+
+func TestFormatStuckGuidance_ExecIncludesCommand(t *testing.T) {
+	stuck := gitstate.RebaseStuck{
+		Reason:      gitstate.RebaseStuckExec,
+		LastDoneArg: "make test",
+	}
+	got := FormatStuckGuidance(stuck)
+	if !strings.Contains(got, "exec failed: make test") {
+		t.Errorf("missing exec command in reason:\n%s", got)
+	}
+	if !strings.Contains(got, "git rebase --continue  # use the current state as-is (creates an empty commit if needed)  (recommended)") {
+		t.Errorf("--continue should be recommended for Exec:\n%s", got)
+	}
+}
+
+func TestFormatStuckGuidance_UnknownNoRecommendation(t *testing.T) {
+	stuck := gitstate.RebaseStuck{Reason: gitstate.RebaseStuckUnknown}
+	got := FormatStuckGuidance(stuck)
+	if !strings.Contains(got, "unrecognized reason") {
+		t.Errorf("missing unrecognized hint:\n%s", got)
+	}
+	if strings.Contains(got, "(recommended)") {
+		t.Errorf("Unknown should not mark any option as recommended:\n%s", got)
+	}
+	for _, want := range []string{"git rebase --skip", "git rebase --continue", "git rebase --abort", "gk continue"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatStuckGuidance_HandlesShortSHA(t *testing.T) {
+	cases := []struct {
+		sha  string
+		want string
+	}{
+		{"", "empty/redundant commit — its changes are already in the new base"},
+		{"abc", "empty/redundant commit at abc"},
+		{"abcdef1", "empty/redundant commit at abcdef1"},
+		{"abcdef1234567890", "empty/redundant commit at abcdef1"},
+	}
+	for _, c := range cases {
+		got := FormatStuckGuidance(gitstate.RebaseStuck{
+			Reason: gitstate.RebaseStuckEmptyCommit, StoppedSHA: c.sha,
+		})
+		if !strings.Contains(got, c.want) {
+			t.Errorf("sha=%q: missing %q in:\n%s", c.sha, c.want, got)
+		}
+	}
+}

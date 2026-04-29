@@ -116,6 +116,7 @@ func TestResolve_KnownBinary_Bat(t *testing.T) {
 	p := resolve("bat")
 	if p == nil {
 		t.Fatal("resolve(bat) returned nil")
+		return
 	}
 	if p.Kind != PagerBat {
 		t.Errorf("Kind = %q, want %q", p.Kind, PagerBat)
@@ -138,6 +139,7 @@ func TestResolve_KnownBinary_Less(t *testing.T) {
 	p := resolve("less")
 	if p == nil {
 		t.Fatal("resolve(less) returned nil")
+		return
 	}
 	if p.Kind != PagerLess {
 		t.Errorf("Kind = %q, want %q", p.Kind, PagerLess)
@@ -161,6 +163,7 @@ func TestResolve_UserArgs(t *testing.T) {
 	p := resolve("delta --line-numbers")
 	if p == nil {
 		t.Fatal("resolve returned nil")
+		return
 	}
 	if !contains(p.Args, "--line-numbers") {
 		t.Errorf("expected --line-numbers in args: %v", p.Args)
@@ -178,6 +181,7 @@ func TestResolve_NoColor(t *testing.T) {
 	p := resolve("bat")
 	if p == nil {
 		t.Fatal("resolve(bat) returned nil")
+		return
 	}
 	if !contains(p.Args, "--color=never") {
 		t.Errorf("expected --color=never in args when NO_COLOR=1: %v", p.Args)
@@ -195,6 +199,7 @@ func TestResolve_NoColor_Delta(t *testing.T) {
 	p := resolve("delta")
 	if p == nil {
 		t.Fatal("resolve(delta) returned nil")
+		return
 	}
 	if !contains(p.Args, "--features") {
 		t.Errorf("expected --features in args when NO_COLOR=1: %v", p.Args)

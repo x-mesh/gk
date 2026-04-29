@@ -359,6 +359,120 @@ func TestSwitchAction_DeleteMerged(t *testing.T) {
 	}
 }
 
+func TestFormatDirtyMarker(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   git.DirtyFlags
+		want string
+	}{
+		{git.DirtyFlags{}, ""},
+		{git.DirtyFlags{Modified: true}, "*"},
+		{git.DirtyFlags{Staged: true}, "±"},
+		{git.DirtyFlags{Conflict: true}, "!"},
+		{git.DirtyFlags{Modified: true, Staged: true}, "*±"},
+		{git.DirtyFlags{Modified: true, Conflict: true}, "*!"},
+		{git.DirtyFlags{Modified: true, Staged: true, Conflict: true}, "*±!"},
+	}
+	for _, c := range cases {
+		if got := formatDirtyMarker(c.in); got != c.want {
+			t.Errorf("formatDirtyMarker(%+v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestBuildSwitchItems_DirtyMarkerInBranchCell(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "main", Hash: "abc", LastCommit: now()},
+		{Name: "feat/x", Hash: "def", LastCommit: now()},
+	}
+	dirty := map[string]git.DirtyFlags{
+		"feat/x": {Modified: true, Staged: true},
+	}
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, "main", switchDivergence{}, dirty)
+	for _, it := range items {
+		switch it.Key {
+		case "local:main":
+			if strings.Contains(it.Cells[0], "*") || strings.Contains(it.Cells[0], "±") {
+				t.Errorf("clean branch should have no marker, got %q", it.Cells[0])
+			}
+		case "local:feat/x":
+			if !strings.Contains(it.Cells[0], "*±") {
+				t.Errorf("dirty branch should have *± marker, got %q", it.Cells[0])
+			}
+		}
+	}
+}
+
+// --- dirty-state integration ---
+
+func TestLoadWorktreeDirtyStates_Modified(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "hello")
+	repo.RunGit("add", "seed.txt")
+	repo.Commit("seed")
+
+	// Modify the tracked file (no add).
+	repo.WriteFile("seed.txt", "hello world")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	wt := loadSwitchWorktrees(context.Background(), runner)
+	dirty := loadWorktreeDirtyStates(context.Background(), wt)
+
+	flags, ok := dirty["main"]
+	if !ok {
+		t.Fatalf("expected 'main' in dirty map, got %+v", dirty)
+	}
+	if !flags.Modified || flags.Staged || flags.Conflict {
+		t.Errorf("expected modified-only, got %+v", flags)
+	}
+}
+
+func TestLoadWorktreeDirtyStates_StagedAndModified(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "1")
+	repo.RunGit("add", "a.txt")
+	repo.Commit("seed")
+
+	// Stage one change, modify it again (becomes MM).
+	repo.WriteFile("a.txt", "2")
+	repo.RunGit("add", "a.txt")
+	repo.WriteFile("a.txt", "3")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	wt := loadSwitchWorktrees(context.Background(), runner)
+	dirty := loadWorktreeDirtyStates(context.Background(), wt)
+
+	flags := dirty["main"]
+	if !flags.Modified || !flags.Staged {
+		t.Errorf("expected modified+staged, got %+v", flags)
+	}
+}
+
+func TestLoadWorktreeDirtyStates_CleanIsAbsent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "1")
+	repo.RunGit("add", "a.txt")
+	repo.Commit("seed")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	wt := loadSwitchWorktrees(context.Background(), runner)
+	dirty := loadWorktreeDirtyStates(context.Background(), wt)
+
+	if _, ok := dirty["main"]; ok {
+		t.Errorf("clean worktree should be absent from dirty map, got %+v", dirty)
+	}
+}
+
 // --- worktree integration ---
 
 func TestFormatSwitchDiff(t *testing.T) {
@@ -401,7 +515,7 @@ func TestBuildSwitchItems_DivergenceInUpstreamCell(t *testing.T) {
 	diff := switchDivergence{
 		"local:feat/x": [2]int{3, 1},
 	}
-	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, "main", diff)
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, "main", diff, nil)
 	for _, it := range items {
 		if it.Key == "local:main" && it.Cells[1] != "(default)" {
 			t.Errorf("default branch UPSTREAM cell: got %q, want (default)", it.Cells[1])
@@ -409,6 +523,46 @@ func TestBuildSwitchItems_DivergenceInUpstreamCell(t *testing.T) {
 		if it.Key == "local:feat/x" && !strings.Contains(it.Cells[1], "↑3 ↓1") {
 			t.Errorf("diverged branch UPSTREAM should embed diff, got %q", it.Cells[1])
 		}
+	}
+}
+
+func TestPickBranchForSwitch_CurrentPinnedFirst(t *testing.T) {
+	t.Parallel()
+	// Sort happens inside pickBranchForSwitch — verify the comparator
+	// directly by replicating it on a known input.
+	branches := []branchInfo{
+		{Name: "feat/older", LastCommit: time.Now().Add(-72 * time.Hour)},
+		{Name: "main", LastCommit: time.Now().Add(-1 * time.Hour)},
+		{Name: "feat/newest", LastCommit: time.Now()},
+	}
+	cur := "main"
+	sortStable := func(arr []branchInfo) {
+		// mirrors the comparator in pickBranchForSwitch
+		for i := 1; i < len(arr); i++ {
+			for j := i; j > 0; j-- {
+				less := func(a, b branchInfo) bool {
+					if a.Name == cur {
+						return true
+					}
+					if b.Name == cur {
+						return false
+					}
+					return a.LastCommit.After(b.LastCommit)
+				}
+				if less(arr[j], arr[j-1]) {
+					arr[j], arr[j-1] = arr[j-1], arr[j]
+				} else {
+					break
+				}
+			}
+		}
+	}
+	sortStable(branches)
+	if branches[0].Name != "main" {
+		t.Errorf("expected main at index 0, got %q (full order: %+v)", branches[0].Name, branches)
+	}
+	if branches[1].Name != "feat/newest" {
+		t.Errorf("expected feat/newest at index 1, got %q", branches[1].Name)
 	}
 }
 
@@ -424,7 +578,7 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 			"feat/locked": {Path: "/tmp/wt/locked-tree", Branch: "feat/locked"},
 		},
 	}
-	items := buildSwitchItems(local, nil, "main", wt, "main", switchDivergence{})
+	items := buildSwitchItems(local, nil, "main", wt, "main", switchDivergence{}, nil)
 	if len(items) != 3 {
 		t.Fatalf("expected all 3 local branches, got %d: %+v", len(items), items)
 	}

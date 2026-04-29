@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -304,6 +306,67 @@ func buildSwitchSubtitle(cur string, wt switchWorktreeMap, allRemotes []remoteBr
 	return strings.Join(parts, "  ·  ")
 }
 
+// loadWorktreeDirtyStates queries `git status --porcelain` in every
+// known worktree concurrently and returns a map keyed by branch name.
+// Branches without an associated worktree (or with a stale/missing
+// path) are absent from the map; callers treat that as "no signal".
+//
+// Each per-worktree call is bounded by a 200ms context so a slow path
+// (NFS, USB drive spun-down) doesn't block picker entry. We pass
+// `--no-optional-locks` to coexist cleanly with concurrent editor git
+// plugins. Errors are swallowed to "no signal" — this is informational
+// UI, not a correctness gate.
+func loadWorktreeDirtyStates(ctx context.Context, wt switchWorktreeMap) map[string]git.DirtyFlags {
+	type entry struct {
+		branch string
+		path   string
+	}
+	var targets []entry
+	if wt.current.Path != "" && wt.current.Branch != "" && !wt.current.Detached && !wt.current.Bare {
+		targets = append(targets, entry{branch: wt.current.Branch, path: wt.current.Path})
+	}
+	for _, e := range wt.others {
+		if e.Bare || e.Detached || e.Branch == "" || e.Path == "" {
+			continue
+		}
+		targets = append(targets, entry{branch: e.Branch, path: e.Path})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	out := make(map[string]git.DirtyFlags, len(targets))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, t := range targets {
+		wg.Add(1)
+		go func(branch, path string) {
+			defer wg.Done()
+			if _, err := os.Stat(path); err != nil {
+				return
+			}
+			callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			defer cancel()
+			r := &git.ExecRunner{Dir: path}
+			stdout, _, err := r.Run(callCtx,
+				"--no-optional-locks", "status", "--porcelain", "-z",
+			)
+			if err != nil {
+				return
+			}
+			flags := git.ParsePorcelainV1(stdout)
+			if flags.Clean() {
+				return
+			}
+			mu.Lock()
+			out[branch] = flags
+			mu.Unlock()
+		}(t.branch, t.path)
+	}
+	wg.Wait()
+	return out
+}
+
 func canonPath(p string) string {
 	if p == "" {
 		return ""
@@ -354,14 +417,26 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		// resolvable default branch (bare repos, fresh clones).
 		diff := computeSwitchDivergence(ctx, runner, defaultBr, local, allRemotes)
 
-		sort.Slice(local, func(i, j int) bool {
+		// Per-worktree dirty state. Parallel git status per worktree;
+		// each call bounded to 200ms. Missing in map = clean / unknown.
+		dirty := loadWorktreeDirtyStates(ctx, wt)
+
+		// Pin the current branch to the top so the user always sees
+		// "where am I" on the first row; sort the rest by recency.
+		sort.SliceStable(local, func(i, j int) bool {
+			if local[i].Name == cur {
+				return true
+			}
+			if local[j].Name == cur {
+				return false
+			}
 			return local[i].LastCommit.After(local[j].LastCommit)
 		})
 		sort.Slice(remotes, func(i, j int) bool {
 			return remotes[i].LastCommit.After(remotes[j].LastCommit)
 		})
 
-		items := buildSwitchItems(local, remotes, cur, wt, defaultBr, diff)
+		items := buildSwitchItems(local, remotes, cur, wt, defaultBr, diff, dirty)
 		if len(items) == 0 {
 			placeholder := "(no branches — press n to create)"
 			items = append(items, ui.PickerItem{
@@ -371,7 +446,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			})
 		}
 
-		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, defaultBr, diff)
+		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, defaultBr, diff, dirty)
 		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes)
 		picker := &ui.TablePicker{
 			Headers:  []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
@@ -508,7 +583,28 @@ func formatSwitchDiff(d [2]int) string {
 // the upstream column; selecting them triggers the smart-handoff
 // prompt to enter the holding worktree. The UPSTREAM cell embeds
 // divergence vs the default branch (e.g. "↑3 ↓1  origin/feat/x").
-func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence) []ui.PickerItem {
+// formatDirtyMarker turns DirtyFlags into a compact glyph cluster:
+//
+//	"*"   modified
+//	"±"   staged
+//	"!"   conflict
+//	"*±"  modified + staged (combine compactly)
+//	""    clean / no signal
+func formatDirtyMarker(d git.DirtyFlags) string {
+	var b strings.Builder
+	if d.Modified {
+		b.WriteString("*")
+	}
+	if d.Staged {
+		b.WriteString("±")
+	}
+	if d.Conflict {
+		b.WriteString("!")
+	}
+	return b.String()
+}
+
+func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.PickerItem {
 	faint := color.New(color.Faint).SprintFunc()
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
 
@@ -536,12 +632,20 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 			marker = "★"
 			coloredMarker = color.YellowString("★")
 		}
+		dirtyTag := ""
+		if d, ok := dirty[b.Name]; ok {
+			dirtyTag = " " + formatDirtyMarker(d)
+		}
+		coloredDirtyTag := dirtyTag
+		if dirtyTag != "" {
+			coloredDirtyTag = " " + color.RedString(formatDirtyMarker(dirty[b.Name]))
+		}
 		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
 			Key:   keyLocalPrefix + b.Name,
-			Cells: []string{marker + " " + b.Name, upstream, b.Hash, age},
+			Cells: []string{marker + " " + b.Name + dirtyTag, upstream, b.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				coloredMarker, b.Name, upstream, b.Hash, age,
+				coloredMarker, b.Name+coloredDirtyTag, upstream, b.Hash, age,
 			),
 		})
 		_ = faint
@@ -583,9 +687,9 @@ func composeUpstreamCell(d [2]int, source string, isDefault bool) string {
 // picker so the caller can drive prompts/confirms outside the
 // bubbletea program. allRemotes is the full enumerated set so the
 // closure can populate *remotes on toggle-on without re-listing.
-func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur, defaultBr string, diff switchDivergence) []ui.TablePickerExtraKey {
+func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.TablePickerExtraKey {
 	rebuild := func() ([]ui.PickerItem, []string, error) {
-		items := buildSwitchItems(*local, *remotes, cur, *wt, defaultBr, diff)
+		items := buildSwitchItems(*local, *remotes, cur, *wt, defaultBr, diff, dirty)
 		return items, []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}, nil
 	}
 	return []ui.TablePickerExtraKey{

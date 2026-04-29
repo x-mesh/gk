@@ -62,7 +62,7 @@ func TestBranchList_Stale(t *testing.T) {
 	// With stale=0, all branches should be included.
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)%00%(objectname:short) refs/heads": {
 				// two branches: main (unix=0, very old) and feature (unix=9999999999, far future)
 				Stdout: "main\x00\x001000000000\x00\nfeature\x00\x009999999999\x00\n",
 			},
@@ -94,7 +94,7 @@ func TestBranchList_Stale(t *testing.T) {
 func TestListLocalBranches_GoneFlag(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)%00%(objectname:short) refs/heads": {
 				Stdout: "main\x00origin/main\x001700000000\x00\n" +
 					"stale\x00origin/stale\x001700000000\x00[gone]\n" +
 					"noupstream\x00\x001700000000\x00\n",
@@ -581,7 +581,7 @@ func TestBranchClean_ForceFlag_UsesCapitalD(t *testing.T) {
 			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat-done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short) refs/heads":                                       {Stdout: "main\nfeat-done\n"},
-			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)%00%(objectname:short) refs/heads": {
 				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",
 			},
 			"branch -D feat-done": {Stdout: "Deleted branch feat-done\n"},
@@ -628,7 +628,7 @@ func TestBranchClean_NoForce_UsesLowercaseD(t *testing.T) {
 			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat-done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short) refs/heads":                                       {Stdout: "main\nfeat-done\n"},
-			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)%00%(objectname:short) refs/heads": {
 				Stdout: "main\x00origin/main\x001700000000\x00\nfeat-done\x00\x001700000000\x00\n",
 			},
 			"branch -d feat-done": {Stdout: "Deleted branch feat-done\n"},

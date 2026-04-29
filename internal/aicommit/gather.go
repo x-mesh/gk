@@ -208,11 +208,13 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 				out = append(out, e)
 			}
 		case 'u':
-			e, err := parseV2Unmerged(line)
+			e, ok, err := parseV2Unmerged(line)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, e)
+			if ok {
+				out = append(out, e)
+			}
 		case '?':
 			// "? path"
 			if len(line) < 3 {
@@ -273,17 +275,23 @@ func parseV2Rename(line, orig string) (FileChange, bool, error) {
 }
 
 // parseV2Unmerged parses a "u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>" line.
-func parseV2Unmerged(line string) (FileChange, error) {
+// Submodule conflicts (rare but possible during a submodule-pointer
+// merge) are dropped for the same reason as ordinary submodule
+// entries — the fix is symmetric across all three record types.
+func parseV2Unmerged(line string) (FileChange, bool, error) {
 	parts := strings.SplitN(line, " ", 11)
 	if len(parts) < 11 {
-		return FileChange{}, fmt.Errorf("aicommit: porcelain v2: short unmerged record %q", line)
+		return FileChange{}, false, fmt.Errorf("aicommit: porcelain v2: short unmerged record %q", line)
+	}
+	if isSubmoduleSubField(parts[2]) {
+		return FileChange{}, false, nil
 	}
 	return FileChange{
 		Path:     parts[10],
 		Status:   "unmerged",
 		Staged:   false,
 		Unstaged: true,
-	}, nil
+	}, true, nil
 }
 
 // classifyXY maps the two-letter porcelain code to FileChange fields.

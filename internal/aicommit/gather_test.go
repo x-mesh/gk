@@ -32,6 +32,8 @@ func TestGatherWIP_DropsSubmoduleEntries(t *testing.T) {
 		"third_party/old-sub",
 		"2 R. N... 100644 100644 100644 aaa bbb R95 internal/foo.go",
 		"internal/bar.go",
+		// Unmerged submodule (rare — submodule pointer conflict).
+		"u UU SCMU 160000 160000 160000 160000 aaa bbb ccc vendor/conflicted-sub",
 	)
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

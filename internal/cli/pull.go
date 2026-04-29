@@ -313,21 +313,7 @@ func resolveStrategyFromRunner(ctx context.Context, flag, cfgStrategy string, ru
 }
 
 func resolveStrategyWithSource(ctx context.Context, flag string, cfg *config.Config, runner git.Runner) (string, string) {
-	if flag != "" && flag != pullStrategyAuto {
-		return flag, "--strategy"
-	}
-	if cfg.Pull.Strategy != "" && cfg.Pull.Strategy != pullStrategyAuto {
-		return cfg.Pull.Strategy, ".gk.yaml pull.strategy"
-	}
-	if out, _, err := runner.Run(ctx, "config", "--get", "pull.rebase"); err == nil {
-		switch strings.TrimSpace(string(out)) {
-		case "true", "1", "yes":
-			return pullStrategyRebase, "git config pull.rebase"
-		case "false", "0", "no":
-			return pullStrategyMerge, "git config pull.rebase"
-		}
-	}
-	return pullStrategyRebase, "default"
+	return resolveIntegrationStrategy(ctx, flag, cfg.Pull.Strategy, ".gk.yaml pull.strategy", runner)
 }
 
 // isFastForwardPossible reports whether HEAD is an ancestor of upstream,

@@ -11,6 +11,7 @@ type Config struct {
 	Commit     CommitConfig    `mapstructure:"commit"      yaml:"commit"`
 	Push       PushConfig      `mapstructure:"push"        yaml:"push"`
 	Pull       PullConfig      `mapstructure:"pull"        yaml:"pull"`
+	Sync       SyncConfig      `mapstructure:"sync"        yaml:"sync"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
@@ -162,6 +163,17 @@ type PullConfig struct {
 	Strategy string `mapstructure:"strategy" yaml:"strategy"`
 }
 
+// SyncConfig controls gk sync behaviour. Strategy is the integration
+// mode used when the current branch has diverged from its base:
+// "rebase" (default), "merge", or "ff-only" (refuse divergence).
+// Kept separate from PullConfig.Strategy because sync (catch-up to base)
+// and pull (sync with @{u}) have different intents — a user may want to
+// merge-pull from collaborators on the same branch but rebase-sync onto
+// main, or vice versa.
+type SyncConfig struct {
+	Strategy string `mapstructure:"strategy" yaml:"strategy"`
+}
+
 // PreflightConfig controls the sequence of checks gk preflight runs.
 type PreflightConfig struct {
 	Steps []PreflightStep `mapstructure:"steps" yaml:"steps"`
@@ -265,6 +277,9 @@ func Defaults() Config {
 			AllowForce:     false,
 		},
 		Pull: PullConfig{
+			Strategy: "rebase",
+		},
+		Sync: SyncConfig{
 			Strategy: "rebase",
 		},
 		Preflight: PreflightConfig{

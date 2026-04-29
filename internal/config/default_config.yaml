@@ -62,6 +62,12 @@ ui:
   # Empty means always prompt interactively when TTY is available.
   prefer: ""
 
+sync:
+  # Integration strategy when the current branch has diverged from its base.
+  # Values: "rebase" (default), "merge", "ff-only" (refuse divergence).
+  # Override per-invocation with `--strategy <mode>`.
+  strategy: rebase
+
 branch:
   # Threshold in days for `gk branch list --stale`.
   stale_days: 30

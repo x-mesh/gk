@@ -389,7 +389,7 @@ func TestBuildSwitchItems_DirtyMarkerInBranchCell(t *testing.T) {
 	dirty := map[string]git.DirtyFlags{
 		"feat/x": {Modified: true, Staged: true},
 	}
-	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, "main", switchDivergence{}, dirty)
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, dirty)
 	for _, it := range items {
 		switch it.Key {
 		case "local:main":
@@ -478,50 +478,64 @@ func TestLoadWorktreeDirtyStates_CleanIsAbsent(t *testing.T) {
 func TestFormatSwitchDiff(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in   [2]int
-		want string
+		ahead, behind int
+		want          string
 	}{
-		{[2]int{0, 0}, ""},
-		{[2]int{3, 0}, "↑3"},
-		{[2]int{0, 5}, "↓5"},
-		{[2]int{3, 5}, "↑3 ↓5"},
+		{0, 0, ""},
+		{3, 0, "↑3"},
+		{0, 5, "↓5"},
+		{3, 5, "↑3 ↓5"},
 	}
 	for _, c := range cases {
-		if got := formatSwitchDiff(c.in); got != c.want {
-			t.Errorf("formatSwitchDiff(%v) = %q, want %q", c.in, got, c.want)
+		if got := formatSwitchDiff(c.ahead, c.behind); got != c.want {
+			t.Errorf("formatSwitchDiff(%d,%d) = %q, want %q", c.ahead, c.behind, got, c.want)
 		}
 	}
 }
 
-func TestComposeUpstreamCell(t *testing.T) {
+func TestParseUpstreamTrack(t *testing.T) {
 	t.Parallel()
-	if got := composeUpstreamCell([2]int{0, 0}, "(default)", true); got != "(default)" {
-		t.Errorf("default: got %q", got)
+	cases := []struct {
+		in            string
+		ahead, behind int
+	}{
+		{"", 0, 0},
+		{"[gone]", 0, 0},
+		{"[ahead 3]", 3, 0},
+		{"[behind 5]", 0, 5},
+		{"[ahead 3, behind 5]", 3, 5},
 	}
-	if got := composeUpstreamCell([2]int{0, 0}, "↑ origin/main", false); got != "↑ origin/main" {
-		t.Errorf("synced: got %q", got)
-	}
-	if got := composeUpstreamCell([2]int{3, 1}, "↑ origin/main", false); got != "↑3 ↓1  ↑ origin/main" {
-		t.Errorf("diverged: got %q", got)
+	for _, c := range cases {
+		a, b := parseUpstreamTrack(c.in)
+		if a != c.ahead || b != c.behind {
+			t.Errorf("parseUpstreamTrack(%q) = (%d,%d), want (%d,%d)", c.in, a, b, c.ahead, c.behind)
+		}
 	}
 }
 
-func TestBuildSwitchItems_DivergenceInUpstreamCell(t *testing.T) {
+func TestBuildSwitchItems_DivergenceInBranchCell(t *testing.T) {
 	t.Parallel()
 	local := []branchInfo{
 		{Name: "main", Hash: "aaa", LastCommit: now()},
-		{Name: "feat/x", Hash: "bbb", LastCommit: now(), Upstream: "origin/feat/x"},
+		{Name: "feat/x", Hash: "bbb", LastCommit: now(), Upstream: "origin/feat/x", Ahead: 3, Behind: 1},
 	}
-	diff := switchDivergence{
-		"local:feat/x": [2]int{3, 1},
-	}
-	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, "main", diff, nil)
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, nil)
 	for _, it := range items {
-		if it.Key == "local:main" && it.Cells[1] != "(default)" {
-			t.Errorf("default branch UPSTREAM cell: got %q, want (default)", it.Cells[1])
-		}
-		if it.Key == "local:feat/x" && !strings.Contains(it.Cells[1], "↑3 ↓1") {
-			t.Errorf("diverged branch UPSTREAM should embed diff, got %q", it.Cells[1])
+		switch it.Key {
+		case "local:main":
+			if !strings.Contains(it.Cells[1], "(local)") && !strings.Contains(it.Cells[1], "↑ ") {
+				// main has no upstream in this fixture → "(local)"
+				if !strings.Contains(it.Cells[1], "(local)") {
+					t.Errorf("main UPSTREAM cell: got %q, want (local)", it.Cells[1])
+				}
+			}
+		case "local:feat/x":
+			if !strings.Contains(it.Cells[0], "↑3 ↓1") {
+				t.Errorf("feat/x BRANCH cell should embed ↑3 ↓1, got %q", it.Cells[0])
+			}
+			if strings.Contains(it.Cells[1], "↑3") || strings.Contains(it.Cells[1], "↓1") {
+				t.Errorf("UPSTREAM cell should NOT have diff, got %q", it.Cells[1])
+			}
 		}
 	}
 }
@@ -578,7 +592,7 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 			"feat/locked": {Path: "/tmp/wt/locked-tree", Branch: "feat/locked"},
 		},
 	}
-	items := buildSwitchItems(local, nil, "main", wt, "main", switchDivergence{}, nil)
+	items := buildSwitchItems(local, nil, "main", wt, nil)
 	if len(items) != 3 {
 		t.Fatalf("expected all 3 local branches, got %d: %+v", len(items), items)
 	}

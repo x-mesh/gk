@@ -412,11 +412,6 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		merged, _ := mergedBranches(ctx, runner, defaultBr)
 		wt := loadSwitchWorktrees(ctx, runner)
 
-		// Per-branch divergence vs default. One rev-list call per ref;
-		// typically <50ms total. Skipped silently when there's no
-		// resolvable default branch (bare repos, fresh clones).
-		diff := computeSwitchDivergence(ctx, runner, defaultBr, local, allRemotes)
-
 		// Per-worktree dirty state. Parallel git status per worktree;
 		// each call bounded to 200ms. Missing in map = clean / unknown.
 		dirty := loadWorktreeDirtyStates(ctx, wt)
@@ -436,7 +431,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			return remotes[i].LastCommit.After(remotes[j].LastCommit)
 		})
 
-		items := buildSwitchItems(local, remotes, cur, wt, defaultBr, diff, dirty)
+		items := buildSwitchItems(local, remotes, cur, wt, dirty)
 		if len(items) == 0 {
 			placeholder := "(no branches — press n to create)"
 			items = append(items, ui.PickerItem{
@@ -446,7 +441,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			})
 		}
 
-		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, defaultBr, diff, dirty)
+		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, dirty)
 		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes)
 		picker := &ui.TablePicker{
 			Headers:  []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
@@ -530,39 +525,9 @@ func handleWorktreeRedirect(ctx context.Context, cmd *cobra.Command, entry Workt
 	return true, nil
 }
 
-// switchDivergence keys "local:<name>" or "remote:<trackRef>" to
-// (ahead, behind) vs the default branch. Empty means "no diff data
-// for this ref" — rendered as a bare source descriptor.
-type switchDivergence map[string][2]int
-
-// computeSwitchDivergence runs `rev-list --left-right --count` per
-// ref against defaultBr. Returns an empty map when defaultBr is
-// missing (bare repos, no main/master) so callers can format
-// gracefully without divergence info.
-func computeSwitchDivergence(ctx context.Context, runner git.Runner, defaultBr string, local []branchInfo, remotes []remoteBranchInfo) switchDivergence {
-	out := switchDivergence{}
-	if defaultBr == "" {
-		return out
-	}
-	for _, b := range local {
-		if b.Name == defaultBr {
-			continue
-		}
-		if a, bh, ok := branchDivergence(ctx, runner, defaultBr, b.Name); ok {
-			out[keyLocalPrefix+b.Name] = [2]int{a, bh}
-		}
-	}
-	for _, r := range remotes {
-		if a, bh, ok := branchDivergence(ctx, runner, defaultBr, r.TrackRef); ok {
-			out[keyRemotePrefix+r.TrackRef] = [2]int{a, bh}
-		}
-	}
-	return out
-}
-
-// formatSwitchDiff renders divergence "↑3 ↓5" / "↑3" / "↓5" / "" .
-func formatSwitchDiff(d [2]int) string {
-	ahead, behind := d[0], d[1]
+// formatSwitchDiff renders ahead/behind vs upstream as "↑3 ↓5" /
+// "↑3" / "↓5" / "" (clean or no upstream).
+func formatSwitchDiff(ahead, behind int) string {
 	switch {
 	case ahead == 0 && behind == 0:
 		return ""
@@ -575,13 +540,10 @@ func formatSwitchDiff(d [2]int) string {
 	}
 }
 
-// colorSwitchDiff renders divergence with green ↑ and red ↓ for
-// at-a-glance "ahead/behind default" cues. Empty on no diff. Used
-// inside Cells, so it must use fg-only-reset helpers (cellGreen /
-// cellRed) — `fatih/color`'s full reset would break the bubbles/table
-// Selected-row background mid-cell.
-func colorSwitchDiff(d [2]int) string {
-	ahead, behind := d[0], d[1]
+// colorSwitchDiff is the cell-safe coloured counterpart: green ↑,
+// red ↓. Uses fg-only-reset helpers so bubbles/table's Selected-row
+// background isn't broken mid-span by an embedded `\x1b[0m`.
+func colorSwitchDiff(ahead, behind int) string {
 	parts := make([]string, 0, 2)
 	if ahead > 0 {
 		parts = append(parts, cellGreen(fmt.Sprintf("↑%d", ahead)))
@@ -639,18 +601,24 @@ func colorDirtyMarker(d git.DirtyFlags) string {
 	return b.String()
 }
 
-func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.PickerItem {
+// buildSwitchItems renders the picker as a branch list with four
+// columns: BRANCH, UPSTREAM, HASH, AGE.
+//
+// BRANCH cell carries all per-branch state signals: marker (★/●/○),
+// name, dirty glyphs (*/±/!), and divergence vs upstream (↑X ↓Y).
+// UPSTREAM cell carries only the source descriptor (origin/X,
+// wt:<basename>, (local), (gone), remote:<remote>).
+//
+// Selecting a worktree-locked local branch triggers the smart-handoff
+// prompt; selecting the current branch is a no-op (handled by caller).
+func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, dirty map[string]git.DirtyFlags) []ui.PickerItem {
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
 
 	for _, b := range local {
 		entry, locked := wt.byBranch[b.Name]
 		isCurrent := b.Name == cur
-		isDefault := b.Name == defaultBr
 		var source, coloredSource string
 		switch {
-		case isDefault:
-			source = "(default)"
-			coloredSource = cellFaint(source)
 		case locked:
 			tag := filepath.Base(entry.Path)
 			source = "wt: " + tag
@@ -665,9 +633,6 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 			source = "(local)"
 			coloredSource = cellFaint(source)
 		}
-		dKey := keyLocalPrefix + b.Name
-		upstream := composeUpstreamCell(diff[dKey], source, isDefault)
-		coloredUpstream := composeColoredUpstreamCell(diff[dKey], coloredSource, isDefault)
 		// Display marker stays via fatih/color — it's only used by
 		// FzfPicker fallback which doesn't have row-level styles.
 		displayMarker := color.GreenString("●")
@@ -680,12 +645,20 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		if d, ok := dirty[b.Name]; ok {
 			coloredDirtyTag = " " + colorDirtyMarker(d)
 		}
+		diffPlain := formatSwitchDiff(b.Ahead, b.Behind)
+		diffCell := colorSwitchDiff(b.Ahead, b.Behind)
+		diffSuffix := ""
+		coloredDiffSuffix := ""
+		if diffPlain != "" {
+			diffSuffix = " " + diffPlain
+			coloredDiffSuffix = " " + diffCell
+		}
 		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
 			Key:   keyLocalPrefix + b.Name,
-			Cells: []string{cellMarker + " " + b.Name + coloredDirtyTag, coloredUpstream, b.Hash, age},
+			Cells: []string{cellMarker + " " + b.Name + coloredDirtyTag + coloredDiffSuffix, coloredSource, b.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				displayMarker, b.Name+coloredDirtyTag, upstream, b.Hash, age,
+				displayMarker, b.Name+coloredDirtyTag+diffSuffix, source, b.Hash, age,
 			),
 		})
 	}
@@ -694,45 +667,15 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		age := shortAge(r.LastCommit)
 		source := "remote: " + r.Remote
 		coloredSource := cellCyan("remote: ") + r.Remote
-		upstream := composeUpstreamCell(diff[keyRemotePrefix+r.TrackRef], source, false)
-		coloredUpstream := composeColoredUpstreamCell(diff[keyRemotePrefix+r.TrackRef], coloredSource, false)
 		items = append(items, ui.PickerItem{
 			Key:   keyRemotePrefix + r.TrackRef,
-			Cells: []string{cellCyan("○") + " " + r.Name, coloredUpstream, r.Hash, age},
+			Cells: []string{cellCyan("○") + " " + r.Name, coloredSource, r.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				color.CyanString("○"), r.Name, upstream, r.Hash, age,
+				color.CyanString("○"), r.Name, source, r.Hash, age,
 			),
 		})
 	}
 	return items
-}
-
-// composeUpstreamCell merges divergence + source into a single cell:
-//
-//	"(default)"            — the default branch itself, never has diff
-//	"<source>"             — synced or no diff data
-//	"↑3 ↓1  <source>"      — diverged
-func composeUpstreamCell(d [2]int, source string, isDefault bool) string {
-	if isDefault {
-		return source
-	}
-	diff := formatSwitchDiff(d)
-	if diff == "" {
-		return source
-	}
-	return diff + "  " + source
-}
-
-// composeColoredUpstreamCell is the colored version: green ↑, red ↓.
-func composeColoredUpstreamCell(d [2]int, source string, isDefault bool) string {
-	if isDefault {
-		return source
-	}
-	diff := colorSwitchDiff(d)
-	if diff == "" {
-		return source
-	}
-	return diff + "  " + source
 }
 
 // buildSwitchExtras wires the n/d/D/r hotkeys. Only `r` mutates
@@ -740,9 +683,9 @@ func composeColoredUpstreamCell(d [2]int, source string, isDefault bool) string 
 // picker so the caller can drive prompts/confirms outside the
 // bubbletea program. allRemotes is the full enumerated set so the
 // closure can populate *remotes on toggle-on without re-listing.
-func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.TablePickerExtraKey {
+func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur string, dirty map[string]git.DirtyFlags) []ui.TablePickerExtraKey {
 	rebuild := func() ([]ui.PickerItem, []string, error) {
-		items := buildSwitchItems(*local, *remotes, cur, *wt, defaultBr, diff, dirty)
+		items := buildSwitchItems(*local, *remotes, cur, *wt, dirty)
 		return items, []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}, nil
 	}
 	return []ui.TablePickerExtraKey{

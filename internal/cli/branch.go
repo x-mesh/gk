@@ -68,6 +68,8 @@ type branchInfo struct {
 	Upstream   string
 	LastCommit time.Time
 	Hash       string // 7-char short commit hash
+	Ahead      int    // commits this branch has that upstream lacks
+	Behind     int    // commits upstream has that this branch lacks
 	Gone       bool   // upstream configured but missing on remote
 }
 
@@ -94,8 +96,11 @@ func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) 
 			Name: parts[0], Upstream: parts[1],
 			LastCommit: time.Unix(n, 0),
 		}
-		if len(parts) >= 4 && strings.Contains(parts[3], "gone") {
-			bi.Gone = true
+		if len(parts) >= 4 {
+			if strings.Contains(parts[3], "gone") {
+				bi.Gone = true
+			}
+			bi.Ahead, bi.Behind = parseUpstreamTrack(parts[3])
 		}
 		if len(parts) >= 5 {
 			bi.Hash = parts[4]
@@ -103,6 +108,36 @@ func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) 
 		out = append(out, bi)
 	}
 	return out, nil
+}
+
+// parseUpstreamTrack extracts ahead/behind counts from the
+// %(upstream:track) field emitted by `git for-each-ref`. Examples:
+//
+//	""                       → 0, 0  (synced, or no upstream)
+//	"[gone]"                 → 0, 0  (callers also set Gone via Contains)
+//	"[ahead 3]"              → 3, 0
+//	"[behind 5]"             → 0, 5
+//	"[ahead 3, behind 5]"    → 3, 5
+func parseUpstreamTrack(s string) (ahead, behind int) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.Contains(s, "gone") {
+		return 0, 0
+	}
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		var n int
+		if _, err := fmt.Sscanf(p, "ahead %d", &n); err == nil {
+			ahead = n
+			continue
+		}
+		if _, err := fmt.Sscanf(p, "behind %d", &n); err == nil {
+			behind = n
+			continue
+		}
+	}
+	return ahead, behind
 }
 
 // unmergedBranches returns the set of branch names NOT merged into base.

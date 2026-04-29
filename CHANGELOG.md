@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-04-30
+
+### Fixed
+
+- **릴리스 바이너리에 `-dirty` 마커가 박히던 문제**. v0.21.0이 태그 커밋에서
+  깔끔하게 빌드됐는데도 `gk --version` 출력이 `commit <sha>-dirty`로 표시.
+  - `.goreleaser.yaml`: `builds[].flags`에 `-buildvcs=false`, `-trimpath`
+    추가. goreleaser의 `go mod tidy` before-hook이 빌드 샌드박스의 go.sum을
+    일시적으로 변경해 `vcs.modified=true`가 BuildInfo에 임베드되던 경로 차단.
+  - `cmd/gk/main.go`: `vcsFallback`이 ldflags로 채워진 commit에도 BuildInfo의
+    `vcs.modified`를 보고 `-dirty`를 붙이던 가드 결함 수정.
+    `vcsFallbackFromSettings`로 순수 함수 분리 + `fromVCS` bool 가드 추가 —
+    `vcs.modified`는 같은 호출에서 `vcs.revision`으로 commit을 채운 경우에만
+    적용.
+  - 단위 테스트 6건 (`cmd/gk/main_test.go`)으로 v0.21.0 회귀 시나리오 + ldflags
+    precedence + plain `go build`의 dirty 마킹을 모두 커버.
+
 ## [0.21.0] - 2026-04-30
 
 ### Added

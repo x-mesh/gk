@@ -80,6 +80,12 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 // pathspec check because nothing matches. The follow-up `git commit --
 // <files>` picks the deletion up via the staged HEAD diff.
 //
+// Rename pair expansion in commit pathspec: staged rename pairs
+// (new→orig) are collected once before the loop. For each group the
+// commit pathspec is expanded via expandRenamePairs so that the orig
+// (deletion) side is included alongside the new path — preventing
+// dangling staged deletions when the grouper only emits the new path.
+//
 // Tree-OID guard: ApplyMessages records `git write-tree` before any
 // commit and again after all commits. A mismatch between TreeBefore
 // and the ORIGINAL tree (captured upstream) signals drift between
@@ -115,6 +121,11 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 		return result, err
 	}
 
+	renamePairs, err := stagedRenamePairs(ctx, runner)
+	if err != nil {
+		return result, err
+	}
+
 	for _, m := range messages {
 		if opts.DryRun {
 			result.CommitShas = append(result.CommitShas, "")
@@ -132,7 +143,7 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 
 		msg := formatCommitMessage(m, opts.Trailer)
 		commitArgs := []string{"commit", "-m", msg, "--"}
-		commitArgs = append(commitArgs, m.Group.Files...)
+		commitArgs = append(commitArgs, expandRenamePairs(m.Group.Files, renamePairs)...)
 		stdout, stderr, err := runner.Run(ctx, commitArgs...)
 		if err != nil {
 			return result, fmt.Errorf("aicommit: git commit: %w (stderr=%s stdout=%s)",
@@ -310,6 +321,74 @@ func filterStaged(files []string, skip map[string]struct{}) []string {
 			continue
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// stagedRenamePairs returns a map of newPath → origPath for all staged
+// renames (and copies) detected by `git diff --cached --name-status -z -M`.
+//
+// The -z output format uses NUL as the field separator:
+//   - non-rename/copy records: <status>\0<path>\0
+//   - rename/copy records:     <statusScore>\0<origPath>\0<newPath>\0
+//
+// The returned map lets callers include the orig (deletion) side in a
+// commit pathspec so that rename pairs are never split across commits.
+func stagedRenamePairs(ctx context.Context, runner git.Runner) (map[string]string, error) {
+	out, _, err := runner.Run(ctx, "diff", "--cached", "--name-status", "-z", "-M")
+	if err != nil {
+		return nil, fmt.Errorf("aicommit: list staged renames: %w", err)
+	}
+	pairs := map[string]string{}
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i < len(fields); {
+		status := fields[i]
+		if status == "" {
+			i++
+			continue
+		}
+		// Rename (R) and Copy (C) records start with the letter followed by
+		// an optional similarity score (e.g. "R100", "C075").
+		if len(status) >= 1 && (status[0] == 'R' || status[0] == 'C') {
+			if i+2 >= len(fields) {
+				break
+			}
+			origPath := fields[i+1]
+			newPath := fields[i+2]
+			if origPath != "" && newPath != "" {
+				pairs[newPath] = origPath
+			}
+			i += 3
+		} else {
+			// Non-rename record: status + single path.
+			i += 2
+		}
+	}
+	return pairs, nil
+}
+
+// expandRenamePairs returns files with each entry that has a rename orig
+// (as recorded in pairs) followed immediately by that orig path, deduped.
+// If pairs is empty the input slice is returned unchanged.
+// Input order is preserved; orig paths are inserted directly after their
+// corresponding new path.
+func expandRenamePairs(files []string, pairs map[string]string) []string {
+	if len(pairs) == 0 {
+		return files
+	}
+	seen := make(map[string]struct{}, len(files)*2)
+	out := make([]string, 0, len(files)*2)
+	for _, f := range files {
+		if _, dup := seen[f]; !dup {
+			seen[f] = struct{}{}
+			out = append(out, f)
+		}
+		if orig, ok := pairs[f]; ok {
+			if _, dup := seen[orig]; !dup {
+				seen[orig] = struct{}{}
+				out = append(out, orig)
+			}
+		}
 	}
 	return out
 }

@@ -267,6 +267,7 @@ func toProviderFiles(files []FileChange) []provider.FileChange {
 			Path:     f.Path,
 			Status:   f.Status,
 			IsBinary: f.IsBinary,
+			OrigPath: f.OrigPath,
 		}
 	}
 	return out

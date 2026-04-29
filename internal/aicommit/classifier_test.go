@@ -200,6 +200,24 @@ func TestClassifyDropsDeniedFiles(t *testing.T) {
 	}
 }
 
+func TestToProviderFilesPropagatesOrigPath(t *testing.T) {
+	files := []FileChange{
+		{Path: "new.go", Status: "renamed", OrigPath: "old.go", IsBinary: false},
+		{Path: "regular.go", Status: "modified"},
+	}
+	out := toProviderFiles(files)
+
+	if len(out) != 2 {
+		t.Fatalf("want 2 files, got %d", len(out))
+	}
+	if out[0].OrigPath != "old.go" {
+		t.Errorf("OrigPath: want %q, got %q", "old.go", out[0].OrigPath)
+	}
+	if out[1].OrigPath != "" {
+		t.Errorf("OrigPath for regular file: want empty, got %q", out[1].OrigPath)
+	}
+}
+
 // errUnexpected is returned by fake hooks that should never fire.
 type errUnexpected struct{}
 

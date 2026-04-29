@@ -204,7 +204,11 @@ func concatFileDiffs(files []FileChange) []byte {
 		if f.IsBinary || f.DiffHint == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "--- %s (%s)\n", f.Path, f.Status)
+		if f.OrigPath != "" {
+			fmt.Fprintf(&b, "--- %s (%s from %s)\n", f.Path, f.Status, f.OrigPath)
+		} else {
+			fmt.Fprintf(&b, "--- %s (%s)\n", f.Path, f.Status)
+		}
 		b.WriteString(f.DiffHint)
 		if !strings.HasSuffix(f.DiffHint, "\n") {
 			b.WriteByte('\n')

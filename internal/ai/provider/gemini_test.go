@@ -150,6 +150,21 @@ func TestFilterGeminiStderrDropsStartupLines(t *testing.T) {
 	}
 }
 
+func TestConcatFileDiffs_RenamedFileShowsOrig(t *testing.T) {
+	files := []FileChange{
+		{Path: "new.go", Status: "renamed", OrigPath: "old.go", DiffHint: "+package main\n"},
+		{Path: "regular.go", Status: "modified", DiffHint: "+x\n"},
+	}
+	out := string(concatFileDiffs(files))
+
+	if !strings.Contains(out, "--- new.go (renamed from old.go)") {
+		t.Errorf("concat missing renamed header: %q", out)
+	}
+	if !strings.Contains(out, "--- regular.go (modified)") {
+		t.Errorf("concat missing regular header: %q", out)
+	}
+}
+
 // jsonQuote returns s wrapped in JSON-safe double quotes.
 func jsonQuote(s string) string {
 	var b strings.Builder

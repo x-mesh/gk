@@ -37,6 +37,9 @@ type FileChange struct {
 	Path     string
 	Status   string
 	IsBinary bool
+	// OrigPath is the source path for rename/copy operations. Empty for
+	// all other status values.
+	OrigPath string
 	// DiffHint holds an abbreviated diff snippet (stat-only for binary,
 	// numstat + short hunk for text). Full diffs are never embedded here
 	// — the caller decides what to forward to the provider.

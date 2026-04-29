@@ -32,7 +32,11 @@ func buildClassifyUserPrompt(in ClassifyInput, aggregateDiff string) string {
 	}
 	fmt.Fprintln(&b, "\nFiles:")
 	for _, f := range in.Files {
-		fmt.Fprintf(&b, "- %s [%s]\n", f.Path, f.Status)
+		if f.OrigPath != "" {
+			fmt.Fprintf(&b, "- %s [%s from %s]\n", f.Path, f.Status, f.OrigPath)
+		} else {
+			fmt.Fprintf(&b, "- %s [%s]\n", f.Path, f.Status)
+		}
 	}
 	fmt.Fprintln(&b, "\nRespond with JSON of the form:")
 	fmt.Fprintln(&b, `{"groups":[{"type":"feat","scope":"optional","files":["a.go","b.go"],"rationale":"..."}]}`)

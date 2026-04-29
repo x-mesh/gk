@@ -25,6 +25,8 @@ func TestApplyMessagesCreatesCommitPerGroup(t *testing.T) {
 			"symbolic-ref --quiet --short HEAD": {Stdout: "ai-commit\n"},
 			"rev-parse HEAD":                    {Stdout: "abcdef\n"},
 			"write-tree":                        {Stdout: "tree123\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
 		},
 		DefaultResp: git.FakeResponse{Stdout: "[ai-commit 1111111] feat: subject\n"},
 	}
@@ -67,6 +69,8 @@ func TestApplyMessagesDryRunMakesNoCommits(t *testing.T) {
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
 			"rev-parse HEAD":                    {Stdout: "abc\n"},
 			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
 		},
 	}
 	msgs := []Message{
@@ -92,6 +96,8 @@ func TestApplyMessagesAddFailureAborts(t *testing.T) {
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
 			"rev-parse HEAD":                    {Stdout: "abc\n"},
 			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
 			"add -A -- bad.go": {
 				Stderr:   "fatal: pathspec 'bad.go' did not match any files",
 				ExitCode: 128,
@@ -217,6 +223,153 @@ func TestApplyMessagesSkipsAddEntirelyWhenAllStagedDeleted(t *testing.T) {
 	for _, c := range fake.Calls {
 		if len(c.Args) >= 1 && c.Args[0] == "add" {
 			t.Errorf("git add must not be invoked when all files are fully staged-deleted, got %v", c.Args)
+		}
+	}
+}
+
+// TestApplyMessagesExpandsRenamePairsInCommitPathspec guards the fix for
+// dangling staged deletions when a grouper emits only the new path of a
+// staged rename. The orig (deletion) side must be included in the commit
+// pathspec so both sides land in the same commit.
+func TestApplyMessagesExpandsRenamePairsInCommitPathspec(t *testing.T) {
+	// R100 means 100% rename similarity: old.go -> new.go
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: "R100\x00old.go\x00new.go\x00"},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 5555555] feat: rename\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "feat", Files: []string{"new.go"}}, Subject: "rename old to new"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	var commitArgs []string
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 1 && c.Args[0] == "commit" {
+			commitArgs = c.Args
+		}
+	}
+	if !contains(commitArgs, "new.go") {
+		t.Errorf("commit args missing new.go: %v", commitArgs)
+	}
+	if !contains(commitArgs, "old.go") {
+		t.Errorf("commit args missing orig path old.go: %v", commitArgs)
+	}
+}
+
+// TestApplyMessagesNoRenamePairsLeavesPathspecAsIs checks that when there
+// are no staged renames the commit pathspec matches Group.Files exactly.
+func TestApplyMessagesNoRenamePairsLeavesPathspecAsIs(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 6666666] feat: add\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "feat", Files: []string{"a.go", "b.go"}}, Subject: "add files"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	var commitArgs []string
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 1 && c.Args[0] == "commit" {
+			commitArgs = c.Args
+		}
+	}
+	// Expect exactly: commit -m <msg> -- a.go b.go (no extras)
+	var pathArgs []string
+	pastSep := false
+	for _, a := range commitArgs {
+		if a == "--" {
+			pastSep = true
+			continue
+		}
+		if pastSep {
+			pathArgs = append(pathArgs, a)
+		}
+	}
+	want := []string{"a.go", "b.go"}
+	if !reflect.DeepEqual(pathArgs, want) {
+		t.Errorf("commit path args = %v, want %v", pathArgs, want)
+	}
+}
+
+// TestExpandRenamePairsHelper unit-tests the helper directly:
+// dedup, input-order preservation, and orig insertion position.
+func TestExpandRenamePairsHelper(t *testing.T) {
+	t.Run("empty pairs returns input unchanged", func(t *testing.T) {
+		in := []string{"a.go", "b.go"}
+		got := expandRenamePairs(in, nil)
+		if !reflect.DeepEqual(got, in) {
+			t.Errorf("got %v, want %v", got, in)
+		}
+	})
+
+	t.Run("orig inserted directly after new", func(t *testing.T) {
+		pairs := map[string]string{"new.go": "old.go"}
+		got := expandRenamePairs([]string{"x.go", "new.go", "y.go"}, pairs)
+		want := []string{"x.go", "new.go", "old.go", "y.go"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("dedup: orig already present not duplicated", func(t *testing.T) {
+		pairs := map[string]string{"new.go": "old.go"}
+		got := expandRenamePairs([]string{"old.go", "new.go"}, pairs)
+		// old.go appears first (input order); new.go follows; old.go not re-added
+		want := []string{"old.go", "new.go"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("dedup: new appears twice in input", func(t *testing.T) {
+		pairs := map[string]string{"new.go": "old.go"}
+		got := expandRenamePairs([]string{"new.go", "new.go"}, pairs)
+		want := []string{"new.go", "old.go"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+}
+
+// TestStagedRenamePairsParsesNZFormat checks that the -z parser correctly
+// handles mixed (M, R, A, D) output from git diff --cached --name-status -z -M.
+func TestStagedRenamePairsParsesNZFormat(t *testing.T) {
+	// Simulate: M modified.go, R100 old.go->new.go, A added.go, D deleted.go
+	nzOutput := "M\x00modified.go\x00R100\x00old.go\x00new.go\x00A\x00added.go\x00D\x00deleted.go\x00"
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"diff --cached --name-status -z -M": {Stdout: nzOutput},
+		},
+	}
+	pairs, err := stagedRenamePairs(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("stagedRenamePairs: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("expected 1 pair, got %d: %v", len(pairs), pairs)
+	}
+	if pairs["new.go"] != "old.go" {
+		t.Errorf("pairs[new.go] = %q, want %q", pairs["new.go"], "old.go")
+	}
+	// Non-rename keys must not appear.
+	for _, k := range []string{"modified.go", "added.go", "deleted.go"} {
+		if _, ok := pairs[k]; ok {
+			t.Errorf("unexpected key %q in pairs", k)
 		}
 	}
 }

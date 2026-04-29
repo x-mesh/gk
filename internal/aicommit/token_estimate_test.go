@@ -38,7 +38,7 @@ func TestEstimateComposeTokensScalesWithDiff(t *testing.T) {
 	g := provider.Group{Type: "feat", Files: []string{"main.go"}}
 	small := EstimateComposeTokens(g, strings.Repeat("x", 1000), "en")
 	big := EstimateComposeTokens(g, strings.Repeat("x", 50000), "en")
-	if !(big > small*5) {
+	if big <= small*5 {
 		t.Errorf("estimate should scale with diff size — small=%d big=%d", small, big)
 	}
 }

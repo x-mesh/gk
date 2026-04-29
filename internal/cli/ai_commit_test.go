@@ -80,14 +80,14 @@ func TestInspectWIPCommitForAICommitIncludesFiles(t *testing.T) {
 	// (NUL-separated) form.
 	const wipSHA = "wipsha11"
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"rev-parse --abbrev-ref HEAD":              {Stdout: "improve\n"},
-		"log -1 --format=%s HEAD~0":                {Stdout: "--wip-- [skip ci]\n"},
-		"rev-parse HEAD~0":                         {Stdout: wipSHA + "\n"},
-		"log -1 --format=%P HEAD~0":                {Stdout: wipSHA + "-parent\n"},
-		"branch -r --contains " + wipSHA:           {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":                     {Stdout: "improve\n"},
+		"log -1 --format=%s HEAD~0":                       {Stdout: "--wip-- [skip ci]\n"},
+		"rev-parse HEAD~0":                                {Stdout: wipSHA + "\n"},
+		"log -1 --format=%P HEAD~0":                       {Stdout: wipSHA + "-parent\n"},
+		"branch -r --contains " + wipSHA:                  {Stdout: ""},
 		"diff -z --name-status " + wipSHA + "^ " + wipSHA: {Stdout: "M\x00internal/cli/merge.go\x00A\x00new.go\x00"},
-		"log -1 --format=%s HEAD~1":                {Stdout: "feat: real commit\n"},
-		"rev-parse HEAD":                           {Stdout: wipSHA + "\n"},
+		"log -1 --format=%s HEAD~1":                       {Stdout: "feat: real commit\n"},
+		"rev-parse HEAD":                                  {Stdout: wipSHA + "\n"},
 	}}
 
 	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}

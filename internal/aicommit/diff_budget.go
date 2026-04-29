@@ -67,7 +67,7 @@ func TruncateDiff(diff string, capBytes int) string {
 	}
 
 	if dropped > 0 {
-		b.WriteString(fmt.Sprintf("\n[gk: %d additional file(s) omitted to fit budget]\n", dropped))
+		fmt.Fprintf(&b, "\n[gk: %d additional file(s) omitted to fit budget]\n", dropped)
 	}
 	return b.String()
 }

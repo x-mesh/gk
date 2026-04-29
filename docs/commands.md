@@ -101,6 +101,136 @@ gk ship --no-release --yes
 
 ---
 
+## gk sync
+
+Catch the current branch up to its base branch (e.g., `main`). When the
+current branch is already an ancestor of the base, sync fast-forwards;
+otherwise it rebases by default. Use `--strategy merge` to integrate with
+a merge commit, or `--strategy ff-only` to refuse divergence.
+
+`gk sync` is the command for the most common feature-branch workflow:
+"my branch fell behind `main` while I worked on it; pull `main`'s new
+commits in." For "fetch the same branch from the remote and integrate"
+(the multi-machine / collaborative-branch case), use [`gk pull`](#gk-pull).
+
+### Synopsis
+
+```
+gk sync [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--base <branch>` | auto-detect | Base branch to sync onto |
+| `--strategy <mode>` | `rebase` | `rebase`, `merge`, or `ff-only` |
+| `--autostash` | false | Stash dirty changes before integration, pop after |
+| `--fetch-only` | false | Fetch base, skip integration (reports ahead/behind) |
+| `--no-fetch` | false | Skip fetch, integrate from already-fetched ref |
+| `--upstream-only` | false | **Deprecated.** Legacy v0.6 FF-to-`origin/<self>` behaviour. Removed in v0.8. |
+
+### Strategy resolution
+
+First match wins:
+
+1. `--strategy` flag
+2. `sync.strategy` in `.gk.yaml`
+3. `git config pull.rebase` (`true`→rebase, `false`→merge)
+4. default: `rebase`
+
+### Self-FF (always-on)
+
+When `origin/<self>` is strictly ahead of the local branch — e.g., another
+machine pushed earlier — gk fast-forwards before integrating the base. If
+`origin/<self>` has diverged from local, the self-FF step is skipped and
+the divergence is resolved by the base integration. This makes
+`gk sync` safe to run on multi-machine workflows without thinking about
+order: a single command catches up to both your remote self *and* your
+base.
+
+### Base branch auto-detection
+
+When `--base` is not set and `base_branch` is not configured, gk probes:
+
+1. `origin/HEAD` (remote default branch)
+2. `develop`
+3. `main`
+4. `master`
+
+### Examples
+
+```bash
+# Catch up onto auto-detected base
+gk sync
+
+# Sync onto a specific branch
+gk sync --base develop
+
+# Use a merge commit instead of rebase
+gk sync --strategy merge
+
+# Refuse to rebase — only fast-forward
+gk sync --strategy ff-only
+
+# Stash dirty work before sync
+gk sync --autostash
+
+# Just fetch and report (no integration)
+gk sync --fetch-only
+
+# Legacy v0.6 behaviour (deprecated; removed in v0.8)
+gk sync --upstream-only
+```
+
+### Conflict handling
+
+If a rebase or merge produces conflicts, gk pauses with a clear hint:
+`run gk continue, gk abort, or git rebase --continue to resolve`. Resume
+or abort with the same plumbing as `gk pull` and `gk merge`.
+
+### Output
+
+After a successful integration, gk prints a compact summary:
+
+```
+self-ff: a1b2c3d → e4f5g6h  (origin/feat/x was ahead)
+rebased feat/x onto main  e4f5g6h → 7h8i9j0  (+3 commits · rebase)
+12 files changed, 240 insertions(+), 18 deletions(-)
+```
+
+The first line appears only when the self-FF step actually moved HEAD.
+The middle line shows the verb ("rebased", "merged", "fast-forwarded"),
+the branch and base, the pre/post HEADs, the commit count, and the
+strategy used. When `requested != actual` (e.g., rebase requested but the
+ancestor short-circuit collapsed it to a fast-forward), the strategy
+reads `rebase → ff-only`.
+
+`--fetch-only` instead reports ahead/behind against the upstream and
+hints at the integrate command.
+
+### Migration from v0.6
+
+The v0.6 `gk sync` was "fetch + FF current branch to `origin/<self>`". v0.7
+re-targets the command at the more common intent (catch up to base) and
+exposes the old behaviour behind `--upstream-only` for one release. The
+flag is removed in v0.8; use `gk pull` for the same effect.
+
+The `--all` flag from v0.6 is removed — rebasing every local branch onto
+the base is dangerous, and the FF-only fallback added little. Iterate
+manually with a shell loop if you need it.
+
+### Notes
+
+- Refuses to start with tracked working-tree changes unless `--autostash`
+  is set. Interactive terminals get a stash-or-skip prompt.
+- Refuses to run when the current branch *is* the base branch — there is
+  nothing to catch up to. Switch branches first.
+- Set `GK_SUPPRESS_DEPRECATION=1` to silence the `--upstream-only` notice
+  in CI logs.
+
+---
+
 ## gk pull
 
 Fetch and rebase the current branch onto the base branch.

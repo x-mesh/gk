@@ -174,6 +174,22 @@ ai:
     # .git/gk-ai-commit/audit.jsonl (RunID, provider, tokens, subject).
     audit: false
 
+    # WIP-like commits at HEAD are folded into the AI plan and unwrapped
+    # via `git reset HEAD~N` after Apply. Built-in defaults already cover:
+    # `--wip--` (git stash), `wip:`, `WIP`, `tmp`, `temp`, `save`,
+    # `checkpoint`, `fixup!`, `squash!`. Patterns below ADD to the
+    # defaults — they don't replace. Use --no-wip-unwrap on the CLI to
+    # disable for one invocation.
+    # Safety: chain stops at protected branches (branch.protected),
+    # already-pushed commits (reachable from upstream), and merge commits.
+    # wip_patterns:
+    #   - "^DRAFT\\b"
+    #   - "^scratch\\b"
+
+    # Cap on chain length. 0 falls back to 10 — stops runaway scans on
+    # branches where every commit is a save-point.
+    wip_max_chain: 10
+
     # Paths matching any of these globs (filepath.Match syntax, applied
     # to both basename and full path) are dropped from the WIP set
     # before anything leaves the process. Keeps secret-bearing files

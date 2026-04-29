@@ -77,15 +77,30 @@ type AIGroqConfig struct {
 // only local providers may run (the policy layer may enforce this too).
 // Trailer and Audit are opt-in telemetry knobs, both default off.
 type AICommitConfig struct {
-	Mode        string        `mapstructure:"mode"         yaml:"mode"`
-	MaxGroups   int           `mapstructure:"max_groups"   yaml:"max_groups"`
-	MaxTokens   int           `mapstructure:"max_tokens"   yaml:"max_tokens"`
-	Timeout     string        `mapstructure:"timeout"      yaml:"timeout"`
-	DenyPaths   []string      `mapstructure:"deny_paths"   yaml:"deny_paths"`
-	AllowRemote bool          `mapstructure:"allow_remote" yaml:"allow_remote"`
-	Trailer     bool          `mapstructure:"trailer"      yaml:"trailer"`
-	Audit       bool          `mapstructure:"audit"        yaml:"audit"`
-	Privacy     PrivacyConfig `mapstructure:"privacy"      yaml:"privacy"`
+	Mode        string        `mapstructure:"mode"          yaml:"mode"`
+	MaxGroups   int           `mapstructure:"max_groups"    yaml:"max_groups"`
+	MaxTokens   int           `mapstructure:"max_tokens"    yaml:"max_tokens"`
+	Timeout     string        `mapstructure:"timeout"       yaml:"timeout"`
+	DenyPaths   []string      `mapstructure:"deny_paths"    yaml:"deny_paths"`
+	AllowRemote bool          `mapstructure:"allow_remote"  yaml:"allow_remote"`
+	Trailer     bool          `mapstructure:"trailer"       yaml:"trailer"`
+	Audit       bool          `mapstructure:"audit"         yaml:"audit"`
+	Privacy     PrivacyConfig `mapstructure:"privacy"       yaml:"privacy"`
+	// WIPPatterns are EXTRA subject regexes that mark a commit as a
+	// WIP-like save-point eligible for chain unwrap. They ADD to the
+	// hard-coded defaults (`--wip--`, `wip:`, `tmp`, `save`,
+	// `checkpoint`, `fixup!`, `squash!`) — empty list keeps just the
+	// defaults.
+	WIPPatterns []string `mapstructure:"wip_patterns"  yaml:"wip_patterns"`
+	// WIPMaxChain caps how many recent commits the unwrap pass will
+	// consider. 0 falls back to 10. Stops a runaway chain on a branch
+	// that is entirely save-point commits.
+	WIPMaxChain int `mapstructure:"wip_max_chain" yaml:"wip_max_chain"`
+	// WIPEnabled is the global on/off switch for the chain unwrap
+	// pass. Defaults true. The CLI flag --no-wip-unwrap is OR-ed with
+	// `!WIPEnabled` per invocation, so users can disable entirely via
+	// config or one-shot via flag.
+	WIPEnabled bool `mapstructure:"wip_enabled"   yaml:"wip_enabled"`
 }
 
 // PrivacyConfig tunes the Privacy Gate that runs before remote AI
@@ -354,14 +369,16 @@ func Defaults() Config {
 			Provider: "",
 			Lang:     "en",
 			Commit: AICommitConfig{
-				Mode:      "interactive",
-				MaxGroups: 10,
-				MaxTokens: 24000,
-				Timeout:   "30s",
-				DenyPaths: DefaultDenyPaths(),
+				Mode:        "interactive",
+				MaxGroups:   10,
+				MaxTokens:   24000,
+				Timeout:     "30s",
+				DenyPaths:   DefaultDenyPaths(),
 				AllowRemote: true,
 				Trailer:     false,
 				Audit:       false,
+				WIPMaxChain: 10,
+				WIPEnabled:  true,
 			},
 			Nvidia: AINvidiaConfig{
 				Timeout: "60s",

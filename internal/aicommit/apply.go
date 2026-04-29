@@ -21,6 +21,12 @@ type ApplyOptions struct {
 	Trailer         string
 	DryRun          bool
 	SkipGpgKeyCheck bool
+	// PrecapturedBackupRef, when non-empty, replaces the backup ref
+	// that ApplyMessages would otherwise create at entry. Callers that
+	// rewrite history before calling Apply (e.g. WIP chain unwrap) use
+	// this so the recorded backup points at the ORIGINAL pre-rewrite
+	// HEAD rather than the post-rewrite ancestor.
+	PrecapturedBackupRef string
 }
 
 // ApplyResult is what the caller receives after ApplyMessages runs.
@@ -86,11 +92,18 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, opts ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{}
 
-	backup, err := EnsureBackupRef(ctx, runner)
-	if err != nil {
-		return result, err
+	if opts.PrecapturedBackupRef != "" {
+		// Caller already snapshotted the original HEAD (e.g. before
+		// WIP chain unwrap). Don't overwrite — the pre-rewrite ref is
+		// the one --abort needs to roll back to.
+		result.BackupRef = opts.PrecapturedBackupRef
+	} else {
+		backup, err := EnsureBackupRef(ctx, runner)
+		if err != nil {
+			return result, err
+		}
+		result.BackupRef = backup
 	}
-	result.BackupRef = backup
 
 	before, _, err := runner.Run(ctx, "write-tree")
 	if err == nil {

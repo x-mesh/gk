@@ -30,6 +30,7 @@ func TestDetectExistingGarbageFindsPyc(t *testing.T) {
 	pyc := findPattern(got, "*.pyc")
 	if pyc == nil {
 		t.Fatalf("expected *.pyc detection, got %+v", got)
+		return
 	}
 	if pyc.Count != 2 {
 		t.Errorf("Count: want 2, got %d", pyc.Count)
@@ -75,6 +76,7 @@ func TestDetectExistingGarbageSamplesCappedToLimit(t *testing.T) {
 	pyc := findPattern(got, "*.pyc")
 	if pyc == nil {
 		t.Fatal("expected *.pyc detection")
+		return
 	}
 	if len(pyc.Sample) != garbageSampleLimit {
 		t.Errorf("Sample length: want %d, got %d", garbageSampleLimit, len(pyc.Sample))

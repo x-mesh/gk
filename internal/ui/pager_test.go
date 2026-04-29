@@ -93,6 +93,7 @@ func TestResolve_KnownBinary_Delta(t *testing.T) {
 	p := resolve("delta")
 	if p == nil {
 		t.Fatal("resolve(delta) returned nil")
+		return
 	}
 	if p.Kind != PagerDelta {
 		t.Errorf("Kind = %q, want %q", p.Kind, PagerDelta)

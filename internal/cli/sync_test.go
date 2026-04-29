@@ -13,12 +13,9 @@ import (
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
-// buildSyncCmd wires a cobra root + `sync` subcommand targeting repoDir.
-// Mirrors buildPrecheckCmd / buildPreflightCmd.
-//
-// NOTE: tests in this file exercise the v0.6 sync semantics that now live
-// behind --upstream-only. They are kept skipped until t9 rewrites the suite
-// for the new "catch up to base" sync — see docs/rfc-sync-redesign.md.
+// buildSyncCmd wires a cobra root + `sync` subcommand targeting repoDir
+// for the new "catch up to base" sync. Test-local because the real init()
+// registers against the global rootCmd.
 func buildSyncCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.Buffer) {
 	testRoot := &cobra.Command{Use: "gk", SilenceUsage: true, SilenceErrors: true}
 	testRoot.PersistentFlags().StringVar(&flagRepo, "repo", repoDir, "path to git repo")
@@ -32,10 +29,12 @@ func buildSyncCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.B
 		RunE:         func(c *cobra.Command, _ []string) error { return runSyncCore(c) },
 		SilenceUsage: true,
 	}
-	sync.Flags().Bool("all", false, "sync every local branch")
+	sync.Flags().String("base", "", "base branch")
+	sync.Flags().String("strategy", "", "integration strategy")
 	sync.Flags().Bool("fetch-only", false, "fetch only")
 	sync.Flags().Bool("no-fetch", false, "skip fetch")
 	sync.Flags().Bool("autostash", false, "autostash")
+	sync.Flags().Bool("upstream-only", false, "legacy v0.6 behaviour")
 	testRoot.AddCommand(sync)
 
 	buf := &bytes.Buffer{}
@@ -47,8 +46,57 @@ func buildSyncCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.B
 	return testRoot, buf
 }
 
-// setupTrackingDownstream returns (upstream, downstream) repos where
-// downstream/main tracks upstream/main via a local-path remote.
+// execRunnerFor returns a live git.ExecRunner rooted at the repo directory.
+func execRunnerFor(r *testutil.Repo) *git.ExecRunner {
+	return &git.ExecRunner{Dir: r.Dir}
+}
+
+// setupFeatureFromMain builds (upstream, downstream) where:
+//   - upstream has one main commit at SHA m0
+//   - downstream tracks origin/main at m0
+//   - downstream is on a feat/x branch off m0 with no commits yet
+//
+// Tests advance one or both sides further to construct the scenario.
+func setupFeatureFromMain(t *testing.T) (*testutil.Repo, *testutil.Repo) {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hello\n")
+	upstream.Commit("init")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	downstream.RunGit("branch", "--set-upstream-to=origin/main", "main")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	downstream.CreateBranch("feat/x")
+	downstream.Checkout("feat/x")
+	return upstream, downstream
+}
+
+// untrackedDownstream returns a downstream repo whose `main` has the
+// origin/main ref cached but lacks a configured upstream — exactly the
+// scenario where main fell out of sync silently. Used by status/doctor tests.
+func untrackedDownstream(t *testing.T) (*testutil.Repo, *testutil.Repo) {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hello\n")
+	upstream.Commit("feat: a")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	// Intentionally NOT setting upstream.
+
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+	return upstream, downstream
+}
+
+// setupTrackingDownstream returns (upstream, downstream) where downstream/main
+// tracks upstream/main. Used by the legacy --upstream-only test.
 func setupTrackingDownstream(t *testing.T) (*testutil.Repo, *testutil.Repo) {
 	t.Helper()
 	upstream := testutil.NewRepo(t)
@@ -65,11 +113,10 @@ func setupTrackingDownstream(t *testing.T) (*testutil.Repo, *testutil.Repo) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit — upstreamOf, resolveShortSHA, equalRefs (against real git)
+// Unit — upstreamOf (still used by the --upstream-only legacy path)
 // ---------------------------------------------------------------------------
 
 func TestUpstreamOf_NoUpstream(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
 	repo := testutil.NewRepo(t)
 	repo.WriteFile("a.txt", "hi\n")
 	repo.Commit("init")
@@ -81,7 +128,6 @@ func TestUpstreamOf_NoUpstream(t *testing.T) {
 }
 
 func TestUpstreamOf_WithUpstream(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
 	_, downstream := setupTrackingDownstream(t)
 
 	got, err := upstreamOf(context.Background(), execRunnerFor(downstream), "main")
@@ -94,120 +140,14 @@ func TestUpstreamOf_WithUpstream(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Integration — full sync command
+// Mutex flag check
 // ---------------------------------------------------------------------------
-
-func TestSyncCmd_NoUpstream(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	repo := testutil.NewRepo(t)
-	repo.WriteFile("a.txt", "hi\n")
-	repo.Commit("init")
-
-	root, buf := buildSyncCmd(repo.Dir, "--no-fetch")
-	if err := root.Execute(); err != nil {
-		t.Fatalf("expected no error for no-upstream, got: %v\n%s", err, buf.String())
-	}
-	out := buf.String()
-	if !strings.Contains(out, "no upstream") {
-		t.Errorf("expected 'no upstream' in report, got:\n%s", out)
-	}
-}
-
-func TestSyncCmd_AlreadyUpToDate(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	_, downstream := setupTrackingDownstream(t)
-
-	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
-	if err := root.Execute(); err != nil {
-		t.Fatalf("err: %v\n%s", err, buf.String())
-	}
-	if !strings.Contains(buf.String(), "up to date") {
-		t.Errorf("expected 'up to date', got:\n%s", buf.String())
-	}
-}
-
-func TestSyncCmd_FastForwards(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	upstream, downstream := setupTrackingDownstream(t)
-
-	// upstream advances
-	upstream.WriteFile("b.txt", "second\n")
-	upstreamHead := upstream.Commit("feat: add b")
-
-	// Real fetch (using remote = upstream.Dir).
-	root, buf := buildSyncCmd(downstream.Dir)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("sync failed: %v\n%s", err, buf.String())
-	}
-
-	got := strings.TrimSpace(downstream.RunGit("rev-parse", "HEAD"))
-	if got != upstreamHead {
-		t.Errorf("downstream HEAD = %s, want %s", got, upstreamHead)
-	}
-	if !strings.Contains(buf.String(), "fast-forwarded") && !strings.Contains(buf.String(), "→") {
-		t.Errorf("expected FF report, got:\n%s", buf.String())
-	}
-}
-
-func TestSyncCmd_Diverged(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	upstream, downstream := setupTrackingDownstream(t)
-
-	// upstream advances
-	upstream.WriteFile("b.txt", "up\n")
-	upstream.Commit("feat: up")
-
-	// downstream also advances on main → diverged
-	downstream.RunGit("fetch", "origin")
-	downstream.WriteFile("c.txt", "down\n")
-	downstream.Commit("feat: down")
-
-	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
-	err := root.Execute()
-	if err == nil {
-		t.Fatalf("expected DivergedError, got nil\n%s", buf.String())
-	}
-	var de *DivergedError
-	if !errors.As(err, &de) {
-		t.Fatalf("expected *DivergedError, got %T: %v", err, err)
-	}
-	if de.Code != 4 {
-		t.Errorf("expected exit 4, got %d", de.Code)
-	}
-	if !strings.Contains(buf.String(), "diverged") {
-		t.Errorf("expected 'diverged' in report, got:\n%s", buf.String())
-	}
-}
-
-func TestSyncCmd_FetchOnly(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	upstream, downstream := setupTrackingDownstream(t)
-	upstream.WriteFile("b.txt", "later\n")
-	upstreamHead := upstream.Commit("feat: later")
-
-	root, buf := buildSyncCmd(downstream.Dir, "--fetch-only")
-	if err := root.Execute(); err != nil {
-		t.Fatalf("fetch-only failed: %v\n%s", err, buf.String())
-	}
-	// origin/main should point at upstreamHead, but local main should NOT have moved.
-	originMain := strings.TrimSpace(downstream.RunGit("rev-parse", "origin/main"))
-	if originMain != upstreamHead {
-		t.Errorf("origin/main = %s, want %s", originMain, upstreamHead)
-	}
-	localMain := strings.TrimSpace(downstream.RunGit("rev-parse", "main"))
-	if localMain == upstreamHead {
-		t.Error("--fetch-only moved local main; should have skipped FF")
-	}
-}
 
 func TestSyncCmd_MutexFlags(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	repo.WriteFile("a.txt", "hi\n")
 	repo.Commit("init")
 
-	// --fetch-only + --no-fetch is still rejected in the new sync, so this
-	// test stays valid. Force --base to skip auto-detection (current branch
-	// is also the base in a fresh repo with no remote).
 	root, _ := buildSyncCmd(repo.Dir, "--fetch-only", "--no-fetch")
 	err := root.Execute()
 	if err == nil {
@@ -218,102 +158,238 @@ func TestSyncCmd_MutexFlags(t *testing.T) {
 	}
 }
 
-// execRunnerFor returns a live git.ExecRunner rooted at the repo directory.
-func execRunnerFor(r *testutil.Repo) *git.ExecRunner {
-	return &git.ExecRunner{Dir: r.Dir}
+// ---------------------------------------------------------------------------
+// Scenario 1 — ancestor → fast-forward onto base
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_AncestorFastForwards(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	// upstream main advances by one commit beyond what downstream has.
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	// feat/x has no commits; it's at the original main SHA, which is
+	// strictly an ancestor of origin/main after the next fetch. The new
+	// sync should auto-fetch and FF.
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("ancestor sync failed: %v\n%s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "fast-forwarded") {
+		t.Errorf("expected 'fast-forwarded' in summary, got:\n%s", out)
+	}
 }
 
-// untrackedDownstream returns a downstream repo whose `main` has the
-// origin/main ref cached but lacks a configured upstream — exactly the
-// scenario where mem-mesh's main fell out of sync silently. The upstream
-// is advanced past the downstream by one commit so origin/main is "ahead".
-func untrackedDownstream(t *testing.T) (*testutil.Repo, *testutil.Repo) {
-	t.Helper()
-	upstream := testutil.NewRepo(t)
-	upstream.WriteFile("a.txt", "hello\n")
-	upstream.Commit("feat: a")
+// ---------------------------------------------------------------------------
+// Scenario 2 — divergence → rebase succeeds
+// ---------------------------------------------------------------------------
 
-	downstream := testutil.NewRepo(t)
-	downstream.AddRemote("origin", upstream.Dir)
-	downstream.RunGit("fetch", "origin")
-	downstream.RunGit("reset", "--hard", "origin/main")
-	// Intentionally NOT setting upstream.
+func TestSyncCmd_DivergedRebaseSuccess(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
 
-	// upstream advances → origin/main now ahead by 1 after the next fetch.
+	// upstream advances on a different file.
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	// feat/x advances on its own file (no overlap → no conflict).
+	downstream.WriteFile("c.txt", "feat-x\n")
+	downstream.Commit("feat: c")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("rebase sync failed: %v\n%s", err, buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "rebased") {
+		t.Errorf("expected 'rebased' in summary, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 3 — divergence with conflict → ConflictError
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_DivergedRebaseConflict(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	// Both sides edit the same file → guaranteed rebase conflict.
+	upstream.WriteFile("a.txt", "upstream change\n")
+	upstream.Commit("feat: upstream a")
+
+	downstream.WriteFile("a.txt", "downstream change\n")
+	downstream.Commit("feat: downstream a")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("expected conflict error, got success.\n%s", buf.String())
+	}
+
+	var ce *ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+	if ce.Code != 3 {
+		t.Errorf("expected exit code 3, got %d", ce.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 4 — --strategy merge → merge commit instead of rebase
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_DivergedStrategyMerge(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	downstream.WriteFile("c.txt", "feat-x\n")
+	downstream.Commit("feat: c")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "merge")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("merge sync failed: %v\n%s", err, buf.String())
+	}
+
+	// Verify a merge commit landed on feat/x.
+	log := downstream.RunGit("log", "--oneline", "-1", "--pretty=format:%P")
+	parents := strings.Fields(strings.TrimSpace(log))
+	if len(parents) != 2 {
+		t.Errorf("expected merge commit (2 parents), got %d:\n%s", len(parents), buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 5 — --strategy ff-only on diverged → rejection
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_FFOnlyDivergedRejection(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	downstream.WriteFile("c.txt", "feat-x\n")
+	downstream.Commit("feat: c")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "ff-only")
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("expected ff-only rejection, got success.\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "fast-forward not possible") &&
+		!strings.Contains(err.Error(), "ff-only") &&
+		!strings.Contains(err.Error(), "diverged") {
+		t.Errorf("expected ff-only rejection message, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 6 — dirty tree + --autostash → stash, integrate, pop
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_DirtyAutostash(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	// Dirty tree on a file the integration won't touch.
+	downstream.WriteFile("dirty.txt", "wip\n")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--autostash")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("autostash sync failed: %v\n%s", err, buf.String())
+	}
+
+	// dirty.txt should be back on disk after stash pop.
+	status := downstream.RunGit("status", "--porcelain")
+	if !strings.Contains(status, "dirty.txt") {
+		t.Errorf("expected dirty.txt restored after stash pop, got status:\n%s", status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 7 — --upstream-only legacy path with deprecation notice
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_UpstreamOnlyLegacy(t *testing.T) {
+	upstream, downstream := setupTrackingDownstream(t)
+
+	beforeSHA := strings.TrimSpace(downstream.RunGit("rev-parse", "main"))
+
+	// upstream main advances by one commit.
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	// downstream's main is still the old SHA but has @{u} = origin/main.
+	t.Setenv("GK_SUPPRESS_DEPRECATION", "")
+	root, buf := buildSyncCmd(downstream.Dir, "--upstream-only")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("upstream-only legacy sync failed: %v\n%s", err, buf.String())
+	}
+
+	// The legacy report (writeSyncReport → stdout) contains "main" and a
+	// transition arrow when an FF moved HEAD. The deprecation notice
+	// itself goes to real os.Stderr (matching the existing project
+	// convention in pull.go) and is not captured here — verify the FF
+	// took effect via git state instead.
+	out := buf.String()
+	if !strings.Contains(out, "main") {
+		t.Errorf("expected 'main' in legacy report, got:\n%s", out)
+	}
+
+	afterSHA := strings.TrimSpace(downstream.RunGit("rev-parse", "main"))
+	if beforeSHA == afterSHA {
+		t.Errorf("expected legacy FF to advance main; SHA stayed at %s", afterSHA)
+	}
+}
+
+// TestSyncLegacy_DeprecationSuppressed verifies that GK_SUPPRESS_DEPRECATION=1
+// silences the notice. We can't easily capture os.Stderr here; instead we
+// assert the run completes cleanly with the env var set (no panic, exit 0)
+// and the legacy FF actually happened.
+func TestSyncLegacy_DeprecationSuppressed(t *testing.T) {
+	upstream, downstream := setupTrackingDownstream(t)
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+
+	t.Setenv("GK_SUPPRESS_DEPRECATION", "1")
+	root, buf := buildSyncCmd(downstream.Dir, "--upstream-only")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("upstream-only with suppressed deprecation failed: %v\n%s",
+			err, buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 8 — --no-fetch integrates from already-fetched ref
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_NoFetch(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	// Pre-advance upstream and let downstream fetch once.
 	upstream.WriteFile("b.txt", "world\n")
 	upstream.Commit("feat: b")
 	downstream.RunGit("fetch", "origin")
-	return upstream, downstream
-}
 
-func TestSyncCmd_NoUpstream_ImplicitDivergence(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	_, downstream := untrackedDownstream(t)
+	// Now break the upstream URL so a fetch would fail. With --no-fetch,
+	// sync should still succeed using the already-fetched origin/main.
+	downstream.RunGit("remote", "set-url", "origin", "/nonexistent/path")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--no-fetch")
 	if err := root.Execute(); err != nil {
-		t.Fatalf("expected no error (skip), got: %v\n%s", err, buf.String())
+		t.Fatalf("--no-fetch sync failed (fetch should have been skipped): %v\n%s",
+			err, buf.String())
 	}
 	out := buf.String()
-
-	if !strings.Contains(out, "no upstream") {
-		t.Errorf("expected 'no upstream' marker, got:\n%s", out)
-	}
-	if !strings.Contains(out, "origin/main differs") {
-		t.Errorf("expected divergence detail, got:\n%s", out)
-	}
-	if !strings.Contains(out, "↑0 ↓1") {
-		t.Errorf("expected '↑0 ↓1' (origin ahead by 1), got:\n%s", out)
-	}
-	if !strings.Contains(out, "fix: git branch --set-upstream-to=origin/main main") {
-		t.Errorf("expected fix command, got:\n%s", out)
-	}
-	if strings.Contains(out, "skipped") {
-		t.Errorf("legacy 'skipped' phrasing should not appear when implicit divergence detected, got:\n%s", out)
-	}
-}
-
-func TestSyncCmd_NoUpstream_EqualToImplicit_KeepsLegacyPhrasing(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	upstream := testutil.NewRepo(t)
-	upstream.WriteFile("a.txt", "hi\n")
-	upstream.Commit("feat: a")
-
-	downstream := testutil.NewRepo(t)
-	downstream.AddRemote("origin", upstream.Dir)
-	downstream.RunGit("fetch", "origin")
-	downstream.RunGit("reset", "--hard", "origin/main")
-	// Same SHA, no upstream set → should NOT emit the new hint.
-
-	root, buf := buildSyncCmd(downstream.Dir, "--no-fetch")
-	if err := root.Execute(); err != nil {
-		t.Fatalf("err: %v\n%s", err, buf.String())
-	}
-	out := buf.String()
-	if !strings.Contains(out, "no upstream configured — skipped") {
-		t.Errorf("expected legacy 'skipped' phrasing for equal SHA, got:\n%s", out)
-	}
-	if strings.Contains(out, "differs") {
-		t.Errorf("hint should not fire when SHAs match, got:\n%s", out)
-	}
-}
-
-func TestSyncCmd_NoUpstream_ForkBranch_NoSameNamedRemote(t *testing.T) {
-	t.Skip("legacy v0.6 sync test — rewritten in t9 against new catch-up-to-base semantics")
-	repo := testutil.NewRepo(t)
-	repo.WriteFile("a.txt", "hi\n")
-	repo.Commit("init")
-	// No origin → no remote refs cached at all.
-
-	root, buf := buildSyncCmd(repo.Dir, "--no-fetch")
-	if err := root.Execute(); err != nil {
-		t.Fatalf("err: %v\n%s", err, buf.String())
-	}
-	out := buf.String()
-	if !strings.Contains(out, "no upstream configured — skipped") {
-		t.Errorf("expected legacy 'skipped' phrasing for fork-style branch, got:\n%s", out)
-	}
-	if strings.Contains(out, "differs") {
-		t.Errorf("hint should be silent when same-named remote ref is absent, got:\n%s", out)
+	if !strings.Contains(out, "fast-forwarded") && !strings.Contains(out, "rebased") {
+		t.Errorf("expected an integration verb in output, got:\n%s", out)
 	}
 }

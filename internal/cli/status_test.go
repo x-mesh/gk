@@ -595,7 +595,7 @@ func TestRenderSubmoduleSection(t *testing.T) {
 	t.Cleanup(func() { color.NoColor = false })
 
 	buf := &bytes.Buffer{}
-	renderSubmoduleSection(buf, context.Background(), nil, []git.StatusEntry{
+	renderSubmoduleSection(context.Background(), buf, nil, []git.StatusEntry{
 		{Path: "ghostty", Sub: "S..U", Kind: git.KindSubmodule},
 	}, false, 0)
 	out := buf.String()
@@ -611,7 +611,7 @@ func TestRenderSubmoduleSectionVerboseAction(t *testing.T) {
 	t.Cleanup(func() { color.NoColor = false })
 
 	buf := &bytes.Buffer{}
-	renderSubmoduleSection(buf, context.Background(), nil, []git.StatusEntry{
+	renderSubmoduleSection(context.Background(), buf, nil, []git.StatusEntry{
 		{Path: "ghostty", Sub: "S..U", Kind: git.KindSubmodule},
 	}, true, 1)
 	if out := buf.String(); !strings.Contains(out, "cd ghostty && gk status") {

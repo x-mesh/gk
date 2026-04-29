@@ -1560,7 +1560,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	if next := nextStatusAction(allGrouped, st, statusVerbose); next != "" {
 		fmt.Fprintln(w, renderNextStatusAction(next))
 	}
-	showSubmoduleActions := statusVerbose > 0 && !(onlySubmodulesDirty && len(allGrouped.Submodules) == 1)
+	showSubmoduleActions := statusVerbose > 0 && (!onlySubmodulesDirty || len(allGrouped.Submodules) != 1)
 	renderSubmoduleSection(cmd.Context(), w, runner, allGrouped.Submodules, showSubmoduleActions, statusVerbose)
 	if statusVisEnabled("types") && len(listEntries) > 0 {
 		if line := renderTypesChip(listEntries); line != "" {
@@ -1901,15 +1901,19 @@ func statusShellQuote(s string) string {
 	if s == "" {
 		return "''"
 	}
-	if strings.IndexFunc(s, func(r rune) bool {
-		return !(r == '/' || r == '_' || r == '-' || r == '.' ||
-			(r >= '0' && r <= '9') ||
-			(r >= 'A' && r <= 'Z') ||
-			(r >= 'a' && r <= 'z'))
-	}) < 0 {
+	if strings.IndexFunc(s, func(r rune) bool { return !isShellSafeRune(r) }) < 0 {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// isShellSafeRune reports whether r is safe to embed unquoted in a POSIX
+// shell argument: alphanumerics, '/', '_', '-', '.'.
+func isShellSafeRune(r rune) bool {
+	return r == '/' || r == '_' || r == '-' || r == '.' ||
+		(r >= '0' && r <= '9') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= 'a' && r <= 'z')
 }
 
 func renderSubmoduleState() string {

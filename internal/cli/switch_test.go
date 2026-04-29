@@ -693,6 +693,7 @@ func TestBuildSwitchItems_DivergenceInBranchCell(t *testing.T) {
 		switch it.Key {
 		case "local:main":
 			if !strings.Contains(c1, "(local)") && !strings.Contains(c1, "↑ ") {
+				// main has no upstream in this fixture → "(local)"
 				if !strings.Contains(c1, "(local)") {
 					t.Errorf("main UPSTREAM cell: got %q, want (local)", c1)
 				}

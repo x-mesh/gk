@@ -42,6 +42,7 @@ func TestParsePorcelainV1(t *testing.T) {
 		{"multi-line mix", " M a.txt\nM  b.txt\n?? c.txt\n", DirtyFlags{Modified: true, Staged: true}},
 		{"NUL separated modified", " M file.txt\x00", DirtyFlags{Modified: true}},
 		{"NUL rename skip target", "R  new\x00old\x00", DirtyFlags{Staged: true}},
+		{"NUL copy skip target", "C  new\x00old\x00", DirtyFlags{Staged: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

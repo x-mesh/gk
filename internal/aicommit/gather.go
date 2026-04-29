@@ -185,11 +185,11 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 		}
 		switch line[0] {
 		case '1':
-			e, keep, err := parseV2Ordinary(line)
+			e, ok, err := parseV2Ordinary(line)
 			if err != nil {
 				return nil, err
 			}
-			if keep {
+			if ok {
 				out = append(out, e)
 			}
 		case '2':
@@ -200,11 +200,13 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 			}
 			orig := string(data[i : i+end2])
 			i += end2 + 1
-			e, err := parseV2Rename(line, orig)
+			e, ok, err := parseV2Rename(line, orig)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, e)
+			if ok {
+				out = append(out, e)
+			}
 		case 'u':
 			e, err := parseV2Unmerged(line)
 			if err != nil {
@@ -230,30 +232,44 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 }
 
 // parseV2Ordinary parses a "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>" line.
+// Returns ok=false for submodule entries (sub starts with 'S') so the
+// caller can drop them from auto-staging — submodule pointer commits
+// must be deliberate, not silently rolled into an AI-classified group.
 func parseV2Ordinary(line string) (FileChange, bool, error) {
 	parts := strings.SplitN(line, " ", 9)
 	if len(parts) < 9 {
 		return FileChange{}, false, fmt.Errorf("aicommit: porcelain v2: short ordinary record %q", line)
 	}
-	xy := parts[1]
-	sub := parts[2]
-	if git.IsSubmoduleWorktreeDirtinessOnly(xy, sub) {
+	if isSubmoduleSubField(parts[2]) {
 		return FileChange{}, false, nil
 	}
+	xy := parts[1]
 	path := parts[8]
 	return classifyXY(path, xy, "", false), true, nil
 }
 
+// isSubmoduleSubField reports whether the porcelain v2 `sub` field
+// describes a submodule entry (`S<c><m><u>`) rather than an ordinary
+// path (`N...`).
+func isSubmoduleSubField(sub string) bool {
+	return len(sub) > 0 && sub[0] == 'S'
+}
+
 // parseV2Rename parses a "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>" line.
-func parseV2Rename(line, orig string) (FileChange, error) {
+// Submodule renames (rare) are skipped for the same reason as ordinary
+// submodule entries — pointer commits must be explicit.
+func parseV2Rename(line, orig string) (FileChange, bool, error) {
 	parts := strings.SplitN(line, " ", 10)
 	if len(parts) < 10 {
-		return FileChange{}, fmt.Errorf("aicommit: porcelain v2: short rename record %q", line)
+		return FileChange{}, false, fmt.Errorf("aicommit: porcelain v2: short rename record %q", line)
+	}
+	if isSubmoduleSubField(parts[2]) {
+		return FileChange{}, false, nil
 	}
 	xy := parts[1]
 	path := parts[9]
 	fc := classifyXY(path, xy, orig, true)
-	return fc, nil
+	return fc, true, nil
 }
 
 // parseV2Unmerged parses a "u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>" line.

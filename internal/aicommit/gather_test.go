@@ -21,6 +21,65 @@ func buildV2(records ...string) string {
 	return b.String()
 }
 
+func TestGatherWIP_DropsSubmoduleEntries(t *testing.T) {
+	// porcelain v2 marks submodules with sub starting `S<c><m><u>`.
+	// gk commit must NOT auto-stage submodule pointer changes —
+	// those are deliberate commits, not AI-classified groupings.
+	stdout := buildV2(
+		"1 .M S.M. 160000 160000 160000 aaa bbb vendor/sub-mod",
+		"1 .M N... 100644 100644 100644 aaa bbb cmd/gk/main.go",
+		"2 R. S..U 160000 160000 160000 aaa bbb R100 third_party/renamed-sub",
+		"third_party/old-sub",
+		"2 R. N... 100644 100644 100644 aaa bbb R95 internal/foo.go",
+		"internal/bar.go",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Path, "sub") {
+			t.Errorf("submodule entry leaked into gather: %+v", e)
+		}
+	}
+	want := map[string]bool{"cmd/gk/main.go": true, "internal/foo.go": true}
+	got := map[string]bool{}
+	for _, e := range entries {
+		got[e.Path] = true
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("expected %q in entries, got %+v", p, entries)
+		}
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected exactly 2 non-submodule entries, got %d: %+v",
+			len(entries), entries)
+	}
+}
+
+func TestIsSubmoduleSubField(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"":     false,
+		"N...": false,
+		"S...": true,
+		"S.M.": true,
+		"SCMU": true,
+		"NUUU": false,
+	}
+	for in, want := range cases {
+		if got := isSubmoduleSubField(in); got != want {
+			t.Errorf("isSubmoduleSubField(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestGatherWIPOrdinary(t *testing.T) {
 	stdout := buildV2(
 		"1 M. N... 100644 100644 100644 aaa bbb internal/cli/root.go",

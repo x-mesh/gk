@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,9 +78,14 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--create requires a branch name")
 	}
 
-	pick, err := pickBranchForSwitch(ctx, runner, client)
+	cfg, _ := config.Load(cmd.Flags())
+	pick, err := pickBranchForSwitch(ctx, runner, client, cfg, w, cmd)
 	if err != nil {
 		return err
+	}
+	if pick.Done {
+		// Picker already performed the switch (e.g. `n` create-and-switch).
+		return nil
 	}
 	// Remote-only picks need `git switch --track <remote>/<branch>` so DWIM
 	// creates a local tracking branch. Local picks go straight through.
@@ -126,11 +132,14 @@ func localBranchExists(ctx context.Context, r git.Runner, name string) bool {
 
 // switchPick is the result of the interactive picker. Remote=true means
 // the chosen branch exists only on a remote and should be created via
-// `git switch --track` using TrackRef ("<remote>/<branch>").
+// `git switch --track` using TrackRef ("<remote>/<branch>"). Done=true
+// means the picker already executed the switch (or terminated cleanly
+// after an action like `n`); the caller should NOT run doSwitch again.
 type switchPick struct {
 	Name     string // local branch name, or short name for remote-only pick
 	TrackRef string // "origin/foo" for remote-only picks; empty for local
 	Remote   bool
+	Done     bool
 }
 
 // remoteBranchInfo captures the bits of a refs/remotes/* entry needed for
@@ -141,6 +150,7 @@ type remoteBranchInfo struct {
 	TrackRef   string
 	Remote     string
 	LastCommit time.Time
+	Hash       string // 7-char short commit hash
 }
 
 // listRemoteOnlyBranches enumerates refs/remotes/* branches that do NOT
@@ -151,7 +161,7 @@ type remoteBranchInfo struct {
 func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInfo) ([]remoteBranchInfo, error) {
 	stdout, stderr, err := r.Run(ctx,
 		"for-each-ref",
-		"--format=%(refname:short)%00%(committerdate:unix)%00%(symref)",
+		"--format=%(refname:short)%00%(committerdate:unix)%00%(symref)%00%(objectname:short)",
 		"refs/remotes",
 	)
 	if err != nil {
@@ -194,99 +204,411 @@ func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInf
 			continue
 		}
 		ts, _ := strconv.ParseInt(parts[1], 10, 64)
+		hash := ""
+		if len(parts) >= 4 {
+			hash = parts[3]
+		}
 		out = append(out, remoteBranchInfo{
 			Name:       shortName,
 			TrackRef:   trackRef,
 			Remote:     remoteName,
 			LastCommit: time.Unix(ts, 0),
+			Hash:       hash,
 		})
 	}
 	return out, nil
 }
 
-func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client) (switchPick, error) {
-	branches, err := listLocalBranches(ctx, runner)
+// Key format distinguishes row types without requiring the picker UI
+// to carry auxiliary metadata:
+//
+//	local  → "local:<name>"
+//	remote → "remote:<trackRef>"   (e.g. remote:origin/feature/foo)
+const (
+	keyLocalPrefix  = "local:"
+	keyRemotePrefix = "remote:"
+)
+
+// switchWorktreeMap captures the worktree topology relevant to the
+// switch picker. Worktrees are first-class navigation targets — every
+// non-current worktree surfaces as its own row.
+type switchWorktreeMap struct {
+	// byBranch maps branch name → the OTHER worktree holding it. Used
+	// for smart handoff when a user picks a branch that's checked out
+	// elsewhere (git would refuse the switch).
+	byBranch map[string]WorktreeEntry
+	// others is every worktree EXCEPT the one we're running in. Each
+	// surfaces as a "worktree:<path>" row in the picker.
+	others []WorktreeEntry
+	// current is the entry matching cwd, if any. Empty when cwd is
+	// outside any worktree the git CLI knows about.
+	current WorktreeEntry
+	// linked is true when the current entry is NOT the main worktree
+	// (the first entry in `git worktree list --porcelain`).
+	linked bool
+}
+
+func loadSwitchWorktrees(ctx context.Context, runner git.Runner) switchWorktreeMap {
+	m := switchWorktreeMap{byBranch: map[string]WorktreeEntry{}}
+	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
-		return switchPick{}, err
+		return m
 	}
-	remotes, err := listRemoteOnlyBranches(ctx, runner, branches)
-	if err != nil {
-		// Non-fatal: fall through with local-only list so an fetch/remote
-		// enumeration failure doesn't block the picker entirely.
-		remotes = nil
+	entries := parseWorktreePorcelain(string(out))
+	if len(entries) == 0 {
+		return m
 	}
-	cur, _ := client.CurrentBranch(ctx)
+	// Ask git which worktree the current operation targets. This honors
+	// --repo and any GIT_DIR override more reliably than os.Getwd().
+	top, _, terr := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	cur := ""
+	if terr == nil {
+		cur = canonPath(strings.TrimSpace(string(top)))
+	}
 
-	// Recent first — most useful when a user has many branches.
-	sort.Slice(branches, func(i, j int) bool {
-		return branches[i].LastCommit.After(branches[j].LastCommit)
-	})
-	sort.Slice(remotes, func(i, j int) bool {
-		return remotes[i].LastCommit.After(remotes[j].LastCommit)
-	})
-
-	// Key format distinguishes origin without requiring the picker UI
-	// to carry auxiliary metadata:
-	//   local  → "local:<name>"
-	//   remote → "remote:<trackRef>"  (e.g. remote:origin/feature/foo)
-	const (
-		keyLocalPrefix  = "local:"
-		keyRemotePrefix = "remote:"
-	)
-
-	faint := color.New(color.Faint).SprintFunc()
-	items := make([]ui.PickerItem, 0, len(branches)+len(remotes))
-
-	for _, b := range branches {
-		if b.Name == cur {
+	for i, e := range entries {
+		ep := canonPath(e.Path)
+		if cur != "" && ep == cur {
+			m.current = e
+			m.linked = i > 0
 			continue
 		}
-		ups := b.Upstream
-		trailPlain := "-"
-		if ups != "" {
-			trailPlain = "→ " + ups
+		if e.Bare {
+			continue
 		}
-		trailColored := trailPlain
-		if b.Gone {
-			trailPlain = "(gone)"
-			trailColored = faint("(gone)")
+		m.others = append(m.others, e)
+		if e.Branch != "" && !e.Detached {
+			m.byBranch[e.Branch] = e
+		}
+	}
+	return m
+}
+
+// buildSwitchSubtitle composes the picker's ambient context line:
+//
+//   - "on: <current>" — always, so the user knows where they are.
+//   - "worktree: <path>" — when running inside a linked worktree.
+//   - "hidden: 2 remote (r)" — when the remote toggle would reveal
+//     more rows; surfaces the hotkey.
+func buildSwitchSubtitle(cur string, wt switchWorktreeMap, allRemotes []remoteBranchInfo, showRemotes bool) string {
+	parts := make([]string, 0, 3)
+	if cur != "" {
+		parts = append(parts, "on: "+cur)
+	}
+	if wt.linked && wt.current.Path != "" {
+		parts = append(parts, "worktree: "+wt.current.Path)
+	}
+	if !showRemotes && len(allRemotes) > 0 {
+		parts = append(parts, fmt.Sprintf("hidden: %d remote (r)", len(allRemotes)))
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func canonPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(r)
+	}
+	return filepath.Clean(p)
+}
+
+// pickBranchForSwitch runs the interactive switch picker as an outer
+// action loop. The picker shows local branches (current branch
+// included with a star marker for context) and remote-only branches
+// (toggled by `r`). Selecting a branch checked out in another
+// worktree triggers a smart handoff to that worktree's subshell —
+// since git would refuse the switch otherwise. Hotkeys (n/d/D) exit
+// the picker so we can drive sub-prompts (text input, confirm),
+// then re-enter on the next iteration.
+func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command) (switchPick, error) {
+	showRemotes := false
+	for {
+		local, err := listLocalBranches(ctx, runner)
+		if err != nil {
+			return switchPick{}, err
+		}
+		// Always enumerate remotes — we need the count to surface a
+		// "N remote hidden (r)" hint even when not displaying them.
+		allRemotes, rerr := listRemoteOnlyBranches(ctx, runner, local)
+		if rerr != nil {
+			allRemotes = nil
+		}
+		var remotes []remoteBranchInfo
+		if showRemotes {
+			remotes = allRemotes
+		}
+
+		cur, _ := client.CurrentBranch(ctx)
+		remote := "origin"
+		if cfg != nil && cfg.Remote != "" {
+			remote = cfg.Remote
+		}
+		defaultBr, _ := resolveMainBranch(ctx, runner, client, remote)
+		merged, _ := mergedBranches(ctx, runner, defaultBr)
+		wt := loadSwitchWorktrees(ctx, runner)
+
+		// Per-branch divergence vs default. One rev-list call per ref;
+		// typically <50ms total. Skipped silently when there's no
+		// resolvable default branch (bare repos, fresh clones).
+		diff := computeSwitchDivergence(ctx, runner, defaultBr, local, allRemotes)
+
+		sort.Slice(local, func(i, j int) bool {
+			return local[i].LastCommit.After(local[j].LastCommit)
+		})
+		sort.Slice(remotes, func(i, j int) bool {
+			return remotes[i].LastCommit.After(remotes[j].LastCommit)
+		})
+
+		items := buildSwitchItems(local, remotes, cur, wt, defaultBr, diff)
+		if len(items) == 0 {
+			placeholder := "(no branches — press n to create)"
+			items = append(items, ui.PickerItem{
+				Key:     "local:__placeholder__",
+				Cells:   []string{placeholder, "", "", ""},
+				Display: placeholder,
+			})
+		}
+
+		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, defaultBr, diff)
+		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes)
+		picker := &ui.TablePicker{
+			Headers:  []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
+			Extras:   extras,
+			Subtitle: subtitle,
+		}
+		choice, err := picker.Pick(ctx, "switch", items)
+		if err != nil {
+			if errors.Is(err, ui.ErrPickerAborted) {
+				return switchPick{}, WithHint(errors.New("aborted"), "pass a branch name directly: gk switch <name>")
+			}
+			return switchPick{}, err
+		}
+
+		switch choice.ExtraAction {
+		case "":
+			pick, err := decodeSwitchChoice(choice)
+			if err != nil {
+				return switchPick{}, err
+			}
+			// Selecting the current branch is a no-op — the user is
+			// already there. Bail out cleanly so they're not confused
+			// by a "fatal: invalid reference" error from git.
+			if !pick.Remote && pick.Name == cur {
+				fmt.Fprintf(w, "already on %s\n", cur)
+				return switchPick{Done: true}, nil
+			}
+			// Branch is checked out elsewhere → smart handoff.
+			if entry, locked := wt.byBranch[pick.Name]; locked && !pick.Remote {
+				done, err := handleWorktreeRedirect(ctx, cmd, entry)
+				if err != nil {
+					return switchPick{}, err
+				}
+				if done {
+					return switchPick{Done: true}, nil
+				}
+				continue
+			}
+			return pick, nil
+		case "n":
+			pick, handled, err := promptCreateBranch(ctx, runner, w)
+			if err != nil {
+				return switchPick{}, err
+			}
+			if handled {
+				return pick, nil
+			}
+			continue
+		case "d", "D":
+			force := choice.ExtraAction == "D"
+			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, merged, force); err != nil {
+				if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, errSwitchActionRetry) {
+					continue
+				}
+				return switchPick{}, err
+			}
+		}
+	}
+}
+
+// handleWorktreeRedirect prompts the user to enter the worktree where
+// `entry.Branch` is checked out. Returns (true, nil) when the subshell
+// completed (caller should treat the switch as done), (false, nil) when
+// the user declined or non-TTY (re-enter picker).
+func handleWorktreeRedirect(ctx context.Context, cmd *cobra.Command, entry WorktreeEntry) (bool, error) {
+	title := fmt.Sprintf("Branch %q lives in another worktree", entry.Branch)
+	desc := fmt.Sprintf("enter %s? (a subshell opens; type `exit` to return)", entry.Path)
+	ok, err := ui.ConfirmTUI(ctx, title, desc, true)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, ui.ErrNonInteractive) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := enterWorktreeSubshell(cmd, entry.Path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// switchDivergence keys "local:<name>" or "remote:<trackRef>" to
+// (ahead, behind) vs the default branch. Empty means "no diff data
+// for this ref" — rendered as a bare source descriptor.
+type switchDivergence map[string][2]int
+
+// computeSwitchDivergence runs `rev-list --left-right --count` per
+// ref against defaultBr. Returns an empty map when defaultBr is
+// missing (bare repos, no main/master) so callers can format
+// gracefully without divergence info.
+func computeSwitchDivergence(ctx context.Context, runner git.Runner, defaultBr string, local []branchInfo, remotes []remoteBranchInfo) switchDivergence {
+	out := switchDivergence{}
+	if defaultBr == "" {
+		return out
+	}
+	for _, b := range local {
+		if b.Name == defaultBr {
+			continue
+		}
+		if a, bh, ok := branchDivergence(ctx, runner, defaultBr, b.Name); ok {
+			out[keyLocalPrefix+b.Name] = [2]int{a, bh}
+		}
+	}
+	for _, r := range remotes {
+		if a, bh, ok := branchDivergence(ctx, runner, defaultBr, r.TrackRef); ok {
+			out[keyRemotePrefix+r.TrackRef] = [2]int{a, bh}
+		}
+	}
+	return out
+}
+
+// formatSwitchDiff renders divergence "↑3 ↓5" / "↑3" / "↓5" / "" .
+func formatSwitchDiff(d [2]int) string {
+	ahead, behind := d[0], d[1]
+	switch {
+	case ahead == 0 && behind == 0:
+		return ""
+	case ahead == 0:
+		return fmt.Sprintf("↓%d", behind)
+	case behind == 0:
+		return fmt.Sprintf("↑%d", ahead)
+	default:
+		return fmt.Sprintf("↑%d ↓%d", ahead, behind)
+	}
+}
+
+// buildSwitchItems renders the picker as a branch list with four
+// columns: BRANCH, UPSTREAM, HASH, AGE. The current branch is
+// included with a "★" marker so users can see "where am I" at a
+// glance — selecting it is a no-op handled by the caller. Local
+// branches checked out in another worktree show "wt: <basename>" in
+// the upstream column; selecting them triggers the smart-handoff
+// prompt to enter the holding worktree. The UPSTREAM cell embeds
+// divergence vs the default branch (e.g. "↑3 ↓1  origin/feat/x").
+func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence) []ui.PickerItem {
+	faint := color.New(color.Faint).SprintFunc()
+	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
+
+	for _, b := range local {
+		entry, locked := wt.byBranch[b.Name]
+		isCurrent := b.Name == cur
+		isDefault := b.Name == defaultBr
+		var source string
+		switch {
+		case isDefault:
+			source = "(default)"
+		case locked:
+			source = "wt: " + filepath.Base(entry.Path)
+		case b.Gone:
+			source = "(gone)"
+		case b.Upstream != "":
+			source = "↑ " + b.Upstream
+		default:
+			source = "(local)"
+		}
+		upstream := composeUpstreamCell(diff[keyLocalPrefix+b.Name], source, isDefault)
+		marker := "●"
+		coloredMarker := color.GreenString("●")
+		if isCurrent {
+			marker = "★"
+			coloredMarker = color.YellowString("★")
 		}
 		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
-			Key: keyLocalPrefix + b.Name,
-			// Cells stay plain so bubbles/table's runewidth-based
-			// truncation measures visible width correctly.
-			Cells: []string{"● " + b.Name, trailPlain, age},
-			Display: fmt.Sprintf("%s  %-36s  %-32s  %s",
-				color.GreenString("●"), b.Name, trailColored, age,
+			Key:   keyLocalPrefix + b.Name,
+			Cells: []string{marker + " " + b.Name, upstream, b.Hash, age},
+			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
+				coloredMarker, b.Name, upstream, b.Hash, age,
 			),
 		})
+		_ = faint
 	}
+
 	for _, r := range remotes {
 		age := shortAge(r.LastCommit)
-		trailPlain := "(from " + r.Remote + ")"
-		trailColored := faint(trailPlain)
+		source := "remote: " + r.Remote
+		upstream := composeUpstreamCell(diff[keyRemotePrefix+r.TrackRef], source, false)
 		items = append(items, ui.PickerItem{
 			Key:   keyRemotePrefix + r.TrackRef,
-			Cells: []string{"○ " + r.Name, trailPlain, age},
-			Display: fmt.Sprintf("%s  %-36s  %-32s  %s",
-				color.CyanString("○"), r.Name, trailColored, age,
+			Cells: []string{"○ " + r.Name, upstream, r.Hash, age},
+			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
+				color.CyanString("○"), r.Name, upstream, r.Hash, age,
 			),
 		})
 	}
+	return items
+}
 
-	if len(items) == 0 {
-		return switchPick{}, errors.New("no other branches to switch to")
+// composeUpstreamCell merges divergence + source into a single cell:
+//
+//	"(default)"            — the default branch itself, never has diff
+//	"<source>"             — synced or no diff data
+//	"↑3 ↓1  <source>"      — diverged
+func composeUpstreamCell(d [2]int, source string, isDefault bool) string {
+	if isDefault {
+		return source
 	}
+	diff := formatSwitchDiff(d)
+	if diff == "" {
+		return source
+	}
+	return diff + "  " + source
+}
 
-	picker := &ui.TablePicker{Headers: []string{"BRANCH", "UPSTREAM", "AGE"}}
-	choice, err := picker.Pick(ctx, "switch", items)
-	if err != nil {
-		if errors.Is(err, ui.ErrPickerAborted) {
-			return switchPick{}, WithHint(errors.New("aborted"), "pass a branch name directly: gk switch <name>")
-		}
-		return switchPick{}, err
+// buildSwitchExtras wires the n/d/D/r hotkeys. Only `r` mutates
+// state in place (toggle remote visibility); the rest exit the
+// picker so the caller can drive prompts/confirms outside the
+// bubbletea program. allRemotes is the full enumerated set so the
+// closure can populate *remotes on toggle-on without re-listing.
+func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur, defaultBr string, diff switchDivergence) []ui.TablePickerExtraKey {
+	rebuild := func() ([]ui.PickerItem, []string, error) {
+		items := buildSwitchItems(*local, *remotes, cur, *wt, defaultBr, diff)
+		return items, []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}, nil
 	}
+	return []ui.TablePickerExtraKey{
+		{Key: "n", Help: "n new", Exit: true},
+		{Key: "d", Help: "d delete", Exit: true},
+		{Key: "D", Help: "D force", Exit: true},
+		{
+			Key:  "r",
+			Help: "r remotes",
+			OnPress: func() ([]ui.PickerItem, []string, error) {
+				*showRemotes = !*showRemotes
+				if *showRemotes {
+					*remotes = allRemotes
+				} else {
+					*remotes = nil
+				}
+				return rebuild()
+			},
+		},
+	}
+}
+
+func decodeSwitchChoice(choice ui.PickerItem) (switchPick, error) {
 	switch {
 	case strings.HasPrefix(choice.Key, keyRemotePrefix):
 		trackRef := strings.TrimPrefix(choice.Key, keyRemotePrefix)
@@ -296,12 +618,137 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		}
 		return switchPick{Name: short, TrackRef: trackRef, Remote: true}, nil
 	case strings.HasPrefix(choice.Key, keyLocalPrefix):
-		return switchPick{Name: strings.TrimPrefix(choice.Key, keyLocalPrefix)}, nil
+		name := strings.TrimPrefix(choice.Key, keyLocalPrefix)
+		if name == "__placeholder__" {
+			return switchPick{}, WithHint(errors.New("no branch selected"),
+				"press n to create a new branch")
+		}
+		return switchPick{Name: name}, nil
 	default:
-		// Defensive: accept bare keys for backward-compat with older
-		// picker contracts.
 		return switchPick{Name: choice.Key}, nil
 	}
+}
+
+// errSwitchActionRetry is returned by action handlers when the user
+// cancelled inside a sub-prompt and the picker should re-enter rather
+// than abort the whole flow.
+var errSwitchActionRetry = errors.New("switch action: retry")
+
+// promptCreateBranch runs the `n` action: prompt for a name, then run
+// `git switch -c <name>`. Returns (pick, true, nil) on success so the
+// outer loop terminates; (zero, false, nil) when the user aborted the
+// name prompt (loop should re-enter the picker).
+func promptCreateBranch(ctx context.Context, r git.Runner, w io.Writer) (switchPick, bool, error) {
+	name, err := ui.PromptTextTUI(ctx, "new branch name", "feature/...", "")
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, ui.ErrNonInteractive) {
+			return switchPick{}, false, nil
+		}
+		return switchPick{}, false, err
+	}
+	if name == "" {
+		return switchPick{}, false, nil
+	}
+	if err := doSwitch(ctx, r, w, name, true, false, false); err != nil {
+		return switchPick{}, false, err
+	}
+	return switchPick{Name: name, Done: true}, true, nil
+}
+
+// targetBranchInfo decodes the cursor row into a deletion target.
+type targetBranchInfo struct {
+	Name        string // local branch name; empty if remote-only
+	IsRemote    bool   // true if cursor was on a refs/remotes/* row
+	Placeholder bool   // true if cursor was on the empty-list placeholder
+}
+
+func decodeBranchTarget(choice ui.PickerItem) targetBranchInfo {
+	switch {
+	case strings.HasPrefix(choice.Key, keyRemotePrefix):
+		trackRef := strings.TrimPrefix(choice.Key, keyRemotePrefix)
+		short := trackRef
+		if i := strings.IndexByte(trackRef, '/'); i >= 0 {
+			short = trackRef[i+1:]
+		}
+		return targetBranchInfo{Name: short, IsRemote: true}
+	case strings.HasPrefix(choice.Key, keyLocalPrefix):
+		name := strings.TrimPrefix(choice.Key, keyLocalPrefix)
+		if name == "__placeholder__" {
+			return targetBranchInfo{Placeholder: true}
+		}
+		return targetBranchInfo{Name: name}
+	default:
+		return targetBranchInfo{Name: choice.Key}
+	}
+}
+
+// guardDelete returns nil if (target, force) is safe to delete,
+// otherwise an error explaining why. Pure function — no I/O.
+func guardDelete(target targetBranchInfo, current, defaultBr string, merged map[string]bool, force bool) error {
+	if target.Placeholder {
+		return errors.New("nothing to delete — list is empty")
+	}
+	if target.IsRemote {
+		return WithHint(errors.New("cannot delete remote branches from picker"),
+			"use `gk branch clean --remote` or `git push <remote> --delete <name>`")
+	}
+	if target.Name == "" {
+		return errors.New("no branch under cursor")
+	}
+	if target.Name == current {
+		return errors.New("cannot delete the current branch")
+	}
+	if defaultBr != "" && target.Name == defaultBr {
+		return errors.New("refusing to delete default branch")
+	}
+	if !force && !merged[target.Name] {
+		return WithHint(fmt.Errorf("branch %q has unmerged commits", target.Name),
+			"press D to force delete (unmerged work will be lost)")
+	}
+	return nil
+}
+
+// handleDeleteAction runs the d/D action end-to-end: guard → confirm →
+// `git branch -d|-D`. Returns nil on success (caller re-lists),
+// errSwitchActionRetry when the user cancelled the confirm or the
+// guard rejected, and a real error only on git failure.
+func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, merged map[string]bool, force bool) error {
+	target := decodeBranchTarget(choice)
+	if err := guardDelete(target, current, defaultBr, merged, force); err != nil {
+		fmt.Fprintln(w, "✗ "+err.Error())
+		if h := HintFrom(err); h != "" {
+			fmt.Fprintln(w, "  hint: "+h)
+		}
+		return errSwitchActionRetry
+	}
+
+	title := fmt.Sprintf("Delete branch %q?", target.Name)
+	desc := "merged into " + defaultBr
+	if force {
+		title = fmt.Sprintf("FORCE delete %q?", target.Name)
+		desc = "unmerged work will be lost — this cannot be undone"
+	}
+	ok, err := ui.ConfirmTUI(ctx, title, desc, false)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return errSwitchActionRetry
+		}
+		return err
+	}
+	if !ok {
+		return errSwitchActionRetry
+	}
+
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	if _, stderr, err := r.Run(ctx, "branch", flag, target.Name); err != nil {
+		fmt.Fprintln(w, "✗ delete failed: "+strings.TrimSpace(string(stderr)))
+		return errSwitchActionRetry
+	}
+	fmt.Fprintf(w, "deleted %s\n", target.Name)
+	return nil
 }
 
 func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, create, force, detach bool) error {

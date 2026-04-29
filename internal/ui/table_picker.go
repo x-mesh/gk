@@ -18,10 +18,17 @@ import (
 // it for actions that change *what's listed* (e.g. "g toggle global").
 // The user must press the key while the filter prompt is *not*
 // focused; filter typing always wins.
+//
+// When Exit is true, OnPress is ignored: pressing the key quits the
+// picker and surfaces the cursor row's PickerItem with ExtraAction set
+// to Key. Use this for actions whose handlers need to leave the picker
+// (open a confirm dialog, prompt for input) — the caller dispatches on
+// ExtraAction and re-enters the picker on the next loop iteration.
 type TablePickerExtraKey struct {
 	Key     string
 	Help    string
 	OnPress func() (items []PickerItem, headers []string, err error)
+	Exit    bool
 }
 
 // TablePicker is a bubbletea-based replacement for FzfPicker. Items
@@ -29,10 +36,15 @@ type TablePickerExtraKey struct {
 // row falls back to PickerItem.Display in a single column. Headers
 // is optional — when shorter than the column count it is right-padded
 // with empties.
+//
+// Subtitle, when non-empty, is rendered as a faint single line above
+// the filter prompt — used for ambient context like "in worktree: X"
+// that callers want visible while the picker is open.
 type TablePicker struct {
-	Headers []string
-	Height  int // 0 → auto (min(items+headers+1, 12))
-	Extras  []TablePickerExtraKey
+	Headers  []string
+	Height   int // 0 → auto (min(items+headers+1, 12))
+	Extras   []TablePickerExtraKey
+	Subtitle string
 }
 
 type tablePickerModel struct {
@@ -48,6 +60,7 @@ type tablePickerModel struct {
 	extras       []TablePickerExtraKey
 	headers      []string
 	errMsg       string
+	subtitle     string
 }
 
 func (m tablePickerModel) Init() tea.Cmd { return textinput.Blink }
@@ -112,6 +125,20 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if s != ex.Key {
 					continue
 				}
+				if ex.Exit {
+					// Capture cursor row (if any) and quit. ExtraAction tells
+					// the caller which key fired; chosenItem is the row the
+					// user was on, so handlers can act on it (delete THIS).
+					if len(m.items) > 0 {
+						m.chosen = m.t.Cursor()
+						m.chosenItem = m.items[m.chosen]
+					}
+					m.chosenItem.ExtraAction = ex.Key
+					return m, tea.Quit
+				}
+				if ex.OnPress == nil {
+					continue
+				}
 				items, headers, err := ex.OnPress()
 				if err != nil {
 					m.errMsg = err.Error()
@@ -121,7 +148,14 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.all = items
 				if headers != nil {
 					m.headers = headers
-					m.t.SetColumns(buildColumnsFromHeaders(items, headers))
+					cols := buildColumnsFromHeaders(items, headers)
+					// Keep total width pinned to the terminal so the
+					// table doesn't snap narrow when toggle callbacks
+					// rebuild from the (smaller) data set.
+					if m.width > 0 {
+						cols = distributeColumnWidths(cols, m.width)
+					}
+					m.t.SetColumns(cols)
 				}
 				m.applyFilter()
 				return m, nil
@@ -210,6 +244,7 @@ func itemMatchesFilter(it PickerItem, q string) bool {
 
 func (m tablePickerModel) View() string {
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
 	var filterLine string
 	if m.filterActive {
 		filterLine = "filter: " + m.filterInput.View()
@@ -223,7 +258,11 @@ func (m tablePickerModel) View() string {
 		helpLine = ex.Help + " · " + helpLine
 	}
 	help := hintStyle.Render(helpLine)
-	out := filterLine + "\n" + m.t.View() + "\n" + help
+	out := ""
+	if m.subtitle != "" {
+		out += subtitleStyle.Render("▸ "+m.subtitle) + "\n"
+	}
+	out += filterLine + "\n" + m.t.View() + "\n" + help
 	if m.errMsg != "" {
 		out += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
 			Render("✗ "+m.errMsg)
@@ -319,6 +358,7 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 			filterInput: filter,
 			extras:      p.Extras,
 			headers:     headers,
+			subtitle:    p.Subtitle,
 		},
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
@@ -335,7 +375,13 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		return PickerItem{}, fmt.Errorf("table picker: %w", err)
 	}
 	m := final.(tablePickerModel)
-	if m.aborted || m.chosen < 0 {
+	if m.aborted {
+		return PickerItem{}, ErrPickerAborted
+	}
+	// Exit-action hotkeys may fire with no row under cursor (chosen == -1
+	// is the initial state, retained when items is empty). Surface them
+	// anyway so callers like `n new branch` work in empty pickers.
+	if m.chosen < 0 && m.chosenItem.ExtraAction == "" {
 		return PickerItem{}, ErrPickerAborted
 	}
 	return m.chosenItem, nil

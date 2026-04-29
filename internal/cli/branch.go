@@ -67,13 +67,14 @@ type branchInfo struct {
 	Name       string
 	Upstream   string
 	LastCommit time.Time
-	Gone       bool // upstream configured but missing on remote
+	Hash       string // 7-char short commit hash
+	Gone       bool   // upstream configured but missing on remote
 }
 
 func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) {
 	stdout, stderr, err := r.Run(ctx,
 		"for-each-ref",
-		"--format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)",
+		"--format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track)%00%(objectname:short)",
 		"refs/heads",
 	)
 	if err != nil {
@@ -95,6 +96,9 @@ func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) 
 		}
 		if len(parts) >= 4 && strings.Contains(parts[3], "gone") {
 			bi.Gone = true
+		}
+		if len(parts) >= 5 {
+			bi.Hash = parts[4]
 		}
 		out = append(out, bi)
 	}

@@ -24,11 +24,15 @@ var ErrPickerAborted = errors.New("picker aborted")
 // Cells, when non-empty, lets table-style pickers (TablePicker) render
 // the row split into columns. Pickers that don't support columns
 // (FzfPicker, FallbackPicker) ignore Cells and fall back to Display.
+// ExtraAction is set by TablePicker when an Extra hotkey with Exit=true
+// fires — it carries the key letter so callers can dispatch on it. The
+// rest of the PickerItem reflects the row under the cursor at exit.
 type PickerItem struct {
-	Display string
-	Preview string
-	Key     string
-	Cells   []string
+	Display     string
+	Preview     string
+	Key         string
+	Cells       []string
+	ExtraAction string
 }
 
 // Picker selects one item from a list.

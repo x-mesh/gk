@@ -12,18 +12,19 @@ import (
 //
 // The message has a stable prefix that callers and tests can match against:
 //
-//	gk resolve: rebase is in progress but no conflicted files found.
+//	rebase is in progress but no conflicted files found.
 //
-// Only RebaseStuckEmptyCommit / Edit / Exec / Unknown are formatted.
-// For RebaseStuckNone the function returns an empty string — callers
-// should not invoke it in that case.
+// `cli.FormatError` prepends "gk:" when this string is returned as an
+// error, producing the final user-facing form. Only RebaseStuckEmptyCommit /
+// Edit / Exec / Unknown are formatted. For RebaseStuckNone the function
+// returns an empty string — callers should not invoke it in that case.
 func FormatStuckGuidance(stuck gitstate.RebaseStuck) string {
 	if stuck.Reason == gitstate.RebaseStuckNone {
 		return ""
 	}
 
 	var b strings.Builder
-	b.WriteString("gk resolve: rebase is in progress but no conflicted files found.\n")
+	b.WriteString("rebase is in progress but no conflicted files found.\n")
 
 	reasonLine, recommended := stuckReasonLine(stuck)
 	fmt.Fprintf(&b, "  reason: %s\n", reasonLine)
@@ -114,4 +115,34 @@ func displayOp(op string) string {
 	default:
 		return op
 	}
+}
+
+// StuckError signals that `gk resolve` was called on a rebase that is paused
+// with no merge conflicts to resolve. Its Error() returns the multi-line
+// guidance from FormatStuckGuidance, so the standard cli error path renders
+// the full message to stderr and exits non-zero.
+type StuckError struct {
+	Stuck gitstate.RebaseStuck
+}
+
+func (e *StuckError) Error() string {
+	return strings.TrimRight(FormatStuckGuidance(e.Stuck), "\n")
+}
+
+// CheckStuck returns a *StuckError when state is a paused rebase with no
+// merge conflicts to resolve. It returns nil otherwise (no rebase, or
+// rebase progressing normally). Callers are expected to have already
+// confirmed there are zero unmerged paths.
+func CheckStuck(state *gitstate.State) error {
+	if state == nil {
+		return nil
+	}
+	if state.Kind != gitstate.StateRebaseMerge && state.Kind != gitstate.StateRebaseApply {
+		return nil
+	}
+	stuck := gitstate.ClassifyRebaseStuck(state)
+	if stuck.Reason == gitstate.RebaseStuckNone {
+		return nil
+	}
+	return &StuckError{Stuck: stuck}
 }

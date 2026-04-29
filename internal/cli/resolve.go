@@ -151,6 +151,9 @@ func runResolveInteractive(
 		return err
 	}
 	if len(conflicted) == 0 {
+		if err := resolve.CheckStuck(state); err != nil {
+			return err
+		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "no conflicted files found")
 		return nil
 	}

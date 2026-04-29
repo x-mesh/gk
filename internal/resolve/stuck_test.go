@@ -21,7 +21,7 @@ func TestFormatStuckGuidance_PrefixAlwaysPresent(t *testing.T) {
 		gitstate.RebaseStuckExec,
 		gitstate.RebaseStuckUnknown,
 	}
-	const prefix = "gk resolve: rebase is in progress but no conflicted files found."
+	const prefix = "rebase is in progress but no conflicted files found."
 	for _, r := range cases {
 		got := FormatStuckGuidance(gitstate.RebaseStuck{Reason: r})
 		if !strings.HasPrefix(got, prefix) {
@@ -102,6 +102,37 @@ func TestFormatStuckGuidance_UnknownNoRecommendation(t *testing.T) {
 	for _, want := range []string{"git rebase --skip", "git rebase --continue", "git rebase --abort", "gk continue"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestStuckError_WrapsGuidance(t *testing.T) {
+	stuck := gitstate.RebaseStuck{
+		Reason:     gitstate.RebaseStuckEmptyCommit,
+		StoppedSHA: "deadbeef0000",
+	}
+	err := &StuckError{Stuck: stuck}
+	got := err.Error()
+	if !strings.HasPrefix(got, "rebase is in progress but no conflicted files found.") {
+		t.Errorf("StuckError.Error must start with prefix, got:\n%s", got)
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Errorf("StuckError.Error must not have trailing newline (cli.FormatError adds one)")
+	}
+	if !strings.Contains(got, "deadbee") {
+		t.Errorf("StuckError.Error must include short sha, got:\n%s", got)
+	}
+}
+
+func TestCheckStuck(t *testing.T) {
+	if err := CheckStuck(nil); err != nil {
+		t.Errorf("nil state: want nil err, got %v", err)
+	}
+
+	// Non-rebase states never trigger.
+	for _, k := range []gitstate.StateKind{gitstate.StateNone, gitstate.StateMerge, gitstate.StateCherryPick} {
+		if err := CheckStuck(&gitstate.State{Kind: k}); err != nil {
+			t.Errorf("Kind=%s: want nil err, got %v", k, err)
 		}
 	}
 }

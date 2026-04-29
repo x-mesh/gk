@@ -237,6 +237,9 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		return nil, err
 	}
 	if len(conflicted) == 0 {
+		if err := CheckStuck(state); err != nil {
+			return nil, err
+		}
 		if r.Stderr != nil {
 			fmt.Fprintf(r.Stderr, "no conflicted files found\n")
 		}

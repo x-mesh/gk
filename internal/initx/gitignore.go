@@ -51,6 +51,43 @@ var IDEPatterns = []string{
 	"Thumbs.db",
 }
 
+// CompiledArtifactPatterns는 언어 감지 결과와 무관하게 항상 ignore할
+// 컴파일 산출물 패턴이다.
+//
+// 왜 이 리스트가 별도로 필요한가:
+//   - langIgnorePatterns는 marker file이 있는 언어만 커버한다. Go 모노레포
+//     에 들어 있는 임시 Python 스크립트가 __pycache__ 를 만들면 Python
+//     marker가 없어 빠진다. 그 결과 .pyc 가 working tree로 흘러들어
+//     `gk commit` LLM payload 의 토큰을 잠식한다.
+//   - 멀티 언어 프로젝트에서 language detection이 한 가지만 잡아도
+//     나머지 언어 산출물은 누락될 수 있다.
+var CompiledArtifactPatterns = []string{
+	// Python
+	"__pycache__/",
+	"*.pyc",
+	"*.pyo",
+	"*.pyd",
+	".pytest_cache/",
+	".mypy_cache/",
+	".ruff_cache/",
+	// JVM
+	"*.class",
+	// C/C++/Rust 등 네이티브 산출물
+	"*.o",
+	"*.obj",
+	"*.so",
+	"*.dylib",
+	"*.dll",
+	"*.a",
+	"*.lib",
+	// 커버리지/툴 캐시
+	"*.cover",
+	"*.coverage",
+	"coverage/",
+	".tox/",
+	".cache/",
+}
+
 // GenerateGitignore는 분석 결과를 기반으로 .gitignore 내용을 생성한다.
 // 카테고리별 주석 헤더와 함께 언어별 패턴, 보안 패턴, IDE 패턴을 포함한다.
 func GenerateGitignore(result *AnalysisResult) string {
@@ -88,6 +125,14 @@ func GenerateGitignore(result *AnalysisResult) string {
 	b.WriteByte('\n')
 	b.WriteString("# IDE/Editor\n")
 	for _, pat := range IDEPatterns {
+		b.WriteString(pat)
+		b.WriteByte('\n')
+	}
+
+	// 컴파일 산출물 (항상 포함, 언어 감지와 무관)
+	b.WriteByte('\n')
+	b.WriteString("# Compiled artifacts\n")
+	for _, pat := range CompiledArtifactPatterns {
 		b.WriteString(pat)
 		b.WriteByte('\n')
 	}

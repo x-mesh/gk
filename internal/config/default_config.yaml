@@ -172,15 +172,66 @@ ai:
     # to both basename and full path) are dropped from the WIP set
     # before anything leaves the process. Keeps secret-bearing files
     # out of provider prompts even with `--force`.
+    #
+    # Stays in sync with config.DefaultDenyPaths() — when adding entries,
+    # update both. Categories: secrets, auth/config files, infra state,
+    # PII-prone data, compiled artifacts.
     deny_paths:
+      # secrets / credentials
       - .env
       - .env.*
       - "*.pem"
-      - id_rsa*
-      - credentials.json
+      - "*.key"
+      - "*.crt"
+      - "*.cer"
+      - "*.p12"
       - "*.pfx"
-      - "*.kdbx"
+      - "*.jks"
       - "*.keystore"
+      - "*.kdbx"
+      - id_rsa*
+      - id_dsa*
+      - id_ecdsa*
+      - id_ed25519*
+      - "*.ppk"
+      - credentials.json
       - service-account*.json
-      - terraform.tfstate
-      - terraform.tfstate.*
+      - firebase-adminsdk*.json
+      - "gcp-*-key*.json"
+      # auth / config files
+      - .netrc
+      - _netrc
+      - .npmrc
+      - .pypirc
+      - .docker/config.json
+      - .git-credentials
+      - .aws/credentials
+      - .aws/config
+      - .kube/config
+      - kubeconfig
+      - "*.kubeconfig"
+      # infra state
+      - "*.tfstate"
+      - "*.tfstate.*"
+      - terraform.tfvars
+      - "*.auto.tfvars"
+      - .vault_pass*
+      - vault-token*
+      - vault.yml
+      - vault.yaml
+      - "*-vault.yml"
+      - "*-vault.yaml"
+      - secrets.dec.yaml
+      - secrets.dec.yml
+      # data with potential PII
+      - "*.sqlite"
+      - "*.sqlite3"
+      - "*.db"
+      - "*.dump"
+      - dump.sql
+      # compiled artifacts (token waste)
+      - "*.pyc"
+      - "*.pyo"
+      - __pycache__
+      - __pycache__/*
+      - "*.class"

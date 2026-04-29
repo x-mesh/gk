@@ -51,6 +51,11 @@ type AnalysisResult struct {
 	CommitInfo   CommitAnalysis
 	Preflight    []PreflightStep
 	AIProviders  []string
+	// Garbage는 working tree에서 발견된 컴파일 산출물(.pyc, *.class 등)이다.
+	// nil이면 깨끗하다는 뜻; 비어있지 않으면 CLI가 사용자에게 git rm -rf
+	// --cached 가이드를 출력한다. .gitignore 패턴 추가만으로는 이미
+	// tracked된 파일을 제거하지 못하기 때문이다.
+	Garbage []GarbageDetection
 }
 
 // GitRunner는 git 명령어를 실행하는 인터페이스이다.
@@ -118,7 +123,11 @@ func AnalyzeProject(dir string, gitRunner GitRunner) (*AnalysisResult, error) {
 	// 4. AI provider 감지
 	result.AIProviders = detectAIProviders()
 
-	// 5. Git 관련 분석 (gitRunner가 nil이면 건너뜀)
+	// 5. 컴파일 산출물 감지 — 이미 working tree에 흘러들어와 있는
+	//    .pyc / *.class 등을 찾아 사용자에게 알린다.
+	result.Garbage = DetectExistingGarbage(dir)
+
+	// 6. Git 관련 분석 (gitRunner가 nil이면 건너뜀)
 	if gitRunner != nil {
 		ctx := context.Background()
 		result.CommitInfo = analyzeCommits(ctx, gitRunner)

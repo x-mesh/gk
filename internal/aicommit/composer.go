@@ -67,6 +67,13 @@ func ComposeAll(
 
 	out := make([]Message, 0, len(groups))
 	for _, g := range groups {
+		// Lockfile-only / CI-only groups skip the LLM. Saves the 50K+
+		// tokens a single lockfile diff would burn, which is what was
+		// hitting Groq's 100K daily TPD ceiling.
+		if msg, ok := heuristicMessage(g, opts.Lang); ok {
+			out = append(out, msg)
+			continue
+		}
 		msg, err := composeOne(ctx, p, g, diffs[groupKey(g)], rules, opts, max)
 		if err != nil {
 			return nil, fmt.Errorf("compose group %q: %w", g.Type, err)

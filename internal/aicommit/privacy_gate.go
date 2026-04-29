@@ -267,22 +267,11 @@ func extractPathTokens(line string) []string {
 	return paths
 }
 
-// matchDenyGlob returns true if path matches any deny glob (by basename
-// first, then full path), mirroring the existing matchDeny in gather.go.
+// matchDenyGlob returns true if path matches any deny glob. Delegates
+// to matchDeny so basename / full-path / nested-component matching
+// stays consistent across the two call sites (gather + redact).
 func matchDenyGlob(path string, patterns []string) bool {
-	base := filepath.Base(path)
-	for _, g := range patterns {
-		if g == "" {
-			continue
-		}
-		if ok, _ := filepath.Match(g, base); ok {
-			return true
-		}
-		if ok, _ := filepath.Match(g, path); ok {
-			return true
-		}
-	}
-	return false
+	return matchDeny(path, patterns) != ""
 }
 
 // maskOriginal returns the first 4 characters of s followed by "***".

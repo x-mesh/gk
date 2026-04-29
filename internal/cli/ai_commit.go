@@ -35,13 +35,19 @@ Provider resolution order:
   3. Auto-detect (gemini → qwen → kiro-cli)
 
 Default behaviour is an interactive TUI review; pass --force/-f to skip
-review and --dry-run to preview only. Use --abort to restore HEAD to the
-backup ref created at the start of the most recent run.
+review.
+
+  --dry-run shows the plan and per-group estimated token cost without
+  making any LLM call. Useful before firing a large run, and works even
+  when the daily token quota is exhausted.
+
+Use --abort to restore HEAD to the backup ref created at the start of
+the most recent run.
 `,
 		RunE: runAICommit,
 	}
 	cmd.Flags().BoolP("force", "f", false, "apply commits without interactive review")
-	cmd.Flags().Bool("dry-run", false, "show the plan and exit without committing")
+	cmd.Flags().Bool("dry-run", false, "preview groups + estimated token cost; no LLM calls")
 	cmd.Flags().String("provider", "", "override ai.provider (gemini|qwen|kiro)")
 	cmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 	cmd.Flags().Bool("staged-only", false, "only consider already-staged changes")
@@ -163,6 +169,14 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// --show-prompt: display redacted payload.
 	showPromptIfRequested(cmd, redactedPayload)
 
+	// --dry-run is a cost preview: heuristic classify + token estimate,
+	// no LLM calls. Useful before firing a large commit run, and works
+	// even when the daily TPD quota is exhausted (the original 429
+	// scenario). Exits before Classify so no remote call is issued.
+	if flags.dryRun {
+		return runCommitDryRunPreview(cmd, runner, ctx, prov, files, wipCommit, *cfg, ai)
+	}
+
 	// Classify — the first provider call. Spinner advertises we are
 	// waiting on the AI CLI, not stuck.
 	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
@@ -184,12 +198,25 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Pair Go test/prod files split across groups so Compose sees the
+	// full picture for one commit (e.g. switch.go + switch_test.go →
+	// one feat/chore commit instead of two).
+	groups = aicommit.PairTestProdGroups(groups)
+
 	// Compose (per group) with commitlint retry.
 	diffs, err := collectGroupDiffs(ctx, runner, groups, wipCommit)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "commit: composing %d message(s)...\n", len(groups))
+	heuristicN := aicommit.CountHeuristicGroups(groups, ai.Lang)
+	llmN := len(groups) - heuristicN
+	if heuristicN > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"commit: composing %d message(s) (%d via heuristic, %d via %s)...\n",
+			len(groups), heuristicN, llmN, prov.Name())
+	} else {
+		fmt.Fprintf(cmd.ErrOrStderr(), "commit: composing %d message(s)...\n", len(groups))
+	}
 	stopCompose := ui.StartBubbleSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
 	composeStart := time.Now()
 	messages, err := aicommit.ComposeAll(ctx, prov, groups, diffs, aicommit.ComposeOptions{
@@ -252,6 +279,118 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 type wipCommitForAICommit struct {
 	Present bool
 	Files   []aicommit.FileChange
+}
+
+// runCommitDryRunPreview produces a cost-aware plan without making any
+// LLM call. Classify uses the path heuristic (HeuristicOnly) so the
+// preview is free even when the provider's daily quota is exhausted —
+// exactly the scenario that motivated this command shape.
+//
+// Output: per-group file count, classification rationale, and an
+// estimated Compose token cost. Heuristic-bypassed groups
+// (lockfile-only build, CI-only) report 0 tokens. The estimate is
+// approximate (4 chars per token) — accurate enough to flag a
+// 50K-token blowup before it happens.
+func runCommitDryRunPreview(
+	cmd *cobra.Command,
+	runner git.Runner,
+	ctx context.Context,
+	prov provider.Provider,
+	files []aicommit.FileChange,
+	wipCommit wipCommitForAICommit,
+	cfg config.Config,
+	ai config.AIConfig,
+) error {
+	out := cmd.OutOrStdout()
+
+	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
+		HeuristicOnly:   true,
+		AllowedTypes:    cfg.Commit.Types,
+		AllowedScopes:   allowedScopesFromFiles(files),
+		Lang:            ai.Lang,
+		HybridFileLimit: 5,
+	})
+	if err != nil {
+		return fmt.Errorf("commit: dry-run classify: %w", err)
+	}
+	if len(groups) == 0 {
+		fmt.Fprintln(out, "commit: dry-run — nothing to commit after filtering")
+		return nil
+	}
+
+	// Mirror the merge pass that the real run will perform — keeps
+	// preview aligned with actual output for paired Go test/prod files.
+	groups = aicommit.PairTestProdGroups(groups)
+
+	diffs, err := collectGroupDiffs(ctx, runner, groups, wipCommit)
+	if err != nil {
+		return err
+	}
+
+	classifyTok := aicommit.EstimateClassifyTokens(files)
+	deniedN := countDenied(files)
+
+	fmt.Fprintln(out, "commit: dry-run — cost preview (no LLM call made)")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Provider:  %s\n", prov.Name())
+	fmt.Fprintf(out, "Language:  %s\n", fallbackStr(ai.Lang, "en"))
+	fmt.Fprintf(out, "Files:     %d in scope", len(files))
+	if deniedN > 0 {
+		fmt.Fprintf(out, " (%d denied by deny_paths)", deniedN)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Groups:    %d (heuristic-classified — actual run may regroup via LLM)\n", len(groups))
+	fmt.Fprintln(out)
+
+	totalCompose := 0
+	for _, g := range groups {
+		key := groupKeyLocal(g)
+		est := aicommit.EstimateComposeTokens(g, diffs[key], ai.Lang)
+		totalCompose += est
+		bypass := ""
+		if est == 0 {
+			bypass = "  [heuristic — no LLM]"
+		}
+		fmt.Fprintf(out, "  %s — %d file(s) — ~%d tokens%s\n",
+			groupLabel(g), len(g.Files), est, bypass)
+		for _, f := range g.Files {
+			fmt.Fprintf(out, "      %s\n", f)
+		}
+	}
+
+	total := classifyTok + totalCompose
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Estimated tokens:\n")
+	fmt.Fprintf(out, "  classify   ~%d\n", classifyTok)
+	fmt.Fprintf(out, "  compose    ~%d  (sum of per-group estimates above)\n", totalCompose)
+	fmt.Fprintf(out, "  TOTAL      ~%d\n", total)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Run without --dry-run to execute.")
+	return nil
+}
+
+func groupLabel(g provider.Group) string {
+	if g.Scope != "" {
+		return fmt.Sprintf("[%s(%s)]", g.Type, g.Scope)
+	}
+	return fmt.Sprintf("[%s]", g.Type)
+}
+
+func countDenied(files []aicommit.FileChange) int {
+	n := 0
+	for _, f := range files {
+		if f.DeniedBy != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func fallbackStr(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }
 
 func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner) (wipCommitForAICommit, error) {
@@ -502,6 +641,11 @@ func topLevelDirSimple(p string) string {
 // collectGroupDiffs runs `git diff --cached` / `git diff` per group
 // file set. Binary files fall back to `--stat`-only output so the
 // provider sees a stub instead of junk bytes.
+//
+// Per-group diffs are capped to aicommit.DefaultComposeDiffByteCap
+// before they leave this function — protects against a single huge
+// diff (typical: a generated lockfile that escaped the heuristic
+// bypass) blowing through the daily token budget.
 func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider.Group, wipCommit wipCommitForAICommit) (map[string]string, error) {
 	diffs := map[string]string{}
 	for _, g := range groups {
@@ -523,7 +667,7 @@ func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider
 			b.WriteByte('\n')
 		}
 		b.Write(unstaged)
-		diffs[groupKeyLocal(g)] = b.String()
+		diffs[groupKeyLocal(g)] = aicommit.TruncateDiff(b.String(), aicommit.DefaultComposeDiffByteCap)
 	}
 	return diffs, nil
 }

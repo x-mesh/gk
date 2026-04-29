@@ -22,6 +22,9 @@ func TestGenerateGitignore_NoLanguages(t *testing.T) {
 	if !strings.Contains(got, "# IDE/Editor") {
 		t.Error("expected # IDE/Editor header")
 	}
+	if !strings.Contains(got, "# Compiled artifacts") {
+		t.Error("expected # Compiled artifacts header")
+	}
 	for _, p := range SecurityPatterns {
 		if !strings.Contains(got, p) {
 			t.Errorf("missing security pattern %q", p)
@@ -30,6 +33,27 @@ func TestGenerateGitignore_NoLanguages(t *testing.T) {
 	for _, p := range IDEPatterns {
 		if !strings.Contains(got, p) {
 			t.Errorf("missing IDE pattern %q", p)
+		}
+	}
+	for _, p := range CompiledArtifactPatterns {
+		if !strings.Contains(got, p) {
+			t.Errorf("missing compiled artifact pattern %q", p)
+		}
+	}
+}
+
+// TestGenerateGitignore_CompiledArtifactsWithoutPython ensures that
+// __pycache__ / *.pyc are emitted even when Python is not detected as a
+// language. This is the regression that caused gk-dev commit to leak
+// 50K+ tokens of stale .pyc diffs into the LLM payload.
+func TestGenerateGitignore_CompiledArtifactsWithoutPython(t *testing.T) {
+	result := &AnalysisResult{
+		Languages: []Language{{Name: "go", MarkerFile: "go.mod"}},
+	}
+	got := GenerateGitignore(result)
+	for _, p := range []string{"__pycache__/", "*.pyc", "*.class"} {
+		if !strings.Contains(got, p) {
+			t.Errorf("missing %q in Go-only project gitignore", p)
 		}
 	}
 }
@@ -336,6 +360,12 @@ func collectAllKnownPatterns() []string {
 		}
 	}
 	for _, p := range IDEPatterns {
+		if !seen[p] {
+			seen[p] = true
+			all = append(all, p)
+		}
+	}
+	for _, p := range CompiledArtifactPatterns {
 		if !seen[p] {
 			seen[p] = true
 			all = append(all, p)

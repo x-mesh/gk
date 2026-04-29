@@ -223,6 +223,55 @@ type PreflightStep struct {
 	ContinueOnFailure bool   `mapstructure:"continue_on_failure" yaml:"continue_on_failure"`
 }
 
+// DefaultDenyPaths returns the baked-in deny_paths used when the user
+// has none configured. Globs are matched with filepath.Match against
+// both basename and full path; entries containing "/" require the path
+// shape, bare entries match anywhere.
+//
+// Categories:
+//   - secrets: .env, SSH keys, TLS material, cloud credentials
+//   - infra state: terraform state, ansible/hashicorp vault
+//   - data: sqlite DBs, raw dumps (often contain PII)
+//   - compiled artifacts: __pycache__, *.class — useless for commit
+//     prose and bloat token usage
+func DefaultDenyPaths() []string {
+	return []string{
+		// secrets / credentials
+		".env", ".env.*",
+		"*.pem", "*.key", "*.crt", "*.cer",
+		"*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx",
+		"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.ppk",
+		"credentials.json",
+		"service-account*.json",
+		"firebase-adminsdk*.json",
+		"gcp-*-key*.json",
+
+		// auth / config files
+		".netrc", "_netrc",
+		".npmrc", ".pypirc",
+		".docker/config.json",
+		".git-credentials",
+		".aws/credentials", ".aws/config",
+		".kube/config", "kubeconfig", "*.kubeconfig",
+
+		// infra state
+		"*.tfstate", "*.tfstate.*",
+		"terraform.tfvars", "*.auto.tfvars",
+		".vault_pass*", "vault-token*",
+		"vault.yml", "vault.yaml", "*-vault.yml", "*-vault.yaml",
+		"secrets.dec.yaml", "secrets.dec.yml",
+
+		// data with potential PII
+		"*.sqlite", "*.sqlite3", "*.db",
+		"*.dump", "dump.sql",
+
+		// compiled artifacts (token waste)
+		"*.pyc", "*.pyo",
+		"__pycache__", "__pycache__/*",
+		"*.class",
+	}
+}
+
 // Defaults returns a Config populated with default values.
 func Defaults() Config {
 	return Config{
@@ -294,19 +343,7 @@ func Defaults() Config {
 				MaxGroups: 10,
 				MaxTokens: 24000,
 				Timeout:   "30s",
-				DenyPaths: []string{
-					".env",
-					".env.*",
-					"*.pem",
-					"id_rsa*",
-					"credentials.json",
-					"*.pfx",
-					"*.kdbx",
-					"*.keystore",
-					"service-account*.json",
-					"terraform.tfstate",
-					"terraform.tfstate.*",
-				},
+				DenyPaths: DefaultDenyPaths(),
 				AllowRemote: true,
 				Trailer:     false,
 				Audit:       false,

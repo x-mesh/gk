@@ -83,10 +83,24 @@ func (e FileChange) matchesScope(s Scope) bool {
 	}
 }
 
-// matchDeny returns the first glob in patterns that matches path
-// (by basename first, then full path). Empty result means no match.
+// matchDeny returns the first glob in patterns that matches path.
+// Empty result means no match.
+//
+// Matching strategy (each pattern tried in order until one hits):
+//  1. basename match — covers bare globs like "*.pem", ".env"
+//  2. full-path match — covers explicit prefixes like ".aws/credentials"
+//  3. component-wise match — covers "any depth" patterns like
+//     "__pycache__" or "__pycache__/*", which filepath.Match cannot
+//     express. Matches when the pattern (or its first segment) hits
+//     any path component.
+//
+// Why (3) exists: filepath.Match has no doublestar; "__pycache__/*"
+// against "internal/foo/__pycache__/bar.pyc" fails. Without component
+// scanning, every nested cache directory leaks into the LLM payload.
 func matchDeny(path string, patterns []string) string {
 	base := filepath.Base(path)
+	path = filepath.ToSlash(path)
+	components := strings.Split(path, "/")
 	for _, g := range patterns {
 		if g == "" {
 			continue
@@ -97,8 +111,49 @@ func matchDeny(path string, patterns []string) string {
 		if ok, _ := filepath.Match(g, path); ok {
 			return g
 		}
+		if matchAnyComponent(g, components) {
+			return g
+		}
 	}
 	return ""
+}
+
+// matchAnyComponent matches `pattern` against each path component.
+// For multi-segment patterns (e.g. "__pycache__/*"), it splits and
+// matches the first segment against any component, then verifies the
+// remaining segments line up with the path's tail. This is intentionally
+// narrower than full doublestar — we only need "this directory anywhere
+// in the path" semantics.
+func matchAnyComponent(pattern string, components []string) bool {
+	segs := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	if len(segs) == 0 || segs[0] == "" {
+		return false
+	}
+	for i, c := range components {
+		ok, _ := filepath.Match(segs[0], c)
+		if !ok {
+			continue
+		}
+		if len(segs) == 1 {
+			return true
+		}
+		// Remaining pattern segments must match the components after i.
+		tail := components[i+1:]
+		if len(tail) < len(segs)-1 {
+			continue
+		}
+		matched := true
+		for j, seg := range segs[1:] {
+			if ok, _ := filepath.Match(seg, tail[j]); !ok {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // parsePorcelainV2 parses `git status --porcelain=v2 -z` output.

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -121,7 +122,41 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// 실행
-	return initx.ExecutePlan(plan, cmd.OutOrStdout(), dryRun)
+	if err := initx.ExecutePlan(plan, cmd.OutOrStdout(), dryRun); err != nil {
+		return err
+	}
+
+	// 컴파일 산출물 경고 — .gitignore 추가만으로는 이미 tracked된 파일을
+	// 제거하지 못하므로 사용자에게 git rm 가이드를 보여준다.
+	if !dryRun {
+		warnExistingGarbage(cmd.OutOrStdout(), result.Garbage)
+	}
+	return nil
+}
+
+func warnExistingGarbage(w io.Writer, garbage []initx.GarbageDetection) {
+	if len(garbage) == 0 {
+		return
+	}
+	total := 0
+	for _, g := range garbage {
+		total += g.Count
+	}
+	fmt.Fprintf(w, "\ngk init: %d compiled artifact(s) already in working tree (now in .gitignore):\n", total)
+	for _, g := range garbage {
+		fmt.Fprintf(w, "  %s — %d file(s)", g.Pattern, g.Count)
+		if len(g.Sample) > 0 {
+			fmt.Fprintf(w, " (e.g. %s", g.Sample[0])
+			if g.Count > 1 {
+				fmt.Fprint(w, ", ...")
+			}
+			fmt.Fprint(w, ")")
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w, "\nTo untrack files already committed:")
+	fmt.Fprintln(w, "  git rm -rf --cached <pattern>")
+	fmt.Fprintln(w, "  git commit -m \"chore: untrack compiled artifacts\"")
 }
 
 // buildInitPlan은 분석 결과와 플래그를 기반으로 InitPlan을 구성한다.

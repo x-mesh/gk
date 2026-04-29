@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/x-mesh/gk/internal/config"
 )
 
 // --- YAML 구조체 (Project_Config 전용, Global_Config 필드 배제) ---
@@ -48,12 +50,10 @@ type aiCommitCfg struct {
 }
 
 // defaultDenyPaths는 ai.commit.deny_paths의 기본 목록이다.
-var defaultDenyPaths = []string{
-	".env",
-	".env.*",
-	"*.pem",
-	"id_rsa*",
-	"credentials.json",
+// config.DefaultDenyPaths를 단일 출처로 사용한다 — gk 코드 default와
+// gk init 생성 default가 같은 리스트를 가리키게 해야 운영 시 혼란이 없다.
+func defaultDenyPaths() []string {
+	return config.DefaultDenyPaths()
 }
 
 // policiesComment는 commented-out policies 블록이다.
@@ -105,7 +105,7 @@ func buildConfig(result *AnalysisResult) gkConfig {
 		},
 		AI: aiCfg{
 			Commit: aiCommitCfg{
-				DenyPaths: append([]string(nil), defaultDenyPaths...),
+				DenyPaths: defaultDenyPaths(),
 				Trailer:   false,
 				Audit:     false,
 			},

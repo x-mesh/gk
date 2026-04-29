@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -408,7 +409,56 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		return rowSource{entries: ents}, nil
 	}
 
+	// loadWorktreeDiffs computes ↑ahead ↓behind vs the default branch for
+	// every worktree branch in the current repo. Skipped in global mode
+	// (cross-repo divergence would need a runner per project — out of
+	// scope for now). Returns nil/empty on failure → callers render no
+	// diff suffix, no error to user.
+	loadWorktreeDiffs := func(entries []WorktreeEntry) map[string][2]int {
+		if global {
+			return nil
+		}
+		client := git.NewClient(runner)
+		defaultBr, err := resolveMainBranch(ctx, runner, client, cfg.Remote)
+		if err != nil || defaultBr == "" {
+			return nil
+		}
+		out := map[string][2]int{}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, e := range entries {
+			if e.Bare || e.Detached || e.Branch == "" || e.Branch == defaultBr {
+				continue
+			}
+			wg.Add(1)
+			go func(branch string) {
+				defer wg.Done()
+				ahead, behind, ok := branchDivergence(ctx, runner, defaultBr, branch)
+				if !ok || (ahead == 0 && behind == 0) {
+					return
+				}
+				mu.Lock()
+				out[branch] = [2]int{ahead, behind}
+				mu.Unlock()
+			}(e.Branch)
+		}
+		wg.Wait()
+		return out
+	}
+
 	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
+		diffs := loadWorktreeDiffs(rs.entries)
+		appendDiff := func(branch string) string {
+			d, ok := diffs[branch]
+			if !ok {
+				return branch
+			}
+			suffix := formatSwitchDiff(d)
+			if suffix == "" {
+				return branch
+			}
+			return branch + "  " + suffix
+		}
 		if global {
 			headers = []string{"PROJECT", "BRANCH", "PATH", "FLAGS"}
 			items = make([]ui.PickerItem, 0, len(rs.entries)+1)
@@ -416,7 +466,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				branch, flagsPlain := worktreeRowPartsPlain(e)
 				items = append(items, ui.PickerItem{
 					Display: worktreeTUILabel(e, bold, faint),
-					Cells:   []string{rs.projectByPath[e.Path], branch, e.Path, flagsPlain},
+					Cells:   []string{rs.projectByPath[e.Path], appendDiff(branch), e.Path, flagsPlain},
 					Key:     e.Path,
 				})
 			}
@@ -436,7 +486,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			branch, flagsPlain := worktreeRowPartsPlain(e)
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				Cells:   []string{branch, e.Path, flagsPlain},
+				Cells:   []string{appendDiff(branch), e.Path, flagsPlain},
 				Key:     e.Path,
 			})
 		}

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-04-29
+
+### Added
+
+- **`gk status --json`** — 머신 판독용 JSON 출력. `repo`/`branch`/`upstream`/
+  `ahead`/`behind`/`clean`/`next` 헤더, `counts`(committable/split/staged/
+  modified/untracked/conflicts/dirty_submodules), `entries[]`, `submodules[]`.
+  모든 사람-가독 문자열은 `stripControlChars`로 sanitize됩니다.
+- **`gk status --exit-code`** — 셸 스크립트용 종료 코드: 0=clean, 1=dirty,
+  2=submodule-only, 3=conflicts, 4=behind. 우선순위는 conflict > dirty >
+  submodule-only > behind > clean. `--watch`와 동시 사용은 거부됩니다.
+- **`gk status --watch [--watch-interval D]`** — 인터럽트 전까지 N초 간격으로
+  상태를 갱신. 기본 2s. `--json`/`--exit-code`와 충돌 시 거부.
+- **서브모듈 worktree-only dirtiness 분류 (`KindSubmodule`).** porcelain v2의
+  `.M S.M.` / `.M S..U` 레코드(superproject `git add`로 commit 불가능한 nested
+  변경)를 감지해 별도 카테고리로 표시합니다. `gk commit`도 분류 결과에서
+  drop합니다. `IsSubmoduleWorktreeDirtinessOnly` 헬퍼는 `internal/git`에서
+  export되며 `internal/aicommit/gather.go`도 이를 호출합니다.
+
+### Changed
+
+- **`compactUpstreamSuffix`가 항상 `<remote>/<branch>` 전체를 표시.** 이전에는
+  로컬 브랜치 이름과 upstream 브랜치 이름이 일치하면 `→ origin`으로 줄였으나,
+  `main → origin` 같은 모호한 출력을 막기 위해 dedup 로직을 제거했습니다.
+- **`StatusEntry`에 `Sub` 필드 추가.** porcelain v2의 submodule 필드(`N...` /
+  `S.M.` 등)를 보존합니다. `parseRenamedEntry`/`parseUnmergedEntry`도
+  `Sub`를 읽어 rename·unmerged 서브모듈도 `KindSubmodule`로 분류합니다.
+- **`renderSubmoduleSection` 시그니처에서 `ctx`가 첫 인자로 이동.** Go convention
+  준수.
+- **`runStatus`의 `os.Exit` 호출이 `statusExitFunc` 인디렉션으로 분리됨.**
+  테스트에서 종료 코드를 검증할 수 있도록.
+
 ## [0.19.0] - 2026-04-29
 
 ### Fixed
@@ -426,7 +458,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/x-mesh/gk/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/x-mesh/gk/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/x-mesh/gk/compare/v0.17.5...v0.18.0
 [0.14.1]: https://github.com/x-mesh/gk/compare/v0.14.0...v0.14.1

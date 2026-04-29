@@ -306,43 +306,6 @@ func TestRunPull_Conflict(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// resolveUpstreamFromRunner tests
-// ---------------------------------------------------------------------------
-
-func TestResolveUpstream_FallsBackToBase(t *testing.T) {
-	fake := &git.FakeRunner{
-		Responses: map[string]git.FakeResponse{
-			"rev-parse --abbrev-ref --symbolic-full-name @{u}": {ExitCode: 128, Stderr: "fatal: no upstream\n"},
-		},
-	}
-	upstream, fetchRemote, fetchBranch := resolveUpstreamFromRunner(context.Background(), fake, "origin", "main")
-	if upstream != "origin/main" {
-		t.Errorf("upstream = %q, want origin/main", upstream)
-	}
-	if fetchRemote != "origin" || fetchBranch != "main" {
-		t.Errorf("fetch = %q/%q, want origin/main", fetchRemote, fetchBranch)
-	}
-}
-
-func TestResolveUpstream_ParsesTrackingRef(t *testing.T) {
-	fake := &git.FakeRunner{
-		Responses: map[string]git.FakeResponse{
-			"rev-parse --abbrev-ref --symbolic-full-name @{u}": {Stdout: "upstream/feat/my-branch\n"},
-		},
-	}
-	upstream, fetchRemote, fetchBranch := resolveUpstreamFromRunner(context.Background(), fake, "origin", "main")
-	if upstream != "upstream/feat/my-branch" {
-		t.Errorf("upstream = %q", upstream)
-	}
-	if fetchRemote != "upstream" {
-		t.Errorf("fetchRemote = %q, want upstream", fetchRemote)
-	}
-	if fetchBranch != "feat/my-branch" {
-		t.Errorf("fetchBranch = %q, want feat/my-branch", fetchBranch)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // resolveStrategyFromRunner tests
 // ---------------------------------------------------------------------------
 

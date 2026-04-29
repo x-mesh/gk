@@ -61,7 +61,10 @@ Fast-forward optimisation (D):
 	}
 	cmd.Flags().String("base", "", "base branch (auto-detect if empty)")
 	cmd.Flags().String("strategy", "", "pull strategy: rebase|merge|ff-only|auto")
-	cmd.Flags().Bool("no-rebase", false, "fetch only, do not integrate (skip rebase/merge)")
+	cmd.Flags().Bool("rebase", false, "shorthand for --strategy rebase (also acts as explicit consent on diverged history)")
+	cmd.Flags().Bool("merge", false, "shorthand for --strategy merge (also acts as explicit consent on diverged history)")
+	cmd.Flags().Bool("fetch-only", false, "fetch only, do not integrate")
+	cmd.Flags().Bool("no-rebase", false, "deprecated alias for --fetch-only")
 	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration and pop after")
 	cmd.Flags().CountVarP(&pullVerbose, "verbose", "v", "show upstream, strategy, and integration details; repeat for diagnostics")
 	rootCmd.AddCommand(cmd)
@@ -85,8 +88,33 @@ func runPullCore(cmd *cobra.Command) error {
 		base = cfg.BaseBranch
 	}
 	strategyFlag, _ := cmd.Flags().GetString("strategy")
+	rebaseFlag, _ := cmd.Flags().GetBool("rebase")
+	mergeFlag, _ := cmd.Flags().GetBool("merge")
+	fetchOnly, _ := cmd.Flags().GetBool("fetch-only")
 	noRebase, _ := cmd.Flags().GetBool("no-rebase")
 	autostash, _ := cmd.Flags().GetBool("autostash")
+
+	// Translate --rebase/--merge into --strategy and reject conflicting flags.
+	// These shorthands also act as explicit consent for diverged-history pulls.
+	if rebaseFlag && mergeFlag {
+		return errors.New("--rebase and --merge are mutually exclusive")
+	}
+	if rebaseFlag && strategyFlag != "" && strategyFlag != pullStrategyRebase {
+		return errors.New("--rebase conflicts with --strategy " + strategyFlag)
+	}
+	if mergeFlag && strategyFlag != "" && strategyFlag != pullStrategyMerge {
+		return errors.New("--merge conflicts with --strategy " + strategyFlag)
+	}
+	if rebaseFlag {
+		strategyFlag = pullStrategyRebase
+	}
+	if mergeFlag {
+		strategyFlag = pullStrategyMerge
+	}
+	// --fetch-only is the preferred name; --no-rebase is its legacy alias.
+	if fetchOnly {
+		noRebase = true
+	}
 
 	repo := RepoFlag()
 	runner := &git.ExecRunner{Dir: repo}
@@ -97,26 +125,32 @@ func runPullCore(cmd *cobra.Command) error {
 		remote = "origin"
 	}
 
-	// 1) auto-detect base if needed (only required when @{u} is absent)
-	if base == "" {
-		detected, err := client.DefaultBranch(ctx, remote)
-		if err != nil {
-			return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+	// 1) Resolve upstream — prefer the current branch's tracking @{u}.
+	//    Only fall back to <remote>/<base> when no upstream is configured,
+	//    which is when base detection actually matters. This matches what
+	//    `git pull` does and avoids spurious "could not determine default
+	//    branch" failures in repos where origin/HEAD is unset but the
+	//    branch tracks something perfectly fine.
+	upstream, fetchRemote, fetchBranch, hasTracking := tryTrackingUpstream(ctx, runner)
+	if !hasTracking {
+		if base == "" {
+			detected, err := client.DefaultBranch(ctx, remote)
+			if err != nil {
+				return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+			}
+			base = detected
+			Dbg("pull: auto-detected base=%s via remote=%s", base, remote)
+		} else {
+			Dbg("pull: base=%s (explicit)", base)
 		}
-		base = detected
-		Dbg("pull: auto-detected base=%s via remote=%s", base, remote)
-	} else {
-		Dbg("pull: base=%s (explicit)", base)
+		if err := client.CheckRefFormat(ctx, base); err != nil {
+			return fmt.Errorf("invalid base branch %q: %w", base, err)
+		}
+		upstream = remote + "/" + base
+		fetchRemote = remote
+		fetchBranch = base
 	}
-
-	// 2) validate ref name (argv injection defence)
-	if err := client.CheckRefFormat(ctx, base); err != nil {
-		return fmt.Errorf("invalid base branch %q: %w", base, err)
-	}
-
-	// 3) resolve upstream: prefer tracking @{u}, fall back to remote/base
-	upstream, fetchRemote, fetchBranch := resolveUpstream(ctx, runner, remote, base)
-	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s", upstream, fetchRemote, fetchBranch)
+	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s tracking=%v", upstream, fetchRemote, fetchBranch, hasTracking)
 	fmt.Fprintf(os.Stderr, "fetching %s...\n", upstream)
 
 	// 4) dirty check
@@ -201,24 +235,107 @@ func runPullCore(cmd *cobra.Command) error {
 		return nil
 	}
 
-	// 6) resolve strategy
-	strategy, strategySource := resolveStrategyWithSource(ctx, strategyFlag, cfg, runner)
-	Dbg("pull: strategy=%s (flag=%q cfg=%q)", strategy, strategyFlag, cfg.Pull.Strategy)
-
-	// Capture pre-integration HEAD so we can summarize what the
-	// integration actually pulled in. Failure to read HEAD is tolerated —
-	// we fall back to a silent summary rather than aborting the pull.
+	// 6) ahead/behind dispatch — decide whether integration is needed at
+	//    all, and refuse on diverged history unless the user has expressed
+	//    explicit consent (flag, .gk.yaml, or git config).
 	preHEAD := headRev(ctx, runner)
+	ahead, behind, abErr := computeAheadBehind(ctx, runner, upstream)
+	if abErr != nil {
+		// Detection failed — preserve legacy behaviour rather than block.
+		Dbg("pull: ahead/behind detection failed: %v (falling through)", abErr)
+	}
+	Dbg("pull: ahead=%d behind=%d", ahead, behind)
 
-	// 7) D — fast-forward optimisation: if HEAD is already an ancestor of the
-	//    upstream and strategy is rebase, substitute merge --ff-only (same
-	//    end-state, no rebase process overhead).
+	// 6a) Already up to date.
+	if abErr == nil && ahead == 0 && behind == 0 {
+		if stashed {
+			if err := popStash(ctx, runner); err != nil {
+				return fmt.Errorf("stash pop failed: %w", err)
+			}
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "already up to date at %s\n", shortSHA(preHEAD))
+		return nil
+	}
+
+	// 6b) Local has commits not on upstream, upstream has nothing new.
+	//     Nothing to integrate.
+	if abErr == nil && ahead > 0 && behind == 0 {
+		if stashed {
+			if err := popStash(ctx, runner); err != nil {
+				return fmt.Errorf("stash pop failed: %w", err)
+			}
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"no upstream changes; local is ahead by %d commit%s — nothing to pull\n",
+			ahead, plural(ahead))
+		return nil
+	}
+
+	// 7) Resolve strategy.
+	strategy, strategySource := resolveStrategyWithSource(ctx, strategyFlag, cfg, runner)
+	Dbg("pull: strategy=%s source=%s (flag=%q cfg=%q)", strategy, strategySource, strategyFlag, cfg.Pull.Strategy)
+
+	// 7a) Diverged — refuse unless the user gave explicit consent.
+	//     "default" source means we'd be rebasing on autopilot, which
+	//     silently rewrites SHAs of any unpushed local commits.
+	diverged := abErr == nil && ahead > 0 && behind > 0
+	if diverged && strategySource == "default" {
+		if stashed {
+			popStashBestEffort(ctx, runner)
+		}
+		printDivergenceRefusal(cmd.ErrOrStderr(), runner, ctx, upstream, ahead, behind)
+		return errors.New("histories diverged: choose --rebase, --merge, or --fetch-only")
+	}
+
+	// 7a') Detection failure with no explicit consent — apply the same
+	//      safety net via a legacy ancestry probe so a transient rev-list
+	//      error can't bypass the refusal. If HEAD is provably an ancestor
+	//      of upstream, ff is safe; otherwise we cannot rule out a real
+	//      divergence and must refuse.
+	if abErr != nil && strategySource == "default" {
+		if !isFastForwardPossible(ctx, runner, upstream) {
+			if stashed {
+				popStashBestEffort(ctx, runner)
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"\n%s could not verify ahead/behind state (%v).\n",
+				color.YellowString("⚠"), abErr)
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"  refusing to auto-rebase without confirmation. choose:")
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"    gk pull --rebase | --merge | --fetch-only")
+			return errors.New("ahead/behind detection failed and no explicit strategy chosen")
+		}
+	}
+
+	// 7b) Pure fast-forward — pick ff-only regardless of resolved strategy.
+	//     `merge` would auto-FF anyway and `rebase` reduces to FF, so we
+	//     normalise here for a clear summary line.
 	requestedStrategy := strategy
 	ffOptimized := false
-	if strategy == pullStrategyRebase && isFastForwardPossible(ctx, runner, upstream) {
+	if abErr == nil && ahead == 0 && behind > 0 && strategy != pullStrategyFFOnly {
 		strategy = pullStrategyFFOnly
 		ffOptimized = true
-		Dbg("pull: ff-possible — substituting merge --ff-only for rebase")
+		Dbg("pull: ff-possible — substituting merge --ff-only")
+	} else if abErr != nil && strategy == pullStrategyRebase && isFastForwardPossible(ctx, runner, upstream) {
+		// Detection failed; fall back to legacy ff probe.
+		strategy = pullStrategyFFOnly
+		ffOptimized = true
+	}
+
+	// 7c) Backup ref before any history-rewriting integration. Diverged
+	//     rebase rewrites local SHAs; merge creates a merge commit but
+	//     also changes the branch tip, so a backup is cheap insurance.
+	//     ff-only never rewrites anything, so skip it there.
+	if diverged && (strategy == pullStrategyRebase || strategy == pullStrategyMerge) && preHEAD != "" {
+		if currentBranch, cerr := client.CurrentBranch(ctx); cerr == nil && currentBranch != "" {
+			if ref, berr := client.CreateBackup(ctx, currentBranch, preHEAD); berr == nil {
+				Dbg("pull: backup ref created: %s", ref)
+				_ = client.PruneBackups(ctx, currentBranch, 30*24*time.Hour, 5)
+			} else {
+				Dbg("pull: backup creation failed: %v", berr)
+			}
+		}
 	}
 
 	if pullVerbose > 0 {
@@ -268,26 +385,105 @@ func headRev(ctx context.Context, runner git.Runner) string {
 	return strings.TrimSpace(string(out))
 }
 
-// resolveUpstream returns (upstreamRef, fetchRemote, fetchBranch).
-// It checks whether the current branch has a tracking upstream (@{u}) and
-// prefers that; falls back to remote/base when absent or detached.
-func resolveUpstream(ctx context.Context, runner *git.ExecRunner, remote, base string) (string, string, string) {
-	return resolveUpstreamFromRunner(ctx, runner, remote, base)
+// tryTrackingUpstream reads the current branch's @{u} and parses it into
+// (upstreamRef, fetchRemote, fetchBranch). Returns ok=false when no upstream
+// is configured (detached HEAD, branch without tracking, etc.) — in that
+// case the caller is responsible for falling back to a base branch.
+func tryTrackingUpstream(ctx context.Context, runner git.Runner) (upstream, fetchRemote, fetchBranch string, ok bool) {
+	out, _, err := runner.Run(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err != nil {
+		return "", "", "", false
+	}
+	tracking := strings.TrimSpace(string(out))
+	if tracking == "" || tracking == "@{u}" || !strings.Contains(tracking, "/") {
+		return "", "", "", false
+	}
+	// tracking = "origin/feat/foo" → fetchRemote="origin", fetchBranch="feat/foo"
+	// Reject malformed inputs where either side is empty ("origin/" or "/foo")
+	// — those values would propagate as empty refs and silently bypass the
+	// ahead/behind detection.
+	idx := strings.Index(tracking, "/")
+	remote, branch := tracking[:idx], tracking[idx+1:]
+	if remote == "" || branch == "" {
+		return "", "", "", false
+	}
+	return tracking, remote, branch, true
 }
 
-// resolveUpstreamFromRunner is the testable core of resolveUpstream; it
-// accepts a git.Runner so tests can inject a FakeRunner.
-func resolveUpstreamFromRunner(ctx context.Context, runner git.Runner, remote, base string) (string, string, string) {
-	out, _, err := runner.Run(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-	if err == nil {
-		tracking := strings.TrimSpace(string(out))
-		if tracking != "" && tracking != "@{u}" && strings.Contains(tracking, "/") {
-			// tracking = "origin/feat/foo" → fetchRemote="origin", fetchBranch="feat/foo"
-			idx := strings.Index(tracking, "/")
-			return tracking, tracking[:idx], tracking[idx+1:]
+// computeAheadBehind reports how many commits HEAD has that upstream lacks
+// (ahead) and vice versa (behind). It runs a single `git rev-list
+// --left-right --count HEAD...upstream` invocation, so the cost is O(merge
+// distance), not O(history). Errors propagate so the caller can decide
+// whether to abort or fall through to legacy heuristics.
+func computeAheadBehind(ctx context.Context, runner git.Runner, upstream string) (ahead, behind int, err error) {
+	out, _, runErr := runner.Run(ctx, "rev-list", "--left-right", "--count", "HEAD..."+upstream)
+	if runErr != nil {
+		return 0, 0, runErr
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("rev-list output malformed: %q", out)
+	}
+	a, aerr := strconv.Atoi(fields[0])
+	if aerr != nil {
+		return 0, 0, fmt.Errorf("ahead parse: %w", aerr)
+	}
+	b, berr := strconv.Atoi(fields[1])
+	if berr != nil {
+		return 0, 0, fmt.Errorf("behind parse: %w", berr)
+	}
+	return a, b, nil
+}
+
+// printDivergenceRefusal renders a multi-line explanation when gk pull
+// declines to integrate a diverged history without explicit consent. It
+// shows the local commits at risk (their SHA will be rewritten on rebase)
+// plus an upstream count, then enumerates the three resolution paths:
+// rebase, merge, or fetch-only.
+func printDivergenceRefusal(w io.Writer, runner git.Runner, ctx context.Context, upstream string, ahead, behind int) {
+	bold := color.New(color.Bold).SprintFunc()
+	yellow := color.YellowString
+	faint := color.New(color.Faint).SprintFunc()
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%s histories diverged.\n", yellow("⚠"))
+	fmt.Fprintf(w, "  local has %s unpushed commit%s, upstream %s has %s new commit%s.\n",
+		bold(strconv.Itoa(ahead)), plural(ahead),
+		bold(upstream),
+		bold(strconv.Itoa(behind)), plural(behind))
+
+	// One-line list of the at-risk local commits (capped).
+	if commits, _, err := runner.Run(ctx, "log",
+		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--pretty=format:%h %s",
+		upstream+"..HEAD",
+	); err == nil {
+		lines := strings.Split(strings.TrimRight(string(commits), "\n"), "\n")
+		if len(lines) > 0 && lines[0] != "" {
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "  local commits at risk (SHAs change on rebase):")
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				parts := strings.SplitN(line, " ", 2)
+				if len(parts) == 2 {
+					fmt.Fprintf(w, "    %s  %s\n", yellow(parts[0]), parts[1])
+				}
+			}
+			if ahead > pullCommitLimit {
+				fmt.Fprintf(w, "    %s\n", faint(fmt.Sprintf("… +%d more", ahead-pullCommitLimit)))
+			}
 		}
 	}
-	return remote + "/" + base, remote, base
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  pick one:")
+	fmt.Fprintf(w, "    %s   %s\n", bold("gk pull --rebase"), faint("replay local on top of upstream (rewrites SHA)"))
+	fmt.Fprintf(w, "    %s    %s\n", bold("gk pull --merge"), faint("create a merge commit (preserves SHA)"))
+	fmt.Fprintf(w, "    %s   %s\n", bold("gk pull --fetch-only"), faint("just fetch, decide later"))
+	fmt.Fprintln(w, faint("  a backup ref is created automatically before --rebase or --merge."))
+	fmt.Fprintln(w)
 }
 
 // resolveStrategyFromRunner is the testable core of the strategy

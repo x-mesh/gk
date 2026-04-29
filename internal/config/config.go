@@ -348,7 +348,12 @@ func Defaults() Config {
 			AllowForce:     false,
 		},
 		Pull: PullConfig{
-			Strategy: "rebase",
+			// Empty by default. resolveIntegrationStrategy treats an unset
+			// value as "no explicit user choice" and falls through to the
+			// rebase default with source="default" — which gk pull uses to
+			// decide whether to refuse on diverged history. Pre-filling
+			// "rebase" here would mask that signal and silently auto-rebase.
+			Strategy: "",
 		},
 		Sync: SyncConfig{
 			Strategy: "rebase",

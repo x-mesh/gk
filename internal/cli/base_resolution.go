@@ -281,9 +281,9 @@ func renderExplainBase(res BaseResolution) string {
 	if res.Resolved == "" {
 		b.WriteString("  → " + yellow("unresolved") + "\n")
 	} else {
-		b.WriteString(fmt.Sprintf("  → resolved: %s  %s\n",
+		fmt.Fprintf(&b, "  → resolved: %s  %s\n",
 			cyan(res.Resolved),
-			faint("(source: "+string(res.Source)+")")))
+			faint("(source: "+string(res.Source)+")"))
 	}
 
 	if hint := explainBaseActionHint(res); hint != "" {

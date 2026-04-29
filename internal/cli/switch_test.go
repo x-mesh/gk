@@ -391,14 +391,15 @@ func TestBuildSwitchItems_DirtyMarkerInBranchCell(t *testing.T) {
 	}
 	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, dirty)
 	for _, it := range items {
+		cell := stripANSI(it.Cells[0])
 		switch it.Key {
 		case "local:main":
-			if strings.Contains(it.Cells[0], "*") || strings.Contains(it.Cells[0], "±") {
-				t.Errorf("clean branch should have no marker, got %q", it.Cells[0])
+			if strings.Contains(cell, "*") || strings.Contains(cell, "±") {
+				t.Errorf("clean branch should have no marker, got %q", cell)
 			}
 		case "local:feat/x":
-			if !strings.Contains(it.Cells[0], "*±") {
-				t.Errorf("dirty branch should have *± marker, got %q", it.Cells[0])
+			if !strings.Contains(cell, "*±") {
+				t.Errorf("dirty branch should have *± marker, got %q", cell)
 			}
 		}
 	}
@@ -521,20 +522,22 @@ func TestBuildSwitchItems_DivergenceInBranchCell(t *testing.T) {
 	}
 	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, nil)
 	for _, it := range items {
+		c0 := stripANSI(it.Cells[0])
+		c1 := stripANSI(it.Cells[1])
 		switch it.Key {
 		case "local:main":
-			if !strings.Contains(it.Cells[1], "(local)") && !strings.Contains(it.Cells[1], "↑ ") {
+			if !strings.Contains(c1, "(local)") && !strings.Contains(c1, "↑ ") {
 				// main has no upstream in this fixture → "(local)"
-				if !strings.Contains(it.Cells[1], "(local)") {
-					t.Errorf("main UPSTREAM cell: got %q, want (local)", it.Cells[1])
+				if !strings.Contains(c1, "(local)") {
+					t.Errorf("main UPSTREAM cell: got %q, want (local)", c1)
 				}
 			}
 		case "local:feat/x":
-			if !strings.Contains(it.Cells[0], "↑3 ↓1") {
-				t.Errorf("feat/x BRANCH cell should embed ↑3 ↓1, got %q", it.Cells[0])
+			if !strings.Contains(c0, "↑3 ↓1") {
+				t.Errorf("feat/x BRANCH cell should embed ↑3 ↓1, got %q", c0)
 			}
-			if strings.Contains(it.Cells[1], "↑3") || strings.Contains(it.Cells[1], "↓1") {
-				t.Errorf("UPSTREAM cell should NOT have diff, got %q", it.Cells[1])
+			if strings.Contains(c1, "↑3") || strings.Contains(c1, "↓1") {
+				t.Errorf("UPSTREAM cell should NOT have diff, got %q", c1)
 			}
 		}
 	}
@@ -600,24 +603,46 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 		if len(it.Cells) != 4 {
 			t.Errorf("expected 4 cells, got %d: %+v", len(it.Cells), it.Cells)
 		}
+		c0 := stripANSI(it.Cells[0])
+		c1 := stripANSI(it.Cells[1])
 		switch it.Key {
 		case "local:main":
-			if !strings.HasPrefix(it.Cells[0], "★") {
-				t.Errorf("current branch should have ★ marker, got %q", it.Cells[0])
+			if !strings.HasPrefix(c0, "★") {
+				t.Errorf("current branch should have ★ marker, got %q", c0)
 			}
 			if it.Cells[2] != "abc1234" {
 				t.Errorf("expected hash abc1234 in cell 2, got %q", it.Cells[2])
 			}
 		case "local:feat/free":
-			if !strings.HasPrefix(it.Cells[0], "●") {
-				t.Errorf("normal branch should have ● marker, got %q", it.Cells[0])
+			if !strings.HasPrefix(c0, "●") {
+				t.Errorf("normal branch should have ● marker, got %q", c0)
 			}
 		case "local:feat/locked":
-			if !strings.Contains(it.Cells[1], "wt: locked-tree") {
-				t.Errorf("expected 'wt: locked-tree' on locked row, got %q", it.Cells[1])
+			if !strings.Contains(c1, "wt: locked-tree") {
+				t.Errorf("expected 'wt: locked-tree' on locked row, got %q", c1)
 			}
 		}
 	}
+}
+
+// stripANSI removes ANSI escape sequences so test assertions match raw
+// glyphs regardless of color codes injected by the picker.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func TestLoadSwitchWorktrees_Topology(t *testing.T) {

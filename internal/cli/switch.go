@@ -412,6 +412,12 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		merged, _ := mergedBranches(ctx, runner, defaultBr)
 		wt := loadSwitchWorktrees(ctx, runner)
 
+		// Fallback divergence for branches without an upstream:
+		// compare against same-named remote ref when one exists. This
+		// covers the common case of `git switch -c feat/x` where the
+		// user later pushed to origin without `--set-upstream`.
+		applyUntrackedFallback(local, scanUntrackedDivergent(ctx, runner, remote))
+
 		// Per-worktree dirty state. Parallel git status per worktree;
 		// each call bounded to 200ms. Missing in map = clean / unknown.
 		dirty := loadWorktreeDirtyStates(ctx, wt)
@@ -525,6 +531,34 @@ func handleWorktreeRedirect(ctx context.Context, cmd *cobra.Command, entry Workt
 	return true, nil
 }
 
+// applyUntrackedFallback patches Ahead/Behind on branches that have
+// no configured upstream but a same-named remote ref that differs.
+// Mutates `local` in place.
+func applyUntrackedFallback(local []branchInfo, fallback []untrackedDivergent) {
+	if len(fallback) == 0 {
+		return
+	}
+	byName := make(map[string]untrackedDivergent, len(fallback))
+	for _, u := range fallback {
+		byName[u.Branch] = u
+	}
+	for i := range local {
+		if local[i].Upstream != "" {
+			continue
+		}
+		if u, ok := byName[local[i].Name]; ok {
+			local[i].Ahead = u.Ahead
+			local[i].Behind = u.Behind
+			// Surface the implicit remote in UPSTREAM cell so the user
+			// sees what the diff is being measured against. Marked
+			// inferred so the renderer uses a `~` prefix instead of
+			// `↑` — visually distinct from a configured upstream.
+			local[i].Upstream = u.Implicit
+			local[i].UpstreamInferred = true
+		}
+	}
+}
+
 // formatSwitchDiff renders ahead/behind vs upstream as "↑3 ↓5" /
 // "↑3" / "↓5" / "" (clean or no upstream).
 func formatSwitchDiff(ahead, behind int) string {
@@ -627,7 +661,11 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 			source = "(gone)"
 			coloredSource = cellFaint(source)
 		case b.Upstream != "":
-			source = "↑ " + b.Upstream
+			prefix := "↑ "
+			if b.UpstreamInferred {
+				prefix = "~ "
+			}
+			source = prefix + b.Upstream
 			coloredSource = source
 		default:
 			source = "(local)"

@@ -64,13 +64,15 @@ func init() {
 }
 
 type branchInfo struct {
-	Name       string
-	Upstream   string
-	LastCommit time.Time
-	Hash       string // 7-char short commit hash
-	Ahead      int    // commits this branch has that upstream lacks
-	Behind     int    // commits upstream has that this branch lacks
-	Gone       bool   // upstream configured but missing on remote
+	Name             string
+	Upstream         string
+	LastCommit       time.Time
+	Hash             string // 7-char short commit hash
+	Ahead            int    // commits this branch has that upstream lacks
+	Behind           int    // commits upstream has that this branch lacks
+	Gone             bool   // upstream configured but missing on remote
+	UpstreamInferred bool   // Upstream filled by same-named remote fallback,
+	// not by `branch.<name>.merge` config
 }
 
 func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) {

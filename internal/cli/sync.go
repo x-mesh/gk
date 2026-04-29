@@ -211,7 +211,6 @@ func runSyncCore(cmd *cobra.Command) error {
 	renderSyncSummary(cmd, runner, currentBranch, base, upstream, preHEAD, postHEAD, requested, strategy, selfFFPre, selfFFPost)
 
 	if stashed {
-		stashed = false
 		if err := popStash(ctx, runner); err != nil {
 			return fmt.Errorf("stash pop failed: %w", err)
 		}
@@ -418,7 +417,6 @@ func runSyncLegacy(cmd *cobra.Command) error {
 	}
 
 	if stashed {
-		stashed = false
 		if err := popStash(ctx, runner); err != nil {
 			return fmt.Errorf("stash pop failed: %w", err)
 		}

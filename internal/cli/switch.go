@@ -576,15 +576,18 @@ func formatSwitchDiff(d [2]int) string {
 }
 
 // colorSwitchDiff renders divergence with green ↑ and red ↓ for
-// at-a-glance "ahead/behind default" cues. Empty on no diff.
+// at-a-glance "ahead/behind default" cues. Empty on no diff. Used
+// inside Cells, so it must use fg-only-reset helpers (cellGreen /
+// cellRed) — `fatih/color`'s full reset would break the bubbles/table
+// Selected-row background mid-cell.
 func colorSwitchDiff(d [2]int) string {
 	ahead, behind := d[0], d[1]
 	parts := make([]string, 0, 2)
 	if ahead > 0 {
-		parts = append(parts, color.GreenString("↑%d", ahead))
+		parts = append(parts, cellGreen(fmt.Sprintf("↑%d", ahead)))
 	}
 	if behind > 0 {
-		parts = append(parts, color.RedString("↓%d", behind))
+		parts = append(parts, cellRed(fmt.Sprintf("↓%d", behind)))
 	}
 	return strings.Join(parts, " ")
 }
@@ -620,23 +623,23 @@ func formatDirtyMarker(d git.DirtyFlags) string {
 
 // colorDirtyMarker is the colored counterpart of formatDirtyMarker.
 // Colours: red `*` (working tree), yellow `±` (staged for commit),
-// red bold `!` (unmerged path — needs attention).
+// red bold `!` (unmerged path — needs attention). Used inside Cells
+// → fg-only-reset helpers preserve Selected-row background.
 func colorDirtyMarker(d git.DirtyFlags) string {
 	var b strings.Builder
 	if d.Modified {
-		b.WriteString(color.RedString("*"))
+		b.WriteString(cellRed("*"))
 	}
 	if d.Staged {
-		b.WriteString(color.YellowString("±"))
+		b.WriteString(cellYellow("±"))
 	}
 	if d.Conflict {
-		b.WriteString(color.New(color.FgRed, color.Bold).Sprint("!"))
+		b.WriteString(cellRedBold("!"))
 	}
 	return b.String()
 }
 
 func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.PickerItem {
-	faint := color.New(color.Faint).SprintFunc()
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
 
 	for _, b := range local {
@@ -647,27 +650,31 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		switch {
 		case isDefault:
 			source = "(default)"
-			coloredSource = faint(source)
+			coloredSource = cellFaint(source)
 		case locked:
 			tag := filepath.Base(entry.Path)
 			source = "wt: " + tag
-			coloredSource = color.YellowString("wt: ") + tag
+			coloredSource = cellYellow("wt: ") + tag
 		case b.Gone:
 			source = "(gone)"
-			coloredSource = faint(source)
+			coloredSource = cellFaint(source)
 		case b.Upstream != "":
 			source = "↑ " + b.Upstream
 			coloredSource = source
 		default:
 			source = "(local)"
-			coloredSource = faint(source)
+			coloredSource = cellFaint(source)
 		}
 		dKey := keyLocalPrefix + b.Name
 		upstream := composeUpstreamCell(diff[dKey], source, isDefault)
 		coloredUpstream := composeColoredUpstreamCell(diff[dKey], coloredSource, isDefault)
-		coloredMarker := color.GreenString("●")
+		// Display marker stays via fatih/color — it's only used by
+		// FzfPicker fallback which doesn't have row-level styles.
+		displayMarker := color.GreenString("●")
+		cellMarker := cellGreen("●")
 		if isCurrent {
-			coloredMarker = color.YellowString("★")
+			displayMarker = color.YellowString("★")
+			cellMarker = cellYellow("★")
 		}
 		coloredDirtyTag := ""
 		if d, ok := dirty[b.Name]; ok {
@@ -676,9 +683,9 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
 			Key:   keyLocalPrefix + b.Name,
-			Cells: []string{coloredMarker + " " + b.Name + coloredDirtyTag, coloredUpstream, b.Hash, age},
+			Cells: []string{cellMarker + " " + b.Name + coloredDirtyTag, coloredUpstream, b.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				coloredMarker, b.Name+coloredDirtyTag, upstream, b.Hash, age,
+				displayMarker, b.Name+coloredDirtyTag, upstream, b.Hash, age,
 			),
 		})
 	}
@@ -686,12 +693,12 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 	for _, r := range remotes {
 		age := shortAge(r.LastCommit)
 		source := "remote: " + r.Remote
-		coloredSource := color.CyanString("remote: ") + r.Remote
+		coloredSource := cellCyan("remote: ") + r.Remote
 		upstream := composeUpstreamCell(diff[keyRemotePrefix+r.TrackRef], source, false)
 		coloredUpstream := composeColoredUpstreamCell(diff[keyRemotePrefix+r.TrackRef], coloredSource, false)
 		items = append(items, ui.PickerItem{
 			Key:   keyRemotePrefix + r.TrackRef,
-			Cells: []string{color.CyanString("○") + " " + r.Name, coloredUpstream, r.Hash, age},
+			Cells: []string{cellCyan("○") + " " + r.Name, coloredUpstream, r.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
 				color.CyanString("○"), r.Name, upstream, r.Hash, age,
 			),

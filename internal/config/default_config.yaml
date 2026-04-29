@@ -36,9 +36,13 @@ status:
   # `base` adds a second "from <trunk> [gauge]" line on feature branches,
   # summarizing how far the current branch has diverged from the repo's
   # canonical trunk (resolved via `base_branch` below, then refs/remotes/
-  # origin/HEAD, then main/master/develop). Off by default because it adds
-  # ~15ms per invocation (one `git rev-list --left-right --count` call).
-  vis: [gauge, bar, progress, tree, staleness]
+  # origin/HEAD, then main/master/develop). On by default — surfaces the
+  # signal users typically read to decide whether to merge or sync. Cost
+  # is one local `git rev-list --left-right --count` (~10–15ms). Suppressed
+  # automatically on detached HEAD and when the branch IS the base. The
+  # line also carries a short action hint (`→ ready to merge into main`,
+  # `→ behind main: gk sync`, etc.) when the gauge alone isn't decisive.
+  vis: [gauge, bar, progress, base, tree, staleness]
 
   # Opt-in upstream fetch. Default false: `gk status` does no network activity
   # unless the caller passes `-f` / `--fetch`. Set to true to always fetch

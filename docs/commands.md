@@ -550,7 +550,7 @@ gk st [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vis <list>` | `gauge,bar,progress,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`, `heatmap`, `glyphs`. |
+| `--vis <list>` | `gauge,progress,base,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`, `heatmap`, `glyphs`. |
 | `-f`, `--fetch` | false | Fetch the current branch's upstream before reporting ↑N ↓N. Off by default — `gk status` does no network activity unless this flag (or `status.auto_fetch: true`) is set. |
 | `--xy-style` | `labels` (from `status.xy_style`) | Per-entry state column: `labels` (`new`/`mod`/`staged`/`conflict`, self-documenting, default), `glyphs` (`+` `~` `●` `⚔` `#`, compact), or `raw` (git's two-character code like `??`/`.M`/`UU`). |
 | `--top N` | 0 (unlimited) | Limit the entry list to the first N paths (alphabetically sorted for stable output); a `… +K more (total · showing top N)` footer surfaces the hidden remainder so the truncation is never silent. Composes with every viz layer. |
@@ -605,7 +605,7 @@ To always fetch without typing the flag, set `status.auto_fetch: true` in `.gk.y
 | `conflict` | Appends `[N hunks · both modified]` to each conflicts entry. Hunk count is derived from `<<<<<<<` markers in the worktree file. |
 | `churn` | Appends an 8-cell sparkline to each modified entry (per-commit add+del totals over the file's last 8 commits). Suppressed when the dirty tree has more than 50 files. |
 | `risk` | Flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `diff LOC + distinct-authors-over-30d × 10`, threshold 50. |
-| `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from the repo's mainline. Base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. Suppressed when the current branch *is* the base. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
+| `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from its base (or fork-parent, see below), plus a short action hint: `→ ready to merge into <base>` (ahead-only, clean tree), `→ behind <base>: gk sync` (behind-only), or `→ <base> moved: gk sync` (diverged). When `gk branch set-parent` has recorded a fork-parent for the current branch and the parent ref still exists, that parent replaces the trunk in this line — stacked workflows see `from feat/parent ↑2` instead of `from main ↑12`. Otherwise base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. If the recorded parent has been deleted, `gk status` writes a one-line `warning: parent <X> not found (deleted?); using <base>` to stderr and falls back to the trunk. Suppressed when the current branch *is* the base or HEAD is detached. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
 | `since-push` | Appends `· since push Xh (Nc)` to the branch line when there are unpushed commits, showing the age of the oldest one and the total unpushed count. Suppressed on up-to-date branches and when no upstream is configured. Cost: one `git rev-list @{u}..HEAD --format=%ct` call (~5 ms). |
 | `stash` | Adds a `  stash: 3 entries · newest 2h · oldest 5d · ⚠ 2 overlap with dirty` line when the stash is non-empty. Overlap warning checks whether the top stash touches any currently-dirty file (the common `git stash pop` footgun). Cost: one `git stash list` call + one `git stash show --name-only stash@{0}` when overlap-check applies (~5–10 ms total). |
 | `heatmap` | Prints a 2-D density grid above the entry list: rows = top-level directory, columns = `C` conflicts / `S` staged / `M` modified / `?` untracked. Each cell glyph scales (` `/`░`/`▒`/`▓`/`█`) with the peak count for the current state. Designed for large-repo triage — at 100+ dirty files the flat tree scrolls off-screen but the heatmap stays a single block. Cost: 0 (pure aggregation over porcelain output). |
@@ -797,6 +797,56 @@ gk branch pick
 - Presents a filterable list of local branches using an interactive TUI prompt.
 - Falls back to a simple numbered list when running in a non-TTY environment.
 - Use `--dry-run` to see which branch would be checked out without switching.
+
+### gk branch set-parent
+
+Record the fork-parent of the current branch in `branch.<current>.gk-parent`. Once set, `gk status` compares divergence against the parent instead of the repository's mainline — useful for stacked workflows where a feature branch is forked off another feature branch rather than from `main`.
+
+#### Synopsis
+
+```
+gk branch set-parent <parent>
+```
+
+#### Validations
+
+The write is rejected (with a non-zero exit code and a one-line message) when:
+
+- `<parent>` is empty
+- `<parent>` equals the current branch (no self-parent)
+- `<parent>` looks like a remote-tracking ref (`origin/main`, `upstream/...`, `fork/...`) — use the local branch name instead
+- `<parent>`'s ref name is malformed (rejected by `git check-ref-format`)
+- `<parent>` is a tag, not a branch
+- `<parent>` does not exist locally — the closest local branch is suggested via Levenshtein fuzzy match
+- assigning would create a cycle in the parent chain, or the chain would exceed 10 hops
+
+#### Examples
+
+```bash
+# Mark feat/auth-jwt as the parent of the current branch
+gk branch set-parent feat/auth-jwt
+
+# Common typo — gk suggests the closest match
+gk branch set-parent mian
+# → branch "mian" does not exist; did you mean "main"?
+```
+
+### gk branch unset-parent
+
+Clear the fork-parent metadata of the current branch (`git config --unset branch.<current>.gk-parent`). Idempotent: succeeds silently when no parent is set. Status output reverts to base-relative divergence on the next invocation.
+
+#### Synopsis
+
+```
+gk branch unset-parent
+```
+
+#### Examples
+
+```bash
+# Stop tracking a parent (e.g., after the parent branch was merged into main)
+gk branch unset-parent
+```
 
 ---
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/branchclean"
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
@@ -59,7 +60,39 @@ func init() {
 		RunE:  runBranchPick,
 	}
 
-	branchCmd.AddCommand(listCmd, cleanCmd, pickCmd)
+	setParentCmd := &cobra.Command{
+		Use:   "set-parent <parent>",
+		Short: "Record the fork-parent of the current branch",
+		Long: `Records ` + "`branch.<current>.gk-parent = <parent>`" + ` so commands like
+gk status compare divergence against the actual parent branch instead of
+the repository's mainline. Useful for stacked workflows where a feature
+branch is forked off another feature branch rather than from main.
+
+Validations applied before write:
+  - parent must be a non-empty local branch name
+  - parent != current branch (no self-parent)
+  - parent must not be a remote-tracking ref (e.g. origin/main)
+  - parent must be a real local branch (not a tag, must exist)
+  - assigning parent must not create a cycle, and the resulting parent
+    chain must be ≤ 10 hops deep
+
+If the named parent does not exist, the closest local branch name is
+suggested (Levenshtein-based fuzzy match) so common typos are caught.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runBranchSetParent,
+	}
+
+	unsetParentCmd := &cobra.Command{
+		Use:   "unset-parent",
+		Short: "Clear the fork-parent metadata of the current branch",
+		Long: `Removes ` + "`branch.<current>.gk-parent`" + ` from git config. Idempotent:
+running it on a branch with no parent set succeeds silently. Status
+output reverts to base-relative divergence on the next invocation.`,
+		Args: cobra.NoArgs,
+		RunE: runBranchUnsetParent,
+	}
+
+	branchCmd.AddCommand(listCmd, cleanCmd, pickCmd, setParentCmd, unsetParentCmd)
 	rootCmd.AddCommand(branchCmd)
 }
 
@@ -454,4 +487,46 @@ func pickWithPrompt(names []string, in io.Reader, out io.Writer) (string, error)
 		return "", fmt.Errorf("invalid selection %q", s.Text())
 	}
 	return names[idx-1], nil
+}
+
+func runBranchSetParent(cmd *cobra.Command, args []string) error {
+	parent := strings.TrimSpace(args[0])
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	client := git.NewClient(runner)
+
+	current, err := client.CurrentBranch(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("could not determine current branch: %w", err)
+	}
+	if current == "" {
+		return fmt.Errorf("HEAD is detached; check out a branch first")
+	}
+
+	if err := branchparent.ValidateSet(cmd.Context(), client, current, parent); err != nil {
+		return err
+	}
+	if err := branchparent.NewConfig(client).SetParent(cmd.Context(), current, parent); err != nil {
+		return fmt.Errorf("failed to set parent: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "set parent of %s to %s\n", current, parent)
+	return nil
+}
+
+func runBranchUnsetParent(cmd *cobra.Command, _ []string) error {
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	client := git.NewClient(runner)
+
+	current, err := client.CurrentBranch(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("could not determine current branch: %w", err)
+	}
+	if current == "" {
+		return fmt.Errorf("HEAD is detached; check out a branch first")
+	}
+
+	if err := branchparent.NewConfig(client).UnsetParent(cmd.Context(), current); err != nil {
+		return fmt.Errorf("failed to unset parent: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "unset parent of %s\n", current)
+	return nil
 }

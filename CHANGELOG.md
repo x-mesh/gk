@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **브랜치별 fork-parent 메타데이터 (`gk branch set-parent`/`unset-parent`).**
+  Stacked workflow 사용자가 `git config branch.<name>.gk-parent <parent>`로
+  실제 부모 브랜치를 등록하면, `gk status`가 main 대신 parent 기준으로
+  ahead/behind를 출력합니다 (`from feat/parent ↑2 ↓0 → ready to merge into feat/parent`).
+  - Write-time 검증: self/cycle (depth ≤10)/non-branch/tag/존재 안 함 모두 거부.
+    오타는 Levenshtein 기반 fuzzy 제안 ("did you mean 'main'?").
+    Remote-tracking ref 거부는 실제 `git remote` 목록 기반 — 휴리스틱 아님.
+  - parent 가리키는 브랜치가 삭제된 경우 stderr에 1-line 경고 후 base로
+    silent fallback — status 출력 자체는 base 라인으로 유지됩니다.
+  - 신규 패키지 `internal/branchparent/`. Phase 1은 storage + status 통합만;
+    추론 알고리즘 (reflog 기반 자동 parent 감지) 및 `gk switch`/`gk worktree`
+    parent 인지는 Phase 2 예정. sync/merge/ship은 의도적으로 제외 — 변경
+    명령에는 명시적 `--base` 인자가 더 안전합니다.
+- **`gk status`의 `base` 시각화 레이어 기본 활성화.** 이전에는 `--vis base`로
+  opt-in해야 했던 `from <trunk> ↑N ↓M [hint]` 라인이 기본 출력. 액션 힌트도
+  추가됐습니다 — `→ ready to merge into main` (ahead-only, clean tree),
+  `→ behind main: gk sync` (behind-only), `→ main moved: gk sync` (diverged).
+  - **Perf 영향:** 일반 사용자의 `gk status` baseline이 약 +6-12ms 증가합니다
+    (`git rev-list --left-right` 1회 + `git config --get` 1회 추가 spawn).
+    parent metadata가 설정된 브랜치에서는 추가로 `git rev-parse --verify` 1회
+    더 호출됩니다 (~+1-2ms). 기존 ≤10ms budget을 약간 넘기지만, 머지 판단
+    신호의 가시성 향상이 비용을 정당화합니다. opt-out하려면 `.gk.yaml`의
+    `status.vis`에서 `base`를 제외하세요.
+
 ### Changed (BREAKING)
 
 - **`gk sync`가 "현재 브랜치를 base로 따라잡기"로 재정의됨.** 기본 전략은 rebase.

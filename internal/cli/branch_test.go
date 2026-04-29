@@ -664,3 +664,118 @@ func TestBranchClean_NoForce_UsesLowercaseD(t *testing.T) {
 		t.Error("expected git branch -d to be called without --force")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// runBranchSetParent / runBranchUnsetParent — CLI entry-point integration tests
+// ---------------------------------------------------------------------------
+
+func TestRunBranchSetParent_Happy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/parent")
+	repo.WriteFile("p.txt", "p\n")
+	repo.Commit("p")
+	repo.Checkout("main")
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s\n")
+	repo.Commit("s")
+	t.Chdir(repo.Dir)
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{Use: "set-parent"}
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetContext(context.Background())
+
+	if err := runBranchSetParent(cmd, []string{"feat/parent"}); err != nil {
+		t.Fatalf("set-parent should succeed, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "set parent of feat/sub to feat/parent") {
+		t.Errorf("expected confirmation message, got: %q", buf.String())
+	}
+	out, _, err := (&git.ExecRunner{Dir: repo.Dir}).Run(context.Background(),
+		"config", "--get", "branch.feat/sub.gk-parent")
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "feat/parent" {
+		t.Errorf("config not written: got %q", out)
+	}
+}
+
+func TestRunBranchSetParent_DetachedHEAD(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	r := &git.ExecRunner{Dir: repo.Dir}
+	shaOut, _, _ := r.Run(context.Background(), "rev-parse", "HEAD")
+	sha := strings.TrimSpace(string(shaOut))
+	r.Run(context.Background(), "checkout", sha)
+	t.Chdir(repo.Dir)
+
+	cmd := &cobra.Command{Use: "set-parent"}
+	cmd.SetContext(context.Background())
+	err := runBranchSetParent(cmd, []string{"main"})
+	if err == nil {
+		t.Fatal("must error on detached HEAD")
+	}
+	if !strings.Contains(err.Error(), "detached") {
+		t.Errorf("expected 'detached' in error, got: %v", err)
+	}
+}
+
+func TestRunBranchSetParent_InvalidParentTypo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/sub")
+	t.Chdir(repo.Dir)
+
+	cmd := &cobra.Command{Use: "set-parent"}
+	cmd.SetContext(context.Background())
+	err := runBranchSetParent(cmd, []string{"mian"})
+	if err == nil {
+		t.Fatal("must error on non-existent branch")
+	}
+	if !strings.Contains(err.Error(), "did you mean") {
+		t.Errorf("expected fuzzy suggestion, got: %v", err)
+	}
+}
+
+func TestRunBranchUnsetParent_Idempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s\n")
+	repo.Commit("s")
+	t.Chdir(repo.Dir)
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{Use: "unset-parent"}
+	cmd.SetOut(&buf)
+	cmd.SetContext(context.Background())
+
+	if err := runBranchUnsetParent(cmd, nil); err != nil {
+		t.Fatalf("unset on absent key must be idempotent, got: %v", err)
+	}
+	r := &git.ExecRunner{Dir: repo.Dir}
+	if _, _, err := r.Run(context.Background(),
+		"config", "branch.feat/sub.gk-parent", "main"); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	buf.Reset()
+	if err := runBranchUnsetParent(cmd, nil); err != nil {
+		t.Fatalf("unset after set must succeed, got: %v", err)
+	}
+	out, _, err := r.Run(context.Background(),
+		"config", "--get", "branch.feat/sub.gk-parent")
+	if err == nil {
+		t.Errorf("config still present after unset: %q", out)
+	}
+}

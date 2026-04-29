@@ -511,3 +511,126 @@ func TestStatus_IgnoredEntry(t *testing.T) {
 		t.Errorf("expected KindIgnored, got %v", st.Entries[0].Kind)
 	}
 }
+
+// ---- Branch config helpers ----
+
+func TestGetBranchConfig_Set(t *testing.T) {
+	r := fakeWithResponse(
+		"config --get branch.feat/x.gk-parent",
+		FakeResponse{Stdout: "feat/parent\n"},
+	)
+	c := NewClient(r)
+	got, err := c.GetBranchConfig(context.Background(), "feat/x", "gk-parent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "feat/parent" {
+		t.Errorf("want %q, got %q", "feat/parent", got)
+	}
+}
+
+func TestGetBranchConfig_Unset(t *testing.T) {
+	// git config --get exits 1 when the key is absent. Should return ("", nil).
+	r := fakeWithResponse(
+		"config --get branch.feat/x.gk-parent",
+		FakeResponse{ExitCode: 1},
+	)
+	c := NewClient(r)
+	got, err := c.GetBranchConfig(context.Background(), "feat/x", "gk-parent")
+	if err != nil {
+		t.Fatalf("unset should not error, got: %v", err)
+	}
+	if got != "" {
+		t.Errorf("want empty, got %q", got)
+	}
+}
+
+func TestGetBranchConfig_RealError(t *testing.T) {
+	// Non-1 exit codes (broken config, etc.) must surface.
+	r := fakeWithResponse(
+		"config --get branch.feat/x.gk-parent",
+		FakeResponse{ExitCode: 128, Stderr: "fatal: bad config"},
+	)
+	c := NewClient(r)
+	_, err := c.GetBranchConfig(context.Background(), "feat/x", "gk-parent")
+	if err == nil {
+		t.Fatal("want error for exit 128, got nil")
+	}
+}
+
+func TestSetBranchConfig_Roundtrip(t *testing.T) {
+	r := &FakeRunner{}
+	c := NewClient(r)
+	if err := c.SetBranchConfig(context.Background(), "feat/x", "gk-parent", "main"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Calls) != 1 {
+		t.Fatalf("want 1 call, got %d", len(r.Calls))
+	}
+	got := strings.Join(r.Calls[0].Args, " ")
+	if got != "config branch.feat/x.gk-parent main" {
+		t.Errorf("want %q, got %q", "config branch.feat/x.gk-parent main", got)
+	}
+}
+
+func TestSetBranchConfig_Error(t *testing.T) {
+	r := fakeWithResponse(
+		"config branch.feat/x.gk-parent main",
+		FakeResponse{ExitCode: 4, Stderr: "no such key"},
+	)
+	c := NewClient(r)
+	err := c.SetBranchConfig(context.Background(), "feat/x", "gk-parent", "main")
+	if err == nil || !strings.Contains(err.Error(), "no such key") {
+		t.Fatalf("want error containing stderr, got: %v", err)
+	}
+}
+
+func TestUnsetBranchConfig_Idempotent(t *testing.T) {
+	// Exit 5 = key already absent. Treat as success.
+	r := fakeWithResponse(
+		"config --unset branch.feat/x.gk-parent",
+		FakeResponse{ExitCode: 5},
+	)
+	c := NewClient(r)
+	if err := c.UnsetBranchConfig(context.Background(), "feat/x", "gk-parent"); err != nil {
+		t.Errorf("unset of absent key should be idempotent, got: %v", err)
+	}
+}
+
+func TestUnsetBranchConfig_Success(t *testing.T) {
+	r := &FakeRunner{}
+	c := NewClient(r)
+	if err := c.UnsetBranchConfig(context.Background(), "feat/x", "gk-parent"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.Join(r.Calls[0].Args, " ")
+	if got != "config --unset branch.feat/x.gk-parent" {
+		t.Errorf("want %q, got %q", "config --unset branch.feat/x.gk-parent", got)
+	}
+}
+
+func TestUnsetBranchConfig_RealError(t *testing.T) {
+	r := fakeWithResponse(
+		"config --unset branch.feat/x.gk-parent",
+		FakeResponse{ExitCode: 128, Stderr: "fatal: not in a git dir"},
+	)
+	c := NewClient(r)
+	if err := c.UnsetBranchConfig(context.Background(), "feat/x", "gk-parent"); err == nil {
+		t.Fatal("want error for non-5 exit, got nil")
+	}
+}
+
+func TestIsExitCode(t *testing.T) {
+	if !isExitCode(&ExitError{Code: 1}, 1) {
+		t.Error("ExitError{Code:1} should match code=1")
+	}
+	if isExitCode(&ExitError{Code: 1}, 2) {
+		t.Error("ExitError{Code:1} should not match code=2")
+	}
+	if isExitCode(errors.New("plain"), 1) {
+		t.Error("plain error should not match")
+	}
+	if isExitCode(nil, 1) {
+		t.Error("nil should not match")
+	}
+}

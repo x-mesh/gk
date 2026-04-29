@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -387,6 +388,39 @@ func canonPath(p string) string {
 // then re-enter on the next iteration.
 func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command) (switchPick, error) {
 	showRemotes := false
+
+	// Hoist loop-invariant probes outside the picker re-entry loop.
+	// `cur`, `defaultBr`, and `wt` don't change across n/d/D actions
+	// (n exits the loop entirely; d/D never delete the current branch
+	// or modify worktrees). Refreshing them every iteration was the
+	// dominant source of post-action stalls.
+	cur, _ := client.CurrentBranch(ctx)
+	remote := "origin"
+	if cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
+	var defaultBr string
+	var wt switchWorktreeMap
+	{
+		var setupWg sync.WaitGroup
+		setupWg.Add(2)
+		go func() {
+			defer setupWg.Done()
+			defaultBr, _ = resolveMainBranch(ctx, runner, client, remote)
+		}()
+		go func() {
+			defer setupWg.Done()
+			wt = loadSwitchWorktrees(ctx, runner)
+		}()
+		setupWg.Wait()
+	}
+	// Dirty state derives from wt and is expensive (per-worktree git
+	// status). Compute once — concurrent editor edits between picker
+	// renders won't reflect, but that's an informational signal, not
+	// a correctness gate. After d/D, dirty entries for the deleted
+	// branch are simply unused.
+	dirty := loadWorktreeDirtyStates(ctx, wt)
+
 	for {
 		local, err := listLocalBranches(ctx, runner)
 		if err != nil {
@@ -394,23 +428,21 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		}
 		// Always enumerate remotes — we need the count to surface a
 		// "N remote hidden (r)" hint even when not displaying them.
+		// Sorted once here so the `r` toggle's first press shows
+		// recency-ordered rows just like a re-entered loop would.
 		allRemotes, rerr := listRemoteOnlyBranches(ctx, runner, local)
 		if rerr != nil {
 			allRemotes = nil
 		}
+		sort.Slice(allRemotes, func(i, j int) bool {
+			return allRemotes[i].LastCommit.After(allRemotes[j].LastCommit)
+		})
 		var remotes []remoteBranchInfo
 		if showRemotes {
 			remotes = allRemotes
 		}
 
-		cur, _ := client.CurrentBranch(ctx)
-		remote := "origin"
-		if cfg != nil && cfg.Remote != "" {
-			remote = cfg.Remote
-		}
-		defaultBr, _ := resolveMainBranch(ctx, runner, client, remote)
 		merged, _ := mergedBranches(ctx, runner, defaultBr)
-		wt := loadSwitchWorktrees(ctx, runner)
 
 		// Fallback divergence for branches without an upstream:
 		// compare against same-named remote ref when one exists. This
@@ -423,10 +455,6 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		// "from main@abc1234" instead of a flat "(local)".
 		computeForkPoints(ctx, runner, defaultBr, local)
 
-		// Per-worktree dirty state. Parallel git status per worktree;
-		// each call bounded to 200ms. Missing in map = clean / unknown.
-		dirty := loadWorktreeDirtyStates(ctx, wt)
-
 		// Pin the current branch to the top so the user always sees
 		// "where am I" on the first row; sort the rest by recency.
 		sort.SliceStable(local, func(i, j int) bool {
@@ -438,9 +466,8 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			}
 			return local[i].LastCommit.After(local[j].LastCommit)
 		})
-		sort.Slice(remotes, func(i, j int) bool {
-			return remotes[i].LastCommit.After(remotes[j].LastCommit)
-		})
+		// `remotes` shares storage with `allRemotes`, which is sorted
+		// once at enumeration above — no need to sort again here.
 
 		items := buildSwitchItems(local, remotes, cur, wt, dirty)
 		if len(items) == 0 {
@@ -550,6 +577,10 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		hash string
 	}
 	out := make(chan result, len(local))
+	// Bound concurrency at NumCPU so a repo with hundreds of stale
+	// local branches doesn't fork hundreds of `git merge-base`
+	// processes simultaneously (fd / pid pressure + context-switch tax).
+	sem := make(chan struct{}, runtime.NumCPU())
 	var wg sync.WaitGroup
 	for i, b := range local {
 		if b.Upstream != "" || b.Name == defaultBr {
@@ -558,6 +589,8 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		wg.Add(1)
 		go func(idx int, branch string) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 			defer cancel()
 			stdout, _, err := runner.Run(callCtx, "merge-base", branch, defaultBr)

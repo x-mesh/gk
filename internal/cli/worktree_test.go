@@ -404,3 +404,40 @@ func TestResolveWorktreePath_RejectsProjectWithSeparator(t *testing.T) {
 		}
 	}
 }
+
+// --- worktreeDiffsFromBranches ---
+
+func TestWorktreeDiffsFromBranches(t *testing.T) {
+	t.Parallel()
+	branches := []branchInfo{
+		{Name: "feat/a", Ahead: 3, Behind: 1},
+		{Name: "feat/b", Ahead: 0, Behind: 0}, // synced — excluded
+		{Name: "main", Ahead: 0, Behind: 0},
+	}
+	entries := []WorktreeEntry{
+		{Path: "/wt/a", Branch: "feat/a"},
+		{Path: "/wt/b", Branch: "feat/b"},                        // synced — excluded
+		{Path: "/wt/c", Branch: "feat/missing"},                  // not in branches — excluded
+		{Path: "/wt/d", Branch: "feat/detached", Detached: true}, // detached — excluded
+		{Path: "/wt/e", Bare: true, Branch: "main"},              // bare — excluded
+		{Path: "/wt/f", Branch: ""},                              // empty branch — excluded
+	}
+	got := worktreeDiffsFromBranches(entries, branches)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %+v", len(got), got)
+	}
+	if got["feat/a"] != [2]int{3, 1} {
+		t.Errorf("feat/a: want [3 1], got %+v", got["feat/a"])
+	}
+}
+
+func TestWorktreeDiffsFromBranches_EmptyInputs(t *testing.T) {
+	t.Parallel()
+	if got := worktreeDiffsFromBranches(nil, nil); len(got) != 0 {
+		t.Errorf("nil/nil should yield empty map, got %+v", got)
+	}
+	if got := worktreeDiffsFromBranches(
+		[]WorktreeEntry{{Path: "/wt", Branch: "main"}}, nil); len(got) != 0 {
+		t.Errorf("empty branches should yield empty map, got %+v", got)
+	}
+}

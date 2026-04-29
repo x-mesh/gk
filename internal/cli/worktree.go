@@ -154,6 +154,34 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 //	branch refs/heads/<name>   (or: "detached" / "bare")
 //	locked [reason...]
 //	prunable [reason...]
+//
+// worktreeDiffsFromBranches projects per-branch upstream divergence
+// (Ahead/Behind already populated by listLocalBranches) onto a
+// worktree-entry list, keyed by branch name. Bare/detached worktrees,
+// branches not in the list, and zero-diff branches are excluded so
+// the caller can quickly check `_, ok := diffs[branch]`.
+func worktreeDiffsFromBranches(entries []WorktreeEntry, branches []branchInfo) map[string][2]int {
+	byName := make(map[string]branchInfo, len(branches))
+	for _, b := range branches {
+		byName[b.Name] = b
+	}
+	out := map[string][2]int{}
+	for _, e := range entries {
+		if e.Bare || e.Detached || e.Branch == "" {
+			continue
+		}
+		b, ok := byName[e.Branch]
+		if !ok {
+			continue
+		}
+		if b.Ahead == 0 && b.Behind == 0 {
+			continue
+		}
+		out[e.Branch] = [2]int{b.Ahead, b.Behind}
+	}
+	return out
+}
+
 func parseWorktreePorcelain(raw string) []WorktreeEntry {
 	var out []WorktreeEntry
 	var cur *WorktreeEntry
@@ -409,9 +437,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// loadWorktreeDiffs reads ahead/behind vs upstream from each
-	// branch's `%(upstream:track)` field. One for-each-ref call across
-	// all refs/heads — same data feeds gk sw too. Skipped in global
-	// mode (cross-repo iteration is out of scope). Returns nil on
+	// branch's `%(upstream:track)` field. Skipped in global mode
+	// (cross-repo iteration is out of scope). Returns nil on
 	// failure → callers render no diff suffix.
 	loadWorktreeDiffs := func(entries []WorktreeEntry) map[string][2]int {
 		if global {
@@ -421,25 +448,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return nil
 		}
-		byName := make(map[string]branchInfo, len(branches))
-		for _, b := range branches {
-			byName[b.Name] = b
-		}
-		out := map[string][2]int{}
-		for _, e := range entries {
-			if e.Bare || e.Detached || e.Branch == "" {
-				continue
-			}
-			b, ok := byName[e.Branch]
-			if !ok {
-				continue
-			}
-			if b.Ahead == 0 && b.Behind == 0 {
-				continue
-			}
-			out[e.Branch] = [2]int{b.Ahead, b.Behind}
-		}
-		return out
+		return worktreeDiffsFromBranches(entries, branches)
 	}
 
 	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {

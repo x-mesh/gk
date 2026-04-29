@@ -165,3 +165,109 @@ func updateAs(m tablePickerModel, msg tea.Msg) (tablePickerModel, tea.Cmd) {
 	got, cmd := m.Update(msg)
 	return got.(tablePickerModel), cmd
 }
+
+// --- Exit / ExtraAction / Subtitle (added by review fix) ---
+
+func newTablePickerWithExtras(items []PickerItem, extras []TablePickerExtraKey) tablePickerModel {
+	m := newTablePickerModelForTest(items)
+	m.extras = extras
+	m.all = items
+	return m
+}
+
+func TestTablePicker_ExitHotkeyCarriesExtraAction(t *testing.T) {
+	items := []PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "n", Help: "n new", Exit: true},
+	})
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if got.chosenItem.ExtraAction != "n" {
+		t.Errorf("expected ExtraAction=n, got %q", got.chosenItem.ExtraAction)
+	}
+	if got.chosenItem.Key != "a" {
+		t.Errorf("ExtraAction should carry the cursor row, got Key=%q", got.chosenItem.Key)
+	}
+	if cmd == nil {
+		t.Errorf("Exit hotkey should return tea.Quit cmd")
+	}
+}
+
+func TestTablePicker_ExitHotkeyOnEmptyListStillFires(t *testing.T) {
+	// Critical edge case: `n new branch` must work even when picker
+	// is in the empty placeholder state — the contract is "Exit
+	// quits regardless of items".
+	m := newTablePickerWithExtras(nil, []TablePickerExtraKey{
+		{Key: "n", Help: "n new", Exit: true},
+	})
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if got.chosenItem.ExtraAction != "n" {
+		t.Errorf("Exit on empty must still set ExtraAction, got %q",
+			got.chosenItem.ExtraAction)
+	}
+	if cmd == nil {
+		t.Errorf("Exit on empty should return tea.Quit cmd")
+	}
+}
+
+func TestTablePicker_NonExitHotkeyRunsOnPress(t *testing.T) {
+	pressed := false
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", Help: "r toggle",
+			OnPress: func() ([]PickerItem, []string, error) {
+				pressed = true
+				return items, nil, nil
+			}},
+	})
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !pressed {
+		t.Errorf("OnPress should have fired")
+	}
+	if got.chosenItem.ExtraAction != "" {
+		t.Errorf("non-Exit OnPress must NOT set ExtraAction, got %q",
+			got.chosenItem.ExtraAction)
+	}
+	if cmd != nil {
+		t.Errorf("non-Exit OnPress must NOT quit; got cmd %v", cmd)
+	}
+}
+
+func TestTablePicker_SubtitleRenderedAboveFilter(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	m.subtitle = "on: main · hidden: 2 remote (r)"
+	view := m.View()
+	// Subtitle line must come before the filter line; "▸ " marker is
+	// the contract for visibility on dark terminals.
+	subIdx := strIdx(view, "▸ on: main")
+	filterIdx := strIdx(view, "press / to filter")
+	if subIdx < 0 {
+		t.Fatalf("subtitle missing; got view: %q", view)
+	}
+	if filterIdx < 0 {
+		t.Fatalf("filter line missing; got view: %q", view)
+	}
+	if subIdx > filterIdx {
+		t.Errorf("subtitle should appear before filter; subIdx=%d filterIdx=%d",
+			subIdx, filterIdx)
+	}
+}
+
+func TestTablePicker_NoSubtitleHidesLine(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	view := m.View()
+	if strIdx(view, "▸ ") >= 0 {
+		t.Errorf("empty subtitle must not render the marker line; got %q", view)
+	}
+}
+
+func strIdx(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}

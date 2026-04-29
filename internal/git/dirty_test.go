@@ -17,7 +17,25 @@ func TestParsePorcelainV1(t *testing.T) {
 		{"ignored only ignored", "!! ignored\n", DirtyFlags{}},
 		{"conflict UU", "UU conflict.txt\n", DirtyFlags{Conflict: true}},
 		{"conflict AA", "AA conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict DD", "DD conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict AU", "AU conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict UD", "UD conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict UA", "UA conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict DU", "DU conflict.txt\n", DirtyFlags{Conflict: true}},
 		{"conflict mix overrides", " M m.txt\nUU c.txt\n", DirtyFlags{Modified: true, Conflict: true}},
+		// Adversarial: -z mode rename target whose path begins with
+		// bytes that resemble a conflict code. The skipNext logic
+		// must consume the source-path NUL record so we don't
+		// re-classify "UU/file" as an unmerged path.
+		{"NUL rename target starts with UU bytes",
+			"R  new\x00UU/oldpath\x00",
+			DirtyFlags{Staged: true}},
+		{"NUL rename target starts with DD bytes",
+			"R  new\x00DD/oldpath\x00",
+			DirtyFlags{Staged: true}},
+		{"NUL copy target starts with AA bytes",
+			"C  new\x00AA/oldpath\x00",
+			DirtyFlags{Staged: true}},
 		{"rename staged", "R  old -> new\n", DirtyFlags{Staged: true}},
 		{"deleted unstaged", " D removed.txt\n", DirtyFlags{Modified: true}},
 		{"deleted staged", "D  removed.txt\n", DirtyFlags{Staged: true}},

@@ -391,16 +391,161 @@ func TestBuildSwitchItems_DirtyMarkerInBranchCell(t *testing.T) {
 	}
 	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, dirty)
 	for _, it := range items {
+		cell := stripANSI(it.Cells[0])
 		switch it.Key {
 		case "local:main":
-			if strings.Contains(it.Cells[0], "*") || strings.Contains(it.Cells[0], "±") {
-				t.Errorf("clean branch should have no marker, got %q", it.Cells[0])
+			if strings.Contains(cell, "*") || strings.Contains(cell, "±") {
+				t.Errorf("clean branch should have no marker, got %q", cell)
 			}
 		case "local:feat/x":
-			if !strings.Contains(it.Cells[0], "*±") {
-				t.Errorf("dirty branch should have *± marker, got %q", it.Cells[0])
+			if !strings.Contains(cell, "*±") {
+				t.Errorf("dirty branch should have *± marker, got %q", cell)
 			}
 		}
+	}
+}
+
+// --- subtitle / decode / fallback / fork helpers ---
+
+func TestBuildSwitchSubtitle(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		cur         string
+		wt          switchWorktreeMap
+		allRemotes  []remoteBranchInfo
+		showRemotes bool
+		want        string
+	}{
+		{"empty", "", switchWorktreeMap{}, nil, false, ""},
+		{"current only", "main", switchWorktreeMap{}, nil, false, "on: main"},
+		{"current + linked worktree", "feat/x",
+			switchWorktreeMap{linked: true, current: WorktreeEntry{Path: "/wt/x"}},
+			nil, false,
+			"on: feat/x  ·  worktree: /wt/x"},
+		{"hidden remotes", "main", switchWorktreeMap{},
+			[]remoteBranchInfo{{Name: "a"}, {Name: "b"}}, false,
+			"on: main  ·  hidden: 2 remote (r)"},
+		{"showRemotes hides hint", "main", switchWorktreeMap{},
+			[]remoteBranchInfo{{Name: "a"}}, true,
+			"on: main"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := buildSwitchSubtitle(c.cur, c.wt, c.allRemotes, c.showRemotes)
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestDecodeSwitchChoice(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		key      string
+		wantName string
+		wantTrk  string
+		wantRem  bool
+		wantErr  bool
+	}{
+		{"local:foo", "foo", "", false, false},
+		{"local:__placeholder__", "", "", false, true},
+		{"remote:origin/feat/x", "feat/x", "origin/feat/x", true, false},
+		{"bare-key", "bare-key", "", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.key, func(t *testing.T) {
+			pick, err := decodeSwitchChoice(ui.PickerItem{Key: c.key})
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			if pick.Name != c.wantName || pick.TrackRef != c.wantTrk || pick.Remote != c.wantRem {
+				t.Errorf("got %+v, want Name=%q TrackRef=%q Remote=%v",
+					pick, c.wantName, c.wantTrk, c.wantRem)
+			}
+		})
+	}
+}
+
+func TestApplyUntrackedFallback(t *testing.T) {
+	t.Parallel()
+	t.Run("no fallback", func(t *testing.T) {
+		local := []branchInfo{{Name: "a"}}
+		applyUntrackedFallback(local, nil)
+		if local[0].UpstreamInferred || local[0].Ahead != 0 {
+			t.Errorf("nil fallback should not mutate, got %+v", local[0])
+		}
+	})
+	t.Run("upstream already set is skipped", func(t *testing.T) {
+		local := []branchInfo{{Name: "a", Upstream: "origin/a"}}
+		applyUntrackedFallback(local, []untrackedDivergent{
+			{Branch: "a", Implicit: "origin/a", Ahead: 3, Behind: 1},
+		})
+		if local[0].UpstreamInferred {
+			t.Errorf("branch with upstream must not be marked inferred")
+		}
+	})
+	t.Run("matches name and applies counts", func(t *testing.T) {
+		local := []branchInfo{{Name: "feat/x"}}
+		applyUntrackedFallback(local, []untrackedDivergent{
+			{Branch: "feat/x", Implicit: "origin/feat/x", Ahead: 3, Behind: 1},
+		})
+		got := local[0]
+		if !got.UpstreamInferred || got.Upstream != "origin/feat/x" ||
+			got.Ahead != 3 || got.Behind != 1 {
+			t.Errorf("expected inferred upstream + counts, got %+v", got)
+		}
+	})
+}
+
+// computeForkPoints integration test — uses real git via testutil.NewRepo.
+func TestComputeForkPoints_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	// main has the seed commit.
+	mainHead := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+	repo.CreateBranch("feat/y")
+	repo.WriteFile("y.txt", "y")
+	repo.Commit("y commit on feat/y")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	local := []branchInfo{
+		{Name: "main"},
+		{Name: "feat/y"},
+	}
+	computeForkPoints(context.Background(), runner, "main", local)
+
+	// main is the default branch → not annotated.
+	if local[0].ForkPoint != "" {
+		t.Errorf("default branch should not get fork annotation, got %+v", local[0])
+	}
+	// feat/y forks at the seed commit (mainHead).
+	if local[1].ForkPoint == "" {
+		t.Errorf("feat/y missing fork point, got %+v", local[1])
+	}
+	if !strings.HasPrefix(mainHead, local[1].ForkPoint) {
+		t.Errorf("fork point %q should be prefix of mainHead %q",
+			local[1].ForkPoint, mainHead)
+	}
+	if local[1].ForkBranch != "main" {
+		t.Errorf("ForkBranch = %q, want main", local[1].ForkBranch)
+	}
+}
+
+func TestComputeForkPoints_EmptyDefaultIsNoOp(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{{Name: "feat"}}
+	// No runner needed — defaultBr=="" short-circuits before any git call.
+	computeForkPoints(context.Background(), nil, "", local)
+	if local[0].ForkPoint != "" || local[0].ForkBranch != "" {
+		t.Errorf("empty defaultBr should be no-op, got %+v", local[0])
 	}
 }
 
@@ -473,6 +618,28 @@ func TestLoadWorktreeDirtyStates_CleanIsAbsent(t *testing.T) {
 	}
 }
 
+// stripANSI removes ANSI SGR escape sequences so cell-content
+// assertions are robust to fatih/color.NoColor flips by other tests
+// in the package (log_test/pull_test cleanups reset to false instead
+// of restoring the original value, leaking state into parallel runs).
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 // --- worktree integration ---
 
 func TestFormatSwitchDiff(t *testing.T) {
@@ -521,20 +688,21 @@ func TestBuildSwitchItems_DivergenceInBranchCell(t *testing.T) {
 	}
 	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, nil)
 	for _, it := range items {
+		c0 := stripANSI(it.Cells[0])
+		c1 := stripANSI(it.Cells[1])
 		switch it.Key {
 		case "local:main":
-			if !strings.Contains(it.Cells[1], "(local)") && !strings.Contains(it.Cells[1], "↑ ") {
-				// main has no upstream in this fixture → "(local)"
-				if !strings.Contains(it.Cells[1], "(local)") {
-					t.Errorf("main UPSTREAM cell: got %q, want (local)", it.Cells[1])
+			if !strings.Contains(c1, "(local)") && !strings.Contains(c1, "↑ ") {
+				if !strings.Contains(c1, "(local)") {
+					t.Errorf("main UPSTREAM cell: got %q, want (local)", c1)
 				}
 			}
 		case "local:feat/x":
-			if !strings.Contains(it.Cells[0], "↑3 ↓1") {
-				t.Errorf("feat/x BRANCH cell should embed ↑3 ↓1, got %q", it.Cells[0])
+			if !strings.Contains(c0, "↑3 ↓1") {
+				t.Errorf("feat/x BRANCH cell should embed ↑3 ↓1, got %q", c0)
 			}
-			if strings.Contains(it.Cells[1], "↑3") || strings.Contains(it.Cells[1], "↓1") {
-				t.Errorf("UPSTREAM cell should NOT have diff, got %q", it.Cells[1])
+			if strings.Contains(c1, "↑3") || strings.Contains(c1, "↓1") {
+				t.Errorf("UPSTREAM cell should NOT have diff, got %q", c1)
 			}
 		}
 	}
@@ -550,7 +718,7 @@ func TestBuildSwitchItems_ForkPointInSource(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("want 1 item, got %d", len(items))
 	}
-	if !strings.Contains(items[0].Cells[1], "from main@cbdce8b") {
+	if !strings.Contains(stripANSI(items[0].Cells[1]), "from main@cbdce8b") {
 		t.Errorf("expected 'from main@cbdce8b' in source cell, got %q", items[0].Cells[1])
 	}
 }
@@ -567,7 +735,7 @@ func TestBuildSwitchItems_LockedPlusForkCombined(t *testing.T) {
 		},
 	}
 	items := buildSwitchItems(local, nil, "main", wt, nil)
-	if !strings.Contains(items[0].Cells[1], "wt: from main@cbdce8b") {
+	if !strings.Contains(stripANSI(items[0].Cells[1]), "wt: from main@cbdce8b") {
 		t.Errorf("expected 'wt: from main@cbdce8b', got %q", items[0].Cells[1])
 	}
 }
@@ -632,25 +800,27 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 		if len(it.Cells) != 4 {
 			t.Errorf("expected 4 cells, got %d: %+v", len(it.Cells), it.Cells)
 		}
+		c0 := stripANSI(it.Cells[0])
+		c1 := stripANSI(it.Cells[1])
 		switch it.Key {
 		case "local:main":
-			if !strings.HasPrefix(it.Cells[0], "★") {
-				t.Errorf("current branch should have ★ marker, got %q", it.Cells[0])
+			if !strings.Contains(c0, "★") {
+				t.Errorf("current branch should have ★ marker, got %q", c0)
 			}
 			if it.Cells[2] != "abc1234" {
 				t.Errorf("expected hash abc1234 in cell 2, got %q", it.Cells[2])
 			}
 		case "local:feat/free":
-			if !strings.HasPrefix(it.Cells[0], "●") {
-				t.Errorf("normal branch should have ● marker, got %q", it.Cells[0])
+			if !strings.Contains(c0, "●") {
+				t.Errorf("normal branch should have ● marker, got %q", c0)
 			}
 		case "local:feat/locked":
 			// New design: wt: prefix is additive to the comparison
 			// source (upstream / fork / (local)). With no upstream
 			// or fork data in this fixture, source falls back to
 			// "(local)" → cell shows "wt: (local)".
-			if !strings.HasPrefix(it.Cells[1], "wt: ") {
-				t.Errorf("expected 'wt: ' prefix on locked row, got %q", it.Cells[1])
+			if !strings.HasPrefix(c1, "wt: ") {
+				t.Errorf("expected 'wt: ' prefix on locked row, got %q", c1)
 			}
 		}
 	}

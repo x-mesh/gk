@@ -105,11 +105,17 @@ func TestComputeAheadBehind_PropagatesGitError(t *testing.T) {
 // pullCoreCmd builds a real cobra.Command wired to runPullCore, scoped to
 // the given working directory by overriding the package-global flagRepo.
 // flagRepo is restored on test cleanup so test order doesn't leak state.
+//
+// XDG_CONFIG_HOME is also redirected to an empty tmp dir so the developer's
+// real ~/.config/gk/config.yaml cannot leak `pull.strategy` into the test;
+// otherwise the resolver would report source != "default" and the
+// diverged-refusal path under test would never fire.
 func pullCoreCmd(t *testing.T, dir string) *cobra.Command {
 	t.Helper()
 	prev := flagRepo
 	flagRepo = dir
 	t.Cleanup(func() { flagRepo = prev })
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	cmd := &cobra.Command{Use: "pull", RunE: runPull}
 	cmd.Flags().String("base", "", "")

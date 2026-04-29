@@ -541,10 +541,7 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 		if err != nil {
 			combined := string(stdout) + string(stderr)
 			if strings.Contains(combined, "CONFLICT") || strings.Contains(combined, "Merge conflict") {
-				fmt.Fprintln(os.Stderr, "conflict detected. resolve manually, then `git merge --continue` or `gk abort`.")
-				if stashed {
-					fmt.Fprintln(os.Stderr, "warning: autostash still applied — pop manually with `git stash pop`")
-				}
+				printIntegrationConflict(os.Stderr, ctx, client, runner, "merge", stashed)
 				return &ConflictError{Code: 3, Stashed: stashed}
 			}
 			return fmt.Errorf("merge: %w\n%s", err, strings.TrimSpace(combined))
@@ -558,15 +555,134 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 			return err
 		}
 		if res.Conflict {
-			fmt.Fprintln(os.Stderr, "conflict detected. run `gk continue`, `gk abort`, or `git rebase --continue` to resolve.")
-			if stashed {
-				fmt.Fprintln(os.Stderr, "warning: autostash still has changes stashed — pop manually with `git stash pop`")
-			}
+			printIntegrationConflict(os.Stderr, ctx, client, runner, "rebase", stashed)
 			return &ConflictError{Code: 3, Stashed: stashed}
 		}
 		_ = res
 	}
 	return nil
+}
+
+// printIntegrationConflict renders a richer paused-integration banner
+// than the previous one-liner: which commit stopped the rebase, how
+// far through the plan we are, which files still carry markers, which
+// auto-merged cleanly, and what to type next. mode is "rebase" or
+// "merge"; the resolution commands differ slightly between them.
+func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Client, runner git.Runner, mode string, stashed bool) {
+	yellow := color.YellowString
+	red := color.RedString
+	green := color.GreenString
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%s %s paused on conflict\n", yellow("✗"), mode)
+
+	// rebase-specific context: which commit stopped us, position in plan.
+	if mode == "rebase" {
+		if info, _ := client.RebaseConflictStatus(ctx); info != nil {
+			if info.StoppedSHA != "" {
+				short := info.StoppedSHA
+				if len(short) > 7 {
+					short = short[:7]
+				}
+				if info.StoppedSubj != "" {
+					fmt.Fprintf(w, "  applying %s  %s\n", bold(short), info.StoppedSubj)
+				} else {
+					fmt.Fprintf(w, "  applying %s\n", bold(short))
+				}
+			}
+			if info.Total > 0 {
+				fmt.Fprintf(w, "  progress %d/%d  %s\n",
+					info.Done, info.Total,
+					faint(fmt.Sprintf("(%d remaining after this)", info.Remaining())))
+			}
+			renderConflictFileLists(w, info, red, green)
+		} else {
+			// Fall back to a plain unmerged-files probe when no rebase-merge
+			// metadata is visible (legacy rebase-apply, weird filesystem).
+			renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+		}
+	} else {
+		// Merge: no rebase metadata; just probe the working tree.
+		renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  resolve:")
+	fmt.Fprintf(w, "    1. edit each conflicted file — pick the right side, remove %s / %s / %s markers\n",
+		bold("<<<<<<<"), bold("======="), bold(">>>>>>>"))
+	fmt.Fprintf(w, "    2. %s    %s\n",
+		bold("git add <file>"), faint("(stage the resolved file)"))
+	if mode == "rebase" {
+		fmt.Fprintf(w, "    3. %s         %s\n",
+			bold("gk continue"), faint("(finish this commit, proceed to next pick)"))
+		fmt.Fprintf(w, "       %s            %s\n",
+			bold("gk abort"), faint("(give up rebase, return to pre-pull state)"))
+	} else {
+		fmt.Fprintf(w, "    3. %s         %s\n",
+			bold("gk continue"), faint("(create the merge commit)"))
+		fmt.Fprintf(w, "       %s            %s\n",
+			bold("gk abort"), faint("(discard the merge attempt)"))
+	}
+
+	// Backup ref hint — only show when we actually have one for the
+	// current branch, so the user sees something they can copy.
+	if branch, err := client.CurrentBranch(ctx); err == nil && branch != "" {
+		if ref := client.LatestBackupRef(ctx, branch); ref != "" {
+			fmt.Fprintf(w, "\n  %s   %s\n",
+				faint("backup:"),
+				bold(ref))
+			fmt.Fprintf(w, "  %s\n",
+				faint("   → recover with `git reset --hard "+ref+"` if you need to bail"))
+		}
+	}
+
+	if stashed {
+		fmt.Fprintf(w, "\n%s autostash still applied — pop manually with `git stash pop` if you abort\n",
+			yellow("!"))
+	}
+	fmt.Fprintln(w)
+}
+
+// probeUnmergedFiles is a fallback for code paths where we don't have
+// the full RebaseConflictInfo (merge conflict, rebase-apply legacy).
+// It populates only the file lists from porcelain output.
+func probeUnmergedFiles(ctx context.Context, runner git.Runner) *git.RebaseConflictInfo {
+	info := &git.RebaseConflictInfo{}
+	if out, _, err := runner.Run(ctx, "diff", "--name-only", "--diff-filter=U"); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			if line != "" {
+				info.Unmerged = append(info.Unmerged, line)
+			}
+		}
+	}
+	if out, _, err := runner.Run(ctx, "diff", "--name-only", "--cached", "--diff-filter=ACMRT"); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			if line != "" {
+				info.Staged = append(info.Staged, line)
+			}
+		}
+	}
+	return info
+}
+
+func renderConflictFileLists(w io.Writer, info *git.RebaseConflictInfo, red, green func(string, ...interface{}) string) {
+	if info == nil {
+		return
+	}
+	if len(info.Unmerged) > 0 {
+		fmt.Fprintf(w, "\n  %s files with conflicts (need manual resolution):\n", red("✗"))
+		for _, f := range info.Unmerged {
+			fmt.Fprintf(w, "    %s\n", red(f))
+		}
+	}
+	if len(info.Staged) > 0 {
+		fmt.Fprintf(w, "\n  %s files already staged (auto-merged or resolved):\n", green("✓"))
+		for _, f := range info.Staged {
+			fmt.Fprintf(w, "    %s\n", green(f))
+		}
+	}
 }
 
 func popStash(ctx context.Context, r git.Runner) error {

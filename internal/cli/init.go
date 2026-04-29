@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -100,8 +102,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// InitPlan 생성
 	plan := buildInitPlan(dir, result, only, force, kiro)
 
-	// AI provider가 있으면 gitignore 패턴 추가 제안
-	if only == "" || only == "gitignore" {
+	// AI provider가 있으면 gitignore 패턴 추가 제안. dry-run에선
+	// 건너뛴다 — 외부 HTTP 호출 때문에 plan preview가 수십 초 늘어
+	// 지는 일이 없도록 (특히 `make check`의 -race 테스트에서 시간
+	// 폭증의 주범이었음). 실제 init에서만 AI 의견을 반영.
+	if !dryRun && (only == "" || only == "gitignore") {
 		aiPatterns := suggestAIGitignore(dir, result)
 		if len(aiPatterns) > 0 && plan.Gitignore != nil {
 			aiSection := initx.FormatAISuggestedSection(aiPatterns)
@@ -284,8 +289,17 @@ func detectProjectType(dir string) string {
 
 // suggestAIGitignore는 AI provider를 사용하여 프로젝트에 맞는 추가 gitignore 패턴을 제안한다.
 // provider가 없거나 실패하면 빈 목록을 반환한다 (graceful degradation).
+//
+// AI suggestion is informational — bounded by a hard ctx timeout so a
+// slow/unreachable provider doesn't block `gk init` indefinitely.
+// Skipped entirely under `go test` so the test suite never reaches the
+// network (was the dominant cost in `make check` — 456 s with race).
 func suggestAIGitignore(dir string, result *initx.AnalysisResult) []string {
-	ctx := context.Background()
+	if testing.Testing() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	// config에서 ai.provider + 모델/엔드포인트 override를 읽어서 사용
 	cfg, _ := config.Load(nil)

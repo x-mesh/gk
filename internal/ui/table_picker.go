@@ -11,7 +11,17 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
+
+// cellAllocWidth measures a cell for column-width allocation. We use
+// runewidth.StringWidth (ANSI-blind — counts each escape byte as
+// visible) instead of lipgloss.Width so the resulting column width is
+// large enough that bubbles/table's runewidth.Truncate never fires
+// mid-escape on coloured cells. The allocation is a few cells wider
+// than the truly visible content; that slack is harmless and beats
+// broken ANSI rendering.
+func cellAllocWidth(s string) int { return runewidth.StringWidth(s) }
 
 // TablePickerExtraKey binds a custom keystroke to a callback that
 // can replace the entire data set on the fly — items + headers. Use
@@ -216,9 +226,9 @@ func buildColumnsFromHeaders(items []PickerItem, headers []string) []table.Colum
 	colCount := len(headers)
 	cols := make([]table.Column, colCount)
 	for i := 0; i < colCount; i++ {
-		w := lipgloss.Width(headers[i])
+		w := cellAllocWidth(headers[i])
 		for _, it := range items {
-			if l := lipgloss.Width(pickerCell(it, i)); l > w {
+			if l := cellAllocWidth(pickerCell(it, i)); l > w {
 				w = l
 			}
 		}
@@ -296,9 +306,9 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 
 	cols := make([]table.Column, colCount)
 	for i := 0; i < colCount; i++ {
-		w := lipgloss.Width(headers[i])
+		w := cellAllocWidth(headers[i])
 		for _, it := range items {
-			if l := lipgloss.Width(pickerCell(it, i)); l > w {
+			if l := cellAllocWidth(pickerCell(it, i)); l > w {
 				w = l
 			}
 		}

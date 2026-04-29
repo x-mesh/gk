@@ -575,6 +575,20 @@ func formatSwitchDiff(d [2]int) string {
 	}
 }
 
+// colorSwitchDiff renders divergence with green ↑ and red ↓ for
+// at-a-glance "ahead/behind default" cues. Empty on no diff.
+func colorSwitchDiff(d [2]int) string {
+	ahead, behind := d[0], d[1]
+	parts := make([]string, 0, 2)
+	if ahead > 0 {
+		parts = append(parts, color.GreenString("↑%d", ahead))
+	}
+	if behind > 0 {
+		parts = append(parts, color.RedString("↓%d", behind))
+	}
+	return strings.Join(parts, " ")
+}
+
 // buildSwitchItems renders the picker as a branch list with four
 // columns: BRANCH, UPSTREAM, HASH, AGE. The current branch is
 // included with a "★" marker so users can see "where am I" at a
@@ -604,6 +618,23 @@ func formatDirtyMarker(d git.DirtyFlags) string {
 	return b.String()
 }
 
+// colorDirtyMarker is the colored counterpart of formatDirtyMarker.
+// Colours: red `*` (working tree), yellow `±` (staged for commit),
+// red bold `!` (unmerged path — needs attention).
+func colorDirtyMarker(d git.DirtyFlags) string {
+	var b strings.Builder
+	if d.Modified {
+		b.WriteString(color.RedString("*"))
+	}
+	if d.Staged {
+		b.WriteString(color.YellowString("±"))
+	}
+	if d.Conflict {
+		b.WriteString(color.New(color.FgRed, color.Bold).Sprint("!"))
+	}
+	return b.String()
+}
+
 func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, defaultBr string, diff switchDivergence, dirty map[string]git.DirtyFlags) []ui.PickerItem {
 	faint := color.New(color.Faint).SprintFunc()
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
@@ -612,52 +643,55 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		entry, locked := wt.byBranch[b.Name]
 		isCurrent := b.Name == cur
 		isDefault := b.Name == defaultBr
-		var source string
+		var source, coloredSource string
 		switch {
 		case isDefault:
 			source = "(default)"
+			coloredSource = faint(source)
 		case locked:
-			source = "wt: " + filepath.Base(entry.Path)
+			tag := filepath.Base(entry.Path)
+			source = "wt: " + tag
+			coloredSource = color.YellowString("wt: ") + tag
 		case b.Gone:
 			source = "(gone)"
+			coloredSource = faint(source)
 		case b.Upstream != "":
 			source = "↑ " + b.Upstream
+			coloredSource = source
 		default:
 			source = "(local)"
+			coloredSource = faint(source)
 		}
-		upstream := composeUpstreamCell(diff[keyLocalPrefix+b.Name], source, isDefault)
-		marker := "●"
+		dKey := keyLocalPrefix + b.Name
+		upstream := composeUpstreamCell(diff[dKey], source, isDefault)
+		coloredUpstream := composeColoredUpstreamCell(diff[dKey], coloredSource, isDefault)
 		coloredMarker := color.GreenString("●")
 		if isCurrent {
-			marker = "★"
 			coloredMarker = color.YellowString("★")
 		}
-		dirtyTag := ""
+		coloredDirtyTag := ""
 		if d, ok := dirty[b.Name]; ok {
-			dirtyTag = " " + formatDirtyMarker(d)
-		}
-		coloredDirtyTag := dirtyTag
-		if dirtyTag != "" {
-			coloredDirtyTag = " " + color.RedString(formatDirtyMarker(dirty[b.Name]))
+			coloredDirtyTag = " " + colorDirtyMarker(d)
 		}
 		age := shortAge(b.LastCommit)
 		items = append(items, ui.PickerItem{
 			Key:   keyLocalPrefix + b.Name,
-			Cells: []string{marker + " " + b.Name + dirtyTag, upstream, b.Hash, age},
+			Cells: []string{coloredMarker + " " + b.Name + coloredDirtyTag, coloredUpstream, b.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
 				coloredMarker, b.Name+coloredDirtyTag, upstream, b.Hash, age,
 			),
 		})
-		_ = faint
 	}
 
 	for _, r := range remotes {
 		age := shortAge(r.LastCommit)
 		source := "remote: " + r.Remote
+		coloredSource := color.CyanString("remote: ") + r.Remote
 		upstream := composeUpstreamCell(diff[keyRemotePrefix+r.TrackRef], source, false)
+		coloredUpstream := composeColoredUpstreamCell(diff[keyRemotePrefix+r.TrackRef], coloredSource, false)
 		items = append(items, ui.PickerItem{
 			Key:   keyRemotePrefix + r.TrackRef,
-			Cells: []string{"○ " + r.Name, upstream, r.Hash, age},
+			Cells: []string{color.CyanString("○") + " " + r.Name, coloredUpstream, r.Hash, age},
 			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
 				color.CyanString("○"), r.Name, upstream, r.Hash, age,
 			),
@@ -676,6 +710,18 @@ func composeUpstreamCell(d [2]int, source string, isDefault bool) string {
 		return source
 	}
 	diff := formatSwitchDiff(d)
+	if diff == "" {
+		return source
+	}
+	return diff + "  " + source
+}
+
+// composeColoredUpstreamCell is the colored version: green ↑, red ↓.
+func composeColoredUpstreamCell(d [2]int, source string, isDefault bool) string {
+	if isDefault {
+		return source
+	}
+	diff := colorSwitchDiff(d)
 	if diff == "" {
 		return source
 	}

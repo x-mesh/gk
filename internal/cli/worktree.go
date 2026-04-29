@@ -453,7 +453,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			if !ok {
 				return branch
 			}
-			suffix := formatSwitchDiff(d)
+			suffix := colorSwitchDiff(d)
 			if suffix == "" {
 				return branch
 			}

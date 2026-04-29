@@ -56,6 +56,7 @@ the most recent run.
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
+	cmd.Flags().Bool("no-wip-unwrap", false, "skip detection/unwrap of WIP-like commits in HEAD chain")
 
 	rootCmd.AddCommand(cmd)
 }
@@ -112,7 +113,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	Dbg("commit: preflight ok")
 
-	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner)
+	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, cfg.Branch.Protected, flags.noWIPUnwrap)
 	if err != nil {
 		return err
 	}
@@ -278,7 +279,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 type wipCommitForAICommit struct {
 	Present bool
-	Files   []aicommit.FileChange
+	// ChainLen is how many recent commits will be unwrapped after
+	// Apply. >= 1 when Present, 0 otherwise. Backwards-compatible
+	// with the prior single-WIP shape (ChainLen=1).
+	ChainLen int
+	Files    []aicommit.FileChange
 }
 
 // runCommitDryRunPreview produces a cost-aware plan without making any
@@ -393,56 +398,36 @@ func fallbackStr(s, d string) string {
 	return s
 }
 
-func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner) (wipCommitForAICommit, error) {
-	subjOut, _, err := runner.Run(ctx, "log", "-1", "--format=%s")
-	if err != nil {
+// inspectWIPCommitForAICommit walks HEAD backward as long as each
+// commit's subject matches a WIP pattern (defaults + user-config
+// additions), so a stack of save-point commits can be folded into one
+// AI plan. cfg.WIPMaxChain caps the walk; protected branches and
+// already-pushed commits stop it for safety. When --no-wip-unwrap is
+// set the function returns immediately without touching git.
+func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg config.AICommitConfig, branchProtected []string, disabled bool) (wipCommitForAICommit, error) {
+	if disabled {
 		return wipCommitForAICommit{}, nil
 	}
-	subject := strings.TrimSpace(string(subjOut))
-	if !strings.HasPrefix(subject, "--wip--") {
-		return wipCommitForAICommit{}, nil
-	}
-	out, _, err := runner.Run(ctx, "diff", "--name-status", "HEAD~1..HEAD")
+	patterns, err := aicommit.CompileWIPPatterns(cfg.WIPPatterns)
 	if err != nil {
-		return wipCommitForAICommit{}, fmt.Errorf("commit: inspect WIP commit: %w", err)
+		return wipCommitForAICommit{}, fmt.Errorf("commit: wip patterns: %w", err)
+	}
+	chain, err := aicommit.DetectWIPChain(ctx, runner, aicommit.DetectWIPChainOptions{
+		MaxChain:          cfg.WIPMaxChain,
+		Patterns:          patterns,
+		ProtectedBranches: branchProtected,
+	})
+	if err != nil {
+		return wipCommitForAICommit{}, fmt.Errorf("commit: detect WIP chain: %w", err)
+	}
+	if len(chain) == 0 {
+		return wipCommitForAICommit{}, nil
 	}
 	return wipCommitForAICommit{
-		Present: true,
-		Files:   parseWIPCommitNameStatus(string(out)),
+		Present:  true,
+		ChainLen: len(chain),
+		Files:    aicommit.MergeChainFiles(chain),
 	}, nil
-}
-
-func parseWIPCommitNameStatus(out string) []aicommit.FileChange {
-	var files []aicommit.FileChange
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 {
-			continue
-		}
-		code := parts[0]
-		path := parts[len(parts)-1]
-		status := "modified"
-		switch code[0] {
-		case 'A':
-			status = "added"
-		case 'D':
-			status = "deleted"
-		case 'R':
-			status = "renamed"
-		case 'C':
-			status = "copied"
-		}
-		files = append(files, aicommit.FileChange{
-			Path:   path,
-			Status: status,
-			Staged: true,
-		})
-	}
-	return files
 }
 
 func appendWIPCommitFiles(files, wipFiles []aicommit.FileChange) []aicommit.FileChange {
@@ -466,11 +451,20 @@ func unwrapWIPCommitBeforeApply(ctx context.Context, runner git.Runner, wipCommi
 	if !wipCommit.Present || flags.dryRun {
 		return nil
 	}
-	if _, stderr, err := runner.Run(ctx, "reset", "HEAD~1"); err != nil {
-		return fmt.Errorf("commit: unwrap WIP commit: %s: %w", strings.TrimSpace(string(stderr)), err)
+	depth := wipCommit.ChainLen
+	if depth <= 0 {
+		depth = 1 // legacy callers / safety
+	}
+	target := fmt.Sprintf("HEAD~%d", depth)
+	if _, stderr, err := runner.Run(ctx, "reset", target); err != nil {
+		return fmt.Errorf("commit: unwrap WIP chain (%d commit(s)): %s: %w", depth, strings.TrimSpace(string(stderr)), err)
 	}
 	if out != nil {
-		fmt.Fprintln(out, "commit: unwrapped WIP commit after AI plan; rewriting it as regular commit(s)")
+		if depth == 1 {
+			fmt.Fprintln(out, "commit: unwrapped WIP commit after AI plan; rewriting it as regular commit(s)")
+		} else {
+			fmt.Fprintf(out, "commit: unwrapped %d WIP commits after AI plan; rewriting as regular commit(s)\n", depth)
+		}
 	}
 	return nil
 }
@@ -504,6 +498,7 @@ type aiCommitFlags struct {
 	abort            bool
 	ci               bool
 	yes              bool
+	noWIPUnwrap      bool
 }
 
 func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
@@ -518,6 +513,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.abort, _ = cmd.Flags().GetBool("abort")
 	f.ci, _ = cmd.Flags().GetBool("ci")
 	f.yes, _ = cmd.Flags().GetBool("yes")
+	f.noWIPUnwrap, _ = cmd.Flags().GetBool("no-wip-unwrap")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
 	}
@@ -651,7 +647,12 @@ func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider
 	for _, g := range groups {
 		var b strings.Builder
 		if wipCommit.Present {
-			args := append([]string{"diff", "HEAD~1..HEAD", "--"}, g.Files...)
+			depth := wipCommit.ChainLen
+			if depth <= 0 {
+				depth = 1
+			}
+			rangeRef := fmt.Sprintf("HEAD~%d..HEAD", depth)
+			args := append([]string{"diff", rangeRef, "--"}, g.Files...)
 			wipDiff, _, _ := runner.Run(ctx, args...)
 			b.Write(wipDiff)
 			if len(wipDiff) > 0 && !strings.HasSuffix(string(wipDiff), "\n") {

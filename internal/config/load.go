@@ -53,6 +53,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("ai.commit.allow_remote", defaults.AI.Commit.AllowRemote)
 	v.SetDefault("ai.commit.trailer", defaults.AI.Commit.Trailer)
 	v.SetDefault("ai.commit.audit", defaults.AI.Commit.Audit)
+	v.SetDefault("ai.commit.wip_max_chain", defaults.AI.Commit.WIPMaxChain)
 	v.SetDefault("ai.nvidia.model", defaults.AI.Nvidia.Model)
 	v.SetDefault("ai.nvidia.endpoint", defaults.AI.Nvidia.Endpoint)
 	v.SetDefault("ai.nvidia.timeout", defaults.AI.Nvidia.Timeout)

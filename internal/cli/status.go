@@ -16,6 +16,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
@@ -1000,7 +1001,11 @@ func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *gi
 	if currentBranch == "" {
 		return ""
 	}
-	base := resolveBaseBranchForStatus(cmd.Context(), runner, client, cfg)
+	cfgBase := resolveBaseBranchForStatus(cmd.Context(), runner, client, cfg)
+	// Swap cfgBase for the explicit/inferred parent when one is configured
+	// for this branch. The Resolver returns cfgBase verbatim when no parent
+	// is set, so branches without gk-parent metadata see byte-equal output.
+	base := branchparent.NewResolver(client).ResolveBase(cmd.Context(), currentBranch, cfgBase)
 	if base == "" || base == currentBranch {
 		return ""
 	}

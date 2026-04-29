@@ -3,7 +3,6 @@ package branchparent
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -207,24 +206,4 @@ func min3(a, b, c int) int {
 		m = c
 	}
 	return m
-}
-
-// localBranchNames is exposed for callers that want a deterministic,
-// alphabetically-sorted list (e.g., for help output). Currently used only
-// by tests; the production fuzzy-match path consumes raw `for-each-ref`
-// output without re-sorting.
-func localBranchNames(ctx context.Context, c *git.Client) []string {
-	out, _, err := c.Raw().Run(ctx, "for-each-ref", "--format=%(refname:short)", "refs/heads")
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		name := strings.TrimSpace(line)
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
 }

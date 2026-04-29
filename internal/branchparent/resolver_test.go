@@ -14,7 +14,7 @@ func newResolverWithRunner(r git.Runner) *Resolver {
 func TestResolver_ExplicitParentExists(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/parent\n"},
+			"config --get branch.feat/x.gk-parent":              {Stdout: "feat/parent\n"},
 			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
 		},
 	}
@@ -29,7 +29,7 @@ func TestResolver_ExplicitParentMissing(t *testing.T) {
 	// Explicit value is set but the branch was deleted — must NOT return it.
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/gone\n"},
+			"config --get branch.feat/x.gk-parent":            {Stdout: "feat/gone\n"},
 			"rev-parse --verify --quiet refs/heads/feat/gone": {ExitCode: 1},
 		},
 	}
@@ -82,7 +82,7 @@ func TestResolveBase_FallbackWhenNoParent(t *testing.T) {
 func TestResolveBase_UsesParent(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/parent\n"},
+			"config --get branch.feat/x.gk-parent":              {Stdout: "feat/parent\n"},
 			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
 		},
 	}
@@ -96,7 +96,7 @@ func TestResolveBase_UsesParent(t *testing.T) {
 func TestResolveBaseExplained_ReturnsSource(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/parent\n"},
+			"config --get branch.feat/x.gk-parent":              {Stdout: "feat/parent\n"},
 			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
 		},
 	}
@@ -126,7 +126,7 @@ func TestResolveBaseExplained_FallbackKeepsCfgBase(t *testing.T) {
 func TestResolveBaseWithIssues_ParentMissing(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/gone\n"},
+			"config --get branch.feat/x.gk-parent":            {Stdout: "feat/gone\n"},
 			"rev-parse --verify --quiet refs/heads/feat/gone": {ExitCode: 1},
 		},
 	}
@@ -165,7 +165,7 @@ func TestResolveBaseWithIssues_NoIssuesWhenUnset(t *testing.T) {
 func TestResolveBaseWithIssues_ExplicitOk(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/parent\n"},
+			"config --get branch.feat/x.gk-parent":              {Stdout: "feat/parent\n"},
 			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
 		},
 	}

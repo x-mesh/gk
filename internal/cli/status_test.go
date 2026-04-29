@@ -1282,11 +1282,11 @@ func TestRenderUntrackedRemoteHint_ForkSilent(t *testing.T) {
 
 func TestBaseDivergenceHint(t *testing.T) {
 	cases := []struct {
-		name           string
-		ahead, behind  int
-		dirty          bool
-		base           string
-		want           string
+		name          string
+		ahead, behind int
+		dirty         bool
+		base          string
+		want          string
 	}{
 		{"in sync", 0, 0, false, "main", ""},
 		{"in sync dirty", 0, 0, true, "main", ""},

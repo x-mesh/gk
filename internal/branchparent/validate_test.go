@@ -47,9 +47,9 @@ func TestValidateSet_MalformedRef(t *testing.T) {
 func TestValidateSet_NonExistentBranchSuggestion(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"check-ref-format --branch mian":              {},
-			"rev-parse --verify --quiet refs/heads/mian":  {ExitCode: 1},
-			"rev-parse --verify --quiet refs/tags/mian":   {ExitCode: 1},
+			"check-ref-format --branch mian":             {},
+			"rev-parse --verify --quiet refs/heads/mian": {ExitCode: 1},
+			"rev-parse --verify --quiet refs/tags/mian":  {ExitCode: 1},
 			"for-each-ref --format=%(refname:short) refs/heads": {
 				Stdout: "main\nfeat/x\nfeat/parent\n",
 			},
@@ -71,9 +71,9 @@ func TestValidateSet_NonExistentBranchSuggestion(t *testing.T) {
 func TestValidateSet_TagRejected(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"check-ref-format --branch v1.0":              {},
-			"rev-parse --verify --quiet refs/heads/v1.0":  {ExitCode: 1},
-			"rev-parse --verify --quiet refs/tags/v1.0":   {Stdout: "abc\n"},
+			"check-ref-format --branch v1.0":             {},
+			"rev-parse --verify --quiet refs/heads/v1.0": {ExitCode: 1},
+			"rev-parse --verify --quiet refs/tags/v1.0":  {Stdout: "abc\n"},
 		},
 	}
 	c := git.NewClient(r)
@@ -86,9 +86,9 @@ func TestValidateSet_TagRejected(t *testing.T) {
 func TestValidateSet_HappyPath(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"check-ref-format --branch feat/parent":              {},
-			"rev-parse --verify --quiet refs/heads/feat/parent":  {Stdout: "abc\n"},
-			"config --get branch.feat/parent.gk-parent":          {ExitCode: 1},
+			"check-ref-format --branch feat/parent":             {},
+			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
+			"config --get branch.feat/parent.gk-parent":         {ExitCode: 1},
 		},
 	}
 	c := git.NewClient(r)

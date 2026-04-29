@@ -185,11 +185,13 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 		}
 		switch line[0] {
 		case '1':
-			e, err := parseV2Ordinary(line)
+			e, keep, err := parseV2Ordinary(line)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, e)
+			if keep {
+				out = append(out, e)
+			}
 		case '2':
 			// The original path is the next NUL-terminated token.
 			end2 := bytes.IndexByte(data[i:], 0)
@@ -228,14 +230,18 @@ func parsePorcelainV2(data []byte) ([]FileChange, error) {
 }
 
 // parseV2Ordinary parses a "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>" line.
-func parseV2Ordinary(line string) (FileChange, error) {
+func parseV2Ordinary(line string) (FileChange, bool, error) {
 	parts := strings.SplitN(line, " ", 9)
 	if len(parts) < 9 {
-		return FileChange{}, fmt.Errorf("aicommit: porcelain v2: short ordinary record %q", line)
+		return FileChange{}, false, fmt.Errorf("aicommit: porcelain v2: short ordinary record %q", line)
 	}
 	xy := parts[1]
+	sub := parts[2]
+	if git.IsSubmoduleWorktreeDirtinessOnly(xy, sub) {
+		return FileChange{}, false, nil
+	}
 	path := parts[8]
-	return classifyXY(path, xy, "", false), nil
+	return classifyXY(path, xy, "", false), true, nil
 }
 
 // parseV2Rename parses a "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>" line.

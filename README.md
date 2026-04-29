@@ -120,7 +120,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk pull` | | Fetch + integrate upstream. `--strategy rebase\|merge\|ff-only\|auto`; resolves `@{u}` first; auto-switches to `--ff-only` when HEAD is already an ancestor |
 | `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
 | `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
-| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind). Pass `-f`/`--fetch` to refresh ↑N ↓N from the remote. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
+| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind), submodule-aware with `next:` hints. Pass `-f`/`--fetch` to refresh ↑N ↓N, `--watch` to refresh continuously, or `--exit-code` for scripts. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 
 ### Branches

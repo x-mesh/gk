@@ -138,11 +138,13 @@ const (
 	KindUnmerged
 	KindUntracked
 	KindIgnored
+	KindSubmodule
 )
 
 // StatusEntry represents a single entry in `git status --porcelain=v2`.
 type StatusEntry struct {
 	XY   string
+	Sub  string // porcelain v2 submodule field, e.g. N... or S..U
 	Path string
 	Orig string // original path for renames
 	Kind StatusKind
@@ -263,10 +265,28 @@ func parseOrdinaryEntry(line string) StatusEntry {
 	if len(parts) >= 2 {
 		entry.XY = parts[1]
 	}
+	if len(parts) >= 3 {
+		entry.Sub = parts[2]
+		if IsSubmoduleWorktreeDirtinessOnly(entry.XY, entry.Sub) {
+			entry.Kind = KindSubmodule
+		}
+	}
 	if len(parts) >= 9 {
 		entry.Path = parts[8]
 	}
 	return entry
+}
+
+// IsSubmoduleWorktreeDirtinessOnly reports a submodule record that has no
+// committable superproject gitlink change. Git reports nested tracked or
+// untracked dirtiness as ".M S.M." / ".M S..U" even when the gitlink SHA is
+// unchanged, so callers should render it separately from files that `git add`
+// can stage in the superproject.
+func IsSubmoduleWorktreeDirtinessOnly(xy, sub string) bool {
+	if len(xy) < 2 || len(sub) < 4 || sub[0] != 'S' {
+		return false
+	}
+	return xy[0] == '.' && xy[1] == 'M' && sub[1] == '.'
 }
 
 // parseRenamedEntry parses a "2 ..." porcelain v2 line.
@@ -276,6 +296,12 @@ func parseRenamedEntry(line string) StatusEntry {
 	entry := StatusEntry{Kind: KindRenamed}
 	if len(parts) >= 2 {
 		entry.XY = parts[1]
+	}
+	if len(parts) >= 3 {
+		entry.Sub = parts[2]
+		if IsSubmoduleWorktreeDirtinessOnly(entry.XY, entry.Sub) {
+			entry.Kind = KindSubmodule
+		}
 	}
 	if len(parts) >= 10 {
 		entry.Path = parts[9]
@@ -290,6 +316,12 @@ func parseUnmergedEntry(line string) StatusEntry {
 	entry := StatusEntry{Kind: KindUnmerged}
 	if len(parts) >= 2 {
 		entry.XY = parts[1]
+	}
+	if len(parts) >= 3 {
+		entry.Sub = parts[2]
+		if IsSubmoduleWorktreeDirtinessOnly(entry.XY, entry.Sub) {
+			entry.Kind = KindSubmodule
+		}
 	}
 	if len(parts) >= 11 {
 		entry.Path = parts[10]

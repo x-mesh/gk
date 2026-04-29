@@ -553,7 +553,10 @@ gk st [flags]
 | `--vis <list>` | `gauge,progress,base,tree,staleness` (from `status.vis`) | Visualization layers (comma-list or repeated). Pass `--vis none` to disable all layers for a single invocation. Values: `gauge`, `bar`, `progress`, `types`, `staleness`, `tree`, `conflict`, `churn`, `risk`, `base`, `since-push`, `stash`, `heatmap`, `glyphs`. |
 | `-f`, `--fetch` | false | Fetch the current branch's upstream before reporting ↑N ↓N. Off by default — `gk status` does no network activity unless this flag (or `status.auto_fetch: true`) is set. |
 | `--xy-style` | `labels` (from `status.xy_style`) | Per-entry state column: `labels` (`new`/`mod`/`staged`/`conflict`, self-documenting, default), `glyphs` (`+` `~` `●` `⚔` `#`, compact), or `raw` (git's two-character code like `??`/`.M`/`UU`). |
-| `--top N` | 0 (unlimited) | Limit the entry list to the first N paths (alphabetically sorted for stable output); a `… +K more (total · showing top N)` footer surfaces the hidden remainder so the truncation is never silent. Composes with every viz layer. |
+| `--top N` | 0 (unlimited) | Limit the entry list to N paths after action-priority sorting: conflicts → staged → modified → untracked, then path. A `… +K more (total · showing top N)` footer surfaces the hidden remainder so truncation is never silent. |
+| `--exit-code` | false | Exit with a status-specific code after printing: `0` clean, `1` committable dirty, `2` submodule-only dirty, `3` conflicts, `4` behind upstream. |
+| `--watch` | false | Refresh human-readable status until interrupted. Not supported with `--json` or `--exit-code`. |
+| `--watch-interval <duration>` | `2s` | Refresh interval for `--watch`, e.g. `500ms`, `2s`, `1m`. |
 
 ### Per-entry state column (`--xy-style`)
 
@@ -573,11 +576,17 @@ Label mapping (labels mode):
 | `!!` | `ignored` | `A.` | `added` | `.D` | `del` |
 | `UU`/`AU`/`UA`/`UD`/`DU` | `conflict` | `D.` | `deleted` | `.R` | `ren` |
 | `DD`/`AA` | `conflict` | `R.` | `renamed` | `.T` | `typ` |
-| `MM`/`AM` | `mod*` (staged + touched again) | `C.` | `copied` | `.C` | `cop` |
+| `MM`/`AM` | `split` (staged + unstaged) | `C.` | `copied` | `.C` | `cop` |
 
 Glyph mapping (glyphs mode) collapses to five categories: `+` new, `#` ignored, `●` staged (any action), `~` worktree-dirty, `◉` both (staged + worktree), `⚔` conflict. Granularity is deliberately lower — glyph mode trades per-action precision for visual density.
 
 Colors (dim gray / green / yellow / red) are applied consistently across all three modes, so switching styles never loses the category cue.
+
+### Next action, submodules, and exit codes
+
+`gk status` prints a `next:` hint using gk commands: `gk resolve` for conflicts, `gk commit --dry-run` for committable work, `gk status -v` for submodule-only dirtiness, and `gk sync` / `gk push` for clean branches that are behind/ahead.
+
+Submodule worktree dirtiness is separated from committable superproject changes. If the submodule has untracked or modified files inside but the superproject gitlink did not change, the main tree remains clean and status renders a `submodules:` section. Use `-vv` to read each dirty submodule's branch and internal counts without changing directories.
 
 ### Upstream fetch (opt-in)
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +29,9 @@ var statusTopN int
 var statusLegend bool
 var statusXYStyleFlag string
 var statusVerbose int
+var statusExitCode bool
+var statusWatch bool
+var statusWatchInterval time.Duration
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
@@ -63,6 +67,9 @@ func init() {
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().StringVar(&statusXYStyleFlag, "xy-style", "", "per-entry state column: 'labels' (new/mod/staged/conflict, default), 'glyphs' (+ ~ ● ⚔ #), or 'raw' (git's two-char code like ??/.M/UU)")
 	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "show a richer status summary; repeat for diagnostic details")
+	cmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "exit 0 clean, 1 dirty, 2 submodule-only dirty, 3 conflicts, 4 behind remote")
+	cmd.Flags().BoolVar(&statusWatch, "watch", false, "refresh status until interrupted")
+	cmd.Flags().DurationVar(&statusWatchInterval, "watch-interval", 2*time.Second, "refresh interval for --watch")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -498,17 +505,10 @@ func compactBranch(name string, maxWidth int) string {
 	return string(runes[:head]) + "…" + string(runes[len(runes)-tail:])
 }
 
-// compactUpstreamSuffix renders the trailing "  → <remote-or-path>"
-// fragment for the gauge-head layout. Dedup rule:
-//
-//	local == upstream-branch  →  "  → origin"            (remote short only)
-//	local != upstream-branch  →  "  → origin/release"    (full remote/branch)
-//	upstream empty            →  ""                       (caller handles)
-//
-// Saves 15–30 characters on the common case where the branch name
-// exactly matches its upstream, which is the overwhelming majority of
-// real-world branches.
-func compactUpstreamSuffix(branch, upstream string, cyan func(format string, a ...interface{}) string, faint func(a ...interface{}) string) string {
+// compactUpstreamSuffix renders the trailing "  → <remote>/<branch>"
+// fragment for the gauge-head layout. Keeping the branch component even when
+// it matches the local branch avoids ambiguous output such as "main → origin".
+func compactUpstreamSuffix(_, upstream string, cyan func(format string, a ...interface{}) string, faint func(a ...interface{}) string) string {
 	if upstream == "" {
 		return ""
 	}
@@ -516,12 +516,7 @@ func compactUpstreamSuffix(branch, upstream string, cyan func(format string, a .
 	if slash <= 0 || slash >= len(upstream)-1 {
 		return " " + faint("→") + " " + cyan("%s", upstream)
 	}
-	remote := upstream[:slash]
-	upstreamBranch := upstream[slash+1:]
 	target := upstream
-	if upstreamBranch == branch {
-		target = remote
-	}
 	// Single-space around `→` so the arrow binds visually to the pair it
 	// connects (branch→remote reads as one unit) while the outer double-
 	// space before the suffix still separates the branch-identity block
@@ -1161,7 +1156,181 @@ func markFetch(gitDir string) {
 	_ = os.Chtimes(path, now, now)
 }
 
+type statusJSON struct {
+	Repo       string             `json:"repo"`
+	Branch     string             `json:"branch"`
+	Upstream   string             `json:"upstream,omitempty"`
+	Ahead      int                `json:"ahead"`
+	Behind     int                `json:"behind"`
+	Clean      bool               `json:"clean"`
+	Next       string             `json:"next,omitempty"`
+	Counts     statusJSONCounts   `json:"counts"`
+	Entries    []statusJSONEntry  `json:"entries"`
+	Submodules []statusJSONModule `json:"submodules,omitempty"`
+}
+
+type statusJSONCounts struct {
+	Committable     int `json:"committable"`
+	Split           int `json:"split"`
+	Staged          int `json:"staged"`
+	Modified        int `json:"modified"`
+	Untracked       int `json:"untracked"`
+	Conflicts       int `json:"conflicts"`
+	DirtySubmodules int `json:"dirty_submodules"`
+}
+
+type statusJSONEntry struct {
+	Path        string `json:"path"`
+	Orig        string `json:"orig,omitempty"`
+	XY          string `json:"xy"`
+	Sub         string `json:"sub,omitempty"`
+	State       string `json:"state"`
+	Detail      string `json:"detail,omitempty"`
+	Committable bool   `json:"committable"`
+}
+
+type statusJSONModule struct {
+	Path   string `json:"path"`
+	XY     string `json:"xy"`
+	Sub    string `json:"sub"`
+	Detail string `json:"detail"`
+	Action string `json:"action,omitempty"`
+}
+
+func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []git.StatusEntry) error {
+	out := statusJSON{
+		Repo:     stripControlChars(repoDisplayPath()),
+		Branch:   stripControlChars(st.Branch),
+		Upstream: stripControlChars(st.Upstream),
+		Ahead:    st.Ahead,
+		Behind:   st.Behind,
+		Clean:    committableCount(g) == 0,
+		Next:     stripControlChars(nextStatusAction(g, st, statusVerbose)),
+		Counts: statusJSONCounts{
+			Committable:     committableCount(g),
+			Split:           splitCount(g),
+			Staged:          len(g.Staged),
+			Modified:        len(g.Modified),
+			Untracked:       len(g.Untracked),
+			Conflicts:       len(g.Unmerged),
+			DirtySubmodules: len(g.Submodules),
+		},
+		Entries: make([]statusJSONEntry, 0, len(entries)),
+	}
+	for _, e := range entries {
+		out.Entries = append(out.Entries, statusJSONEntry{
+			Path:        stripControlChars(e.Path),
+			Orig:        stripControlChars(e.Orig),
+			XY:          e.XY,
+			Sub:         e.Sub,
+			State:       statusEntryState(e),
+			Detail:      strings.Join(submoduleEntryDetails(e), "; "),
+			Committable: true,
+		})
+	}
+	for _, e := range g.Submodules {
+		out.Submodules = append(out.Submodules, statusJSONModule{
+			Path:   stripControlChars(e.Path),
+			XY:     e.XY,
+			Sub:    e.Sub,
+			Detail: submoduleStateLabel(e.Sub) + " inside",
+			Action: stripControlChars(submoduleStatusAction(e.Path)),
+		})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+func statusEntryState(e git.StatusEntry) string {
+	if isStatusSubmoduleEntry(e) {
+		return "submodule"
+	}
+	switch {
+	case e.Kind == git.KindUnmerged:
+		return "conflict"
+	case e.Kind == git.KindUntracked:
+		return "untracked"
+	case isSplitEntry(e):
+		return "split"
+	case len(e.XY) >= 2 && e.XY[0] != '.' && e.XY[0] != ' ' && (e.XY[1] == '.' || e.XY[1] == ' '):
+		return "staged"
+	default:
+		return "modified"
+	}
+}
+
+func statusExitCodeFor(g groupedEntries, st *git.Status) int {
+	switch {
+	case len(g.Unmerged) > 0:
+		return 3
+	case committableCount(g) > 0:
+		return 1
+	case len(g.Submodules) > 0:
+		return 2
+	case st != nil && st.Behind > 0:
+		return 4
+	default:
+		return 0
+	}
+}
+
 func runStatus(cmd *cobra.Command, args []string) error {
+	if statusWatch {
+		if JSONOut() {
+			return fmt.Errorf("status --watch does not support --json")
+		}
+		if statusExitCode {
+			return fmt.Errorf("status --watch does not support --exit-code")
+		}
+		return runStatusWatch(cmd)
+	}
+	code, err := runStatusOnce(cmd)
+	if err != nil {
+		return err
+	}
+	if statusExitCode {
+		statusExitFunc(code)
+	}
+	return nil
+}
+
+// statusExitFunc is the indirection used by --exit-code so tests can swap in
+// a recorder. Production binds to os.Exit; tests assign a closure that
+// captures the code without terminating the test runner. Cobra's PostRun
+// hooks are still bypassed when this fires — that is intentional, the flag
+// exists for shell scripts that consume the integer exit code directly.
+var statusExitFunc = os.Exit
+
+func runStatusWatch(cmd *cobra.Command) error {
+	interval := statusWatchInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for first := true; ; first = false {
+		if !first {
+			if _, ok := ui.TTYWidth(); ok && !NoColorFlag() {
+				fmt.Fprint(cmd.OutOrStdout(), "\033[H\033[2J")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+		}
+		if _, err := runStatusOnce(cmd); err != nil {
+			return err
+		}
+		select {
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func runStatusOnce(cmd *cobra.Command) (int, error) {
 	if NoColorFlag() {
 		color.NoColor = true
 	}
@@ -1174,7 +1343,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// or anyone wondering "what does ⊛ mean on this row?".
 	if statusLegend {
 		renderStatusLegend(cmd.OutOrStdout(), effectiveVis)
-		return nil
+		return 0, nil
 	}
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	if shouldAutoFetch(cmd, cfg) {
@@ -1183,10 +1352,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	client := git.NewClient(runner)
 	st, err := client.Status(cmd.Context())
 	if err != nil {
-		return err
+		return 1, err
 	}
+	allGrouped := groupEntries(st.Entries)
+	listEntries := committableEntries(st.Entries)
+	exitCode := statusExitCodeFor(allGrouped, st)
 
 	w := cmd.OutOrStdout()
+	if JSONOut() {
+		return exitCode, renderStatusJSON(w, st, allGrouped, listEntries)
+	}
 	bold := color.New(color.Bold).SprintFunc()
 	cyan := color.CyanString
 	faint := color.New(color.Faint).SprintFunc()
@@ -1208,7 +1383,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if len(st.Entries) == 0 {
 			fmt.Fprintln(w, faint("working tree clean"))
 		}
-		return nil
+		return exitCode, nil
 	}
 
 	// Detached HEAD: `git status --porcelain=v2` emits `branch.head (detached)`
@@ -1334,7 +1509,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	allGrouped := groupEntries(st.Entries)
 	if statusVerbose > 0 {
 		renderStatusVerboseSummary(w, cmd, runner, cfg, st, allGrouped)
 	}
@@ -1346,50 +1520,61 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if statusVisEnabled("base") && !detached {
-		dirty := len(st.Entries) > 0
+		dirty := committableCount(allGrouped) > 0
 		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
 		}
 	}
 
-	// --top N applies globally to the entry list. Sections/tree below
-	// operate on the truncated slice; a footer at the end surfaces the
-	// hidden remainder so the cut is obvious, not silently missing data.
+	// --top N applies globally to the committable entry list. Entries are
+	// ordered by action priority before path so conflicts/staged work cannot
+	// be hidden behind alphabetically earlier untracked files.
 	hiddenByTop := 0
-	totalEntries := len(st.Entries)
-	if statusTopN > 0 && len(st.Entries) > statusTopN {
-		sortedEntries := make([]git.StatusEntry, len(st.Entries))
-		copy(sortedEntries, st.Entries)
-		sort.SliceStable(sortedEntries, func(i, j int) bool { return sortedEntries[i].Path < sortedEntries[j].Path })
+	totalEntries := len(listEntries)
+	if statusTopN > 0 && len(listEntries) > statusTopN {
+		sortedEntries := make([]git.StatusEntry, len(listEntries))
+		copy(sortedEntries, listEntries)
+		sortStatusEntriesForTop(sortedEntries)
 		hiddenByTop = len(sortedEntries) - statusTopN
-		st.Entries = sortedEntries[:statusTopN]
+		listEntries = sortedEntries[:statusTopN]
 	}
 
 	// group entries by Kind
-	grouped := groupEntries(st.Entries)
-	if statusVisEnabled("bar") {
-		if line := renderDensityBar(grouped); line != "" {
+	grouped := groupEntries(listEntries)
+	committableTotal := committableCount(allGrouped)
+	onlySubmodulesDirty := committableTotal == 0 && len(allGrouped.Submodules) > 0
+	if onlySubmodulesDirty {
+		fmt.Fprintln(w, faint("working tree clean"))
+	} else {
+		if statusVisEnabled("bar") {
+			if line := renderDensityBar(grouped); line != "" {
+				fmt.Fprintln(w, line)
+			}
+		}
+		if statusVisEnabled("progress") {
+			if line := renderProgressMeter(grouped); line != "" {
+				fmt.Fprintln(w, line)
+			}
+		}
+	}
+	if next := nextStatusAction(allGrouped, st, statusVerbose); next != "" {
+		fmt.Fprintln(w, renderNextStatusAction(next))
+	}
+	showSubmoduleActions := statusVerbose > 0 && !(onlySubmodulesDirty && len(allGrouped.Submodules) == 1)
+	renderSubmoduleSection(cmd.Context(), w, runner, allGrouped.Submodules, showSubmoduleActions, statusVerbose)
+	if statusVisEnabled("types") && len(listEntries) > 0 {
+		if line := renderTypesChip(listEntries); line != "" {
 			fmt.Fprintln(w, line)
 		}
 	}
-	if statusVisEnabled("progress") {
-		if line := renderProgressMeter(grouped); line != "" {
+	if statusVisEnabled("heatmap") && len(listEntries) > 0 {
+		for _, line := range renderStatusHeatmap(listEntries) {
 			fmt.Fprintln(w, line)
 		}
 	}
-	if statusVisEnabled("types") && len(st.Entries) > 0 {
-		if line := renderTypesChip(st.Entries); line != "" {
-			fmt.Fprintln(w, line)
-		}
-	}
-	if statusVisEnabled("heatmap") && len(st.Entries) > 0 {
-		for _, line := range renderStatusHeatmap(st.Entries) {
-			fmt.Fprintln(w, line)
-		}
-	}
-	if statusVisEnabled("tree") && len(st.Entries) > 0 {
+	if statusVisEnabled("tree") && len(listEntries) > 0 {
 		stats := fetchDiffStats(cmd.Context(), runner)
-		renderStatusTree(w, st.Entries, stats)
+		renderStatusTree(w, listEntries, stats)
 	} else {
 		useGlyphs := statusVisEnabled("glyphs")
 		if len(grouped.Unmerged) > 0 {
@@ -1402,13 +1587,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 						suffix = "  " + faint(s)
 					}
 				}
-				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), e.Path, suffix)
 			}
 		}
 		if len(grouped.Staged) > 0 {
 			fmt.Fprintln(w, color.GreenString("staged:"))
 			for _, e := range grouped.Staged {
-				fmt.Fprintf(w, "  %s%s %s\n", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), displayPath(e))
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), displayPath(e), renderEntryDetail(e))
 			}
 		}
 		if len(grouped.Modified) > 0 {
@@ -1417,13 +1602,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			if statusVisEnabled("risk") {
 				modified = sortByRisk(cmd.Context(), runner, modified)
 			}
-			showChurn := statusVisEnabled("churn") && len(st.Entries) <= 50
+			showChurn := statusVisEnabled("churn") && len(listEntries) <= 50
 			showRisk := statusVisEnabled("risk")
 			for _, e := range modified {
-				parts := []string{fmt.Sprintf("  %s%s %s", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), displayPath(e))}
+				parts := []string{fmt.Sprintf("  %s%s %s%s", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), displayPath(e), renderEntryDetail(e))}
 				if showRisk {
 					if marker := riskMarker(cmd.Context(), runner, e); marker != "" {
-						parts[0] = fmt.Sprintf("  %s%s %s %s", glyphPrefix(e.Path, useGlyphs), renderXY(e.XY, effectiveXYStyle), marker, displayPath(e))
+						parts[0] = fmt.Sprintf("  %s%s %s %s%s", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), marker, displayPath(e), renderEntryDetail(e))
 					}
 				}
 				if showChurn {
@@ -1448,13 +1633,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	if len(st.Entries) == 0 {
+	if len(listEntries) == 0 && len(allGrouped.Submodules) == 0 {
 		fmt.Fprintln(w, faint("working tree clean"))
 	}
 	if hiddenByTop > 0 {
 		fmt.Fprintln(w, faint(fmt.Sprintf("… +%d more (%d total · showing top %d)", hiddenByTop, totalEntries, statusTopN)))
 	}
-	return nil
+	return exitCode, nil
 }
 
 func renderStatusVerboseSummary(
@@ -1466,7 +1651,7 @@ func renderStatusVerboseSummary(
 	g groupedEntries,
 ) {
 	ctx := cmd.Context()
-	total := len(st.Entries)
+	total := committableCount(g)
 	cleanPct := 1.0
 	if total > 0 {
 		cleanPct = float64(len(g.Staged)) / float64(total)
@@ -1497,6 +1682,12 @@ func renderStatusVerboseSummary(
 	}
 	treeNote := fmt.Sprintf("%d staged · %d modified · %d untracked · %d conflicts",
 		len(g.Staged), len(g.Modified), len(g.Untracked), len(g.Unmerged))
+	if n := splitCount(g); n > 0 {
+		treeNote += fmt.Sprintf(" · %d split", n)
+	}
+	if len(g.Submodules) > 0 {
+		treeNote += fmt.Sprintf(" · %d submodules dirty", len(g.Submodules))
+	}
 	cleanBar := ui.ProgressBar(cleanPct, 28)
 	if NoColorFlag() {
 		cleanBar = ui.PlainProgressBar(cleanPct, 28)
@@ -1550,13 +1741,15 @@ func repoDisplayPath() string {
 }
 
 type groupedEntries struct {
-	Modified, Staged, Unmerged, Untracked []git.StatusEntry
+	Modified, Staged, Unmerged, Untracked, Submodules []git.StatusEntry
 }
 
 func groupEntries(entries []git.StatusEntry) groupedEntries {
 	var g groupedEntries
 	for _, e := range entries {
 		switch e.Kind {
+		case git.KindSubmodule:
+			g.Submodules = append(g.Submodules, e)
 		case git.KindUnmerged:
 			g.Unmerged = append(g.Unmerged, e)
 		case git.KindUntracked:
@@ -1576,11 +1769,241 @@ func groupEntries(entries []git.StatusEntry) groupedEntries {
 	return g
 }
 
+func committableEntries(entries []git.StatusEntry) []git.StatusEntry {
+	out := make([]git.StatusEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind != git.KindSubmodule {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func committableCount(g groupedEntries) int {
+	return len(g.Modified) + len(g.Staged) + len(g.Unmerged) + len(g.Untracked)
+}
+
+func splitCount(g groupedEntries) int {
+	n := 0
+	for _, e := range g.Modified {
+		if isSplitEntry(e) {
+			n++
+		}
+	}
+	for _, e := range g.Staged {
+		if isSplitEntry(e) {
+			n++
+		}
+	}
+	return n
+}
+
+func isSplitEntry(e git.StatusEntry) bool {
+	return len(e.XY) >= 2 && isXYActive(e.XY[0]) && isXYActive(e.XY[1])
+}
+
+func sortStatusEntriesForTop(entries []git.StatusEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		pi, pj := statusEntryPriority(entries[i]), statusEntryPriority(entries[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return entries[i].Path < entries[j].Path
+	})
+}
+
+func statusEntryPriority(e git.StatusEntry) int {
+	switch {
+	case e.Kind == git.KindUnmerged:
+		return 0
+	case len(e.XY) >= 2 && e.XY[0] != '.' && e.XY[0] != ' ' && (e.XY[1] == '.' || e.XY[1] == ' '):
+		return 1
+	case e.Kind == git.KindUntracked:
+		return 3
+	default:
+		return 2
+	}
+}
+
 func displayPath(e git.StatusEntry) string {
 	if e.Orig != "" {
 		return fmt.Sprintf("%s → %s", e.Orig, e.Path)
 	}
 	return e.Path
+}
+
+func renderSubmoduleSection(ctx context.Context, w io.Writer, runner *git.ExecRunner, entries []git.StatusEntry, showActions bool, verbose int) {
+	if len(entries) == 0 {
+		return
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	fmt.Fprintln(w, faint(fmt.Sprintf("submodules: %d dirty", len(entries))))
+	for i, e := range entries {
+		branch := "├─ "
+		if i == len(entries)-1 {
+			branch = "└─ "
+		}
+		action := ""
+		if showActions {
+			action = "  " + faint(submoduleStatusAction(e.Path))
+		}
+		fmt.Fprintf(w, "%s%s  %s  %s%s\n", faint(branch), renderSubmoduleState(), e.Path, faint("("+submoduleStateLabel(e.Sub)+" inside)"), action)
+		if verbose > 1 {
+			if detail := submoduleDetailSummary(ctx, runner.Dir, e.Path); detail != "" {
+				fmt.Fprintf(w, "%s%s\n", faint("   "), faint(detail))
+			}
+		}
+	}
+}
+
+func submoduleDetailSummary(ctx context.Context, repoDir, path string) string {
+	dir := path
+	if !filepath.IsAbs(dir) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		dir = filepath.Join(repoDir, path)
+	}
+	st, err := git.NewClient(&git.ExecRunner{Dir: dir}).Status(ctx)
+	if err != nil {
+		return ""
+	}
+	g := groupEntries(st.Entries)
+	parts := make([]string, 0, 5)
+	branch := stripControlChars(st.Branch)
+	if branch == "" || branch == "(detached)" {
+		branch = "detached"
+	}
+	parts = append(parts, "branch "+branch)
+	if len(g.Unmerged) > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflicts", len(g.Unmerged)))
+	}
+	if len(g.Staged) > 0 {
+		parts = append(parts, fmt.Sprintf("%d staged", len(g.Staged)))
+	}
+	if len(g.Modified) > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified", len(g.Modified)))
+	}
+	if len(g.Untracked) > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked", len(g.Untracked)))
+	}
+	if len(parts) == 1 {
+		parts = append(parts, "clean")
+	}
+	return strings.Join(parts, " · ")
+}
+
+func submoduleStatusAction(path string) string {
+	return "cd " + statusShellQuote(path) + " && gk status"
+}
+
+func statusShellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if strings.IndexFunc(s, func(r rune) bool {
+		return !(r == '/' || r == '_' || r == '-' || r == '.' ||
+			(r >= '0' && r <= '9') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= 'a' && r <= 'z'))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func renderSubmoduleState() string {
+	return color.New(color.FgHiBlack).Sprintf("%-8s", "submod")
+}
+
+func submoduleStateLabel(sub string) string {
+	if len(sub) < 4 || sub[0] != 'S' {
+		return "dirty"
+	}
+	parts := make([]string, 0, 3)
+	if sub[1] == 'C' {
+		parts = append(parts, "new commit")
+	}
+	if sub[2] == 'M' {
+		parts = append(parts, "modified")
+	}
+	if sub[3] == 'U' {
+		parts = append(parts, "untracked")
+	}
+	if len(parts) == 0 {
+		return "dirty"
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return strings.Join(parts, "+")
+}
+
+func isStatusSubmoduleEntry(e git.StatusEntry) bool {
+	return len(e.Sub) >= 4 && e.Sub[0] == 'S'
+}
+
+func submoduleEntryDetails(e git.StatusEntry) []string {
+	if !isStatusSubmoduleEntry(e) {
+		return nil
+	}
+	details := make([]string, 0, 3)
+	if e.Kind != git.KindSubmodule && len(e.XY) >= 2 {
+		switch {
+		case e.XY[0] == 'A' || e.XY[1] == 'A':
+			details = append(details, "added")
+		case e.XY[0] == 'D' || e.XY[1] == 'D':
+			details = append(details, "removed")
+		}
+	}
+	if e.Sub[1] == 'C' {
+		details = append(details, "commit changed")
+	}
+	if e.Kind != git.KindSubmodule && len(details) == 0 && len(e.XY) >= 2 && (e.XY[0] == 'M' || e.XY[1] == 'M') {
+		details = append(details, "commit changed")
+	}
+	if e.Sub[2] == 'M' {
+		details = append(details, "modified inside")
+	}
+	if e.Sub[3] == 'U' {
+		details = append(details, "untracked inside")
+	}
+	return details
+}
+
+func renderEntryDetail(e git.StatusEntry) string {
+	details := submoduleEntryDetails(e)
+	if isSplitEntry(e) {
+		details = append(details, "staged + unstaged")
+	}
+	if len(details) == 0 {
+		return ""
+	}
+	return color.New(color.Faint).Sprint("  (" + strings.Join(details, " · ") + ")")
+}
+
+func nextStatusAction(g groupedEntries, st *git.Status, verbose int) string {
+	switch {
+	case len(g.Unmerged) > 0:
+		return "gk resolve"
+	case committableCount(g) > 0:
+		return "gk commit --dry-run"
+	case len(g.Submodules) == 1 && verbose > 0:
+		return submoduleStatusAction(g.Submodules[0].Path)
+	case len(g.Submodules) > 0:
+		return "gk status -v"
+	case st != nil && st.Behind > 0:
+		return "gk sync"
+	case st != nil && st.Ahead > 0:
+		return "gk push"
+	default:
+		return ""
+	}
+}
+
+func renderNextStatusAction(action string) string {
+	faint := color.New(color.Faint).SprintFunc()
+	return fmt.Sprintf("%s %s", faint("next:"), action)
 }
 
 // fileChurnSparkline returns an N-cell sparkline of a file's recent commit
@@ -1962,7 +2385,7 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 		if child.entry != nil {
 			useGlyphs := statusVisEnabled("glyphs")
 			stat := formatDiffStat(stats, child.entry.Path)
-			fmt.Fprintf(w, "%s%s%s%s  %s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), renderXY(child.entry.XY, effectiveXYStyle), displayTreeName(child), stat)
+			fmt.Fprintf(w, "%s%s%s%s  %s%s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), renderEntryState(*child.entry, effectiveXYStyle), displayTreeName(child), renderEntryDetail(*child.entry), stat)
 		} else {
 			if dropBadge {
 				fmt.Fprintf(w, "%s%s%s/\n", prefix, faint(branch),
@@ -2076,6 +2499,20 @@ const (
 // format strings at the call site.
 const xyCellWidthLabels = 8
 
+func renderEntryState(e git.StatusEntry, style string) string {
+	if isStatusSubmoduleEntry(e) {
+		switch style {
+		case xyStyleGlyphs:
+			return color.New(color.FgHiBlack).Sprint("#")
+		case xyStyleRaw:
+			return color.New(color.FgHiBlack).Sprint(e.XY)
+		default:
+			return color.New(color.FgHiBlack).Sprintf("%-*s", xyCellWidthLabels, "submod")
+		}
+	}
+	return renderXY(e.XY, style)
+}
+
 // renderXY returns a styled, width-stable cell for the two-letter
 // porcelain code. The style argument picks one of:
 //
@@ -2173,16 +2610,7 @@ func xyLabel(xy string) string {
 			return "typ"
 		}
 	default: // both staged + worktree dirty
-		// Trailing '*' hints "touched in both the index and the working
-		// tree" — you staged it and then edited further.
-		switch y {
-		case 'M':
-			return "mod*"
-		case 'D':
-			return "del*"
-		case 'R':
-			return "ren*"
-		}
+		return "split"
 	}
 	return xy
 }

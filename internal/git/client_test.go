@@ -329,6 +329,49 @@ func TestStatus_RenamedEntry(t *testing.T) {
 	}
 }
 
+func TestStatus_SubmoduleDirtinessOnly(t *testing.T) {
+	raw := "# branch.head main\x001 .M S..U 160000 160000 160000 aaa aaa ghostty\x00"
+	r := fakeWithResponse("status --porcelain=v2 -z --branch", FakeResponse{Stdout: raw})
+	c := NewClient(r)
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(st.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(st.Entries))
+	}
+	e := st.Entries[0]
+	if e.Kind != KindSubmodule {
+		t.Errorf("kind: want KindSubmodule, got %v", e.Kind)
+	}
+	if e.Sub != "S..U" {
+		t.Errorf("Sub: want S..U, got %q", e.Sub)
+	}
+	if e.Path != "ghostty" {
+		t.Errorf("Path: want ghostty, got %q", e.Path)
+	}
+}
+
+func TestStatus_SubmoduleGitlinkChangeStaysOrdinary(t *testing.T) {
+	raw := "# branch.head main\x001 .M SC.. 160000 160000 160000 aaa bbb ghostty\x00"
+	r := fakeWithResponse("status --porcelain=v2 -z --branch", FakeResponse{Stdout: raw})
+	c := NewClient(r)
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(st.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(st.Entries))
+	}
+	e := st.Entries[0]
+	if e.Kind != KindOrdinary {
+		t.Errorf("kind: want KindOrdinary, got %v", e.Kind)
+	}
+	if e.Sub != "SC.." {
+		t.Errorf("Sub: want SC.., got %q", e.Sub)
+	}
+}
+
 func TestStatus_EmptyOutput(t *testing.T) {
 	r := fakeWithResponse("status --porcelain=v2 -z --branch", FakeResponse{Stdout: ""})
 	c := NewClient(r)

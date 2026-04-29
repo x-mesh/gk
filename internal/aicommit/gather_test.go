@@ -119,6 +119,53 @@ func TestGatherWIPRenameRecord(t *testing.T) {
 	}
 }
 
+func TestGatherWIPDropsSubmoduleDirtinessOnly(t *testing.T) {
+	stdout := buildV2(
+		"1 .M S..U 160000 160000 160000 aaa aaa ghostty",
+		"1 .M S.M. 160000 160000 160000 bbb bbb vendor/lib",
+		"1 .M S.MU 160000 160000 160000 ccc ccc deps/tool",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("submodule dirtiness-only records should be dropped, got %+v", entries)
+	}
+}
+
+func TestGatherWIPKeepsSubmoduleGitlinkChanges(t *testing.T) {
+	stdout := buildV2(
+		"1 .M SC.. 160000 160000 160000 aaa aaa ghostty",
+		"1 M. S... 160000 160000 160000 bbb ccc vendor/lib",
+		"1 A. S... 000000 160000 160000 000000 ddd deps/tool",
+	)
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2 --untracked-files=all -z": {Stdout: stdout},
+		},
+	}
+	entries, err := GatherWIP(context.Background(), fake, GatherOptions{})
+	if err != nil {
+		t.Fatalf("GatherWIP: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("gitlink changes should be kept, got %+v", entries)
+	}
+	got := []string{entries[0].Path, entries[1].Path, entries[2].Path}
+	want := []string{"ghostty", "vendor/lib", "deps/tool"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paths: want %v, got %v", want, got)
+		}
+	}
+}
+
 func TestGatherWIPDenyPaths(t *testing.T) {
 	stdout := buildV2(
 		"1 .M N... 100644 100644 100644 aaa bbb .env",

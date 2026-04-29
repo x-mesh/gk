@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -572,6 +573,225 @@ func TestRenderStatusTree_Output(t *testing.T) {
 	}
 }
 
+func TestGroupEntriesSeparatesSubmoduleDirtiness(t *testing.T) {
+	entries := []git.StatusEntry{
+		{Path: "ghostty", XY: ".M", Sub: "S..U", Kind: git.KindSubmodule},
+		{Path: "main.go", XY: ".M", Kind: git.KindOrdinary},
+	}
+	g := groupEntries(entries)
+	if len(g.Submodules) != 1 {
+		t.Fatalf("Submodules: want 1, got %d", len(g.Submodules))
+	}
+	if len(g.Modified) != 1 {
+		t.Fatalf("Modified: want 1, got %d", len(g.Modified))
+	}
+	if committableCount(g) != 1 {
+		t.Fatalf("committableCount: want 1, got %d", committableCount(g))
+	}
+}
+
+func TestRenderSubmoduleSection(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	buf := &bytes.Buffer{}
+	renderSubmoduleSection(buf, context.Background(), nil, []git.StatusEntry{
+		{Path: "ghostty", Sub: "S..U", Kind: git.KindSubmodule},
+	}, false, 0)
+	out := buf.String()
+	for _, want := range []string{"submodules: 1 dirty", "submod", "ghostty", "untracked inside"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderSubmoduleSectionVerboseAction(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	buf := &bytes.Buffer{}
+	renderSubmoduleSection(buf, context.Background(), nil, []git.StatusEntry{
+		{Path: "ghostty", Sub: "S..U", Kind: git.KindSubmodule},
+	}, true, 1)
+	if out := buf.String(); !strings.Contains(out, "cd ghostty && gk status") {
+		t.Errorf("expected verbose submodule action, got:\n%s", out)
+	}
+}
+
+func TestRenderEntryStateSubmoduleGitlink(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	e := git.StatusEntry{Path: "ghostty", XY: ".M", Sub: "SC..", Kind: git.KindOrdinary}
+	if got := renderEntryState(e, xyStyleLabels); !strings.Contains(got, "submod") {
+		t.Fatalf("expected submod state, got %q", got)
+	}
+	if got := renderEntryDetail(e); !strings.Contains(got, "commit changed") {
+		t.Fatalf("expected commit changed detail, got %q", got)
+	}
+}
+
+func TestRenderEntryStateSplit(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	e := git.StatusEntry{Path: "app.go", XY: "MM", Kind: git.KindOrdinary}
+	if got := renderEntryState(e, xyStyleLabels); !strings.Contains(got, "split") {
+		t.Fatalf("expected split state, got %q", got)
+	}
+	if got := renderEntryDetail(e); !strings.Contains(got, "staged + unstaged") {
+		t.Fatalf("expected split detail, got %q", got)
+	}
+}
+
+func TestNextStatusActionUsesGKCommands(t *testing.T) {
+	cases := []struct {
+		name string
+		g    groupedEntries
+		st   *git.Status
+		want string
+	}{
+		{"conflicts", groupedEntries{Unmerged: []git.StatusEntry{{Path: "a"}}}, &git.Status{}, "gk resolve"},
+		{"committable", groupedEntries{Modified: []git.StatusEntry{{Path: "a"}}}, &git.Status{}, "gk commit --dry-run"},
+		{"submodule only", groupedEntries{Submodules: []git.StatusEntry{{Path: "ghostty"}}}, &git.Status{}, "gk status -v"},
+		{"behind clean", groupedEntries{}, &git.Status{Behind: 1}, "gk sync"},
+		{"ahead clean", groupedEntries{}, &git.Status{Ahead: 1}, "gk push"},
+	}
+	for _, tc := range cases {
+		if got := nextStatusAction(tc.g, tc.st, 0); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestStatusExitCodeFor(t *testing.T) {
+	cases := []struct {
+		name string
+		g    groupedEntries
+		st   *git.Status
+		want int
+	}{
+		{"clean", groupedEntries{}, &git.Status{}, 0},
+		{"dirty", groupedEntries{Modified: []git.StatusEntry{{Path: "a"}}}, &git.Status{}, 1},
+		{"submodule only", groupedEntries{Submodules: []git.StatusEntry{{Path: "sub"}}}, &git.Status{}, 2},
+		{"conflict", groupedEntries{Unmerged: []git.StatusEntry{{Path: "a"}}}, &git.Status{Behind: 1}, 3},
+		{"behind", groupedEntries{}, &git.Status{Behind: 1}, 4},
+		// Priority guard: dirty beats behind.
+		{"dirty and behind", groupedEntries{Modified: []git.StatusEntry{{Path: "a"}}}, &git.Status{Behind: 2}, 1},
+		// Priority guard: submodule-only beats behind.
+		{"submodule only and behind", groupedEntries{Submodules: []git.StatusEntry{{Path: "sub"}}}, &git.Status{Behind: 1}, 2},
+	}
+	for _, tc := range cases {
+		if got := statusExitCodeFor(tc.g, tc.st); got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSubmoduleDetailSummary(t *testing.T) {
+	r := testutil.NewRepo(t)
+	sub := filepath.Join(r.Dir, "ghostty")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir submodule dir: %v", err)
+	}
+	cmd := exec.Command("git", "init")
+	cmd.Dir = sub
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init submodule: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = sub
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config email: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "config", "user.name", "Test")
+	cmd.Dir = sub
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config name: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write tracked: %v", err)
+	}
+	cmd = exec.Command("git", "add", "tracked.txt")
+	cmd.Dir = sub
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "commit", "-m", "base")
+	cmd.Dir = sub
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "extra.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+
+	got := submoduleDetailSummary(context.Background(), r.Dir, "ghostty")
+	for _, want := range []string{"branch", "1 untracked"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("submoduleDetailSummary missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestSortStatusEntriesForTopPrioritizesActions(t *testing.T) {
+	entries := []git.StatusEntry{
+		{Path: "z-untracked", XY: "??", Kind: git.KindUntracked},
+		{Path: "a-modified", XY: ".M", Kind: git.KindOrdinary},
+		{Path: "m-staged", XY: "M.", Kind: git.KindOrdinary},
+		{Path: "b-conflict", XY: "UU", Kind: git.KindUnmerged},
+	}
+	sortStatusEntriesForTop(entries)
+	got := []string{entries[0].Path, entries[1].Path, entries[2].Path, entries[3].Path}
+	want := []string{"b-conflict", "m-staged", "a-modified", "z-untracked"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order: want %v, got %v", want, got)
+		}
+	}
+}
+
+func TestRenderStatusJSON(t *testing.T) {
+	prevRepo := flagRepo
+	prevVerbose := statusVerbose
+	t.Cleanup(func() {
+		flagRepo = prevRepo
+		statusVerbose = prevVerbose
+	})
+	flagRepo = "/repo"
+	statusVerbose = 0
+	st := &git.Status{
+		Branch:   "main",
+		Upstream: "origin/main",
+		Entries: []git.StatusEntry{
+			{Path: "ghostty", XY: ".M", Sub: "S..U", Kind: git.KindSubmodule},
+			{Path: "main.go", XY: ".M", Kind: git.KindOrdinary},
+		},
+	}
+	g := groupEntries(st.Entries)
+	buf := &bytes.Buffer{}
+	if err := renderStatusJSON(buf, st, g, committableEntries(st.Entries)); err != nil {
+		t.Fatalf("renderStatusJSON: %v", err)
+	}
+	var out statusJSON
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, buf.String())
+	}
+	if out.Counts.Committable != 1 || out.Counts.DirtySubmodules != 1 {
+		t.Fatalf("counts: %+v", out.Counts)
+	}
+	if out.Next != "gk commit --dry-run" {
+		t.Fatalf("next: want gk commit --dry-run, got %q", out.Next)
+	}
+	if len(out.Entries) != 1 || out.Entries[0].Path != "main.go" {
+		t.Fatalf("entries: %+v", out.Entries)
+	}
+	if len(out.Submodules) != 1 || out.Submodules[0].Action != "cd ghostty && gk status" {
+		t.Fatalf("submodules: %+v", out.Submodules)
+	}
+}
+
 func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
 	color.NoColor = true
 	t.Cleanup(func() { color.NoColor = false })
@@ -1016,8 +1236,8 @@ func TestCompactUpstreamSuffix(t *testing.T) {
 	}{
 		// Empty upstream → empty output.
 		{"main", "", "", ""},
-		// Branch name matches upstream branch → show remote only (dedup).
-		{"main", "origin/main", "origin", "main"},
+		// Branch name matches upstream branch → keep full upstream for clarity.
+		{"main", "origin/main", "origin/main", ""},
 		// Branch differs from upstream branch → show full remote/branch.
 		{"feat/local", "origin/release", "origin/release", ""},
 		// Upstream without slash → render as-is.
@@ -1080,8 +1300,8 @@ func TestXYStyle(t *testing.T) {
 			"A.": "added",
 			"D.": "deleted",
 			"R.": "renamed",
-			"MM": "mod*",
-			"MD": "del*",
+			"MM": "split",
+			"MD": "split",
 			"UU": "conflict",
 			"AU": "conflict",
 			"UA": "conflict",

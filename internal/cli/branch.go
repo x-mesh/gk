@@ -71,8 +71,9 @@ type branchInfo struct {
 	Ahead            int    // commits this branch has that upstream lacks
 	Behind           int    // commits upstream has that this branch lacks
 	Gone             bool   // upstream configured but missing on remote
-	UpstreamInferred bool   // Upstream filled by same-named remote fallback,
-	// not by `branch.<name>.merge` config
+	UpstreamInferred bool   // Upstream filled by same-named remote fallback
+	ForkBranch       string // base branch of the fork (e.g. "main")
+	ForkPoint        string // 7-char short hash of the merge-base with ForkBranch
 }
 
 func listLocalBranches(ctx context.Context, r git.Runner) ([]branchInfo, error) {

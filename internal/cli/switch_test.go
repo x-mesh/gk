@@ -540,6 +540,38 @@ func TestBuildSwitchItems_DivergenceInBranchCell(t *testing.T) {
 	}
 }
 
+func TestBuildSwitchItems_ForkPointInSource(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "feat/local", Hash: "aaa", LastCommit: now(),
+			ForkBranch: "main", ForkPoint: "cbdce8b"},
+	}
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, nil)
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if !strings.Contains(items[0].Cells[1], "from main@cbdce8b") {
+		t.Errorf("expected 'from main@cbdce8b' in source cell, got %q", items[0].Cells[1])
+	}
+}
+
+func TestBuildSwitchItems_LockedPlusForkCombined(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "feat/wt", Hash: "bbb", LastCommit: now(),
+			ForkBranch: "main", ForkPoint: "cbdce8b"},
+	}
+	wt := switchWorktreeMap{
+		byBranch: map[string]WorktreeEntry{
+			"feat/wt": {Path: "/tmp/wt/feat-wt", Branch: "feat/wt"},
+		},
+	}
+	items := buildSwitchItems(local, nil, "main", wt, nil)
+	if !strings.Contains(items[0].Cells[1], "wt: from main@cbdce8b") {
+		t.Errorf("expected 'wt: from main@cbdce8b', got %q", items[0].Cells[1])
+	}
+}
+
 func TestPickBranchForSwitch_CurrentPinnedFirst(t *testing.T) {
 	t.Parallel()
 	// Sort happens inside pickBranchForSwitch — verify the comparator
@@ -613,8 +645,12 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 				t.Errorf("normal branch should have ● marker, got %q", it.Cells[0])
 			}
 		case "local:feat/locked":
-			if !strings.Contains(it.Cells[1], "wt: locked-tree") {
-				t.Errorf("expected 'wt: locked-tree' on locked row, got %q", it.Cells[1])
+			// New design: wt: prefix is additive to the comparison
+			// source (upstream / fork / (local)). With no upstream
+			// or fork data in this fixture, source falls back to
+			// "(local)" → cell shows "wt: (local)".
+			if !strings.HasPrefix(it.Cells[1], "wt: ") {
+				t.Errorf("expected 'wt: ' prefix on locked row, got %q", it.Cells[1])
 			}
 		}
 	}

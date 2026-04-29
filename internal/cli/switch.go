@@ -418,6 +418,11 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		// user later pushed to origin without `--set-upstream`.
 		applyUntrackedFallback(local, scanUntrackedDivergent(ctx, runner, remote))
 
+		// Fork point — for branches still without any upstream/inferred
+		// signal, compute merge-base vs default so the picker can show
+		// "from main@abc1234" instead of a flat "(local)".
+		computeForkPoints(ctx, runner, defaultBr, local)
+
 		// Per-worktree dirty state. Parallel git status per worktree;
 		// each call bounded to 200ms. Missing in map = clean / unknown.
 		dirty := loadWorktreeDirtyStates(ctx, wt)
@@ -529,6 +534,52 @@ func handleWorktreeRedirect(ctx context.Context, cmd *cobra.Command, entry Workt
 		return false, err
 	}
 	return true, nil
+}
+
+// computeForkPoints attaches ForkBranch/ForkPoint to local branches
+// that have no upstream (real or inferred). The fork point is
+// `merge-base <branch> <defaultBr>`. Skipped when defaultBr is empty
+// (bare/fresh repos). Runs in parallel; failures are silently
+// ignored — fork info is informational, not load-bearing.
+func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string, local []branchInfo) {
+	if defaultBr == "" {
+		return
+	}
+	type result struct {
+		idx  int
+		hash string
+	}
+	out := make(chan result, len(local))
+	var wg sync.WaitGroup
+	for i, b := range local {
+		if b.Upstream != "" || b.Name == defaultBr {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, branch string) {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			defer cancel()
+			stdout, _, err := runner.Run(callCtx, "merge-base", branch, defaultBr)
+			if err != nil {
+				return
+			}
+			h := strings.TrimSpace(string(stdout))
+			if len(h) > 7 {
+				h = h[:7]
+			}
+			if h == "" {
+				return
+			}
+			out <- result{idx, h}
+		}(i, b.Name)
+	}
+	wg.Wait()
+	close(out)
+	for r := range out {
+		local[r.idx].ForkBranch = defaultBr
+		local[r.idx].ForkPoint = r.hash
+	}
 }
 
 // applyUntrackedFallback patches Ahead/Behind on branches that have
@@ -649,27 +700,36 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
 
 	for _, b := range local {
-		entry, locked := wt.byBranch[b.Name]
+		_, locked := wt.byBranch[b.Name]
 		isCurrent := b.Name == cur
-		var source, coloredSource string
+		// Resolve the underlying "what does this branch compare to"
+		// info first (upstream / inferred / fork / gone / nothing).
+		// Worktree-locked is then prefixed additively so users see
+		// both "this lives in another worktree" + "diff target".
+		var coreSource, coreColored string
 		switch {
-		case locked:
-			tag := filepath.Base(entry.Path)
-			source = "wt: " + tag
-			coloredSource = cellYellow("wt: ") + tag
 		case b.Gone:
-			source = "(gone)"
-			coloredSource = cellFaint(source)
+			coreSource = "(gone)"
+			coreColored = cellFaint(coreSource)
 		case b.Upstream != "":
 			prefix := "↑ "
 			if b.UpstreamInferred {
 				prefix = "~ "
 			}
-			source = prefix + b.Upstream
-			coloredSource = source
+			coreSource = prefix + b.Upstream
+			coreColored = coreSource
+		case b.ForkPoint != "":
+			coreSource = fmt.Sprintf("from %s@%s", b.ForkBranch, b.ForkPoint)
+			coreColored = coreSource
 		default:
-			source = "(local)"
-			coloredSource = cellFaint(source)
+			coreSource = "(local)"
+			coreColored = cellFaint(coreSource)
+		}
+		source := coreSource
+		coloredSource := coreColored
+		if locked {
+			source = "wt: " + coreSource
+			coloredSource = cellYellow("wt: ") + coreColored
 		}
 		// Display marker stays via fatih/color — it's only used by
 		// FzfPicker fallback which doesn't have row-level styles.

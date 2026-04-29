@@ -11,6 +11,14 @@ builds:
       - CGO_ENABLED=0
     goos: [darwin, linux]
     goarch: [amd64, arm64]
+    flags:
+      # -buildvcs=false stops the Go toolchain from embedding
+      # debug.BuildInfo VCS settings (vcs.revision/vcs.time/vcs.modified)
+      # into the binary. We already inject those via ldflags below, and a
+      # transient working-tree change from the `go mod tidy` before-hook
+      # would otherwise mark the released artifact as -dirty.
+      - -buildvcs=false
+      - -trimpath
     ldflags:
       - -s -w
       - -X main.version={{.Version}}

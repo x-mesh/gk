@@ -47,18 +47,34 @@ func vcsFallback(curCommit, curDate string) (string, string) {
 	if !ok {
 		return curCommit, curDate
 	}
-	for _, s := range info.Settings {
+	return vcsFallbackFromSettings(curCommit, curDate, info.Settings)
+}
+
+// vcsFallbackFromSettings is the pure core of vcsFallback, split out so
+// tests can drive it with synthetic []debug.BuildSetting without having
+// to fork a real Go toolchain build.
+//
+// vcs.modified is only honoured when the commit was filled in from
+// vcs.revision in this same call — i.e. ldflags did NOT provide a
+// commit. When ldflags supplied the commit (release builds via
+// goreleaser or `make build`), a transient working-tree change in the
+// build sandbox (e.g. `go mod tidy` adjusting go.sum) must not stamp
+// the released binary as -dirty.
+func vcsFallbackFromSettings(curCommit, curDate string, settings []debug.BuildSetting) (string, string) {
+	commitFromVCS := false
+	for _, s := range settings {
 		switch s.Key {
 		case "vcs.revision":
 			if curCommit == "none" && len(s.Value) >= 7 {
 				curCommit = s.Value[:7]
+				commitFromVCS = true
 			}
 		case "vcs.time":
 			if curDate == "unknown" && s.Value != "" {
 				curDate = s.Value
 			}
 		case "vcs.modified":
-			if s.Value == "true" && curCommit != "none" {
+			if s.Value == "true" && commitFromVCS {
 				curCommit += "-dirty"
 			}
 		}

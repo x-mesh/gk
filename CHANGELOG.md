@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-04-30
+
+### Added
+
+- **`gk status` — base 출처 라벨**. `from <base>` 라인에 `default` /
+  `configured` / `guessed` 라벨이 붙어 base 브랜치가 어디서 결정됐는지 한눈에
+  보입니다. 내부 source 상수(`origin/HEAD`, `git config`, `.gk.yaml`,
+  `GK_BASE_BRANCH`, `fallback`)는 그대로 유지되며, `-v` /
+  `--explain-base`에서 기술 라벨로 노출됩니다.
+- **`gk status --explain-base`** — base 결정 근거 다층 진단 블록. 모든 config
+  layer + 캐시된 `origin/HEAD` + (옵션) live origin + 로컬 fallback 후보를
+  나열하고 채택된 행에 ✓ 마커, 불일치 시 action hint를 표시합니다.
+- **`gk status --explain-base --fetch-default`** — `git ls-remote --symref`
+  한 번 호출로 라이브 origin/HEAD를 조회해 캐시본과 비교합니다.
+  `SSH_ASKPASS=` / `GCM_INTERACTIVE=never`로 강화된 runner에서 실행돼 인증
+  다이얼로그로 status가 멈추지 않습니다.
+- **Base mismatch footer** — `cfg.BaseBranch`(.gk.yaml/git config/env)가
+  캐시된 `origin/HEAD`와 다르면 `⚠ base 'X' (configured) ≠ origin default
+  'Y'`와 `git remote set-head origin -a` 힌트가 출력됩니다.
+- **Tracking mismatch footer** — `branch.<name>.merge`가 `refs/heads/Y`를
+  가리키는데 로컬 이름이 `X`면 `⚠ tracking mismatch: local 'X' pushes to
+  'origin/Y'` 경고와 `git branch --set-upstream-to=…` / `git push -u …` fix
+  힌트, 그리고 per-branch 억제 방법을 함께 표시합니다.
+- **`branch.<name>.gk-tracking-ok=true`** — triangular workflow / personal
+  fork 등 트래킹 비대칭이 의도된 경우 per-branch로 tracking warning을 끕니다.
+  대소문자 구분 없음 (`true`/`True`/`TRUE`).
+- **`gk status -v`에 `[base]` 진단 라인** — `resolved=… source=…
+  origin/HEAD=… cfg=…` key=value 한 줄. 미스매치 / origin/HEAD unset 시 ⚠
+  꼬리표가 붙습니다.
+
+### Changed
+
+- **`gk status` base 해석을 단일 호출로 hoist**. 이전에는 `runStatusOnce`가
+  `resolveBaseForStatus`를 최대 3회 호출하던 것을 `BaseResolution`을 1회 계산
+  후 `renderBaseDivergence` / `renderStatusVerboseSummary`에 인자로 전달하도록
+  refactor. 매 status 4-10개 git subprocess가 줄었습니다.
+- **Tracking 검출이 단일 `git config --get-regexp`로 통합**. 이전에는 3개
+  별도 lookup(`gk-tracking-ok`, `merge`, `remote`)이었으나 1회 spawn으로
+  줄였습니다.
+- **`--legend` "base" 섹션** — 새 라벨 어휘(`default` / `configured` /
+  `guessed`)와 mismatch footer 설명을 반영합니다.
+
 ## [0.20.0] - 2026-04-29
 
 ### Added

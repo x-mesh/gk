@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`gk sync`가 "현재 브랜치를 base로 따라잡기"로 재정의됨.** 기본 전략은 rebase.
+  v0.6의 `gk sync`는 "fetch + 현재 브랜치를 `origin/<self>`로 FF"였는데, 이는
+  사용자가 가장 흔히 원하는 인텐트(피처 브랜치를 trunk로 따라잡기)와 어긋나
+  있었습니다. 재설계로 gk의 통합 커맨드 3개가 서로 겹치지 않게 정리됩니다:
+  `sync`(base → 현재, 기본 rebase), `pull`(`@{u}` ↔ 현재), `merge <x>`(머지
+  커밋을 동반한 의도적 통합).
+  - 신규 플래그: `--base`, `--strategy rebase|merge|ff-only`.
+  - `.gk.yaml`의 `sync.strategy`는 신규 키 — `pull.strategy`와 분리.
+  - **Self-FF (always-on):** `origin/<self>`가 로컬보다 strictly ahead일 때,
+    base 통합 전에 자동 FF. diverge 시 조용히 스킵.
+  - **`--upstream-only` (deprecated, v0.8 제거):** v0.6 동작을 한 사이클
+    유지. stderr에 한 줄 deprecation 안내. CI 로그용 무음화는
+    `GK_SUPPRESS_DEPRECATION=1`. v0.8 이후엔 `gk pull`을 사용.
+  - **`--all` 제거.** 모든 로컬 브랜치를 base로 rebase하는 동작은 위험하고
+    드물게 의도된 것이라 제거. 필요하면 shell 루프로 수동 처리.
+  - 충돌 처리는 동일 — `gk continue` / `gk abort` / `gk resolve`로 재개.
+  - 자세한 내용은 `docs/commands.md#gk-sync` 및 `docs/rfc-sync-redesign.md`.
+
 ## [0.15.0] - 2026-04-28
 
 ### Added

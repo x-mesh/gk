@@ -76,6 +76,23 @@ func TestFormatStuckGuidance_EditRecommendsContinue(t *testing.T) {
 	}
 }
 
+// TestFormatStuckGuidance_EditBreakOp — `git rebase --break` produces a
+// done entry with no operand, so LastDoneOp is empty. displayOp must render
+// "edit/break" rather than the empty string.
+func TestFormatStuckGuidance_EditBreakOp(t *testing.T) {
+	stuck := gitstate.RebaseStuck{
+		Reason:     gitstate.RebaseStuckEdit,
+		LastDoneOp: "",
+	}
+	got := FormatStuckGuidance(stuck)
+	if !strings.Contains(got, "(edit/break)") {
+		t.Errorf("empty LastDoneOp should render as edit/break:\n%s", got)
+	}
+	if !strings.Contains(got, "git rebase --continue  # use the current state as-is (creates an empty commit if needed)  (recommended)") {
+		t.Errorf("--continue should be recommended for break:\n%s", got)
+	}
+}
+
 func TestFormatStuckGuidance_ExecIncludesCommand(t *testing.T) {
 	stuck := gitstate.RebaseStuck{
 		Reason:      gitstate.RebaseStuckExec,

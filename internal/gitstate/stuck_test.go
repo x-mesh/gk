@@ -130,6 +130,41 @@ func TestClassifyRebaseStuck_Exec(t *testing.T) {
 	}
 }
 
+// TestClassifyRebaseStuck_ExecShorthandX — git todo files may use the `x`
+// shorthand instead of `exec`; both must classify as Exec.
+func TestClassifyRebaseStuck_ExecShorthandX(t *testing.T) {
+	s, rbDir := rebaseMergeFixture(t)
+	makeFile(t, filepath.Join(rbDir, "git-rebase-todo"), "pick 5555555 # next\n")
+	makeFile(t, filepath.Join(rbDir, "done"), "pick 4444444 # ok\nx make test\n")
+	got := ClassifyRebaseStuck(s)
+	if got.Reason != RebaseStuckExec {
+		t.Errorf("Reason: want %s, got %s", RebaseStuckExec, got.Reason)
+	}
+	if got.LastDoneOp != "x" {
+		t.Errorf("LastDoneOp: want x, got %q", got.LastDoneOp)
+	}
+	if got.LastDoneArg != "make test" {
+		t.Errorf("LastDoneArg: want %q, got %q", "make test", got.LastDoneArg)
+	}
+}
+
+// TestClassifyRebaseStuck_EmptyCommit_ShorthandP — pick may also be written
+// as `p`; the empty-commit fallback path must accept both forms.
+func TestClassifyRebaseStuck_EmptyCommit_ShorthandP(t *testing.T) {
+	s, rbDir := rebaseMergeFixture(t)
+	makeFile(t, filepath.Join(rbDir, "git-rebase-todo"), "")
+	makeFile(t, filepath.Join(rbDir, "done"), "p deadbeef # noop\n")
+	makeFile(t, filepath.Join(rbDir, "stopped-sha"), "deadbeef\n")
+
+	got := ClassifyRebaseStuck(s)
+	if got.Reason != RebaseStuckEmptyCommit {
+		t.Errorf("Reason: want %s, got %s", RebaseStuckEmptyCommit, got.Reason)
+	}
+	if got.LastDoneOp != "p" {
+		t.Errorf("LastDoneOp: want p, got %q", got.LastDoneOp)
+	}
+}
+
 // TestClassifyRebaseStuck_NotStuck — stopped-sha empty, todo non-empty.
 // Mid-rebase between conflict-free picks: not stuck, just transient.
 func TestClassifyRebaseStuck_NotStuck(t *testing.T) {

@@ -17,6 +17,11 @@ func TestParsePorcelainV1(t *testing.T) {
 		{"ignored only ignored", "!! ignored\n", DirtyFlags{}},
 		{"conflict UU", "UU conflict.txt\n", DirtyFlags{Conflict: true}},
 		{"conflict AA", "AA conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict DD", "DD conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict AU", "AU conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict UD", "UD conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict UA", "UA conflict.txt\n", DirtyFlags{Conflict: true}},
+		{"conflict DU", "DU conflict.txt\n", DirtyFlags{Conflict: true}},
 		{"conflict mix overrides", " M m.txt\nUU c.txt\n", DirtyFlags{Modified: true, Conflict: true}},
 		{"rename staged", "R  old -> new\n", DirtyFlags{Staged: true}},
 		{"deleted unstaged", " D removed.txt\n", DirtyFlags{Modified: true}},
@@ -24,6 +29,7 @@ func TestParsePorcelainV1(t *testing.T) {
 		{"multi-line mix", " M a.txt\nM  b.txt\n?? c.txt\n", DirtyFlags{Modified: true, Staged: true}},
 		{"NUL separated modified", " M file.txt\x00", DirtyFlags{Modified: true}},
 		{"NUL rename skip target", "R  new\x00old\x00", DirtyFlags{Staged: true}},
+		{"NUL copy skip target", "C  new\x00old\x00", DirtyFlags{Staged: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

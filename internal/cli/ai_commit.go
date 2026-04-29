@@ -113,7 +113,8 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	Dbg("commit: preflight ok")
 
-	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, cfg.Branch.Protected, flags.noWIPUnwrap)
+	wipDisabled := flags.noWIPUnwrap || !ai.Commit.WIPEnabled
+	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, cfg.Branch.Protected, wipDisabled)
 	if err != nil {
 		return err
 	}
@@ -253,12 +254,24 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Snapshot the backup ref BEFORE the unwrap rewrites HEAD —
+	// otherwise --abort would only roll back to the chain ancestor,
+	// not the original WIP-tipped state.
+	var preUnwrapBackup string
+	if wipCommit.Present && !flags.dryRun {
+		b, bErr := aicommit.EnsureBackupRef(ctx, runner)
+		if bErr != nil {
+			return fmt.Errorf("commit: backup ref: %w", bErr)
+		}
+		preUnwrapBackup = b
+	}
+
 	if err := unwrapWIPCommitBeforeApply(ctx, runner, wipCommit, flags, cmd.OutOrStdout()); err != nil {
 		return err
 	}
 
 	// Apply.
-	applyOpts := aicommit.ApplyOptions{DryRun: flags.dryRun}
+	applyOpts := aicommit.ApplyOptions{DryRun: flags.dryRun, PrecapturedBackupRef: preUnwrapBackup}
 	if ai.Commit.Trailer {
 		applyOpts.Trailer = fmt.Sprintf("%s@%s", prov.Name(), readProviderVersion(ctx, prov))
 	}
@@ -283,7 +296,12 @@ type wipCommitForAICommit struct {
 	// Apply. >= 1 when Present, 0 otherwise. Backwards-compatible
 	// with the prior single-WIP shape (ChainLen=1).
 	ChainLen int
-	Files    []aicommit.FileChange
+	// HeadSHA captures HEAD at detection time. Verified again before
+	// `git reset HEAD~N` — if HEAD moved during the (potentially long)
+	// classify/compose/review phases, the unwrap is refused so we
+	// don't reset against a stale offset.
+	HeadSHA string
+	Files   []aicommit.FileChange
 }
 
 // runCommitDryRunPreview produces a cost-aware plan without making any
@@ -423,9 +441,11 @@ func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg con
 	if len(chain) == 0 {
 		return wipCommitForAICommit{}, nil
 	}
+	headOut, _, _ := runner.Run(ctx, "rev-parse", "HEAD")
 	return wipCommitForAICommit{
 		Present:  true,
 		ChainLen: len(chain),
+		HeadSHA:  strings.TrimSpace(string(headOut)),
 		Files:    aicommit.MergeChainFiles(chain),
 	}, nil
 }
@@ -454,6 +474,21 @@ func unwrapWIPCommitBeforeApply(ctx context.Context, runner git.Runner, wipCommi
 	depth := wipCommit.ChainLen
 	if depth <= 0 {
 		depth = 1 // legacy callers / safety
+	}
+	// Verify HEAD hasn't moved since detection — classify+compose+
+	// review can take many seconds and another shell could land a
+	// commit in the meantime, in which case `HEAD~depth` would point
+	// somewhere different than what the AI plan was built against.
+	if wipCommit.HeadSHA != "" {
+		cur, _, err := runner.Run(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("commit: unwrap WIP chain: verify HEAD: %w", err)
+		}
+		curSHA := strings.TrimSpace(string(cur))
+		if curSHA != wipCommit.HeadSHA {
+			return fmt.Errorf("commit: unwrap WIP chain: HEAD moved during plan (was %s, now %s); refusing reset",
+				shortSHA(wipCommit.HeadSHA), shortSHA(curSHA))
+		}
 	}
 	target := fmt.Sprintf("HEAD~%d", depth)
 	if _, stderr, err := runner.Run(ctx, "reset", target); err != nil {

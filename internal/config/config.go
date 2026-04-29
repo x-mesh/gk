@@ -95,6 +95,11 @@ type AICommitConfig struct {
 	// consider. 0 falls back to 10. Stops a runaway chain on a branch
 	// that is entirely save-point commits.
 	WIPMaxChain int `mapstructure:"wip_max_chain" yaml:"wip_max_chain"`
+	// WIPEnabled is the global on/off switch for the chain unwrap
+	// pass. Defaults true. The CLI flag --no-wip-unwrap is OR-ed with
+	// `!WIPEnabled` per invocation, so users can disable entirely via
+	// config or one-shot via flag.
+	WIPEnabled bool `mapstructure:"wip_enabled"   yaml:"wip_enabled"`
 }
 
 // PrivacyConfig tunes the Privacy Gate that runs before remote AI
@@ -358,6 +363,7 @@ func Defaults() Config {
 				Trailer:     false,
 				Audit:       false,
 				WIPMaxChain: 10,
+				WIPEnabled:  true,
 			},
 			Nvidia: AINvidiaConfig{
 				Timeout: "60s",

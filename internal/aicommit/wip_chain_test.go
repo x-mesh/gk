@@ -95,15 +95,30 @@ func chainRunner(commits []chainCommit, branch string, _ string) *git.FakeRunner
 		} else {
 			resp["branch -r --contains "+c.SHA] = git.FakeResponse{}
 		}
-		// File lookup — use diff or diff-tree depending on whether this
-		// is a root commit.
+		// File lookup — keep fixtures readable (tab/newline separated)
+		// and convert to the -z form (NUL separated) the parser expects.
+		nameStatus := tabFixtureToNUL(c.NameStatus)
 		if c.Root {
-			resp["diff-tree --root --name-status --no-commit-id -r "+c.SHA] = git.FakeResponse{Stdout: c.NameStatus}
+			resp["diff-tree --root -z --name-status --no-commit-id -r "+c.SHA] = git.FakeResponse{Stdout: nameStatus}
 		} else {
-			resp["diff --name-status "+c.SHA+"^ "+c.SHA] = git.FakeResponse{Stdout: c.NameStatus}
+			resp["diff -z --name-status "+c.SHA+"^ "+c.SHA] = git.FakeResponse{Stdout: nameStatus}
 		}
 	}
 	return &git.FakeRunner{Responses: resp}
+}
+
+// tabFixtureToNUL converts a human-readable tab/newline-separated
+// `--name-status` fixture into the NUL-separated form `-z` produces.
+// Records: status\x00path\x00 (or status\x00src\x00dst\x00 for
+// rename/copy). The fixture form `M\ta.go\nM\tb.go\n` becomes
+// `M\x00a.go\x00M\x00b.go\x00`.
+func tabFixtureToNUL(s string) string {
+	if s == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\t", "\x00")
+	s = strings.ReplaceAll(s, "\n", "\x00")
+	return s
 }
 
 type chainCommit struct {
@@ -383,8 +398,10 @@ func chainSubjects(c []WIPCommit) []string {
 }
 
 // Sanity: parseWIPDiffNameStatus handles the common cases.
+// Records are NUL-separated (`-z` form). Status, then path; rename
+// and copy emit a destination as a third token.
 func TestParseWIPDiffNameStatus(t *testing.T) {
-	in := "M\tinternal/foo.go\nA\tnew.go\nD\told.go\n"
+	in := "M\x00internal/foo.go\x00A\x00new.go\x00D\x00old.go\x00"
 	out := parseWIPDiffNameStatus(in)
 	if len(out) != 3 {
 		t.Fatalf("want 3 entries, got %d", len(out))
@@ -394,12 +411,39 @@ func TestParseWIPDiffNameStatus(t *testing.T) {
 		if out[i].Status != w {
 			t.Errorf("[%d] Status: want %q, got %q", i, w, out[i].Status)
 		}
-		if !out[i].Staged {
-			t.Errorf("[%d] Staged: must be true", i)
+		// L1.1 fix — chain files are NOT staged after the mixed reset
+		// that follows. Staged must be false.
+		if out[i].Staged {
+			t.Errorf("[%d] Staged: must be false post-reset", i)
 		}
 	}
-	// Path correct
 	if !strings.Contains(out[0].Path, "foo.go") {
 		t.Errorf("Path: %q", out[0].Path)
+	}
+}
+
+// TestParseWIPDiffNameStatusRename — rename emits 3 tokens; the parser
+// must keep the destination (not the source) as the canonical Path.
+func TestParseWIPDiffNameStatusRename(t *testing.T) {
+	in := "R100\x00old/path.go\x00new/path.go\x00M\x00other.go\x00"
+	out := parseWIPDiffNameStatus(in)
+	if len(out) != 2 {
+		t.Fatalf("want 2 entries (rename + modify), got %d: %+v", len(out), out)
+	}
+	if out[0].Status != "renamed" || out[0].Path != "new/path.go" {
+		t.Errorf("rename entry: %+v", out[0])
+	}
+	if out[1].Status != "modified" || out[1].Path != "other.go" {
+		t.Errorf("modify entry: %+v", out[1])
+	}
+}
+
+// TestParseWIPDiffNameStatusTabInPath — paths containing tabs (which
+// `core.quotepath=true` would mangle) survive intact under -z.
+func TestParseWIPDiffNameStatusTabInPath(t *testing.T) {
+	in := "M\x00weird\tname.go\x00"
+	out := parseWIPDiffNameStatus(in)
+	if len(out) != 1 || out[0].Path != "weird\tname.go" {
+		t.Errorf("tab-in-path lost: %+v", out)
 	}
 }

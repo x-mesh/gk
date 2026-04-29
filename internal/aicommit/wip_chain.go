@@ -208,9 +208,13 @@ func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainO
 // wipChainFiles returns the file list for a commit. Uses
 // `diff-tree --root` for parentless commits so a chain that reaches
 // repo root doesn't abort the whole `gk commit` flow.
+//
+// `-z` produces NUL-separated records and disables C-style quoting,
+// so paths containing tabs / non-ASCII bytes survive intact (the
+// previous tab-split parser silently dropped such files).
 func wipChainFiles(ctx context.Context, runner git.Runner, sha string, rootCommit bool) ([]FileChange, error) {
 	if rootCommit {
-		out, _, err := runner.Run(ctx, "diff-tree", "--root", "--name-status", "--no-commit-id", "-r", sha)
+		out, _, err := runner.Run(ctx, "diff-tree", "--root", "-z", "--name-status", "--no-commit-id", "-r", sha)
 		if err != nil {
 			return nil, fmt.Errorf("aicommit: wip chain files for root %s: %w", sha, err)
 		}
@@ -218,30 +222,56 @@ func wipChainFiles(ctx context.Context, runner git.Runner, sha string, rootCommi
 		// tree, which is the correct semantic.
 		return parseWIPDiffNameStatus(string(out)), nil
 	}
-	out, _, err := runner.Run(ctx, "diff", "--name-status", sha+"^", sha)
+	out, _, err := runner.Run(ctx, "diff", "-z", "--name-status", sha+"^", sha)
 	if err != nil {
 		return nil, fmt.Errorf("aicommit: wip chain files for %s: %w", sha, err)
 	}
 	return parseWIPDiffNameStatus(string(out)), nil
 }
 
-// parseWIPDiffNameStatus parses `git diff --name-status` output into
-// FileChange entries marked Staged=true. Mirrors the parser previously
-// inlined in cli/ai_commit.go; kept here so the chain detector is
-// self-contained.
+// parseWIPDiffNameStatus parses `git diff -z --name-status` output
+// into FileChange entries.
+//
+// With `-z`, records are NUL-terminated and there is no C-style
+// quoting — paths with tabs/spaces/non-ASCII survive intact. Renames
+// (`R<score>`) and copies (`C<score>`) emit THREE NUL-separated
+// tokens (status, source, destination); other codes emit two
+// (status, path).
+//
+// After the chain unwrap (`git reset HEAD~N`, mixed), files end up
+// as working-tree changes — NOT staged — so Staged=false. ApplyMessages
+// re-stages per-group via `git add -A -- <files>` regardless.
 func parseWIPDiffNameStatus(out string) []FileChange {
+	if out == "" {
+		return nil
+	}
+	toks := strings.Split(out, "\x00")
 	var files []FileChange
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	i := 0
+	for i < len(toks) {
+		code := toks[i]
+		if code == "" {
+			i++
 			continue
 		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 {
+		i++
+		if i >= len(toks) {
+			break
+		}
+		path := toks[i]
+		i++
+		// R/C codes consume an extra token (the destination); we keep
+		// the destination as the canonical Path since callers care
+		// about the file's current location.
+		if len(code) > 0 && (code[0] == 'R' || code[0] == 'C') {
+			if i < len(toks) {
+				path = toks[i]
+				i++
+			}
+		}
+		if path == "" {
 			continue
 		}
-		code := parts[0]
-		path := parts[len(parts)-1]
 		status := "modified"
 		switch code[0] {
 		case 'A':
@@ -256,7 +286,7 @@ func parseWIPDiffNameStatus(out string) []FileChange {
 		files = append(files, FileChange{
 			Path:   path,
 			Status: status,
-			Staged: true,
+			Staged: false,
 		})
 	}
 	return files
@@ -325,7 +355,7 @@ func MergeChainFiles(chain []WIPCommit) []FileChange {
 			// add+delete (or never existed) → omit
 			continue
 		}
-		out = append(out, FileChange{Path: p, Status: status, Staged: true})
+		out = append(out, FileChange{Path: p, Status: status, Staged: false})
 	}
 	return out
 }

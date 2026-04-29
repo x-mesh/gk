@@ -92,6 +92,64 @@ func (r *Resolver) ResolveBaseExplained(ctx context.Context, branch, cfgBase str
 	return cfgBase, "", false
 }
 
+// Issue describes a recoverable problem encountered during resolution that
+// the caller should surface (typically a one-line stderr warning). The
+// resolver itself never prints — it has no writer — but it tells the
+// caller what to say.
+type Issue struct {
+	// Code is a stable machine-readable identifier ("parent-missing",
+	// "parent-is-tag", etc.). Reserved for future expansion; Phase 1
+	// only emits "parent-missing".
+	Code string
+	// Parent is the offending value (the explicit gk-parent that no
+	// longer resolves to a local ref).
+	Parent string
+	// Message is a human-readable, single-line description suitable
+	// for stderr — already including the parent name.
+	Message string
+}
+
+// ResolveBaseWithIssues is the noisy variant of ResolveBase: it returns the
+// effective base AND any problems that justified a fallback. Status uses
+// this to print a one-line warning when the user has set a gk-parent that
+// no longer exists, instead of silently using cfgBase and leaving them in
+// the dark.
+//
+// When no explicit parent is configured, issues is empty even if inference
+// would have failed — absent inference is the normal path, not a problem.
+func (r *Resolver) ResolveBaseWithIssues(ctx context.Context, branch, cfgBase string) (base string, source Source, issues []Issue) {
+	if branch == "" {
+		return cfgBase, "", nil
+	}
+	cfg := NewConfig(r.c)
+	explicit, err := cfg.GetParent(ctx, branch)
+	if err != nil {
+		// Read failure is rare (broken config); surface but don't block.
+		return cfgBase, "", []Issue{{
+			Code:    "parent-read-error",
+			Message: "warning: could not read gk-parent: " + err.Error(),
+		}}
+	}
+	if explicit != "" {
+		if r.parentRefExists(ctx, explicit) {
+			return explicit, SourceExplicit, nil
+		}
+		// Explicit but ref gone — record an issue and fall back.
+		issues = append(issues, Issue{
+			Code:    "parent-missing",
+			Parent:  explicit,
+			Message: "warning: parent " + explicit + " not found (deleted?); using " + cfgBase,
+		})
+		return cfgBase, "", issues
+	}
+	if inferred := r.inferParent(ctx, branch); inferred != "" {
+		if r.parentRefExists(ctx, inferred) {
+			return inferred, SourceInferred, nil
+		}
+	}
+	return cfgBase, "", nil
+}
+
 // parentRefExists reports whether `refs/heads/<parent>` resolves locally.
 // We deliberately reject `refs/remotes/...` and tag refs by checking the
 // heads namespace specifically — parent must be a local branch (validated

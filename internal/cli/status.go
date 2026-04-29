@@ -1005,7 +1005,13 @@ func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *gi
 	// Swap cfgBase for the explicit/inferred parent when one is configured
 	// for this branch. The Resolver returns cfgBase verbatim when no parent
 	// is set, so branches without gk-parent metadata see byte-equal output.
-	base := branchparent.NewResolver(client).ResolveBase(cmd.Context(), currentBranch, cfgBase)
+	// Issues (e.g. "parent set but ref deleted") are printed to stderr once
+	// per status invocation — silent fallback would leave the user wondering
+	// why their stacked workflow line vanished.
+	base, _, issues := branchparent.NewResolver(client).ResolveBaseWithIssues(cmd.Context(), currentBranch, cfgBase)
+	for _, iss := range issues {
+		fmt.Fprintln(cmd.ErrOrStderr(), iss.Message)
+	}
 	if base == "" || base == currentBranch {
 		return ""
 	}

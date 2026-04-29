@@ -122,3 +122,62 @@ func TestResolveBaseExplained_FallbackKeepsCfgBase(t *testing.T) {
 		t.Errorf("want main/'', got %s/%s", base, source)
 	}
 }
+
+func TestResolveBaseWithIssues_ParentMissing(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/gone\n"},
+			"rev-parse --verify --quiet refs/heads/feat/gone": {ExitCode: 1},
+		},
+	}
+	res := newResolverWithRunner(r)
+	base, source, issues := res.ResolveBaseWithIssues(context.Background(), "feat/x", "main")
+	if base != "main" {
+		t.Errorf("want fallback base 'main', got %q", base)
+	}
+	if source != "" {
+		t.Errorf("source must be empty on fallback, got %q", source)
+	}
+	if len(issues) != 1 || issues[0].Code != "parent-missing" {
+		t.Fatalf("want one parent-missing issue, got: %#v", issues)
+	}
+	if issues[0].Parent != "feat/gone" {
+		t.Errorf("issue.Parent should record the explicit value, got %q", issues[0].Parent)
+	}
+}
+
+func TestResolveBaseWithIssues_NoIssuesWhenUnset(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent": {ExitCode: 1},
+		},
+	}
+	res := newResolverWithRunner(r)
+	base, _, issues := res.ResolveBaseWithIssues(context.Background(), "feat/x", "main")
+	if base != "main" {
+		t.Errorf("want main, got %q", base)
+	}
+	if len(issues) != 0 {
+		t.Errorf("unset parent must not produce issues, got: %#v", issues)
+	}
+}
+
+func TestResolveBaseWithIssues_ExplicitOk(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent":          {Stdout: "feat/parent\n"},
+			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
+		},
+	}
+	res := newResolverWithRunner(r)
+	base, source, issues := res.ResolveBaseWithIssues(context.Background(), "feat/x", "main")
+	if base != "feat/parent" {
+		t.Errorf("want feat/parent, got %q", base)
+	}
+	if source != SourceExplicit {
+		t.Errorf("want SourceExplicit, got %q", source)
+	}
+	if len(issues) != 0 {
+		t.Errorf("happy path must not produce issues, got: %#v", issues)
+	}
+}

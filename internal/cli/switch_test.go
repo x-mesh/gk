@@ -580,46 +580,6 @@ func TestPickBranchForSwitch_CurrentPinnedFirst(t *testing.T) {
 	}
 }
 
-func TestPickBranchForSwitch_CurrentPinnedFirst(t *testing.T) {
-	t.Parallel()
-	// Sort happens inside pickBranchForSwitch — verify the comparator
-	// directly by replicating it on a known input.
-	branches := []branchInfo{
-		{Name: "feat/older", LastCommit: time.Now().Add(-72 * time.Hour)},
-		{Name: "main", LastCommit: time.Now().Add(-1 * time.Hour)},
-		{Name: "feat/newest", LastCommit: time.Now()},
-	}
-	cur := "main"
-	sortStable := func(arr []branchInfo) {
-		// mirrors the comparator in pickBranchForSwitch
-		for i := 1; i < len(arr); i++ {
-			for j := i; j > 0; j-- {
-				less := func(a, b branchInfo) bool {
-					if a.Name == cur {
-						return true
-					}
-					if b.Name == cur {
-						return false
-					}
-					return a.LastCommit.After(b.LastCommit)
-				}
-				if less(arr[j], arr[j-1]) {
-					arr[j], arr[j-1] = arr[j-1], arr[j]
-				} else {
-					break
-				}
-			}
-		}
-	}
-	sortStable(branches)
-	if branches[0].Name != "main" {
-		t.Errorf("expected main at index 0, got %q (full order: %+v)", branches[0].Name, branches)
-	}
-	if branches[1].Name != "feat/newest" {
-		t.Errorf("expected feat/newest at index 1, got %q", branches[1].Name)
-	}
-}
-
 func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 	t.Parallel()
 	local := []branchInfo{

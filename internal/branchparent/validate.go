@@ -36,7 +36,7 @@ func ValidateSet(ctx context.Context, c *git.Client, branch, parent string) erro
 	if parent == branch {
 		return fmt.Errorf("cannot set %q as its own parent", branch)
 	}
-	if isRemoteLike(parent) {
+	if isRemoteLikeFor(ctx, c, parent) {
 		hint := ""
 		if i := strings.IndexByte(parent, '/'); i > 0 {
 			hint = " (use the local branch name " + parent[i+1:] + ")"
@@ -64,29 +64,36 @@ func ValidateSet(ctx context.Context, c *git.Client, branch, parent string) erro
 	return nil
 }
 
-// isRemoteLike returns true when parent looks like a remote-tracking ref
-// (e.g., "origin/main"). We reject these because divergence semantics
-// against a remote ref are subtly wrong: the value drifts as the remote
-// updates without any local action, leading to silent behavior changes.
+// isRemoteLikeFor reports whether parent's prefix matches one of the repo's
+// configured remote names — a real check, not a hardcoded whitelist. We
+// reject those because divergence against a remote ref is subtly wrong:
+// the target drifts as the remote updates without any local action, and
+// `gk sync` semantics expect a local branch.
 //
-// The heuristic is intentionally permissive: any value containing '/'.
-// Local branches with slashes ("feat/x") share the syntax, so we accept
-// those — the actual disambiguation happens in branchExists, which only
-// returns true for refs/heads. The pre-check here just yields a clearer
-// error message for the common origin/* mistake.
-func isRemoteLike(parent string) bool {
-	// Reject only when the segment before the first '/' looks like a
-	// known remote name. This is heuristic — checking remotes for real
-	// means another git spawn we don't want — so we use the convention
-	// that "origin", "upstream", "fork" are common remote names.
+// Cost is one `git remote` spawn (~1ms) but only on the write path
+// (set-parent), never on the hot status path. False positives — local
+// branches that legitimately start with a remote name — are still valid
+// candidates if they exist in refs/heads, and branchExists() is the
+// authoritative check immediately after; this function only exists to
+// produce a clearer error message for the common `origin/main` mistake.
+//
+// Returns false when remotes can't be enumerated (e.g., not in a repo).
+// We don't want to block legitimate operations on enumeration failure;
+// branchExists() will catch any actually-wrong values downstream.
+func isRemoteLikeFor(ctx context.Context, c *git.Client, parent string) bool {
 	idx := strings.IndexByte(parent, '/')
 	if idx <= 0 {
 		return false
 	}
 	prefix := parent[:idx]
-	switch prefix {
-	case "origin", "upstream", "fork":
-		return true
+	out, _, err := c.Raw().Run(ctx, "remote")
+	if err != nil {
+		return false
+	}
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if strings.TrimSpace(name) == prefix {
+			return true
+		}
 	}
 	return false
 }
@@ -113,7 +120,9 @@ func detectCycle(ctx context.Context, c *git.Client, branch, parent string) stri
 	chain := []string{branch, parent}
 	for i := 0; i < maxParentDepth; i++ {
 		if visited[cur] {
-			return strings.Join(chain, " → ") + " → " + cur
+			// chain already ends in cur — appending it again would
+			// duplicate the closing node ("A → B → A → A").
+			return strings.Join(chain, " → ")
 		}
 		visited[cur] = true
 		next, err := cfg.GetParent(ctx, cur)
@@ -123,7 +132,7 @@ func detectCycle(ctx context.Context, c *git.Client, branch, parent string) stri
 		chain = append(chain, next)
 		cur = next
 	}
-	return strings.Join(chain, " → ") + " (depth > " + fmt.Sprintf("%d", maxParentDepth) + ")"
+	return strings.Join(chain, " → ") + fmt.Sprintf(" (depth > %d)", maxParentDepth)
 }
 
 // suggestSimilarBranch returns the closest local branch name to `parent`
@@ -136,12 +145,13 @@ func suggestSimilarBranch(ctx context.Context, c *git.Client, parent string) str
 		return ""
 	}
 	want := strings.ToLower(parent)
+	wantLen := len([]rune(parent))
 	type cand struct {
 		name string
 		dist int
 	}
 	var best cand
-	best.dist = len(parent) // upper bound
+	best.dist = wantLen + 1 // upper bound, beats any real distance
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		name := strings.TrimSpace(line)
 		if name == "" {
@@ -153,8 +163,9 @@ func suggestSimilarBranch(ctx context.Context, c *git.Client, parent string) str
 		}
 	}
 	// Only suggest when the distance is small relative to the length —
-	// otherwise we'd be guessing.
-	threshold := len(parent) / 3
+	// otherwise we'd be guessing. Threshold is in runes, not bytes, so
+	// non-ASCII branch names get a fair comparison.
+	threshold := wantLen / 3
 	if threshold < 2 {
 		threshold = 2
 	}
@@ -167,11 +178,17 @@ func suggestSimilarBranch(ctx context.Context, c *git.Client, parent string) str
 // levenshtein is a small, allocation-light implementation. We only call it
 // against local branch names (typically <50 entries × <30 chars), so an
 // O(n*m) loop is cheaper than pulling in a dependency.
+//
+// Operates on runes, not bytes — a multi-byte UTF-8 branch name (Korean,
+// Japanese, etc.) would otherwise count each byte as a separate character
+// and produce nonsense distances.
 func levenshtein(a, b string) int {
 	if a == b {
 		return 0
 	}
-	la, lb := len(a), len(b)
+	ra := []rune(a)
+	rb := []rune(b)
+	la, lb := len(ra), len(rb)
 	if la == 0 {
 		return lb
 	}
@@ -187,7 +204,7 @@ func levenshtein(a, b string) int {
 		curr[0] = i
 		for j := 1; j <= lb; j++ {
 			cost := 1
-			if a[i-1] == b[j-1] {
+			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
 			curr[j] = min3(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)

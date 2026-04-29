@@ -71,6 +71,21 @@ func TestConfig_UnsetParent_Idempotent(t *testing.T) {
 	}
 }
 
+func TestConfig_SetParent_RejectsEmpty(t *testing.T) {
+	r := &git.FakeRunner{}
+	cfg := newConfigWithRunner(r)
+	err := cfg.SetParent(context.Background(), "feat/x", "")
+	if err == nil {
+		t.Fatal("empty parent must be rejected")
+	}
+	if !strings.Contains(err.Error(), "UnsetParent") {
+		t.Errorf("error must hint at UnsetParent, got: %v", err)
+	}
+	if len(r.Calls) != 0 {
+		t.Errorf("must not invoke runner on rejection, got %d calls", len(r.Calls))
+	}
+}
+
 func TestConfig_RoundTrip(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

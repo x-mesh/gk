@@ -24,7 +24,12 @@ func TestValidateSet_SelfParent(t *testing.T) {
 }
 
 func TestValidateSet_RemoteLikeRejected(t *testing.T) {
-	c := git.NewClient(&git.FakeRunner{})
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {Stdout: "origin\n"},
+		},
+	}
+	c := git.NewClient(r)
 	err := ValidateSet(context.Background(), c, "feat/x", "origin/main")
 	if err == nil || !strings.Contains(err.Error(), "remote-tracking") {
 		t.Fatalf("origin/main must be rejected, got: %v", err)
@@ -86,7 +91,8 @@ func TestValidateSet_TagRejected(t *testing.T) {
 func TestValidateSet_HappyPath(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"check-ref-format --branch feat/parent":             {},
+			"remote":                                {Stdout: "origin\n"},
+			"check-ref-format --branch feat/parent": {},
 			"rev-parse --verify --quiet refs/heads/feat/parent": {Stdout: "abc\n"},
 			"config --get branch.feat/parent.gk-parent":         {ExitCode: 1},
 		},
@@ -187,6 +193,10 @@ func TestLevenshtein(t *testing.T) {
 		{"main", "develop", 7},
 		{"feat/x", "feat/y", 1},
 		{"abc", "", 3},
+		// UTF-8: byte-indexing would say each Korean char is 3 bytes.
+		// Rune-indexing reports actual character distance.
+		{"feat/한글", "feat/한글", 0},
+		{"feat/한글", "feat/한국", 1},
 	}
 	for _, tc := range cases {
 		got := levenshtein(tc.a, tc.b)
@@ -211,21 +221,41 @@ func TestSuggestSimilar_NoMatch(t *testing.T) {
 	}
 }
 
-func TestIsRemoteLike(t *testing.T) {
+func TestIsRemoteLikeFor_RealRemoteRejected(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {Stdout: "origin\nupstream\n"},
+		},
+	}
+	c := git.NewClient(r)
 	cases := []struct {
 		in   string
 		want bool
 	}{
 		{"origin/main", true},
 		{"upstream/develop", true},
-		{"fork/feature", true},
-		{"feat/x", false},
-		{"main", false},
-		{"my-org/main", false}, // unknown prefix → not flagged
+		{"feat/x", false},       // feat is not a configured remote
+		{"main", false},         // no slash
+		{"fork/feature", false}, // not configured here
+		{"origin", false},       // no slash, not flagged
 	}
 	for _, tc := range cases {
-		if got := isRemoteLike(tc.in); got != tc.want {
-			t.Errorf("isRemoteLike(%q) = %v, want %v", tc.in, got, tc.want)
+		if got := isRemoteLikeFor(context.Background(), c, tc.in); got != tc.want {
+			t.Errorf("isRemoteLikeFor(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestIsRemoteLikeFor_GitFailure_NotFlagged(t *testing.T) {
+	// `git remote` failure (e.g. not in a repo) must not block legitimate
+	// operations — branchExists() is the authoritative check.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {ExitCode: 128, Stderr: "fatal: not a git repository"},
+		},
+	}
+	c := git.NewClient(r)
+	if isRemoteLikeFor(context.Background(), c, "origin/main") {
+		t.Error("must not flag when `git remote` fails")
 	}
 }

@@ -11,6 +11,7 @@ package branchparent
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -40,7 +41,14 @@ func (cfg *Config) GetParent(ctx context.Context, branch string) (string, error)
 // SetParent writes the parent. The value is stored verbatim; no normalization
 // (e.g., stripping `refs/heads/`). Validate before calling — see ValidateSet
 // in this package, which the CLI write path runs first.
+//
+// Empty parent is rejected: storing "" would create a key whose value reads
+// back as "" on GetParent, indistinguishable from "unset". Callers wanting
+// to remove the metadata must use UnsetParent.
 func (cfg *Config) SetParent(ctx context.Context, branch, parent string) error {
+	if parent == "" {
+		return fmt.Errorf("parent must not be empty; use UnsetParent to clear")
+	}
 	return cfg.c.SetBranchConfig(ctx, branch, parentConfigKey, parent)
 }
 

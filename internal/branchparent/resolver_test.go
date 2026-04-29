@@ -162,6 +162,28 @@ func TestResolveBaseWithIssues_NoIssuesWhenUnset(t *testing.T) {
 	}
 }
 
+func TestResolveBaseWithIssues_ReadError(t *testing.T) {
+	// `git config --get` failing with anything but exit 1 (broken config,
+	// permission, etc.) must surface as a parent-read-error issue and
+	// fall back to cfgBase rather than blocking status.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent": {ExitCode: 128, Stderr: "fatal: bad config"},
+		},
+	}
+	res := newResolverWithRunner(r)
+	base, source, issues := res.ResolveBaseWithIssues(context.Background(), "feat/x", "main")
+	if base != "main" {
+		t.Errorf("must fall back to cfgBase, got %q", base)
+	}
+	if source != "" {
+		t.Errorf("source must be empty on read error, got %q", source)
+	}
+	if len(issues) != 1 || issues[0].Code != "parent-read-error" {
+		t.Fatalf("want one parent-read-error issue, got: %#v", issues)
+	}
+}
+
 func TestResolveBaseWithIssues_ExplicitOk(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

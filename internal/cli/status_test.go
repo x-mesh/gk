@@ -1307,3 +1307,101 @@ func TestBaseDivergenceHint(t *testing.T) {
 		})
 	}
 }
+
+// renderBaseDivergence integration tests — verifies the parent-aware swap
+// actually shows up in the status line and that fallback prints the right
+// stderr warning.
+
+func TestRenderBaseDivergence_WithParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/parent")
+	repo.WriteFile("p.txt", "p\n")
+	repo.RunGit("add", "p.txt")
+	repo.RunGit("commit", "-m", "p")
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s\n")
+	repo.RunGit("add", "s.txt")
+	repo.RunGit("commit", "-m", "s")
+	repo.RunGit("config", "branch.feat/sub.gk-parent", "feat/parent")
+	t.Chdir(repo.Dir)
+
+	cmd := &cobra.Command{Use: "status"}
+	cmd.SetContext(context.Background())
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	if !strings.Contains(got, "feat/parent") {
+		t.Errorf("expected 'feat/parent' in line, got: %q", got)
+	}
+	if strings.Contains(got, "main") {
+		t.Errorf("parent must replace base — should not contain 'main', got: %q", got)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("happy path must not write to stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRenderBaseDivergence_ParentMissingFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s\n")
+	repo.RunGit("add", "s.txt")
+	repo.RunGit("commit", "-m", "s")
+	// Set parent metadata to a non-existent branch.
+	repo.RunGit("config", "branch.feat/sub.gk-parent", "feat/never-existed")
+	t.Chdir(repo.Dir)
+
+	cmd := &cobra.Command{Use: "status"}
+	cmd.SetContext(context.Background())
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	if strings.Contains(got, "feat/never-existed") {
+		t.Errorf("must not show missing parent in line, got: %q", got)
+	}
+	if !strings.Contains(got, "main") {
+		t.Errorf("must fall back to main, got: %q", got)
+	}
+	if !strings.Contains(stderr.String(), "feat/never-existed not found") {
+		t.Errorf("expected stderr warning about missing parent, got: %q", stderr.String())
+	}
+}
+
+func TestRenderBaseDivergence_NoParent_ByteEqualBehavior(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s\n")
+	repo.RunGit("add", "s.txt")
+	repo.RunGit("commit", "-m", "s")
+	t.Chdir(repo.Dir)
+
+	cmd := &cobra.Command{Use: "status"}
+	cmd.SetContext(context.Background())
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	if !strings.Contains(got, "main") {
+		t.Errorf("no parent → must show base, got: %q", got)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("no parent must not warn, got stderr: %q", stderr.String())
+	}
+}

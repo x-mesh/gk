@@ -1555,7 +1555,9 @@ func TestRenderBaseDivergence_WithParent(t *testing.T) {
 	cmd.SetErr(&stderr)
 	runner := &git.ExecRunner{Dir: repo.Dir}
 	client := git.NewClient(runner)
-	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	cfg := &config.Config{BaseBranch: "main"}
+	res := resolveBaseForStatus(context.Background(), runner, client, cfg)
+	got := renderBaseDivergence(cmd, runner, client, cfg, "feat/sub", false, res)
 	if !strings.Contains(got, "feat/parent") {
 		t.Errorf("expected 'feat/parent' in line, got: %q", got)
 	}
@@ -1587,7 +1589,9 @@ func TestRenderBaseDivergence_ParentMissingFallback(t *testing.T) {
 	cmd.SetErr(&stderr)
 	runner := &git.ExecRunner{Dir: repo.Dir}
 	client := git.NewClient(runner)
-	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	cfg := &config.Config{BaseBranch: "main"}
+	res := resolveBaseForStatus(context.Background(), runner, client, cfg)
+	got := renderBaseDivergence(cmd, runner, client, cfg, "feat/sub", false, res)
 	if strings.Contains(got, "feat/never-existed") {
 		t.Errorf("must not show missing parent in line, got: %q", got)
 	}
@@ -1617,7 +1621,9 @@ func TestRenderBaseDivergence_NoParent_ByteEqualBehavior(t *testing.T) {
 	cmd.SetErr(&stderr)
 	runner := &git.ExecRunner{Dir: repo.Dir}
 	client := git.NewClient(runner)
-	got := renderBaseDivergence(cmd, runner, client, &config.Config{BaseBranch: "main"}, "feat/sub", false)
+	cfg := &config.Config{BaseBranch: "main"}
+	res := resolveBaseForStatus(context.Background(), runner, client, cfg)
+	got := renderBaseDivergence(cmd, runner, client, cfg, "feat/sub", false, res)
 	if !strings.Contains(got, "main") {
 		t.Errorf("no parent → must show base, got: %q", got)
 	}

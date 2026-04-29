@@ -32,6 +32,8 @@ var statusVerbose int
 var statusExitCode bool
 var statusWatch bool
 var statusWatchInterval time.Duration
+var statusExplainBase bool
+var statusFetchDefault bool
 
 // effectiveVis holds the resolved visualization set for the current runStatus
 // invocation. Populated at the top of runStatus from flag > config > default
@@ -70,6 +72,8 @@ func init() {
 	cmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "exit 0 clean, 1 dirty, 2 submodule-only dirty, 3 conflicts, 4 behind remote")
 	cmd.Flags().BoolVar(&statusWatch, "watch", false, "refresh status until interrupted")
 	cmd.Flags().DurationVar(&statusWatchInterval, "watch-interval", 2*time.Second, "refresh interval for --watch")
+	cmd.Flags().BoolVar(&statusExplainBase, "explain-base", false, "print a multi-line block explaining how the base branch was resolved (sources, mismatches, action hints)")
+	cmd.Flags().BoolVar(&statusFetchDefault, "fetch-default", false, "with --explain-base, also query the remote's live default branch via ls-remote (one network call)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -722,7 +726,10 @@ func renderStatusLegend(w io.Writer, vis []string) {
 			fmt.Fprintln(w, "  stash: N entries — summary line; ⚠ warns if top stash overlaps a dirty file")
 		}
 		if enabled("base") {
-			fmt.Fprintln(w, "  from <trunk> [gauge] — divergence vs base_branch / refs/remotes/<r>/HEAD")
+			fmt.Fprintln(w, "  from <trunk> <source> [gauge] — divergence vs base_branch")
+			fmt.Fprintln(w, "    source labels: config / GK_BASE_BRANCH / git config / origin/HEAD / fallback")
+			fmt.Fprintln(w, "  ⚠ base 'X' (source) ≠ origin/HEAD 'Y' — config disagrees with cached remote HEAD")
+			fmt.Fprintln(w, "    inspect: gk status --explain-base    (add --fetch-default to query live origin)")
 		}
 		if enabled("conflict") {
 			fmt.Fprintln(w, "  [N hunks · both modified] — appended to conflicts section rows")
@@ -804,34 +811,6 @@ func pluralize(n int, singular, plural string) string {
 		return singular
 	}
 	return plural
-}
-
-// resolveBaseBranchForStatus picks the branch to compare the current
-// branch against for divergence reporting. Priority:
-//
-//  1. `status.base_branch` (project config) or the top-level `base_branch`
-//     — lets teams pin a canonical trunk like `develop`.
-//  2. `client.DefaultBranch(remote)` — honors refs/remotes/<remote>/HEAD.
-//  3. First of "main" / "master" / "develop" that exists locally.
-//
-// Returns empty string when nothing sensible can be resolved.
-func resolveBaseBranchForStatus(ctx context.Context, runner *git.ExecRunner, client *git.Client, cfg *config.Config) string {
-	if cfg != nil && strings.TrimSpace(cfg.BaseBranch) != "" {
-		return strings.TrimSpace(cfg.BaseBranch)
-	}
-	remote := "origin"
-	if cfg != nil && cfg.Remote != "" {
-		remote = cfg.Remote
-	}
-	if name, err := client.DefaultBranch(ctx, remote); err == nil && name != "" {
-		return name
-	}
-	for _, cand := range []string{"main", "master", "develop"} {
-		if localBranchExists(ctx, runner, cand) {
-			return cand
-		}
-	}
-	return ""
 }
 
 // branchDivergence returns (ahead, behind) commit counts of head versus
@@ -992,11 +971,11 @@ func renderUntrackedRemoteHint(ctx context.Context, runner *git.ExecRunner, cfg 
 //   - git rev-list fails for any reason (offline refs, pruned histories).
 //
 // One `rev-list` call; ≤10 ms on typical repos.
-func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string, dirty bool) string {
+func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string, dirty bool, res BaseResolution) string {
 	if currentBranch == "" {
 		return ""
 	}
-	cfgBase := resolveBaseBranchForStatus(cmd.Context(), runner, client, cfg)
+	cfgBase := res.Resolved
 	// Swap cfgBase for the explicit/inferred parent when one is configured
 	// for this branch. The Resolver returns cfgBase verbatim when no parent
 	// is set, so branches without gk-parent metadata see byte-equal output.
@@ -1019,11 +998,20 @@ func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *gi
 	// the branch/upstream gauge on the line above, cementing the "same
 	// semantics" reading.
 	faint := color.New(color.Faint).SprintFunc()
-	line := fmt.Sprintf("  %s %s  %s",
+	line := fmt.Sprintf("  %s %s",
 		faint("from"),
 		color.CyanString(base),
-		renderDivergenceGauge(ahead, behind),
 	)
+	// Phase 1: provenance label. Only attached when we resolved through
+	// the canonical resolver (base == res.Resolved); when branchparent
+	// swapped the base for a parent ref we deliberately skip the label
+	// because the source then refers to the trunk, not the parent.
+	if base == res.Resolved && res.Source != BaseSourceUnresolved {
+		if label := res.Source.DisplayLabel(); label != "" {
+			line += "  " + faint(label)
+		}
+	}
+	line += "  " + renderDivergenceGauge(ahead, behind)
 	if hint := baseDivergenceHint(ahead, behind, dirty, base); hint != "" {
 		line += "  " + faint(hint)
 	}
@@ -1509,8 +1497,33 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		}
 	}
 
+	// Hoist base resolution so the git-config / DefaultBranch round
+	// trip happens once per status invocation. Renderers below
+	// (verbose summary, base-divergence line, mismatch footer, explain
+	// block) consume this single value. Detached / no-branch repos
+	// have no base concept so we skip resolution entirely.
+	var baseRes BaseResolution
+	var trackMismatch TrackingMismatch
+	if !detached && st.Branch != "" {
+		baseRes = resolveBaseForStatus(cmd.Context(), runner, client, cfg)
+		if statusExplainBase && statusFetchDefault {
+			// Match maybeFetchUpstream's hardening — `git ls-remote`
+			// may hit SSH passphrases or GCM interactive dialogs and
+			// hang the status call mid-prompt.
+			hardened := &git.ExecRunner{
+				Dir: runner.Dir,
+				ExtraEnv: []string{
+					"SSH_ASKPASS=",
+					"GCM_INTERACTIVE=never",
+				},
+			}
+			baseRes.OriginLive = fetchOriginLiveDefault(cmd.Context(), hardened, baseRes.Remote)
+		}
+		trackMismatch = detectTrackingMismatch(cmd.Context(), runner, st.Branch, baseRes.Remote, st.Upstream != "")
+	}
+
 	if statusVerbose > 0 {
-		renderStatusVerboseSummary(w, cmd, runner, cfg, st, allGrouped)
+		renderStatusVerboseSummary(w, cmd, runner, cfg, st, allGrouped, baseRes)
 	}
 
 	if statusVisEnabled("stash") {
@@ -1521,8 +1534,20 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 
 	if statusVisEnabled("base") && !detached {
 		dirty := committableCount(allGrouped) > 0
-		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty); baseLine != "" {
+		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty, baseRes); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
+		}
+	}
+
+	if !detached {
+		if footer := renderTrackingMismatchFooter(trackMismatch); footer != "" {
+			fmt.Fprintln(w, footer)
+		}
+		if footer := renderBaseMismatchFooter(baseRes); footer != "" {
+			fmt.Fprintln(w, footer)
+		}
+		if statusExplainBase {
+			fmt.Fprintln(w, renderExplainBase(baseRes))
 		}
 	}
 
@@ -1649,6 +1674,7 @@ func renderStatusVerboseSummary(
 	cfg *config.Config,
 	st *git.Status,
 	g groupedEntries,
+	baseRes BaseResolution,
 ) {
 	ctx := cmd.Context()
 	total := committableCount(g)
@@ -1714,6 +1740,16 @@ func renderStatusVerboseSummary(
 	}
 	if block != "" {
 		fmt.Fprintln(w, block)
+	}
+
+	// Compact one-line base diagnostic. Always-on when -v is set so the
+	// user can spot a `gk status` mismatch warning's underlying numbers
+	// without invoking --explain-base. Detached / no-branch repos pass
+	// a zero BaseResolution from runStatusOnce; suppress in that case.
+	if baseRes.Resolved != "" || baseRes.ConfigMerged != "" || baseRes.OriginHEAD != "" {
+		if line := renderBaseVerboseLine(baseRes); line != "" {
+			fmt.Fprintln(w, line)
+		}
 	}
 }
 

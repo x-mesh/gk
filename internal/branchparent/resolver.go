@@ -72,7 +72,7 @@ func (r *Resolver) ResolveParent(ctx context.Context, branch string) (string, So
 // for callers that previously passed cfgBase directly to rev-list.
 //
 // cfgBase is whatever the caller would have used absent parent metadata —
-// typically status's resolveBaseBranchForStatus output. ResolveBase never
+// typically status's resolveBaseForStatus output. ResolveBase never
 // returns "" unless the caller passes "" — it only swaps cfgBase out when
 // a parent is resolvable.
 func (r *Resolver) ResolveBase(ctx context.Context, branch, cfgBase string) string {

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-04-29
+
+### Fixed
+
+- **Rename groupings now stay in a single commit.** `gk commit`이 staged
+  rename(`git mv` 등)을 처리할 때, AI grouper가 새 경로만 그룹에 emit하면
+  원본 삭제 측이 `git commit -- <pathspec>`에 포함되지 않아 인덱스에
+  dangling staged deletion으로 남던 버그를 수정. `ApplyMessages`는 이제
+  commit 루프 진입 전 `git diff --cached --name-status -z -M`로 staged
+  rename pair(`new → orig`)를 한 번 수집하고, 각 그룹의 commit pathspec을
+  expand해 원본 삭제 측 경로를 함께 커밋합니다. 새 헬퍼는
+  `internal/aicommit/apply.go`의 `stagedRenamePairs`/`expandRenamePairs`.
+
+### Changed
+
+- **AI 분류 prompt와 Gemini diff 헤더에 rename 원본 경로가 노출됩니다.**
+  `provider.FileChange`에 `OrigPath` 필드 추가 — classifier prompt는
+  `- new.go [renamed from old.go]`, diff 헤더는
+  `--- new.go (renamed from old.go)`로 출력. LLM이 rename을 delete+add
+  페어로 오해해 그룹을 분리하는 빈도를 줄이는 것이 목적입니다.
+
 ## [0.18.0] - 2026-04-29
 
 ### Added
@@ -405,7 +426,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/x-mesh/gk/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/x-mesh/gk/compare/v0.17.5...v0.18.0
 [0.14.1]: https://github.com/x-mesh/gk/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/x-mesh/gk/compare/v0.13.1...v0.14.0

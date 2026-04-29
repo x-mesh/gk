@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-04-29
+
 ### Added
 
 - **브랜치별 fork-parent 메타데이터 (`gk branch set-parent`/`unset-parent`).**
@@ -403,7 +405,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/x-mesh/gk/compare/v0.17.5...v0.18.0
 [0.14.1]: https://github.com/x-mesh/gk/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/x-mesh/gk/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/x-mesh/gk/compare/v0.13.0...v0.13.1

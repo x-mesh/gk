@@ -252,7 +252,14 @@ func Defaults() Config {
 			// progress shows remaining-verbs over the same counts). Drop
 			// `bar` from the default to cut a row; users who want both
 			// can add `bar` back via .gk.yaml.
-			Vis:       []string{"gauge", "progress", "tree", "staleness"},
+			//
+			// `base` is on by default so users see how their branch sits
+			// against its base branch (`from main ↑3 ↓0 → ready to merge
+			// into main`) — the signal most often used to decide whether
+			// to merge or sync. Cost is one local rev-list (~10ms); no
+			// network. Hidden automatically on detached HEAD or when the
+			// branch IS the base.
+			Vis:       []string{"gauge", "progress", "base", "tree", "staleness"},
 			AutoFetch: false,
 			XYStyle:   "labels",
 		},

@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -341,4 +342,67 @@ func (c *Client) CheckRefFormat(ctx context.Context, ref string) error {
 func RefExists(ctx context.Context, r Runner, ref string) bool {
 	_, _, err := r.Run(ctx, "rev-parse", "--verify", "--quiet", ref)
 	return err == nil
+}
+
+// GetBranchConfig reads `git config branch.<branch>.<key>`. Returns ("", nil)
+// when the key is unset (git exits non-zero, but absence is not a programmer
+// error here — callers treat empty as "not configured"). Other failures
+// (broken config, runner error) propagate as a non-nil error.
+//
+// The two-level distinction (unset vs error) is intentional: parent metadata
+// is opt-in, so "no value" is the normal path on most branches and must not
+// noise up logs. We detect "unset" via exit code 1 (git's documented signal
+// for missing keys); anything else surfaces.
+func (c *Client) GetBranchConfig(ctx context.Context, branch, key string) (string, error) {
+	stdout, stderr, err := c.R.Run(ctx, "config", "--get", "branch."+branch+"."+key)
+	if err != nil {
+		// git config exits 1 when the key is unset; treat that as empty.
+		if isExitCode(err, 1) {
+			return "", nil
+		}
+		return "", fmt.Errorf("git config --get branch.%s.%s: %w: %s",
+			branch, key, err, strings.TrimSpace(string(stderr)))
+	}
+	return strings.TrimSpace(string(stdout)), nil
+}
+
+// SetBranchConfig writes `git config branch.<branch>.<key> <value>` to the
+// local repo config. Overwrites any existing value. Empty value is allowed
+// but discouraged — prefer UnsetBranchConfig for clearing.
+func (c *Client) SetBranchConfig(ctx context.Context, branch, key, value string) error {
+	_, stderr, err := c.R.Run(ctx, "config", "branch."+branch+"."+key, value)
+	if err != nil {
+		return fmt.Errorf("git config branch.%s.%s: %w: %s",
+			branch, key, err, strings.TrimSpace(string(stderr)))
+	}
+	return nil
+}
+
+// UnsetBranchConfig removes `branch.<branch>.<key>` via `git config --unset`.
+// Returns nil when the key was already absent (idempotent), so callers can
+// invoke this without first checking. Other errors propagate.
+func (c *Client) UnsetBranchConfig(ctx context.Context, branch, key string) error {
+	_, stderr, err := c.R.Run(ctx, "config", "--unset", "branch."+branch+"."+key)
+	if err != nil {
+		// Exit 5 = config key did not exist; treat as success (idempotent).
+		if isExitCode(err, 5) {
+			return nil
+		}
+		return fmt.Errorf("git config --unset branch.%s.%s: %w: %s",
+			branch, key, err, strings.TrimSpace(string(stderr)))
+	}
+	return nil
+}
+
+// isExitCode reports whether err is a *git.ExitError with the given code.
+// Used by GetBranchConfig/UnsetBranchConfig to distinguish "missing key"
+// (a normal state) from real failures. The runner wraps non-zero exits in
+// our custom ExitError; raw os/exec errors come through unwrapped only on
+// spawn failure (binary missing, etc.), which we want to surface either way.
+func isExitCode(err error, code int) bool {
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	return ee.Code == code
 }

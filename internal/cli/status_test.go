@@ -1279,3 +1279,31 @@ func TestRenderUntrackedRemoteHint_ForkSilent(t *testing.T) {
 		t.Errorf("hint should stay silent without a same-named remote ref, got: %q", got)
 	}
 }
+
+func TestBaseDivergenceHint(t *testing.T) {
+	cases := []struct {
+		name           string
+		ahead, behind  int
+		dirty          bool
+		base           string
+		want           string
+	}{
+		{"in sync", 0, 0, false, "main", ""},
+		{"in sync dirty", 0, 0, true, "main", ""},
+		{"ahead clean", 3, 0, false, "main", "→ ready to merge into main"},
+		{"ahead dirty", 3, 0, true, "main", ""},
+		{"behind only", 0, 2, false, "main", "→ behind main: gk sync"},
+		{"diverged", 2, 1, false, "main", "→ main moved: gk sync"},
+		{"diverged dirty", 2, 1, true, "main", "→ main moved: gk sync"},
+		{"non-default base", 4, 0, false, "develop", "→ ready to merge into develop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := baseDivergenceHint(tc.ahead, tc.behind, tc.dirty, tc.base)
+			if got != tc.want {
+				t.Errorf("baseDivergenceHint(%d, %d, %v, %q) = %q, want %q",
+					tc.ahead, tc.behind, tc.dirty, tc.base, got, tc.want)
+			}
+		})
+	}
+}

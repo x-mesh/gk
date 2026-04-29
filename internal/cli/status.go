@@ -996,7 +996,7 @@ func renderUntrackedRemoteHint(ctx context.Context, runner *git.ExecRunner, cfg 
 //   - git rev-list fails for any reason (offline refs, pruned histories).
 //
 // One `rev-list` call; ≤10 ms on typical repos.
-func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string) string {
+func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *git.Client, cfg *config.Config, currentBranch string, dirty bool) string {
 	if currentBranch == "" {
 		return ""
 	}
@@ -1013,11 +1013,45 @@ func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *gi
 	// the branch/upstream gauge on the line above, cementing the "same
 	// semantics" reading.
 	faint := color.New(color.Faint).SprintFunc()
-	return fmt.Sprintf("  %s %s  %s",
+	line := fmt.Sprintf("  %s %s  %s",
 		faint("from"),
 		color.CyanString(base),
 		renderDivergenceGauge(ahead, behind),
 	)
+	if hint := baseDivergenceHint(ahead, behind, dirty, base); hint != "" {
+		line += "  " + faint(hint)
+	}
+	return line
+}
+
+// baseDivergenceHint returns a short action suggestion based on how the
+// current branch sits relative to its base, or "" when the gauge alone is
+// enough. Logic:
+//
+//   - in sync               → ""              (gauge already says "in sync")
+//   - ahead-only, clean     → "→ ready to merge into <base>"
+//   - ahead-only, dirty     → ""              (WIP — entries list shows it)
+//   - behind-only           → "→ behind <base>: gk sync"
+//   - diverged              → "→ <base> moved: gk sync"
+//
+// The merge case is intentionally advisory (no command), since the actual
+// mechanism is workflow-specific (PR, ship, local merge). The sync cases
+// are prescriptive because `gk sync` is unambiguous: catch the current
+// branch up to its base.
+func baseDivergenceHint(ahead, behind int, dirty bool, base string) string {
+	switch {
+	case ahead == 0 && behind == 0:
+		return ""
+	case ahead > 0 && behind == 0:
+		if dirty {
+			return ""
+		}
+		return "→ ready to merge into " + base
+	case ahead == 0 && behind > 0:
+		return "→ behind " + base + ": gk sync"
+	default:
+		return "→ " + base + " moved: gk sync"
+	}
 }
 
 // fastPathDebounced short-circuits maybeFetchUpstream on warm calls by
@@ -1301,7 +1335,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if statusVisEnabled("base") && !detached {
-		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch); baseLine != "" {
+		dirty := len(st.Entries) > 0
+		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
 		}
 	}

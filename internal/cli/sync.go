@@ -33,10 +33,20 @@ const deprecationEnvVar = "GK_SUPPRESS_DEPRECATION"
 func init() {
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Catch the current branch up to its base (FF or rebase)",
-		Long: `Fetches the base branch and brings the current branch up to date with it.
-By default rebases on top of the base when histories have diverged; falls
-back to a fast-forward when the current branch is already an ancestor.
+		Short: "Rebase the current branch onto its (local) base",
+		Long: `Integrates the local base branch into the current branch.
+Operates entirely on local refs by default — no network. Fast-forwards
+when the current branch is already an ancestor of <base>; otherwise
+rebases (configurable).
+
+This is the "trunk-relative rebase" half of the gk pull/sync split:
+
+  gk pull   ←  network: fetch <remote>/<self> and integrate
+  gk sync   ←  local:   rebase HEAD onto local <base>
+
+To refresh local <base> from the remote first, either:
+  gk checkout <base> && gk pull           (explicit two-step)
+  gk sync --fetch                         (fetch + ff local <base> + sync)
 
 Strategy resolution order (first match wins):
   1. --strategy flag
@@ -48,21 +58,25 @@ Self-FF: when ` + "`origin/<self>`" + ` is strictly ahead of the local branch
 (e.g., another machine pushed earlier), gk fast-forwards before integrating
 the base. Diverged self refs are skipped silently.
 
+When local <base> differs from <remote>/<base>, gk sync prints a hint but
+does not block — the user explicitly asked for "from local <base>".
+
 Legacy: --upstream-only preserves the v0.6 sync semantics (fetch + FF to
 ` + "`origin/<self>`" + ` only, never integrate base) for one release. It is
 removed in v0.8; ` + "`gk pull`" + ` covers the same ground.
 
 Exit codes:
   0  integration succeeded or already up to date
-  1  general error (fetch failure, dirty tree without --autostash, etc.)
+  1  general error (missing local base, dirty tree without --autostash, etc.)
   3  rebase/merge conflict (resume with gk continue / gk abort)
   4  diverged but --strategy ff-only refused divergence`,
 		RunE: runSync,
 	}
 	cmd.Flags().String("base", "", "base branch (auto-detect if empty)")
 	cmd.Flags().String("strategy", "", "integration strategy: rebase|merge|ff-only|auto")
-	cmd.Flags().Bool("fetch-only", false, "fetch base, skip integration")
-	cmd.Flags().Bool("no-fetch", false, "skip fetch, integrate from already-fetched ref")
+	cmd.Flags().Bool("fetch", false, "fetch <remote>/<base> and fast-forward local <base> before integrating")
+	cmd.Flags().Bool("fetch-only", false, "fetch <remote>/<base> and ff local <base>; skip integration")
+	cmd.Flags().Bool("no-fetch", false, "deprecated: default behaviour is now no-fetch; flag retained as a no-op alias")
 	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration, pop after")
 	cmd.Flags().Bool("upstream-only", false, "legacy v0.6 behaviour: FF current branch to origin/<self> only (deprecated, removed in v0.8)")
 	rootCmd.AddCommand(cmd)
@@ -100,12 +114,15 @@ func runSyncCore(cmd *cobra.Command) error {
 		base = cfg.BaseBranch
 	}
 	strategyFlag, _ := cmd.Flags().GetString("strategy")
+	fetchFlag, _ := cmd.Flags().GetBool("fetch")
 	fetchOnly, _ := cmd.Flags().GetBool("fetch-only")
-	noFetch, _ := cmd.Flags().GetBool("no-fetch")
 	autostash, _ := cmd.Flags().GetBool("autostash")
+	// --no-fetch is now the default; the flag is a no-op kept only so
+	// existing scripts don't error. Reading and discarding silently.
+	_, _ = cmd.Flags().GetBool("no-fetch")
 
-	if fetchOnly && noFetch {
-		return errors.New("--fetch-only and --no-fetch are mutually exclusive")
+	if fetchOnly && fetchFlag {
+		return errors.New("--fetch-only and --fetch are mutually exclusive")
 	}
 
 	repo := RepoFlag()
@@ -137,18 +154,41 @@ func runSyncCore(cmd *cobra.Command) error {
 		return fmt.Errorf("current branch is the base branch (%s); nothing to sync", base)
 	}
 
-	upstream := remote + "/" + base
-	fmt.Fprintf(os.Stderr, "fetching %s...\n", upstream)
+	// Local <base> is the integration source — without it there is
+	// nothing to rebase onto. Direct the user to --fetch when no local
+	// ref exists yet (fresh worktree, never checked out main).
+	if !git.RefExists(ctx, runner, "refs/heads/"+base) {
+		return WithHint(
+			fmt.Errorf("local %s does not exist", base),
+			hintCommand("gk sync --fetch"),
+		)
+	}
 
-	if !noFetch {
+	// --fetch / --fetch-only: refresh <remote>/<base> and fast-forward
+	// the local base ref. Fast-forward only — if local base has diverged
+	// from the remote we leave it alone and let the stale-base hint
+	// surface that.
+	if fetchFlag || fetchOnly {
+		fmt.Fprintf(os.Stderr, "fetching %s/%s...\n", remote, base)
 		if err := client.Fetch(ctx, remote, base, false); err != nil {
 			return fmt.Errorf("fetch failed: %w", err)
+		}
+		if pre, post, err := fastForwardLocalBase(ctx, runner, base, remote); err == nil && pre != post {
+			fmt.Fprintf(os.Stderr, "local %s: %s → %s  (fast-forwarded from %s/%s)\n",
+				base, pre, post, remote, base)
 		}
 	}
 
 	if fetchOnly {
-		renderSyncFetchOnly(cmd, runner, upstream)
+		renderSyncFetchOnly(cmd, runner, base, remote, currentBranch)
 		return nil
+	}
+
+	// Stale-base detection — informational. Printed before integration
+	// so the user understands what `local <base>` they're rebasing onto.
+	staleHint := buildStaleBaseHint(ctx, runner, base, remote)
+	if staleHint != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), staleHint)
 	}
 
 	dirty, err := client.IsDirty(ctx)
@@ -195,20 +235,25 @@ func runSyncCore(cmd *cobra.Command) error {
 
 	strategy, _ := resolveSyncStrategyWithSource(ctx, strategyFlag, cfg, runner)
 
-	// Ancestor short-circuit: HEAD already an ancestor of upstream → any
+	// Integration source is the *local* base ref. git resolves bare
+	// `main` against refs/heads/main, never refs/remotes/origin/main —
+	// keep it bare so the rest of executePullStrategy renders cleanly.
+	integrationRef := base
+
+	// Ancestor short-circuit: HEAD already an ancestor of base → any
 	// strategy collapses to a fast-forward merge.
 	requested := strategy
-	if isFastForwardPossible(ctx, runner, upstream) {
+	if isFastForwardPossible(ctx, runner, integrationRef) {
 		strategy = pullStrategyFFOnly
 	}
 
-	fmt.Fprintf(os.Stderr, "integrating %s (%s)...\n", upstream, strategy)
-	if err := executePullStrategy(ctx, client, runner, upstream, strategy, stashed); err != nil {
+	fmt.Fprintf(os.Stderr, "integrating %s into %s (%s)...\n", integrationRef, currentBranch, strategy)
+	if err := executePullStrategy(ctx, client, runner, integrationRef, strategy, stashed); err != nil {
 		return err
 	}
 
 	postHEAD := headRev(ctx, runner)
-	renderSyncSummary(cmd, runner, currentBranch, base, upstream, preHEAD, postHEAD, requested, strategy, selfFFPre, selfFFPost)
+	renderSyncSummary(cmd, runner, currentBranch, base, integrationRef, preHEAD, postHEAD, requested, strategy, selfFFPre, selfFFPost)
 
 	if stashed {
 		if err := popStash(ctx, runner); err != nil {
@@ -216,6 +261,84 @@ func runSyncCore(cmd *cobra.Command) error {
 		}
 	}
 	return nil
+}
+
+// fastForwardLocalBase moves refs/heads/<base> forward to <remote>/<base>
+// when the remote ref is strictly ahead. Uses update-ref so the user
+// doesn't need to be checked out on <base>; the working tree stays put
+// on the current feature branch.
+//
+// Returns (preSHA, postSHA) — pre==post means no movement (already at
+// remote, diverged, or remote ref missing). Errors are surfaced so the
+// caller can decide whether to mention them; callers typically ignore
+// non-critical fetch/ff failures since the integration step still runs.
+func fastForwardLocalBase(ctx context.Context, runner git.Runner, base, remote string) (string, string, error) {
+	upstream := remote + "/" + base
+	if !git.RefExists(ctx, runner, "refs/remotes/"+upstream) {
+		return "", "", fmt.Errorf("no cached %s ref", upstream)
+	}
+	pre := resolveShortSHA(ctx, runner, "refs/heads/"+base)
+	if pre == "" {
+		return "", "", fmt.Errorf("local %s not resolvable", base)
+	}
+	if equalRefs(ctx, runner, "refs/heads/"+base, upstream) {
+		return pre, pre, nil
+	}
+	// Only ff if local base is strictly an ancestor of remote.
+	if _, _, err := runner.Run(ctx, "merge-base", "--is-ancestor", "refs/heads/"+base, upstream); err != nil {
+		return pre, pre, nil
+	}
+	fullSHA, _, rerr := runner.Run(ctx, "rev-parse", upstream)
+	if rerr != nil {
+		return pre, pre, rerr
+	}
+	if _, _, uerr := runner.Run(ctx, "update-ref", "refs/heads/"+base, strings.TrimSpace(string(fullSHA))); uerr != nil {
+		return pre, pre, uerr
+	}
+	post := resolveShortSHA(ctx, runner, "refs/heads/"+base)
+	return pre, post, nil
+}
+
+// buildStaleBaseHint returns a multi-line warning when local <base>
+// differs from <remote>/<base>. Empty string means clean (or the remote
+// ref is unknown, in which case there's nothing to compare against).
+//
+// Sync uses local <base> by design, so this is informational, not an
+// error: the user might genuinely want their local base regardless of
+// what's on the remote.
+func buildStaleBaseHint(ctx context.Context, runner git.Runner, base, remote string) string {
+	upstream := remote + "/" + base
+	if !git.RefExists(ctx, runner, "refs/remotes/"+upstream) {
+		return ""
+	}
+	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "refs/heads/"+base+"..."+upstream)
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return ""
+	}
+	aheadLocal, _ := strconv.Atoi(fields[0])  // commits in local base not in upstream
+	behindLocal, _ := strconv.Atoi(fields[1]) // commits in upstream not in local base
+	if aheadLocal == 0 && behindLocal == 0 {
+		return ""
+	}
+	yellow := color.YellowString
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s local %s differs from %s  (%s↑%d local · ↓%d %s%s)\n",
+		yellow("⚠"), bold(base), bold(upstream),
+		faint(""), aheadLocal, behindLocal, remote, faint(""))
+	fmt.Fprintf(&b, "  %s\n", faint("hint:"))
+	fmt.Fprintf(&b, "    %s   %s\n",
+		bold("git checkout "+base+" && gk pull"),
+		faint("(refresh local "+base+" from "+upstream+")"))
+	fmt.Fprintf(&b, "    %s                       %s",
+		bold("gk sync --fetch"),
+		faint("(refresh + integrate in one step)"))
+	return b.String()
 }
 
 // tryAdvanceSelfFF fast-forwards the current branch to origin/<self> when
@@ -290,12 +413,16 @@ func renderSyncSummary(
 	}
 }
 
-// renderSyncFetchOnly prints the --fetch-only summary.
-func renderSyncFetchOnly(cmd *cobra.Command, runner git.Runner, upstream string) {
+// renderSyncFetchOnly prints the --fetch-only summary. Compares HEAD to
+// the *local* base (the integration source) since that's what a follow-up
+// `gk sync` would use. The --fetch step has already advanced local base
+// when it could, so this comparison is against the most up-to-date state
+// available without doing the integration.
+func renderSyncFetchOnly(cmd *cobra.Command, runner git.Runner, base, remote, currentBranch string) {
 	ctx := cmd.Context()
 	out := cmd.ErrOrStderr()
 	faint := color.New(color.Faint).SprintFunc()
-	raw, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "HEAD..."+upstream)
+	raw, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "HEAD..."+base)
 	if err != nil {
 		fmt.Fprintln(out, "fetched; integrate with `gk sync`")
 		return
@@ -309,19 +436,22 @@ func renderSyncFetchOnly(cmd *cobra.Command, runner git.Runner, upstream string)
 	behind, _ := strconv.Atoi(fields[1])
 	switch {
 	case ahead == 0 && behind == 0:
-		fmt.Fprintln(out, "already up to date with "+upstream)
+		fmt.Fprintf(out, "already up to date with %s\n", base)
 	case behind > 0 && ahead == 0:
 		fmt.Fprintf(out, "fetched %s: %s %s waiting  %s\n",
-			upstream,
+			base,
 			color.GreenString("+%d", behind),
 			plural2(behind, "commit"),
 			faint("(run `gk sync` to integrate)"))
 	case behind > 0 && ahead > 0:
 		fmt.Fprintf(out, "fetched %s: ↑%d local · ↓%d base  %s\n",
-			upstream, ahead, behind,
+			base, ahead, behind,
 			faint("(diverged — run `gk sync` to rebase/merge)"))
 	case ahead > 0:
-		fmt.Fprintf(out, "fetched %s: ↑%d local, base unchanged\n", upstream, ahead)
+		fmt.Fprintf(out, "fetched %s: ↑%d local, base unchanged\n", base, ahead)
+	}
+	if hint := buildStaleBaseHint(ctx, runner, base, remote); hint != "" {
+		fmt.Fprintln(out, hint)
 	}
 }
 

@@ -1631,3 +1631,144 @@ func TestRenderBaseDivergence_NoParent_ByteEqualBehavior(t *testing.T) {
 		t.Errorf("no parent must not warn, got stderr: %q", stderr.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// renderLocalBaseStaleSubline — tells the user when local <base> is itself
+// out of sync with <remote>/<base>, separate from the head↔base line.
+// ---------------------------------------------------------------------------
+
+func TestLocalBaseGauge(t *testing.T) {
+	cases := []struct {
+		ahead, behind int
+		want          string
+	}{
+		{0, 0, ""},
+		{0, 5, "↓5"},
+		{3, 0, "↑3"},
+		{2, 4, "↑2 ↓4"},
+	}
+	for _, tc := range cases {
+		got := localBaseGauge(tc.ahead, tc.behind)
+		if got != tc.want {
+			t.Errorf("localBaseGauge(%d,%d) = %q, want %q", tc.ahead, tc.behind, got, tc.want)
+		}
+	}
+}
+
+func TestLocalBaseStaleHint(t *testing.T) {
+	cases := []struct {
+		name          string
+		ahead, behind int
+		base          string
+		wantSubstr    string
+	}{
+		{"behind only", 0, 5, "main", "git checkout main && gk pull"},
+		{"behind only fetch hint", 0, 5, "main", "gk sync --fetch"},
+		{"ahead only", 3, 0, "main", "git push"},
+		{"diverged", 2, 4, "develop", "diverged"},
+		{"diverged base name", 2, 4, "develop", "develop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := localBaseStaleHint(tc.ahead, tc.behind, tc.base)
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Errorf("localBaseStaleHint(%d,%d,%q): %q missing %q",
+					tc.ahead, tc.behind, tc.base, got, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+// TestRenderLocalBaseStaleSubline_BehindLocal exercises the most common
+// case: the user fetched origin/main but never advanced local main, so
+// local main is N commits behind. The sub-line must reveal that and
+// recommend either a checkout+pull or `gk sync --fetch`.
+func TestRenderLocalBaseStaleSubline_BehindLocal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("NO_COLOR", "1")
+	upstream, downstream := setupFeatureFromMain(t)
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+	// Note: downstream's local main is intentionally NOT advanced.
+
+	cfg := &config.Config{BaseBranch: "main", Remote: "origin"}
+	got := renderLocalBaseStaleSubline(context.Background(),
+		&git.ExecRunner{Dir: downstream.Dir}, cfg, "main")
+	if got == "" {
+		t.Fatal("expected sub-line, got empty")
+	}
+	for _, want := range []string{"main", "origin/main", "↓1", "gk pull", "gk sync --fetch"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sub-line missing %q: %q", want, got)
+		}
+	}
+}
+
+// TestRenderLocalBaseStaleSubline_InSync verifies the line stays empty
+// when local <base> matches <remote>/<base> exactly. We don't want extra
+// noise on the happy path.
+func TestRenderLocalBaseStaleSubline_InSync(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	_, downstream := setupFeatureFromMain(t)
+	cfg := &config.Config{BaseBranch: "main", Remote: "origin"}
+	got := renderLocalBaseStaleSubline(context.Background(),
+		&git.ExecRunner{Dir: downstream.Dir}, cfg, "main")
+	if got != "" {
+		t.Errorf("expected empty sub-line on in-sync state, got: %q", got)
+	}
+}
+
+// TestRenderLocalBaseStaleSubline_NoOriginRef checks that the sub-line
+// stays silent when there's nothing to compare against — fork repos, or
+// repos where origin/<base> hasn't been fetched yet, shouldn't trigger
+// false-positive "stale" warnings.
+func TestRenderLocalBaseStaleSubline_NoOriginRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hi\n")
+	repo.Commit("init")
+	// No remote, no origin/main ref.
+
+	cfg := &config.Config{BaseBranch: "main", Remote: "origin"}
+	got := renderLocalBaseStaleSubline(context.Background(),
+		&git.ExecRunner{Dir: repo.Dir}, cfg, "main")
+	if got != "" {
+		t.Errorf("expected empty sub-line without origin ref, got: %q", got)
+	}
+}
+
+// TestRenderLocalBaseStaleSubline_MissingLocalBase covers the case where
+// the user is on a branch that doesn't have a local <base> ref yet. The
+// sub-line must stay empty rather than crash on the missing ref.
+func TestRenderLocalBaseStaleSubline_MissingLocalBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hi\n")
+	upstream.Commit("init")
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	// Stay on the initial branch, delete main locally if present.
+	current := strings.TrimSpace(downstream.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	if current == "main" {
+		downstream.CreateBranch("feat/x")
+		downstream.Checkout("feat/x")
+		downstream.RunGit("branch", "-D", "main")
+	}
+
+	cfg := &config.Config{BaseBranch: "main", Remote: "origin"}
+	got := renderLocalBaseStaleSubline(context.Background(),
+		&git.ExecRunner{Dir: downstream.Dir}, cfg, "main")
+	if got != "" {
+		t.Errorf("expected empty sub-line without local base, got: %q", got)
+	}
+}

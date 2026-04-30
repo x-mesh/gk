@@ -1761,17 +1761,26 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	// Easy Mode: append a contextual next-step hint when enabled and
 	// --json is not active (JSON output is handled above and returns
 	// early, so this branch only fires for human-readable output).
+	//
+	// Two-tier hint selection:
+	//   1. Working-tree state (staged/unstaged/untracked/conflict) wins
+	//      — these are local, always actionable, and the user's most
+	//      direct next step.
+	//   2. Otherwise (clean tree) fall back to upstream divergence so
+	//      `gk status` always offers a path forward when there is one
+	//      (push when ahead, pull when behind, sync when diverged, an
+	//      "all clear" line when fully in sync).
+	//
+	// Catalog hints are kept verbatim — running TranslateTerms over
+	// them mangles the literal commands they suggest.
 	if eng := EasyEngine(); eng != nil && eng.IsEnabled() {
 		hasStaged := len(allGrouped.Staged) > 0
 		hasUnstaged := len(allGrouped.Modified) > 0
 		hasUntracked := len(allGrouped.Untracked) > 0
 		hasConflict := len(allGrouped.Unmerged) > 0
 		if hint := eng.StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConflict); hint != "" {
-			// Catalog hints are already in user-language form. Running
-			// TranslateTerms over them mangles the literal commands the
-			// hint exists to suggest: "→ gk commit" gets rewritten to
-			// "→ gk 변경사항 저장 (commit)" because \bcommit\b matches
-			// the command token. Keep the catalog text verbatim.
+			fmt.Fprintln(w, hint)
+		} else if hint := eng.SyncHint(st.Ahead, st.Behind, st.Upstream != ""); hint != "" {
 			fmt.Fprintln(w, hint)
 		}
 	}

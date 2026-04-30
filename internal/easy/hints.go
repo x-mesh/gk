@@ -88,6 +88,33 @@ func (g *HintGenerator) StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConf
 	return ""
 }
 
+// SyncHint generates a contextual hint when the working tree is
+// otherwise clean, based purely on upstream divergence. Priority order:
+// diverged (both ahead and behind) > behind > ahead > in sync.
+//
+// hasUpstream reports whether the current branch tracks an upstream;
+// without one we cannot speak to "in sync" so the function returns "".
+//
+// Returns "" when the level is HintOff or the generator is nil.
+func (g *HintGenerator) SyncHint(ahead, behind int, hasUpstream bool) string {
+	if g == nil || g.level == HintOff {
+		return ""
+	}
+	if !hasUpstream {
+		return ""
+	}
+	switch {
+	case ahead > 0 && behind > 0:
+		return g.Generate("hint.status.diverged", ahead, behind)
+	case behind > 0:
+		return g.Generate("hint.status.behind", behind)
+	case ahead > 0:
+		return g.Generate("hint.status.ahead", ahead)
+	default:
+		return g.Generate("hint.status.clean_synced")
+	}
+}
+
 // Level returns the current hint verbosity level.
 func (g *HintGenerator) Level() HintLevel {
 	if g == nil {

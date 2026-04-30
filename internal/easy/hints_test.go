@@ -1,6 +1,7 @@
 package easy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/i18n"
@@ -356,6 +357,13 @@ func TestHintGenerator_NilSafety(t *testing.T) {
 		}
 	})
 
+	t.Run("SyncHint returns empty", func(t *testing.T) {
+		got := gen.SyncHint(1, 1, true)
+		if got != "" {
+			t.Errorf("nil.SyncHint() = %q, want empty", got)
+		}
+	})
+
 	t.Run("Level returns HintOff", func(t *testing.T) {
 		got := gen.Level()
 		if got != HintOff {
@@ -385,6 +393,52 @@ func TestHintGenerator_Level(t *testing.T) {
 			got := gen.Level()
 			if got != tc.level {
 				t.Errorf("Level() = %q, want %q", got, tc.level)
+			}
+		})
+	}
+}
+
+// TestHintGenerator_SyncHint verifies the clean-tree upstream-divergence
+// hint selection. Priority: diverged > behind > ahead > in sync.
+// `hasUpstream=false` always yields "" because we can't speak to "in
+// sync" without a tracked upstream. HintOff also yields "".
+func TestHintGenerator_SyncHint(t *testing.T) {
+	cat := i18n.New("ko", i18n.ModeEasy)
+	emoji := NewEmojiMapper(true)
+
+	tests := []struct {
+		name        string
+		level       HintLevel
+		ahead       int
+		behind      int
+		hasUpstream bool
+		wantSubstr  string // "" means expect an empty string back
+	}{
+		{"off_returns_empty", HintOff, 1, 1, true, ""},
+		{"no_upstream_returns_empty", HintVerbose, 0, 0, false, ""},
+		{"clean_synced", HintVerbose, 0, 0, true, "동기화"},
+		{"ahead_only", HintVerbose, 3, 0, true, "올릴 커밋이 3"},
+		{"behind_only", HintVerbose, 0, 5, true, "새 커밋이 5"},
+		{"diverged_picks_diverged", HintVerbose, 2, 4, true, "↑2 ↓4"},
+		{"minimal_ahead", HintMinimal, 1, 0, true, "gk push"},
+		{"minimal_behind", HintMinimal, 0, 1, true, "gk pull"},
+		{"minimal_diverged", HintMinimal, 1, 1, true, "gk sync"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := NewHintGenerator(tc.level, cat, emoji)
+			got := gen.SyncHint(tc.ahead, tc.behind, tc.hasUpstream)
+			if tc.wantSubstr == "" {
+				if got != "" {
+					t.Errorf("SyncHint(%d, %d, %v) = %q, want empty",
+						tc.ahead, tc.behind, tc.hasUpstream, got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Errorf("SyncHint(%d, %d, %v) = %q, want substring %q",
+					tc.ahead, tc.behind, tc.hasUpstream, got, tc.wantSubstr)
 			}
 		})
 	}

@@ -84,10 +84,6 @@ func init() {
 		if flagDebug {
 			easyEngine.SetDebugFn(Dbg)
 		}
-		// Register Korean subcommand aliases when Easy Mode is active.
-		if easyEngine.IsEnabled() {
-			easy.RegisterAliases(rootCmd, true)
-		}
 		return nil
 	}
 }

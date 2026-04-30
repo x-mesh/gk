@@ -60,6 +60,37 @@ var enMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk add <file> → gk commit",
 	},
 
+	// ── Sync hints (clean tree, depend only on ahead/behind) ────────────
+
+	"hint.status.clean_synced": {
+		ModeNormal: "in sync — nothing to do",
+		ModeEasy:   "✨ Your working folder is clean and in sync with the server",
+	},
+	"hint.status.ahead": {
+		ModeNormal: "try: gk push",
+		ModeEasy:   "📤 You have %d commit(s) to upload → gk push",
+	},
+	"hint.status.ahead.minimal": {
+		ModeNormal: "gk push",
+		ModeEasy:   "gk push",
+	},
+	"hint.status.behind": {
+		ModeNormal: "try: gk pull",
+		ModeEasy:   "📥 The server has %d new commit(s) → gk pull",
+	},
+	"hint.status.behind.minimal": {
+		ModeNormal: "gk pull",
+		ModeEasy:   "gk pull",
+	},
+	"hint.status.diverged": {
+		ModeNormal: "try: gk sync",
+		ModeEasy:   "🔀 Both sides have new commits (↑%d ↓%d) → gk sync",
+	},
+	"hint.status.diverged.minimal": {
+		ModeNormal: "gk sync",
+		ModeEasy:   "gk sync",
+	},
+
 	// ── Error messages ──────────────────────────────────────────────────
 
 	"error.push_failed": {

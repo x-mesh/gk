@@ -206,6 +206,15 @@ func (e *Engine) StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConflict bo
 	return e.hints.StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConflict)
 }
 
+// SyncHint generates a contextual hint based on upstream divergence
+// when the working tree is clean. Delegates to HintGenerator.SyncHint.
+func (e *Engine) SyncHint(ahead, behind int, hasUpstream bool) string {
+	if e == nil || !e.enabled || e.hints == nil {
+		return ""
+	}
+	return e.hints.SyncHint(ahead, behind, hasUpstream)
+}
+
 // Hints returns the underlying HintGenerator, or nil when the engine
 // is disabled or not initialised.
 func (e *Engine) Hints() *HintGenerator {

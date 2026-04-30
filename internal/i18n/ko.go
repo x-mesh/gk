@@ -60,6 +60,37 @@ var koMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk add <파일> → gk commit",
 	},
 
+	// ── Sync hints (clean tree, depend only on ahead/behind) ────────────
+
+	"hint.status.clean_synced": {
+		ModeNormal: "in sync — nothing to do",
+		ModeEasy:   "✨ 작업 폴더가 깨끗하고 서버와도 동기화되어 있습니다",
+	},
+	"hint.status.ahead": {
+		ModeNormal: "try: gk push",
+		ModeEasy:   "📤 서버에 올릴 커밋이 %d개 있습니다 → gk push",
+	},
+	"hint.status.ahead.minimal": {
+		ModeNormal: "gk push",
+		ModeEasy:   "gk push",
+	},
+	"hint.status.behind": {
+		ModeNormal: "try: gk pull",
+		ModeEasy:   "📥 서버에 새 커밋이 %d개 있습니다 → gk pull",
+	},
+	"hint.status.behind.minimal": {
+		ModeNormal: "gk pull",
+		ModeEasy:   "gk pull",
+	},
+	"hint.status.diverged": {
+		ModeNormal: "try: gk sync",
+		ModeEasy:   "🔀 양쪽에 새 커밋이 있습니다 (↑%d ↓%d) → gk sync",
+	},
+	"hint.status.diverged.minimal": {
+		ModeNormal: "gk sync",
+		ModeEasy:   "gk sync",
+	},
+
 	// ── Error messages ──────────────────────────────────────────────────
 
 	"error.push_failed": {

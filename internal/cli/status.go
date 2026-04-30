@@ -1767,7 +1767,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		hasUntracked := len(allGrouped.Untracked) > 0
 		hasConflict := len(allGrouped.Unmerged) > 0
 		if hint := eng.StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConflict); hint != "" {
-			fmt.Fprintln(w, eng.TranslateTerms(hint))
+			// Catalog hints are already in user-language form. Running
+			// TranslateTerms over them mangles the literal commands the
+			// hint exists to suggest: "→ gk commit" gets rewritten to
+			// "→ gk 변경사항 저장 (commit)" because \bcommit\b matches
+			// the command token. Keep the catalog text verbatim.
+			fmt.Fprintln(w, hint)
 		}
 	}
 

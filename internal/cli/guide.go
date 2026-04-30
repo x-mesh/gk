@@ -101,20 +101,27 @@ func pickWorkflow(ctx context.Context) (Workflow, error) {
 
 // printWorkflowSteps renders a step-by-step guide for the given
 // workflow. Always uses easy language regardless of Easy Mode setting.
+//
+// Write errors (closed pipe, EPIPE) are intentionally ignored — like
+// the rest of gk's stdout writers, the contract is "best effort: a
+// downstream `head -1` that closes the pipe terminates the process via
+// SIGPIPE on the next syscall." Capturing the error here would only
+// add noise without changing the outcome.
 func printWorkflowSteps(cmd *cobra.Command, wf Workflow) {
 	w := cmd.OutOrStdout()
 	bold := color.New(color.Bold)
 	faint := color.New(color.Faint)
+	cyan := color.New(color.FgCyan)
 
-	bold.Fprintf(w, "📋 %s\n", wf.DisplayName)
-	faint.Fprintf(w, "   %s\n\n", wf.Description)
+	_, _ = bold.Fprintf(w, "📋 %s\n", wf.DisplayName)
+	_, _ = faint.Fprintf(w, "   %s\n\n", wf.Description)
 
 	for i, step := range wf.Steps {
-		bold.Fprintf(w, "  %d단계: %s\n", i+1, step.Title)
+		_, _ = bold.Fprintf(w, "  %d단계: %s\n", i+1, step.Title)
 		fmt.Fprintf(w, "     %s\n", step.Description)
 		if step.Command != "" {
 			fmt.Fprintf(w, "     ▸ 실행: ")
-			color.New(color.FgCyan).Fprintf(w, "%s", step.Command)
+			_, _ = cyan.Fprintf(w, "%s", step.Command)
 			fmt.Fprintln(w)
 		}
 		if i < len(wf.Steps)-1 {

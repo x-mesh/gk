@@ -183,6 +183,7 @@ func TestProperty_AliasRegistration(t *testing.T) {
 			originalCmd := findSubcommand(root, input.conflictCmd)
 			if originalCmd == nil {
 				rt.Fatalf("conflict command %q not found in tree", input.conflictCmd)
+				return
 			}
 			originalShort := originalCmd.Short
 
@@ -193,6 +194,7 @@ func TestProperty_AliasRegistration(t *testing.T) {
 			afterCmd := findSubcommand(root, input.conflictCmd)
 			if afterCmd == nil {
 				rt.Fatalf("command %q disappeared after RegisterAliases", input.conflictCmd)
+				return
 			}
 			if afterCmd.Short != originalShort {
 				rt.Fatalf("command %q was overwritten: Short=%q, want original %q",
@@ -202,13 +204,13 @@ func TestProperty_AliasRegistration(t *testing.T) {
 	})
 }
 
-// TestAlias_ShortContainsEnglishName verifies that each registered alias
-// command's Short description contains the English command name in
-// parentheses, e.g. "... (status)".
-//
-// **Validates: Requirements 7.4**
-func TestAlias_ShortContainsEnglishName(t *testing.T) {
-	// Build a root command with all English commands from aliasMap.
+// TestAlias_RegisteredAsCobraAliases verifies that each Korean alias
+// lands in the original command's `Aliases` slice rather than being
+// installed as a separate command. This is the cobra-native pattern
+// that keeps the subcommand tree intact (a previous implementation
+// built duplicate commands and reparented every subcommand to the
+// alias, silently breaking `CommandPath()` for the original).
+func TestAlias_RegisteredAsCobraAliases(t *testing.T) {
 	root := &cobra.Command{Use: "gk"}
 	for _, eng := range aliasMap {
 		root.AddCommand(&cobra.Command{
@@ -220,19 +222,53 @@ func TestAlias_ShortContainsEnglishName(t *testing.T) {
 		})
 	}
 
+	// Pre-condition: no aliases set on any command.
+	for _, cmd := range root.Commands() {
+		if len(cmd.Aliases) != 0 {
+			t.Fatalf("unexpected pre-existing aliases on %q: %v", cmd.Name(), cmd.Aliases)
+		}
+	}
+
 	RegisterAliases(root, true)
 
 	for alias, eng := range aliasMap {
-		cmd := findSubcommand(root, alias)
-		if cmd == nil {
-			t.Fatalf("alias %q not registered", alias)
+		// findSubcommand checks both primary name and Aliases — both
+		// queries should now land on the same *cobra.Command.
+		viaAlias := findSubcommand(root, alias)
+		viaEnglish := findSubcommand(root, eng)
+		if viaAlias == nil {
+			t.Errorf("alias %q not registered", alias)
+			continue
 		}
+		if viaAlias != viaEnglish {
+			t.Errorf("alias %q resolves to a different *Command than %q — duplicate tree", alias, eng)
+		}
+		if !containsString(viaEnglish.Aliases, alias) {
+			t.Errorf("alias %q missing from %q.Aliases (got %v)", alias, eng, viaEnglish.Aliases)
+		}
+	}
+}
 
-		// The Short description must contain "(englishName)".
-		wantPattern := "(" + eng + ")"
-		if !containsSubstring(cmd.Short, wantPattern) {
-			t.Errorf("alias %q Short = %q, want it to contain %q",
-				alias, cmd.Short, wantPattern)
+// TestAlias_Idempotent verifies that calling RegisterAliases twice
+// does not duplicate aliases on the original command's Aliases slice.
+func TestAlias_Idempotent(t *testing.T) {
+	root := &cobra.Command{Use: "gk"}
+	for _, eng := range aliasMap {
+		root.AddCommand(&cobra.Command{Use: eng, RunE: func(*cobra.Command, []string) error { return nil }})
+	}
+	RegisterAliases(root, true)
+	RegisterAliases(root, true)
+
+	for _, eng := range aliasMap {
+		cmd := findSubcommand(root, eng)
+		seen := map[string]int{}
+		for _, a := range cmd.Aliases {
+			seen[a]++
+		}
+		for a, n := range seen {
+			if n > 1 {
+				t.Errorf("alias %q duplicated on %q (count %d)", a, eng, n)
+			}
 		}
 	}
 }
@@ -263,18 +299,4 @@ func TestAlias_DisabledNotRegistered(t *testing.T) {
 				alias, cmd.Short)
 		}
 	}
-}
-
-// containsSubstring reports whether s contains substr.
-func containsSubstring(s, substr string) bool {
-	return len(substr) <= len(s) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

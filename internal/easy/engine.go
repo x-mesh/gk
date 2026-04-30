@@ -215,6 +215,16 @@ func (e *Engine) Hints() *HintGenerator {
 	return e.hints
 }
 
+// Emoji returns the underlying EmojiMapper so callers can wire it into
+// out-of-package formatters (e.g. ui.NewEasyFormatter). Returns nil
+// when the engine is disabled, uninitialised, or emoji is turned off.
+func (e *Engine) Emoji() *EmojiMapper {
+	if e == nil || !e.enabled {
+		return nil
+	}
+	return e.emoji
+}
+
 // SetDebugFn installs a debug logging function (typically cli.Dbg).
 // This is called after engine construction because the debug flag
 // state may not be fully resolved at NewEngine time.

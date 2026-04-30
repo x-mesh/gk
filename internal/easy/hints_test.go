@@ -8,10 +8,10 @@ import (
 )
 
 // Feature: easy-mode, Property 7: 힌트 생성 동작 — For any 힌트 키와 상태 조합에 대해:
-// - HintLevel == HintOff이면 Generate는 항상 빈 문자열을 반환한다
-// - HintLevel != HintOff이고 유효한 상태 조합(hasStaged, hasUnstaged, hasUntracked,
-//   hasConflict 중 하나 이상 true)이면 StatusHint는 비어있지 않은 문자열을 반환한다
-// - HintLevel != HintOff이고 모든 bool이 false이면 StatusHint는 빈 문자열을 반환한다
+//   - HintLevel == HintOff이면 Generate는 항상 빈 문자열을 반환한다
+//   - HintLevel != HintOff이고 유효한 상태 조합(hasStaged, hasUnstaged, hasUntracked,
+//     hasConflict 중 하나 이상 true)이면 StatusHint는 비어있지 않은 문자열을 반환한다
+//   - HintLevel != HintOff이고 모든 bool이 false이면 StatusHint는 빈 문자열을 반환한다
 //
 // **Validates: Requirements 5.4, 5.5**
 func TestProperty_HintGeneration(t *testing.T) {
@@ -265,10 +265,10 @@ func TestHintGenerator_ErrorHints(t *testing.T) {
 	emoji := NewEmojiMapper(true)
 
 	tests := []struct {
-		name    string
-		level   HintLevel
-		key     string
-		want    string
+		name  string
+		level HintLevel
+		key   string
+		want  string
 	}{
 		// Verbose error hints
 		{

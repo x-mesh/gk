@@ -59,21 +59,20 @@ func FormatError(err error) string {
 	// Easy Mode branch: use EasyFormatter for friendlier output.
 	// Skip when --json is active (Property 9: JSON Mode Bypass).
 	if eng := EasyEngine(); eng != nil && eng.IsEnabled() && !JSONOut() {
-		fmtr := ui.NewEasyFormatter(nil, NoColorFlag())
-		if eng.Hints() != nil && eng.Hints().Level() != "off" {
-			fmtr = ui.NewEasyFormatter(
-				// Re-create with emoji from engine internals is not
-				// exposed; use a nil emoji mapper — FormatError adds
-				// its own prefixes.
-				nil,
-				NoColorFlag(),
-			)
-		}
+		// Wire the engine's emoji mapper through so FormatError can
+		// prefix ❌ / 💡. Previously this branch built the formatter
+		// twice with a nil mapper, defeating the very emoji prefix
+		// Easy Mode is supposed to add.
+		fmtr := ui.NewEasyFormatter(eng.Emoji(), NoColorFlag())
+
+		// Translate raw error text only. Hints come from the i18n
+		// catalog already in user-language form — running them through
+		// TranslateTerms a second time mangles the literal commands
+		// they exist to suggest (e.g. "→ gk commit" becomes
+		// "→ gk 변경사항 저장 (commit)" because \bcommit\b matches the
+		// command token in the already-translated string).
 		translated := eng.TranslateTerms(err.Error())
 		hint := HintFrom(err)
-		if hint != "" {
-			hint = eng.TranslateTerms(hint)
-		}
 		return fmtr.FormatError(fmt.Errorf("%s", translated), hint)
 	}
 

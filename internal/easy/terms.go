@@ -136,9 +136,32 @@ func (m *TermMapper) Translate(s string) string {
 		pattern := m.patterns[term]
 		translated := m.terms[term]
 
-		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
-			return translated + " (" + match + ")"
-		})
+		// Position-aware replacement so we can skip matches that are
+		// already wrapped from a prior Translate pass.
+		// First pass:  "commit"     →  "변경사항 저장 (commit)"
+		// Second pass: re-running the same regex would otherwise match
+		// the `commit` inside `(commit)` — `(` / `)` are non-word
+		// characters so `\bcommit\b` finds it. Detect the surrounding
+		// parens and skip; without this guard the output explodes into
+		// nested parentheticals on any double-translation path.
+		var b strings.Builder
+		b.Grow(len(result))
+		last := 0
+		for _, idx := range pattern.FindAllStringIndex(result, -1) {
+			start, end := idx[0], idx[1]
+			if start > 0 && end < len(result) &&
+				result[start-1] == '(' && result[end] == ')' {
+				continue
+			}
+			b.WriteString(result[last:start])
+			b.WriteString(translated)
+			b.WriteString(" (")
+			b.WriteString(result[start:end])
+			b.WriteString(")")
+			last = end
+		}
+		b.WriteString(result[last:])
+		result = b.String()
 	}
 
 	return result

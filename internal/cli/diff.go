@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/diff"
@@ -82,7 +84,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		if useJSON {
 			return diff.WriteJSON(cmd.OutOrStdout(), &diff.DiffResult{})
 		}
-		fmt.Fprintln(cmd.ErrOrStderr(), "변경사항 없음")
+		renderDiffNoChanges(cmd.ErrOrStderr(), ctx, runner, diffFlagStaged, args)
 		return nil
 	}
 
@@ -199,6 +201,110 @@ func extractRef(args []string) string {
 		}
 	}
 	return "(unknown)"
+}
+
+// renderDiffNoChanges prints a context-aware "no changes" banner when
+// `git diff …` produced empty output. The banner does three things the
+// previous one-liner did not:
+//
+//  1. Names the comparison that was just performed (working tree ↔
+//     index, index ↔ HEAD, working tree ↔ <ref>) so users with mixed
+//     mental models see what gk actually compared.
+//  2. Probes the *other* side cheaply — if the user ran `gk diff`
+//     with all changes staged, the staged probe surfaces that fact
+//     and points at `gk diff --staged` directly, instead of leaving
+//     the user puzzled why their staged work is invisible.
+//  3. Always shows two universal escape hatches (`gk diff HEAD`,
+//     `gk diff <ref>`) so the user sees how to widen the comparison
+//     without leaving the message.
+//
+// All output goes to stderr (the caller passes cmd.ErrOrStderr()) so
+// pipelines that capture stdout aren't polluted by the hint.
+func renderDiffNoChanges(w io.Writer, ctx context.Context, runner git.Runner, staged bool, userArgs []string) {
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+
+	scope, label := diffComparisonLabel(staged, userArgs)
+	fmt.Fprintf(w, "변경사항 없음  %s\n", faint("("+label+")"))
+
+	// Smart hint: probe the side the user did NOT compare.
+	switch scope {
+	case "default":
+		// User compared working tree ↔ index. Are there staged changes?
+		if n := countStagedFiles(ctx, runner); n > 0 {
+			fmt.Fprintf(w, "  %s staged 변경 %s — %s\n",
+				faint("hint:"),
+				bold(fmt.Sprintf("%d 파일", n)),
+				bold("gk diff --staged"))
+		}
+	case "staged":
+		// User compared index ↔ HEAD. Are there unstaged changes?
+		if hasUnstagedChanges(ctx, runner) {
+			fmt.Fprintf(w, "  %s unstaged 변경 있음 — %s\n",
+				faint("hint:"),
+				bold("gk diff"))
+		}
+	}
+
+	// Universal alternates — surface even when the smart probe found
+	// nothing, so first-time users learn the comparison vocabulary.
+	fmt.Fprintf(w, "  %s %s\n",
+		faint("또는:"),
+		bold("gk diff HEAD")+"     "+faint("(staged + unstaged 합쳐서)"))
+	fmt.Fprintf(w, "        %s\n",
+		bold("gk diff <ref>")+"   "+faint("(다른 commit/branch와 비교)"))
+}
+
+// diffComparisonLabel returns (scopeKey, humanLabel) describing which
+// pairing of trees gk just diffed. scopeKey drives the smart probe;
+// humanLabel goes in the banner.
+func diffComparisonLabel(staged bool, userArgs []string) (scope, label string) {
+	switch {
+	case staged:
+		return "staged", "index ↔ HEAD · --staged"
+	case hasExplicitDiffRef(userArgs):
+		ref := extractRef(userArgs)
+		return "ref", "working tree ↔ " + ref
+	default:
+		return "default", "working tree ↔ index · 기본"
+	}
+}
+
+// hasExplicitDiffRef reports whether the user passed any positional
+// argument that is not a flag and not the `--` path separator. Mirror
+// of extractRef's traversal — kept separate for readability.
+func hasExplicitDiffRef(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+	}
+	return false
+}
+
+// countStagedFiles returns the number of files with staged changes,
+// or 0 on any error. Cheap probe (single git invocation).
+func countStagedFiles(ctx context.Context, runner git.Runner) int {
+	out, _, err := runner.Run(ctx, "diff", "--cached", "--name-only")
+	if err != nil {
+		return 0
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return 0
+	}
+	return len(strings.Split(trimmed, "\n"))
+}
+
+// hasUnstagedChanges reports whether the working tree differs from the
+// index. Uses `git diff --quiet` which exits 1 when changes exist —
+// the cheapest possible probe (no diff content materialised).
+func hasUnstagedChanges(ctx context.Context, runner git.Runner) bool {
+	_, _, err := runner.Run(ctx, "diff", "--quiet")
+	return err != nil
 }
 
 // writeDiffWithPager는 출력을 페이저를 통해 표시하거나, 페이저가 비활성화된 경우 stdout으로 직접 출력한다.

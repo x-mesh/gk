@@ -1747,6 +1747,47 @@ gk timemachine restore abc1234 --mode hard --dry-run
 
 ---
 
+## gk guide
+
+Step-by-step walkthrough of common git workflows for new users. Independent of Easy Mode — works in any output configuration.
+
+### Synopsis
+
+```
+gk guide [<workflow>] [flags]
+```
+
+When `<workflow>` is omitted, `gk guide` prints the workflow menu. Passing the name skips the menu and starts that flow directly.
+
+### Workflows
+
+| Name | Description |
+|------|-------------|
+| `init` | First-time repo bootstrap and initial commit |
+| `commit` | Stage and record changes |
+| `push` | Publish a branch to a remote |
+| `merge` | Bring a feature branch into main |
+| `conflict` | Resolve a merge / rebase conflict |
+| `undo` | Recover from a recent mistake (reflog / backup refs) |
+
+The exact list is sourced from the in-binary `defaultWorkflows` table; run `gk guide` with no argument to see the current set.
+
+### Examples
+
+```
+gk guide                # interactive menu
+gk guide commit         # straight to the "first commit" walkthrough
+gk guide undo           # recovery flow
+```
+
+### Notes
+
+- Each step prints a title (bold), a short description, and an optional command (cyan) the user can run.
+- Output goes to stdout; stderr is reserved for any provider warnings.
+- The command is read-only — it never modifies the repository.
+
+---
+
 ## gk init
 
 One-shot project bootstrap. Analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds the three artifacts a new repo usually needs:

@@ -25,6 +25,7 @@ A lightweight Go git helper for daily pull/log/status/branch workflows, with a f
 - **Diverged-pull safety net** — `gk pull` refuses to silently rewrite local SHAs when histories have diverged, presenting `--rebase` / `--merge` / `--fetch-only` as explicit choices. `pull.strategy` config (or the explicit flags) bypasses the gate. Every history-rewriting integration writes a `refs/gk/backup/<branch>/<ts>` ref first.
 - **Conventional-Commits-aware hooks** — `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so re-installation is idempotent and foreign hooks are never clobbered without `--force`.
 - **Health at a glance** — `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation — with copy-paste fix commands.
+- **Easy Mode for new users** — `--easy` (or `output.easy: true` / `GK_EASY=1`) translates technical git terminology into Korean equivalents wrapped with the original (`commit` → `변경사항 저장 (commit)`), prefixes status sections with emoji, and surfaces contextual next-step hints. Korean command aliases (`gk 갈래`, `gk 상태`, `gk 저장`, …) work across the full subcommand tree. `gk guide` walks first-time users through git workflows step-by-step, independent of Easy Mode.
 - **Actionable errors** — most errors print a second-line `hint:` with the concrete next command.
 
 ## Install
@@ -188,6 +189,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 ### Onboarding / config
 | Command | Description |
 |---|---|
+| `gk guide [<workflow>]` | Step-by-step walkthrough of common git workflows (init → first commit, push, merge conflict, undo) for new users. Optional positional `<workflow>` skips the menu and starts that flow directly |
 | `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers) with fix commands; `--json` for CI |
 | `gk init [--only <target>] [--kiro] [--force]` | Analyze the project and scaffold `.gitignore`, `.gk.yaml`, and AI context files (`CLAUDE.md`, `AGENTS.md`) in one step. `--only gitignore\|config\|ai` narrows the run; `--kiro` also writes `.kiro/steering/`; an interactive huh form previews the plan before writing |
 | `gk config init [--force] [--out <path>]` | Scaffold the commented YAML template at `$XDG_CONFIG_HOME/gk/config.yaml` (also auto-created on first `gk` run; skip with `GK_NO_AUTO_CONFIG=1`). Replaces `gk init config`, which remains as a backward-compatible alias |
@@ -355,10 +357,21 @@ Flags: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`
 |---|---|
 | `-d, --debug` | Emit diagnostic logs to stderr (also via `GK_DEBUG=1`). Each line carries an elapsed-since-start prefix, so you can see at a glance which stage is spending wall time. |
 | `--dry-run` | Print actions without executing |
+| `--easy` | Enable Easy Mode for this invocation (Korean term translation + emoji + hints). Equivalent to `GK_EASY=1` |
+| `--no-easy` | Disable Easy Mode for this invocation, even if config / env enabled it |
 | `--json` | JSON output where supported |
 | `--no-color` | Disable color output |
 | `--repo <path>` | Path to git repo (default: current directory) |
 | `--verbose` | Verbose output |
+
+### Easy Mode env vars
+
+| Var | Default | Description |
+|---|---|---|
+| `GK_EASY` | unset | `1` / `true` enables Easy Mode globally; `0` / `false` forces it off |
+| `GK_LANG` | `ko` | Message catalog language (BCP-47 short code; `en` and `ko` shipped) |
+| `GK_EMOJI` | `true` | Prefix status sections with emoji (`📋` / `❌` / `💡`) |
+| `GK_HINTS` | `verbose` | Hint verbosity: `verbose` / `minimal` / `off` |
 
 ## Configuration
 

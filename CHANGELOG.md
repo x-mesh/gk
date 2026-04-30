@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-04-30
+
+### Added
+
+- **Easy Mode** — opt-in beginner-friendly output layer. Translates a
+  curated set of git terminology to Korean equivalents wrapped with the
+  English original in parens (`commit` → `변경사항 저장 (commit)`),
+  prefixes status sections with emoji (`📋` / `❌` / `💡` / etc.), and
+  appends contextual next-step hints from a fallback-chained i18n
+  catalog. Off by default. Activation precedence: `--no-easy` flag >
+  `--easy` flag > `output.easy` in config > `GK_EASY` env. Disabled
+  paths short-circuit before any catalog or term-mapper construction
+  so the cold-start cost is a single boolean check.
+- **`gk guide [<workflow>]`** — standalone interactive walkthrough of
+  common git workflows (init / first commit / push / merge conflict /
+  undo). Renders steps with title, description, and run-able command
+  in cyan. Independent of Easy Mode — works with any output config.
+- **Korean command aliases under Easy Mode** — `gk 상태` / `gk 저장` /
+  `gk 올리기` / `gk 가져오기` / `gk 동기화` / `gk 되돌리기` /
+  `gk 갈래` / `gk 검사` / `gk 안내`. Registered via cobra's native
+  `command.Aliases` field, so the entire subcommand tree (e.g.
+  `gk 갈래 list`) resolves through to the original command without
+  duplication. English-priority conflict guard refuses to register an
+  alias that would shadow an existing English subcommand.
+- **`internal/i18n` package** — message catalog with English and
+  Korean tables, mode-aware lookup (`ModeEasy` / `ModeMinimal` /
+  `ModeOff`), and a fallback chain (requested-lang → en → key
+  passthrough). Format-string args propagate via `Getf`.
+- **`output.*` config keys** — `output.easy` (bool, default false),
+  `output.lang` (BCP-47 short code, default "ko"), `output.emoji`
+  (bool, default true), `output.hints` (`verbose` | `minimal` | `off`,
+  default `verbose`). Matching env shortcuts: `GK_EASY`, `GK_LANG`,
+  `GK_EMOJI`, `GK_HINTS`.
+- **`--easy` / `--no-easy` global flags** — per-invocation override
+  of the config / env activation. `--no-easy` wins over `--easy` so
+  scripts that hardcode disable can survive a globally-enabled config.
+
+### Fixed
+
+- **Easy Mode hint commands no longer get rewritten by term
+  translation**. `status.go` and `errhint.go` previously ran
+  `TranslateTerms` over already-translated catalog hints, so
+  `→ gk commit` rendered as `→ gk 변경사항 저장 (commit)` —
+  `\bcommit\b` matched the literal command token in the hint string,
+  defeating the very suggestion the hint was supposed to surface.
+  Hints now bypass `TranslateTerms`; only raw error text and
+  unstructured git output flow through it.
+- **`TermMapper.Translate` is idempotent**. The wrapping format
+  `<translated> (<term>)` left `<term>` exposed to `\b<term>\b`
+  on a second pass because `(` and `)` are non-word characters that
+  count as word boundaries; double-applying the function nested the
+  parentheticals (`(((commit)))…`). The replacement now uses
+  position-aware substitution that skips matches surrounded by parens.
+- **Korean aliases no longer reparent the English subcommand tree**.
+  `RegisterAliases` previously built a fresh `*cobra.Command` per alias
+  and called `aliasCmd.AddCommand(sub)` for every child of the
+  original — cobra's `AddCommand` sets `sub.parent = aliasCmd`, which
+  silently broke `CommandPath()` and completion for the original
+  (running `gk branch list --help` would print the path as
+  `gk 갈래 list`). Aliases are now appended to `original.Aliases`,
+  the cobra-native pattern that keeps the subtree intact and is
+  idempotent on re-registration.
+- **Easy Mode error formatter wires emoji**. `errhint.go` previously
+  built `ui.NewEasyFormatter(nil, ...)` twice inside a no-op
+  conditional, so `FormatError` could never prefix the error / hint
+  with `❌` / `💡` — Easy Mode's error output was missing the
+  emoji it was advertising. New `Engine.Emoji()` accessor exposes
+  the underlying mapper; the dead branch is gone.
+
+### Internal
+
+- **`RegisterAliases` idempotent on re-registration** — safe to call
+  multiple times during tests or alternate cobra-tree boots.
+- **Lint cleared** — gofmt (alias.go, hints_test.go), staticcheck
+  SA5011 (alias_test.go added defensive `return` after `rapid.Fatalf`),
+  errcheck (guide.go `bold.Fprintf` / `cyan.Fprintf` returns
+  explicitly discarded with a comment documenting the
+  best-effort-stdout-write contract).
+
 ## [0.22.0] - 2026-04-30
 
 ### Added

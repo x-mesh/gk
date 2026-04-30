@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -334,6 +335,76 @@ func TestPull_AheadOnlyReportsNoUpstreamChanges(t *testing.T) {
 	out := stderr.String()
 	if !strings.Contains(out, "no upstream changes") {
 		t.Errorf("stderr missing 'no upstream changes' line:\n%s", out)
+	}
+}
+
+// TestPull_RefusesDuringPausedRebase verifies the in-progress guard:
+// when a previous rebase is still paused, `gk pull` must refuse with
+// a clear message instead of forwarding into git's opaque "could not
+// write index" failure that surfaces from the autostash path.
+func TestPull_RefusesDuringPausedRebase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	_, downstream := makeDivergedClone(t)
+
+	// Trigger a rebase with conflict by overlapping local + upstream
+	// edits to the same file. makeDivergedClone already gives diverged
+	// commits, but they touch different paths — produce one collision
+	// so the rebase actually pauses.
+	downstream.WriteFile("conflict.txt", "downstream-version\n")
+	downstream.Commit("local: introduce conflict")
+	// Note: at this point the upstream side doesn't have conflict.txt,
+	// so a vanilla rebase would still succeed cleanly. The simpler
+	// path: leave the working tree clean, manually start a paused
+	// rebase from a known-conflicting pair using `git rebase` directly.
+	// Easier still: simulate the paused state by creating
+	// .git/rebase-merge with the minimum required files.
+	// rev-parse --git-dir returns ".git" (relative to the repo root) so
+	// resolve it against downstream.Dir before mkdir — os.MkdirAll uses
+	// the *test* process cwd otherwise.
+	gitDir := strings.TrimSpace(downstream.RunGit("rev-parse", "--git-dir"))
+	if !strings.HasPrefix(gitDir, "/") {
+		gitDir = downstream.Dir + "/" + gitDir
+	}
+	rebaseMerge := gitDir + "/rebase-merge"
+	if err := os.MkdirAll(rebaseMerge, 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+	head := downstream.RunGit("rev-parse", "HEAD")
+	for path, content := range map[string]string{
+		"head-name":   "refs/heads/main\n",
+		"onto":        head + "\n",
+		"orig-head":   head + "\n",
+		"stopped-sha": head + "\n",
+		"msgnum":      "1\n",
+		"end":         "3\n",
+	} {
+		if err := os.WriteFile(rebaseMerge+"/"+path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	cmd := pullCoreCmd(t, downstream.Dir)
+	stderr := &bytes.Buffer{}
+	cmd.SetErr(stderr)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected pull to refuse during paused rebase")
+	}
+	if !strings.Contains(err.Error(), "in progress") {
+		t.Errorf("error = %v, want 'in progress'", err)
+	}
+
+	// Strip ANSI escape codes — color may be enabled when stdout is a
+	// pty in the full-suite run, breaking literal substring matching.
+	out := stripANSI(stderr.String())
+	if !strings.Contains(out, "is already in progress") {
+		t.Errorf("stderr missing in-progress banner:\n%s", out)
+	}
+	if !strings.Contains(out, "gk continue") || !strings.Contains(out, "gk abort") {
+		t.Errorf("stderr missing recovery hints:\n%s", out)
 	}
 }
 

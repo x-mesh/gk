@@ -15,6 +15,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -123,6 +124,16 @@ func runPullCore(cmd *cobra.Command) error {
 	remote := cfg.Remote
 	if remote == "" {
 		remote = "origin"
+	}
+
+	// 0) Refuse early when a previous rebase / merge / cherry-pick is
+	//    still paused. Without this check `gk pull` proceeds to fetch
+	//    and then tries to autostash, which git rejects with an opaque
+	//    "could not write index" because the index is reserved by the
+	//    paused operation. The user should resume or abort that first.
+	if state, err := gitstate.Detect(ctx, repo); err == nil && state.Kind != gitstate.StateNone {
+		printPullBlockedByState(cmd.ErrOrStderr(), ctx, client, runner, state.Kind)
+		return fmt.Errorf("a %s is in progress — resolve it first", inProgressLabel(state.Kind))
 	}
 
 	// 1) Resolve upstream — prefer the current branch's tracking @{u}.
@@ -561,6 +572,88 @@ func executePullStrategy(ctx context.Context, client *git.Client, runner *git.Ex
 		_ = res
 	}
 	return nil
+}
+
+// inProgressLabel maps a gitstate StateKind to a human label suitable
+// for the "a X is in progress" sentence. Kept narrow on purpose — only
+// the operations that conflict with `gk pull`'s preconditions need a
+// label here. Anything else falls through to "git operation".
+func inProgressLabel(k gitstate.StateKind) string {
+	switch k {
+	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
+		return "rebase"
+	case gitstate.StateMerge:
+		return "merge"
+	case gitstate.StateCherryPick:
+		return "cherry-pick"
+	case gitstate.StateRevert:
+		return "revert"
+	default:
+		return "git operation"
+	}
+}
+
+// printPullBlockedByState explains why `gk pull` refuses to proceed when
+// a prior integration is still paused. Reuses the same conflict-file
+// listing as the in-flight conflict banner so the user sees the exact
+// same recovery surface whether they hit a fresh conflict or run pull
+// while one is already pending.
+func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Client, runner git.Runner, kind gitstate.StateKind) {
+	yellow := color.YellowString
+	red := color.RedString
+	green := color.GreenString
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+
+	label := inProgressLabel(kind)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%s cannot pull: a %s is already in progress\n", yellow("✗"), bold(label))
+
+	switch kind {
+	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
+		if info, _ := client.RebaseConflictStatus(ctx); info != nil {
+			if info.StoppedSHA != "" {
+				short := info.StoppedSHA
+				if len(short) > 7 {
+					short = short[:7]
+				}
+				if info.StoppedSubj != "" {
+					fmt.Fprintf(w, "  paused on %s  %s\n", bold(short), info.StoppedSubj)
+				} else {
+					fmt.Fprintf(w, "  paused on %s\n", bold(short))
+				}
+			}
+			if info.Total > 0 {
+				fmt.Fprintf(w, "  progress %d/%d\n", info.Done, info.Total)
+			}
+			renderConflictFileLists(w, info, red, green)
+		} else {
+			renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+		}
+	default:
+		// Merge / cherry-pick / revert — only the file lists matter.
+		renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  resolve first:")
+	if kind == gitstate.StateRebaseMerge || kind == gitstate.StateRebaseApply {
+		fmt.Fprintf(w, "    1. fix conflict markers in the listed files, then %s\n", bold("git add <file>"))
+		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(finish the paused rebase)"))
+		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard the rebase, return to pre-pull state)"))
+	} else {
+		fmt.Fprintf(w, "    1. fix conflict markers in the listed files, then %s\n", bold("git add <file>"))
+		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(complete the paused operation)"))
+		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard it)"))
+	}
+	fmt.Fprintln(w, "  then re-run `gk pull`.")
+
+	if branch, err := client.CurrentBranch(ctx); err == nil && branch != "" {
+		if ref := client.LatestBackupRef(ctx, branch); ref != "" {
+			fmt.Fprintf(w, "\n  %s   %s\n", faint("backup:"), bold(ref))
+		}
+	}
+	fmt.Fprintln(w)
 }
 
 // printIntegrationConflict renders a richer paused-integration banner

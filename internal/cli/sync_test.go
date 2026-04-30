@@ -149,13 +149,22 @@ func TestSyncCmd_MutexFlags(t *testing.T) {
 	repo.WriteFile("a.txt", "hi\n")
 	repo.Commit("init")
 
-	root, _ := buildSyncCmd(repo.Dir, "--fetch-only", "--fetch")
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected mutex error")
+	cases := [][]string{
+		{"--fetch-only", "--fetch"},
+		{"--no-fetch", "--fetch"},
+		{"--no-fetch", "--fetch-only"},
 	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("expected 'mutually exclusive', got: %v", err)
+	for _, args := range cases {
+		t.Run(strings.Join(args, "+"), func(t *testing.T) {
+			root, _ := buildSyncCmd(repo.Dir, args...)
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected mutex error")
+			}
+			if !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Errorf("expected 'mutually exclusive', got: %v", err)
+			}
+		})
 	}
 }
 
@@ -222,6 +231,58 @@ func TestSyncCmd_DivergedRebaseSuccess(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "rebased") {
 		t.Errorf("expected 'rebased' in summary, got:\n%s", out)
+	}
+}
+
+// TestSyncCmd_SelfFFCountSeparated guards against a regression where
+// the integration commit count silently absorbed the self-FF delta.
+// preHEAD must be captured AFTER tryAdvanceSelfFF so `pre..post`
+// covers only the base integration. With the bug, the summary would
+// report `+(self-FF + base)` commits — for example "+3 commits"
+// where 2 came from origin/feat/x and only 1 from main.
+func TestSyncCmd_SelfFFCountSeparated(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	// Push feat/x to origin so self-FF has a tracking remote.
+	downstream.WriteFile("feat-base.txt", "feat\n")
+	downstream.Commit("feat: x base")
+	downstream.RunGit("push", "-u", "origin", "feat/x")
+
+	// Origin advances feat/x by 2 commits (no local copy yet).
+	upstream.RunGit("checkout", "feat/x")
+	upstream.WriteFile("feat-1.txt", "1\n")
+	upstream.Commit("feat: x advance 1")
+	upstream.WriteFile("feat-2.txt", "2\n")
+	upstream.Commit("feat: x advance 2")
+	upstream.RunGit("checkout", "main")
+
+	// Origin main also advances by 1 commit.
+	upstream.WriteFile("main-new.txt", "main\n")
+	upstream.Commit("feat: main advance")
+
+	// Pre-fetch feat/x so origin/feat/x reflects upstream's 2 new
+	// commits. `gk sync --fetch` only fetches the base ref; without
+	// this step, tryAdvanceSelfFF sees a stale origin/feat/x and the
+	// self-FF delta we're trying to verify never materialises.
+	downstream.RunGit("fetch", "origin", "feat/x")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--fetch")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed: %v\n%s", err, buf.String())
+	}
+
+	out := buf.String()
+	// self-FF should fire (origin/feat/x ahead by 2).
+	if !strings.Contains(out, "self-ff:") {
+		t.Errorf("expected 'self-ff:' line in summary:\n%s", out)
+	}
+	// Integration count must reflect only the base integration: 1 commit
+	// (the single main advance), not 3 (self-FF 2 + base 1).
+	if !strings.Contains(out, "+1 commit") {
+		t.Errorf("expected '+1 commit' (only base integration), got:\n%s", out)
+	}
+	if strings.Contains(out, "+3 commit") {
+		t.Errorf("count must not include self-FF delta:\n%s", out)
 	}
 }
 

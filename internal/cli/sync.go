@@ -117,12 +117,21 @@ func runSyncCore(cmd *cobra.Command) error {
 	fetchFlag, _ := cmd.Flags().GetBool("fetch")
 	fetchOnly, _ := cmd.Flags().GetBool("fetch-only")
 	autostash, _ := cmd.Flags().GetBool("autostash")
-	// --no-fetch is now the default; the flag is a no-op kept only so
-	// existing scripts don't error. Reading and discarding silently.
-	_, _ = cmd.Flags().GetBool("no-fetch")
+	// --no-fetch is now the default. Kept as an explicit opt-out so
+	// existing scripts that pass it for clarity keep working — but if
+	// the user combines it with --fetch / --fetch-only the intent is
+	// contradictory and we must reject rather than silently letting
+	// --fetch win (the previous code read --no-fetch and discarded it,
+	// which made `gk sync --fetch --no-fetch` fetch anyway).
+	noFetch, _ := cmd.Flags().GetBool("no-fetch")
 
-	if fetchOnly && fetchFlag {
+	switch {
+	case fetchOnly && fetchFlag:
 		return errors.New("--fetch-only and --fetch are mutually exclusive")
+	case noFetch && fetchFlag:
+		return errors.New("--no-fetch and --fetch are mutually exclusive")
+	case noFetch && fetchOnly:
+		return errors.New("--no-fetch and --fetch-only are mutually exclusive")
 	}
 
 	repo := RepoFlag()
@@ -226,12 +235,19 @@ func runSyncCore(cmd *cobra.Command) error {
 		}
 	}
 
-	preHEAD := headRev(ctx, runner)
-
 	// Self-FF (always-on): if origin/<self> is strictly ahead of local self,
 	// fast-forward first. Catches the multi-machine push case without
 	// requiring a separate command. Diverged refs are skipped silently.
 	selfFFPre, selfFFPost := tryAdvanceSelfFF(ctx, runner, currentBranch)
+
+	// preHEAD is captured AFTER self-FF so the integration count
+	// (`rev-list --count preHEAD..postHEAD`) reflects only what the
+	// rebase/merge against base actually pulled in. The self-FF
+	// delta — which moves HEAD before integration — is already
+	// surfaced as its own line in renderSyncSummary, so including
+	// it here would double-count: a `+12 commits` summary actually
+	// composed of 11 self-FF + 1 base would read as if base had 12.
+	preHEAD := headRev(ctx, runner)
 
 	strategy, _ := resolveSyncStrategyWithSource(ctx, strategyFlag, cfg, runner)
 
@@ -388,8 +404,15 @@ func renderSyncSummary(
 		return
 	}
 
+	// Count "commits brought in from base", not "commits in pre..post".
+	// On rebase, local commits past pre are rewritten with new SHAs and
+	// land in post, so a naive pre..post conflates "what base pulled in"
+	// with "what local was already carrying". `pre..base` (commits
+	// reachable from base but not from pre) answers the question the
+	// user actually asks: "how much did I pick up from main?" — and
+	// for ff-only it is identical to pre..post.
 	count := 0
-	if n, _, err := runner.Run(ctx, "rev-list", "--count", pre+".."+post); err == nil {
+	if n, _, err := runner.Run(ctx, "rev-list", "--count", pre+".."+upstream); err == nil {
 		count, _ = strconv.Atoi(strings.TrimSpace(string(n)))
 	}
 	verb := "rebased"

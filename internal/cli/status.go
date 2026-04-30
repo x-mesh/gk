@@ -1757,6 +1757,20 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	if hiddenByTop > 0 {
 		fmt.Fprintln(w, faint(fmt.Sprintf("… +%d more (%d total · showing top %d)", hiddenByTop, totalEntries, statusTopN)))
 	}
+
+	// Easy Mode: append a contextual next-step hint when enabled and
+	// --json is not active (JSON output is handled above and returns
+	// early, so this branch only fires for human-readable output).
+	if eng := EasyEngine(); eng != nil && eng.IsEnabled() {
+		hasStaged := len(allGrouped.Staged) > 0
+		hasUnstaged := len(allGrouped.Modified) > 0
+		hasUntracked := len(allGrouped.Untracked) > 0
+		hasConflict := len(allGrouped.Unmerged) > 0
+		if hint := eng.StatusHint(hasStaged, hasUnstaged, hasUntracked, hasConflict); hint != "" {
+			fmt.Fprintln(w, eng.TranslateTerms(hint))
+		}
+	}
+
 	return exitCode, nil
 }
 

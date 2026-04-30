@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 )
 
@@ -28,6 +30,8 @@ var (
 	flagJSON    bool
 	flagNoColor bool
 	flagDebug   bool
+	flagEasy    bool
+	flagNoEasy  bool
 
 	// debugStart is captured the first time Dbg() fires so every
 	// subsequent log line carries an elapsed-since-start offset, which
@@ -56,6 +60,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "json output where supported")
 	rootCmd.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "emit diagnostic logs (subprocess invocations, retry reasons, timings) to stderr")
+	rootCmd.PersistentFlags().BoolVar(&flagEasy, "easy", false, "enable Easy Mode for this invocation")
+	rootCmd.PersistentFlags().BoolVar(&flagNoEasy, "no-easy", false, "disable Easy Mode even if config/env enables it")
 	// GK_DEBUG=1 env var is honored so users can opt in without every
 	// subcommand needing to pass -d by hand.
 	if v := os.Getenv("GK_DEBUG"); v == "1" || v == "true" {
@@ -66,6 +72,22 @@ func init() {
 	// by the time this fires flagDebug reflects the -d / GK_DEBUG state.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		installDebugHooks()
+		// Initialise Easy Mode engine from config + CLI flags.
+		// config.Load may fail (e.g. not in a git repo); that is fine —
+		// we fall back to defaults so the engine still resolves flags.
+		cfg, _ := config.Load(nil)
+		if cfg != nil {
+			easyEngine = easy.NewEngine(cfg.Output, flagEasy, flagNoEasy)
+		} else {
+			easyEngine = easy.NewEngine(config.Defaults().Output, flagEasy, flagNoEasy)
+		}
+		if flagDebug {
+			easyEngine.SetDebugFn(Dbg)
+		}
+		// Register Korean subcommand aliases when Easy Mode is active.
+		if easyEngine.IsEnabled() {
+			easy.RegisterAliases(rootCmd, true)
+		}
 		return nil
 	}
 }
@@ -108,10 +130,20 @@ func DryRun() bool      { return flagDryRun }
 func JSONOut() bool     { return flagJSON }
 func NoColorFlag() bool { return flagNoColor }
 func Debug() bool       { return flagDebug }
+func EasyFlag() bool    { return flagEasy }
+func NoEasyFlag() bool  { return flagNoEasy }
 
 // debugWriter is the sink for Dbg lines. Production uses os.Stderr;
 // tests override it via SetDebugWriter to assert on emitted log lines.
 var debugWriter io.Writer = os.Stderr
+
+// easyEngine is the package-level Easy Mode engine, initialised in
+// PersistentPreRunE. Nil until the first subcommand runs.
+var easyEngine *easy.Engine
+
+// EasyEngine returns the package-level Easy Mode engine. May be nil if
+// PersistentPreRunE has not yet run or config loading failed.
+func EasyEngine() *easy.Engine { return easyEngine }
 
 // SetDebugWriter overrides the destination for Dbg output. Returns the
 // previous writer so callers can restore on cleanup. Safe to call from

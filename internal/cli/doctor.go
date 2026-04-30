@@ -85,6 +85,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkFzf(),
 		checkEditor(),
 		checkConfig(cmd),
+		checkEasyMode(),
 		checkHook(ctx, runner, "commit-msg", "gk lint-commit"),
 		checkHook(ctx, runner, "pre-push", "gk push"),
 		checkBackupRefs(ctx, runner),
@@ -219,6 +220,28 @@ func checkEditor() doctorCheck {
 		Name: "editor", Status: statusWarn,
 		Detail: "no $EDITOR/$VISUAL/$GIT_EDITOR set — git will use vi",
 		Fix:    "export EDITOR=nvim  # or your preferred editor",
+	}
+}
+
+// checkEasyMode reports the Easy Mode activation status, active language,
+// and catalog state. Always PASS — purely informational.
+func checkEasyMode() doctorCheck {
+	eng := EasyEngine()
+	if eng == nil || !eng.IsEnabled() {
+		return doctorCheck{
+			Name:   "easy mode",
+			Status: statusPass,
+			Detail: "disabled",
+		}
+	}
+	lang := eng.Lang()
+	if lang == "" {
+		lang = "ko"
+	}
+	return doctorCheck{
+		Name:   "easy mode",
+		Status: statusPass,
+		Detail: fmt.Sprintf("enabled · lang=%s · catalog=loaded", lang),
 	}
 }
 

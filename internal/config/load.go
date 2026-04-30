@@ -58,6 +58,10 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("ai.nvidia.model", defaults.AI.Nvidia.Model)
 	v.SetDefault("ai.nvidia.endpoint", defaults.AI.Nvidia.Endpoint)
 	v.SetDefault("ai.nvidia.timeout", defaults.AI.Nvidia.Timeout)
+	v.SetDefault("output.easy", defaults.Output.Easy)
+	v.SetDefault("output.lang", defaults.Output.Lang)
+	v.SetDefault("output.emoji", defaults.Output.Emoji)
+	v.SetDefault("output.hints", defaults.Output.Hints)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()
@@ -100,6 +104,14 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetEnvPrefix("GK")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+
+	// Explicit bindings for output.* fields so that the short env var
+	// names GK_EASY, GK_LANG, GK_EMOJI, GK_HINTS work in addition to
+	// the automatic GK_OUTPUT_EASY, GK_OUTPUT_LANG, etc.
+	_ = v.BindEnv("output.easy", "GK_EASY")
+	_ = v.BindEnv("output.lang", "GK_LANG")
+	_ = v.BindEnv("output.emoji", "GK_EMOJI")
+	_ = v.BindEnv("output.hints", "GK_HINTS")
 
 	// --- 6. CLI flags ---
 	if flags != nil {

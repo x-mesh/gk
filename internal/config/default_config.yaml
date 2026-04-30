@@ -261,3 +261,21 @@ ai:
       - __pycache__
       - __pycache__/*
       - "*.class"
+
+# Easy Mode — beginner-friendly output with emoji, translated git terms,
+# and contextual next-step hints. All fields are optional; omit to keep
+# defaults. Override per-invocation with --easy / --no-easy flags or the
+# GK_EASY, GK_LANG, GK_EMOJI, GK_HINTS environment variables.
+#
+# output:
+#   # Master switch. true = Easy Mode on for every gk subcommand.
+#   easy: false
+#
+#   # Message catalogue language (BCP-47 short code). "ko" = Korean, "en" = English.
+#   lang: ko
+#
+#   # Prepend emoji to status lines (✅ ❌ 💡 …). Set false for plain text.
+#   emoji: true
+#
+#   # Hint verbosity after each command: "verbose", "minimal", or "off".
+#   hints: verbose

@@ -16,6 +16,19 @@ type Config struct {
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
+	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
+}
+
+// OutputConfig controls Easy Mode output behaviour.
+//   - Easy: master switch for Easy Mode (default false).
+//   - Lang: message catalogue language, BCP-47 short code (default "ko").
+//   - Emoji: prepend emoji to status lines (default true).
+//   - Hints: hint verbosity level — "verbose", "minimal", or "off" (default "verbose").
+type OutputConfig struct {
+	Easy  bool   `mapstructure:"easy"  yaml:"easy"`
+	Lang  string `mapstructure:"lang"  yaml:"lang"`
+	Emoji bool   `mapstructure:"emoji" yaml:"emoji"`
+	Hints string `mapstructure:"hints" yaml:"hints"`
 }
 
 // AIConfig controls AI-powered subcommands (commit, pr, review,
@@ -398,6 +411,12 @@ func Defaults() Config {
 			Groq: AIGroqConfig{
 				Timeout: "60s",
 			},
+		},
+		Output: OutputConfig{
+			Easy:  false,
+			Lang:  "ko",
+			Emoji: true,
+			Hints: "verbose",
 		},
 	}
 }

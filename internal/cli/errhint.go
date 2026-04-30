@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // hintError wraps an error with a short "next step" hint rendered after the
@@ -46,10 +48,35 @@ func HintFrom(err error) string {
 //
 //	gk: <error message>          (red)
 //	  hint: <hint>                (magenta label, faint body)
+//
+// When Easy Mode is active and --json is not set, the error is formatted
+// with emoji and beginner-friendly language via the EasyFormatter.
 func FormatError(err error) string {
 	if err == nil {
 		return ""
 	}
+
+	// Easy Mode branch: use EasyFormatter for friendlier output.
+	// Skip when --json is active (Property 9: JSON Mode Bypass).
+	if eng := EasyEngine(); eng != nil && eng.IsEnabled() && !JSONOut() {
+		fmtr := ui.NewEasyFormatter(nil, NoColorFlag())
+		if eng.Hints() != nil && eng.Hints().Level() != "off" {
+			fmtr = ui.NewEasyFormatter(
+				// Re-create with emoji from engine internals is not
+				// exposed; use a nil emoji mapper — FormatError adds
+				// its own prefixes.
+				nil,
+				NoColorFlag(),
+			)
+		}
+		translated := eng.TranslateTerms(err.Error())
+		hint := HintFrom(err)
+		if hint != "" {
+			hint = eng.TranslateTerms(hint)
+		}
+		return fmtr.FormatError(fmt.Errorf("%s", translated), hint)
+	}
+
 	prefix := color.New(color.FgRed, color.Bold).Sprint("gk:")
 	out := prefix + " " + err.Error()
 	if h := HintFrom(err); h != "" {

@@ -650,12 +650,20 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  resolve first:")
+	fmt.Fprintf(w, "    1. fix conflict markers — pick one:\n")
+	fmt.Fprintf(w, "         %s             %s\n",
+		bold("gk resolve"), faint("AI-assisted (preview with --dry-run)"))
+	fmt.Fprintf(w, "         %s   %s\n",
+		bold("gk resolve --strategy ours"), faint("take HEAD across all conflicts"))
+	fmt.Fprintf(w, "         %s %s\n",
+		bold("gk resolve --strategy theirs"), faint("take incoming across all conflicts"))
+	fmt.Fprintf(w, "         %s            %s\n",
+		faint("manual:"),
+		faint("edit each file, then "+bold("git add <file>")))
 	if kind == gitstate.StateRebaseMerge || kind == gitstate.StateRebaseApply {
-		fmt.Fprintf(w, "    1. fix conflict markers in the listed files, then %s\n", bold("git add <file>"))
 		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(finish the paused rebase)"))
 		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard the rebase, return to pre-pull state)"))
 	} else {
-		fmt.Fprintf(w, "    1. fix conflict markers in the listed files, then %s\n", bold("git add <file>"))
 		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(complete the paused operation)"))
 		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard it)"))
 	}
@@ -729,17 +737,23 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  resolve:")
-	fmt.Fprintf(w, "    1. edit each conflicted file — pick the right side, remove %s / %s / %s markers\n",
-		bold("<<<<<<<"), bold("======="), bold(">>>>>>>"))
-	fmt.Fprintf(w, "    2. %s    %s\n",
-		bold("git add <file>"), faint("(stage the resolved file)"))
+	fmt.Fprintf(w, "    1. fix conflict markers — pick one:\n")
+	fmt.Fprintf(w, "         %s             %s\n",
+		bold("gk resolve"), faint("AI-assisted (preview with --dry-run)"))
+	fmt.Fprintf(w, "         %s   %s\n",
+		bold("gk resolve --strategy ours"), faint("take HEAD across all conflicts"))
+	fmt.Fprintf(w, "         %s %s\n",
+		bold("gk resolve --strategy theirs"), faint("take incoming across all conflicts"))
+	fmt.Fprintf(w, "         %s            %s\n",
+		faint("manual:"),
+		faint("edit each file, remove "+bold("<<<<<<<")+" / "+bold("=======")+" / "+bold(">>>>>>>")+" markers, then "+bold("git add <file>")))
 	if mode == "rebase" {
-		fmt.Fprintf(w, "    3. %s         %s\n",
+		fmt.Fprintf(w, "    2. %s         %s\n",
 			bold("gk continue"), faint("(finish this commit, proceed to next pick)"))
 		fmt.Fprintf(w, "       %s            %s\n",
 			bold("gk abort"), faint("(give up rebase, return to pre-pull state)"))
 	} else {
-		fmt.Fprintf(w, "    3. %s         %s\n",
+		fmt.Fprintf(w, "    2. %s         %s\n",
 			bold("gk continue"), faint("(create the merge commit)"))
 		fmt.Fprintf(w, "       %s            %s\n",
 			bold("gk abort"), faint("(discard the merge attempt)"))

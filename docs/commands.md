@@ -126,8 +126,9 @@ gk sync [flags]
 | `--base <branch>` | auto-detect | Base branch to sync onto |
 | `--strategy <mode>` | `rebase` | `rebase`, `merge`, or `ff-only` |
 | `--autostash` | false | Stash dirty changes before integration, pop after |
-| `--fetch-only` | false | Fetch base, skip integration (reports ahead/behind) |
-| `--no-fetch` | false | Skip fetch, integrate from already-fetched ref |
+| `--fetch` | false | Fetch `<remote>/<base>` and fast-forward `refs/heads/<base>` before integrating (one-shot opt-in; default behaviour is offline) |
+| `--fetch-only` | false | Fetch `<remote>/<base>` and ff local `<base>`; skip integration |
+| `--no-fetch` | false | **Deprecated.** Default behaviour is now no-fetch; flag retained as a no-op alias. Mutually exclusive with `--fetch` and `--fetch-only`. |
 | `--upstream-only` | false | **Deprecated.** Legacy v0.6 FF-to-`origin/<self>` behaviour. Removed in v0.8. |
 
 ### Strategy resolution
@@ -245,9 +246,14 @@ gk pull [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--base <branch>` | auto-detect | Base branch to rebase onto |
-| `--autostash` | false | Stash dirty changes before rebase, pop after |
-| `--no-rebase` | false | Only fetch, do not rebase |
+| `--base <branch>` | auto-detect | Base branch to rebase onto (only consulted when `@{u}` is unset) |
+| `--strategy <mode>` | `rebase` | `rebase`, `merge`, `ff-only`, or `auto` |
+| `--rebase` | false | Shorthand for `--strategy rebase`; also acts as explicit consent on diverged history |
+| `--merge` | false | Shorthand for `--strategy merge`; also acts as explicit consent on diverged history |
+| `--fetch-only` | false | Fetch only, do not integrate |
+| `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
+| `--autostash` | false | Stash dirty changes before integration, pop after |
+| `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
 
 ### Base branch auto-detection
 
@@ -300,6 +306,81 @@ updated 6ab13b03 → 67208ff8  (+3 commits · ff-only)
 - `gk pull --no-rebase` (fetch-only) reports waiting commits:
   - `fetched origin/main: +2 commits waiting  (run gk pull to integrate)` when only behind.
   - `fetched origin/main: ↑N local · ↓M upstream  (diverged — run gk pull to rebase/merge)` when both sides have diverged.
+
+---
+
+## gk diff
+
+Terminal-friendly diff viewer that wraps `git diff` with color, line numbers, intra-line word highlights, and an optional interactive file picker. The parsed output (file → hunk → line model) drives a renderer with `◀` / `▶` / `·` markers; a pager auto-launches when stdout is a TTY.
+
+### Synopsis
+
+```
+gk diff [flags] [<ref>] [<ref>..<ref>] [-- <path>...]
+```
+
+Positional arguments and `--` paths are forwarded to `git diff` unchanged, so the comparison vocabulary is identical to git's:
+
+| Invocation | Compares |
+|---|---|
+| `gk diff` | working tree ↔ index (unstaged changes) |
+| `gk diff --staged` | index ↔ HEAD (staged changes) |
+| `gk diff HEAD` | working tree ↔ HEAD (staged + unstaged) |
+| `gk diff main` | working tree ↔ `main` |
+| `gk diff a..b` | commit `a` ↔ commit `b` |
+| `gk diff -- path/` | scope to path |
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--staged` | false | Show staged changes (`git diff --cached`) |
+| `--stat` | false | Prefix the output with a per-file diffstat (proportional bars + line counts) |
+| `-i`, `--interactive` | false | Open a file picker; selected file shows in a scrollable viewport with hunk fold/unfold (Tab) and `n`/`p` navigation |
+| `-U`, `--context <n>` | `3` | Context lines per hunk |
+| `--no-pager` | false | Disable the auto-pager (`$GK_PAGER` / `$PAGER` / `less`) |
+| `--no-word-diff` | false | Disable intra-line word-level highlights |
+| `--json` | (global) | Emit a structured JSON document; implies `--no-color --no-pager` |
+
+### "No changes" hint
+
+When the comparison produces empty output, `gk diff` prints a banner naming the trees compared and probes the *other* side:
+
+```
+변경사항 없음  (working tree ↔ index · 기본)
+  hint: staged 변경 3 파일 — gk diff --staged
+  또는: gk diff HEAD     (staged + unstaged 합쳐서)
+        gk diff <ref>   (다른 commit/branch와 비교)
+```
+
+The smart hint surfaces only when probing the unused side reveals work; for explicit-ref invocations (`gk diff main`) the probe is suppressed and only the universal alternates render.
+
+### Word-diff bounds
+
+Intra-line highlights run an LCS DP table sized `(m+1)*(n+1)` ints, where `m`/`n` are token counts. To prevent OOM on minified-bundle / generated-file diffs, two guards skip word-diff and fall back to a whole-line "Changed" highlight:
+
+- Either side longer than 4 KB.
+- Token product (`(m+1)*(n+1)`) over 1 M cells.
+
+The whole-line marker still appears with `◀` / `▶`; only the intra-line span detail is suppressed.
+
+### Examples
+
+```
+gk diff                       # unstaged changes in the working tree
+gk diff --staged              # what `git commit` would record
+gk diff HEAD                  # staged + unstaged together
+gk diff main..HEAD            # everything since branching
+gk diff -i                    # interactive file picker → per-file viewer
+gk diff --stat                # diffstat prefix + diff body
+gk diff --json                # machine-readable output (implies no color, no pager)
+gk diff -U10                  # 10 context lines per hunk
+gk diff -- internal/ui/       # restrict to a path
+```
+
+### Exit codes
+
+`0` regardless of whether changes were found — `gk diff` is a *viewer*, not a status check. Use `gk status --exit-code` when you need an exit-code-driven dirty/clean signal.
 
 ---
 

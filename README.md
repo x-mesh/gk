@@ -21,8 +21,8 @@ A lightweight Go git helper for daily pull/log/status/branch workflows, with a f
 - **Reflog-backed undo** — `gk undo` picks a past HEAD from the reflog (fzf or numeric picker), resets to it, and leaves a backup ref at `refs/gk/undo-backup/<branch>/<unix>` so every undo is trivially reversible.
 - **Policies as code** — `gk guard check` evaluates repo policy rules (secret scanning, commit size, required trailers) in parallel; `gk guard init` scaffolds `.gk.yaml` with commented stubs. Wire as a pre-commit hook with `gk hooks install --pre-commit`.
 - **Dry-run any merge** — `gk precheck <target>` runs `git merge-tree` and reports conflicted paths without touching your working tree (exit 3 on conflicts for CI).
-- **One-shot fast-forward** — `gk sync` fetches remotes and fast-forwards the current branch (or every tracked branch with `--all`). Never creates merge commits; diverged branches fail cleanly with a `gk pull` hint.
-- **Flexible pull strategy** — `gk pull --strategy rebase|merge|ff-only|auto` overrides the default per-invocation; resolves upstream from `@{u}` first, auto-switches to `merge --ff-only` when fast-forward is possible.
+- **Local-first rebase** — `gk sync` rebases the current branch onto local `<base>` offline. `gk sync --fetch` is the explicit one-shot when the user wants the network too. Stale-base hint when local `<base>` differs from `<remote>/<base>`.
+- **Diverged-pull safety net** — `gk pull` refuses to silently rewrite local SHAs when histories have diverged, presenting `--rebase` / `--merge` / `--fetch-only` as explicit choices. `pull.strategy` config (or the explicit flags) bypasses the gate. Every history-rewriting integration writes a `refs/gk/backup/<branch>/<ts>` ref first.
 - **Conventional-Commits-aware hooks** — `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so re-installation is idempotent and foreign hooks are never clobbered without `--force`.
 - **Health at a glance** — `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation — with copy-paste fix commands.
 - **Actionable errors** — most errors print a second-line `hint:` with the concrete next command.
@@ -80,10 +80,13 @@ unalias gk gke 2>/dev/null
 ```bash
 # Daily driver
 gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
-gk pull                      # fetch + rebase, auto-detects upstream
-gk pull --strategy ff-only   # fast-forward only; errors if histories diverged
+gk pull                      # fetch + integrate @{u}; refuses on diverged
+gk pull --rebase             # explicit consent: replay local on top of upstream
+gk pull --fetch-only         # fetch without integrating
 gk merge main                # precheck + merge main into current branch
-gk sync                      # fetch + fast-forward only (never rebases)
+gk sync                      # rebase onto local <base> (offline)
+gk sync --fetch              # one-shot: fetch + ff local <base> + rebase
+gk diff                      # color, line-numbered, word-level diff viewer
 gk status                    # concise working-tree summary
 gk log                       # short, colorful commit log
 
@@ -117,9 +120,10 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Alias | Description |
 |---|---|---|
 | `gk clone <owner/repo \| alias:owner/repo \| url>` | | Clone with short-form URL expansion. Bare `owner/repo` expands to `git@github.com:owner/repo.git` (ssh default, configurable). `--ssh`/`--https` override. `clone.hosts` maps aliases (`gl:`, `work:`). Optional `clone.root` + `clone.post_actions: [hooks-install, doctor]`. |
-| `gk pull` | | Fetch + integrate upstream. `--strategy rebase\|merge\|ff-only\|auto`; resolves `@{u}` first; auto-switches to `--ff-only` when HEAD is already an ancestor |
+| `gk pull` | | Fetch + integrate the current branch's upstream (`@{u}`). Refuses on diverged histories without explicit consent; `--rebase` / `--merge` / `--fetch-only` choose; `--strategy rebase\|merge\|ff-only\|auto` for direct override. Writes a backup ref before any history-rewriting integration. Conflict pauses surface inline previews + `gk resolve` shortcuts |
+| `gk diff` | | Terminal-friendly diff viewer with color, line numbers, and word-level highlights. `-i`/`--interactive` opens a file picker; `--staged`, `--stat`, `-U <n>`, `--no-pager`, `--no-word-diff`, `--json`. `<ref>`, `<ref>..<ref>`, `-- <path>` pass through to `git diff` |
 | `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
-| `gk sync` | | Fetch + fast-forward only; `--all` for every tracked branch |
+| `gk sync` | | Rebase the current branch onto local `<base>` (offline by default). `--fetch` for the explicit one-shot: fetch `<remote>/<base>`, fast-forward `refs/heads/<base>`, then integrate. Stale-base hint when local `<base>` differs from `<remote>/<base>` |
 | `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind), submodule-aware with `next:` hints. Pass `-f`/`--fetch` to refresh ↑N ↓N, `--watch` to refresh continuously, or `--exit-code` for scripts. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 

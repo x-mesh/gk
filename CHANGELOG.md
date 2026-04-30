@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-04-30
+
+### Added
+
+- **`gk diff`** — terminal-friendly diff viewer with color, line numbers,
+  word-level highlights, and an optional interactive file picker
+  (`-i`/`--interactive`). Honors `--staged`, `--stat`, `-U <n>`,
+  `--no-pager`, `--no-word-diff`, and `--json`. Pager auto-invoked when
+  output is a TTY; positional args (`<ref>`, `<ref>..<ref>`, `-- <path>`)
+  pass through to `git diff`.
+- **`gk diff` "no changes" banner** — when nothing matches the selected
+  comparison, gk prints which trees were compared (`(working tree ↔
+  index · 기본)`) and probes the *other* side: shows
+  `staged 변경 N 파일 — gk diff --staged` when default-mode finds
+  nothing but staging has work, or `unstaged 변경 있음 — gk diff` when
+  `--staged` is empty but the working tree dirty. Universal alternates
+  `gk diff HEAD` and `gk diff <ref>` always rendered.
+- **`gk pull --rebase` / `--merge`** — shorthand for `--strategy rebase`
+  / `--strategy merge`, and explicit consent for diverged-history pulls
+  (see "Changed" below).
+- **`gk pull --fetch-only`** — preferred name for fetch-without-integrate;
+  `--no-rebase` retained as a deprecated alias.
+- **`gk sync --fetch`** — opt-in one-shot: fetch `<remote>/<base>`,
+  fast-forward `refs/heads/<base>`, then integrate. Combines the
+  network-refresh and rebase-onto-base steps that previously required
+  two commands.
+- **Backup ref before history-rewriting integrations** — `gk pull
+  --rebase` / `--merge` writes `refs/gk/backup/<branch>/<unix-ts>`
+  pointing at the pre-integration tip and prunes entries older than
+  30 days (preserving the newest 5). `git reset --hard <ref>` restores.
+- **Inline conflict region preview in `gk pull` / `gk continue`** —
+  paused integrations show the first conflict region with file line
+  numbers, side markers (`◀` HEAD / `▶` incoming / `·` context), and
+  a one-line summary of remaining regions. The same inline preview
+  fires when `gk continue` is invoked while markers are still in the
+  working tree.
+- **`gk pull` early refusal on paused operations** — invoking `gk pull`
+  while a rebase / merge / cherry-pick is in progress now refuses with
+  the same banner instead of forwarding into the autostash path (where
+  it produced an opaque "could not write index" error from git).
+- **`gk resolve` TUI improvements** — line numbers, side labels with
+  branch name / commit subject, region progress
+  (`region 1/4 · lines 188–200`), and option labels with line counts
+  (`ours — keep HEAD (5 lines)`,
+  `theirs — accept cd98609 (subject) (5 lines)`). The legacy `-/+`
+  diff formatter (`FormatHunkDiff`) stays as a fallback for callers
+  without parsed regions.
+- **Conflict-recovery banner surfaces `gk resolve`** — `gk pull`,
+  `gk continue`, and the in-progress refusal banner now lead with
+  `gk resolve` (AI-assisted) and `gk resolve --strategy ours|theirs`
+  shortcuts before the manual edit recipe.
+- **`gk sync` stale-base hint** — when `refs/heads/<base>` differs
+  from `<remote>/<base>`, both `gk sync` and `gk status` surface
+  `⚠ local main differs from origin/main (↑N local · ↓M origin)` with
+  remediation hints (`git checkout main && gk pull` or
+  `gk sync --fetch`).
+
+### Changed
+
+- **`gk sync` integrates against local `<base>` by default**. The
+  v0.21 default was `<remote>/<base>` (silent fetch + integrate). Now
+  sync is offline-by-default; the user's local base is the integration
+  source. `gk sync --fetch` is the explicit one-shot opt-in.
+  `--no-fetch` retained as a no-op alias for old scripts.
+- **`gk pull` refuses to auto-rebase on diverged histories without
+  explicit consent**. Previously the default strategy was `rebase`,
+  which silently rewrote local SHAs when local commits hadn't been
+  pushed yet. Now divergence triggers a refusal banner listing the
+  at-risk local commits and the three resolution paths
+  (`--rebase` / `--merge` / `--fetch-only`); explicit `--rebase` /
+  `--merge` flags or `pull.strategy` config bypass the gate.
+- **`Pull.Strategy` default value is empty** in `Defaults()`. The
+  previous `"rebase"` default masked the resolver's `default` source
+  signal that the new diverged-refusal logic relies on. The effective
+  strategy when nothing is set remains `rebase`.
+
+### Fixed
+
+- **Submodule entries no longer leak into `gk commit` groupings**.
+  `parsePorcelainV2` drops every `S<c><m><u>` sub-field record across
+  ordinary, rename, and unmerged categories. Submodule pointer commits
+  stay deliberate — the user must `git add <path>` them explicitly.
+- **`gk pull` works when `@{u}` is set but `origin/HEAD` is not**.
+  `runPullCore` now tries the branch's tracking ref first and only
+  falls back to `DefaultBranch` detection when no upstream is
+  configured. Previously a missing `origin/HEAD` (and no
+  `develop`/`main`/`master`) failed with "could not determine default
+  branch" even though `git rev-parse @{u}` would have answered.
+- **CJK / multibyte labels no longer corrupt the conflict banner**.
+  `renderConflictSide` truncated `displayLabel` via byte slicing
+  (`displayLabel[:57]`), which split mid-codepoint for Korean /
+  Japanese / Chinese / emoji branch names and emitted invalid UTF-8.
+  Replaced with a rune-aware truncation; `headerRule` width also
+  switched from `len()` to `utf8.RuneCountInString`.
+- **AI strategy whitespace tolerated**. `buildResolveOptions` now
+  trims `ai.Strategy` before lowering, so `"theirs "` / `" Theirs"`
+  no longer silently miss the default-highlight check.
+- **`gk sync --no-fetch --fetch` rejected as contradictory** instead
+  of silently fetching. Three combinations now error:
+  `--fetch-only + --fetch`, `--no-fetch + --fetch`,
+  `--no-fetch + --fetch-only`.
+- **`gk sync` integration count separates self-FF from base**. The
+  summary's `+N commits` line previously absorbed the self-FF delta
+  (commits picked up from `origin/<self>`) into the rebase-onto-base
+  count. `preHEAD` is now captured after self-FF, and the count uses
+  `pre..base` (commits brought in from base) so rebase no longer
+  inflates it with rewritten local SHAs.
+
+### Internal
+
+- **`internal/diff` package** — unified-diff parser (round-trippable),
+  renderer with word-diff, diffstat, JSON output. ~1700 lines impl +
+  ~3600 lines tests (parse / render / format / stat / json / worddiff
+  / property).
+- **Word-diff LCS DP table bounded** — `wordDiffMaxLineBytes` (4 KB) +
+  `wordDiffMaxCells` (1 M cells) prevent OOM on minified-bundle diffs
+  that would otherwise allocate gigabytes. `buildSpans` switched from
+  per-call `map[int]bool` to a two-pointer walk for zero-alloc span
+  construction.
+- **Diff scanner cap raised** to 64 MB (was 1 MB), absorbing realistic
+  generated lockfiles / minified bundles without falling back to
+  raw-byte output.
+
 ## [0.21.1] - 2026-04-30
 
 ### Fixed

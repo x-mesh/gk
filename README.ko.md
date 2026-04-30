@@ -25,6 +25,7 @@
 - **유연한 pull 전략** — `gk pull --strategy rebase|merge|ff-only|auto`로 호출 단위로 전략을 변경합니다. `@{u}` 추적 ref를 우선 사용하고, fast-forward 가능 시 자동으로 `merge --ff-only`로 전환합니다.
 - **Conventional Commits 인식 훅** — `gk hooks install`은 `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, `pre-commit` → `gk guard check`를 연결합니다.
 - **한눈에 보는 상태** — `gk doctor`는 git 버전, pager, fzf, `$EDITOR`, 설정 유효성, 훅 상태, gitleaks 설치 여부, gk 백업 ref 누적에 대해 PASS/WARN/FAIL을 보고하며 복사-붙여넣기 가능한 수정 명령을 제공합니다.
+- **입문자를 위한 Easy Mode** — `--easy` (또는 `output.easy: true` / `GK_EASY=1`)로 git 용어를 한국어로 번역해 원어와 함께 표기하고(`commit` → `변경사항 저장 (commit)`), 상태 섹션에 이모지를 붙이고, 컨텍스트에 맞는 다음-단계 힌트를 끝줄에 덧붙입니다. 워킹 트리가 깨끗할 때도 ↑/↓ 상태에 따라 `📤 서버에 올릴 커밋 N개 → gk push` 같은 안내가 떠 다음에 무엇을 해야 할지 명확합니다. `gk guide`는 Easy Mode와 무관하게 git 워크플로우를 단계별로 안내합니다.
 - **실행 가능한 에러** — 대부분의 에러에는 구체적인 다음 명령이 담긴 `hint:` 두 번째 줄이 출력됩니다.
 
 ## 설치
@@ -357,10 +358,21 @@ gk changelog --format json
 |---|---|
 | `-d, --debug` | 진단 로그(서브프로세스 호출, 재시도 사유, 타이밍)를 stderr로 출력. `GK_DEBUG=1` 환경변수도 인식. 각 줄은 시작 이후 경과 시간 prefix가 붙어 어느 단계에서 시간이 걸리는지 한눈에 파악 |
 | `--dry-run` | 실행 없이 동작 출력 |
+| `--easy` | 이번 호출만 Easy Mode 활성화 (한국어 용어 번역 + 이모지 + 힌트). `GK_EASY=1`과 동등 |
+| `--no-easy` | 설정/환경변수가 켜져 있어도 이번 호출만 Easy Mode 비활성화 |
 | `--json` | 지원되는 경우 JSON 출력 |
 | `--no-color` | 컬러 출력 비활성화 |
 | `--repo <path>` | git 저장소 경로 (기본값: 현재 디렉토리) |
 | `--verbose` | 상세 출력 |
+
+### Easy Mode 환경 변수
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `GK_EASY` | unset | `1` / `true`로 Easy Mode 전역 활성화, `0` / `false`로 강제 비활성화 |
+| `GK_LANG` | `ko` | 메시지 카탈로그 언어 (BCP-47 short code; `en`/`ko` 제공) |
+| `GK_EMOJI` | `true` | 상태 섹션에 이모지 붙이기 (`📦` / `✏️` / `💡` 등) |
+| `GK_HINTS` | `verbose` | 힌트 상세도: `verbose` / `minimal` / `off` |
 
 ## 설정
 

@@ -110,6 +110,31 @@ worktree:
   # clones share the same basename (e.g. work vs personal).
   # project: work-gk
 
+# output controls Easy Mode — beginner-friendly translation of git
+# terminology, emoji-prefixed status sections, and contextual next-step
+# hints in the configured language. Disabled by default; flip `easy` to
+# true (or pass `--easy` / `GK_EASY=1`) to opt in.
+output:
+  # Master switch. true → translate terms, emit emoji + hints.
+  # CLI overrides: --easy / --no-easy. Env var: GK_EASY.
+  easy: false
+
+  # Message-catalog language. Two catalogs ship: en, ko. Unknown
+  # values fall back to English. Env var: GK_LANG.
+  lang: ko
+
+  # Prefix status sections with emoji (📦 ✏️ 🆕 💥 💡 …). Independent
+  # of `easy` — set false to keep section headers plain even with
+  # Easy Mode on. Env var: GK_EMOJI.
+  emoji: true
+
+  # Contextual next-step hint verbosity:
+  #   verbose → full sentence with command (default)
+  #   minimal → command only ("gk push")
+  #   off     → suppress hints entirely
+  # Env var: GK_HINTS.
+  hints: verbose
+
 # ai drives `gk ai commit` and future `gk ai *` subcommands. Provider
 # binaries are subprocess-called; gk never talks to LLM APIs directly.
 ai:

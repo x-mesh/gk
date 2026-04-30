@@ -228,6 +228,84 @@ ui:
 
 ---
 
+### `output.easy`
+
+| | |
+|-|-|
+| Type | boolean |
+| Default | `false` |
+| Env var | `GK_EASY` (also auto-bound `GK_OUTPUT_EASY`) |
+| CLI flag | `--easy` / `--no-easy` |
+
+Master switch for Easy Mode. When enabled, gk translates a curated set of git terminology to the configured language wrapped with the English original (`commit` → `변경사항 저장 (commit)`), prefixes status sections with emoji, and appends contextual next-step hints. `--no-easy` always wins, then `--easy`, then config / env.
+
+```yaml
+output:
+  easy: true
+```
+
+---
+
+### `output.lang`
+
+| | |
+|-|-|
+| Type | string (BCP-47) |
+| Default | `ko` |
+| Env var | `GK_LANG` (also auto-bound `GK_OUTPUT_LANG`) |
+| CLI flag | none |
+
+Message-catalog language. Two catalogs ship: `en`, `ko`. Unknown values fall back to English with a one-line warning on stderr. Distinct from `ai.lang`, which controls AI-generated commit messages.
+
+```yaml
+output:
+  lang: ko
+```
+
+---
+
+### `output.emoji`
+
+| | |
+|-|-|
+| Type | boolean |
+| Default | `true` |
+| Env var | `GK_EMOJI` (also auto-bound `GK_OUTPUT_EMOJI`) |
+| CLI flag | none |
+
+Whether to prefix status sections, hints, and error labels with emoji (`📦` / `✏️` / `🆕` / `💥` / `💡` / `❌`). Independent of `output.easy` — set `false` to keep section headers plain even with Easy Mode on (e.g. for terminals with poor emoji rendering).
+
+```yaml
+output:
+  emoji: false
+```
+
+---
+
+### `output.hints`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `verbose` |
+| Env var | `GK_HINTS` (also auto-bound `GK_OUTPUT_HINTS`) |
+| CLI flag | none |
+
+Verbosity of contextual next-step hints (e.g. the trailing `💡 다음 단계: …` line on `gk status`).
+
+| Value | Behavior |
+|-------|---------|
+| `verbose` | Full sentence with command — `💡 다음 단계: 변경사항을 저장하려면 → gk commit` |
+| `minimal` | Command only — `gk commit` |
+| `off` | Suppress hints entirely |
+
+```yaml
+output:
+  hints: minimal
+```
+
+---
+
 ### `branch.stale_days`
 
 | | |

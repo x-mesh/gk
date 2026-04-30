@@ -75,7 +75,7 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 		client := git.NewClient(runner)
 		unmerged := listUnmergedFiles(ctx, runner)
 		if len(unmerged) > 0 {
-			printContinueUnresolved(os.Stderr, sub, unmerged, client, ctx)
+			printContinueUnresolved(os.Stderr, sub, unmerged, client, ctx, runner.Dir)
 			return fmt.Errorf("%s --continue blocked: %d file%s still unresolved",
 				sub, len(unmerged), plural(len(unmerged)))
 		}
@@ -99,7 +99,7 @@ func listUnmergedFiles(ctx context.Context, runner git.Runner) []string {
 	return strings.Split(string(out), "\n")
 }
 
-func printContinueUnresolved(w *os.File, sub string, files []string, client *git.Client, ctx context.Context) {
+func printContinueUnresolved(w *os.File, sub string, files []string, client *git.Client, ctx context.Context, repoDir string) {
 	yellow := color.YellowString
 	red := color.RedString
 	bold := color.New(color.Bold).SprintFunc()
@@ -112,6 +112,10 @@ func printContinueUnresolved(w *os.File, sub string, files []string, client *git
 	for _, f := range files {
 		fmt.Fprintf(w, "    %s\n", red(f))
 	}
+
+	// Inline first conflict region for the first file — same treatment
+	// as `gk pull`'s initial banner so the surface stays consistent.
+	renderInlineConflicts(w, repoDir, files)
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  resolve:")

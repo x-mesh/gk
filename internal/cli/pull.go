@@ -609,9 +609,16 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s cannot pull: a %s is already in progress\n", yellow("✗"), bold(label))
 
+	repoDir := ""
+	if er, ok := runner.(*git.ExecRunner); ok {
+		repoDir = er.Dir
+	}
+
+	var info *git.RebaseConflictInfo
 	switch kind {
 	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
-		if info, _ := client.RebaseConflictStatus(ctx); info != nil {
+		info, _ = client.RebaseConflictStatus(ctx)
+		if info != nil {
 			if info.StoppedSHA != "" {
 				short := info.StoppedSHA
 				if len(short) > 7 {
@@ -628,11 +635,17 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 			}
 			renderConflictFileLists(w, info, red, green)
 		} else {
-			renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+			info = probeUnmergedFiles(ctx, runner)
+			renderConflictFileLists(w, info, red, green)
 		}
 	default:
 		// Merge / cherry-pick / revert — only the file lists matter.
-		renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+		info = probeUnmergedFiles(ctx, runner)
+		renderConflictFileLists(w, info, red, green)
+	}
+
+	if info != nil && len(info.Unmerged) > 0 {
+		renderInlineConflicts(w, repoDir, info.Unmerged)
 	}
 
 	fmt.Fprintln(w)
@@ -668,12 +681,19 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
+	repoDir := ""
+	if er, ok := runner.(*git.ExecRunner); ok {
+		repoDir = er.Dir
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s %s paused on conflict\n", yellow("✗"), mode)
 
+	var info *git.RebaseConflictInfo
 	// rebase-specific context: which commit stopped us, position in plan.
 	if mode == "rebase" {
-		if info, _ := client.RebaseConflictStatus(ctx); info != nil {
+		info, _ = client.RebaseConflictStatus(ctx)
+		if info != nil {
 			if info.StoppedSHA != "" {
 				short := info.StoppedSHA
 				if len(short) > 7 {
@@ -692,13 +712,19 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 			}
 			renderConflictFileLists(w, info, red, green)
 		} else {
-			// Fall back to a plain unmerged-files probe when no rebase-merge
-			// metadata is visible (legacy rebase-apply, weird filesystem).
-			renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+			info = probeUnmergedFiles(ctx, runner)
+			renderConflictFileLists(w, info, red, green)
 		}
 	} else {
 		// Merge: no rebase metadata; just probe the working tree.
-		renderConflictFileLists(w, probeUnmergedFiles(ctx, runner), red, green)
+		info = probeUnmergedFiles(ctx, runner)
+		renderConflictFileLists(w, info, red, green)
+	}
+
+	// Inline preview of the first conflict region — usually enough for
+	// the user to decide "trivial rename, fix in 30s" vs "open editor".
+	if info != nil && len(info.Unmerged) > 0 {
+		renderInlineConflicts(w, repoDir, info.Unmerged)
 	}
 
 	fmt.Fprintln(w)

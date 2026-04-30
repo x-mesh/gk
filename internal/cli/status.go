@@ -1018,6 +1018,93 @@ func renderBaseDivergence(cmd *cobra.Command, runner *git.ExecRunner, client *gi
 	return line
 }
 
+// renderLocalBaseStaleSubline returns a one-line annotation surfacing
+// how the *local* base ref relates to its remote counterpart. It pairs
+// with renderBaseDivergence above: that line compares HEAD to local
+// <base> (matching gk sync semantics), this one tells the user whether
+// that local <base> is itself fresh.
+//
+// Returns "" when:
+//   - the local base ref doesn't exist (branchDivergence already failed),
+//   - <remote>/<base> is uncached (offline/fork without a tracking ref),
+//   - local base equals <remote>/<base> exactly.
+//
+// Single rev-list call; cheap.
+func renderLocalBaseStaleSubline(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, base string) string {
+	if base == "" {
+		return ""
+	}
+	remote := "origin"
+	if cfg != nil && cfg.Remote != "" {
+		remote = cfg.Remote
+	}
+	upstream := remote + "/" + base
+	if !git.RefExists(ctx, runner, "refs/heads/"+base) {
+		return ""
+	}
+	if !git.RefExists(ctx, runner, "refs/remotes/"+upstream) {
+		return ""
+	}
+	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "refs/heads/"+base+"..."+upstream)
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return ""
+	}
+	aheadLocal, _ := strconv.Atoi(fields[0])
+	behindLocal, _ := strconv.Atoi(fields[1])
+	if aheadLocal == 0 && behindLocal == 0 {
+		return ""
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	cyan := color.CyanString
+	gauge := localBaseGauge(aheadLocal, behindLocal)
+	hint := localBaseStaleHint(aheadLocal, behindLocal, base)
+	return fmt.Sprintf("  %s local %s %s vs %s  %s",
+		faint("↳"),
+		cyan(base),
+		gauge,
+		cyan(upstream),
+		faint(hint),
+	)
+}
+
+// localBaseGauge formats "↑N ↓M" style markers for the local-base
+// sub-line. Kept separate from renderDivergenceGauge because that one
+// produces the bar visualization which would crowd the sub-line.
+func localBaseGauge(ahead, behind int) string {
+	switch {
+	case ahead > 0 && behind > 0:
+		return fmt.Sprintf("↑%d ↓%d", ahead, behind)
+	case ahead > 0:
+		return fmt.Sprintf("↑%d", ahead)
+	case behind > 0:
+		return fmt.Sprintf("↓%d", behind)
+	default:
+		return ""
+	}
+}
+
+// localBaseStaleHint chooses the right remediation phrase. The intent is
+// to nudge the user toward the simplest fix that works for their state:
+//
+//   - behind-only      → checkout + gk pull (or gk sync --fetch)
+//   - ahead-only       → uncommonly the user has unpushed work on base;
+//     suggest pushing rather than discarding
+//   - diverged         → mention both directions; user must decide
+func localBaseStaleHint(ahead, behind int, base string) string {
+	switch {
+	case ahead == 0 && behind > 0:
+		return "→ refresh: git checkout " + base + " && gk pull  (or `gk sync --fetch`)"
+	case ahead > 0 && behind == 0:
+		return "→ unpushed: git checkout " + base + " && git push"
+	default:
+		return "→ diverged: git checkout " + base + " && gk pull  (resolve before sync)"
+	}
+}
+
 // baseDivergenceHint returns a short action suggestion based on how the
 // current branch sits relative to its base, or "" when the gauge alone is
 // enough. Logic:
@@ -1536,6 +1623,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		dirty := committableCount(allGrouped) > 0
 		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty, baseRes); baseLine != "" {
 			fmt.Fprintln(w, baseLine)
+			// Surface "your local <base> is stale vs origin/<base>" only
+			// when we actually rendered the base line above — keeps the
+			// sub-line semantically attached to its parent.
+			if subline := renderLocalBaseStaleSubline(cmd.Context(), runner, cfg, baseRes.Resolved); subline != "" {
+				fmt.Fprintln(w, subline)
+			}
 		}
 	}
 

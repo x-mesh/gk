@@ -31,8 +31,9 @@ func buildSyncCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.B
 	}
 	sync.Flags().String("base", "", "base branch")
 	sync.Flags().String("strategy", "", "integration strategy")
-	sync.Flags().Bool("fetch-only", false, "fetch only")
-	sync.Flags().Bool("no-fetch", false, "skip fetch")
+	sync.Flags().Bool("fetch", false, "fetch + ff local base before integrating")
+	sync.Flags().Bool("fetch-only", false, "fetch + ff local base, skip integration")
+	sync.Flags().Bool("no-fetch", false, "deprecated no-op")
 	sync.Flags().Bool("autostash", false, "autostash")
 	sync.Flags().Bool("upstream-only", false, "legacy v0.6 behaviour")
 	testRoot.AddCommand(sync)
@@ -148,7 +149,7 @@ func TestSyncCmd_MutexFlags(t *testing.T) {
 	repo.WriteFile("a.txt", "hi\n")
 	repo.Commit("init")
 
-	root, _ := buildSyncCmd(repo.Dir, "--fetch-only", "--no-fetch")
+	root, _ := buildSyncCmd(repo.Dir, "--fetch-only", "--fetch")
 	err := root.Execute()
 	if err == nil {
 		t.Fatal("expected mutex error")
@@ -162,6 +163,20 @@ func TestSyncCmd_MutexFlags(t *testing.T) {
 // Scenario 1 — ancestor → fast-forward onto base
 // ---------------------------------------------------------------------------
 
+// advanceLocalBase moves downstream's local main forward to match the
+// latest upstream commit, simulating the "user did `gk pull` on main
+// before running `gk sync`" workflow that the new local-base-only sync
+// expects. Tests that want to exercise ff/rebase against an advanced
+// base call this OR pass `--fetch` to let sync do it.
+func advanceLocalBase(t *testing.T, downstream *testutil.Repo) {
+	t.Helper()
+	current := strings.TrimSpace(downstream.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	downstream.RunGit("fetch", "origin")
+	downstream.Checkout("main")
+	downstream.RunGit("merge", "--ff-only", "origin/main")
+	downstream.Checkout(current)
+}
+
 func TestSyncCmd_AncestorFastForwards(t *testing.T) {
 	upstream, downstream := setupFeatureFromMain(t)
 
@@ -169,10 +184,11 @@ func TestSyncCmd_AncestorFastForwards(t *testing.T) {
 	upstream.WriteFile("b.txt", "world\n")
 	upstream.Commit("feat: b")
 
-	// feat/x has no commits; it's at the original main SHA, which is
-	// strictly an ancestor of origin/main after the next fetch. The new
-	// sync should auto-fetch and FF.
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	// New sync semantics: sync integrates from *local* main, so we must
+	// either pre-advance local main ourselves or pass --fetch. Use
+	// --fetch here — the test's intent is "given the latest upstream,
+	// catch the feature branch up to it".
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--fetch")
 	if err := root.Execute(); err != nil {
 		t.Fatalf("ancestor sync failed: %v\n%s", err, buf.String())
 	}
@@ -198,7 +214,7 @@ func TestSyncCmd_DivergedRebaseSuccess(t *testing.T) {
 	downstream.WriteFile("c.txt", "feat-x\n")
 	downstream.Commit("feat: c")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--fetch")
 	if err := root.Execute(); err != nil {
 		t.Fatalf("rebase sync failed: %v\n%s", err, buf.String())
 	}
@@ -223,7 +239,7 @@ func TestSyncCmd_DivergedRebaseConflict(t *testing.T) {
 	downstream.WriteFile("a.txt", "downstream change\n")
 	downstream.Commit("feat: downstream a")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--fetch")
 	err := root.Execute()
 	if err == nil {
 		t.Fatalf("expected conflict error, got success.\n%s", buf.String())
@@ -251,7 +267,7 @@ func TestSyncCmd_DivergedStrategyMerge(t *testing.T) {
 	downstream.WriteFile("c.txt", "feat-x\n")
 	downstream.Commit("feat: c")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "merge")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "merge", "--fetch")
 	if err := root.Execute(); err != nil {
 		t.Fatalf("merge sync failed: %v\n%s", err, buf.String())
 	}
@@ -277,7 +293,7 @@ func TestSyncCmd_FFOnlyDivergedRejection(t *testing.T) {
 	downstream.WriteFile("c.txt", "feat-x\n")
 	downstream.Commit("feat: c")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "ff-only")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--strategy", "ff-only", "--fetch")
 	err := root.Execute()
 	if err == nil {
 		t.Fatalf("expected ff-only rejection, got success.\n%s", buf.String())
@@ -302,7 +318,7 @@ func TestSyncCmd_DirtyAutostash(t *testing.T) {
 	// Dirty tree on a file the integration won't touch.
 	downstream.WriteFile("dirty.txt", "wip\n")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--autostash")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--autostash", "--fetch")
 	if err := root.Execute(); err != nil {
 		t.Fatalf("autostash sync failed: %v\n%s", err, buf.String())
 	}
@@ -368,28 +384,90 @@ func TestSyncLegacy_DeprecationSuppressed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 8 — --no-fetch integrates from already-fetched ref
+// Scenario 8 — default no-fetch: sync integrates only from local base,
+// never reaches the network even when the remote URL is broken
 // ---------------------------------------------------------------------------
 
-func TestSyncCmd_NoFetch(t *testing.T) {
+func TestSyncCmd_DefaultNoFetch(t *testing.T) {
 	upstream, downstream := setupFeatureFromMain(t)
 
-	// Pre-advance upstream and let downstream fetch once.
+	// Advance LOCAL main directly (simulating "user did `gk pull` on main
+	// earlier"). The remote URL is intentionally broken next so sync's
+	// default no-fetch behaviour cannot mask itself by hitting the network.
 	upstream.WriteFile("b.txt", "world\n")
 	upstream.Commit("feat: b")
-	downstream.RunGit("fetch", "origin")
-
-	// Now break the upstream URL so a fetch would fail. With --no-fetch,
-	// sync should still succeed using the already-fetched origin/main.
+	advanceLocalBase(t, downstream)
 	downstream.RunGit("remote", "set-url", "origin", "/nonexistent/path")
 
-	root, buf := buildSyncCmd(downstream.Dir, "--base", "main", "--no-fetch")
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
 	if err := root.Execute(); err != nil {
-		t.Fatalf("--no-fetch sync failed (fetch should have been skipped): %v\n%s",
+		t.Fatalf("default sync failed (must not need network): %v\n%s",
 			err, buf.String())
 	}
 	out := buf.String()
 	if !strings.Contains(out, "fast-forwarded") && !strings.Contains(out, "rebased") {
 		t.Errorf("expected an integration verb in output, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 9 — stale local base: sync still works against local base, and
+// the stale-base hint surfaces the divergence so the user can decide.
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_StaleBaseHintPrinted(t *testing.T) {
+	upstream, downstream := setupFeatureFromMain(t)
+
+	// upstream advances; downstream fetches but does NOT advance local main.
+	upstream.WriteFile("b.txt", "world\n")
+	upstream.Commit("feat: b")
+	downstream.RunGit("fetch", "origin")
+
+	// feat/x advances on its own.
+	downstream.WriteFile("c.txt", "feat-x\n")
+	downstream.Commit("feat: c")
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "differs from") || !strings.Contains(out, "origin/main") {
+		t.Errorf("expected stale-base hint in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "gk sync --fetch") {
+		t.Errorf("expected --fetch hint in output, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 10 — local <base> doesn't exist: clear error + --fetch hint
+// ---------------------------------------------------------------------------
+
+func TestSyncCmd_LocalBaseMissing(t *testing.T) {
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hello\n")
+	upstream.Commit("init")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	// Stay on the *initial* branch — never check out main, so refs/heads/main
+	// doesn't exist locally even though origin/main does.
+	current := strings.TrimSpace(downstream.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	if current == "main" {
+		downstream.CreateBranch("feat/x")
+		downstream.Checkout("feat/x")
+		downstream.RunGit("branch", "-D", "main")
+	}
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("expected error for missing local base, got success.\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "local main does not exist") {
+		t.Errorf("expected 'local main does not exist' in error, got: %v", err)
 	}
 }

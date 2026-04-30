@@ -207,7 +207,10 @@ func buildResolveOptions(hunk resolve.ConflictHunk, ai *resolve.HunkResolution) 
 				Display: fmt.Sprintf("merged — AI combined (%d lines): %s",
 					len(ai.ResolvedLines), ai.Rationale)},
 		}
-		rec := strings.ToLower(string(ai.Strategy))
+		// Trim before lowering — an AI response with leading or trailing
+		// whitespace ("ours ", " theirs") would otherwise silently miss
+		// the equality check and leave every option without a default.
+		rec := strings.TrimSpace(strings.ToLower(string(ai.Strategy)))
 		for i := range opts {
 			if opts[i].Value == rec {
 				opts[i].IsDefault = true

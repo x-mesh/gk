@@ -221,6 +221,23 @@ func TestBuildResolveOptions_WithAI(t *testing.T) {
 	}
 }
 
+func TestBuildResolveOptions_AIStrategyTrimmed(t *testing.T) {
+	hunk := resolve.ConflictHunk{
+		OursLabel:   "HEAD",
+		TheirsLabel: "feat",
+		Ours:        []string{"a"},
+		Theirs:      []string{"b"},
+	}
+	cases := []resolve.Strategy{"theirs", " theirs", "theirs ", "  Theirs ", "THEIRS"}
+	for _, s := range cases {
+		ai := &resolve.HunkResolution{Strategy: s, ResolvedLines: []string{"b"}, Rationale: "r"}
+		opts := buildResolveOptions(hunk, ai)
+		if !opts[1].IsDefault {
+			t.Errorf("strategy %q: expected theirs to be default, none/wrong set", s)
+		}
+	}
+}
+
 func TestPickLabel(t *testing.T) {
 	cases := []struct {
 		in, fallback, want string

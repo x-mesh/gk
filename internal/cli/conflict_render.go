@@ -5,11 +5,25 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/git"
 )
+
+// truncateLabelRunes shortens s to at most max runes, appending an
+// ellipsis when truncation actually happens. Operates on a rune slice
+// so it never splits a multibyte codepoint — important for Korean,
+// Japanese, Chinese, and emoji that frequently appear in branch names
+// and commit subjects.
+func truncateLabelRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
 
 // renderInlineConflicts shows the first conflict region of the first
 // unmerged file in detail (with line numbers + side markers), then
@@ -120,11 +134,18 @@ func renderConflictSide(
 		displayLabel = fallbackLabel
 	}
 	// Truncate very long labels (incoming commit subjects can run on)
-	// to keep the header on one line.
-	if len(displayLabel) > 60 {
-		displayLabel = displayLabel[:57] + "…"
-	}
-	headerRule := strings.Repeat("─", maxInt(0, inlineDividerWidth-len(displayLabel)-len(descriptor)-6))
+	// to keep the header on one line. Use a rune slice so multibyte
+	// runes (CJK / emoji) are not chopped mid-codepoint, which would
+	// produce invalid UTF-8 in the rendered terminal output.
+	displayLabel = truncateLabelRunes(displayLabel, 60)
+
+	// Header rule width is visual: count runes, not bytes, so a
+	// "main" label (4 runes) and a "메인 브랜치" label (7 runes) get
+	// equal-feeling rules. Byte length would shrink the rule far too
+	// much for any non-ASCII label.
+	labelRunes := utf8.RuneCountInString(displayLabel)
+	descriptorRunes := utf8.RuneCountInString(descriptor)
+	headerRule := strings.Repeat("─", maxInt(0, inlineDividerWidth-labelRunes-descriptorRunes-6))
 	fmt.Fprintf(w, "    %s %s %s %s\n",
 		sideColor(bar),
 		bold(displayLabel),

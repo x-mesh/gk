@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-04-30
+
+### Removed
+
+- **Korean subcommand aliases** (`gk 상태` / `gk 저장` / `gk 갈래` / …).
+  Registration ran inside `PersistentPreRunE`, but cobra resolves the
+  subcommand name *before* PreRun fires, so the aliases never reached
+  the dispatch table — they appeared in docs but always failed with
+  `unknown command "상태"`. Dropping the dead code (`internal/easy/
+  alias.go` + tests + the `easy.RegisterAliases` call). Easy Mode
+  itself is unaffected; only the never-functional alias surface is
+  gone.
+
+### Added
+
+- **More Korean Easy Mode hints in `gk status`** — when the working
+  tree is otherwise clean, the status footer now surfaces a contextual
+  next-step hint based on upstream divergence: `✨ 작업 폴더가
+  깨끗합니다` (in sync), `📤 서버에 올릴 커밋이 N개 있습니다 → gk
+  push` (ahead), `📥 서버에 새 커밋이 N개 있습니다 → gk pull`
+  (behind), `🔀 양쪽에 새 커밋 있음 → gk sync` (diverged). Driven
+  off the same `output.hints` knob (`verbose` / `minimal` / `off`).
+
 ## [0.23.0] - 2026-04-30
 
 ### Added

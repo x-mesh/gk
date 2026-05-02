@@ -154,19 +154,32 @@ type lineFileEntry struct {
 // diffHeaderRE matches "diff --git a/path b/path".
 var diffHeaderRE = regexp.MustCompile(`^diff --git a/(.+?) b/`)
 
-// fileHeaderRE matches "### path" (summariseForSecretScan format)
-// or "--- path (status)" (concatFileDiffs format).
-var fileHeaderRE = regexp.MustCompile(`^(?:### |--- )(.+?)(?:\s*\(.*\))?$`)
+// concatFileHeaderRE matches "--- path (status)" emitted by concatFileDiffs.
+// We do NOT match a bare "### path" here — that previously caused
+// markdown H3 headers in real source/doc content to be misread as
+// file boundaries (e.g. "### 첫 호출" surfacing as a phantom filename).
+// summariseForSecretScan / scanDiffAdditions now emit secrets.PayloadFileHeader
+// instead, parsed below.
+var concatFileHeaderRE = regexp.MustCompile(`^--- (.+?)(?:\s*\(.*\))?$`)
 
 // buildLineToFileMap은 payload를 파싱하여 lineFileMap을 생성한다.
-// "### path" (secret scan payload) 또는 "diff --git a/X b/X" (unified diff) 형식을 인식한다.
+// 인식하는 형식:
+//   - secrets.PayloadFileHeader (">>> gk-file <path> <<<") — secret scan payload
+//   - "diff --git a/X b/X" — unified diff
+//   - "--- X (status)" — concatFileDiffs
 func buildLineToFileMap(payload string) lineFileMap {
 	var m lineFileMap
 	for i, line := range strings.Split(payload, "\n") {
 		lineNum := i + 1 // 1-based
-		if groups := diffHeaderRE.FindStringSubmatch(line); len(groups) > 1 {
+		switch {
+		case secrets.PayloadFileHeaderRE.MatchString(line):
+			groups := secrets.PayloadFileHeaderRE.FindStringSubmatch(line)
 			m.entries = append(m.entries, lineFileEntry{startLine: lineNum, file: groups[1]})
-		} else if groups := fileHeaderRE.FindStringSubmatch(line); len(groups) > 1 {
+		case diffHeaderRE.MatchString(line):
+			groups := diffHeaderRE.FindStringSubmatch(line)
+			m.entries = append(m.entries, lineFileEntry{startLine: lineNum, file: groups[1]})
+		case concatFileHeaderRE.MatchString(line):
+			groups := concatFileHeaderRE.FindStringSubmatch(line)
 			m.entries = append(m.entries, lineFileEntry{startLine: lineNum, file: groups[1]})
 		}
 	}
@@ -189,9 +202,9 @@ func (m *lineFileMap) fileAt(line int) string {
 // relLine converts a 1-based blob line number into the equivalent
 // 1-based line number within the file that owns it.
 //
-// summariseForSecretScan emits "### <path>" as a header, then the file
-// content starts on the *next* blob line. So if the header sits at blob
-// line H, the file's line 1 lives at blob line H+1, line 2 at H+2, etc.
+// summariseForSecretScan emits secrets.PayloadFileHeader as a header, then
+// the file content starts on the *next* blob line. So if the header sits at
+// blob line H, the file's line 1 lives at blob line H+1, line 2 at H+2, etc.
 // The mapping is therefore `blob - H` — not `blob - H + 1`, which would
 // off-by-one every reported finding (was reporting line 47 for what is
 // actually line 46 in the source file).

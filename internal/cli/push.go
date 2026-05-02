@@ -194,7 +194,7 @@ func scanDiffAdditions(diff string) []secrets.Finding {
 				currentFile = ""
 			}
 			skip = isTestFile(currentFile)
-			b.WriteString("### " + currentFile + "\n")
+			b.WriteString(secrets.PayloadFileHeader(currentFile) + "\n")
 		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "),
 			strings.HasPrefix(line, "@@ "), strings.HasPrefix(line, "index "),
 			strings.HasPrefix(line, "new file mode"), strings.HasPrefix(line, "deleted file mode"),

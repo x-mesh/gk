@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/x-mesh/gk/internal/scan"
+	"github.com/x-mesh/gk/internal/secrets"
 )
 
 type fakeGitleaks struct {
@@ -84,5 +85,29 @@ func TestScanPayloadGitleaksRealErrorPropagates(t *testing.T) {
 		SecretGateOptions{RunGitleaks: true}, gl)
 	if err == nil {
 		t.Fatal("want wrapped error")
+	}
+}
+
+// TestScanPayloadMarkdownHeadingNotMistakenForFile guards the regression
+// where a markdown H3 inside scanned content (e.g. "### 첫 호출" in a
+// README) was treated as a file boundary, surfacing as a phantom
+// filename in the rendered finding output. The payload header is now
+// sentinel-based so any `### ...` content stays content.
+func TestScanPayloadMarkdownHeadingNotMistakenForFile(t *testing.T) {
+	payload := secrets.PayloadFileHeader("README.md") + "\n" +
+		"# 가이드\n" +
+		"\n" +
+		"### 첫 호출\n" +
+		"잘못된 파싱 회귀 케이스\n" +
+		"AKIA1234567890ABCDEF\n"
+	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{}, fakeGitleaks{})
+	if err != nil {
+		t.Fatalf("ScanPayload: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("findings: %+v", got)
+	}
+	if got[0].File != "README.md" {
+		t.Errorf("file: want README.md, got %q (markdown H3 leaked in)", got[0].File)
 	}
 }

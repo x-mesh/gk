@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/x-mesh/gk/internal/secrets"
 )
 
 // PrivacyGateOptions configures the Redact function.
@@ -22,10 +24,11 @@ type PrivacyGateOptions struct {
 // RedactFinding records one redaction event.
 //
 // Line is the 1-based line number within the full payload (the blob the
-// gate scanned). When the payload is the `### <path>\n<contents>` shape
-// produced by summariseForSecretScan, File and FileLine resolve back to
-// the source file and its in-file line so error reporting can point the
-// user at the original location.
+// gate scanned). When the payload is the
+// `secrets.PayloadFileHeader(<path>)\n<contents>` shape produced by
+// summariseForSecretScan, File and FileLine resolve back to the source
+// file and its in-file line so error reporting can point the user at
+// the original location.
 type RedactFinding struct {
 	Kind        string `json:"kind"`                // "secret" | "path" | "pii"
 	Original    string `json:"original"`            // masked sample (first 4 chars + "***")
@@ -67,9 +70,12 @@ var builtinMultiLinePatterns = []namedPattern{
 	{"pem_block", regexp.MustCompile(`-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----`)},
 }
 
-// payloadFileHeaderRE matches the "### <path>" headers emitted by
-// summariseForSecretScan, used to map a blob line back to (file, fileLine).
-var payloadFileHeaderRE = regexp.MustCompile(`^### (.+)$`)
+// payloadFileHeaderRE re-exports secrets.PayloadFileHeaderRE so code in
+// this file keeps the local name without duplicating the regex source.
+// The header format intentionally avoids markdown's `### ` prefix so
+// real `### Foo` headings inside scanned content are not mistaken for
+// file boundaries.
+var payloadFileHeaderRE = secrets.PayloadFileHeaderRE
 
 // Redact scans payload for deny_paths matches and secret patterns,
 // replacing each with a numbered placeholder. Returns the redacted
@@ -120,7 +126,7 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 	// Phase 2: line-by-line processing for single-line patterns.
 	lines := strings.Split(payload, "\n")
 
-	// Track the most recent "### <path>" header so single-line findings
+	// Track the most recent payload file header so single-line findings
 	// can resolve back to the source file. fileLine counts non-header
 	// lines since the last header.
 	var currentFile string

@@ -18,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -594,7 +595,7 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 		if err != nil {
 			continue
 		}
-		fmt.Fprintf(&b, "### %s\n", f.Path)
+		fmt.Fprintf(&b, "%s\n", secrets.PayloadFileHeader(f.Path))
 		b.Write(content)
 		b.WriteString("\n")
 	}
@@ -642,7 +643,13 @@ func isTestFile(path string) bool {
 func renderFindings(out interface{ Write(p []byte) (int, error) }, findings []aicommit.SecretFinding) {
 	fmt.Fprintln(out, "commit: secret findings detected — aborting:")
 	for _, f := range findings {
-		fmt.Fprintf(out, "  [%s] %s @ %s:%d — %s\n", f.Source, f.Kind, f.File, f.Line, f.Sample)
+		loc := fmt.Sprintf("%s:%d", f.File, f.Line)
+		if f.File == "" {
+			// Header parse failed — at least tell the user the payload-line so
+			// they can grep their staged content rather than chase a phantom path.
+			loc = fmt.Sprintf("(unknown file, payload line %d)", f.Line)
+		}
+		fmt.Fprintf(out, "  [%s] %s @ %s — %s\n", f.Source, f.Kind, loc, f.Sample)
 	}
 }
 

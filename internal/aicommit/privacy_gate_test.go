@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
+
+	"github.com/x-mesh/gk/internal/secrets"
 )
 
 // ---------------------------------------------------------------------------
@@ -312,14 +314,14 @@ func TestRedactStillMatchesQuotedSecrets(t *testing.T) {
 }
 
 // TestRedactFindingFileMapping verifies that findings inside a payload
-// using the "### <path>" header convention resolve back to the source
-// file and its in-file line number, so error reports can point at the
-// real location rather than a payload-relative offset.
+// using the secrets.PayloadFileHeader convention resolve back to the
+// source file and its in-file line number, so error reports can point
+// at the real location rather than a payload-relative offset.
 func TestRedactFindingFileMapping(t *testing.T) {
-	payload := "### src/config.rs\n" +
+	payload := secrets.PayloadFileHeader("src/config.rs") + "\n" +
 		"const FOO: &str = \"hello\";\n" +
 		"secret = \"sk_live_abcdefghij1234567890\"\n" +
-		"### tools/cli.py\n" +
+		secrets.PayloadFileHeader("tools/cli.py") + "\n" +
 		"api_key = \"another_secret_value_1234\"\n"
 	_, findings, err := Redact(payload, PrivacyGateOptions{MaxSecrets: 10})
 	if err != nil {

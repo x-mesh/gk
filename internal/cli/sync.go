@@ -178,8 +178,10 @@ func runSyncCore(cmd *cobra.Command) error {
 	// from the remote we leave it alone and let the stale-base hint
 	// surface that.
 	if fetchFlag || fetchOnly {
-		fmt.Fprintf(os.Stderr, "fetching %s/%s...\n", remote, base)
-		if err := client.Fetch(ctx, remote, base, false); err != nil {
+		stopFetch := ui.StartBubbleSpinner(fmt.Sprintf("fetching %s/%s", remote, base))
+		err := client.Fetch(ctx, remote, base, false)
+		stopFetch()
+		if err != nil {
 			return fmt.Errorf("fetch failed: %w", err)
 		}
 		if pre, post, err := fastForwardLocalBase(ctx, runner, base, remote); err == nil && pre != post {

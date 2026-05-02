@@ -162,7 +162,6 @@ func runPullCore(cmd *cobra.Command) error {
 		fetchBranch = base
 	}
 	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s tracking=%v", upstream, fetchRemote, fetchBranch, hasTracking)
-	fmt.Fprintf(os.Stderr, "fetching %s...\n", upstream)
 
 	// 4) dirty check
 	dirty, err := client.IsDirty(ctx)
@@ -216,7 +215,9 @@ func runPullCore(cmd *cobra.Command) error {
 		}
 		fetchErr = ui.RunCommandStreamTUI(ctx, "fetching "+upstream, "git", args...)
 	} else {
+		stopFetch := ui.StartBubbleSpinner(fmt.Sprintf("fetching %s", upstream))
 		fetchErr = client.Fetch(ctx, fetchRemote, fetchBranch, false)
+		stopFetch()
 	}
 	if fetchErr != nil {
 		if stashed {

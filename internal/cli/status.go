@@ -710,7 +710,7 @@ func renderStatusLegend(w io.Writer, vis []string) {
 	}
 	if enabled("staleness") {
 		sec("--vis staleness")
-		fmt.Fprintln(w, "  · last commit Nd  — only shown when HEAD is ≥1 day old")
+		fmt.Fprintln(w, "  · last commit Nd <sha>  — only shown when HEAD is ≥1 day old (sha = HEAD's short SHA)")
 		fmt.Fprintln(w, "  (Nd old)          — per-untracked mtime, only shown when ≥1 day old")
 	}
 	if enabled("heatmap") {
@@ -1521,8 +1521,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		return visibleWidth(line)+visibleWidth(extra) > ttyW
 	}
 	if statusVisEnabled("staleness") {
-		if ago := lastCommitAgo(cmd, runner); ago != "" {
-			extra := "  " + faint("· last commit "+ago)
+		if ago, sha := lastCommitAgo(cmd, runner); ago != "" {
+			text := "· last commit " + ago
+			if sha != "" {
+				text += " " + sha
+			}
+			extra := "  " + faint(text)
 			if !wouldOverflow(extra) {
 				line += extra
 			}
@@ -2834,29 +2838,34 @@ func normalizeXYStyle(s string) string {
 }
 
 // lastCommitAgo returns a short relative age ("11d", "4h") of HEAD's
-// committer date, or empty string when there is no HEAD (fresh repo), git
-// fails, or the commit is under 1 day old. Active branches commit multiple
-// times per day so annotating "last commit 2h" on every `gk status` call
-// is noise — the signal only earns attention once the branch starts going
-// stale, so we suppress it for <24h ages.
-func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) string {
-	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct", "HEAD")
+// committer date and its abbreviated SHA, or empty strings when there is
+// no HEAD (fresh repo), git fails, or the commit is under 1 day old.
+// Active branches commit multiple times per day so annotating "last
+// commit 2h" on every `gk status` call is noise — the signal only earns
+// attention once the branch starts going stale, so we suppress it for
+// <24h ages.
+func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) (ago, sha string) {
+	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct %H", "HEAD")
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	ts := strings.TrimSpace(string(out))
-	if ts == "" {
-		return ""
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return "", ""
+	}
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return "", ""
 	}
 	var secs int64
-	if _, err := fmt.Sscanf(ts, "%d", &secs); err != nil {
-		return ""
+	if _, err := fmt.Sscanf(parts[0], "%d", &secs); err != nil {
+		return "", ""
 	}
 	age := time.Since(time.Unix(secs, 0))
 	if age < 24*time.Hour {
-		return ""
+		return "", ""
 	}
-	return formatAge(age)
+	return formatAge(age), shortSHA(parts[1])
 }
 
 // untrackedAge returns a short relative age of an untracked file's mtime,

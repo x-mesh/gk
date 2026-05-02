@@ -124,7 +124,9 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("pushing %s → %s", branch, remote))
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
+	stop()
 	if err != nil {
 		fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
 		return err

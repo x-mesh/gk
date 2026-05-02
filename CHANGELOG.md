@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-05-03
+
+### Fixed
+
+- **`gk commit` secret-gate misreports markdown headings as filenames**.
+  When the staged payload included a markdown `### Foo` line (e.g. a
+  `### 첫 호출` heading inside a README), the file-boundary parser
+  treated it as a new file marker, so finding output rendered as
+  `[builtin] generic-secret @ 첫 호출:21 — toke***` instead of
+  pointing at the actual source path. The aggregated payload now
+  uses a `>>> gk-file <path> <<<` sentinel that cannot collide with
+  H3 headings (`internal/secrets.PayloadFileHeader`), and
+  `renderFindings` falls back to `(unknown file, payload line N)` if
+  the header parser fails. Same sentinel is shared by `gk push`'s
+  `scanDiffAdditions` for consistent reporting.
+
 ## [0.24.0] - 2026-04-30
 
 ### Removed

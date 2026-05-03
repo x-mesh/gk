@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-05-04
+
+### Added
+
+- **`gk status -v` divergence diagram** — when the current branch is
+  ahead/behind its upstream, the rich-mode output now includes a
+  small ASCII branch graph showing both rays meeting at the merge
+  base. Up to six commits per side are drawn explicitly; counts
+  beyond that collapse to a `…` ellipsis. The block is omitted when
+  there is no upstream or both counts are zero (`↑0 ↓0` would render
+  as two empty rays).
+
+  ```
+  ┌─ divergence ────────────────────────────┐
+  │    o─o─o   ↑3 you                       │
+  │   /                                     │
+  │ ──●  merge-base 86d3aac                 │
+  │   \                                     │
+  │    o─o     ↓2 origin                    │
+  └─────────────────────────────────────────┘
+  ```
+
+- **`gk status -v` 7-day activity heatmap** — a sparkline + day-of-
+  week strip summarising commits over the last seven local days,
+  scaled to the busiest day's count. Today is rightmost so the eye
+  lands on "now" first; an empty range renders as flat `▁` cells
+  with `0 commits`. Fetch-free (`git log` only) so the block adds
+  no network cost.
+
+  ```
+  ┌─ activity 7d ───────────────────────────┐
+  │ ▂ ▅ █ ▄ ▁ ▂ ▂   23 commits              │
+  │ T W T F S S M                           │
+  └─────────────────────────────────────────┘
+  ```
+
+### Internal
+
+- New file `internal/cli/status_richblocks.go` with
+  `renderDivergenceDiagram` (uses `git merge-base HEAD <upstream>`
+  for the SHA label) and `renderActivityHeatmap` (uses `git log
+  --since=7.days.ago --pretty=format:%cd --date=unix`).
+
 ## [0.27.0] - 2026-05-04
 
 ### Added

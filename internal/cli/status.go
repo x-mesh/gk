@@ -1811,7 +1811,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	}
 
 	if density == "rich" {
-		flushRichStatus(realW, richBuf.String(), allGrouped, st)
+		flushRichStatus(cmd.Context(), realW, richBuf.String(), allGrouped, st, runner)
 	}
 	return exitCode, nil
 }
@@ -1822,7 +1822,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 // follow-up command. The branch line is always the first non-empty
 // line emitted by runStatusOnce; everything after it is treated as the
 // working-tree body.
-func flushRichStatus(w io.Writer, body string, g groupedEntries, st *git.Status) {
+//
+// Rich mode also renders two additional blocks: a divergence diagram
+// (skipped when ↑0 ↓0 or no upstream) and a 7-day commit sparkline.
+// Both are best-effort — git failures collapse the block instead of
+// emitting a half-rendered box.
+func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEntries, st *git.Status, runner *git.ExecRunner) {
 	body = strings.TrimRight(body, "\n")
 	lines := strings.Split(body, "\n")
 	var branchLine string
@@ -1864,6 +1869,12 @@ func flushRichStatus(w io.Writer, body string, g groupedEntries, st *git.Status)
 	rest = filterLegacyNextHints(rest)
 	if len(rest) > 0 {
 		fmt.Fprint(w, renderBox(treeTitle, rest))
+	}
+	if diag := renderDivergenceDiagram(ctx, runner, st.Upstream, st.Ahead, st.Behind); len(diag) > 0 {
+		fmt.Fprint(w, renderBox("divergence", diag))
+	}
+	if heat := renderActivityHeatmap(ctx, runner); len(heat) > 0 {
+		fmt.Fprint(w, renderBox("activity 7d", heat))
 	}
 	next, why := suggestNextAction(g, st)
 	fmt.Fprint(w, renderNextActionBlock(next, why))

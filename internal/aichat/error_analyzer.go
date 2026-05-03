@@ -20,13 +20,6 @@ type ErrorAnalyzer struct {
 	Dbg        func(string, ...any)
 }
 
-// dbg is a helper that calls a.Dbg if non-nil.
-func (a *ErrorAnalyzer) dbg(format string, args ...any) {
-	if a.Dbg != nil {
-		a.Dbg(format, args...)
-	}
-}
-
 // emptyErrorGuidance returns a guidance message when the error message is
 // empty or unrecognizable. It lists common git error types and suggests
 // using `gk explain --last`.

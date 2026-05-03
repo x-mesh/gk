@@ -11,11 +11,11 @@ import (
 // allGitResponses returns a FakeRunner with typical git outputs for a healthy repo.
 func allGitResponses() map[string]git.FakeResponse {
 	return map[string]git.FakeResponse{
-		"rev-parse --abbrev-ref HEAD":  {Stdout: "main\n"},
-		"rev-parse --short HEAD":       {Stdout: "abc1234\n"},
-		"rev-parse --abbrev-ref @{u}":  {Stdout: "origin/main\n"},
-		"status --porcelain=v2":        {Stdout: " M file.go\n?? new.txt\n"},
-		"reflog -10 --format=%h %gs":   {Stdout: "abc1234 commit: init\ndef5678 checkout: main\n"},
+		"rev-parse --abbrev-ref HEAD":      {Stdout: "main\n"},
+		"rev-parse --short HEAD":           {Stdout: "abc1234\n"},
+		"rev-parse --abbrev-ref @{u}":      {Stdout: "origin/main\n"},
+		"status --porcelain=v2":            {Stdout: " M file.go\n?? new.txt\n"},
+		"reflog -10 --format=%h %gs":       {Stdout: "abc1234 commit: init\ndef5678 checkout: main\n"},
 		"branch --format=%(refname:short)": {Stdout: "main\nfeat/x\nfeat/y\n"},
 	}
 }

@@ -20,13 +20,6 @@ type QAEngine struct {
 	Dbg        func(string, ...any)
 }
 
-// dbg is a helper that calls q.Dbg if non-nil.
-func (q *QAEngine) dbg(format string, args ...any) {
-	if q.Dbg != nil {
-		q.Dbg(format, args...)
-	}
-}
-
 // isNonGitQuestion returns true when the question is clearly unrelated
 // to git or gk. The check is intentionally conservative — when in doubt
 // the question is forwarded to the AI provider.

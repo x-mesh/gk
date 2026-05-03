@@ -118,8 +118,8 @@ func (r RiskLevel) String() string {
 // ExecutionResult is the outcome of CommandExecutor.Execute.
 type ExecutionResult struct {
 	Executed  []CommandResult // results for each executed command
-	BackupRef string         // backup ref created before dangerous commands
-	Aborted   bool           // true when user rejected or an error stopped execution
+	BackupRef string          // backup ref created before dangerous commands
+	Aborted   bool            // true when user rejected or an error stopped execution
 }
 
 // CommandResult is the outcome of a single command execution.

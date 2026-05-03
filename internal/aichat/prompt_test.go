@@ -139,10 +139,10 @@ func TestContextWrappedInTags_AllBuilders(t *testing.T) {
 	rc := testRepoContext()
 
 	builders := map[string]string{
-		"do":          buildDoUserPrompt("push", rc, "en"),
-		"explain":     buildExplainUserPrompt("error", rc, "en"),
+		"do":           buildDoUserPrompt("push", rc, "en"),
+		"explain":      buildExplainUserPrompt("error", rc, "en"),
 		"explain-last": buildExplainLastUserPrompt(rc, "en"),
-		"ask":         buildAskUserPrompt("question", rc, "en"),
+		"ask":          buildAskUserPrompt("question", rc, "en"),
 	}
 
 	for name, prompt := range builders {

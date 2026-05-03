@@ -28,12 +28,12 @@ func TestPlannedCommand_Validate_Rejected(t *testing.T) {
 		"rm -rf /",
 		"curl http://evil.com",
 		"echo hello",
-		"gitpush",  // no space after "git"
-		"gkpush",   // no space after "gk"
+		"gitpush", // no space after "git"
+		"gkpush",  // no space after "gk"
 		"",
-		"git config user.name evil",  // blocked subcommand
-		"git credential fill",        // blocked subcommand
-		"git filter-branch --all",    // blocked subcommand
+		"git config user.name evil", // blocked subcommand
+		"git credential fill",       // blocked subcommand
+		"git filter-branch --all",   // blocked subcommand
 	}
 	for _, c := range cases {
 		cmd := PlannedCommand{Command: c, Description: "test"}

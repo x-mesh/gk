@@ -20,11 +20,11 @@ import (
 func newTestQAEngine(sum provider.Summarizer) *QAEngine {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"rev-parse --abbrev-ref HEAD":  {Stdout: "feature/auth\n"},
-			"rev-parse --short HEAD":       {Stdout: "abc1234\n"},
-			"rev-parse --abbrev-ref @{u}":  {Stdout: "origin/feature/auth\n"},
-			"status --porcelain=v2":        {Stdout: ""},
-			"reflog -10 --format=%h %gs":   {Stdout: "abc1234 commit: add login\ndef5678 checkout: moving from main to feature/auth\n"},
+			"rev-parse --abbrev-ref HEAD":      {Stdout: "feature/auth\n"},
+			"rev-parse --short HEAD":           {Stdout: "abc1234\n"},
+			"rev-parse --abbrev-ref @{u}":      {Stdout: "origin/feature/auth\n"},
+			"status --porcelain=v2":            {Stdout: ""},
+			"reflog -10 --format=%h %gs":       {Stdout: "abc1234 commit: add login\ndef5678 checkout: moving from main to feature/auth\n"},
 			"branch --format=%(refname:short)": {Stdout: "main\nfeature/auth\ndev\n"},
 		},
 	}

@@ -1427,6 +1427,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	client := git.NewClient(runner)
 	st, err := client.Status(cmd.Context())
 	if err != nil {
+		if isNotAGitRepoError(err) {
+			return 1, WithHint(
+				fmt.Errorf("gk status: git 저장소가 아닙니다"),
+				"git init 으로 저장소를 초기화하거나, 올바른 디렉토리로 이동하세요",
+			)
+		}
 		return 1, err
 	}
 	allGrouped := groupEntries(st.Entries)

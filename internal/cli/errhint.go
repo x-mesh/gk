@@ -7,6 +7,7 @@ import (
 
 	"github.com/fatih/color"
 
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -90,3 +91,20 @@ func FormatError(err error) string {
 //
 //	return WithHint(err, hintCommand("gk continue"))
 func hintCommand(cmd string) string { return fmt.Sprintf("try: %s", cmd) }
+
+// isNotAGitRepoError reports whether err originates from running git outside a
+// repository. We check both the wrapped message and the ExitError's stderr so
+// the detection survives any chain wrapping done above the runner layer.
+func isNotAGitRepoError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "not a git repository") {
+		return true
+	}
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) && strings.Contains(exitErr.Stderr, "not a git repository") {
+		return true
+	}
+	return false
+}

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-05-04
+
+### Added
+
+- **`gk do`, `gk explain`, `gk ask` — natural-language assist commands**
+  built on the existing AI provider plumbing (`nvidia → gemini → qwen
+  → kiro-cli`). `gk do "<intent>"` turns Korean/English natural
+  language into a vetted git/gk command sequence, dry-runs by default,
+  and gates dangerous ops (force push, hard reset, history rewrite)
+  behind an extra confirmation prompt. `gk explain "<error>"` parses
+  the error text, surfaces likely cause, recovery steps, and a
+  prevention tip; `--last` repurposes the helper to walk the user
+  through the previous command they ran. `gk ask "<question>"` answers
+  git/gk concept questions with concrete examples drawn from the
+  current repo state (real branch names, commit shas, file paths).
+  Provider resolution mirrors `gk commit`: `--provider` flag → 
+  `ai.provider` config → auto-detect. Lives under `internal/aichat/`
+  with safety classifiers, repo-context collection, and full unit
+  coverage; the CLI surface is `internal/cli/ai_{do,explain,ask}.go`.
+
+### Changed
+
+- **`internal/aichat` cleanup** — dropped two unused `dbg` helpers on
+  `ErrorAnalyzer` / `QAEngine` and ran `gofmt -w` over the package so
+  `golangci-lint run` is clean.
+
 ## [0.25.0] - 2026-05-03
 
 ### Changed

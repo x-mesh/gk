@@ -144,22 +144,47 @@ func runPullCore(cmd *cobra.Command) error {
 	//    branch tracks something perfectly fine.
 	upstream, fetchRemote, fetchBranch, hasTracking := tryTrackingUpstream(ctx, runner)
 	if !hasTracking {
-		if base == "" {
-			detected, err := client.DefaultBranch(ctx, remote)
-			if err != nil {
-				return fmt.Errorf("could not determine base branch: %w (use --base)", err)
-			}
-			base = detected
-			Dbg("pull: auto-detected base=%s via remote=%s", base, remote)
+		// No upstream configured for the current branch. Before falling back
+		// to the repo's base branch (which can confuse users — "I'm on
+		// develop, why is it pulling main?"), see if <remote>/<currentBranch>
+		// exists. If it does, that ref matches user intent far better than
+		// the base, and we surface a hint explaining why it isn't tracked.
+		current, currErr := client.CurrentBranch(ctx)
+		if currErr == nil && current != "" && git.RefExists(ctx, runner, remote+"/"+current) {
+			upstream = remote + "/" + current
+			fetchRemote = remote
+			fetchBranch = current
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: '%s' has no upstream configured — using %s (set tracking with: git branch --set-upstream-to=%s %s)\n",
+				current, upstream, upstream, current,
+			)
+			Dbg("pull: no @{u}; using same-name remote ref %s", upstream)
 		} else {
-			Dbg("pull: base=%s (explicit)", base)
+			if base == "" {
+				detected, err := client.DefaultBranch(ctx, remote)
+				if err != nil {
+					return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+				}
+				base = detected
+				Dbg("pull: auto-detected base=%s via remote=%s", base, remote)
+			} else {
+				Dbg("pull: base=%s (explicit)", base)
+			}
+			if err := client.CheckRefFormat(ctx, base); err != nil {
+				return fmt.Errorf("invalid base branch %q: %w", base, err)
+			}
+			upstream = remote + "/" + base
+			fetchRemote = remote
+			fetchBranch = base
+			if current != "" && current != base {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"note: '%s' has no upstream and no cached '%s/%s' — falling back to base branch %s\n"+
+						"      if '%s/%s' exists on the remote, run: git fetch %s %s && git branch --set-upstream-to=%s/%s\n",
+					current, remote, current, upstream,
+					remote, current, remote, current, remote, current,
+				)
+			}
 		}
-		if err := client.CheckRefFormat(ctx, base); err != nil {
-			return fmt.Errorf("invalid base branch %q: %w", base, err)
-		}
-		upstream = remote + "/" + base
-		fetchRemote = remote
-		fetchBranch = base
 	}
 	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s tracking=%v", upstream, fetchRemote, fetchBranch, hasTracking)
 

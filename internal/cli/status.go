@@ -1439,9 +1439,19 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	listEntries := committableEntries(st.Entries)
 	exitCode := statusExitCodeFor(allGrouped, st)
 
-	w := cmd.OutOrStdout()
+	realW := cmd.OutOrStdout()
 	if JSONOut() {
-		return exitCode, renderStatusJSON(w, st, allGrouped, listEntries)
+		return exitCode, renderStatusJSON(realW, st, allGrouped, listEntries)
+	}
+	// Rich density wraps the normal-path output (branch + tree + footer)
+	// in square boxes plus a highlighted next-action strip. Fresh-repo
+	// and JSON paths skip rich rendering on purpose — they are already
+	// terse single-purpose outputs and adding boxes is just noise.
+	density := statusDensity(cmd, cfg)
+	w := realW
+	var richBuf strings.Builder
+	if density == "rich" {
+		w = &richBuf
 	}
 	bold := color.New(color.Bold).SprintFunc()
 	cyan := color.CyanString
@@ -1619,7 +1629,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		trackMismatch = detectTrackingMismatch(cmd.Context(), runner, st.Branch, baseRes.Remote, st.Upstream != "")
 	}
 
-	if statusVerbose > 0 {
+	// `-v` is now reserved for rich-density visual layout (boxes,
+	// always-visible last commit, highlighted next-action). The
+	// technical verbose summary — repo path, head SHA, upstream,
+	// base resolution diagnostics — is gated behind `-vv` so the
+	// two layers don't fight for the same screen real estate.
+	if statusVerbose >= 2 {
 		renderStatusVerboseSummary(w, cmd, runner, cfg, st, allGrouped, baseRes)
 	}
 
@@ -1795,7 +1810,135 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		}
 	}
 
+	if density == "rich" {
+		flushRichStatus(realW, richBuf.String(), allGrouped, st)
+	}
 	return exitCode, nil
+}
+
+// flushRichStatus splits the captured normal-path output into a branch
+// header line and a tree/footer body, wraps each in a square box, and
+// appends a highlighted next-action strip describing the recommended
+// follow-up command. The branch line is always the first non-empty
+// line emitted by runStatusOnce; everything after it is treated as the
+// working-tree body.
+func flushRichStatus(w io.Writer, body string, g groupedEntries, st *git.Status) {
+	body = strings.TrimRight(body, "\n")
+	lines := strings.Split(body, "\n")
+	var branchLine string
+	rest := lines
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			branchLine = ln
+			rest = lines[i+1:]
+			break
+		}
+	}
+	if branchLine != "" {
+		// The legacy branch-head layout prefixes the line with a
+		// faint "branch: " label. The rich box title already says
+		// "branch", so strip the redundant prefix when present —
+		// the gauge-head layout never has the prefix and is left
+		// alone. We have to walk past the ANSI escape that paints
+		// the label faint before checking the literal token.
+		trimmed := branchLine
+		if i := strings.Index(trimmed, "branch:"); i >= 0 && i < 12 {
+			// Skip past "branch:" + any color reset and the
+			// trailing space the legacy format emits.
+			rest := trimmed[i+len("branch:"):]
+			rest = strings.TrimLeft(rest, " \x1b[m")
+			trimmed = rest
+		}
+		fmt.Fprint(w, renderBox("branch", []string{trimmed}))
+	}
+	treeTitle := "working tree"
+	hasTreeEntries := len(g.Staged) > 0 || len(g.Modified) > 0 || len(g.Untracked) > 0 || len(g.Unmerged) > 0
+	if !hasTreeEntries {
+		treeTitle = "working tree · clean"
+	}
+	// The legacy footer emits a `next: <cmd>` line and Easy Mode adds
+	// a `💡 다음 단계 …` hint; both repeat what the highlighted strip
+	// will say below, so drop them from the box body. The trim is
+	// best-effort — coloured strings are kept when ANSI bytes prefix
+	// the marker.
+	rest = filterLegacyNextHints(rest)
+	if len(rest) > 0 {
+		fmt.Fprint(w, renderBox(treeTitle, rest))
+	}
+	next, why := suggestNextAction(g, st)
+	fmt.Fprint(w, renderNextActionBlock(next, why))
+}
+
+// filterLegacyNextHints strips lines that the rich-mode footer would
+// just repeat — the legacy `next:` line and the Easy Mode `💡` hint —
+// from the captured tree body. Other content (tree, gauges, base
+// resolution, untracked age) is preserved untouched.
+func filterLegacyNextHints(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(stripANSIEscapes(ln))
+		if strings.HasPrefix(trimmed, "next:") || strings.HasPrefix(trimmed, "💡") {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return out
+}
+
+// stripANSIEscapes removes the most common ANSI SGR escape sequences from a
+// string so prefix checks see the literal text. The match is naive
+// (no full ANSI parser) but covers the colour helpers used elsewhere
+// in this file.
+func stripANSIEscapes(s string) string {
+	for {
+		i := strings.Index(s, "\x1b[")
+		if i < 0 {
+			return s
+		}
+		j := strings.IndexByte(s[i:], 'm')
+		if j < 0 {
+			return s
+		}
+		s = s[:i] + s[i+j+1:]
+	}
+}
+
+// suggestNextAction picks the single most-actionable follow-up command
+// for the current state. The decision tree mirrors the Easy Mode hint
+// logic but is always emitted in rich mode (regardless of Easy state)
+// because the highlighted strip is the visual payoff of -v / density=
+// rich. Order matters: conflicts and rebase-in-progress would already
+// have aborted earlier in runStatusOnce, so we only handle the steady-
+// state combinations of dirty × diverged here.
+func suggestNextAction(g groupedEntries, st *git.Status) (next, why string) {
+	hasConflict := len(g.Unmerged) > 0
+	hasStaged := len(g.Staged) > 0
+	hasUnstaged := len(g.Modified) > 0
+	hasUntracked := len(g.Untracked) > 0
+	dirty := hasStaged || hasUnstaged || hasUntracked || hasConflict
+	ahead, behind := st.Ahead, st.Behind
+	hasUpstream := st.Upstream != ""
+
+	switch {
+	case hasConflict:
+		return "gk continue   ·   gk abort", fmt.Sprintf("%d conflict(s) — resolve then continue", len(g.Unmerged))
+	case dirty && ahead > 0 && behind > 0:
+		return "gk wip · gk sync · gk pop", fmt.Sprintf("dirty + diverged ↑%d ↓%d", ahead, behind)
+	case dirty && behind > 0:
+		return "gk wip · gk pull · gk pop", fmt.Sprintf("dirty + behind ↓%d", behind)
+	case dirty:
+		return "gk commit --dry-run", "uncommitted changes ready"
+	case ahead > 0 && behind > 0:
+		return "gk sync", fmt.Sprintf("diverged ↑%d ↓%d", ahead, behind)
+	case behind > 0:
+		return "gk pull", fmt.Sprintf("behind by %d", behind)
+	case ahead > 0:
+		return "gk push", fmt.Sprintf("ahead by %d", ahead)
+	case !hasUpstream:
+		return "git branch --set-upstream-to=origin/<branch>", "no upstream configured"
+	default:
+		return "자유롭게 작업하세요", "in sync · clean"
+	}
 }
 
 func renderStatusVerboseSummary(
@@ -2843,13 +2986,12 @@ func normalizeXYStyle(s string) string {
 	}
 }
 
-// lastCommitAgo returns a short relative age ("11d", "4h") of HEAD's
-// committer date and its abbreviated SHA, or empty strings when there is
-// no HEAD (fresh repo), git fails, or the commit is under 1 day old.
-// Active branches commit multiple times per day so annotating "last
-// commit 2h" on every `gk status` call is noise — the signal only earns
-// attention once the branch starts going stale, so we suppress it for
-// <24h ages.
+// lastCommitAgo returns a short relative age ("11d", "4h", "5m") of
+// HEAD's committer date and its abbreviated SHA, or empty strings when
+// there is no HEAD (fresh repo) or git fails. Status is the "what is
+// the current state" command, so we render the age unconditionally —
+// users explicitly asked for the freshness of their last commit to be
+// visible even right after committing.
 func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) (ago, sha string) {
 	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct %H", "HEAD")
 	if err != nil {
@@ -2868,9 +3010,6 @@ func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) (ago, sha string)
 		return "", ""
 	}
 	age := time.Since(time.Unix(secs, 0))
-	if age < 24*time.Hour {
-		return "", ""
-	}
 	return formatAge(age), shortSHA(parts[1])
 }
 

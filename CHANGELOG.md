@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-05-04
+
+### Added
+
+- **`gk status` rich density mode** — `gk status -v` (or
+  `status.density: rich` in `.gk.yaml`) wraps the branch line and the
+  working-tree body in square boxes (`┌─ branch ─┐` / `┌─ working
+  tree ─┐`) and appends a highlighted next-action strip with a
+  one-line "why" beneath. The next-action selector covers the full
+  steady-state matrix — conflicts, dirty + diverged, dirty + behind,
+  dirty alone, ahead, behind, diverged, no-upstream, in-sync — and
+  emits a single concrete command for each. Rich mode is opt-in: the
+  default `gk status` output is unchanged, JSON output is unchanged,
+  and `--json` always wins. Verbose-summary diagnostics that used to
+  fire on `-v` are now gated behind `-vv` so the visual layer and the
+  technical-detail layer stop fighting for the same screen.
+
+### Changed
+
+- **`gk status` always shows the last commit age + SHA**. The
+  previous code suppressed the `· last commit Nm/Nh` tail when the
+  HEAD commit was under 24 hours old on the assumption that "active
+  branches commit multiple times per day, so it's noise". User
+  feedback: status is the "current state at a glance" command — the
+  exact case where the user just committed is the *most* relevant
+  moment to see the SHA and freshness, not the least. The 24h gate
+  is removed; `lastCommitAgo` now renders unconditionally.
+
+### Internal
+
+- New helper `internal/cli/status_box.go` (`renderBox`,
+  `renderNextActionBlock`) plus `flushRichStatus` /
+  `suggestNextAction` / `filterLegacyNextHints` /
+  `stripANSIEscapes` in `status.go` for the rich-mode pipeline.
+  `StatusConfig.Density` is the new mapstructure key.
+
 ## [0.26.0] - 2026-05-04
 
 ### Added

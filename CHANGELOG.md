@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-05-03
+
+### Changed
+
+- **`gk pull` upstream resolution prefers same-name remote ref over the
+  base branch**. When the current branch had no `@{u}` configured, gk
+  previously fell straight back to the repo's base branch — so running
+  `gk pull` on `develop` silently fetched `origin/main` and the user
+  saw an unrelated ref being updated. Now gk first checks whether
+  `<remote>/<currentBranch>` exists in the local ref cache; if so,
+  that ref is used as the fetch target and stderr suggests
+  `git branch --set-upstream-to=<remote>/<branch>`. When neither
+  tracking nor a same-name cached ref is available, the fallback to
+  the base branch is preserved but stderr now spells out exactly what
+  is happening, including the `git fetch && git branch
+  --set-upstream-to` command pair to recover.
+
+### Fixed
+
+- **`gk status` raw, locale-leaking error in non-git directory**.
+  Running `gk status` outside a repository printed the literal
+  porcelain command and git's translated stderr (e.g. `git status
+  --porcelain=v2 -z --작업 갈래 (branch): exit code 128: fatal: not
+  a git repository`). The error is now caught at the call site and
+  rendered as `gk status: git 저장소가 아닙니다` with a hint to run
+  `git init` or change directory. Detection lives in a shared
+  `isNotAGitRepoError` helper (`internal/cli/errhint.go`) that walks
+  the error chain plus `git.ExitError`'s stderr, so other commands
+  can adopt the same friendly treatment without duplicating the
+  string match.
+
 ## [0.24.2] - 2026-05-03
 
 ### Fixed

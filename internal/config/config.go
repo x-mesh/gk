@@ -38,16 +38,29 @@ type OutputConfig struct {
 // Provider is the default AI CLI to use when --provider is not passed;
 // empty means auto-detect (gemini → qwen → kiro-cli). Lang is the
 // default message/output language (BCP-47 short code). Commit holds
-// `gk commit` settings; future ai features add sibling structs.
+// `gk commit` settings; Chat holds `gk do/explain/ask` settings;
+// future ai features add sibling structs.
 type AIConfig struct {
 	Enabled   bool              `mapstructure:"enabled"   yaml:"enabled"`
 	Provider  string            `mapstructure:"provider"  yaml:"provider"`
 	Lang      string            `mapstructure:"lang"      yaml:"lang"`
 	Commit    AICommitConfig    `mapstructure:"commit"    yaml:"commit"`
+	Chat      AIChatConfig      `mapstructure:"chat"      yaml:"chat"`
 	Anthropic AIAnthropicConfig `mapstructure:"anthropic" yaml:"anthropic"`
 	OpenAI    AIOpenAIConfig    `mapstructure:"openai"    yaml:"openai"`
 	Nvidia    AINvidiaConfig    `mapstructure:"nvidia"    yaml:"nvidia"`
 	Groq      AIGroqConfig      `mapstructure:"groq"      yaml:"groq"`
+}
+
+// AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
+// `gk ask`). Timeout is a Go duration string for AI provider calls
+// (default "30s"). MaxTokens caps the response token budget (default
+// 4096). SafetyConfirm controls whether `gk do` requires an extra
+// confirmation prompt for dangerous commands (default true).
+type AIChatConfig struct {
+	Timeout       string `mapstructure:"timeout"        yaml:"timeout"`
+	MaxTokens     int    `mapstructure:"max_tokens"     yaml:"max_tokens"`
+	SafetyConfirm bool   `mapstructure:"safety_confirm" yaml:"safety_confirm"`
 }
 
 // AIAnthropicConfig controls the Claude provider. Empty fields fall
@@ -393,6 +406,11 @@ func Defaults() Config {
 			Enabled:  true,
 			Provider: "",
 			Lang:     "en",
+			Chat: AIChatConfig{
+				Timeout:       "30s",
+				MaxTokens:     4096,
+				SafetyConfirm: true,
+			},
 			Commit: AICommitConfig{
 				Mode:        "interactive",
 				MaxGroups:   10,

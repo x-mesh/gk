@@ -26,7 +26,11 @@ builds:
       - -X main.date={{.Date}}
 archives:
   - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Version is intentionally omitted so that
+    # https://github.com/x-mesh/gk/releases/latest/download/gk_<os>_<arch>.tar.gz
+    # works as a stable URL. GoReleaser's brews block re-derives URL+sha256
+    # from this template automatically, so the Homebrew tap stays in sync.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256

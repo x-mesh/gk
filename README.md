@@ -8,7 +8,7 @@
 
 # gk — git helper
 
-A lightweight Go git helper for daily pull/log/status/branch workflows, with a focus on **safe operations** (reflog-backed undo, time-machine restore, policies-as-code) and **ergonomic diagnostics** (`doctor`, `precheck`, `sync`).
+A small Go helper for everyday pull/log/status/branch work. It leans on two ideas: keep destructive operations recoverable (reflog-backed undo, time-machine restore, policies-as-code), and make diagnostics fast to reach for (`doctor`, `precheck`, `sync`).
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org/dl/)
 [![Release](https://img.shields.io/github/v/release/x-mesh/gk)](https://github.com/x-mesh/gk/releases/latest)
@@ -16,17 +16,17 @@ A lightweight Go git helper for daily pull/log/status/branch workflows, with a f
 
 ## Why gk?
 
-- **Safer pushes by default** — `gk push` scans the commits-to-push diff for AWS / GitHub / Slack / OpenAI keys and PEM bodies; protected-branch force pushes require typing the exact branch name.
-- **Time machine for HEAD** — `gk timemachine list` surfaces every recoverable state (reflog + gk backup refs). `gk timemachine restore <sha|ref>` resets safely: atomic backup ref written first, autostash support, refuses mid-rebase/merge.
-- **Reflog-backed undo** — `gk undo` picks a past HEAD from the reflog (fzf or numeric picker), resets to it, and leaves a backup ref at `refs/gk/undo-backup/<branch>/<unix>` so every undo is trivially reversible.
-- **Policies as code** — `gk guard check` evaluates repo policy rules (secret scanning, commit size, required trailers) in parallel; `gk guard init` scaffolds `.gk.yaml` with commented stubs. Wire as a pre-commit hook with `gk hooks install --pre-commit`.
-- **Dry-run any merge** — `gk precheck <target>` runs `git merge-tree` and reports conflicted paths without touching your working tree (exit 3 on conflicts for CI).
-- **Local-first rebase** — `gk sync` rebases the current branch onto local `<base>` offline. `gk sync --fetch` is the explicit one-shot when the user wants the network too. Stale-base hint when local `<base>` differs from `<remote>/<base>`.
-- **Diverged-pull safety net** — `gk pull` refuses to silently rewrite local SHAs when histories have diverged, presenting `--rebase` / `--merge` / `--fetch-only` as explicit choices. `pull.strategy` config (or the explicit flags) bypasses the gate. Every history-rewriting integration writes a `refs/gk/backup/<branch>/<ts>` ref first.
-- **Conventional-Commits-aware hooks** — `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so re-installation is idempotent and foreign hooks are never clobbered without `--force`.
-- **Health at a glance** — `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation — with copy-paste fix commands.
-- **Easy Mode for new users** — `--easy` (or `output.easy: true` / `GK_EASY=1`) translates technical git terminology into Korean equivalents wrapped with the original (`commit` → `변경사항 저장 (commit)`), prefixes status sections with emoji, and surfaces contextual next-step hints. `gk guide` walks first-time users through git workflows step-by-step, independent of Easy Mode.
-- **Actionable errors** — most errors print a second-line `hint:` with the concrete next command.
+- **Safer pushes by default.** `gk push` scans the commits-to-push diff for AWS, GitHub, Slack, and OpenAI keys, plus PEM bodies. To force-push a protected branch you have to type the branch name yourself.
+- **Time machine for HEAD.** `gk timemachine list` shows every recoverable state (reflog + gk backup refs). `gk timemachine restore <sha|ref>` writes a backup ref before it resets, autostashes if you ask, and refuses to run when a rebase or merge is already in progress.
+- **Reflog-backed undo.** `gk undo` picks a past HEAD from the reflog (fzf or a numeric picker), resets to it, and leaves a backup ref at `refs/gk/undo-backup/<branch>/<unix>`. Undoing the undo is the same command run twice.
+- **Policies as code.** `gk guard check` runs repo policy rules in parallel: secret scanning, commit size, required trailers, and so on. `gk guard init` scaffolds `.gk.yaml` with commented stubs you can uncomment selectively. Wire it into pre-commit with `gk hooks install --pre-commit`.
+- **Dry-run any merge.** `gk precheck <target>` runs `git merge-tree` and reports conflicting paths without touching your working tree. CI gets exit 3 on conflict.
+- **Local-first rebase.** `gk sync` rebases the current branch onto local `<base>` without touching the network. `gk sync --fetch` is the one-shot when you want the fetch too. If local `<base>` has fallen behind `<remote>/<base>`, you get a stale-base hint instead of a silent stale rebase.
+- **Diverged-pull safety net.** When histories have diverged, `gk pull` stops and asks instead of silently rewriting your SHAs. The choices are `--rebase`, `--merge`, or `--fetch-only`; setting `pull.strategy` (or passing the flag) bypasses the prompt. Any integration that rewrites history writes a `refs/gk/backup/<branch>/<ts>` ref before it does so.
+- **Conventional-Commits-aware hooks.** `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so reinstalling is idempotent and a foreign hook is never overwritten without `--force`.
+- **Health at a glance.** `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation. Each WARN/FAIL line carries a copy-paste fix command.
+- **Easy Mode for new users.** `--easy` (or `output.easy: true` / `GK_EASY=1`) translates git terminology into Korean while keeping the original in parentheses (`commit` → `변경사항 저장 (commit)`), prefixes status sections with emoji, and tacks a context-aware next-step hint onto the last line. Even on a clean tree, the ↑/↓ counter feeds hints like `📤 서버에 올릴 커밋 N개 → gk push`. `gk guide` is a separate step-by-step git walkthrough that works whether or not Easy Mode is on.
+- **Errors that tell you what to do.** Most errors print a second `hint:` line with the next command to run.
 
 ## Install
 
@@ -40,24 +40,25 @@ brew upgrade x-mesh/tap/gk
 
 ### Linux / manual download
 
-Download the latest binary from [GitHub Releases](https://github.com/x-mesh/gk/releases/latest):
+One-liner. Auto-detects your OS and arch, verifies sha256:
 
 ```bash
-# amd64
-curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_amd64.tar.gz | tar xz -C /usr/local/bin gk
-
-# arm64
-curl -sL https://github.com/x-mesh/gk/releases/latest/download/gk_$(curl -s https://api.github.com/repos/x-mesh/gk/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_arm64.tar.gz | tar xz -C /usr/local/bin gk
+curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh | sh
 ```
 
-Or manually:
+Pin a version or override the install dir:
 
 ```bash
-# 1. Go to https://github.com/x-mesh/gk/releases/latest
-# 2. Download gk_<version>_linux_amd64.tar.gz (or arm64)
-# 3. Extract and move to PATH:
-tar xzf gk_*.tar.gz
-sudo mv gk /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh \
+  | GK_VERSION=v0.29.0 GK_INSTALL_DIR=$HOME/.local/bin sh
+```
+
+Or grab it manually from [GitHub Releases](https://github.com/x-mesh/gk/releases/latest). Filenames don't include the version, so the download URL stays the same across releases:
+
+```bash
+# linux amd64 — swap for linux_arm64 / darwin_amd64 / darwin_arm64 as needed
+curl -fsSL https://github.com/x-mesh/gk/releases/latest/download/gk_linux_amd64.tar.gz \
+  | sudo tar -xz -C /usr/local/bin gk
 ```
 
 ### go install
@@ -202,11 +203,11 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 
 ## AI commit
 
-`gk commit` analyses the current working tree (staged + unstaged + untracked), groups the changes into semantic commit plans via an external AI CLI, and applies one Conventional Commit per plan.
+`gk commit` looks at the current working tree (staged + unstaged + untracked), asks an AI to split the changes into separate commits, and applies one Conventional Commit per group.
 
 ### Provider setup
 
-`gk commit` drives **already-installed** AI CLI binaries — it never talks to remote LLM APIs directly, so no API key lives inside `gk`.
+For `anthropic`, `openai`, `nvidia`, and `groq`, `gk commit` calls the API directly over HTTP. Your env-var key goes straight to the provider, and `gk` never stores it. For `gemini`, `qwen`, and `kiro-cli`, `gk commit` shells out to the already-installed CLI and lets it handle auth.
 
 | Provider | Install | Auth |
 |---|---|---|
@@ -216,11 +217,9 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 | `groq` (Groq) | No binary needed | `export GROQ_API_KEY=...` |
 | `gemini` (Google) | `npm i -g @google/gemini-cli` or `brew install gemini-cli` | `export GEMINI_API_KEY=...` or run `gemini` once for OAuth |
 | `qwen` (Alibaba) | `npm i -g @qwen-code/qwen-code` | `qwen auth qwen-oauth` or `export DASHSCOPE_API_KEY=...` |
-| `kiro-cli` (AWS Kiro headless — note: **not** the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
+| `kiro-cli` (AWS Kiro headless, not the `kiro` IDE launcher) | See [kiro.dev/docs/cli/installation](https://kiro.dev/docs/cli/installation) | `export KIRO_API_KEY=...` (Kiro Pro) or IDE OAuth session |
 
-> **anthropic**, **openai**, **nvidia**, and **groq** call their respective Messages / Chat Completions APIs directly over HTTP — no external binary required. Other providers (`gemini`, `qwen`, `kiro-cli`) are driven as external CLI subprocesses.
-
-Auto-detect order (when `ai.provider` is empty): **anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli**. When no explicit `--provider` is given, a **Fallback Chain** tries each available provider in order, automatically moving to the next on failure.
+Auto-detect order (when `ai.provider` is empty): `anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli`. Without an explicit `--provider`, the fallback chain walks this list and moves to the next provider on failure.
 
 Run `gk doctor` to verify each provider's install + auth status.
 
@@ -289,13 +288,13 @@ ai:
 
 ### Safety rails (every run)
 
-- **Secret gate** — runs `internal/secrets.Scan` plus `gitleaks` (when installed) over the payload; any finding aborts, even with `--force`. Use `--allow-secret-kind <kind>` per-run to whitelist a specific kind.
-- **Privacy Gate** — for remote providers (`Locality=remote`), automatically redacts secrets, deny_paths matches, and sensitive patterns from the outbound payload. Replaces matches with tokenized placeholders (`[SECRET_1]`, `[PATH_1]`). Aborts if >10 secrets detected. Use `--show-prompt` on any subcommand to inspect the redacted payload. Audit logging to `.gk/ai-audit.jsonl` when `ai.commit.audit` is enabled.
-- **Deny paths** — matching files (`.env`, private keys, tfstate, …) are dropped before the payload leaves the process.
-- **Git-state guard** — refuses to run mid-rebase / mid-merge / mid-cherry-pick so `MERGE_MSG` is never overwritten.
-- **Backup ref** — each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing; `gk commit --abort` restores HEAD there.
-- **Conventional lint loop** — `internal/commitlint.Parse/Lint` validates every message; failures trigger up to two provider retries with feedback injected into the prompt.
-- **Path-rule override** — `_test.go`, `docs/*.md`, `.github/workflows/*.yml`, and lockfiles are always reclassified to `test`/`docs`/`ci`/`build` even if the provider picks a different type.
+- **Secret gate.** `internal/secrets.Scan` plus `gitleaks` (if installed) scan the payload. Any finding aborts the commit, including under `--force`. Pass `--allow-secret-kind <kind>` to whitelist one kind for the current run.
+- **Privacy gate.** For remote providers (`Locality=remote`), the outbound payload is scrubbed: secrets, paths matching `deny_paths`, and sensitive patterns are replaced with tokens like `[SECRET_1]` or `[PATH_1]`. The run aborts if more than ten secrets show up in a single payload. `--show-prompt` lets you inspect the redacted version. With `ai.commit.audit` on, the redactions are logged to `.gk/ai-audit.jsonl`.
+- **Deny paths.** Files like `.env`, private keys, and tfstate are dropped before the payload leaves the process.
+- **Git-state guard.** `gk commit` refuses to run while a rebase, merge, or cherry-pick is in progress, so `MERGE_MSG` never gets overwritten.
+- **Backup ref.** Each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing. `gk commit --abort` restores HEAD to it.
+- **Conventional lint loop.** Every generated message goes through `internal/commitlint.Parse/Lint`. On failure the previous lint errors are injected into the next prompt and the provider is asked again, up to two retries.
+- **Path-rule override.** `_test.go`, `docs/*.md`, `.github/workflows/*.yml`, and lockfiles are always reclassified to `test` / `docs` / `ci` / `build`, even if the provider picks a different type.
 
 ### Quick example
 

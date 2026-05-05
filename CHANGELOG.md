@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-05-06
+
+### Added
+
+- **POSIX install script.** `curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh | sh`
+  auto-detects OS and architecture, downloads the matching archive from the
+  latest release, verifies the published `sha256`, and installs the binary
+  to `/usr/local/bin` (falling back to `~/.local/bin` when the default is
+  not writable). Pin a specific release with `GK_VERSION=v0.29.0` and
+  override the install path with `GK_INSTALL_DIR=$HOME/.local/bin`.
+
+### Changed
+
+- **Stable archive URLs.** `.goreleaser.yaml` now produces archives named
+  `gk_<os>_<arch>.tar.gz` instead of `gk_<version>_<os>_<arch>.tar.gz`, so
+  `https://github.com/x-mesh/gk/releases/latest/download/gk_linux_amd64.tar.gz`
+  resolves consistently across releases. Homebrew users see no change
+  because goreleaser regenerates the formula from the same template, but
+  scripts that hardcoded versioned download URLs need an update. The new
+  `install.sh` relies on this naming, so `GK_VERSION` pins only work for
+  v0.29.0 and later.
+- **README prose pass.** Both `README.md` and `README.ko.md` were rewritten
+  for naturalness (denser bullet headers, fewer em-dashes, less AI-toned
+  vocabulary) and a misstatement about AI provider transport was corrected:
+  `anthropic`, `openai`, `nvidia`, and `groq` call their respective APIs
+  directly over HTTP, while `gemini`, `qwen`, and `kiro-cli` are driven as
+  external CLI subprocesses.
+
 ## [0.28.0] - 2026-05-04
 
 ### Added

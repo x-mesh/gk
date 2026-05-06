@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-05-06
+
+### Fixed
+
+- **`gk commit` and other git-driven commands could fail with "Author identity
+  unknown" inside containers and other minimal environments.** The internal
+  `ExecRunner.buildCmd` was overwriting the child process environment with
+  only the guard variables (`LC_ALL`, `LANG`, `GIT_OPTIONAL_LOCKS`,
+  `GIT_TERMINAL_PROMPT`), dropping `HOME`, `USER`, `PATH`, and
+  `SSH_AUTH_SOCK`. Without `HOME`, git could not locate `~/.gitconfig`, so
+  on hosts where `hostname` is `(none)` (typical for unprivileged
+  containers) git fell back to a synthetic identity like
+  `user@host.(none)` and aborted the commit. The runner now layers
+  `os.Environ()` first, then the guard variables, then any caller-supplied
+  `ExtraEnv`, so guard semantics still win for duplicate keys while parent
+  state is preserved.
+
 ## [0.29.0] - 2026-05-06
 
 ### Added

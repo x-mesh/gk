@@ -33,9 +33,15 @@ into a one-line cleanup for files that were committed before the
 
 DESTRUCTIVE — every commit SHA changes. After the rewrite finishes,
 collaborators must re-clone or hard-reset to the new history. A backup
-is written to refs/gk/forget-backup/<unix>/<original-ref> and a text
-manifest at .git/gk/forget-backup-<unix>.txt; either one is enough to
-roll back.
+is written to refs/gk/forget-backup/<branch>/<unix> (visible in
+gk timemachine list) plus a text manifest at .git/gk/forget-backup-<unix>.txt;
+either one is enough to roll back.
+
+Dirty working tree handling: changes inside the forget target paths are
+fine — filter-repo would erase them anyway. Changes outside the targets
+abort with a hint, since filter-repo's reset would silently drop them.
+Pass --force-dirty when you have reviewed those outside changes and
+accept losing them.
 
 Requires git filter-repo (https://github.com/newren/git-filter-repo).
 Install: brew install git-filter-repo  (or: pip install git-filter-repo)
@@ -53,6 +59,7 @@ Examples:
 	cmd.Flags().BoolP("yes", "y", false, "skip the interactive confirmation prompt")
 	cmd.Flags().Bool("analyze", false, "report unique blob count and total bytes per target without rewriting (implies --dry-run)")
 	cmd.Flags().StringSlice("keep", nil, "filepath.Match pattern to exclude from the forget set (repeatable)")
+	cmd.Flags().Bool("force-dirty", false, "proceed even when working-tree changes exist outside the forget targets (those changes will be reset by filter-repo)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -62,6 +69,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 	yes, _ := cmd.Flags().GetBool("yes")
 	analyze, _ := cmd.Flags().GetBool("analyze")
 	keep, _ := cmd.Flags().GetStringSlice("keep")
+	forceDirty, _ := cmd.Flags().GetBool("force-dirty")
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.
 	dryRun := DryRun() || analyze
@@ -76,15 +84,15 @@ func runForget(cmd *cobra.Command, args []string) error {
 		return WithHint(err, "run `gk doctor` to see the full preflight result")
 	}
 
-	// Same dirty/in-progress preflight as `gk wipe` — history rewrite
-	// must not run while a rebase or merge is half-applied, and a dirty
-	// tree means uncommitted work would be lost when filter-repo blasts
-	// the index.
+	// In-progress rebase/merge/cherry-pick is non-negotiable — filter-repo
+	// would corrupt the half-applied state. AllowDirty masks the dirty
+	// signal so the gate fires only on those structural conditions; we
+	// inspect dirty separately after the targets are known.
 	rep, err := gitsafe.Check(ctx, runner, gitsafe.WithWorkDir(RepoFlag()))
 	if err != nil {
 		return err
 	}
-	if err := rep.Err(); err != nil {
+	if err := rep.AllowDirty().Err(); err != nil {
 		return err
 	}
 
@@ -102,6 +110,29 @@ func runForget(cmd *cobra.Command, args []string) error {
 		return WithHint(
 			fmt.Errorf("no paths to forget"),
 			"add paths to .gitignore and rerun, or pass paths explicitly: gk forget <path>...",
+		)
+	}
+
+	// Dirty-vs-target reconciliation. The classic forget workflow is:
+	// "this directory was committed by mistake, it's been changing on
+	// disk for ages, now I want it gone from history". Refusing to run
+	// because the live directory is mid-write would block exactly that
+	// case. So we accept dirty entries that lie under any forget target
+	// (filter-repo will erase them anyway) but still reject changes
+	// outside, where the user would silently lose uncommitted work.
+	outside, err := dirtyOutsideTargets(ctx, runner, paths)
+	if err != nil {
+		return err
+	}
+	if len(outside) > 0 && !forceDirty {
+		preview := outside
+		if len(preview) > 5 {
+			preview = preview[:5]
+		}
+		return WithHint(
+			fmt.Errorf("working-tree changes outside forget targets (%d path(s)); filter-repo would reset them"+
+				"\n  example: %s", len(outside), strings.Join(preview, ", ")),
+			"commit/stash those changes, narrow the forget targets, or pass --force-dirty if you accept the loss",
 		)
 	}
 
@@ -224,6 +255,52 @@ func resolveTargets(ctx context.Context, r git.Runner, args []string) ([]string,
 	// Filter to paths that actually appear in history; an entry could be
 	// staged-but-not-committed and would be a no-op for filter-repo.
 	return forget.PathInHistory(ctx, r, auto)
+}
+
+// dirtyOutsideTargets returns the working-tree-modified paths that are
+// not covered by any forget target, plus any deletions in the same
+// scope. Entries underneath a target are excluded because filter-repo
+// will rewrite that file out of existence anyway, so a "dirty" working
+// copy of a soon-to-be-forgotten file is uninteresting.
+//
+// Untracked files are not considered — the user typically did not
+// intend to commit them, and filter-repo leaves them on disk.
+func dirtyOutsideTargets(ctx context.Context, r git.Runner, targets []string) ([]string, error) {
+	stdout, _, err := r.Run(ctx, "status", "--porcelain=v1", "-uno", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("status --porcelain: %w", err)
+	}
+	var outside []string
+	for _, entry := range strings.Split(string(stdout), "\x00") {
+		if len(entry) <= 3 {
+			continue
+		}
+		// porcelain v1 -z format: XY<space>path  (no terminator inside
+		// the path because of -z). Strip the two-char status + space.
+		path := entry[3:]
+		if pathUnderAny(path, targets) {
+			continue
+		}
+		outside = append(outside, path)
+	}
+	return outside, nil
+}
+
+// pathUnderAny reports whether path equals any target or sits under a
+// target directory. Targets without a trailing slash but matching a
+// directory on disk still cover their contents — filter-repo's path
+// argument behaves the same way, so we mirror that here.
+func pathUnderAny(path string, targets []string) bool {
+	for _, t := range targets {
+		t = strings.TrimRight(t, "/")
+		if path == t {
+			return true
+		}
+		if strings.HasPrefix(path, t+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func repoGitDir(ctx context.Context, r git.Runner) (string, error) {

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-05-06
+
+### Added
+
+- **`gk forget` removes paths from the entire git history.** New
+  destructive command that delegates to `git filter-repo` for the actual
+  rewrite, wrapped with gk-flavour safety:
+  - **Auto-detect targets from `.gitignore`.** With no positional args,
+    `gk forget` runs `git ls-files -i -c --exclude-standard` to find
+    tracked files that are now covered by `.gitignore`, then filters
+    those down to entries that actually appear in history. Turns the
+    common `echo db/ >> .gitignore && gk forget` workflow into a
+    one-line cleanup.
+  - **Explicit path mode.** `gk forget db/ secrets.json` skips the
+    auto-detect step and feeds the listed paths to filter-repo.
+  - **Dual backup before rewriting.** Every branch and tag is mirrored
+    to `refs/gk/forget-backup/<unix>/<original-ref>` and to a flat-text
+    manifest at `.git/gk/forget-backup-<unix>.txt`. Rollback with
+    `git update-ref --stdin < manifest` or pluck a single branch with
+    `git update-ref refs/heads/main <backup-sha>`.
+  - **Origin URL preserved.** `git filter-repo` deliberately wipes the
+    origin remote to make accidental force-pushes harder; gk re-adds it
+    after the rewrite so `git push --force-with-lease` works straight
+    away. The exact force-push command is printed in the post-run hint.
+  - Standard preflight: refuses on dirty trees and mid-rebase/merge,
+    requires a TTY confirmation unless `--yes`, supports `--dry-run`.
+  - filter-repo is required and not bundled. Missing-binary errors
+    surface the install hint up front: `brew install git-filter-repo`
+    or `pip install git-filter-repo`. We deliberately do not fall back
+    to the deprecated `git filter-branch`.
+
 ## [0.30.1] - 2026-05-06
 
 ### Fixed

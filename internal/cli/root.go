@@ -23,6 +23,12 @@ import (
 )
 
 var (
+	// rawVersion is the raw build-time version string (e.g. "v0.29.1" or "dev")
+	// captured separately from the formatted rootCmd.Version so that
+	// `gk update` can compare it against the latest release tag without
+	// re-parsing the formatted "vX.Y.Z (commit ..., built ...)" string.
+	rawVersion = "dev"
+
 	// Persistent flags populated during root init.
 	flagRepo    string
 	flagVerbose bool
@@ -98,9 +104,16 @@ func Root() *cobra.Command { return rootCmd }
 // binary they're running — invaluable when juggling multiple gk worktrees.
 func SetVersionInfo(v, c, d, b, w string) {
 	suffix := buildSuffix(b, w)
+	rawVersion = v
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s%s)", v, c, d, suffix)
 	rootCmd.Long = fmt.Sprintf("gk %s (commit %s, built %s%s)\n\n%s", v, c, d, suffix, rootLongDesc)
 }
+
+// CurrentVersion returns the raw build-time version string set by
+// SetVersionInfo (e.g. "v0.29.1"). Returns "dev" when running an unreleased
+// build. Stripped of the formatted "(commit ..., built ...)" suffix so
+// callers can pass it to semver comparisons directly.
+func CurrentVersion() string { return rawVersion }
 
 func buildSuffix(branch, worktree string) string {
 	parts := []string{}

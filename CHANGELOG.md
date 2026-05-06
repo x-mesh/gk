@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-05-06
+
+### Fixed
+
+- **`gk pull` / `gk sync` / `gk merge` no longer mask the real cause
+  of a stash failure when the working tree has unmerged paths.** On
+  git 2.43, `git stash push` rejects an unmerged tree by exiting 1
+  with an empty stderr, so callers that prompted for "stash &
+  continue" first surfaced a meaningless `stash push: : exit code 1`
+  several seconds after the user committed to the action. The three
+  commands now run a `guardWorkingTreeReady` pre-check immediately
+  after the dirty probe and refuse outright with a hint that names
+  the conflicted files plus the right remediation
+  (`gk resolve` / `git rebase --continue` / `git rebase --abort`).
+  This is the case `gk doctor` already caught as a FAIL row — the
+  pull/sync/merge surfaces now align with that diagnosis instead of
+  re-discovering it after a wasted prompt.
+
+### Changed
+
+- **Stash-failure hints are now generated from live repo state
+  instead of a fixed string.** When `git stash push` does fail past
+  the new pre-check (race conditions, sparse checkouts, partial
+  clones), `diagnoseStashFailure` walks the repo and picks the
+  highest-priority cause it finds: stale `index.lock`, unmerged
+  paths, or an in-progress rebase/merge/cherry-pick/bisect/revert.
+  Falls through to a "reproduce directly with `git stash push -m
+  gk-debug`" pointer when nothing distinctive is detected. Replaces
+  the previous one-line `git failed to write the index. run gk
+  doctor to inspect (lock file? in-progress merge?)` placeholder.
+
 ## [0.36.0] - 2026-05-06
 
 ### Changed

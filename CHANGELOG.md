@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.34.0] - 2026-05-06
+## [0.35.0] - 2026-05-06
+
+### Added
+
+- **`gk forget --analyze --json`** for CI / dashboards. Single JSON
+  document with `entries[]` (path, unique_blobs, total_bytes,
+  largest_bytes, in_head) plus aggregate `total_bytes` and
+  `history_only_bytes`. Skips the human header / footer / next-steps
+  block when `--json` is set. Stable shape — new fields may be added
+  but existing keys never change meaning.
+
+- **`gk forget --analyze --sort <mode>`.** `size` (default) keeps the
+  prior ranking; `churn` ranks by unique-blob count, surfacing
+  rewrite-heavy paths whose individual blobs are small but whose
+  cumulative weight matters (lock files, generated outputs); `name`
+  is alphabetical for stable diffs across runs. Tie-breakers always
+  fall back to alphabetical so identical inputs render identically.
+
+- **`gk forget --analyze --interactive` / `-i`.** Multi-select picker
+  built on the same `internal/ui.MultiSelectTUI` that powers branch
+  pick. Toggle with space, enter to continue, esc to cancel. The
+  chosen paths are fed straight into the standard rewrite pipeline,
+  so the existing dirty-vs-target gate, backup ref, and
+  confirmation prompt all still fire — interactive mode adds nothing
+  destructive on its own; it just narrows the target list. Requires
+  a TTY; non-TTY invocations surface a clear hint instead of
+  silently dropping into a different mode.
+
+  Each picker row reuses the path-truncation logic from the bar
+  renderer so deeply nested paths stay readable, and the
+  `(history-only)` marker is inlined so users can spot the
+  highest-leverage rows during selection.
+
+### Changed
+
+- `forget.Audit` gained a `SortMode` parameter (was implicitly
+  size-descending). Callers in tree updated; the new `ParseSortMode`
+  helper turns the CLI flag string into the enum.
 
 ### Added
 

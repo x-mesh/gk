@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-05-06
+
+### Added
+
+- **In-bar labels for `gk forget --analyze` output.** Each row now
+  reads as a single line where the label (path / blob count / size /
+  history-only flag) sits on top of a coloured background that covers
+  exactly the entry's share of the heaviest entry. Same idea as `htop`
+  CPU bars or `du-dust` size bars: length is the ratio, the text on
+  top is always parseable. History-only buckets get a warm red
+  background; live entries get navy blue.
+
+  New `--bar=auto|filled|block|none` flag (default `auto`):
+  - `auto`: filled on a colour TTY, plain on pipes / `--no-color` /
+    redirects (so `gk forget --analyze | grep` stays clean).
+  - `filled`: force the in-bar-label style even when stdout is not a
+    detected TTY — useful for screenshots.
+  - `block`: keep the label as plain text and append a sub-cell-
+    precision block-glyph bar (`█▉▊▋▌▍▎▏░`) in a separate column.
+    Survives monochrome terminals where backgrounds are not
+    distinguishable.
+  - `none`: original plain text rows.
+
+  Other improvements alongside:
+  - **Path truncation** — long paths are abbreviated mid-string with a
+    `…` so the bar column stays aligned (`rca-database/.../pg_wal/000…0009`).
+  - **Footer summary** — total bytes shown across visible buckets and
+    history-only subtotal, so the user can size the long tail at a
+    glance.
+  - Terminal width is auto-detected via `golang.org/x/term`; falls
+    back to 100 columns when the size lookup fails.
+
+  Lipgloss does the rendering, mirroring `gk status -v` and other
+  rich-mode surfaces. Colour is suppressed automatically when stdout
+  is not a TTY, so piping the audit output into another command does
+  not leak ANSI escapes.
+
 ## [0.33.0] - 2026-05-06
 
 ### Added

@@ -65,6 +65,7 @@ Examples:
 	cmd.Flags().Bool("force-dirty", false, "proceed even when working-tree changes exist outside the forget targets (those changes will be reset by filter-repo)")
 	cmd.Flags().Int("top", 20, "with --analyze and no targets, limit repo-wide audit to the N heaviest buckets")
 	cmd.Flags().Int("depth", 1, "with --analyze and no targets, group buckets by the first N path segments (0 = per-file)")
+	cmd.Flags().String("bar", "auto", "with --analyze, bar style: auto|filled|block|none (auto = filled on TTY, none on pipes)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -77,6 +78,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 	forceDirty, _ := cmd.Flags().GetBool("force-dirty")
 	top, _ := cmd.Flags().GetInt("top")
 	depth, _ := cmd.Flags().GetInt("depth")
+	barStr, _ := cmd.Flags().GetString("bar")
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.
 	dryRun := DryRun() || analyze
@@ -123,7 +125,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 		// surface the heaviest buckets and trust the user to pick
 		// targets from the output.
 		if analyze {
-			return runAudit(cmd, runner, depth, top)
+			return runAudit(cmd, runner, depth, top, barStr)
 		}
 		return WithHint(
 			fmt.Errorf("no paths to forget"),
@@ -284,40 +286,57 @@ func resolveTargets(ctx context.Context, r git.Runner, args []string) ([]string,
 // no longer present in HEAD but still inflating clones — the highest
 // leverage forget targets, since users can erase them without
 // affecting current work.
-func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int) error {
+func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr string) error {
 	ctx := cmd.Context()
 	w := cmd.OutOrStdout()
 
+	mode, err := forget.ParseBarMode(barStr)
+	if err != nil {
+		return err
+	}
+
 	fmt.Fprintf(w, "gk forget --analyze (repo-wide, depth=%d, top=%d)\n", depth, top)
 	fmt.Fprintln(w, "scanning all objects on every ref — may take a while on large repos...")
+	fmt.Fprintln(w)
 
 	entries, err := forget.Audit(ctx, runner, RepoFlag(), depth, top)
 	if err != nil {
 		return err
 	}
-	if len(entries) == 0 {
-		fmt.Fprintln(w, "no blobs found — repo has no history yet?")
-		return nil
+
+	fmt.Fprint(w, forget.RenderAudit(entries, forget.RenderOpts{
+		Mode:    mode,
+		NoColor: NoColorFlag(),
+	}))
+
+	// Footer summary: total bytes shown, total bytes in repo (top
+	// might be capped), and the share that the visible rows represent.
+	// Helps the user decide whether the long tail matters or whether
+	// targeting top-N alone is enough.
+	if len(entries) > 0 {
+		var visible int64
+		var historyOnly int64
+		for _, e := range entries {
+			visible += e.TotalBytes
+			if !e.InHEAD {
+				historyOnly += e.TotalBytes
+			}
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "shown: %s across %d bucket(s)", forget.HumanBytes(visible), len(entries))
+		if historyOnly > 0 {
+			fmt.Fprintf(w, "  ·  history-only: %s", forget.HumanBytes(historyOnly))
+		}
+		fmt.Fprintln(w)
 	}
 
-	for _, e := range entries {
-		flag := ""
-		if !e.InHEAD {
-			flag = "  (history-only)"
-		}
-		fmt.Fprintf(w, "  %-40s  %4d unique blobs  total %10s  largest %10s%s\n",
-			e.Path, e.UniqueBlobs,
-			forget.HumanBytes(e.TotalBytes),
-			forget.HumanBytes(e.LargestBytes),
-			flag,
-		)
-	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "next:")
-	fmt.Fprintln(w, "  gk forget --analyze <path>      # narrow to one path for an exact reclaim estimate")
-	fmt.Fprintln(w, "  echo <path>/ >> .gitignore && gk forget    # forget a path from history")
-	fmt.Fprintln(w, "  gk forget --analyze --depth 2   # finer-grained directory grouping")
-	fmt.Fprintln(w, "  gk forget --analyze --depth 0   # individual files (slow on large repos)")
+	fmt.Fprintln(w, "  gk forget --analyze <path>             # narrow to one path for an exact reclaim estimate")
+	fmt.Fprintln(w, "  echo <path>/ >> .gitignore && gk forget   # forget a path from history")
+	fmt.Fprintln(w, "  gk forget --analyze --depth 2          # finer-grained directory grouping")
+	fmt.Fprintln(w, "  gk forget --analyze --depth 0          # individual files (slow on large repos)")
+	fmt.Fprintln(w, "  gk forget --analyze --bar=block        # alt bar style (sub-cell glyphs)")
 	return nil
 }
 

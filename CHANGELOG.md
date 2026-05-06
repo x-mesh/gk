@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-05-06
+
+### Fixed
+
+- **`gk update` aborted with "permission denied" when the install dir was
+  not user-writable.** When the running binary lived at `/usr/local/bin/gk`
+  (the install.sh default), the very first download step tried to create a
+  sibling temp file via `os.CreateTemp(install.Dir, ...)` and failed before
+  the sudo-escalating rename step ever ran. Stage downloads in the install
+  dir only when it is writable for the current user, otherwise stage in
+  `os.TempDir()` and let `AtomicReplaceWithSudo` move the file across
+  filesystems via `sudo install -m 0755`. Added `update.PickStagingDir` so
+  callers do not need to track which path was chosen.
+
 ## [0.30.0] - 2026-05-06
 
 ### Added

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-05-06
+
+### Changed
+
+- **`gk doctor` baseline output is quieter and more honest.** The
+  `fzf` row was removed — gk hasn't shelled out to the `fzf` binary
+  since the bubbletea-based `TablePicker` shipped, so warning users
+  to install it was misleading. The seven AI-integration rows
+  (`anthropic`/`openai`/`nvidia`/`groq` API keys, plus the
+  `gemini`/`qwen`/`kiro-cli` binaries) now surface only under
+  `gk doctor --verbose`, leaving the default report focused on
+  issues that actually block gk. On a typical machine this drops
+  the WARN count from ~13 to ~4.
+
+### Internal
+
+- **Picker plumbing dead-code purge.** The unused `FzfPicker`,
+  `FzfAvailable`, `writePreviewMap`, and `shellQuote` symbols in
+  `internal/ui` were removed and `internal/ui/fzf.go` renamed to
+  `picker.go` to match what is left (the shared `PickerItem` /
+  `Picker` types and `FallbackPicker`). Stale `FzfPicker` mentions
+  in `internal/cli/switch.go`, `internal/cli/worktree.go`, and
+  `internal/ui/table_picker.go` doc comments now point at
+  `FallbackPicker`. Drops a never-callable nil check from
+  `internal/ui/formatter_test.go` so `staticcheck` stays clean.
+
 ## [0.35.0] - 2026-05-06
 
 ### Added

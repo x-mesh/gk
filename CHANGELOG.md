@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-05-06
+
+### Added
+
+- **`gk update` self-update.** New command that detects how the running
+  binary was installed and dispatches accordingly:
+  - **brew** (binary lives under `/opt/homebrew`, `/usr/local/Cellar`,
+    `/usr/local/Homebrew`, or `/home/linuxbrew/.linuxbrew`) → forwards to
+    `brew upgrade x-mesh/tap/gk`.
+  - **manual** (anything else, typically `/usr/local/bin/gk` or
+    `~/.local/bin/gk` from `install.sh`) → fetches the latest release tag
+    from GitHub, downloads `gk_<os>_<arch>.tar.gz` and `checksums.txt`,
+    verifies sha256, extracts into a sibling `gk.new`, and renames in
+    place. The previous binary is preserved at `<target>.bak`. When the
+    install dir is not user-writable, `sudo install -m 0755 …` is invoked
+    with stdin/stdout/stderr passed through so the password prompt works.
+  - **go-install** (binary lives under `$GOPATH/bin` or `$HOME/go/bin`) →
+    prints `go install github.com/x-mesh/gk/cmd/gk@latest` rather than
+    overwriting the user's Go-managed bin.
+
+  Flags: `--check` exits 0 when up-to-date or 1 when newer is available
+  (no download, suitable for cron/CI gates); `--force` reinstalls even at
+  the latest version; `--to vX.Y.Z` pins a specific release for manual
+  installs. Honours the global `--dry-run`.
+
+  Tar extraction rejects entries whose basename is not `gk` or that
+  contain `..`, so a hostile mirror cannot drop arbitrary files next to
+  the running binary. Archive size is capped at 64 MiB and `checksums.txt`
+  at 64 KiB.
+
 ## [0.29.1] - 2026-05-06
 
 ### Fixed

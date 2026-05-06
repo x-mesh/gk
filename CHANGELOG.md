@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.2] - 2026-05-06
+
+### Fixed
+
+- **`gk forget` rejected the workflow it was designed for.** Adding a
+  live-data directory (e.g. a PostgreSQL `pg_data/` checkout) to
+  `.gitignore` and running `gk forget` aborted with
+  `working tree has uncommitted changes; commit or stash first`,
+  because the same files the user wanted to delete from history were
+  flagged as M/D in `git status`. Telling the user to "stash first" is
+  exactly wrong: the changes were going to be erased anyway.
+
+  Fix: split the dirty-tree gate from the structural gate. Rebase /
+  merge / cherry-pick still hard-block. Dirty entries are partitioned
+  by location:
+    - paths inside any forget target → ignored (filter-repo will erase
+      them);
+    - paths outside any target → still abort, with a hint surfacing up
+      to five offending paths and suggesting commit/stash/narrow-target
+      remediation.
+
+  New `--force-dirty` flag lets users override the outside-target gate
+  when they have reviewed the loss; filter-repo will reset those
+  changes. The interactive review and backup steps are unchanged.
+
+  `pathUnderAny` matches a target with or without a trailing slash and
+  treats it as a directory cover, mirroring filter-repo's own path
+  argument semantics.
+
 ## [0.32.1] - 2026-05-06
 
 ### Fixed

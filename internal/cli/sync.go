@@ -210,10 +210,18 @@ func runSyncCore(cmd *cobra.Command) error {
 	if dirty {
 		switch {
 		case autostash:
-			if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk sync autostash"); err != nil {
-				return fmt.Errorf("stash failed: %w", err)
+			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk sync autostash")
+			if sErr != nil {
+				return fmt.Errorf("stash failed: %w", sErr)
 			}
-			stashed = true
+			if !created {
+				hint := describeDirtyButNotStashed(ctx, runner)
+				if hint == "" {
+					hint = "stash push reported success but produced no entry"
+				}
+				Dbg("sync: --autostash created no stash entry — %s", hint)
+			}
+			stashed = created
 		case ui.IsTerminal():
 			ok, perr := promptStashDirty(ctx, runner, "gk sync autostash")
 			if perr != nil {
@@ -528,10 +536,18 @@ func runSyncLegacy(cmd *cobra.Command) error {
 	if dirty {
 		switch {
 		case autostash:
-			if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk sync autostash"); err != nil {
-				return fmt.Errorf("stash failed: %w", err)
+			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk sync autostash")
+			if sErr != nil {
+				return fmt.Errorf("stash failed: %w", sErr)
 			}
-			stashed = true
+			if !created {
+				hint := describeDirtyButNotStashed(ctx, runner)
+				if hint == "" {
+					hint = "stash push reported success but produced no entry"
+				}
+				Dbg("sync: --autostash created no stash entry — %s", hint)
+			}
+			stashed = created
 		case ui.IsTerminal():
 			ok, perr := promptStashDirty(ctx, runner, "gk sync autostash")
 			if perr != nil {

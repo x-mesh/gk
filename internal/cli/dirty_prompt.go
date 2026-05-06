@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -47,10 +48,24 @@ func promptStashDirty(ctx context.Context, runner git.Runner, stashLabel string)
 	if choice != "stash" {
 		return false, errSkipDirty
 	}
-	if _, errOut, sErr := runner.Run(ctx, "stash", "push", "--include-untracked", "-m", stashLabel); sErr != nil {
+	created, sErr := stashIfChanged(ctx, runner, "push", "--include-untracked", "-m", stashLabel)
+	if sErr != nil {
 		return false, WithHint(
-			fmt.Errorf("stash before continue: %s: %w", strings.TrimSpace(string(errOut)), sErr),
+			fmt.Errorf("stash before continue: %w", sErr),
 			"git failed to write the index. run `gk doctor` to inspect (lock file? in-progress merge?).")
+	}
+	if !created {
+		// stash push reported success but did not produce a new entry —
+		// the dirty signal came from a diff git stash silently ignores
+		// (submodule pointer, mode bits). Surface a hint and treat the
+		// tree as effectively clean so the caller does not pop a stash
+		// that does not exist.
+		hint := describeDirtyButNotStashed(ctx, runner)
+		if hint == "" {
+			hint = "stash push reported success but produced no entry; the dirty signal is something git stash skips by default"
+		}
+		fmt.Fprintf(os.Stderr, "warning: no stash created — %s\n", hint)
+		return false, nil
 	}
 	return true, nil
 }

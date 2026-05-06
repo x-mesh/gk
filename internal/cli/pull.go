@@ -199,11 +199,19 @@ func runPullCore(cmd *cobra.Command) error {
 	if dirty {
 		switch {
 		case autostash:
-			if _, _, err := runner.Run(ctx, "stash", "push", "-m", "gk pull autostash"); err != nil {
-				return fmt.Errorf("stash failed: %w", err)
+			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk pull autostash")
+			if sErr != nil {
+				return fmt.Errorf("stash failed: %w", sErr)
 			}
-			stashed = true
-			Dbg("pull: autostashed working tree (--autostash)")
+			if !created {
+				hint := describeDirtyButNotStashed(ctx, runner)
+				if hint == "" {
+					hint = "stash push reported success but produced no entry"
+				}
+				Dbg("pull: --autostash created no stash entry — %s", hint)
+			}
+			stashed = created
+			Dbg("pull: autostashed working tree (--autostash) stashed=%v", stashed)
 		case ui.IsTerminal():
 			ok, perr := promptStashDirty(ctx, runner, "gk pull autostash")
 			if perr != nil {

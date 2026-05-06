@@ -61,6 +61,7 @@ func TestRebaseConflictStatus_RebaseMergeMetadata(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil info")
+		return
 	}
 	if got.StoppedSHA != "abc1234" {
 		t.Errorf("StoppedSHA = %q", got.StoppedSHA)
@@ -110,6 +111,7 @@ func TestRebaseConflictStatus_RebaseApplyLegacy(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil info")
+		return
 	}
 	if got.Done != 1 || got.Total != 3 {
 		t.Errorf("Done/Total = %d/%d, want 1/3", got.Done, got.Total)

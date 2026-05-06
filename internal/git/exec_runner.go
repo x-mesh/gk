@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -38,11 +39,19 @@ var guardEnv = []string{
 
 // buildCmd constructs the exec.Cmd for the given args without starting it.
 // Exported for testing environment variable injection.
+//
+// Env layering, in append order so later entries win for duplicate keys:
+//  1. os.Environ()  — preserves HOME, USER, PATH, SSH_AUTH_SOCK, etc. so git
+//     can locate ~/.gitconfig, credential helpers, and the user identity.
+//  2. guardEnv      — forces deterministic locale/lock/prompt behaviour even
+//     when the parent inherits something else.
+//  3. r.ExtraEnv    — caller-provided overrides win over both.
 func (r *ExecRunner) buildCmd(ctx context.Context, args ...string) *exec.Cmd {
 	full := append([]string{"-c", "core.quotepath=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = r.Dir
-	cmd.Env = append(guardEnv, r.ExtraEnv...)
+	env := append(os.Environ(), guardEnv...)
+	cmd.Env = append(env, r.ExtraEnv...)
 	return cmd
 }
 

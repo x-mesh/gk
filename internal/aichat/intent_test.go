@@ -86,6 +86,7 @@ func TestIntentParser_Parse_ValidResponse(t *testing.T) {
 	}
 	if plan == nil {
 		t.Fatal("expected non-nil plan")
+		return
 	}
 	if len(plan.Commands) != 2 {
 		t.Fatalf("expected 2 commands, got %d", len(plan.Commands))
@@ -176,6 +177,7 @@ func TestIntentParser_Parse_DangerousCommands(t *testing.T) {
 	}
 	if plan == nil {
 		t.Fatal("expected non-nil plan")
+		return
 	}
 	if len(plan.Commands) != 3 {
 		t.Fatalf("expected 3 commands, got %d", len(plan.Commands))

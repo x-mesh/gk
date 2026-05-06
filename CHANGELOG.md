@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-05-06
+
+### Added
+
+- **`gk forget --analyze` repo-wide audit fallback.** When `--analyze`
+  is invoked with no positional targets and no `.gitignore`-derived
+  auto-detect hits, gk now switches into an explore-the-landscape
+  mode that scans every reachable object on every ref and prints the
+  heaviest path buckets:
+  - `--depth N` (default 1) groups results by the first N path
+    segments. depth=0 lists individual files; depth=2 walks one level
+    inside top-level dirs.
+  - `--top N` (default 20) caps the result set, sorted by total
+    bytes descending.
+  - Each row shows `unique blobs / total / largest`, plus a
+    `(history-only)` flag when the bucket no longer exists in HEAD —
+    those are the highest-leverage forget targets because removing
+    them from history reclaims space without affecting current work.
+  - Streams `git rev-list --all --objects | git cat-file
+    --batch-check` so even multi-million-object repos do not
+    materialise the listing in memory.
+  - The post-output hint walks the user from "I see what's heavy" to
+    a concrete `gk forget --analyze <path>` (exact reclaim estimate)
+    or `echo path/ >> .gitignore && gk forget` (rewrite).
+  - `--analyze` no longer requires `git-filter-repo` on PATH because
+    audit is read-only; the binary check moves into the rewrite
+    branch only.
+
+  Targeted `gk forget --analyze <path>` is unchanged.
+
 ## [0.32.2] - 2026-05-06
 
 ### Fixed

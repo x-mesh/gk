@@ -51,7 +51,10 @@ Examples:
   gk forget db/ secrets.json             # explicit path list
   gk forget --dry-run db/                # preview without rewriting
   gk forget --yes db/                    # skip the confirmation prompt
-  gk forget --analyze                    # report blob bytes that would be reclaimed
+  gk forget --analyze db/                # exact reclaim estimate for db/
+  gk forget --analyze                    # repo-wide audit (heaviest top-level dirs)
+  gk forget --analyze --depth 2          # repo-wide audit, two-segment buckets
+  gk forget --analyze --depth 0 --top 50 # 50 heaviest individual files
   gk forget db/ --keep "db/keep/*"       # forget db/ but keep db/keep/ entries
 `,
 		RunE: runForget,
@@ -60,6 +63,8 @@ Examples:
 	cmd.Flags().Bool("analyze", false, "report unique blob count and total bytes per target without rewriting (implies --dry-run)")
 	cmd.Flags().StringSlice("keep", nil, "filepath.Match pattern to exclude from the forget set (repeatable)")
 	cmd.Flags().Bool("force-dirty", false, "proceed even when working-tree changes exist outside the forget targets (those changes will be reset by filter-repo)")
+	cmd.Flags().Int("top", 20, "with --analyze and no targets, limit repo-wide audit to the N heaviest buckets")
+	cmd.Flags().Int("depth", 1, "with --analyze and no targets, group buckets by the first N path segments (0 = per-file)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -70,6 +75,8 @@ func runForget(cmd *cobra.Command, args []string) error {
 	analyze, _ := cmd.Flags().GetBool("analyze")
 	keep, _ := cmd.Flags().GetStringSlice("keep")
 	forceDirty, _ := cmd.Flags().GetBool("force-dirty")
+	top, _ := cmd.Flags().GetInt("top")
+	depth, _ := cmd.Flags().GetInt("depth")
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.
 	dryRun := DryRun() || analyze
@@ -77,11 +84,14 @@ func runForget(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
 
-	// Preflight: filter-repo must be installed before we go any further.
+	// Preflight: filter-repo must be installed before we go any further,
+	// except for --analyze which is read-only and just walks objects.
 	// Done first so a missing binary is the first error a user sees, not
 	// a cryptic mid-run failure.
-	if err := forget.EnsureFilterRepo(); err != nil {
-		return WithHint(err, "run `gk doctor` to see the full preflight result")
+	if !analyze {
+		if err := forget.EnsureFilterRepo(); err != nil {
+			return WithHint(err, "run `gk doctor` to see the full preflight result")
+		}
 	}
 
 	// In-progress rebase/merge/cherry-pick is non-negotiable — filter-repo
@@ -107,6 +117,14 @@ func runForget(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(paths) == 0 {
+		// --analyze with no targets switches into repo-wide audit mode.
+		// This is the "I don't know what's heavy yet, show me the
+		// landscape" entry point. We do not abort with a hint; we
+		// surface the heaviest buckets and trust the user to pick
+		// targets from the output.
+		if analyze {
+			return runAudit(cmd, runner, depth, top)
+		}
 		return WithHint(
 			fmt.Errorf("no paths to forget"),
 			"add paths to .gitignore and rerun, or pass paths explicitly: gk forget <path>...",
@@ -255,6 +273,52 @@ func resolveTargets(ctx context.Context, r git.Runner, args []string) ([]string,
 	// Filter to paths that actually appear in history; an entry could be
 	// staged-but-not-committed and would be a no-op for filter-repo.
 	return forget.PathInHistory(ctx, r, auto)
+}
+
+// runAudit prints a repo-wide history audit grouped by `depth`-deep
+// path prefix and capped at `top` entries. Triggered by `gk forget
+// --analyze` with no positional targets and no .gitignore-derived
+// auto-detect hits — i.e. the "explore what's heavy" entry point.
+//
+// Output marks history-only buckets with `(history)`. Those are paths
+// no longer present in HEAD but still inflating clones — the highest
+// leverage forget targets, since users can erase them without
+// affecting current work.
+func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int) error {
+	ctx := cmd.Context()
+	w := cmd.OutOrStdout()
+
+	fmt.Fprintf(w, "gk forget --analyze (repo-wide, depth=%d, top=%d)\n", depth, top)
+	fmt.Fprintln(w, "scanning all objects on every ref — may take a while on large repos...")
+
+	entries, err := forget.Audit(ctx, runner, RepoFlag(), depth, top)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "no blobs found — repo has no history yet?")
+		return nil
+	}
+
+	for _, e := range entries {
+		flag := ""
+		if !e.InHEAD {
+			flag = "  (history-only)"
+		}
+		fmt.Fprintf(w, "  %-40s  %4d unique blobs  total %10s  largest %10s%s\n",
+			e.Path, e.UniqueBlobs,
+			forget.HumanBytes(e.TotalBytes),
+			forget.HumanBytes(e.LargestBytes),
+			flag,
+		)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "next:")
+	fmt.Fprintln(w, "  gk forget --analyze <path>      # narrow to one path for an exact reclaim estimate")
+	fmt.Fprintln(w, "  echo <path>/ >> .gitignore && gk forget    # forget a path from history")
+	fmt.Fprintln(w, "  gk forget --analyze --depth 2   # finer-grained directory grouping")
+	fmt.Fprintln(w, "  gk forget --analyze --depth 0   # individual files (slow on large repos)")
+	return nil
 }
 
 // dirtyOutsideTargets returns the working-tree-modified paths that are

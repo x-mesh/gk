@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-05-06
+
+### Added
+
+- **`gk forget --analyze`.** Walks `git log --all --raw` for each target,
+  collects unique post-image blob OIDs, and pipes them through
+  `git cat-file --batch-check` so the cost of a forget can be estimated
+  without rewriting anything. Output reports per-path unique blob count,
+  total bytes, and largest single blob, plus a grand total. Implies
+  `--dry-run`. Useful for asking "is the rewrite worth it?" before
+  paying the SHA-churn tax.
+- **`gk forget --keep <glob>` exclusions.** Repeatable flag using
+  `filepath.Match` syntax (the same dialect as `ai.commit.deny_paths`).
+  A keep pattern matches the path itself or any parent directory, so
+  `--keep db/keep` strips `db/keep/seed.sql` and everything beneath it.
+  Invalid patterns surface a clean diagnostic up front instead of
+  silently failing to match.
+
+### Changed
+
+- **Forget backup refs are now shaped as
+  `refs/gk/forget-backup/<branch>/<unix>`** (one ref per source
+  branch/tag, with tags written as `tag-<name>`). The previous
+  `refs/gk/forget-backup/<unix>/refs/heads/<name>` shape did not match
+  the gitsafe `<kind>-backup/<branch>/<unix>` grammar, so backups were
+  invisible to `gitsafe.ListBackups` and to `gk timemachine list`.
+  The flat-text manifest under `.git/gk/forget-backup-<unix>.txt` is
+  unchanged.
+- **`gitsafe.ListBackups` now scans `refs/gk/forget-backup/`.** Combined
+  with the ref shape change above, `gk timemachine list` surfaces
+  forget rewrites alongside undo, wipe, and timemachine entries with no
+  caller-side branching.
+
 ## [0.31.0] - 2026-05-06
 
 ### Added

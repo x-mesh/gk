@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-05-06
+
+### Fixed
+
+- **`gk pull` and `gk sync` could fail with "No stash entries found"
+  after auto-stashing a dirty tree.** Trigger: the working tree was
+  dirty for a reason `git stash push` silently skips by default —
+  submodule pointer mismatch or a file-mode-bit-only diff. In those
+  cases stash push exits 0 with `No local changes to save` printed to
+  stdout, but our pre-check (`git status --porcelain -uno`) already
+  considered the tree dirty, so the caller marked the stash as
+  successful and tried to pop it minutes later, after fetch had
+  finished. The pop blew up with the misleading "No stash entries
+  found" error.
+
+  Fix: a new `stashIfChanged` helper compares `refs/stash` before and
+  after the push and reports the actual outcome. When stash created
+  no entry, callers skip the pop and emit a debug line identifying
+  the most likely cause via `describeDirtyButNotStashed`, which
+  inspects `git submodule status` for `+`/`-` lines and `git diff
+  --raw HEAD` for mode-bit changes. Applied at all four `git stash
+  push` call sites: `gk pull --autostash`, `gk pull` interactive
+  prompt, and the two `gk sync --autostash` paths.
+
+  In practice this turns the most common failure mode after
+  `gk sw <remote-only-branch>` (where the new branch's submodule
+  pointer differs from the prior branch's) from a confusing pop
+  error into a clean no-op with an actionable hint.
+
 ## [0.32.0] - 2026-05-06
 
 ### Added

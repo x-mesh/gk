@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-05-06
+
+### Fixed
+
+- **`gk resolve` no longer refuses to help when the only signal is
+  unmerged paths.** `git stash apply`, `git apply --3way`, and a few
+  partial-reset paths leave unmerged stages in the index *without*
+  writing any of the in-progress op markers (`MERGE_HEAD`,
+  `rebase-merge/`, `CHERRY_PICK_HEAD`, etc.) that
+  `gitstate.Detect` keys off. The previous gate fired before file
+  collection and turned that exact case into a dead end —
+  `gk pull`'s new pre-flight pointed users at `gk resolve`, only for
+  `gk resolve` to claim "no merge/rebase/cherry-pick conflict in
+  progress". Resolver now collects unmerged files first; falls back
+  to the "merge" op type when the marker is missing; rejects only
+  when both signals are absent (with an updated message that names
+  the unmerged-paths half of the gate).
+- **`guardWorkingTreeReady`'s remediation hint adapts to whether an
+  op is actually in progress.** When `MERGE_HEAD` / rebase-merge /
+  CHERRY_PICK_HEAD is set, the hint suggests
+  `git merge|rebase|cherry-pick --continue|--abort` as before. When
+  none is — the stash-apply case above — it suggests
+  `git add <files> && git commit` and `git checkout -- <files>`
+  instead, so users following the printed advice don't hit
+  `fatal: No rebase in progress`.
+
 ## [0.37.0] - 2026-05-06
 
 ### Fixed

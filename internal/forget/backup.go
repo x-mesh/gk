@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 )
 
 // BackupRefPrefix groups all forget-related backup refs under a single
@@ -49,11 +50,15 @@ type RefSnapshot struct {
 // namespace and a text manifest. Returns the populated Backup struct so
 // the caller can surface paths in CLI output.
 //
+// Backup ref shape is `refs/gk/forget-backup/<sanitized-source>/<unix>`,
+// matching the gitsafe convention used by undo/wipe/timemachine backups.
+// That keeps `gk timemachine list` and gitsafe.ListBackups in sync without
+// either side carrying a special case for forget.
+//
 // gitDir is the absolute path to the repo's .git directory; the manifest
 // lands at <gitDir>/gk/forget-backup-<unix>.txt.
 func CreateBackup(ctx context.Context, r git.Runner, gitDir string, now time.Time) (*Backup, error) {
 	stamp := now.Unix()
-	prefix := fmt.Sprintf("%s/%d", BackupRefPrefix, stamp)
 
 	stdout, _, err := r.Run(ctx,
 		"for-each-ref",
@@ -83,16 +88,18 @@ func CreateBackup(ctx context.Context, r git.Runner, gitDir string, now time.Tim
 		}
 	}
 
-	// Write the parallel backup ref namespace. We deliberately keep the
-	// original refname intact so users see "refs/gk/forget-backup/<ts>/refs/heads/main"
-	// — long, but trivially mappable to the original.
+	// Write the parallel backup ref namespace. The source ref's shape is
+	// folded into a single sanitized segment so the resulting backup ref
+	// matches gitsafe's <kind>-backup/<branch>/<unix> grammar; without that
+	// shape, ListBackups would not parse the entry and `gk timemachine
+	// list` would silently miss forget backups.
 	for _, s := range snaps {
 		if s.Name == "HEAD" {
 			// Skip HEAD here; it lives in the manifest but not the ref
 			// namespace (a HEAD-named ref under refs/gk/... is confusing).
 			continue
 		}
-		ref := prefix + "/" + s.Name
+		ref := fmt.Sprintf("%s/%s/%d", BackupRefPrefix, sanitizeSourceRef(s.Name), stamp)
 		if _, _, err := r.Run(ctx, "update-ref", ref, s.SHA); err != nil {
 			return nil, fmt.Errorf("write backup ref %s: %w", ref, err)
 		}
@@ -119,6 +126,21 @@ func CreateBackup(ctx context.Context, r git.Runner, gitDir string, now time.Tim
 		Stamp:     stamp,
 		Refs:      snaps,
 		Manifest:  manifest,
-		RefPrefix: prefix,
+		RefPrefix: fmt.Sprintf("%s/<source>/%d", BackupRefPrefix, stamp),
 	}, nil
+}
+
+// sanitizeSourceRef collapses a ref path like "refs/heads/feat/auth" or
+// "refs/tags/v1.0" into a single backup-ref-safe segment. We prefix tags
+// with "tag-" so backups for `main` (branch) and `main` (tag) don't
+// collide in the namespace.
+func sanitizeSourceRef(refname string) string {
+	switch {
+	case strings.HasPrefix(refname, "refs/heads/"):
+		return gitsafe.SanitizeBranchSegment(strings.TrimPrefix(refname, "refs/heads/"))
+	case strings.HasPrefix(refname, "refs/tags/"):
+		return "tag-" + gitsafe.SanitizeBranchSegment(strings.TrimPrefix(refname, "refs/tags/"))
+	default:
+		return gitsafe.SanitizeBranchSegment(refname)
+	}
 }

@@ -41,14 +41,18 @@ Requires git filter-repo (https://github.com/newren/git-filter-repo).
 Install: brew install git-filter-repo  (or: pip install git-filter-repo)
 
 Examples:
-  gk forget                       # auto-detect tracked-but-ignored paths
-  gk forget db/ secrets.json      # explicit path list
-  gk forget --dry-run db/         # preview without rewriting
-  gk forget --yes db/             # skip the confirmation prompt
+  gk forget                              # auto-detect tracked-but-ignored paths
+  gk forget db/ secrets.json             # explicit path list
+  gk forget --dry-run db/                # preview without rewriting
+  gk forget --yes db/                    # skip the confirmation prompt
+  gk forget --analyze                    # report blob bytes that would be reclaimed
+  gk forget db/ --keep "db/keep/*"       # forget db/ but keep db/keep/ entries
 `,
 		RunE: runForget,
 	}
 	cmd.Flags().BoolP("yes", "y", false, "skip the interactive confirmation prompt")
+	cmd.Flags().Bool("analyze", false, "report unique blob count and total bytes per target without rewriting (implies --dry-run)")
+	cmd.Flags().StringSlice("keep", nil, "filepath.Match pattern to exclude from the forget set (repeatable)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -56,7 +60,11 @@ func runForget(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	w := cmd.OutOrStdout()
 	yes, _ := cmd.Flags().GetBool("yes")
-	dryRun := DryRun()
+	analyze, _ := cmd.Flags().GetBool("analyze")
+	keep, _ := cmd.Flags().GetStringSlice("keep")
+	// --analyze is read-only by definition; treat it as a dry-run so the
+	// preview-only path runs without a separate code branch.
+	dryRun := DryRun() || analyze
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
@@ -84,6 +92,12 @@ func runForget(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(keep) > 0 {
+		paths, err = forget.FilterKept(paths, keep)
+		if err != nil {
+			return err
+		}
+	}
 	if len(paths) == 0 {
 		return WithHint(
 			fmt.Errorf("no paths to forget"),
@@ -105,7 +119,26 @@ func runForget(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "    - %s\n", p)
 	}
 	fmt.Fprintf(w, "  commits affected: %d (every commit SHA in the repo will change)\n", commits)
-	fmt.Fprintln(w, "  backup:  refs/gk/forget-backup/<unix>/...  +  .git/gk/forget-backup-<unix>.txt")
+	fmt.Fprintln(w, "  backup:  refs/gk/forget-backup/<branch>/<unix>  +  .git/gk/forget-backup-<unix>.txt")
+
+	if analyze {
+		fmt.Fprintln(w, "analyzing blob sizes (may scan all objects)...")
+		entries, aerr := forget.Analyze(ctx, runner, RepoFlag(), paths)
+		if aerr != nil {
+			return aerr
+		}
+		var grandTotal int64
+		var grandBlobs int
+		for _, e := range entries {
+			fmt.Fprintf(w, "  %-40s  %4d unique blobs  total %10s  largest %10s\n",
+				e.Path, e.UniqueBlobs, forget.HumanBytes(e.TotalBytes), forget.HumanBytes(e.LargestBytes))
+			grandTotal += e.TotalBytes
+			grandBlobs += e.UniqueBlobs
+		}
+		fmt.Fprintf(w, "  %-40s  %4d unique blobs  total %10s\n",
+			"total", grandBlobs, forget.HumanBytes(grandTotal))
+		return nil
+	}
 
 	if dryRun {
 		fmt.Fprintln(w, "[dry-run] not rewriting history")

@@ -13,11 +13,90 @@ package forget
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
 )
+
+// filepathMatch is a thin alias around filepath.Match exposed as a var so
+// tests could swap it for a doublestar matcher in the future without
+// rewriting callers. Today it is just filepath.Match.
+var filepathMatch = filepath.Match
+
+// FilterKept returns the subset of `paths` whose entries do NOT match any
+// of the supplied keep patterns. Patterns use filepath.Match syntax (the
+// same shape gk's privacy_gate and ai-commit deny_paths use), so users
+// can write `db/keep/*` without learning a new glob dialect.
+//
+// Each path is checked against the patterns themselves and against every
+// directory prefix — so `db/keep/foo.txt` matches a pattern of `db/keep`
+// or `db/keep/*`. This mirrors how `.gitignore` rules work in spirit:
+// matching a directory keeps everything underneath it.
+//
+// Invalid patterns return an error so the user gets a clean diagnostic
+// instead of silent "did not match" surprise.
+func FilterKept(paths, patterns []string) ([]string, error) {
+	if len(patterns) == 0 {
+		return paths, nil
+	}
+	// Validate patterns up-front — filepath.Match returns ErrBadPattern
+	// only when the pattern is actually checked against an input, but we
+	// want users to see the error without waiting for a non-matching
+	// path to surface it.
+	for _, pat := range patterns {
+		if _, err := filepathMatch(pat, ""); err != nil && err.Error() != "" {
+			// filepathMatch wraps filepath.Match; the empty-input call
+			// returns false,nil for a syntactically valid pattern and
+			// false,ErrBadPattern for an invalid one.
+			return nil, fmt.Errorf("invalid --keep pattern %q: %w", pat, err)
+		}
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !anyKeepMatch(p, patterns) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// anyKeepMatch returns true when path matches any keep pattern, either
+// directly or via a parent directory. The directory walk is what makes
+// `--keep db/keep` strip `db/keep/data.sqlite` even though the literal
+// path is longer than the pattern.
+func anyKeepMatch(path string, patterns []string) bool {
+	candidates := []string{path}
+	for dir := path; ; {
+		next := dirOf(dir)
+		if next == dir || next == "." || next == "" {
+			break
+		}
+		candidates = append(candidates, next)
+		dir = next
+	}
+	for _, pat := range patterns {
+		for _, c := range candidates {
+			ok, _ := filepathMatch(pat, c)
+			if ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dirOf returns the directory of p without depending on filepath, which
+// would normalise separators in a way that breaks git-style forward-slash
+// paths on Windows. Internal git paths are always forward-slash.
+func dirOf(p string) string {
+	i := strings.LastIndexByte(p, '/')
+	if i < 0 {
+		return ""
+	}
+	return p[:i]
+}
 
 // AutoDetectIgnored returns the list of paths that are currently tracked
 // in the index but would be ignored by .gitignore — i.e. paths the user

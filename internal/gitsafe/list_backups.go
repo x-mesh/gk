@@ -37,6 +37,7 @@ func ListBackups(ctx context.Context, r git.Runner) ([]BackupRef, error) {
 		"refs/gk/undo-backup/",
 		"refs/gk/wipe-backup/",
 		"refs/gk/timemachine-backup/",
+		"refs/gk/forget-backup/",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)

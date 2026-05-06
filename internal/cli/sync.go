@@ -202,6 +202,9 @@ func runSyncCore(cmd *cobra.Command) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), staleHint)
 	}
 
+	if err := guardWorkingTreeReady(ctx, runner, "sync"); err != nil {
+		return err
+	}
 	dirty, err := client.IsDirty(ctx)
 	if err != nil {
 		return err
@@ -212,7 +215,10 @@ func runSyncCore(cmd *cobra.Command) error {
 		case autostash:
 			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk sync autostash")
 			if sErr != nil {
-				return fmt.Errorf("stash failed: %w", sErr)
+				return WithHint(
+					fmt.Errorf("stash failed: %w", sErr),
+					diagnoseStashFailure(ctx, runner),
+				)
 			}
 			if !created {
 				hint := describeDirtyButNotStashed(ctx, runner)
@@ -524,6 +530,9 @@ func runSyncLegacy(cmd *cobra.Command) error {
 		return nil
 	}
 
+	if err := guardWorkingTreeReady(ctx, runner, "sync"); err != nil {
+		return err
+	}
 	dirty, err := client.IsDirty(ctx)
 	if err != nil {
 		return err
@@ -538,7 +547,10 @@ func runSyncLegacy(cmd *cobra.Command) error {
 		case autostash:
 			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk sync autostash")
 			if sErr != nil {
-				return fmt.Errorf("stash failed: %w", sErr)
+				return WithHint(
+					fmt.Errorf("stash failed: %w", sErr),
+					diagnoseStashFailure(ctx, runner),
+				)
 			}
 			if !created {
 				hint := describeDirtyButNotStashed(ctx, runner)

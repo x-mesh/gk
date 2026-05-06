@@ -52,7 +52,8 @@ func promptStashDirty(ctx context.Context, runner git.Runner, stashLabel string)
 	if sErr != nil {
 		return false, WithHint(
 			fmt.Errorf("stash before continue: %w", sErr),
-			"git failed to write the index. run `gk doctor` to inspect (lock file? in-progress merge?).")
+			diagnoseStashFailure(ctx, runner),
+		)
 	}
 	if !created {
 		// stash push reported success but did not produce a new entry —

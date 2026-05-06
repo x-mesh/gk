@@ -213,6 +213,9 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 		return nil
 	}
 
+	if err := guardWorkingTreeReady(ctx, deps.Runner, "merge"); err != nil {
+		return err
+	}
 	dirty, err := client.IsDirty(ctx)
 	if err != nil {
 		return err
@@ -224,8 +227,11 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 				hintCommand("gk merge "+target+" --autostash"),
 			)
 		}
-		if _, _, err := deps.Runner.Run(ctx, "stash", "push", "-m", "gk merge autostash"); err != nil {
-			return fmt.Errorf("stash failed: %w", err)
+		if _, errOut, err := deps.Runner.Run(ctx, "stash", "push", "-m", "gk merge autostash"); err != nil {
+			return WithHint(
+				fmt.Errorf("stash failed: %s: %w", strings.TrimSpace(string(errOut)), err),
+				diagnoseStashFailure(ctx, deps.Runner),
+			)
 		}
 		stashed = true
 	}

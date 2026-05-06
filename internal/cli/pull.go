@@ -188,7 +188,13 @@ func runPullCore(cmd *cobra.Command) error {
 	}
 	Dbg("pull: upstream=%s fetchRemote=%s fetchBranch=%s tracking=%v", upstream, fetchRemote, fetchBranch, hasTracking)
 
-	// 4) dirty check
+	// 4) dirty check — refuse outright when unmerged paths remain.
+	// `git stash push` silently fails (empty stderr, exit 1) on git
+	// 2.43 if we let the autostash path try, so surface the real
+	// cause before the user gets prompted.
+	if err := guardWorkingTreeReady(ctx, runner, "pull"); err != nil {
+		return err
+	}
 	dirty, err := client.IsDirty(ctx)
 	if err != nil {
 		return err
@@ -201,7 +207,10 @@ func runPullCore(cmd *cobra.Command) error {
 		case autostash:
 			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk pull autostash")
 			if sErr != nil {
-				return fmt.Errorf("stash failed: %w", sErr)
+				return WithHint(
+					fmt.Errorf("stash failed: %w", sErr),
+					diagnoseStashFailure(ctx, runner),
+				)
 			}
 			if !created {
 				hint := describeDirtyButNotStashed(ctx, runner)

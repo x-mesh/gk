@@ -138,25 +138,28 @@ func runResolveInteractive(
 	state *gitstate.State,
 	opts resolve.ResolveOptions,
 ) error {
-	// Validate conflict state.
-	if state.Kind == gitstate.StateNone {
-		return fmt.Errorf("gk resolve: no merge/rebase/cherry-pick conflict in progress")
-	}
-
-	opType := stateKindToOpType(state.Kind)
-
-	// Collect conflicted files.
+	// Collect conflicted files. We do this *before* checking
+	// state.Kind because `git stash apply`, `git apply --3way`, and a
+	// few partial-reset paths leave unmerged stages in the index
+	// without writing any of the in-progress op markers gitstate.Detect
+	// looks at — refusing those would force the user to fix conflicts
+	// by hand even though gk resolve is otherwise perfectly capable.
 	conflicted, err := r.CollectConflictedFiles(ctx)
 	if err != nil {
 		return err
 	}
 	if len(conflicted) == 0 {
+		if state.Kind == gitstate.StateNone {
+			return fmt.Errorf("gk resolve: no merge/rebase/cherry-pick conflict in progress and no unmerged paths")
+		}
 		if err := resolve.CheckStuck(state); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "no conflicted files found")
 		return nil
 	}
+
+	opType := stateKindToOpType(state.Kind)
 
 	// Filter by user-specified files.
 	filesToProcess := conflicted

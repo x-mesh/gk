@@ -224,19 +224,19 @@ func stateKindToOpType(kind gitstate.StateKind) string {
 
 // Run은 옵션에 따라 충돌 해결을 실행한다.
 func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveOptions) (*ResolveResult, error) {
-	// 1. 충돌 상태 확인
-	if state.Kind == gitstate.StateNone {
-		return nil, fmt.Errorf("gk resolve: no merge/rebase/cherry-pick conflict in progress")
-	}
-
-	opType := stateKindToOpType(state.Kind)
-
-	// 2. 충돌 파일 수집
+	// 1. 충돌 파일 수집 — state.Kind 가드보다 먼저 한다. git stash
+	// apply / git apply --3way / 일부 partial reset 경로는 in-progress
+	// op 마커를 남기지 않으면서 index에 unmerged stage만 남기는데,
+	// state.Kind만 보고 거부하면 이런 정상적으로 해결 가능한 케이스를
+	// 사용자가 손으로 풀어야 하는 막다른 길로 보내게 된다.
 	conflicted, err := r.CollectConflictedFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(conflicted) == 0 {
+		if state.Kind == gitstate.StateNone {
+			return nil, fmt.Errorf("gk resolve: no merge/rebase/cherry-pick conflict in progress and no unmerged paths")
+		}
 		if err := CheckStuck(state); err != nil {
 			return nil, err
 		}
@@ -245,6 +245,8 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		}
 		return &ResolveResult{}, nil
 	}
+
+	opType := stateKindToOpType(state.Kind)
 
 	// 3. opts.Files 필터링
 	filesToProcess := conflicted

@@ -40,6 +40,10 @@ func TestGuardWorkingTreeReady_Unmerged(t *testing.T) {
 	if !strings.Contains(msg, "unmerged") {
 		t.Errorf("error should mention unmerged: %q", msg)
 	}
+	hint := HintFrom(err)
+	if !strings.Contains(hint, "merge --continue") {
+		t.Errorf("hint should suggest the matching --continue verb when MERGE_HEAD is set: %q", hint)
+	}
 }
 
 // TestPreviewPaths_Truncates — the preview helper protects multi-file
@@ -90,6 +94,37 @@ func TestDiagnoseStashFailure_Unmerged(t *testing.T) {
 	}
 	if !strings.Contains(hint, "gk resolve") {
 		t.Errorf("hint should suggest gk resolve: %q", hint)
+	}
+}
+
+// TestGuardWorkingTreeReady_UnmergedNoOp — `git stash apply`,
+// `git apply --3way`, and a few partial-reset paths produce unmerged
+// stages without writing any of the in-progress op markers. The hint
+// must steer those users at `git add` / `git checkout --` instead of
+// the misleading `git rebase --continue` advice they'd hit a dead
+// end on.
+func TestGuardWorkingTreeReady_UnmergedNoOp(t *testing.T) {
+	repo := mkConflictedRepo(t)
+	// Strip the merge marker without resolving the index — leaves
+	// the working tree in the exact "stash apply mid-conflict" shape.
+	for _, name := range []string{"MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"} {
+		_ = os.Remove(filepath.Join(repo.Dir, ".git", name))
+	}
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	err := guardWorkingTreeReady(context.Background(), runner, "pull")
+	if err == nil {
+		t.Fatal("expected error when unmerged paths exist")
+	}
+	hint := HintFrom(err)
+	if hint == "" {
+		t.Fatalf("expected hint to be attached: %v", err)
+	}
+	if strings.Contains(hint, "rebase --continue") || strings.Contains(hint, "rebase --abort") {
+		t.Errorf("hint must NOT suggest rebase --continue/--abort when no op is in progress: %q", hint)
+	}
+	if !strings.Contains(hint, "git add") {
+		t.Errorf("hint should suggest `git add <files>` for the unmerged-only branch: %q", hint)
 	}
 }
 

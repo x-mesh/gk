@@ -28,16 +28,31 @@ func guardWorkingTreeReady(ctx context.Context, runner git.Runner, op string) er
 		return nil
 	}
 	preview := strings.Join(previewPaths(files, 4), "\n  ")
+
+	// `git stash apply`, `git apply --3way`, and a few partial-reset
+	// paths leave unmerged stages without writing any in-progress op
+	// marker — so the right remediation in that branch is `gk resolve`
+	// + `git add` + commit, not `git rebase --continue`. Detect the op
+	// state once and tailor the hint, otherwise users follow the
+	// `--continue` advice and hit `fatal: No rebase in progress`.
+	var opLine, abortLine string
+	if state, err := gitstate.Detect(ctx, runnerDir(runner)); err == nil && state != nil && state.Kind != gitstate.StateNone {
+		verb := opAbortVerb(state.Kind)
+		opLine = fmt.Sprintf("  git %s --continue            # finish the in-progress %s\n", verb, state.Kind)
+		abortLine = fmt.Sprintf("  git %s --abort               # to cancel instead", verb)
+	} else {
+		opLine = "  git add <files> && git commit    # once markers are gone (no in-progress op detected)\n"
+		abortLine = "  git checkout -- <files>        # to discard your half of the conflict instead"
+	}
+
 	hint := fmt.Sprintf(
-		"resolve markers, then continue the in-progress operation:\n  %s\n"+
-			"fix:\n"+
+		"resolve markers, then continue:\n  %s\nfix:\n"+
 			"  gk resolve                       # interactive walk\n"+
-			"  git rebase --continue            # or merge/cherry-pick --continue\n"+
-			"  git rebase --abort               # to cancel instead",
-		preview,
+			"%s%s",
+		preview, opLine, abortLine,
 	)
 	return WithHint(
-		fmt.Errorf("%s: working tree has %d unmerged path(s); finish the in-progress merge/rebase first", op, len(files)),
+		fmt.Errorf("%s: working tree has %d unmerged path(s); resolve them first", op, len(files)),
 		hint,
 	)
 }

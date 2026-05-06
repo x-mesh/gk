@@ -137,8 +137,14 @@ func runManualUpgrade(cmd *cobra.Command, gh *update.Client, install *update.Ins
 		return fmt.Errorf("unsupported platform: %s/%s", install.OS, install.Arch)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "downloading %s (%s)...\n", asset, tag)
-	staged, err := gh.DownloadVerified(cmd.Context(), tag, asset, install.Dir)
+	// Stage in install.Dir when writable (keeps the eventual rename atomic
+	// on the same filesystem); otherwise stage in os.TempDir() so we never
+	// fail at the download step on /usr/local/bin-style targets that the
+	// current user cannot write to. AtomicReplaceWithSudo handles the
+	// cross-filesystem case via `sudo install`.
+	stagingDir := update.PickStagingDir(install.Dir)
+	fmt.Fprintf(cmd.OutOrStdout(), "downloading %s (%s) to %s...\n", asset, tag, stagingDir)
+	staged, err := gh.DownloadVerified(cmd.Context(), tag, asset, stagingDir)
 	if err != nil {
 		return err
 	}

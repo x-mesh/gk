@@ -95,6 +95,23 @@ func writable(dir string) bool {
 	return true
 }
 
+// PickStagingDir returns installDir when the current user can write to it
+// (so the eventual atomic rename stays on the same filesystem), otherwise
+// os.TempDir() so the download step does not gate on the install dir's
+// permission bits.
+//
+// When this returns os.TempDir(), AtomicReplaceWithSudo will detect the
+// non-writable target and fall through to `sudo install`, which performs
+// a cross-filesystem copy via install(1). So callers do not need to track
+// which path they got back — they just hand the staged file to
+// AtomicReplaceWithSudo and the right strategy is chosen automatically.
+func PickStagingDir(installDir string) string {
+	if writable(installDir) {
+		return installDir
+	}
+	return os.TempDir()
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

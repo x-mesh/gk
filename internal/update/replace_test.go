@@ -69,6 +69,25 @@ func TestWritable(t *testing.T) {
 	}
 }
 
+func TestPickStagingDir(t *testing.T) {
+	// Writable dir → returned as-is so the rename stays same-filesystem.
+	dir := t.TempDir()
+	if got := PickStagingDir(dir); got != dir {
+		t.Errorf("PickStagingDir(writable) = %q, want %q", got, dir)
+	}
+
+	// Unwritable dir → falls back to os.TempDir(). On Linux /proc is the
+	// canonical read-only directory; macOS sandboxes do not expose one,
+	// so use a non-existent path which os.CreateTemp also rejects.
+	bad := "/proc/cannot-write-here"
+	if _, err := os.Stat("/proc/self"); err != nil {
+		bad = filepath.Join(t.TempDir(), "does-not-exist")
+	}
+	if got := PickStagingDir(bad); got != os.TempDir() {
+		t.Errorf("PickStagingDir(unwritable) = %q, want %q", got, os.TempDir())
+	}
+}
+
 func TestAtomicReplaceWithSudoFastPath(t *testing.T) {
 	// Confirms the writable-dir fast path bypasses sudo entirely; we set up
 	// a writable temp dir so sudo is never invoked and the test is hermetic.

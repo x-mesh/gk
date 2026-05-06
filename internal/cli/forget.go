@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -66,6 +68,8 @@ Examples:
 	cmd.Flags().Int("top", 20, "with --analyze and no targets, limit repo-wide audit to the N heaviest buckets")
 	cmd.Flags().Int("depth", 1, "with --analyze and no targets, group buckets by the first N path segments (0 = per-file)")
 	cmd.Flags().String("bar", "auto", "with --analyze, bar style: auto|filled|block|none (auto = filled on TTY, none on pipes)")
+	cmd.Flags().String("sort", "size", "with --analyze, ranking: size|churn|name (churn = by unique blob count, surfaces rewrite-heavy paths)")
+	cmd.Flags().BoolP("interactive", "i", false, "with --analyze, open a multi-select picker over the audit results and forget the selected paths")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -79,6 +83,8 @@ func runForget(cmd *cobra.Command, args []string) error {
 	top, _ := cmd.Flags().GetInt("top")
 	depth, _ := cmd.Flags().GetInt("depth")
 	barStr, _ := cmd.Flags().GetString("bar")
+	sortStr, _ := cmd.Flags().GetString("sort")
+	interactive, _ := cmd.Flags().GetBool("interactive")
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.
 	dryRun := DryRun() || analyze
@@ -125,7 +131,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 		// surface the heaviest buckets and trust the user to pick
 		// targets from the output.
 		if analyze {
-			return runAudit(cmd, runner, depth, top, barStr)
+			return runAudit(cmd, runner, depth, top, barStr, sortStr, interactive)
 		}
 		return WithHint(
 			fmt.Errorf("no paths to forget"),
@@ -286,33 +292,43 @@ func resolveTargets(ctx context.Context, r git.Runner, args []string) ([]string,
 // no longer present in HEAD but still inflating clones — the highest
 // leverage forget targets, since users can erase them without
 // affecting current work.
-func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr string) error {
+func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr, sortStr string, interactive bool) error {
 	ctx := cmd.Context()
 	w := cmd.OutOrStdout()
 
-	mode, err := forget.ParseBarMode(barStr)
+	barMode, err := forget.ParseBarMode(barStr)
+	if err != nil {
+		return err
+	}
+	sortMode, err := forget.ParseSortMode(sortStr)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(w, "gk forget --analyze (repo-wide, depth=%d, top=%d)\n", depth, top)
-	fmt.Fprintln(w, "scanning all objects on every ref — may take a while on large repos...")
-	fmt.Fprintln(w)
+	if !JSONOut() {
+		fmt.Fprintf(w, "gk forget --analyze (repo-wide, depth=%d, top=%d, sort=%s)\n", depth, top, sortStr)
+		fmt.Fprintln(w, "scanning all objects on every ref — may take a while on large repos...")
+		fmt.Fprintln(w)
+	}
 
-	entries, err := forget.Audit(ctx, runner, RepoFlag(), depth, top)
+	entries, err := forget.Audit(ctx, runner, RepoFlag(), depth, top, sortMode)
 	if err != nil {
 		return err
+	}
+
+	// --json: machine-readable output for CI / dashboards. Skip the
+	// human header/footer and emit a single JSON document with the
+	// entries plus aggregate totals so consumers do not need to
+	// re-derive them.
+	if JSONOut() {
+		return emitAuditJSON(w, entries, depth, top, sortStr)
 	}
 
 	fmt.Fprint(w, forget.RenderAudit(entries, forget.RenderOpts{
-		Mode:    mode,
+		Mode:    barMode,
 		NoColor: NoColorFlag(),
 	}))
 
-	// Footer summary: total bytes shown, total bytes in repo (top
-	// might be capped), and the share that the visible rows represent.
-	// Helps the user decide whether the long tail matters or whether
-	// targeting top-N alone is enough.
 	if len(entries) > 0 {
 		var visible int64
 		var historyOnly int64
@@ -330,14 +346,128 @@ func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr
 		fmt.Fprintln(w)
 	}
 
+	if interactive {
+		return runAuditInteractive(cmd, runner, entries)
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "next:")
 	fmt.Fprintln(w, "  gk forget --analyze <path>             # narrow to one path for an exact reclaim estimate")
+	fmt.Fprintln(w, "  gk forget --analyze -i                 # multi-select picker → forget chosen paths")
 	fmt.Fprintln(w, "  echo <path>/ >> .gitignore && gk forget   # forget a path from history")
+	fmt.Fprintln(w, "  gk forget --analyze --sort churn       # rank by rewrite count (lock files etc.)")
 	fmt.Fprintln(w, "  gk forget --analyze --depth 2          # finer-grained directory grouping")
-	fmt.Fprintln(w, "  gk forget --analyze --depth 0          # individual files (slow on large repos)")
-	fmt.Fprintln(w, "  gk forget --analyze --bar=block        # alt bar style (sub-cell glyphs)")
+	fmt.Fprintln(w, "  gk forget --analyze --json             # machine-readable for CI/dashboards")
 	return nil
+}
+
+// emitAuditJSON writes a single JSON document describing the audit.
+// The shape is intentionally stable so that downstream tools can
+// pin to it; new fields may be added but existing keys never change
+// meaning.
+func emitAuditJSON(w io.Writer, entries []forget.AuditEntry, depth, top int, sortStr string) error {
+	var visible, historyOnly int64
+	for _, e := range entries {
+		visible += e.TotalBytes
+		if !e.InHEAD {
+			historyOnly += e.TotalBytes
+		}
+	}
+	doc := struct {
+		Depth            int                 `json:"depth"`
+		Top              int                 `json:"top"`
+		Sort             string              `json:"sort"`
+		Entries          []forget.AuditEntry `json:"entries"`
+		TotalBytes       int64               `json:"total_bytes"`
+		HistoryOnlyBytes int64               `json:"history_only_bytes"`
+	}{
+		Depth:            depth,
+		Top:              top,
+		Sort:             sortStr,
+		Entries:          entries,
+		TotalBytes:       visible,
+		HistoryOnlyBytes: historyOnly,
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(doc)
+}
+
+// runAuditInteractive opens a multi-select picker over the audit
+// results, lets the user toggle which paths to forget, and feeds the
+// chosen paths back into the standard rewrite pipeline. The forget
+// half reuses the existing dirty-vs-target gate, backup ref, and
+// confirmation prompt — interactive mode adds nothing destructive on
+// its own; it just narrows the target list.
+//
+// Cancellation (esc) returns nil with no side effect, so users can
+// browse audit results in the picker and back out.
+func runAuditInteractive(cmd *cobra.Command, runner *git.ExecRunner, entries []forget.AuditEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if !ui.IsTerminal() {
+		return WithHint(
+			fmt.Errorf("--interactive requires a TTY"),
+			"drop -i and rerun without it, or pipe paths to a separate `gk forget <path>` invocation",
+		)
+	}
+
+	items := make([]ui.MultiSelectItem, 0, len(entries))
+	for _, e := range entries {
+		flag := ""
+		if !e.InHEAD {
+			flag = "  (history-only)"
+		}
+		items = append(items, ui.MultiSelectItem{
+			Key: e.Path,
+			Display: fmt.Sprintf("%-50s  %4d blobs  %10s%s",
+				truncatePathForPicker(e.Path, 50),
+				e.UniqueBlobs,
+				forget.HumanBytes(e.TotalBytes),
+				flag,
+			),
+		})
+	}
+
+	chosen, err := ui.MultiSelectTUI(cmd.Context(),
+		"select paths to forget (space to toggle, enter to continue, esc to cancel)",
+		items, nil)
+	if err != nil {
+		// Cancelled or error — quiet exit either way; user did not
+		// commit to a destructive action.
+		return nil
+	}
+	if len(chosen) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no paths selected — nothing to forget.")
+		return nil
+	}
+
+	// Hand the chosen paths to the same flow that `gk forget <path>...`
+	// uses by re-invoking runForget with the selection as positional
+	// args. We disable --analyze so the actual rewrite pipeline runs.
+	if err := cmd.Flags().Set("analyze", "false"); err != nil {
+		return err
+	}
+	return runForget(cmd, chosen)
+}
+
+// truncatePathForPicker mirrors forget.truncatePath but lives in the
+// cli layer so we do not have to export the renderer's internal
+// helpers. Long paths get a middle ellipsis so the picker columns
+// stay aligned regardless of nesting depth.
+func truncatePathForPicker(path string, width int) string {
+	if len(path) <= width || width < 6 {
+		if len(path) > width {
+			return path[:width]
+		}
+		return path
+	}
+	const ell = "…"
+	keep := width - len(ell)
+	headLen := keep / 3
+	tailLen := keep - headLen
+	return path[:headLen] + ell + path[len(path)-tailLen:]
 }
 
 // dirtyOutsideTargets returns the working-tree-modified paths that are

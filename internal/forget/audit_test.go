@@ -18,7 +18,7 @@ func TestAuditDepth1GroupsTopLevel(t *testing.T) {
 	r.RunGit("commit", "-m", "init")
 
 	runner := &git.ExecRunner{Dir: r.Dir}
-	got, err := Audit(context.Background(), runner, r.Dir, 1, 0)
+	got, err := Audit(context.Background(), runner, r.Dir, 1, 0, SortBySize)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAuditMarksHistoryOnly(t *testing.T) {
 	r.RunGit("commit", "-m", "remove ghost")
 
 	runner := &git.ExecRunner{Dir: r.Dir}
-	got, err := Audit(context.Background(), runner, r.Dir, 1, 0)
+	got, err := Audit(context.Background(), runner, r.Dir, 1, 0, SortBySize)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestAuditTopCapsResults(t *testing.T) {
 	r.RunGit("commit", "-m", "init")
 
 	runner := &git.ExecRunner{Dir: r.Dir}
-	got, err := Audit(context.Background(), runner, r.Dir, 1, 3)
+	got, err := Audit(context.Background(), runner, r.Dir, 1, 3, SortBySize)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestAuditDepth0YieldsFiles(t *testing.T) {
 	r.RunGit("commit", "-m", "init")
 
 	runner := &git.ExecRunner{Dir: r.Dir}
-	got, err := Audit(context.Background(), runner, r.Dir, 0, 0)
+	got, err := Audit(context.Background(), runner, r.Dir, 0, 0, SortBySize)
 	if err != nil {
 		t.Fatalf("Audit: %v", err)
 	}
@@ -120,6 +120,64 @@ func TestAuditDepth0YieldsFiles(t *testing.T) {
 		}
 	}
 	t.Errorf("depth=0 should produce file-grain entry src/foo.go; got %+v", got)
+}
+
+func TestAuditSortByChurnRanksRewriteHeavy(t *testing.T) {
+	r := testutil.NewRepo(t)
+	// "lock" gets rewritten three times → 3 unique blobs but tiny.
+	for _, body := range []string{"v1\n", "v2\n", "v3\n"} {
+		r.WriteFile("lock", body)
+		r.RunGit("add", "lock")
+		r.RunGit("commit", "-m", "rev")
+	}
+	// "big" is committed once with a much larger payload.
+	r.WriteFile("big", strings.Repeat("X", 10_000))
+	r.RunGit("add", "big")
+	r.RunGit("commit", "-m", "add big")
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	bySize, err := Audit(context.Background(), runner, r.Dir, 0, 0, SortBySize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byChurn, err := Audit(context.Background(), runner, r.Dir, 0, 0, SortByChurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Size: big should outrank lock.
+	if bySize[0].Path != "big" {
+		t.Errorf("SortBySize first = %q, want big", bySize[0].Path)
+	}
+	// Churn: lock (3 unique blobs) should outrank big (1 blob).
+	if byChurn[0].Path != "lock" {
+		t.Errorf("SortByChurn first = %q, want lock", byChurn[0].Path)
+	}
+}
+
+func TestParseSortMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want SortMode
+		err  bool
+	}{
+		{"", SortBySize, false},
+		{"size", SortBySize, false},
+		{"bytes", SortBySize, false},
+		{"churn", SortByChurn, false},
+		{"blobs", SortByChurn, false},
+		{"name", SortByName, false},
+		{"path", SortByName, false},
+		{"weird", SortBySize, true},
+	}
+	for _, tc := range cases {
+		got, err := ParseSortMode(tc.in)
+		if (err != nil) != tc.err {
+			t.Errorf("ParseSortMode(%q) error=%v want=%v", tc.in, err, tc.err)
+		}
+		if !tc.err && got != tc.want {
+			t.Errorf("ParseSortMode(%q) = %v want %v", tc.in, got, tc.want)
+		}
+	}
 }
 
 func TestBucketKey(t *testing.T) {

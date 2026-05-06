@@ -23,15 +23,45 @@ import (
 // the number of distinct OIDs, not the number of commits that touched
 // it.
 type AuditEntry struct {
-	Path         string
-	UniqueBlobs  int
-	TotalBytes   int64
-	LargestBytes int64
+	Path         string `json:"path"`
+	UniqueBlobs  int    `json:"unique_blobs"`
+	TotalBytes   int64  `json:"total_bytes"`
+	LargestBytes int64  `json:"largest_bytes"`
 	// InHEAD is true when at least one path under this bucket still
 	// exists in the current HEAD tree. Buckets with InHEAD=false are
 	// "history only" — already deleted from the working tree but still
 	// inflating clones. These are the highest-leverage forget targets.
-	InHEAD bool
+	InHEAD bool `json:"in_head"`
+}
+
+// SortMode chooses how Audit results are ordered before --top truncation.
+type SortMode int
+
+const (
+	// SortBySize ranks by TotalBytes descending — the historical default
+	// answer to "what is biggest?".
+	SortBySize SortMode = iota
+	// SortByChurn ranks by UniqueBlobs descending. Useful for finding
+	// rewrite-heavy paths (lock files, generated outputs) where each
+	// commit is small but the cumulative cost is large.
+	SortByChurn
+	// SortByName ranks alphabetically. Stable across runs, helpful for
+	// diffing audit output.
+	SortByName
+)
+
+// ParseSortMode converts a flag string to a SortMode.
+func ParseSortMode(s string) (SortMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "size", "bytes":
+		return SortBySize, nil
+	case "churn", "blobs":
+		return SortByChurn, nil
+	case "name", "path":
+		return SortByName, nil
+	default:
+		return SortBySize, fmt.Errorf("unknown --sort mode %q (want size|churn|name)", s)
+	}
 }
 
 // Audit walks every reachable object on every ref and produces per-
@@ -45,10 +75,10 @@ type AuditEntry struct {
 //   - 1    top-level directory only (e.g. "node_modules")
 //   - N>=2 first N path segments
 //
-// `top` caps the returned slice; entries are sorted by TotalBytes
-// descending so the heaviest contributors come first. Pass 0 for
+// `top` caps the returned slice; entries are sorted by `sort` (default
+// SortBySize when caller passes the zero value). Pass top=0 for
 // "return everything".
-func Audit(ctx context.Context, r git.Runner, repoDir string, depth, top int) ([]AuditEntry, error) {
+func Audit(ctx context.Context, r git.Runner, repoDir string, depth, top int, sortMode SortMode) ([]AuditEntry, error) {
 	headPaths, err := headTreePaths(ctx, r)
 	if err != nil {
 		return nil, err
@@ -120,16 +150,39 @@ func Audit(ctx context.Context, r git.Runner, repoDir string, depth, top int) ([
 		})
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].TotalBytes != out[j].TotalBytes {
-			return out[i].TotalBytes > out[j].TotalBytes
-		}
-		return out[i].Path < out[j].Path
-	})
+	sortAuditEntries(out, sortMode)
 	if top > 0 && len(out) > top {
 		out = out[:top]
 	}
 	return out, nil
+}
+
+// sortAuditEntries orders entries in place per the sort mode. Each
+// branch falls back to a tie-breaker that keeps the output stable
+// across runs (alphabetical path) so users diffing two audits get
+// minimal noise.
+func sortAuditEntries(out []AuditEntry, mode SortMode) {
+	switch mode {
+	case SortByChurn:
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].UniqueBlobs != out[j].UniqueBlobs {
+				return out[i].UniqueBlobs > out[j].UniqueBlobs
+			}
+			if out[i].TotalBytes != out[j].TotalBytes {
+				return out[i].TotalBytes > out[j].TotalBytes
+			}
+			return out[i].Path < out[j].Path
+		})
+	case SortByName:
+		sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	default: // SortBySize
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].TotalBytes != out[j].TotalBytes {
+				return out[i].TotalBytes > out[j].TotalBytes
+			}
+			return out[i].Path < out[j].Path
+		})
+	}
 }
 
 // bucketKey collapses a path into its bucket prefix. depth<=0 returns

@@ -77,7 +77,7 @@ func TestStatusMarker(t *testing.T) {
 func TestWriteDoctorTable(t *testing.T) {
 	checks := []doctorCheck{
 		{Name: "git version", Status: statusPass, Detail: "2.54.0"},
-		{Name: "fzf", Status: statusWarn, Detail: "not installed", Fix: "brew install fzf"},
+		{Name: "pager", Status: statusWarn, Detail: "none found", Fix: "brew install git-delta"},
 		{Name: "hooks: pre-push", Status: statusFail, Detail: "missing", Fix: "gk hooks install"},
 	}
 	buf := &bytes.Buffer{}
@@ -86,7 +86,7 @@ func TestWriteDoctorTable(t *testing.T) {
 
 	for _, want := range []string{
 		"git version", "2.54.0",
-		"fzf", "not installed", "brew install fzf",
+		"pager", "none found", "brew install git-delta",
 		"hooks: pre-push", "missing", "gk hooks install",
 		"1 PASS", "1 WARN", "1 FAIL",
 	} {
@@ -234,9 +234,15 @@ func TestDoctorCmd_Runs(t *testing.T) {
 	_ = root.Execute() // ignore exit — may PASS or 1 FAIL depending on host
 
 	out := buf.String()
-	for _, want := range []string{"git version", "pager", "fzf", "editor", "config", "hooks:"} {
+	for _, want := range []string{"git version", "pager", "editor", "config", "hooks:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	// Optional AI rows must NOT appear without --verbose.
+	for _, unwanted := range []string{"ai api:", "ai provider:"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("baseline doctor output should hide %q (verbose-only):\n%s", unwanted, out)
 		}
 	}
 }

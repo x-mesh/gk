@@ -765,7 +765,7 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 			coloredSource = cellYellow("wt: ") + coreColored
 		}
 		// Display marker stays via fatih/color — it's only used by
-		// FzfPicker fallback which doesn't have row-level styles.
+		// the FallbackPicker path which doesn't have row-level styles.
 		displayMarker := color.GreenString("●")
 		cellMarker := cellGreen("●")
 		if isCurrent {

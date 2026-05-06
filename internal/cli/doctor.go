@@ -60,6 +60,8 @@ the index" and "you're stuck mid-rebase" situations:
   - unmerged paths
 
 With --fix, doctor walks each finding and offers to repair it interactively.
+Pass --verbose to also probe optional AI integrations (anthropic / openai /
+nvidia / groq API keys, gemini / qwen / kiro-cli binaries).
 
 Exit codes:
   0  no FAIL rows
@@ -82,7 +84,6 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	checks := []doctorCheck{
 		checkGitVersion(ctx, runner),
 		checkPager(),
-		checkFzf(),
 		checkEditor(),
 		checkConfig(cmd),
 		checkEasyMode(),
@@ -90,13 +91,21 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		checkHook(ctx, runner, "pre-push", "gk push"),
 		checkBackupRefs(ctx, runner),
 		checkGitleaks(),
-		checkAIAPIProvider("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
-		checkAIAPIProvider("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models"),
-		checkAIAPIProvider("nvidia", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1/models"),
-		checkAIAPIProvider("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
-		checkAIProvider("gemini"),
-		checkAIProvider("qwen"),
-		checkAIProvider("kiro-cli"),
+	}
+	// Optional AI integrations — surfaced only under --verbose so the
+	// baseline report stays focused on issues that actually block gk.
+	// gk still works without any of them; `gk commit` falls back to a
+	// non-AI message when no provider is configured.
+	if flagVerbose {
+		checks = append(checks,
+			checkAIAPIProvider("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
+			checkAIAPIProvider("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models"),
+			checkAIAPIProvider("nvidia", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1/models"),
+			checkAIAPIProvider("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
+			checkAIProvider("gemini"),
+			checkAIProvider("qwen"),
+			checkAIProvider("kiro-cli"),
+		)
 	}
 	remote := "origin"
 	if cfg, _ := config.Load(cmd.Flags()); cfg != nil && cfg.Remote != "" {
@@ -185,17 +194,6 @@ func checkPager() doctorCheck {
 		Name: "pager", Status: statusWarn,
 		Detail: "none found",
 		Fix:    "brew install git-delta  # or: brew install bat",
-	}
-}
-
-func checkFzf() doctorCheck {
-	if path, err := exec.LookPath("fzf"); err == nil {
-		return doctorCheck{Name: "fzf", Status: statusPass, Detail: path}
-	}
-	return doctorCheck{
-		Name: "fzf", Status: statusWarn,
-		Detail: "not installed — gk undo/restore will use a numeric picker",
-		Fix:    "brew install fzf",
 	}
 }
 

@@ -41,11 +41,11 @@ type TablePickerExtraKey struct {
 	Exit    bool
 }
 
-// TablePicker is a bubbletea-based replacement for FzfPicker. Items
-// with PickerItem.Cells render as multi-column rows; otherwise the
-// row falls back to PickerItem.Display in a single column. Headers
-// is optional — when shorter than the column count it is right-padded
-// with empties.
+// TablePicker is the default in-process bubbletea picker — no fzf,
+// no external binary. Items with PickerItem.Cells render as
+// multi-column rows; otherwise the row falls back to PickerItem.Display
+// in a single column. Headers is optional — when shorter than the
+// column count it is right-padded with empties.
 //
 // Subtitle, when non-empty, is rendered as a faint single line above
 // the filter prompt — used for ambient context like "in worktree: X"

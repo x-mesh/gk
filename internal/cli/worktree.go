@@ -661,7 +661,7 @@ func listWorktreesForTUI(ctx context.Context, runner *git.ExecRunner) ([]Worktre
 // "(detached)"/"(bare)") is bolded so it scans first; path is faint.
 // Flags like [locked] / [prunable] append as red-on-default suffixes.
 // Used as the single-column Display fallback when the active picker
-// can't render Cells (FallbackPicker / FzfPicker).
+// can't render Cells (FallbackPicker).
 func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string) string {
 	branch, flags := worktreeRowParts(e)
 	tail := ""
@@ -673,7 +673,7 @@ func worktreeTUILabel(e WorktreeEntry, bold, faint func(a ...interface{}) string
 
 // worktreeRowParts splits a WorktreeEntry into the branch label and the
 // (ANSI-coloured) flag suffix used by the legacy single-column label
-// (FzfPicker/FallbackPicker fallback path).
+// (FallbackPicker fallback path).
 func worktreeRowParts(e WorktreeEntry) (branch, flags string) {
 	branch, _ = worktreeRowPartsPlain(e)
 	var parts []string

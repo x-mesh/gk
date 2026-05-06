@@ -17,9 +17,6 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestNewEasyFormatter(t *testing.T) {
 	emoji := easy.NewEmojiMapper(true)
 	f := NewEasyFormatter(emoji, false)
-	if f == nil {
-		t.Fatal("NewEasyFormatter returned nil")
-	}
 	if f.noColor {
 		t.Error("expected noColor=false")
 	}

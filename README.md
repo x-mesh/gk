@@ -24,7 +24,7 @@ A small Go helper for everyday pull/log/status/branch work. It leans on two idea
 - **Local-first rebase.** `gk sync` rebases the current branch onto local `<base>` without touching the network. `gk sync --fetch` is the one-shot when you want the fetch too. If local `<base>` has fallen behind `<remote>/<base>`, you get a stale-base hint instead of a silent stale rebase.
 - **Diverged-pull safety net.** When histories have diverged, `gk pull` stops and asks instead of silently rewriting your SHAs. The choices are `--rebase`, `--merge`, or `--fetch-only`; setting `pull.strategy` (or passing the flag) bypasses the prompt. Any integration that rewrites history writes a `refs/gk/backup/<branch>/<ts>` ref before it does so.
 - **Conventional-Commits-aware hooks.** `gk hooks install` wires `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, and `pre-commit` → `gk guard check`. Managed hooks carry a marker, so reinstalling is idempotent and a foreign hook is never overwritten without `--force`.
-- **Health at a glance.** `gk doctor` reports PASS/WARN/FAIL on git version, pager, fzf, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation. Each WARN/FAIL line carries a copy-paste fix command.
+- **Health at a glance.** `gk doctor` reports PASS/WARN/FAIL on git version, pager, `$EDITOR`, config validity, hook state, gitleaks install, and gk backup-ref accumulation. Each WARN/FAIL line carries a copy-paste fix command; `--verbose` adds optional AI-integration rows.
 - **Self-update across install methods.** `gk update` detects whether the running binary came from Homebrew, `install.sh`, or `go install`, then takes the right path: forwards to `brew upgrade x-mesh/tap/gk`, downloads + sha256-verifies + atomic-renames the binary in place (with a `.bak` fallback and a `sudo` step when `/usr/local/bin` is not user-writable), or prints the matching `go install …@latest` command. `gk update --check` exits 1 when a newer release is available so cron and CI can gate on it.
 - **Forget paths from history.** Committed a DB dump or a secrets file by mistake? Add the path to `.gitignore` and run `gk forget` — gk auto-detects tracked-but-ignored paths and hands them to `git filter-repo` (the modern replacement for `filter-branch`), with a backup ref + flat-text manifest written before the rewrite so you can roll back with `git update-ref --stdin`. Explicit paths (`gk forget db/ secrets.json`) bypass the auto-detect step. `--dry-run` previews the affected commit count without rewriting.
 - **Easy Mode for new users.** `--easy` (or `output.easy: true` / `GK_EASY=1`) translates git terminology into Korean while keeping the original in parentheses (`commit` → `변경사항 저장 (commit)`), prefixes status sections with emoji, and tacks a context-aware next-step hint onto the last line. Even on a clean tree, the ↑/↓ counter feeds hints like `📤 서버에 올릴 커밋 N개 → gk push`. `gk guide` is a separate step-by-step git walkthrough that works whether or not Easy Mode is on.
@@ -194,7 +194,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Description |
 |---|---|
 | `gk guide [<workflow>]` | Step-by-step walkthrough of common git workflows (init → first commit, push, merge conflict, undo) for new users. Optional positional `<workflow>` skips the menu and starts that flow directly |
-| `gk doctor` | Environment health report (git/pager/fzf/editor/config/hooks/gitleaks/backup-refs/ai-providers) with fix commands; `--json` for CI |
+| `gk doctor` | Environment health report (git/pager/editor/config/hooks/gitleaks/backup-refs) with fix commands; `--verbose` adds AI-provider rows; `--json` for CI |
 | `gk update [--check] [--force] [--to <vX.Y.Z>]` | Self-update. Detects brew / `install.sh` / `go install` from `os.Executable()` and dispatches: brew → `brew upgrade x-mesh/tap/gk`; manual → download `gk_<os>_<arch>.tar.gz` from the release, verify against `checksums.txt`, atomic rename next to the running binary (sudo escalates when needed); go-install → print the `go install …@latest` hint. `--check` exits 0/1 without downloading; `--to` pins a specific tag (manual installs only) |
 | `gk init [--only <target>] [--kiro] [--force]` | Analyze the project and scaffold `.gitignore`, `.gk.yaml`, and AI context files (`CLAUDE.md`, `AGENTS.md`) in one step. `--only gitignore\|config\|ai` narrows the run; `--kiro` also writes `.kiro/steering/`; an interactive huh form previews the plan before writing |
 | `gk config init [--force] [--out <path>]` | Scaffold the commented YAML template at `$XDG_CONFIG_HOME/gk/config.yaml` (also auto-created on first `gk` run; skip with `GK_NO_AUTO_CONFIG=1`). Replaces `gk init config`, which remains as a backward-compatible alias |
@@ -225,7 +225,7 @@ For `anthropic`, `openai`, `nvidia`, and `groq`, `gk commit` calls the API direc
 
 Auto-detect order (when `ai.provider` is empty): `anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli`. Without an explicit `--provider`, the fallback chain walks this list and moves to the next provider on failure.
 
-Run `gk doctor` to verify each provider's install + auth status.
+Run `gk doctor --verbose` to verify each provider's install + auth status.
 
 ### Flags
 

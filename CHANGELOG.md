@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-05-08
+
+### Changed
+
+- **`gk merge --into <branch>` prints next-step hints after a successful
+  merge.** Both the worktree-bypass path (added in v0.38.0) and the
+  worktree-delegated path now append `next: gk push --from <receiver>`,
+  plus `also: gk branch delete <source> (fully merged)` when the source
+  is fully merged into the receiver. Hints come from the i18n catalog
+  (Korean and English shipped) and render in normal mode, not just Easy
+  Mode.
+- **`gk push` appends a one-line summary** matching other gk commands:
+  `pushed N commit(s) to origin/main (abc1234)`, or
+  `up-to-date with origin/main (abc1234)` when nothing was uploaded.
+  Git's raw output stays above the summary so CI parsers and scripts
+  that key off `To <url>` or `<old>..<new>` keep working. A new
+  `--json` flag emits `{remote, branch, ahead, head}` instead and
+  suppresses git's text output for automation. The ahead-count is
+  computed via `git rev-list --count` before the push; if that call
+  fails, gk falls back to ahead=0 instead of aborting.
+- **`gk st` cross-worktree hint.** When the current worktree is in sync
+  and clean, status no longer ends on a "nothing to do" placeholder.
+  It scans the other worktrees in the repo and lists up to three with
+  pending work (`worktree feat/x: ↑3  ·  worktree feat/y: ↓2  ·  +N more`),
+  or prints `all clean across N worktree(s)` when every one is idle.
+  Detection is divergence-only (`HEAD@{upstream}...HEAD` per worktree);
+  dirty-tree checks are skipped to stay within the status latency budget.
+  Per-worktree git failures drop silently so one broken upstream cannot
+  blank out the whole hint.
+
 ## [0.38.0] - 2026-05-08
 
 ### Changed

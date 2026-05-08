@@ -433,6 +433,21 @@ When `--into <branch>` is given, gk first looks for a worktree that has
     (`gk worktree add <path> <receiver>`) and resolve interactively.
   - `--squash` is currently only supported on the worktree path.
 
+### Next-step hints
+
+After a successful `gk merge --into <receiver>` (either path), gk prints
+two indented hint lines to stderr:
+
+```
+  next: gk push --from <receiver>
+  also: gk branch delete <source> (fully merged)
+```
+
+The cleanup hint is suppressed when source equals receiver. Hints render
+in normal mode too; Easy Mode swaps the wording for a friendlier
+description with emoji. Pass `--no-easy` to disable Easy Mode rendering;
+the hints themselves still print using the normal-mode catalog.
+
 ### Merge plan
 
 `gk merge` builds a plan from:
@@ -699,6 +714,25 @@ Colors (dim gray / green / yellow / red) are applied consistently across all thr
 `gk status` prints a `next:` hint using gk commands: `gk resolve` for conflicts, `gk commit --dry-run` for committable work, `gk status -v` for submodule-only dirtiness, and `gk sync` / `gk push` for clean branches that are behind/ahead.
 
 Submodule worktree dirtiness is separated from committable superproject changes. If the submodule has untracked or modified files inside but the superproject gitlink did not change, the main tree remains clean and status renders a `submodules:` section. Use `-vv` to read each dirty submodule's branch and internal counts without changing directories.
+
+### Cross-worktree hint (in-sync clean state)
+
+When the current worktree is fully in sync (no `↑/↓`) and the working
+tree is clean, `gk st` no longer ends on a flat "nothing to do"
+placeholder. It scans the other worktrees in the same repository and
+reports up to three with pending work:
+
+```
+worktree feat/x: ↑3  ·  worktree main: ↓2  ·  +N more
+```
+
+When every worktree is also clean: `all clean across N worktree(s)`.
+
+Detection is divergence-only — each worktree is queried with
+`git -C <path> rev-list --left-right --count HEAD@{upstream}...HEAD`.
+Dirty-tree checks are intentionally skipped to keep the latency budget
+intact. Any per-worktree git failure causes that entry to be silently
+dropped rather than blanking the whole hint.
 
 ### Upstream fetch (opt-in)
 

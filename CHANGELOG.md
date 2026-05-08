@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-05-08
+
+### Fixed
+
+- **`gk st` cross-worktree scan now runs probes in parallel** instead
+  of serially. Previously each non-current worktree triggered a
+  synchronous `git rev-list --left-right --count` call, so a five-
+  worktree repo could blow past the 50ms status latency budget. The
+  scan now dispatches probes through a bounded worker pool (cap 4),
+  preserving result order so the rendered hint is deterministic.
+- **`easy.Engine.effectiveHints` no longer rebuilds the fallback
+  HintGenerator on every call.** The disabled-mode path used to
+  allocate a fresh `i18n.Catalog` and `EmojiMapper` per hint emission;
+  it now caches the synthesized generator behind `sync.Once` so
+  repeated `MergeIntoNextHint` / `PushSummaryHint` /
+  `StatusCrossWorktreeHint` calls reuse the same instance.
+
+### Internal
+
+- **`git.FakeRunner.Run` is now thread-safe.** v0.39.0's parallelized
+  cross-worktree scan exposed an unguarded `Calls` slice append in
+  the test fake; a `sync.Mutex` now protects the recorder.
+- **Tests added for v0.39.0 surface** flagged by post-release review:
+  `gk push --json` schema (ahead and up-to-date cases), disabled-mode
+  fallback for the three new `Engine` hint methods, and Easy Mode
+  variants for all six new i18n keys (en + ko, with a regression
+  guard against legacy emoji creeping back in).
+
 ## [0.39.0] - 2026-05-08
 
 ### Changed

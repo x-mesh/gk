@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"strings"
+	"sync"
 )
 
 // FakeResponse defines the canned response returned by FakeRunner for a given call.
@@ -22,22 +23,32 @@ type FakeCall struct {
 // Responses are keyed by strings.Join(args, " ").
 // When no key matches, DefaultResp is returned (zero value means exit 0 + empty output).
 // All calls are appended to Calls for later assertion.
+//
+// Run is safe to invoke from multiple goroutines: production runners
+// (e.g. ExecRunner) are inherently safe because each call spawns a
+// separate process, and tests started exercising parallel runner
+// access in v0.39.1 (cross-worktree status hint). The mutex protects
+// only the Calls append and Responses lookup; canned responses are
+// expected to be set up before the first Run call.
 type FakeRunner struct {
 	Responses   map[string]FakeResponse
 	DefaultResp FakeResponse
 	Calls       []FakeCall
+
+	mu sync.Mutex
 }
 
 // Run looks up args in Responses, falls back to DefaultResp, records the call,
 // and returns an *ExitError when ExitCode != 0.
 func (f *FakeRunner) Run(_ context.Context, args ...string) (stdout, stderr []byte, err error) {
+	f.mu.Lock()
 	f.Calls = append(f.Calls, FakeCall{Args: append([]string(nil), args...)})
-
 	key := strings.Join(args, " ")
 	resp, ok := f.Responses[key]
 	if !ok {
 		resp = f.DefaultResp
 	}
+	f.mu.Unlock()
 
 	if resp.Err != nil {
 		return []byte(resp.Stdout), []byte(resp.Stderr), resp.Err

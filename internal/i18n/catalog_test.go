@@ -305,3 +305,110 @@ func TestGet_NonExistentKey(t *testing.T) {
 		t.Errorf("Get(%q) ko/easy: got %q, want the key itself", key, got)
 	}
 }
+
+// TestNewHintKeys_EasyModeBothLangs verifies the v0.39.0 hint keys
+// each have a non-empty Easy Mode value in both en and ko, with the
+// Unicode marker prefix stripped of any legacy emoji. The Normal mode
+// is already exercised by other tests; this guards against silent
+// regressions where Easy Mode messages drift back to emoji or get
+// removed entirely.
+//
+// Validates: v0.39.1 review follow-up T4 (i18n Easy Mode coverage).
+func TestNewHintKeys_EasyModeBothLangs(t *testing.T) {
+	keys := []struct {
+		key              string
+		args             []interface{}
+		wantContainsEn   string
+		wantContainsKo   string
+		wantMarkerPrefix string // expected Unicode marker
+	}{
+		{
+			key:              "hint.merge.into.next_push",
+			args:             []interface{}{"main"},
+			wantContainsEn:   "gk push --from main",
+			wantContainsKo:   "gk push --from main",
+			wantMarkerPrefix: "↑",
+		},
+		{
+			key:              "hint.merge.into.cleanup_source",
+			args:             []interface{}{"feat/x", "feat/x"},
+			wantContainsEn:   "gk branch delete feat/x",
+			wantContainsKo:   "gk branch delete feat/x",
+			wantMarkerPrefix: "※",
+		},
+		{
+			key:              "hint.push.summary",
+			args:             []interface{}{3, "origin", "main", "abc1234"},
+			wantContainsEn:   "origin/main",
+			wantContainsKo:   "origin/main",
+			wantMarkerPrefix: "↑",
+		},
+		{
+			key:              "hint.push.up_to_date",
+			args:             []interface{}{"origin", "main", "abc1234"},
+			wantContainsEn:   "origin/main",
+			wantContainsKo:   "origin/main",
+			wantMarkerPrefix: "✓",
+		},
+		{
+			key:              "hint.status.cross_worktree",
+			args:             []interface{}{"feat/x", "↑3"},
+			wantContainsEn:   "feat/x",
+			wantContainsKo:   "feat/x",
+			wantMarkerPrefix: "▸",
+		},
+		{
+			key:              "hint.status.all_clean_worktrees",
+			args:             []interface{}{4},
+			wantContainsEn:   "4",
+			wantContainsKo:   "4",
+			wantMarkerPrefix: "✓",
+		},
+	}
+
+	emoji := []string{"💡", "✅", "❌", "⚠️", "💥", "🆕", "✏️", "🗑️", "📦", "🚀", "📤", "📥", "🌿", "🔀", "✨"}
+
+	check := func(t *testing.T, lang string, want string, key string, args []interface{}, marker string) {
+		t.Helper()
+		cat := New(lang, ModeEasy)
+		got := cat.Getf(key, args...)
+		if got == "" {
+			t.Fatalf("[%s] %s: empty Easy Mode value", lang, key)
+		}
+		if got == key {
+			t.Fatalf("[%s] %s: returned the key itself — Easy Mode value not registered", lang, key)
+		}
+		if !contains(got, want) {
+			t.Errorf("[%s] %s: got %q, want it to contain %q", lang, key, got, want)
+		}
+		if !contains(got, marker) {
+			t.Errorf("[%s] %s: got %q, want Unicode marker %q", lang, key, got, marker)
+		}
+		for _, e := range emoji {
+			if contains(got, e) {
+				t.Errorf("[%s] %s: got %q, must not contain legacy emoji %q (v0.39.0 migrated to Unicode markers)", lang, key, got, e)
+			}
+		}
+	}
+
+	for _, k := range keys {
+		t.Run("en/"+k.key, func(t *testing.T) {
+			check(t, "en", k.wantContainsEn, k.key, k.args, k.wantMarkerPrefix)
+		})
+		t.Run("ko/"+k.key, func(t *testing.T) {
+			check(t, "ko", k.wantContainsKo, k.key, k.args, k.wantMarkerPrefix)
+		})
+	}
+}
+
+// contains is a tiny strings.Contains shim that avoids pulling the
+// strings import only for one helper. Keeps the test file's import
+// surface unchanged.
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

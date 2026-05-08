@@ -214,6 +214,82 @@ func TestFormatHint_NilEngine(t *testing.T) {
 	}
 }
 
+// ── effectiveHints fallback tests (v0.39.1) ─────────────────────────────
+//
+// The hint methods added in v0.39.0 (MergeIntoNextHint, PushSummaryHint,
+// StatusCrossWorktreeHint) intentionally bypass the enabled gate so they
+// surface even when Easy Mode is off. effectiveHints() lazily builds a
+// normal-mode HintGenerator on the disabled path and caches it for
+// subsequent calls.
+
+func TestEffectiveHints_DisabledEngineFallsBackToNormalMode(t *testing.T) {
+	cfg := config.OutputConfig{Easy: false, Lang: "en"}
+	e := NewEngine(cfg, false, false)
+
+	// MergeIntoNextHint should still emit the normal-mode message even
+	// though the engine is disabled (e.hints is nil).
+	got := e.MergeIntoNextHint("main", false, "feat/x")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 hint, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "next: gk push --from main") {
+		t.Fatalf("expected normal-mode hint, got: %q", got[0])
+	}
+}
+
+func TestEffectiveHints_PushSummaryDisabledFallback(t *testing.T) {
+	cfg := config.OutputConfig{Easy: false, Lang: "en"}
+	e := NewEngine(cfg, false, false)
+
+	got := e.PushSummaryHint(3, "origin", "main", "abc1234")
+	if !strings.Contains(got, "pushed 3") || !strings.Contains(got, "origin/main") {
+		t.Fatalf("expected normal-mode push summary, got: %q", got)
+	}
+}
+
+func TestEffectiveHints_StatusCrossWorktreeDisabledFallback(t *testing.T) {
+	cfg := config.OutputConfig{Easy: false, Lang: "en"}
+	e := NewEngine(cfg, false, false)
+
+	got := e.StatusCrossWorktreeHint([]WorktreeWorkItem{{Branch: "feat/x", Detail: "↑3"}}, 2)
+	if !strings.Contains(got, "feat/x") || !strings.Contains(got, "↑3") {
+		t.Fatalf("expected normal-mode cross-worktree hint, got: %q", got)
+	}
+}
+
+func TestEffectiveHints_DisabledFallbackCachedAcrossCalls(t *testing.T) {
+	// Verify the fallback HintGenerator is built once and reused — the
+	// pointer returned across two calls must match. Without the cache
+	// each call would synthesize a fresh generator (the v0.39.0 bug
+	// flagged by the post-release perf review).
+	cfg := config.OutputConfig{Easy: false, Lang: "en"}
+	e := NewEngine(cfg, false, false)
+
+	first := e.effectiveHints()
+	second := e.effectiveHints()
+	if first == nil {
+		t.Fatal("effectiveHints returned nil on disabled engine; want a synthesized generator")
+	}
+	if first != second {
+		t.Fatalf("expected cached generator across calls, got distinct pointers (%p vs %p)", first, second)
+	}
+}
+
+func TestEffectiveHints_UnknownLangFallsBackToEnglish(t *testing.T) {
+	// When the requested lang has no registered catalog, i18n.New still
+	// returns a Catalog with an English fallback chain attached (so
+	// every key resolves to its English value). effectiveHints relies
+	// on this — the caller never sees nil for a known key, just the
+	// English message.
+	cfg := config.OutputConfig{Easy: false, Lang: "xx-not-real"}
+	e := NewEngine(cfg, false, false)
+
+	got := e.MergeIntoNextHint("main", false, "feat/x")
+	if len(got) != 1 || !strings.Contains(got[0], "gk push --from main") {
+		t.Fatalf("expected English fallback hint, got: %v", got)
+	}
+}
+
 // ── SetDebugFn tests ────────────────────────────────────────────────────
 
 func TestSetDebugFn_EmitsStartupDiag(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -3428,13 +3429,26 @@ func renderDivergenceGauge(ahead, behind int) string {
 // hint. Only checks divergence (ahead/behind) — dirty-tree detection is
 // deferred because it requires per-worktree status calls (~10ms each)
 // and would blow past the 50ms status budget.
+//
+// Per-worktree git calls are issued in parallel under a small worker
+// pool (capped at 4) so a five-worktree repo stays inside the budget
+// even when each call costs ~10ms. Output order matches the worktree
+// list order so the rendered hint is deterministic.
 func scanCrossWorktreeWork(ctx context.Context, r git.Runner, currentBranch string) ([]easy.WorktreeWorkItem, int) {
 	out, _, err := r.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, 0
 	}
 	entries := parseWorktreePorcelain(string(out))
-	var items []easy.WorktreeWorkItem
+
+	// Index worktrees we'll actually probe; preserve their original
+	// order so the parallel results can be merged back deterministically.
+	type probe struct {
+		idx    int
+		branch string
+		path   string
+	}
+	probes := make([]probe, 0, len(entries))
 	total := 0
 	for _, e := range entries {
 		if e.Bare || e.Detached || e.Branch == "" {
@@ -3444,22 +3458,62 @@ func scanCrossWorktreeWork(ctx context.Context, r git.Runner, currentBranch stri
 		if e.Branch == currentBranch {
 			continue
 		}
-		ahead, behind, ok := worktreeAheadBehind(ctx, r, e.Path)
-		if !ok {
+		probes = append(probes, probe{idx: len(probes), branch: e.Branch, path: e.Path})
+	}
+	if len(probes) == 0 {
+		return nil, total
+	}
+
+	type result struct {
+		idx    int
+		branch string
+		detail string
+	}
+	results := make([]result, len(probes))
+
+	const maxWorkers = 4
+	workers := maxWorkers
+	if len(probes) < workers {
+		workers = len(probes)
+	}
+	jobs := make(chan probe, len(probes))
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				ahead, behind, ok := worktreeAheadBehind(ctx, r, p.path)
+				if !ok {
+					continue
+				}
+				detail := ""
+				switch {
+				case ahead > 0 && behind > 0:
+					detail = fmt.Sprintf("↑%d ↓%d", ahead, behind)
+				case ahead > 0:
+					detail = fmt.Sprintf("↑%d", ahead)
+				case behind > 0:
+					detail = fmt.Sprintf("↓%d", behind)
+				}
+				if detail != "" {
+					results[p.idx] = result{idx: p.idx, branch: p.branch, detail: detail}
+				}
+			}
+		}()
+	}
+	for _, p := range probes {
+		jobs <- p
+	}
+	close(jobs)
+	wg.Wait()
+
+	var items []easy.WorktreeWorkItem
+	for _, res := range results {
+		if res.detail == "" {
 			continue
 		}
-		detail := ""
-		switch {
-		case ahead > 0 && behind > 0:
-			detail = fmt.Sprintf("↑%d ↓%d", ahead, behind)
-		case ahead > 0:
-			detail = fmt.Sprintf("↑%d", ahead)
-		case behind > 0:
-			detail = fmt.Sprintf("↓%d", behind)
-		}
-		if detail != "" {
-			items = append(items, easy.WorktreeWorkItem{Branch: e.Branch, Detail: detail})
-		}
+		items = append(items, easy.WorktreeWorkItem{Branch: res.branch, Detail: res.detail})
 	}
 	return items, total
 }

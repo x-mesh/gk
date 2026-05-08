@@ -9,6 +9,7 @@ package easy
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -42,6 +43,14 @@ type Engine struct {
 	// hints generates contextual next-action hints based on the
 	// configured verbosity level.
 	hints *HintGenerator
+
+	// fallbackHints is a lazily-built normal-mode HintGenerator used by
+	// effectiveHints when Easy Mode is disabled. Construction happens at
+	// most once per Engine; subsequent calls reuse the same instance to
+	// avoid per-hint catalog/EmojiMapper allocations on the disabled
+	// path. Guarded by fallbackOnce so the lazy init is race-free.
+	fallbackHints *HintGenerator
+	fallbackOnce  sync.Once
 }
 
 // NewEngine creates an Engine based on the resolved OutputConfig and
@@ -217,9 +226,10 @@ func (e *Engine) SyncHint(ahead, behind int, hasUpstream bool) string {
 
 // effectiveHints returns a HintGenerator for the hint methods added in
 // v0.39.0+ that must run in normal mode too. When the engine is enabled
-// it reuses the configured generator; when disabled it synthesizes a
-// HintVerbose generator backed by a normal-mode catalog so the calling
-// command surfaces the hint instead of going silent.
+// it reuses the configured generator; when disabled it returns a
+// lazily-built, cached normal-mode generator so the calling command
+// surfaces the hint instead of going silent — without re-allocating a
+// catalog and EmojiMapper on every call.
 //
 // Returns nil when the language has no registered catalog at all.
 func (e *Engine) effectiveHints() *HintGenerator {
@@ -229,11 +239,14 @@ func (e *Engine) effectiveHints() *HintGenerator {
 	if e.hints != nil {
 		return e.hints
 	}
-	cat := i18n.New(e.lang, i18n.ModeNormal)
-	if cat == nil {
-		return nil
-	}
-	return NewHintGenerator(HintVerbose, cat, NewEmojiMapper(false))
+	e.fallbackOnce.Do(func() {
+		cat := i18n.New(e.lang, i18n.ModeNormal)
+		if cat == nil {
+			return
+		}
+		e.fallbackHints = NewHintGenerator(HintVerbose, cat, NewEmojiMapper(false))
+	})
+	return e.fallbackHints
 }
 
 // MergeIntoNextHint generates next-step hints right after `gk merge --into`

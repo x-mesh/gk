@@ -251,17 +251,157 @@ func TestRunMergeIntoUsesExplicitSource(t *testing.T) {
 	}
 }
 
-func TestRunMergeIntoMissingWorktree(t *testing.T) {
+func TestRunMergeIntoBareFastForwardUpdatesRef(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"symbolic-ref --short HEAD": {Stdout: "ship\n"},
-		"worktree list --porcelain": {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "aaa1111\n"},
+		"update-ref refs/heads/main bbb2222 aaa1111":  {Stdout: ""},
+		"rev-list --count aaa1111..bbb2222":           {Stdout: "3\n"},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut}, nil, mergeFlags{into: "main", noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeInto: %v", err)
+	}
+	calls := joinedShipCalls(sourceRunner.Calls)
+	if !strings.Contains(calls, "update-ref refs/heads/main bbb2222 aaa1111") {
+		t.Fatalf("expected fast-forward update-ref, calls:\n%s", calls)
+	}
+	if strings.Contains(calls, "commit-tree") {
+		t.Fatalf("FF path must not run commit-tree, calls:\n%s", calls)
+	}
+	if !strings.Contains(errOut.String(), "merged ship into main") {
+		t.Fatalf("expected summary, got:\n%s", errOut.String())
+	}
+}
+
+func TestRunMergeIntoBareNonFFCleanCreatesMergeCommit(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "ccc3333\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base ccc3333 main ship": {
+			Stdout: "0123456789abcdef0123456789abcdef01234567\n",
+		},
+		"commit-tree 0123456789abcdef0123456789abcdef01234567 -p aaa1111 -p bbb2222 -m Merge branch 'ship' into main": {
+			Stdout: "ddd4444\n",
+		},
+		"update-ref refs/heads/main ddd4444 aaa1111": {Stdout: ""},
+		"rev-list --count aaa1111..ddd4444":          {Stdout: "4\n"},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut}, nil, mergeFlags{into: "main", noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeInto: %v", err)
+	}
+	calls := joinedShipCalls(sourceRunner.Calls)
+	for _, want := range []string{
+		"merge-tree --write-tree --no-messages --name-only --merge-base ccc3333 main ship",
+		"commit-tree 0123456789abcdef0123456789abcdef01234567 -p aaa1111 -p bbb2222 -m Merge branch 'ship' into main",
+		"update-ref refs/heads/main ddd4444 aaa1111",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing call %q in:\n%s", want, calls)
+		}
+	}
+}
+
+func TestRunMergeIntoBareConflictRefusesWithHint(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "ccc3333\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base ccc3333 main ship": {
+			Stdout:   "0123456789abcdef0123456789abcdef01234567\nfile.go\n",
+			ExitCode: 1,
+		},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut}, nil, mergeFlags{into: "main", noAI: true}, nil)
+	if err == nil {
+		t.Fatal("expected conflict refusal")
+	}
+	if !strings.Contains(err.Error(), "precheck found 1 conflict") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(HintFrom(err), "gk worktree add") {
+		t.Fatalf("expected worktree hint, got: %q", HintFrom(err))
+	}
+	if strings.Contains(joinedShipCalls(sourceRunner.Calls), "commit-tree") {
+		t.Fatalf("commit-tree must not run on conflict")
+	}
+	if strings.Contains(joinedShipCalls(sourceRunner.Calls), "update-ref") {
+		t.Fatalf("update-ref must not run on conflict")
+	}
+}
+
+func TestRunMergeIntoBareAlreadyMergedNoOp(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "bbb2222\n"},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut}, nil, mergeFlags{into: "main", noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeInto: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "main already contains ship") {
+		t.Fatalf("expected already-contains summary, got:\n%s", errOut.String())
+	}
+	if strings.Contains(joinedShipCalls(sourceRunner.Calls), "update-ref") {
+		t.Fatalf("update-ref must not run when already merged")
+	}
+}
+
+func TestRunMergeIntoBareFFOnlyRejectsNonFF(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "ccc3333\n"},
 	}}
 
-	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner}, nil, mergeFlags{into: "main"}, nil)
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &bytes.Buffer{}}, nil, mergeFlags{into: "main", noAI: true, ffOnly: true}, nil)
 	if err == nil {
-		t.Fatal("expected missing worktree error")
+		t.Fatal("expected non-FF refusal under --ff-only")
 	}
-	if !strings.Contains(err.Error(), `no worktree has branch "main" checked out`) {
+	if !strings.Contains(err.Error(), "not a fast-forward") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunMergeIntoBareSquashRefused(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":  {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno": {Stdout: ""},
+		"worktree list --porcelain":  {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+	}}
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner}, nil, mergeFlags{into: "main", squash: true, noAI: true}, nil)
+	if err == nil {
+		t.Fatal("expected squash refusal")
+	}
+	if !strings.Contains(err.Error(), "--squash with --into requires a worktree") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

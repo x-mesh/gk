@@ -321,6 +321,9 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 	if err != nil {
 		return err
 	}
+	if entry == nil {
+		return runMergeIntoBare(ctx, deps, source, flags)
+	}
 	if runnerForPath == nil {
 		runnerForPath = func(path string) git.Runner { return &git.ExecRunner{Dir: path} }
 	}
@@ -334,6 +337,188 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 	return nil
 }
 
+// runMergeIntoBare merges source into flags.into when no worktree has the
+// receiver branch checked out. Two paths:
+//
+//  1. Fast-forward: receiver is an ancestor of source. Updates the ref via
+//     `git update-ref` without touching any worktree.
+//  2. Non-fast-forward, conflict-free: builds an in-memory merge tree with
+//     `git merge-tree`, packages it into a merge commit via `git commit-tree`,
+//     and updates the receiver ref. Two parents (receiver, source).
+//
+// Conflicts always require a worktree to resolve, so we refuse with a hint
+// telling the user to materialize one. --squash is also refused — squashing
+// without a worktree is supportable but not yet implemented.
+func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags mergeFlags) error {
+	receiver := flags.into
+
+	if flags.squash {
+		return WithHint(
+			fmt.Errorf("--squash with --into requires a worktree for %q", receiver),
+			"create one with `gk worktree add <path> "+receiver+"`",
+		)
+	}
+
+	receiverSHA, err := resolveCommitSHA(ctx, deps.Runner, "refs/heads/"+receiver)
+	if err != nil {
+		return WithHint(
+			fmt.Errorf("unknown --into branch %q: not a local branch", receiver),
+			"create it first (e.g. `git branch "+receiver+" <ref>`) or check spelling",
+		)
+	}
+	sourceSHA, err := resolveCommitSHA(ctx, deps.Runner, source)
+	if err != nil {
+		return WithHint(
+			fmt.Errorf("unknown source %q: not a commit", source),
+			"run `git fetch` if it lives on a remote, or check spelling",
+		)
+	}
+
+	baseOut, stderr, err := deps.Runner.Run(ctx, "merge-base", receiver, source)
+	if err != nil {
+		return fmt.Errorf("cannot find merge-base between %s and %s: %s", receiver, source, strings.TrimSpace(string(stderr)))
+	}
+	base := strings.TrimSpace(string(baseOut))
+
+	if base == sourceSHA {
+		if deps.ErrOut != nil {
+			fmt.Fprintf(deps.ErrOut, "%s already contains %s at %s\n", receiver, source, shortSHA(sourceSHA))
+		}
+		return nil
+	}
+	isFF := base == receiverSHA
+
+	if flags.ffOnly && !isFF {
+		return WithHint(
+			fmt.Errorf("not a fast-forward merge of %s into %s", source, receiver),
+			"drop --ff-only, or rebase "+source+" onto "+receiver+" first",
+		)
+	}
+
+	// A real (non-FF) merge runs when receiver is not an ancestor of source,
+	// or when --no-ff forces a merge commit even on FF-able input.
+	willMerge := !isFF || flags.noFF
+
+	var conflicts []string
+	var treeOID string
+	if willMerge && !flags.skipPrecheck {
+		treeOID, conflicts, err = mergeTreeOID(ctx, deps.Runner, base, receiver, source)
+		if err != nil {
+			return fmt.Errorf("merge-tree scan: %w", err)
+		}
+	}
+
+	if (!flags.noAI || flags.planOnly) && deps.ErrOut != nil {
+		renderBareMergePlan(deps.ErrOut, source, receiver, sourceSHA, receiverSHA, isFF, willMerge, conflicts)
+	}
+
+	if len(conflicts) > 0 {
+		return WithHint(
+			fmt.Errorf("precheck found %d conflict(s) merging %s into %s", len(conflicts), source, receiver),
+			"create a worktree to resolve interactively: `gk worktree add <path> "+receiver+"`",
+		)
+	}
+
+	if flags.planOnly {
+		return nil
+	}
+
+	var newSHA string
+	if !willMerge {
+		newSHA = sourceSHA
+	} else {
+		if treeOID == "" {
+			treeOID, conflicts, err = mergeTreeOID(ctx, deps.Runner, base, receiver, source)
+			if err != nil {
+				return fmt.Errorf("merge-tree: %w", err)
+			}
+			if len(conflicts) > 0 {
+				return WithHint(
+					fmt.Errorf("merge has %d conflict(s) in %s", len(conflicts), receiver),
+					"create a worktree to resolve interactively: `gk worktree add <path> "+receiver+"`",
+				)
+			}
+		}
+		msg := fmt.Sprintf("Merge branch '%s' into %s", source, receiver)
+		commitOut, errOut, cerr := deps.Runner.Run(ctx, "commit-tree", treeOID, "-p", receiverSHA, "-p", sourceSHA, "-m", msg)
+		if cerr != nil {
+			return fmt.Errorf("commit-tree: %s: %w", strings.TrimSpace(string(errOut)), cerr)
+		}
+		newSHA = strings.TrimSpace(string(commitOut))
+	}
+
+	if _, errOut, err := deps.Runner.Run(ctx, "update-ref", "refs/heads/"+receiver, newSHA, receiverSHA); err != nil {
+		return fmt.Errorf("update-ref: %s: %w", strings.TrimSpace(string(errOut)), err)
+	}
+
+	if deps.ErrOut != nil {
+		renderMergeSummary(ctx, deps.ErrOut, deps.Runner, receiverSHA, newSHA, source, receiver, flags)
+	}
+	return nil
+}
+
+// resolveCommitSHA returns the commit OID for ref, or an error when ref does
+// not resolve to a commit.
+func resolveCommitSHA(ctx context.Context, r git.Runner, ref string) (string, error) {
+	out, _, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// mergeTreeOID runs merge-tree and returns the merged tree OID together with
+// any conflict paths. A clean merge has empty conflicts and a tree OID safe to
+// pass to `git commit-tree`. A conflicted merge returns the path list; the
+// returned tree OID still encodes conflict stages and must not be committed.
+func mergeTreeOID(ctx context.Context, r git.Runner, base, ours, theirs string) (string, []string, error) {
+	stdout, stderr, err := runMergeTree(ctx, r, base, ours, theirs, true)
+	if err != nil && !looksLikeTreeOID(stdout) {
+		trimmed := strings.TrimSpace(string(stderr))
+		if trimmed == "" {
+			return "", nil, err
+		}
+		return "", nil, fmt.Errorf("%s", trimmed)
+	}
+	lines := strings.Split(strings.TrimRight(string(stdout), "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return "", nil, fmt.Errorf("merge-tree: empty output")
+	}
+	treeOID := strings.TrimSpace(lines[0])
+	var conflicts []string
+	if len(lines) > 1 {
+		seen := make(map[string]bool, len(lines)-1)
+		for _, ln := range lines[1:] {
+			ln = strings.TrimSpace(ln)
+			if ln == "" || seen[ln] {
+				continue
+			}
+			seen[ln] = true
+			conflicts = append(conflicts, ln)
+		}
+	}
+	return treeOID, conflicts, nil
+}
+
+func renderBareMergePlan(out io.Writer, source, receiver, sourceSHA, receiverSHA string, isFF, willMerge bool, conflicts []string) {
+	mode := "merge commit"
+	if !willMerge {
+		mode = "fast-forward"
+	} else if isFF {
+		mode = "merge commit (--no-ff over fast-forward)"
+	}
+	clean := "yes"
+	if len(conflicts) > 0 {
+		clean = fmt.Sprintf("no (%d conflict%s)", len(conflicts), plural(len(conflicts)))
+	}
+	fmt.Fprintf(out, "Merge plan (bare): %s (%s) -> %s (%s)\n", source, shortSHA(sourceSHA), receiver, shortSHA(receiverSHA))
+	fmt.Fprintf(out, "  mode:  %s\n", mode)
+	fmt.Fprintf(out, "  clean: %s\n", clean)
+	for _, p := range conflicts {
+		fmt.Fprintf(out, "    - %s\n", p)
+	}
+}
+
 func confirmSourceWipCommit(deps mergeDeps, source, receiver string) (bool, error) {
 	confirm := deps.Confirm
 	if confirm == nil {
@@ -345,20 +530,22 @@ func confirmSourceWipCommit(deps mergeDeps, source, receiver string) (bool, erro
 	)
 }
 
-func findWorktreeForBranch(ctx context.Context, runner git.Runner, branch string) (WorktreeEntry, error) {
+// findWorktreeForBranch returns the worktree entry that has branch checked
+// out, or (nil, nil) when no worktree owns the branch — callers decide whether
+// to fall back (e.g. merge --into runs a bare ref-update path) or surface the
+// absence as an error.
+func findWorktreeForBranch(ctx context.Context, runner git.Runner, branch string) (*WorktreeEntry, error) {
 	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
-		return WorktreeEntry{}, fmt.Errorf("worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
+		return nil, fmt.Errorf("worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	for _, entry := range parseWorktreePorcelain(string(stdout)) {
 		if entry.Branch == branch && !entry.Bare {
-			return entry, nil
+			e := entry
+			return &e, nil
 		}
 	}
-	return WorktreeEntry{}, WithHint(
-		fmt.Errorf("no worktree has branch %q checked out", branch),
-		"create one with `gk worktree add <path> "+branch+"` or run from that branch's worktree",
-	)
+	return nil, nil
 }
 
 func validateMergeFlags(flags mergeFlags) error {

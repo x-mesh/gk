@@ -1,20 +1,25 @@
 package easy
 
-// defaultEmojis maps status keys to their emoji representations.
+// defaultEmojis maps status keys to their visual marker. Despite the
+// historical name (kept for compatibility) the values are now plain
+// Unicode symbols that render uniformly across terminals — emoji
+// renderers vary in width and several environments box-substitute the
+// glyphs entirely. The marker set below is a one-cell, monochrome
+// alternative chosen for legibility.
 var defaultEmojis = map[string]string{
-	"success":  "✅",
-	"warning":  "⚠️",
-	"error":    "❌",
-	"conflict": "💥",
-	"new":      "🆕",
-	"modified": "✏️",
-	"deleted":  "🗑️",
-	"staged":   "📦",
-	"push":     "🚀",
-	"pull":     "📥",
-	"branch":   "🌿",
-	"merge":    "🔀",
-	"hint":     "💡",
+	"success":  "✓",
+	"warning":  "⚠",
+	"error":    "✗",
+	"conflict": "‼",
+	"new":      "?",
+	"modified": "~",
+	"deleted":  "−",
+	"staged":   "+",
+	"push":     "↑",
+	"pull":     "↓",
+	"branch":   "▸",
+	"merge":    "↕",
+	"hint":     "→",
 }
 
 // EmojiMapper manages status-to-emoji mappings. When disabled, all

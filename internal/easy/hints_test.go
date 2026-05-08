@@ -186,22 +186,22 @@ func TestHintGenerator_VerboseOutput(t *testing.T) {
 		{
 			name: "staged hint contains emoji and description",
 			key:  "hint.status.has_staged",
-			want: "💡 다음 단계: 변경사항을 저장하려면 → gk commit",
+			want: "→ 다음 단계: 변경사항을 저장하려면 → gk commit",
 		},
 		{
 			name: "unstaged hint contains emoji and description",
 			key:  "hint.status.has_unstaged",
-			want: "💡 다음 단계: 변경사항을 준비하려면 → gk add <파일>",
+			want: "→ 다음 단계: 변경사항을 준비하려면 → gk add <파일>",
 		},
 		{
 			name: "untracked hint contains emoji and description",
 			key:  "hint.status.has_untracked",
-			want: "💡 다음 단계: 새 파일을 추적하려면 → gk add <파일>",
+			want: "→ 다음 단계: 새 파일을 추적하려면 → gk add <파일>",
 		},
 		{
 			name: "conflict hint contains emoji and description",
 			key:  "hint.status.has_conflict",
-			want: "💡 다음 단계: 충돌을 해결한 뒤 → gk add <파일> → gk commit",
+			want: "→ 다음 단계: 충돌을 해결한 뒤 → gk add <파일> → gk commit",
 		},
 	}
 
@@ -276,19 +276,19 @@ func TestHintGenerator_ErrorHints(t *testing.T) {
 			name:  "push_failed verbose",
 			level: HintVerbose,
 			key:   "hint.error.push_failed",
-			want:  "💡 먼저 서버에서 가져오기를 실행하세요 → gk pull",
+			want:  "→ 먼저 서버에서 가져오기를 실행하세요 → gk pull",
 		},
 		{
 			name:  "pull_failed verbose",
 			level: HintVerbose,
 			key:   "hint.error.pull_failed",
-			want:  "💡 먼저 변경사항을 저장하세요 → gk commit 또는 gk stash",
+			want:  "→ 먼저 변경사항을 저장하세요 → gk commit 또는 gk stash",
 		},
 		{
 			name:  "merge_conflict verbose",
 			level: HintVerbose,
 			key:   "hint.error.merge_conflict",
-			want:  "💡 충돌 파일을 편집한 뒤 → gk add <파일> → gk commit",
+			want:  "→ 충돌 파일을 편집한 뒤 → gk add <파일> → gk commit",
 		},
 		// Minimal error hints
 		{
@@ -402,6 +402,163 @@ func TestHintGenerator_Level(t *testing.T) {
 // hint selection. Priority: diverged > behind > ahead > in sync.
 // `hasUpstream=false` always yields "" because we can't speak to "in
 // sync" without a tracked upstream. HintOff also yields "".
+func TestHintGenerator_MergeIntoNextHint(t *testing.T) {
+	make := func(lang string) *HintGenerator {
+		cat := i18n.New(lang, i18n.ModeNormal)
+		return NewHintGenerator(HintVerbose, cat, NewEmojiMapper(false))
+	}
+	makeEasy := func(lang string) *HintGenerator {
+		cat := i18n.New(lang, i18n.ModeEasy)
+		return NewHintGenerator(HintVerbose, cat, NewEmojiMapper(true))
+	}
+
+	t.Run("normal_en_only_push", func(t *testing.T) {
+		got := make("en").MergeIntoNextHint("main", false, "feat/x")
+		if len(got) != 1 {
+			t.Fatalf("len=%d, want 1: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "gk push --from main") {
+			t.Fatalf("missing push hint: %q", got[0])
+		}
+	})
+
+	t.Run("normal_en_with_cleanup", func(t *testing.T) {
+		got := make("en").MergeIntoNextHint("main", true, "feat/x")
+		if len(got) != 2 {
+			t.Fatalf("len=%d, want 2: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "push --from main") {
+			t.Fatalf("first should be push: %q", got[0])
+		}
+		if !strings.Contains(got[1], "branch delete feat/x") {
+			t.Fatalf("second should be cleanup: %q", got[1])
+		}
+	})
+
+	t.Run("easy_ko_with_cleanup_uses_korean", func(t *testing.T) {
+		got := makeEasy("ko").MergeIntoNextHint("main", true, "feat/x")
+		if len(got) != 2 {
+			t.Fatalf("len=%d, want 2: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "서버에 올리기") {
+			t.Fatalf("expected korean push wording, got: %q", got[0])
+		}
+		if !strings.Contains(got[1], "다 머지된") {
+			t.Fatalf("expected korean cleanup wording, got: %q", got[1])
+		}
+	})
+
+	t.Run("source_equals_receiver_no_cleanup", func(t *testing.T) {
+		got := make("en").MergeIntoNextHint("main", true, "main")
+		if len(got) != 1 {
+			t.Fatalf("len=%d, want 1 (cleanup must not fire): %v", len(got), got)
+		}
+	})
+
+	t.Run("hint_off_returns_nil", func(t *testing.T) {
+		gen := NewHintGenerator(HintOff, i18n.New("en", i18n.ModeNormal), NewEmojiMapper(false))
+		if got := gen.MergeIntoNextHint("main", true, "feat/x"); got != nil {
+			t.Fatalf("HintOff should return nil, got: %v", got)
+		}
+	})
+}
+
+func TestHintGenerator_PushSummaryHint(t *testing.T) {
+	makeNormal := func(lang string) *HintGenerator {
+		return NewHintGenerator(HintVerbose, i18n.New(lang, i18n.ModeNormal), NewEmojiMapper(false))
+	}
+	makeEasy := func(lang string) *HintGenerator {
+		return NewHintGenerator(HintVerbose, i18n.New(lang, i18n.ModeEasy), NewEmojiMapper(true))
+	}
+
+	t.Run("ahead_n_uses_summary", func(t *testing.T) {
+		got := makeNormal("en").PushSummaryHint(7, "origin", "main", "abc1234")
+		if !strings.Contains(got, "7") || !strings.Contains(got, "origin/main") || !strings.Contains(got, "abc1234") {
+			t.Fatalf("missing parts: %q", got)
+		}
+	})
+	t.Run("zero_uses_up_to_date", func(t *testing.T) {
+		got := makeNormal("en").PushSummaryHint(0, "origin", "main", "abc1234")
+		if !strings.Contains(got, "up-to-date") {
+			t.Fatalf("expected up-to-date, got: %q", got)
+		}
+	})
+	t.Run("easy_ko_summary", func(t *testing.T) {
+		got := makeEasy("ko").PushSummaryHint(3, "origin", "main", "abc1234")
+		if !strings.Contains(got, "올렸습니다") {
+			t.Fatalf("expected korean summary, got: %q", got)
+		}
+	})
+	t.Run("hint_off_returns_empty", func(t *testing.T) {
+		gen := NewHintGenerator(HintOff, i18n.New("en", i18n.ModeNormal), NewEmojiMapper(false))
+		if got := gen.PushSummaryHint(7, "origin", "main", "abc1234"); got != "" {
+			t.Fatalf("HintOff should return empty, got: %q", got)
+		}
+	})
+}
+
+func TestHintGenerator_StatusCrossWorktreeHint(t *testing.T) {
+	make := func() *HintGenerator {
+		return NewHintGenerator(HintVerbose, i18n.New("en", i18n.ModeNormal), NewEmojiMapper(false))
+	}
+
+	t.Run("all_clean_when_no_work_items", func(t *testing.T) {
+		got := make().StatusCrossWorktreeHint(nil, 4)
+		if !strings.Contains(got, "all clean") || !strings.Contains(got, "4") {
+			t.Fatalf("expected all-clean message with count 4, got: %q", got)
+		}
+	})
+
+	t.Run("filters_empty_detail", func(t *testing.T) {
+		items := []WorktreeWorkItem{
+			{Branch: "feat/x", Detail: ""},
+			{Branch: "main", Detail: ""},
+		}
+		got := make().StatusCrossWorktreeHint(items, 2)
+		if !strings.Contains(got, "all clean") {
+			t.Fatalf("filtered to 0 items should yield all-clean: %q", got)
+		}
+	})
+
+	t.Run("lists_up_to_three_items", func(t *testing.T) {
+		items := []WorktreeWorkItem{
+			{Branch: "a", Detail: "↑3"},
+			{Branch: "b", Detail: "↓2"},
+			{Branch: "c", Detail: "dirty"},
+		}
+		got := make().StatusCrossWorktreeHint(items, 3)
+		for _, want := range []string{"a", "↑3", "b", "↓2", "c", "dirty"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q in: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("more_than_three_truncates_with_extra_count", func(t *testing.T) {
+		items := []WorktreeWorkItem{
+			{Branch: "a", Detail: "↑1"},
+			{Branch: "b", Detail: "↑2"},
+			{Branch: "c", Detail: "↑3"},
+			{Branch: "d", Detail: "↑4"},
+			{Branch: "e", Detail: "↑5"},
+		}
+		got := make().StatusCrossWorktreeHint(items, 5)
+		if !strings.Contains(got, "+2 more") {
+			t.Fatalf("expected '+2 more' suffix, got: %q", got)
+		}
+		if strings.Contains(got, "↑4") || strings.Contains(got, "↑5") {
+			t.Fatalf("4th/5th items should be truncated, got: %q", got)
+		}
+	})
+
+	t.Run("hint_off_returns_empty", func(t *testing.T) {
+		gen := NewHintGenerator(HintOff, i18n.New("en", i18n.ModeNormal), NewEmojiMapper(false))
+		if got := gen.StatusCrossWorktreeHint([]WorktreeWorkItem{{Branch: "x", Detail: "↑1"}}, 1); got != "" {
+			t.Fatalf("HintOff should return empty, got: %q", got)
+		}
+	})
+}
+
 func TestHintGenerator_SyncHint(t *testing.T) {
 	cat := i18n.New("ko", i18n.ModeEasy)
 	emoji := NewEmojiMapper(true)

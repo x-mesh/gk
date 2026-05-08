@@ -3,7 +3,9 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -109,6 +111,12 @@ func runPush(cmd *cobra.Command, args []string) error {
 	gitArgs = append(gitArgs, remote, branch)
 	Dbg("push: hasUpstream=%v argv=%v", hasUpstream, gitArgs)
 
+	// Snapshot ahead-count and HEAD before push so we can render a
+	// summary line afterwards. Best-effort — failure here just means
+	// we fall back to whatever git's own output already conveys.
+	ahead := pushAheadCount(ctx, runner, remote, branch, hasUpstream)
+	short := pushHeadShort(ctx, runner, branch)
+
 	// --verbose mode streams git's progress (objects/deltas/refs) into a
 	// scrollable viewport so the user can watch the push proceed.
 	if Verbose() && ui.IsTerminal() {
@@ -131,9 +139,68 @@ func runPush(cmd *cobra.Command, args []string) error {
 		fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
 		return err
 	}
+
+	// JSON mode: render structured result, suppress git's raw output.
+	if JSONOut() {
+		_ = stdout // git push writes nothing to stdout
+		_ = stderr
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(pushResult{
+			Remote: remote,
+			Branch: branch,
+			Ahead:  ahead,
+			Head:   short,
+		})
+	}
+
+	// Default: surface git's output (it's where users see the URL +
+	// ref-update line) and append a one-line gk-style summary so the
+	// flow has a clear "what just happened" signal.
 	fmt.Fprint(cmd.OutOrStdout(), string(stdout))
 	fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
+	if e := EasyEngine(); e != nil {
+		if msg := e.PushSummaryHint(ahead, remote, branch, short); msg != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), msg)
+		}
+	}
 	return nil
+}
+
+// pushResult is the JSON shape emitted when --json is active on push.
+type pushResult struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+	Ahead  int    `json:"ahead"`
+	Head   string `json:"head"`
+}
+
+// pushAheadCount returns how many commits the local branch is ahead of
+// its upstream counterpart, or 0 when no upstream exists / git fails.
+// Best-effort: callers must tolerate a 0 result on transient failures.
+func pushAheadCount(ctx context.Context, r git.Runner, remote, branch string, hasUpstream bool) int {
+	if !hasUpstream {
+		return 0
+	}
+	out, _, err := r.Run(ctx, "rev-list", "--count", remote+"/"+branch+".."+branch)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// pushHeadShort returns the abbreviated SHA at the tip of branch, or ""
+// when git fails. Used purely for display.
+func pushHeadShort(ctx context.Context, r git.Runner, branch string) string {
+	out, _, err := r.Run(ctx, "rev-parse", "--short", branch)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // branchHasUpstream reports whether <branch>@{upstream} resolves.

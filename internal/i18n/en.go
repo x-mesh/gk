@@ -10,26 +10,26 @@ var enMessages = map[string]map[Mode]string{
 
 	"status.staged.header": {
 		ModeNormal: "Staged changes",
-		ModeEasy:   "📦 Changes ready to be saved (staged)",
+		ModeEasy:   "+ Changes ready to be saved (staged)",
 	},
 	"status.unstaged.header": {
 		ModeNormal: "Unstaged changes",
-		ModeEasy:   "✏️ Changes not yet prepared (unstaged)",
+		ModeEasy:   "~ Changes not yet prepared (unstaged)",
 	},
 	"status.untracked.header": {
 		ModeNormal: "Untracked files",
-		ModeEasy:   "🆕 Newly created files (untracked)",
+		ModeEasy:   "? Newly created files (untracked)",
 	},
 	"status.conflict.header": {
 		ModeNormal: "Unmerged paths",
-		ModeEasy:   "💥 Files with conflicts",
+		ModeEasy:   "‼ Files with conflicts",
 	},
 
 	// ── Hint messages for status ────────────────────────────────────────
 
 	"hint.status.has_staged": {
 		ModeNormal: "try: gk commit",
-		ModeEasy:   "💡 Next step: to save your changes → gk commit",
+		ModeEasy:   "→ Next step: to save your changes → gk commit",
 	},
 	"hint.status.has_staged.minimal": {
 		ModeNormal: "gk commit",
@@ -37,7 +37,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_unstaged": {
 		ModeNormal: "try: git add <file>",
-		ModeEasy:   "💡 Next step: to prepare your changes → gk add <file>",
+		ModeEasy:   "→ Next step: to prepare your changes → gk add <file>",
 	},
 	"hint.status.has_unstaged.minimal": {
 		ModeNormal: "gk add <file>",
@@ -45,7 +45,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_untracked": {
 		ModeNormal: "try: git add <file> to track",
-		ModeEasy:   "💡 Next step: to start tracking a new file → gk add <file>",
+		ModeEasy:   "→ Next step: to start tracking a new file → gk add <file>",
 	},
 	"hint.status.has_untracked.minimal": {
 		ModeNormal: "gk add <file>",
@@ -53,7 +53,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_conflict": {
 		ModeNormal: "fix conflicts and run: git add <file>",
-		ModeEasy:   "💡 Next step: fix the conflicts, then → gk add <file> → gk commit",
+		ModeEasy:   "→ Next step: fix the conflicts, then → gk add <file> → gk commit",
 	},
 	"hint.status.has_conflict.minimal": {
 		ModeNormal: "gk add <file> && gk commit",
@@ -64,11 +64,11 @@ var enMessages = map[string]map[Mode]string{
 
 	"hint.status.clean_synced": {
 		ModeNormal: "in sync — nothing to do",
-		ModeEasy:   "✨ Your working folder is clean and in sync with the server",
+		ModeEasy:   "✓ Your working folder is clean and in sync with the server",
 	},
 	"hint.status.ahead": {
 		ModeNormal: "try: gk push",
-		ModeEasy:   "📤 You have %d commit(s) to upload → gk push",
+		ModeEasy:   "↑ You have %d commit(s) to upload → gk push",
 	},
 	"hint.status.ahead.minimal": {
 		ModeNormal: "gk push",
@@ -76,7 +76,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.status.behind": {
 		ModeNormal: "try: gk pull",
-		ModeEasy:   "📥 The server has %d new commit(s) → gk pull",
+		ModeEasy:   "↓ The server has %d new commit(s) → gk pull",
 	},
 	"hint.status.behind.minimal": {
 		ModeNormal: "gk pull",
@@ -84,7 +84,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.status.diverged": {
 		ModeNormal: "try: gk sync",
-		ModeEasy:   "🔀 Both sides have new commits (↑%d ↓%d) → gk sync",
+		ModeEasy:   "↕ Both sides have new commits (↑%d ↓%d) → gk sync",
 	},
 	"hint.status.diverged.minimal": {
 		ModeNormal: "gk sync",
@@ -95,22 +95,22 @@ var enMessages = map[string]map[Mode]string{
 
 	"error.push_failed": {
 		ModeNormal: "push failed: remote has new changes",
-		ModeEasy:   "❌ Upload failed: the server has newer changes you don't have yet",
+		ModeEasy:   "✗ Upload failed: the server has newer changes you don't have yet",
 	},
 	"error.pull_failed": {
 		ModeNormal: "pull failed: local changes would be overwritten",
-		ModeEasy:   "❌ Download failed: your local changes might be overwritten",
+		ModeEasy:   "✗ Download failed: your local changes might be overwritten",
 	},
 	"error.merge_conflict": {
 		ModeNormal: "merge conflict detected",
-		ModeEasy:   "💥 Conflict: the same part of a file was changed differently",
+		ModeEasy:   "‼ Conflict: the same part of a file was changed differently",
 	},
 
 	// ── Error hints ─────────────────────────────────────────────────────
 
 	"hint.error.push_failed": {
 		ModeNormal: "try: gk pull first",
-		ModeEasy:   "💡 First, download the latest changes → gk pull",
+		ModeEasy:   "→ First, download the latest changes → gk pull",
 	},
 	"hint.error.push_failed.minimal": {
 		ModeNormal: "gk pull",
@@ -118,7 +118,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.error.pull_failed": {
 		ModeNormal: "try: gk commit or gk stash first",
-		ModeEasy:   "💡 First, save your changes → gk commit or gk stash",
+		ModeEasy:   "→ First, save your changes → gk commit or gk stash",
 	},
 	"hint.error.pull_failed.minimal": {
 		ModeNormal: "gk commit or gk stash",
@@ -126,7 +126,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.error.merge_conflict": {
 		ModeNormal: "fix conflicts, then: git add <file> && git commit",
-		ModeEasy:   "💡 Edit the conflicting files, then → gk add <file> → gk commit",
+		ModeEasy:   "→ Edit the conflicting files, then → gk add <file> → gk commit",
 	},
 	"hint.error.merge_conflict.minimal": {
 		ModeNormal: "gk add <file> && gk commit",
@@ -137,23 +137,23 @@ var enMessages = map[string]map[Mode]string{
 
 	"general.success": {
 		ModeNormal: "Success",
-		ModeEasy:   "✅ Success",
+		ModeEasy:   "✓ Success",
 	},
 	"general.warning": {
 		ModeNormal: "Warning",
-		ModeEasy:   "⚠️ Warning",
+		ModeEasy:   "⚠ Warning",
 	},
 	"general.error": {
 		ModeNormal: "Error",
-		ModeEasy:   "❌ Error",
+		ModeEasy:   "✗ Error",
 	},
 	"general.nothing_to_commit": {
 		ModeNormal: "nothing to commit, working tree clean",
-		ModeEasy:   "✅ Nothing to save. Your working folder is clean!",
+		ModeEasy:   "✓ Nothing to save. Your working folder is clean!",
 	},
 	"general.branch_info": {
 		ModeNormal: "On branch %s",
-		ModeEasy:   "🌿 Current branch: %s",
+		ModeEasy:   "▸ Current branch: %s",
 	},
 
 	// ── Guide workflow names and descriptions ───────────────────────────
@@ -246,11 +246,11 @@ var enMessages = map[string]map[Mode]string{
 
 	"commit.success": {
 		ModeNormal: "Committed: %s",
-		ModeEasy:   "✅ Changes saved: %s",
+		ModeEasy:   "✓ Changes saved: %s",
 	},
 	"hint.commit.push": {
 		ModeNormal: "try: gk push",
-		ModeEasy:   "💡 Next step: to upload to the server → gk push",
+		ModeEasy:   "→ Next step: to upload to the server → gk push",
 	},
 	"hint.commit.push.minimal": {
 		ModeNormal: "gk push",
@@ -261,14 +261,55 @@ var enMessages = map[string]map[Mode]string{
 
 	"push.success": {
 		ModeNormal: "Pushed to %s",
-		ModeEasy:   "🚀 Uploaded to server: %s",
+		ModeEasy:   "↑ Uploaded to server: %s",
 	},
 
 	// ── Pull messages ───────────────────────────────────────────────────
 
 	"pull.success": {
 		ModeNormal: "Pulled from %s",
-		ModeEasy:   "📥 Downloaded from server: %s",
+		ModeEasy:   "↓ Downloaded from server: %s",
+	},
+
+	// ── Merge --into next-step hints ────────────────────────────────────
+
+	"hint.merge.into.next_push": {
+		ModeNormal: "next: gk push --from %s",
+		ModeEasy:   "↑ next: upload to the server with gk push --from %s",
+	},
+	"hint.merge.into.next_push.minimal": {
+		ModeNormal: "gk push --from %s",
+		ModeEasy:   "gk push --from %s",
+	},
+	"hint.merge.into.cleanup_source": {
+		ModeNormal: "also: gk branch delete %s (fully merged)",
+		ModeEasy:   "※ cleanup: %s is fully merged — gk branch delete %s",
+	},
+	"hint.merge.into.cleanup_source.minimal": {
+		ModeNormal: "gk branch delete %s",
+		ModeEasy:   "gk branch delete %s",
+	},
+
+	// ── Push summary ────────────────────────────────────────────────────
+
+	"hint.push.summary": {
+		ModeNormal: "pushed %d commit(s) to %s/%s (%s)",
+		ModeEasy:   "↑ uploaded %d commit(s) to %s/%s (%s)",
+	},
+	"hint.push.up_to_date": {
+		ModeNormal: "up-to-date with %s/%s (%s)",
+		ModeEasy:   "✓ already up-to-date with %s/%s (%s)",
+	},
+
+	// ── Status cross-worktree hints ─────────────────────────────────────
+
+	"hint.status.cross_worktree": {
+		ModeNormal: "worktree %s: %s",
+		ModeEasy:   "▸ worktree %s: %s",
+	},
+	"hint.status.all_clean_worktrees": {
+		ModeNormal: "all clean across %d worktree(s)",
+		ModeEasy:   "✓ all %d worktree(s) clean and in sync",
 	},
 
 	// ── Easy Mode system messages ───────────────────────────────────────

@@ -1655,6 +1655,100 @@ func TestLocalBaseGauge(t *testing.T) {
 	}
 }
 
+func TestWorktreeAheadBehind(t *testing.T) {
+	t.Run("parses_left_right_count", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"-C /repo/feat rev-list --left-right --count HEAD@{upstream}...HEAD": {
+				Stdout: "2\t5\n",
+			},
+		}}
+		ahead, behind, ok := worktreeAheadBehind(context.Background(), fake, "/repo/feat")
+		if !ok {
+			t.Fatalf("ok=false, want true")
+		}
+		if ahead != 5 || behind != 2 {
+			t.Fatalf("got ahead=%d behind=%d, want ahead=5 behind=2", ahead, behind)
+		}
+	})
+
+	t.Run("git_failure_returns_not_ok", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"-C /repo/feat rev-list --left-right --count HEAD@{upstream}...HEAD": {
+				ExitCode: 128, Stderr: "fatal: no upstream",
+			},
+		}}
+		if _, _, ok := worktreeAheadBehind(context.Background(), fake, "/repo/feat"); ok {
+			t.Fatal("expected ok=false on git failure")
+		}
+	})
+
+	t.Run("malformed_output_returns_not_ok", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"-C /repo/feat rev-list --left-right --count HEAD@{upstream}...HEAD": {
+				Stdout: "garbage\n",
+			},
+		}}
+		if _, _, ok := worktreeAheadBehind(context.Background(), fake, "/repo/feat"); ok {
+			t.Fatal("expected ok=false on malformed output")
+		}
+	})
+}
+
+func TestScanCrossWorktreeWork(t *testing.T) {
+	t.Run("returns_only_other_worktrees_with_work", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD aaa\nbranch refs/heads/main\n\n" +
+				"worktree /repo/feat-a\nHEAD bbb\nbranch refs/heads/feat-a\n\n" +
+				"worktree /repo/feat-b\nHEAD ccc\nbranch refs/heads/feat-b\n\n" +
+				"worktree /repo/feat-c\nHEAD ddd\nbranch refs/heads/feat-c\n"},
+			"-C /repo/feat-a rev-list --left-right --count HEAD@{upstream}...HEAD": {Stdout: "0\t3\n"},
+			"-C /repo/feat-b rev-list --left-right --count HEAD@{upstream}...HEAD": {Stdout: "2\t0\n"},
+			"-C /repo/feat-c rev-list --left-right --count HEAD@{upstream}...HEAD": {Stdout: "0\t0\n"},
+		}}
+
+		items, total := scanCrossWorktreeWork(context.Background(), fake, "main")
+		if total != 4 {
+			t.Fatalf("total=%d, want 4", total)
+		}
+		if len(items) != 2 {
+			t.Fatalf("items len=%d, want 2 (feat-c is clean, main is current)", len(items))
+		}
+		if items[0].Branch != "feat-a" || items[0].Detail != "↑3" {
+			t.Fatalf("items[0]=%+v, want feat-a/↑3", items[0])
+		}
+		if items[1].Branch != "feat-b" || items[1].Detail != "↓2" {
+			t.Fatalf("items[1]=%+v, want feat-b/↓2", items[1])
+		}
+	})
+
+	t.Run("skips_bare_and_detached", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD aaa\nbranch refs/heads/main\n\n" +
+				"worktree /repo/.bare\nHEAD bbb\nbare\n\n" +
+				"worktree /repo/det\nHEAD ccc\ndetached\n"},
+		}}
+		items, total := scanCrossWorktreeWork(context.Background(), fake, "main")
+		if total != 1 {
+			t.Fatalf("total=%d, want 1 (only main has a named branch)", total)
+		}
+		if len(items) != 0 {
+			t.Fatalf("items=%v, want empty", items)
+		}
+	})
+
+	t.Run("diverged_uses_combined_arrows", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD aaa\nbranch refs/heads/main\n\n" +
+				"worktree /repo/feat\nHEAD bbb\nbranch refs/heads/feat\n"},
+			"-C /repo/feat rev-list --left-right --count HEAD@{upstream}...HEAD": {Stdout: "2\t3\n"},
+		}}
+		items, _ := scanCrossWorktreeWork(context.Background(), fake, "main")
+		if len(items) != 1 || items[0].Detail != "↑3 ↓2" {
+			t.Fatalf("got %v, want detail=↑3 ↓2", items)
+		}
+	})
+}
+
 func TestLocalBaseStaleHint(t *testing.T) {
 	cases := []struct {
 		name          string

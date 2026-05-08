@@ -251,6 +251,33 @@ func TestRunMergeIntoUsesExplicitSource(t *testing.T) {
 	}
 }
 
+func TestRunMergeIntoBarePrintsNextStepHint(t *testing.T) {
+	// EasyEngine() returns nil in unit tests since rootCmd PersistentPreRun
+	// never runs — so this test verifies that absence of EasyEngine is
+	// nil-safe (no panic, no hint). The presence-and-content check is
+	// covered by TestHintGenerator_MergeIntoNextHint at the easy layer.
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "aaa1111\n"},
+		"update-ref refs/heads/main bbb2222 aaa1111":  {Stdout: ""},
+		"rev-list --count aaa1111..bbb2222":           {Stdout: "3\n"},
+	}}
+	var errOut bytes.Buffer
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut}, nil, mergeFlags{into: "main", noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeInto: %v", err)
+	}
+	// Without EasyEngine wired up, no hint is printed (nil-safe).
+	// Hint content is exercised at the easy layer.
+	if !strings.Contains(errOut.String(), "merged ship into main") {
+		t.Fatalf("expected merge summary, got:\n%s", errOut.String())
+	}
+}
+
 func TestRunMergeIntoBareFastForwardUpdatesRef(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},

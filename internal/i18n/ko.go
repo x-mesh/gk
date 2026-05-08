@@ -10,26 +10,26 @@ var koMessages = map[string]map[Mode]string{
 
 	"status.staged.header": {
 		ModeNormal: "Staged changes",
-		ModeEasy:   "📦 커밋 준비된 변경사항 (staged)",
+		ModeEasy:   "+ 커밋 준비된 변경사항 (staged)",
 	},
 	"status.unstaged.header": {
 		ModeNormal: "Unstaged changes",
-		ModeEasy:   "✏️ 아직 준비 안 된 변경사항 (unstaged)",
+		ModeEasy:   "~ 아직 준비 안 된 변경사항 (unstaged)",
 	},
 	"status.untracked.header": {
 		ModeNormal: "Untracked files",
-		ModeEasy:   "🆕 새로 만든 파일 (untracked)",
+		ModeEasy:   "? 새로 만든 파일 (untracked)",
 	},
 	"status.conflict.header": {
 		ModeNormal: "Unmerged paths",
-		ModeEasy:   "💥 충돌이 발생한 파일 (conflict)",
+		ModeEasy:   "‼ 충돌이 발생한 파일 (conflict)",
 	},
 
 	// ── Hint messages for status ────────────────────────────────────────
 
 	"hint.status.has_staged": {
 		ModeNormal: "try: gk commit",
-		ModeEasy:   "💡 다음 단계: 변경사항을 저장하려면 → gk commit",
+		ModeEasy:   "→ 다음 단계: 변경사항을 저장하려면 → gk commit",
 	},
 	"hint.status.has_staged.minimal": {
 		ModeNormal: "gk commit",
@@ -37,7 +37,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_unstaged": {
 		ModeNormal: "try: git add <file>",
-		ModeEasy:   "💡 다음 단계: 변경사항을 준비하려면 → gk add <파일>",
+		ModeEasy:   "→ 다음 단계: 변경사항을 준비하려면 → gk add <파일>",
 	},
 	"hint.status.has_unstaged.minimal": {
 		ModeNormal: "gk add <file>",
@@ -45,7 +45,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_untracked": {
 		ModeNormal: "try: git add <file> to track",
-		ModeEasy:   "💡 다음 단계: 새 파일을 추적하려면 → gk add <파일>",
+		ModeEasy:   "→ 다음 단계: 새 파일을 추적하려면 → gk add <파일>",
 	},
 	"hint.status.has_untracked.minimal": {
 		ModeNormal: "gk add <file>",
@@ -53,7 +53,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.status.has_conflict": {
 		ModeNormal: "fix conflicts and run: git add <file>",
-		ModeEasy:   "💡 다음 단계: 충돌을 해결한 뒤 → gk add <파일> → gk commit",
+		ModeEasy:   "→ 다음 단계: 충돌을 해결한 뒤 → gk add <파일> → gk commit",
 	},
 	"hint.status.has_conflict.minimal": {
 		ModeNormal: "gk add <file> && gk commit",
@@ -64,11 +64,11 @@ var koMessages = map[string]map[Mode]string{
 
 	"hint.status.clean_synced": {
 		ModeNormal: "in sync — nothing to do",
-		ModeEasy:   "✨ 작업 폴더가 깨끗하고 서버와도 동기화되어 있습니다",
+		ModeEasy:   "✓ 작업 폴더가 깨끗하고 서버와도 동기화되어 있습니다",
 	},
 	"hint.status.ahead": {
 		ModeNormal: "try: gk push",
-		ModeEasy:   "📤 서버에 올릴 커밋이 %d개 있습니다 → gk push",
+		ModeEasy:   "↑ 서버에 올릴 커밋이 %d개 있습니다 → gk push",
 	},
 	"hint.status.ahead.minimal": {
 		ModeNormal: "gk push",
@@ -76,7 +76,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.status.behind": {
 		ModeNormal: "try: gk pull",
-		ModeEasy:   "📥 서버에 새 커밋이 %d개 있습니다 → gk pull",
+		ModeEasy:   "↓ 서버에 새 커밋이 %d개 있습니다 → gk pull",
 	},
 	"hint.status.behind.minimal": {
 		ModeNormal: "gk pull",
@@ -84,7 +84,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.status.diverged": {
 		ModeNormal: "try: gk sync",
-		ModeEasy:   "🔀 양쪽에 새 커밋이 있습니다 (↑%d ↓%d) → gk sync",
+		ModeEasy:   "↕ 양쪽에 새 커밋이 있습니다 (↑%d ↓%d) → gk sync",
 	},
 	"hint.status.diverged.minimal": {
 		ModeNormal: "gk sync",
@@ -95,22 +95,22 @@ var koMessages = map[string]map[Mode]string{
 
 	"error.push_failed": {
 		ModeNormal: "push failed: remote has new changes",
-		ModeEasy:   "❌ 서버에 올리기 실패: 원격 저장소에 새로운 변경사항이 있습니다",
+		ModeEasy:   "✗ 서버에 올리기 실패: 원격 저장소에 새로운 변경사항이 있습니다",
 	},
 	"error.pull_failed": {
 		ModeNormal: "pull failed: local changes would be overwritten",
-		ModeEasy:   "❌ 서버에서 가져오기 실패: 로컬 변경사항이 덮어씌워질 수 있습니다",
+		ModeEasy:   "✗ 서버에서 가져오기 실패: 로컬 변경사항이 덮어씌워질 수 있습니다",
 	},
 	"error.merge_conflict": {
 		ModeNormal: "merge conflict detected",
-		ModeEasy:   "💥 같은 부분을 다르게 수정해서 충돌이 발생했습니다",
+		ModeEasy:   "‼ 같은 부분을 다르게 수정해서 충돌이 발생했습니다",
 	},
 
 	// ── Error hints ─────────────────────────────────────────────────────
 
 	"hint.error.push_failed": {
 		ModeNormal: "try: gk pull first",
-		ModeEasy:   "💡 먼저 서버에서 가져오기를 실행하세요 → gk pull",
+		ModeEasy:   "→ 먼저 서버에서 가져오기를 실행하세요 → gk pull",
 	},
 	"hint.error.push_failed.minimal": {
 		ModeNormal: "gk pull",
@@ -118,7 +118,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.error.pull_failed": {
 		ModeNormal: "try: gk commit or gk stash first",
-		ModeEasy:   "💡 먼저 변경사항을 저장하세요 → gk commit 또는 gk stash",
+		ModeEasy:   "→ 먼저 변경사항을 저장하세요 → gk commit 또는 gk stash",
 	},
 	"hint.error.pull_failed.minimal": {
 		ModeNormal: "gk commit or gk stash",
@@ -126,7 +126,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.error.merge_conflict": {
 		ModeNormal: "fix conflicts, then: git add <file> && git commit",
-		ModeEasy:   "💡 충돌 파일을 편집한 뒤 → gk add <파일> → gk commit",
+		ModeEasy:   "→ 충돌 파일을 편집한 뒤 → gk add <파일> → gk commit",
 	},
 	"hint.error.merge_conflict.minimal": {
 		ModeNormal: "gk add <file> && gk commit",
@@ -137,23 +137,23 @@ var koMessages = map[string]map[Mode]string{
 
 	"general.success": {
 		ModeNormal: "Success",
-		ModeEasy:   "✅ 성공",
+		ModeEasy:   "✓ 성공",
 	},
 	"general.warning": {
 		ModeNormal: "Warning",
-		ModeEasy:   "⚠️ 주의",
+		ModeEasy:   "⚠ 주의",
 	},
 	"general.error": {
 		ModeNormal: "Error",
-		ModeEasy:   "❌ 오류",
+		ModeEasy:   "✗ 오류",
 	},
 	"general.nothing_to_commit": {
 		ModeNormal: "nothing to commit, working tree clean",
-		ModeEasy:   "✅ 저장할 변경사항이 없습니다. 작업 폴더가 깨끗합니다!",
+		ModeEasy:   "✓ 저장할 변경사항이 없습니다. 작업 폴더가 깨끗합니다!",
 	},
 	"general.branch_info": {
 		ModeNormal: "On branch %s",
-		ModeEasy:   "🌿 현재 브랜치: %s",
+		ModeEasy:   "▸ 현재 브랜치: %s",
 	},
 
 	// ── Guide workflow names and descriptions ───────────────────────────
@@ -246,11 +246,11 @@ var koMessages = map[string]map[Mode]string{
 
 	"commit.success": {
 		ModeNormal: "Committed: %s",
-		ModeEasy:   "✅ 변경사항이 저장되었습니다: %s",
+		ModeEasy:   "✓ 변경사항이 저장되었습니다: %s",
 	},
 	"hint.commit.push": {
 		ModeNormal: "try: gk push",
-		ModeEasy:   "💡 다음 단계: 서버에 올리려면 → gk push",
+		ModeEasy:   "→ 다음 단계: 서버에 올리려면 → gk push",
 	},
 	"hint.commit.push.minimal": {
 		ModeNormal: "gk push",
@@ -261,14 +261,55 @@ var koMessages = map[string]map[Mode]string{
 
 	"push.success": {
 		ModeNormal: "Pushed to %s",
-		ModeEasy:   "🚀 서버에 올리기 완료: %s",
+		ModeEasy:   "↑ 서버에 올리기 완료: %s",
 	},
 
 	// ── Pull messages ───────────────────────────────────────────────────
 
 	"pull.success": {
 		ModeNormal: "Pulled from %s",
-		ModeEasy:   "📥 서버에서 가져오기 완료: %s",
+		ModeEasy:   "↓ 서버에서 가져오기 완료: %s",
+	},
+
+	// ── Merge --into next-step hints ────────────────────────────────────
+
+	"hint.merge.into.next_push": {
+		ModeNormal: "next: gk push --from %s",
+		ModeEasy:   "↑ 다음 단계: 서버에 올리기 — gk push --from %s",
+	},
+	"hint.merge.into.next_push.minimal": {
+		ModeNormal: "gk push --from %s",
+		ModeEasy:   "gk push --from %s",
+	},
+	"hint.merge.into.cleanup_source": {
+		ModeNormal: "also: gk branch delete %s (fully merged)",
+		ModeEasy:   "※ 정리: 다 머지된 %s 브랜치 — gk branch delete %s",
+	},
+	"hint.merge.into.cleanup_source.minimal": {
+		ModeNormal: "gk branch delete %s",
+		ModeEasy:   "gk branch delete %s",
+	},
+
+	// ── Push summary ────────────────────────────────────────────────────
+
+	"hint.push.summary": {
+		ModeNormal: "pushed %d commit(s) to %s/%s (%s)",
+		ModeEasy:   "↑ 커밋 %d개를 %s/%s에 올렸습니다 (%s)",
+	},
+	"hint.push.up_to_date": {
+		ModeNormal: "up-to-date with %s/%s (%s)",
+		ModeEasy:   "✓ %s/%s 와 이미 동기화 상태입니다 (%s)",
+	},
+
+	// ── Status cross-worktree hints ─────────────────────────────────────
+
+	"hint.status.cross_worktree": {
+		ModeNormal: "worktree %s: %s",
+		ModeEasy:   "▸ 워크트리 %s: %s",
+	},
+	"hint.status.all_clean_worktrees": {
+		ModeNormal: "all clean across %d worktree(s)",
+		ModeEasy:   "✓ 워크트리 %d개 모두 깨끗하고 동기화 상태입니다",
 	},
 
 	// ── Easy Mode system messages ───────────────────────────────────────

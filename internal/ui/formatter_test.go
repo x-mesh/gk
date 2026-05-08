@@ -29,7 +29,7 @@ func TestSectionHeader_WithColor(t *testing.T) {
 	got := f.SectionHeader("success", "커밋 준비된 변경사항")
 
 	// Should contain the success emoji
-	if !strings.Contains(got, "✅") {
+	if !strings.Contains(got, "✓") {
 		t.Errorf("expected success emoji, got %q", got)
 	}
 	// Should contain the text
@@ -52,7 +52,7 @@ func TestSectionHeader_NoColor(t *testing.T) {
 	got := f.SectionHeader("success", "커밋 준비된 변경사항")
 
 	// Should contain the emoji (emoji preserved in no-color mode)
-	if !strings.Contains(got, "✅") {
+	if !strings.Contains(got, "✓") {
 		t.Errorf("expected success emoji, got %q", got)
 	}
 	// Should contain the text
@@ -72,7 +72,7 @@ func TestSectionHeader_EmojiDisabled(t *testing.T) {
 	got := f.SectionHeader("success", "Header Text")
 
 	// Should NOT contain emoji
-	if strings.Contains(got, "✅") {
+	if strings.Contains(got, "✓") {
 		t.Errorf("expected no emoji when disabled, got %q", got)
 	}
 	// Should still contain bold text
@@ -128,14 +128,14 @@ func TestFormatError_WithHint(t *testing.T) {
 	got := f.FormatError(err, "먼저 서버에서 가져오기를 실행하세요 → gk pull")
 
 	// Should contain error emoji and message
-	if !strings.Contains(got, "❌") {
+	if !strings.Contains(got, "✗") {
 		t.Errorf("expected error emoji, got %q", got)
 	}
 	if !strings.Contains(got, "서버에 올리기 실패") {
 		t.Errorf("expected error message, got %q", got)
 	}
 	// Should contain hint emoji and hint text
-	if !strings.Contains(got, "💡") {
+	if !strings.Contains(got, "→") {
 		t.Errorf("expected hint emoji, got %q", got)
 	}
 	if !strings.Contains(got, "gk pull") {
@@ -150,7 +150,7 @@ func TestFormatError_WithoutHint(t *testing.T) {
 	err := errors.New("something failed")
 	got := f.FormatError(err, "")
 
-	if !strings.Contains(got, "❌") {
+	if !strings.Contains(got, "✗") {
 		t.Errorf("expected error emoji, got %q", got)
 	}
 	if !strings.Contains(got, "something failed") {
@@ -170,7 +170,7 @@ func TestFormatError_NoColor(t *testing.T) {
 	got := f.FormatError(err, "try this fix")
 
 	// Emoji should be preserved
-	if !strings.Contains(got, "❌") {
+	if !strings.Contains(got, "✗") {
 		t.Errorf("expected error emoji in no-color mode, got %q", got)
 	}
 	// No ANSI codes
@@ -202,8 +202,8 @@ func TestStripANSI(t *testing.T) {
 		},
 		{
 			name:  "emoji preserved",
-			input: "✅ \033[1mtext\033[0m",
-			want:  "✅ text",
+			input: "✓ \033[1mtext\033[0m",
+			want:  "✓ text",
 		},
 	}
 
@@ -283,7 +283,7 @@ func TestProperty_JSONModeBypass(t *testing.T) {
 			return fmt.Sprintf(`{"data":{"nested":"%s"}}`, inner)
 		case 3:
 			// Arbitrary string (could contain ANSI, emoji, etc.)
-			return rapid.StringMatching(`[a-zA-Z0-9가-힣✅❌💡⚠️🚀📦 \n\t\-:{}"\[\],]{0,100}`).Draw(rt, "arbitrary")
+			return rapid.StringMatching(`[a-zA-Z0-9가-힣✓✗→⚠↑+ \n\t\-:{}"\[\],]{0,100}`).Draw(rt, "arbitrary")
 		default:
 			// Empty string
 			return ""

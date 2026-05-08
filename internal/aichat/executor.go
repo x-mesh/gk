@@ -73,7 +73,7 @@ func (e *CommandExecutor) emojiForCommand(cmd string) string {
 }
 
 // Preview returns a human-readable preview of the execution plan.
-// All commands are numbered. Dangerous commands show a ⚠️ 위험 label
+// All commands are numbered. Dangerous commands show a ⚠ 위험 label
 // with an impact description. Easy Mode emoji is inserted when active.
 func (e *CommandExecutor) Preview(plan *ExecutionPlan) string {
 	if plan == nil || len(plan.Commands) == 0 {
@@ -91,9 +91,9 @@ func (e *CommandExecutor) Preview(plan *ExecutionPlan) string {
 				reason = cmd.Description
 			}
 			if reason != "" {
-				fmt.Fprintf(&b, "     ⚠️ 위험: %s\n", reason)
+				fmt.Fprintf(&b, "     ⚠ 위험: %s\n", reason)
 			} else {
-				fmt.Fprintf(&b, "     ⚠️ 위험\n")
+				fmt.Fprintf(&b, "     ⚠ 위험\n")
 			}
 		} else {
 			fmt.Fprintf(&b, "  %d. %s%s\n", i+1, emoji, cmd.Command)
@@ -213,7 +213,7 @@ func (e *CommandExecutor) Execute(ctx context.Context, plan *ExecutionPlan, opts
 			if reason == "" {
 				reason = cmd.Description
 			}
-			prompt := fmt.Sprintf("⚠️ 위험 명령어: %s (%s)\n정말 실행할까요? (y/n) ", cmd.Command, reason)
+			prompt := fmt.Sprintf("⚠ 위험 명령어: %s (%s)\n정말 실행할까요? (y/n) ", cmd.Command, reason)
 			ok, err := e.confirm(prompt)
 			if err != nil {
 				return nil, fmt.Errorf("do: confirmation error: %w", err)

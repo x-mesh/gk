@@ -268,7 +268,7 @@ func TestGetf_Placeholder(t *testing.T) {
 	// Easy mode should also resolve the placeholder.
 	catEasy := New("en", ModeEasy)
 	got = catEasy.Getf("general.branch_info", "feature/login")
-	want = "🌿 Current branch: feature/login"
+	want = "▸ Current branch: feature/login"
 	if got != want {
 		t.Errorf("Getf(general.branch_info, feature/login) easy: got %q, want %q", got, want)
 	}

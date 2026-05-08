@@ -19,6 +19,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
 )
@@ -1798,7 +1799,8 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	//
 	// Catalog hints are kept verbatim — running TranslateTerms over
 	// them mangles the literal commands they suggest.
-	if eng := EasyEngine(); eng != nil && eng.IsEnabled() {
+	eng := EasyEngine()
+	if eng != nil && eng.IsEnabled() {
 		hasStaged := len(allGrouped.Staged) > 0
 		hasUnstaged := len(allGrouped.Modified) > 0
 		hasUntracked := len(allGrouped.Untracked) > 0
@@ -1807,6 +1809,25 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 			fmt.Fprintln(w, hint)
 		} else if hint := eng.SyncHint(st.Ahead, st.Behind, st.Upstream != ""); hint != "" {
 			fmt.Fprintln(w, hint)
+		}
+	}
+	// Cross-worktree hint runs in normal mode too (uses effectiveHints
+	// internally) so users see pending work elsewhere even with
+	// --no-easy. Only fires when the current worktree is fully clean
+	// and in sync, otherwise the StatusHint/SyncHint above already
+	// gave a more specific direction.
+	if eng != nil {
+		hasStaged := len(allGrouped.Staged) > 0
+		hasUnstaged := len(allGrouped.Modified) > 0
+		hasUntracked := len(allGrouped.Untracked) > 0
+		hasConflict := len(allGrouped.Unmerged) > 0
+		if !hasStaged && !hasUnstaged && !hasUntracked && !hasConflict && st.Ahead == 0 && st.Behind == 0 {
+			items, total := scanCrossWorktreeWork(cmd.Context(), runner, st.Branch)
+			if total > 0 {
+				if cross := eng.StatusCrossWorktreeHint(items, total); cross != "" {
+					fmt.Fprintln(w, cross)
+				}
+			}
 		}
 	}
 
@@ -1862,7 +1883,7 @@ func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEnt
 		treeTitle = "working tree · clean"
 	}
 	// The legacy footer emits a `next: <cmd>` line and Easy Mode adds
-	// a `💡 다음 단계 …` hint; both repeat what the highlighted strip
+	// a `→ 다음 단계 …` hint; both repeat what the highlighted strip
 	// will say below, so drop them from the box body. The trim is
 	// best-effort — coloured strings are kept when ANSI bytes prefix
 	// the marker.
@@ -1881,14 +1902,17 @@ func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEnt
 }
 
 // filterLegacyNextHints strips lines that the rich-mode footer would
-// just repeat — the legacy `next:` line and the Easy Mode `💡` hint —
-// from the captured tree body. Other content (tree, gauges, base
-// resolution, untracked age) is preserved untouched.
+// just repeat — the legacy `next:` line and the Easy Mode hint header
+// — from the captured tree body. Match is on the hint phrasing, not
+// the bare `→ ` marker, so unrelated lines that legitimately use `→`
+// (e.g. `→ resolved:` from base resolution) are preserved.
 func filterLegacyNextHints(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
 		trimmed := strings.TrimSpace(stripANSIEscapes(ln))
-		if strings.HasPrefix(trimmed, "next:") || strings.HasPrefix(trimmed, "💡") {
+		if strings.HasPrefix(trimmed, "next:") ||
+			strings.HasPrefix(trimmed, "→ Next") ||
+			strings.HasPrefix(trimmed, "→ 다음") {
 			continue
 		}
 		out = append(out, ln)
@@ -3391,4 +3415,72 @@ func renderDivergenceGauge(ahead, behind int) string {
 		color.RedString(right),
 		suffix,
 	)
+}
+
+// scanCrossWorktreeWork inspects every other worktree (excluding the
+// current one and bare/detached entries) and returns those with pending
+// work — non-zero ahead, behind, or both. total counts every named-branch
+// worktree we examined (used for the "all clean across N worktree(s)"
+// message when items is empty).
+//
+// Best-effort: any worktree whose ahead/behind cannot be resolved is
+// silently skipped so a single broken upstream cannot blank out the whole
+// hint. Only checks divergence (ahead/behind) — dirty-tree detection is
+// deferred because it requires per-worktree status calls (~10ms each)
+// and would blow past the 50ms status budget.
+func scanCrossWorktreeWork(ctx context.Context, r git.Runner, currentBranch string) ([]easy.WorktreeWorkItem, int) {
+	out, _, err := r.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, 0
+	}
+	entries := parseWorktreePorcelain(string(out))
+	var items []easy.WorktreeWorkItem
+	total := 0
+	for _, e := range entries {
+		if e.Bare || e.Detached || e.Branch == "" {
+			continue
+		}
+		total++
+		if e.Branch == currentBranch {
+			continue
+		}
+		ahead, behind, ok := worktreeAheadBehind(ctx, r, e.Path)
+		if !ok {
+			continue
+		}
+		detail := ""
+		switch {
+		case ahead > 0 && behind > 0:
+			detail = fmt.Sprintf("↑%d ↓%d", ahead, behind)
+		case ahead > 0:
+			detail = fmt.Sprintf("↑%d", ahead)
+		case behind > 0:
+			detail = fmt.Sprintf("↓%d", behind)
+		}
+		if detail != "" {
+			items = append(items, easy.WorktreeWorkItem{Branch: e.Branch, Detail: detail})
+		}
+	}
+	return items, total
+}
+
+// worktreeAheadBehind returns (ahead, behind, ok) for the worktree
+// rooted at path, by running `git -C <path> rev-list --left-right --count
+// HEAD@{upstream}...HEAD`. The runner is invoked with `-C` so the same
+// runner instance can be re-used (test mocks see a single call shape).
+func worktreeAheadBehind(ctx context.Context, r git.Runner, path string) (int, int, bool) {
+	out, _, err := r.Run(ctx, "-C", path, "rev-list", "--left-right", "--count", "HEAD@{upstream}...HEAD")
+	if err != nil {
+		return 0, 0, false
+	}
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	behind, err1 := strconv.Atoi(parts[0])
+	ahead, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return ahead, behind, true
 }

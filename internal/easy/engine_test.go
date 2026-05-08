@@ -93,8 +93,8 @@ func TestFormat_EasyMode(t *testing.T) {
 	cfg := config.OutputConfig{Easy: true, Lang: "ko", Emoji: true, Hints: "verbose"}
 	e := NewEngine(cfg, false, false)
 	got := engineMethod(e, "general.success")
-	if got != "✅ 성공" {
-		t.Errorf("Format(general.success) = %q, want %q", got, "✅ 성공")
+	if got != "✓ 성공" {
+		t.Errorf("Format(general.success) = %q, want %q", got, "✓ 성공")
 	}
 }
 
@@ -102,7 +102,7 @@ func TestFormat_EasyModeWithArgs(t *testing.T) {
 	cfg := config.OutputConfig{Easy: true, Lang: "ko", Emoji: true, Hints: "verbose"}
 	e := NewEngine(cfg, false, false)
 	got := engineMethod(e, "general.branch_info", "main")
-	want := "🌿 현재 브랜치: main"
+	want := "▸ 현재 브랜치: main"
 	if got != want {
 		t.Errorf("Format(general.branch_info, main) = %q, want %q", got, want)
 	}
@@ -191,7 +191,7 @@ func TestFormatHint_Enabled(t *testing.T) {
 	cfg := config.OutputConfig{Easy: true, Lang: "ko", Emoji: true, Hints: "verbose"}
 	e := NewEngine(cfg, false, false)
 	got := hintMethod(e, "hint.status.has_staged")
-	want := "💡 다음 단계: 변경사항을 저장하려면 → gk commit"
+	want := "→ 다음 단계: 변경사항을 저장하려면 → gk commit"
 	if got != want {
 		t.Errorf("FormatHint = %q, want %q", got, want)
 	}
@@ -267,8 +267,8 @@ func TestFormat_EnglishEasyMode(t *testing.T) {
 	cfg := config.OutputConfig{Easy: true, Lang: "en", Emoji: true, Hints: "verbose"}
 	e := NewEngine(cfg, false, false)
 	got := engineMethod(e, "general.success")
-	if got != "✅ Success" {
-		t.Errorf("Format(general.success) with en = %q, want %q", got, "✅ Success")
+	if got != "✓ Success" {
+		t.Errorf("Format(general.success) with en = %q, want %q", got, "✓ Success")
 	}
 }
 
@@ -279,8 +279,8 @@ func TestFormat_UnknownLangFallsBackToEn(t *testing.T) {
 	e := NewEngine(cfg, false, false)
 	// "fr" is not registered, so catalog should fall back to "en" easy variant.
 	got := engineMethod(e, "general.success")
-	if got != "✅ Success" {
-		t.Errorf("Format with unknown lang = %q, want en easy fallback %q", got, "✅ Success")
+	if got != "✓ Success" {
+		t.Errorf("Format with unknown lang = %q, want en easy fallback %q", got, "✓ Success")
 	}
 }
 

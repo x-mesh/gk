@@ -117,7 +117,7 @@ func TestPreview_ContainsAllCommands(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Preview shows ⚠️ for dangerous commands
+// Test: Preview shows ⚠ for dangerous commands
 // ---------------------------------------------------------------------------
 
 func TestPreview_ShowsDangerLabel(t *testing.T) {
@@ -126,8 +126,8 @@ func TestPreview_ShowsDangerLabel(t *testing.T) {
 
 	preview := exec.Preview(plan)
 
-	if !strings.Contains(preview, "⚠️") {
-		t.Errorf("Preview should contain ⚠️ for dangerous commands, got:\n%s", preview)
+	if !strings.Contains(preview, "⚠") {
+		t.Errorf("Preview should contain ⚠ for dangerous commands, got:\n%s", preview)
 	}
 	if !strings.Contains(preview, "위험") {
 		t.Errorf("Preview should contain '위험' label, got:\n%s", preview)

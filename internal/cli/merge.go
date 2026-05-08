@@ -334,6 +334,9 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 	if err := runMergeCore(ctx, targetDeps, source, targetFlags); err != nil {
 		return WithHint(err, "receiver worktree: cd "+entry.Path+" or pass `--repo "+entry.Path+"` to inspect/continue")
 	}
+	if deps.ErrOut != nil {
+		renderMergeIntoNextHint(deps.ErrOut, source, flags.into)
+	}
 	return nil
 }
 
@@ -453,8 +456,27 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 
 	if deps.ErrOut != nil {
 		renderMergeSummary(ctx, deps.ErrOut, deps.Runner, receiverSHA, newSHA, source, receiver, flags)
+		renderMergeIntoNextHint(deps.ErrOut, source, receiver)
 	}
 	return nil
+}
+
+// renderMergeIntoNextHint prints the post-merge next-step nudge for both
+// the bare and worktree paths of `gk merge --into <receiver>`. After a
+// successful merge the source branch is, by definition, an ancestor of
+// the receiver — so the cleanup hint is always applicable when source
+// differs from receiver.
+func renderMergeIntoNextHint(out io.Writer, source, receiver string) {
+	e := EasyEngine()
+	if e == nil {
+		return
+	}
+	for _, line := range e.MergeIntoNextHint(receiver, source != receiver, source) {
+		if line == "" {
+			continue
+		}
+		fmt.Fprintln(out, "  "+line)
+	}
 }
 
 // resolveCommitSHA returns the commit OID for ref, or an error when ref does

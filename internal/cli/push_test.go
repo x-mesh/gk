@@ -33,6 +33,48 @@ func buildPushCmd() *cobra.Command {
 // Unit tests
 // ---------------------------------------------------------------------------
 
+func TestPushAheadCount(t *testing.T) {
+	t.Run("no_upstream_returns_zero", func(t *testing.T) {
+		fake := &git.FakeRunner{}
+		if got := pushAheadCount(context.Background(), fake, "origin", "main", false); got != 0 {
+			t.Fatalf("got %d, want 0", got)
+		}
+	})
+	t.Run("counts_ahead", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-list --count origin/main..main": {Stdout: "7\n"},
+		}}
+		if got := pushAheadCount(context.Background(), fake, "origin", "main", true); got != 7 {
+			t.Fatalf("got %d, want 7", got)
+		}
+	})
+	t.Run("git_failure_returns_zero", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-list --count origin/main..main": {ExitCode: 128, Stderr: "fatal"},
+		}}
+		if got := pushAheadCount(context.Background(), fake, "origin", "main", true); got != 0 {
+			t.Fatalf("got %d, want 0 on failure", got)
+		}
+	})
+	t.Run("non_numeric_output_returns_zero", func(t *testing.T) {
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-list --count origin/main..main": {Stdout: "abc\n"},
+		}}
+		if got := pushAheadCount(context.Background(), fake, "origin", "main", true); got != 0 {
+			t.Fatalf("got %d, want 0 on non-numeric", got)
+		}
+	})
+}
+
+func TestPushHeadShort(t *testing.T) {
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --short main": {Stdout: "abc1234\n"},
+	}}
+	if got := pushHeadShort(context.Background(), fake, "main"); got != "abc1234" {
+		t.Fatalf("got %q, want abc1234", got)
+	}
+}
+
 func TestBranchHasUpstream(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

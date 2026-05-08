@@ -139,21 +139,22 @@ func TestProperty_EmojiPrefix(t *testing.T) {
 func TestEmojiMapper_AllRequiredMappings(t *testing.T) {
 	mapper := NewEmojiMapper(true)
 
-	// 설계 문서에 정의된 필수 이모지 매핑 13개
+	// Required marker mappings (13 keys). Switched from emoji to
+	// monochrome Unicode symbols for terminal compatibility.
 	required := map[string]string{
-		"success":  "✅",
-		"warning":  "⚠️",
-		"error":    "❌",
-		"conflict": "💥",
-		"new":      "🆕",
-		"modified": "✏️",
-		"deleted":  "🗑️",
-		"staged":   "📦",
-		"push":     "🚀",
-		"pull":     "📥",
-		"branch":   "🌿",
-		"merge":    "🔀",
-		"hint":     "💡",
+		"success":  "✓",
+		"warning":  "⚠",
+		"error":    "✗",
+		"conflict": "‼",
+		"new":      "?",
+		"modified": "~",
+		"deleted":  "−",
+		"staged":   "+",
+		"push":     "↑",
+		"pull":     "↓",
+		"branch":   "▸",
+		"merge":    "↕",
+		"hint":     "→",
 	}
 
 	if len(required) != 13 {

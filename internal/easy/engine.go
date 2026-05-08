@@ -215,6 +215,60 @@ func (e *Engine) SyncHint(ahead, behind int, hasUpstream bool) string {
 	return e.hints.SyncHint(ahead, behind, hasUpstream)
 }
 
+// effectiveHints returns a HintGenerator for the hint methods added in
+// v0.39.0+ that must run in normal mode too. When the engine is enabled
+// it reuses the configured generator; when disabled it synthesizes a
+// HintVerbose generator backed by a normal-mode catalog so the calling
+// command surfaces the hint instead of going silent.
+//
+// Returns nil when the language has no registered catalog at all.
+func (e *Engine) effectiveHints() *HintGenerator {
+	if e == nil {
+		return nil
+	}
+	if e.hints != nil {
+		return e.hints
+	}
+	cat := i18n.New(e.lang, i18n.ModeNormal)
+	if cat == nil {
+		return nil
+	}
+	return NewHintGenerator(HintVerbose, cat, NewEmojiMapper(false))
+}
+
+// MergeIntoNextHint generates next-step hints right after `gk merge --into`
+// completes. Runs in both Easy Mode (uses configured hints) and normal
+// mode (synthesizes a normal-mode generator) so users always see the
+// next-step nudge.
+func (e *Engine) MergeIntoNextHint(receiver string, sourceFullyMerged bool, source string) []string {
+	g := e.effectiveHints()
+	if g == nil {
+		return nil
+	}
+	return g.MergeIntoNextHint(receiver, sourceFullyMerged, source)
+}
+
+// PushSummaryHint generates the one-line summary for a successful push.
+// Runs in both Easy Mode and normal mode (see effectiveHints).
+func (e *Engine) PushSummaryHint(n int, remote, branch, short string) string {
+	g := e.effectiveHints()
+	if g == nil {
+		return ""
+	}
+	return g.PushSummaryHint(n, remote, branch, short)
+}
+
+// StatusCrossWorktreeHint generates a one-line summary of pending work
+// across worktrees for the in-sync clean status path. Runs in both Easy
+// Mode and normal mode (see effectiveHints).
+func (e *Engine) StatusCrossWorktreeHint(items []WorktreeWorkItem, total int) string {
+	g := e.effectiveHints()
+	if g == nil {
+		return ""
+	}
+	return g.StatusCrossWorktreeHint(items, total)
+}
+
 // Hints returns the underlying HintGenerator, or nil when the engine
 // is disabled or not initialised.
 func (e *Engine) Hints() *HintGenerator {

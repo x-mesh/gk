@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-05-08
+
+### Changed
+
+- **`gk merge --into <branch>` no longer requires the receiver branch to
+  be checked out in some worktree.** Previously the command refused with
+  `no worktree has branch "X" checked out` whenever `git worktree list`
+  did not show the receiver, forcing users to materialize a worktree
+  even for routine "land my branch on local main" flows. The receiver
+  is now updated directly in two cases:
+  1. **Fast-forward** (receiver is an ancestor of the source) — runs
+     `git update-ref refs/heads/<receiver> <source>` with no merge
+     commit, no worktree, no working-tree mutation.
+  2. **Non-fast-forward, conflict-free** — builds the merge tree with
+     `git merge-tree`, packages it via `git commit-tree` (two parents:
+     receiver, source), then `update-ref`. The receiver advances by one
+     merge commit without any worktree being touched.
+
+  Conflicts still require a worktree to resolve interactively, so when
+  the precheck reports conflicts gk refuses with a hint pointing at
+  `gk worktree add <path> <receiver>`. `--squash` is also gated to the
+  worktree path for now (the in-memory squash variant is implementable
+  but out of scope for this change). When the receiver *does* have a
+  worktree, behavior is unchanged — the existing worktree path runs.
+
 ## [0.37.1] - 2026-05-06
 
 ### Fixed

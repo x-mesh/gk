@@ -392,7 +392,12 @@ Precheck, explain, and merge a target branch into the current branch. `gk merge`
 
 ```
 gk merge <target> [flags]
+gk merge [<source>] --into <receiver> [flags]
 ```
+
+`gk merge <target>` merges `<target>` into the current branch — the
+direction matches `git merge`. To go the other way (land the current
+branch on a different branch), use `--into`.
 
 ### Flags
 
@@ -406,7 +411,27 @@ gk merge <target> [flags]
 | `--autostash` | false | Stash tracked changes before merge and pop afterwards |
 | `--no-ai` | false | Skip the merge plan summary |
 | `--plan-only` | false | Print the merge plan without running `git merge` |
+| `--into <branch>` | "" | Land the source branch (default: current) into `<branch>` |
 | `--provider <name>` | config | Override `ai.provider` for the merge plan |
+
+### `--into` worktree handling
+
+When `--into <branch>` is given, gk first looks for a worktree that has
+`<branch>` checked out:
+
+- **Worktree found** — gk runs the merge inside that worktree (same
+  precheck, same conflict-resolution flow as a normal `gk merge`).
+  `--squash`, `--no-commit`, and conflict resolution via
+  `gk continue` / `gk abort` all work as usual.
+- **No worktree** — gk uses a worktree-free path:
+  - Fast-forward case: `git update-ref` jumps the receiver ref to the
+    source. No working tree is touched.
+  - Conflict-free non-fast-forward case: an in-memory merge tree is
+    built with `git merge-tree`, wrapped into a merge commit via
+    `git commit-tree` (two parents: receiver, source), then `update-ref`.
+  - Conflict case: gk refuses with a hint to materialize a worktree
+    (`gk worktree add <path> <receiver>`) and resolve interactively.
+  - `--squash` is currently only supported on the worktree path.
 
 ### Merge plan
 
@@ -436,6 +461,12 @@ gk merge feature/foo --squash
 
 # Merge with tracked local changes
 gk merge main --autostash
+
+# Land the current branch on local main, even if main has no worktree
+gk merge --into main
+
+# Same, but explicit source
+gk merge feat/x --into main
 ```
 
 Automatic conflict correction is intentionally not part of the default path. A future `--ai-resolve` should require explicit opt-in because it mutates user code and can silently choose the wrong semantic side.

@@ -92,6 +92,7 @@ gk sync                      # rebase onto local <base> (offline)
 gk sync --fetch              # one-shot: fetch + ff local <base> + rebase
 gk diff                      # color, line-numbered, word-level diff viewer
 gk status                    # concise working-tree summary
+gk next                      # plain-language status explanation and next steps
 gk log                       # short, colorful commit log
 
 # Safety
@@ -128,7 +129,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk diff` | | Terminal-friendly diff viewer with color, line numbers, and word-level highlights. `-i`/`--interactive` opens a file picker; `--staged`, `--stat`, `-U <n>`, `--no-pager`, `--no-word-diff`, `--json`. `<ref>`, `<ref>..<ref>`, `-- <path>` pass through to `git diff` |
 | `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
 | `gk sync` | | Rebase the current branch onto local `<base>` (offline by default). `--fetch` for the explicit one-shot: fetch `<remote>/<base>`, fast-forward `refs/heads/<base>`, then integrate. Stale-base hint when local `<base>` differs from `<remote>/<base>` |
-| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind), submodule-aware with `next:` hints. Pass `-f`/`--fetch` to refresh ↑N ↓N, `--watch` to refresh continuously, or `--exit-code` for scripts. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
+| `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind), submodule-aware with `next:` hints. Pass `--ai` for a plain-language explanation, `-f`/`--fetch` to refresh ↑N ↓N, `--watch` to refresh continuously, or `--exit-code` for scripts. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
 | `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 
 ### Branches
@@ -186,6 +187,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Description |
 |---|---|
 | `gk commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
+| `gk next` | Explain the current repository state in plain language and suggest safe next commands. Falls back to a local rule-based plan when no AI provider is available |
 | `gk pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
 | `gk review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
 | `gk changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
@@ -288,6 +290,10 @@ ai:
       - "service-account*.json"
       - "terraform.tfstate"
       - "terraform.tfstate.*"
+  assist:
+    mode: "off"              # off | suggest | auto
+    status: true             # enables gk status --ai / gk next surfaces
+    include_diff: false      # status assistant currently sends facts, not patches
 ```
 
 ### Safety rails (every run)

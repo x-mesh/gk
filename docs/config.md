@@ -342,6 +342,35 @@ branch:
     - develop
 ```
 
+### `ai.assist`
+
+| | |
+|-|-|
+| Type | object |
+| Default | `mode: off`, `status: true`, `include_diff: false` |
+| Env var | `GK_AI_ASSIST_MODE`, `GK_AI_ASSIST_STATUS` |
+| CLI flag | `--ai` on `gk status` forces one run regardless of mode |
+
+Controls AI help attached to existing commands. `gk next` and
+`gk status --ai` always try the configured AI provider first and fall
+back to a local next-step plan if no provider is available.
+
+Valid `mode` values:
+
+| Value | Behavior |
+|-------|----------|
+| `off` | No automatic AI help. Explicit commands still work. |
+| `suggest` | Show a small hint pointing to `gk next`. |
+| `auto` | Automatically run AI help for enabled surfaces such as `gk status`. |
+
+```yaml
+ai:
+  assist:
+    mode: suggest
+    status: true
+    include_diff: false
+```
+
 ### `ai.nvidia.model`
 
 | | |

@@ -684,6 +684,9 @@ gk st [flags]
 | `--exit-code` | false | Exit with a status-specific code after printing: `0` clean, `1` committable dirty, `2` submodule-only dirty, `3` conflicts, `4` behind upstream. |
 | `--watch` | false | Refresh human-readable status until interrupted. Not supported with `--json` or `--exit-code`. |
 | `--watch-interval <duration>` | `2s` | Refresh interval for `--watch`, e.g. `500ms`, `2s`, `1m`. |
+| `--ai` | false | Append a plain-language AI explanation of the current state and next safe actions. Not supported with `--json` or `--watch`; falls back to a local plan if no provider is available. |
+| `--provider <name>` | `ai.provider` | Provider override for `--ai`. |
+| `--lang <code>` | `output.lang` / `ai.lang` | Language override for `--ai`, e.g. `en` or `ko`. |
 
 ### Per-entry state column (`--xy-style`)
 
@@ -733,6 +736,21 @@ Detection is divergence-only — each worktree is queried with
 Dirty-tree checks are intentionally skipped to keep the latency budget
 intact. Any per-worktree git failure causes that entry to be silently
 dropped rather than blanking the whole hint.
+
+### AI next-step explanation
+
+Use `gk status --ai` when the compact status is not enough and you want
+the state translated into a short plan:
+
+```bash
+gk status --ai
+gk st --ai --lang ko
+```
+
+The assistant receives structured facts such as branch, upstream,
+ahead/behind counts, conflict counts, and a short path preview. It does
+not receive patch contents. It may only recommend commands from gk's
+precomputed safe command list.
 
 ### Upstream fetch (opt-in)
 
@@ -815,6 +833,30 @@ When `--vis tree` is active, the flat sections are replaced by a single hierarch
 
 - Uses `git status --porcelain=v2 -z` internally for reliable, locale-independent parsing.
 - `LC_ALL=C` is enforced for all git calls.
+
+---
+
+## gk next
+
+Explain the current repository state and next safe actions in plain
+language. This is the direct "what should I do now?" entry point and
+uses the same assistant as `gk status --ai`.
+
+### Synopsis
+
+```
+gk next [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--provider <name>` | `ai.provider` | Provider override. |
+| `--lang <code>` | `output.lang` / `ai.lang` | Language override, e.g. `en` or `ko`. |
+
+If the AI provider is unavailable, `gk next` prints a local next-step
+plan instead of failing the workflow.
 
 ---
 

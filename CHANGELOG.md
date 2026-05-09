@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-05-09
+
+### Added
+
+- **`gk next` command — plain-language status explanation.** Direct
+  entry point for "what should I do now?". The assistant receives
+  structured repo facts (branch, upstream, ahead/behind counts,
+  conflict counts, short path preview) and returns a short plan plus
+  recommendations drawn from gk's precomputed safe-command list. It
+  does not receive patch contents. Falls back to a local rule-based
+  plan when no AI provider is available. `--provider` and `--lang`
+  override `ai.provider` / `ai.lang` for a single invocation.
+- **`gk status --ai` flag.** Appends an AI explanation of the current
+  state and next safe actions to the compact status output, using the
+  same fact-only prompt as `gk next`. Not supported with `--json`
+  (errors with a pointer to `gk next`) or `--watch`. `--provider` /
+  `--lang` overrides mirror the rest of the AI surface.
+- **`ai.assist` config section.** New `mode` (`off` | `suggest` |
+  `auto`) controls whether AI help is attached to existing commands;
+  `status` gates the `gk status` surface; `include_diff` is reserved
+  for future richer prompts (the status assistant currently sends
+  facts only, never patch contents).
+
 ## [0.39.1] - 2026-05-08
 
 ### Fixed

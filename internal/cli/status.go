@@ -2024,12 +2024,7 @@ func renderStatusVerboseSummary(
 		}
 	}
 
-	fetchMode := "local refs"
-	fetchNote := "pass --fetch to refresh upstream"
-	if shouldAutoFetch(cmd, cfg) {
-		fetchMode = "refreshed"
-		fetchNote = "bounded upstream fetch before status"
-	}
+	fetchMode, fetchNote := statusRefsSummary(ctx, cmd, runner, cfg, st)
 
 	treeValue := "clean"
 	if total > 0 {
@@ -2080,6 +2075,22 @@ func renderStatusVerboseSummary(
 			fmt.Fprintln(w, line)
 		}
 	}
+}
+
+func statusRefsSummary(ctx context.Context, cmd *cobra.Command, runner git.Runner, cfg *config.Config, st *git.Status) (mode, note string) {
+	if shouldAutoFetch(cmd, cfg) {
+		return "refreshed", "bounded upstream fetch before status"
+	}
+	if st != nil && st.Upstream == "" {
+		if remotes, ok := configuredRemotes(ctx, runner); ok {
+			if len(remotes) == 0 {
+				return "no remotes", "add a remote before pull/fetch"
+			}
+			return "local refs", "set upstream or pass --fetch after choosing a remote"
+		}
+		return "local refs", "no upstream configured"
+	}
+	return "local refs", "pass --fetch to refresh upstream"
 }
 
 func statusHeadSummary(ctx context.Context, runner git.Runner) string {

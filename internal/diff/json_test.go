@@ -10,6 +10,7 @@ func TestToJSON_NilResult(t *testing.T) {
 	dj := ToJSON(nil)
 	if dj == nil {
 		t.Fatal("ToJSON(nil)이 nil을 반환함")
+		return
 	}
 	if len(dj.Files) != 0 {
 		t.Errorf("nil 입력에 대해 Files가 비어있지 않음: %d", len(dj.Files))

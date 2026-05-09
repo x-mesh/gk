@@ -476,6 +476,25 @@ func TestShouldAutoFetch(t *testing.T) {
 	})
 }
 
+func TestStatusRefsSummary_NoRemoteNoUpstream(t *testing.T) {
+	statusFetch = false
+	t.Cleanup(func() { statusFetch = false })
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {Stdout: ""},
+		},
+	}
+	st := &git.Status{Branch: "main"}
+	mode, note := statusRefsSummary(context.Background(), &cobra.Command{Use: "status"}, fake, &config.Config{}, st)
+
+	if mode != "no remotes" {
+		t.Errorf("mode = %q, want no remotes", mode)
+	}
+	if !strings.Contains(note, "add a remote") {
+		t.Errorf("note should tell user to add a remote, got %q", note)
+	}
+}
+
 func TestResolveStatusVis(t *testing.T) {
 	cfg := &config.Config{Status: config.StatusConfig{Vis: []string{"gauge", "bar", "progress", "tree", "staleness"}}}
 

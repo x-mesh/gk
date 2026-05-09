@@ -60,8 +60,8 @@ the index" and "you're stuck mid-rebase" situations:
   - unmerged paths
 
 With --fix, doctor walks each finding and offers to repair it interactively.
-Pass --verbose to also probe optional AI integrations (anthropic / openai /
-nvidia / groq API keys, gemini / qwen / kiro-cli binaries).
+Pass --verbose or --ai to also probe optional AI integrations (anthropic /
+openai / nvidia / groq API keys, gemini / qwen / kiro-cli binaries).
 
 Exit codes:
   0  no FAIL rows
@@ -70,6 +70,7 @@ Exit codes:
 	}
 	cmd.Flags().Bool("json", false, "emit machine-readable JSON")
 	cmd.Flags().Bool("fix", false, "after reporting, walk each finding and offer to repair it")
+	cmd.Flags().Bool("ai", false, "include optional AI provider diagnostics")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -96,7 +97,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	// baseline report stays focused on issues that actually block gk.
 	// gk still works without any of them; `gk commit` falls back to a
 	// non-AI message when no provider is configured.
-	if flagVerbose {
+	if flagVerbose || doctorAIRequested(cmd) {
 		checks = append(checks,
 			checkAIAPIProvider("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
 			checkAIAPIProvider("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models"),
@@ -148,6 +149,14 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	return nil
+}
+
+func doctorAIRequested(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Flags().Lookup("ai") == nil {
+		return false
+	}
+	ai, _ := cmd.Flags().GetBool("ai")
+	return ai
 }
 
 // ---------- individual checks ----------

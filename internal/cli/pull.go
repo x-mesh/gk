@@ -265,7 +265,10 @@ func runPullCore(cmd *cobra.Command) error {
 		if stashed {
 			popStashBestEffort(ctx, runner)
 		}
-		return fmt.Errorf("fetch failed: %w", fetchErr)
+		return WithHint(
+			fmt.Errorf("fetch failed: %w", fetchErr),
+			pullFetchFailureHint(ctx, runner, fetchRemote, fetchBranch, fetchErr),
+		)
 	}
 
 	if noRebase {
@@ -487,6 +490,75 @@ func computeAheadBehind(ctx context.Context, runner git.Runner, upstream string)
 		return 0, 0, fmt.Errorf("behind parse: %w", berr)
 	}
 	return a, b, nil
+}
+
+func pullFetchFailureHint(ctx context.Context, runner git.Runner, remote, branch string, err error) string {
+	if remote == "" {
+		remote = "origin"
+	}
+	msg := strings.ToLower(errorWithGitStderr(err))
+	remoteLower := strings.ToLower(remote)
+	remotes, remotesKnown := configuredRemotes(ctx, runner)
+
+	switch {
+	case strings.Contains(msg, "'"+remoteLower+"' does not appear to be a git repository") ||
+		(strings.Contains(msg, "does not appear to be a git repository") && strings.Contains(msg, remoteLower)):
+		if remotesKnown && len(remotes) == 0 {
+			return fmt.Sprintf("no git remote is configured; add one with `git remote add %s <url>`, then retry `gk pull`", remote)
+		}
+		if remotesKnown && !hasRemote(remotes, remote) {
+			return fmt.Sprintf("remote %q is not configured (available: %s); add it with `git remote add %s <url>` or set `.gk.yaml` remote to an existing remote", remote, strings.Join(remotes, ", "), remote)
+		}
+		if url := remoteURL(ctx, runner, remote); url != "" {
+			return fmt.Sprintf("remote %s points to %s but fetch failed; check access, or update it with `git remote set-url %s <url>`", remote, url, remote)
+		}
+		return fmt.Sprintf("check `git remote -v`; if %s is missing, run `git remote add %s <url>`; if it is wrong, run `git remote set-url %s <url>`", remote, remote, remote)
+	case strings.Contains(msg, "couldn't find remote ref") ||
+		strings.Contains(msg, "could not find remote ref"):
+		if branch != "" {
+			return fmt.Sprintf("`%s/%s` was not found; run `git fetch %s` and check the branch name, or choose another base with `gk pull --base <branch>`", remote, branch, remote)
+		}
+		return fmt.Sprintf("the remote ref was not found; run `git fetch %s` and check the branch name", remote)
+	case strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "authentication failed") ||
+		strings.Contains(msg, "could not read username") ||
+		strings.Contains(msg, "repository not found"):
+		return fmt.Sprintf("check access to %s with `git remote -v`; fix credentials or update the URL with `git remote set-url %s <url>`", remote, remote)
+	case strings.Contains(msg, "could not resolve hostname") ||
+		strings.Contains(msg, "couldn't resolve host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "operation timed out") ||
+		strings.Contains(msg, "tls handshake timeout"):
+		return fmt.Sprintf("check network/VPN/DNS, then retry `gk pull`; raw check: `%s`", gitFetchCommand(remote, branch))
+	case strings.Contains(msg, "could not read from remote repository"):
+		return fmt.Sprintf("check that %s exists and you have access: `git remote -v`; then retry `gk pull`", remote)
+	default:
+		return fmt.Sprintf("run `%s` to inspect the raw git error, then fix the remote or credentials and retry `gk pull`", gitFetchCommand(remote, branch))
+	}
+}
+
+func errorWithGitStderr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) && strings.TrimSpace(exitErr.Stderr) != "" {
+		msg += "\n" + exitErr.Stderr
+	}
+	return msg
+}
+
+func gitFetchCommand(remote, branch string) string {
+	remote = strings.TrimSpace(remote)
+	branch = strings.TrimSpace(branch)
+	if remote == "" {
+		remote = "origin"
+	}
+	if branch == "" {
+		return "git fetch " + remote
+	}
+	return "git fetch " + remote + " " + branch
 }
 
 // printDivergenceRefusal renders a multi-line explanation when gk pull

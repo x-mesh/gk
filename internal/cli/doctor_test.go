@@ -198,6 +198,11 @@ func TestCheckEditor_Unset(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func buildDoctorCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.Buffer) {
+	flagVerbose = false
+	flagDryRun = false
+	flagJSON = false
+	flagNoColor = true
+
 	testRoot := &cobra.Command{Use: "gk", SilenceUsage: true, SilenceErrors: true}
 	testRoot.PersistentFlags().StringVar(&flagRepo, "repo", repoDir, "path to git repo")
 	testRoot.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "verbose output")
@@ -211,6 +216,7 @@ func buildDoctorCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 		SilenceUsage: true,
 	}
 	doc.Flags().Bool("json", false, "emit JSON")
+	doc.Flags().Bool("ai", false, "include optional AI provider diagnostics")
 	testRoot.AddCommand(doc)
 
 	buf := &bytes.Buffer{}
@@ -239,10 +245,32 @@ func TestDoctorCmd_Runs(t *testing.T) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
 		}
 	}
-	// Optional AI rows must NOT appear without --verbose.
+	// Optional AI rows must NOT appear without --verbose or --ai.
 	for _, unwanted := range []string{"ai api:", "ai provider:"} {
 		if strings.Contains(out, unwanted) {
-			t.Errorf("baseline doctor output should hide %q (verbose-only):\n%s", unwanted, out)
+			t.Errorf("baseline doctor output should hide %q (verbose/ai only):\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestDoctorCmd_AIAliasShowsAIRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "NVIDIA_API_KEY", "GROQ_API_KEY"} {
+		t.Setenv(key, "")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hi\n")
+	repo.Commit("init")
+
+	root, buf := buildDoctorCmd(repo.Dir, "--ai")
+	_ = root.Execute() // ignore exit — host-specific FAIL rows are unrelated
+
+	out := buf.String()
+	for _, want := range []string{"ai api: anthropic", "ai provider: gemini"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor --ai output missing %q:\n%s", want, out)
 		}
 	}
 }

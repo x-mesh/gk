@@ -305,6 +305,63 @@ func TestRunPull_Conflict(t *testing.T) {
 	}
 }
 
+func TestPullFetchFailureHint_RemoteMissing(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {Stdout: ""},
+		},
+	}
+	err := &git.ExitError{
+		Code: 128,
+		Args: []string{"fetch", "origin", "main"},
+		Stderr: "fatal: 'origin' does not appear to be a git repository\n" +
+			"fatal: Could not read from remote repository.\n",
+	}
+
+	hint := pullFetchFailureHint(context.Background(), fake, "origin", "main", err)
+	for _, want := range []string{"no git remote is configured", "git remote add origin <url>", "gk pull"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q: %s", want, hint)
+		}
+	}
+}
+
+func TestPullFetchFailureHint_MissingRemoteBranch(t *testing.T) {
+	fake := &git.FakeRunner{}
+	err := &git.ExitError{
+		Code:   128,
+		Args:   []string{"fetch", "origin", "feature/missing"},
+		Stderr: "fatal: couldn't find remote ref feature/missing\n",
+	}
+
+	hint := pullFetchFailureHint(context.Background(), fake, "origin", "feature/missing", err)
+	for _, want := range []string{"origin/feature/missing", "git fetch origin", "gk pull --base <branch>"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q: %s", want, hint)
+		}
+	}
+}
+
+func TestPullFetchFailureHint_RemoteNameMissingButOthersExist(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"remote": {Stdout: "upstream\n"},
+		},
+	}
+	err := &git.ExitError{
+		Code:   128,
+		Args:   []string{"fetch", "origin", "main"},
+		Stderr: "fatal: 'origin' does not appear to be a git repository\n",
+	}
+
+	hint := pullFetchFailureHint(context.Background(), fake, "origin", "main", err)
+	for _, want := range []string{"remote \"origin\" is not configured", "available: upstream", ".gk.yaml"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q: %s", want, hint)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // resolveStrategyFromRunner tests
 // ---------------------------------------------------------------------------

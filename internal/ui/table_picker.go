@@ -95,11 +95,9 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEnter:
 				// Lock in whatever the cursor is on right now.
-				if len(m.items) == 0 {
+				if !m.selectCursorItem() {
 					return m, nil
 				}
-				m.chosen = m.t.Cursor()
-				m.chosenItem = m.items[m.chosen]
 				return m, tea.Quit
 			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
 				var cmd tea.Cmd
@@ -119,11 +117,9 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.aborted = true
 			return m, tea.Quit
 		case "enter":
-			if len(m.items) == 0 {
+			if !m.selectCursorItem() {
 				return m, nil
 			}
-			m.chosen = m.t.Cursor()
-			m.chosenItem = m.items[m.chosen]
 			return m, tea.Quit
 		case "/":
 			m.filterActive = true
@@ -139,10 +135,7 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Capture cursor row (if any) and quit. ExtraAction tells
 					// the caller which key fired; chosenItem is the row the
 					// user was on, so handlers can act on it (delete THIS).
-					if len(m.items) > 0 {
-						m.chosen = m.t.Cursor()
-						m.chosenItem = m.items[m.chosen]
-					}
+					m.selectCursorItem()
 					m.chosenItem.ExtraAction = ex.Key
 					return m, tea.Quit
 				}
@@ -213,9 +206,26 @@ func (m *tablePickerModel) applyFilter() {
 		rows[i] = row
 	}
 	m.t.SetRows(rows)
-	if m.t.Cursor() >= len(rows) {
+	if len(rows) == 0 {
+		return
+	}
+	if m.t.Cursor() < 0 || m.t.Cursor() >= len(rows) {
 		m.t.SetCursor(0)
 	}
+}
+
+func (m *tablePickerModel) selectCursorItem() bool {
+	if len(m.items) == 0 {
+		return false
+	}
+	cursor := m.t.Cursor()
+	if cursor < 0 || cursor >= len(m.items) {
+		cursor = 0
+		m.t.SetCursor(cursor)
+	}
+	m.chosen = cursor
+	m.chosenItem = m.items[cursor]
+	return true
 }
 
 // buildColumnsFromHeaders rebuilds table.Column slice from a fresh

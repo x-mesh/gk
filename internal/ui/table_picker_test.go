@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -20,7 +21,9 @@ func newTablePickerModelForTest(items []PickerItem) tablePickerModel {
 		table.WithFocused(true),
 		table.WithHeight(len(rows)+1),
 	)
-	return tablePickerModel{t: t, items: items, chosen: -1}
+	filter := textinput.New()
+	filter.Prompt = ""
+	return tablePickerModel{t: t, items: items, all: items, chosen: -1, filterInput: filter}
 }
 
 func TestTablePicker_EmptyItemsErrors(t *testing.T) {
@@ -53,6 +56,33 @@ func TestTablePicker_EnterSelectsCurrentRow(t *testing.T) {
 	m = got.(tablePickerModel)
 	if m.chosen != 1 {
 		t.Fatalf("expected chosen=1, got %d", m.chosen)
+	}
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd (tea.Quit)")
+	}
+}
+
+func TestTablePicker_FilterRestoresCursorAfterEmptyResult(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("zzz")
+	m.applyFilter()
+	if len(m.items) != 0 {
+		t.Fatalf("expected no filtered items, got %d", len(m.items))
+	}
+
+	m.filterInput.SetValue("alp")
+	m.applyFilter()
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.chosen != 0 {
+		t.Fatalf("expected chosen=0 after filter restores rows, got %d", got.chosen)
+	}
+	if got.chosenItem.Key != "a" {
+		t.Fatalf("expected alpha to be selected, got %q", got.chosenItem.Key)
 	}
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd (tea.Quit)")

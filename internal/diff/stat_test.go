@@ -262,9 +262,7 @@ func TestRenderStat_NoColor(t *testing.T) {
 }
 
 func TestRenderStat_WithColor(t *testing.T) {
-	prev := color.NoColor
-	color.NoColor = false
-	defer func() { color.NoColor = prev }()
+	forceColor(t)
 
 	result := &DiffResult{
 		Files: []DiffFile{

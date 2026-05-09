@@ -11,6 +11,7 @@ import (
 // forceColor는 테스트에서 ANSI 색상을 강제 활성화한다.
 func forceColor(t *testing.T) {
 	t.Helper()
+	t.Setenv("NO_COLOR", "")
 	prev := color.NoColor
 	color.NoColor = false
 	t.Cleanup(func() { color.NoColor = prev })

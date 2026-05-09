@@ -182,11 +182,7 @@ func genRandomDiffLine(t *rapid.T) DiffLine {
 // 렌더링 결과는 종류에 따른 올바른 색상, 마커, 사이드 바, 라인 번호 포맷을 포함해야 한다.
 // **Validates: Requirements 2.1, 2.2, 2.3, 2.7**
 func TestProperty_LineRenderInvariant(t *testing.T) {
-	// rapid.Check 내부에서는 *rapid.T를 사용하므로 t.Cleanup을 쓸 수 없다.
-	// rapid.Check 호출 전에 color.NoColor를 설정하고 이후 복원한다.
-	prevNoColor := color.NoColor
-	color.NoColor = false
-	defer func() { color.NoColor = prevNoColor }()
+	forceColor(t)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		line := genRandomDiffLine(rt)

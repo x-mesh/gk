@@ -140,7 +140,7 @@ git push origin "vX.Y.Z"
 
 Use `git add <specific files>` not `git add -A` — secrets/binaries leak that way.
 
-## Phase 5 — VERIFY (one watch, one verify)
+## Phase 5 — VERIFY (watch via API, verify via ssh+CDN)
 
 ```bash
 sleep 5
@@ -157,14 +157,24 @@ On non-zero exit, fetch the failure log and match against the table below. Retry
 | `422 already_exists` (asset upload) | Stale partial release. `gh release delete vX.Y.Z -R x-mesh/gk --yes`, rerun. Do NOT delete the tag |
 | `goreleaser check` fails | Fix `.goreleaser.yaml`, amend tag commit, force-push tag |
 
-Then a single verify command:
+Then verify via ssh + CDN — **no GitHub API calls**. The API quota is shared across the whole machine and the watch above already burned some, so verify is intentionally API-free to avoid secondary rate limits.
 
 ```bash
-gh release view "vX.Y.Z" -R x-mesh/gk --json assets --jq '{count: (.assets|length), names: [.assets[].name]}' \
-  && gh api repos/x-mesh/homebrew-tap/contents/Formula/gk.rb --jq '.content' | base64 -d | grep -E "version|url" | head -5
+# 1. tag landed
+git ls-remote --tags git@github.com:x-mesh/gk.git "vX.Y.Z"
+
+# 2. tap formula bumped (shallow clone, throwaway path)
+TAP_TMP="/tmp/gk-tap-vX.Y.Z"
+rm -rf "$TAP_TMP"
+git clone --depth 1 git@github.com:x-mesh/homebrew-tap.git "$TAP_TMP" \
+  && grep -E '^\s*(version|url ")' "$TAP_TMP/Formula/gk.rb" \
+  && rm -rf "$TAP_TMP"
+
+# 3. release asset reachable on the CDN
+curl -sI "https://github.com/x-mesh/gk/releases/download/vX.Y.Z/checksums.txt" | head -1
 ```
 
-Expect 5 assets (4 archives + `checksums.txt`) and the formula `version "X.Y.Z"`.
+Expect: a `refs/tags/vX.Y.Z` line, `version "X.Y.Z"` plus 4 archive URLs in the formula, and an `HTTP/2 302` (or 200) on the checksums HEAD.
 
 ## Phase 6 — Report
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-05-10
+
+### Fixed
+
+- **`gk switch` no longer panics after an empty filter result.** The
+  built-in table picker now normalizes a stale negative cursor before
+  selecting a row, so filtering branches down to zero matches and then
+  selecting a restored match no longer trips an `index out of range [-1]`
+  panic.
+
+### Internal
+
+- **Diff color tests now work under `NO_COLOR=1` environments.** The
+  test-only `forceColor` helper clears `NO_COLOR` before asserting ANSI
+  output, so local shells and CI jobs that export the standard opt-out
+  variable no longer fail unrelated release verification.
+
 ## [0.41.0] - 2026-05-09
 
 ### Added

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-05-09
+
+### Added
+
+- **`gk doctor --ai` flag.** Probes optional AI provider integrations
+  (anthropic / openai / nvidia / groq API keys, gemini / qwen /
+  kiro-cli binaries) without enabling the rest of `--verbose`. The
+  existing `--verbose` flag still includes the AI rows, so `--ai`
+  is the focused alias for users who only care about provider
+  status.
+- **Actionable hints on `gk pull` fetch failures.** When the
+  underlying `git fetch` errors out, gk now rewrites the message
+  with a copy-paste fix tailored to the failure mode: missing
+  remote → `git remote add`; wrong remote URL → `git remote set-url`;
+  remote ref not found → `git fetch <remote>` plus `gk pull --base`;
+  permission/auth → credentials guidance; DNS/timeout → network
+  hint with the raw `git fetch` command. The hint flows through
+  `WithHint`, so `--json` clients see it in the `hint` field too.
+
+### Changed
+
+- **`gk status` verbose summary now reflects remote state.** The
+  refs row used to always say `local refs · pass --fetch to refresh
+  upstream`, even on a brand-new repo with no remote configured. It
+  now reports `no remotes · add a remote before pull/fetch` for
+  fresh repos and `local refs · set upstream or pass --fetch after
+  choosing a remote` when a remote exists but the current branch
+  has no upstream.
+
+### Internal
+
+- **`internal/cli/remote_hint.go`** centralizes the
+  `git remote` / `git remote get-url` lookups shared by the new
+  `gk pull` fetch-failure hint and the `gk status` refs summary.
+- **`internal/diff/json_test.go`** adds a defensive `return` after
+  `t.Fatal` so staticcheck (SA5011) no longer reports a possible
+  nil dereference on the post-guard `len(dj.Files)` access.
+
 ## [0.40.0] - 2026-05-09
 
 ### Added

@@ -76,6 +76,9 @@ func init() {
 	cmd.Flags().DurationVar(&statusWatchInterval, "watch-interval", 2*time.Second, "refresh interval for --watch")
 	cmd.Flags().BoolVar(&statusExplainBase, "explain-base", false, "print a multi-line block explaining how the base branch was resolved (sources, mismatches, action hints)")
 	cmd.Flags().BoolVar(&statusFetchDefault, "fetch-default", false, "with --explain-base, also query the remote's live default branch via ls-remote (one network call)")
+	cmd.Flags().Bool("ai", false, "explain the current status and next safe actions with AI")
+	cmd.Flags().String("provider", "", "override ai.provider for --ai")
+	cmd.Flags().String("lang", "", "override AI status language (en|ko|...)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -1355,6 +1358,10 @@ func statusExitCodeFor(g groupedEntries, st *git.Status) int {
 
 func runStatus(cmd *cobra.Command, args []string) error {
 	if statusWatch {
+		cfg, _ := loadStatusConfig()
+		if statusAssistExplicit(cmd) || statusAssistAuto(cfg) {
+			return fmt.Errorf("status --watch does not support --ai")
+		}
 		if JSONOut() {
 			return fmt.Errorf("status --watch does not support --json")
 		}
@@ -1411,9 +1418,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	if NoColorFlag() {
 		color.NoColor = true
 	}
-	cfg, _ := config.Load(cmd.Flags())
+	cfg, _ := loadStatusConfig()
 	effectiveVis = resolveStatusVis(cmd, cfg)
 	effectiveXYStyle = resolveXYStyle(cmd, cfg)
+	if JSONOut() && statusAssistExplicit(cmd) {
+		return 1, fmt.Errorf("status --ai does not support --json; use `gk next` for human-readable guidance")
+	}
 
 	// --legend short-circuits everything: print the glyph/color key for
 	// the currently-active viz set and return. Useful for first-run users
@@ -1467,6 +1477,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	// Fresh repo (pre-first-commit): HEAD resolves to nothing, so commit-
 	// based viz (gauge, since-push, base, staleness) all silently fail.
 	// Print a one-line affirmative instead and skip the rest.
+	var baseRes BaseResolution
 	if isFreshRepo(cmd.Context(), runner) {
 		fmt.Fprintf(w, "%s %s  %s\n",
 			faint("branch:"),
@@ -1475,6 +1486,12 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		)
 		if len(st.Entries) == 0 {
 			fmt.Fprintln(w, faint("working tree clean"))
+		}
+		if density == "rich" {
+			fmt.Fprint(realW, richBuf.String())
+		}
+		if err := maybeRenderStatusAssist(cmd.Context(), cmd, cfg, runner, st, allGrouped, baseRes, realW, cmd.ErrOrStderr()); err != nil {
+			return exitCode, err
 		}
 		return exitCode, nil
 	}
@@ -1611,7 +1628,6 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	// (verbose summary, base-divergence line, mismatch footer, explain
 	// block) consume this single value. Detached / no-branch repos
 	// have no base concept so we skip resolution entirely.
-	var baseRes BaseResolution
 	var trackMismatch TrackingMismatch
 	if !detached && st.Branch != "" {
 		baseRes = resolveBaseForStatus(cmd.Context(), runner, client, cfg)
@@ -1834,6 +1850,9 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 
 	if density == "rich" {
 		flushRichStatus(cmd.Context(), realW, richBuf.String(), allGrouped, st, runner)
+	}
+	if err := maybeRenderStatusAssist(cmd.Context(), cmd, cfg, runner, st, allGrouped, baseRes, realW, cmd.ErrOrStderr()); err != nil {
+		return exitCode, err
 	}
 	return exitCode, nil
 }

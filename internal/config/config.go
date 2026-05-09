@@ -44,12 +44,29 @@ type AIConfig struct {
 	Enabled   bool              `mapstructure:"enabled"   yaml:"enabled"`
 	Provider  string            `mapstructure:"provider"  yaml:"provider"`
 	Lang      string            `mapstructure:"lang"      yaml:"lang"`
+	Assist    AIAssistConfig    `mapstructure:"assist"    yaml:"assist"`
 	Commit    AICommitConfig    `mapstructure:"commit"    yaml:"commit"`
 	Chat      AIChatConfig      `mapstructure:"chat"      yaml:"chat"`
 	Anthropic AIAnthropicConfig `mapstructure:"anthropic" yaml:"anthropic"`
 	OpenAI    AIOpenAIConfig    `mapstructure:"openai"    yaml:"openai"`
 	Nvidia    AINvidiaConfig    `mapstructure:"nvidia"    yaml:"nvidia"`
 	Groq      AIGroqConfig      `mapstructure:"groq"      yaml:"groq"`
+}
+
+// AIAssistConfig controls AI help that is attached to existing commands.
+// Mode accepts:
+//   - "off": never attach AI help unless a CLI flag explicitly asks for it.
+//   - "suggest": print a lightweight hint pointing to `gk next`.
+//   - "auto": run the configured AI assistant automatically for enabled
+//     surfaces such as `gk status`.
+//
+// Status gates the `gk status` surface. IncludeDiff is reserved for future
+// richer prompts; the current status assistant sends structured repo facts
+// only, not patch contents.
+type AIAssistConfig struct {
+	Mode        string `mapstructure:"mode"         yaml:"mode"`
+	Status      bool   `mapstructure:"status"       yaml:"status"`
+	IncludeDiff bool   `mapstructure:"include_diff" yaml:"include_diff"`
 }
 
 // AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
@@ -416,6 +433,11 @@ func Defaults() Config {
 			Enabled:  true,
 			Provider: "",
 			Lang:     "en",
+			Assist: AIAssistConfig{
+				Mode:        "off",
+				Status:      true,
+				IncludeDiff: false,
+			},
 			Chat: AIChatConfig{
 				Timeout:       "30s",
 				MaxTokens:     4096,

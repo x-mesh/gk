@@ -163,6 +163,15 @@ ai:
   # Commit-message language. BCP-47 short code. Override via `--lang`.
   lang: en
 
+  # Attach AI help to existing commands.
+  #   off     -> only when explicitly requested, e.g. `gk status --ai`
+  #   suggest -> add a small hint pointing to `gk next`
+  #   auto    -> automatically run AI help on enabled surfaces
+  assist:
+    mode: off
+    status: true
+    include_diff: false
+
   commit:
     # Execution mode when no flag is passed.
     #   interactive → TUI review (default)

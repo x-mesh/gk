@@ -22,3 +22,17 @@ func TestConfigDefaults_Output(t *testing.T) {
 		t.Errorf("Output.Hints: got %q, want %q", cfg.Output.Hints, "verbose")
 	}
 }
+
+func TestConfigDefaults_AIAssist(t *testing.T) {
+	cfg := Defaults()
+
+	if cfg.AI.Assist.Mode != "off" {
+		t.Errorf("AI.Assist.Mode: got %q, want %q", cfg.AI.Assist.Mode, "off")
+	}
+	if cfg.AI.Assist.Status != true {
+		t.Errorf("AI.Assist.Status: got %v, want true", cfg.AI.Assist.Status)
+	}
+	if cfg.AI.Assist.IncludeDiff != false {
+		t.Errorf("AI.Assist.IncludeDiff: got %v, want false", cfg.AI.Assist.IncludeDiff)
+	}
+}

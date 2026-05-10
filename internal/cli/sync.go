@@ -356,21 +356,33 @@ func buildStaleBaseHint(ctx context.Context, runner git.Runner, base, remote str
 	if aheadLocal == 0 && behindLocal == 0 {
 		return ""
 	}
-	yellow := color.YellowString
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s local %s differs from %s  (%s↑%d local · ↓%d %s%s)\n",
-		yellow("⚠"), bold(base), bold(upstream),
-		faint(""), aheadLocal, behindLocal, remote, faint(""))
-	fmt.Fprintf(&b, "  %s\n", faint("hint:"))
-	fmt.Fprintf(&b, "    %s   %s\n",
-		bold("git checkout "+base+" && gk pull"),
-		faint("(refresh local "+base+" from "+upstream+")"))
-	fmt.Fprintf(&b, "    %s                       %s",
-		bold("gk sync --fetch"),
-		faint("(refresh + integrate in one step)"))
-	return b.String()
+
+	// SectionCaution (mustard) replaces the leading ⚠ glyph — the
+	// section title "STALE BASE" already carries the warning
+	// semantics, and the chrome is consistent with `gk doctor`'s
+	// summary section colour for the same severity tier.
+	summary := fmt.Sprintf("local %s differs from %s · ↑%d local · ↓%d %s",
+		bold(base), bold(upstream), aheadLocal, behindLocal, remote)
+
+	formatOpt := func(cmd, desc string) string {
+		const labelWidth = 32
+		pad := labelWidth - len(cmd)
+		if pad < 1 {
+			pad = 1
+		}
+		return bold(cmd) + strings.Repeat(" ", pad) + faint(desc)
+	}
+	body := []string{
+		formatOpt("git checkout "+base+" && gk pull", "(refresh local "+base+" from "+upstream+")"),
+		formatOpt("gk sync --fetch", "(refresh + integrate in one step)"),
+	}
+
+	return strings.TrimRight(ui.RenderSection("stale base", summary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionCaution,
+	}), "\n")
 }
 
 // tryAdvanceSelfFF fast-forwards the current branch to origin/<self> when
@@ -438,18 +450,30 @@ func renderSyncSummary(
 	case pullStrategyMerge:
 		verb = "merged"
 	}
-	header := fmt.Sprintf("%s %s onto %s  %s → %s", verb, branch, base, bold(shortSHA(pre)), bold(shortSHA(post)))
-	suffix := fmt.Sprintf("(+%d commit%s · %s)", count, plural(count), strategy)
-	if requestedStrategy != strategy && requestedStrategy != "" {
-		suffix = fmt.Sprintf("(+%d commit%s · %s → %s)", count, plural(count), requestedStrategy, strategy)
-	}
-	fmt.Fprintf(out, "%s  %s\n", header, faint(suffix))
 
+	// SYNCED section — the headline ("rebased X onto Y · +N commits ·
+	// strategy") goes in the title's summary slot so the eye lands on
+	// the result first; the SHA range and diffstat sit in the body
+	// for users who want details. SectionHealth (olive) signals
+	// success, matching `gk doctor` SUMMARY when all checks pass.
+	summary := fmt.Sprintf("%s %s onto %s · +%d commit%s · %s",
+		verb, branch, base, count, plural(count), strategy)
+	if requestedStrategy != strategy && requestedStrategy != "" {
+		summary = fmt.Sprintf("%s %s onto %s · +%d commit%s · %s → %s",
+			verb, branch, base, count, plural(count), requestedStrategy, strategy)
+	}
+
+	body := []string{fmt.Sprintf("%s → %s", bold(shortSHA(pre)), bold(shortSHA(post)))}
 	if stat, _, err := runner.Run(ctx, "diff", "--shortstat", pre+".."+post); err == nil {
 		if s := strings.TrimSpace(string(stat)); s != "" {
-			fmt.Fprintln(out, faint(s))
+			body = append(body, faint(s))
 		}
 	}
+
+	fmt.Fprint(out, ui.RenderSection("synced", summary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionHealth,
+	}))
 }
 
 // renderSyncFetchOnly prints the --fetch-only summary. Compares HEAD to

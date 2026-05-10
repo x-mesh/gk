@@ -1849,7 +1849,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	}
 
 	if density == "rich" {
-		flushRichStatus(cmd.Context(), realW, richBuf.String(), allGrouped, st, runner)
+		flushRichStatus(cmd.Context(), realW, richBuf.String(), allGrouped, st, runner, statusLayout(cfg))
 	}
 	if err := maybeRenderStatusAssist(cmd.Context(), cmd, cfg, runner, st, allGrouped, baseRes, realW, cmd.ErrOrStderr()); err != nil {
 		return exitCode, err
@@ -1858,17 +1858,18 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 }
 
 // flushRichStatus splits the captured normal-path output into a branch
-// header line and a tree/footer body, wraps each in a square box, and
-// appends a highlighted next-action strip describing the recommended
-// follow-up command. The branch line is always the first non-empty
-// line emitted by runStatusOnce; everything after it is treated as the
-// working-tree body.
+// header line and a tree/footer body, frames each as a titled section
+// using the configured layout (bar / rule), and appends a highlighted
+// next-action footer describing the recommended follow-up command. The
+// branch line is always the first non-empty line emitted by
+// runStatusOnce; everything after it is treated as the working-tree
+// body.
 //
 // Rich mode also renders two additional blocks: a divergence diagram
 // (skipped when ↑0 ↓0 or no upstream) and a 7-day commit sparkline.
 // Both are best-effort — git failures collapse the block instead of
-// emitting a half-rendered box.
-func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEntries, st *git.Status, runner *git.ExecRunner) {
+// emitting a half-rendered section.
+func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEntries, st *git.Status, runner *git.ExecRunner, layout ui.SectionLayout) {
 	body = strings.TrimRight(body, "\n")
 	lines := strings.Split(body, "\n")
 	var branchLine string
@@ -1895,7 +1896,11 @@ func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEnt
 			rest = strings.TrimLeft(rest, " \x1b[m")
 			trimmed = rest
 		}
-		fmt.Fprint(w, renderBox("branch", []string{trimmed}))
+		// The branch line is the entire content of the section, so
+		// hoist it into the title's summary slot and leave the body
+		// empty. This collapses what was previously two lines (title
+		// + body) into a single dense row.
+		fmt.Fprint(w, renderSection("branch", trimmed, nil, layout))
 	}
 	treeTitle := "working tree"
 	hasTreeEntries := len(g.Staged) > 0 || len(g.Modified) > 0 || len(g.Untracked) > 0 || len(g.Unmerged) > 0
@@ -1903,22 +1908,32 @@ func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEnt
 		treeTitle = "working tree · clean"
 	}
 	// The legacy footer emits a `next: <cmd>` line and Easy Mode adds
-	// a `→ 다음 단계 …` hint; both repeat what the highlighted strip
-	// will say below, so drop them from the box body. The trim is
+	// a `→ 다음 단계 …` hint; both repeat what the highlighted footer
+	// will say below, so drop them from the section body. The trim is
 	// best-effort — coloured strings are kept when ANSI bytes prefix
 	// the marker.
 	rest = filterLegacyNextHints(rest)
 	if len(rest) > 0 {
-		fmt.Fprint(w, renderBox(treeTitle, rest))
+		fmt.Fprint(w, renderSection(treeTitle, "", rest, layout))
 	}
 	if diag := renderDivergenceDiagram(ctx, runner, st.Upstream, st.Ahead, st.Behind); len(diag) > 0 {
-		fmt.Fprint(w, renderBox("divergence", diag))
+		// Surface the ahead/behind counts in the title row so the
+		// shape (body) and the magnitude (summary) read at a glance.
+		divSummary := ""
+		if st.Upstream != "" && (st.Ahead > 0 || st.Behind > 0) {
+			divSummary = fmt.Sprintf("↑%d · ↓%d %s", st.Ahead, st.Behind, displayRemoteSide(st.Upstream))
+		}
+		fmt.Fprint(w, renderSection("divergence", divSummary, diag, layout))
 	}
-	if heat := renderActivityHeatmap(ctx, runner); len(heat) > 0 {
-		fmt.Fprint(w, renderBox("activity 7d", heat))
+	if heat, total, ok := renderActivityHeatmap(ctx, runner); ok {
+		// Total goes inline with the title; sparkline + day labels
+		// stay in the body so the user can still see the shape of
+		// the week.
+		actSummary := fmt.Sprintf("%d commits last 7 days", total)
+		fmt.Fprint(w, renderSection("activity 7d", actSummary, heat, layout))
 	}
 	next, why := suggestNextAction(g, st)
-	fmt.Fprint(w, renderNextActionBlock(next, why))
+	fmt.Fprint(w, renderNextAction(next, why, layout))
 }
 
 // filterLegacyNextHints strips lines that the rich-mode footer would

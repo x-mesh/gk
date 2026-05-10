@@ -665,7 +665,11 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 				providerName = result.Provider
 			}
 			summary := decorateMergePlanSummary(cleanMergePlanSummary(result.Text), len(conflicts), !NoColorFlag())
-			text = renderAIMergePlanHeader(target, current, providerName, len(conflicts), !NoColorFlag()) + "\n" + summary
+			// renderAIMergePlanHeader emits a complete bar section
+			// (header + trailing blank line); decorateMergePlanSummary
+			// already starts with the indented body so they concatenate
+			// without an explicit separator.
+			text = renderAIMergePlanHeader(target, current, providerName, len(conflicts), !NoColorFlag()) + summary
 		}
 	}
 writePlan:
@@ -722,57 +726,53 @@ func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current st
 	return b.String(), commitLines
 }
 
+// fallbackMergePlan renders the local-only merge preview when the AI
+// provider is unavailable or refused. The git-derived payload becomes
+// the body of one MERGE PLAN (LOCAL) section, with target → current,
+// the conflict tally, and the fallback reason promoted to the title's
+// summary slot. A trailing NEXT section appears only when conflicts
+// were detected, matching the pull divergence layout.
 func fallbackMergePlan(target, current string, conflicts []string, payload string, reason string, colorize bool) string {
-	var b strings.Builder
-	title := "Merge plan (local): "
-	cleanYes := "yes"
-	cleanNo := "no"
-	if colorize {
-		title = color.New(color.FgCyan, color.Bold).Sprint(title)
-		cleanYes = color.New(color.FgGreen).Sprint(cleanYes)
-		cleanNo = color.New(color.FgRed).Sprint(cleanNo)
-	}
-	fmt.Fprintf(&b, "%s%s -> %s\n", title, target, current)
-	fmt.Fprintf(&b, "Source: local git facts (%s)\n", reason)
-	fmt.Fprintf(&b, "Direction: merge %s into %s\n", target, current)
-	if len(conflicts) == 0 {
-		fmt.Fprintf(&b, "Clean: %s\n", cleanYes)
-	} else {
-		fmt.Fprintf(&b, "Clean: %s (%d conflict(s))\n", cleanNo, len(conflicts))
-	}
-	if strings.TrimSpace(payload) != "" {
-		fmt.Fprintln(&b)
-		b.WriteString(strings.TrimSpace(payload))
-		fmt.Fprintln(&b)
-	}
+	cleanLabel := "clean"
 	if len(conflicts) > 0 {
-		fmt.Fprintln(&b, "\nNext: inspect conflicts with `gk precheck <target>` before merging.")
+		cleanLabel = fmt.Sprintf("%d conflict(s)", len(conflicts))
 	}
-	return b.String()
+	headerSummary := fmt.Sprintf("%s → %s · %s · via local git (%s)", target, current, cleanLabel, reason)
+
+	var body []string
+	if strings.TrimSpace(payload) != "" {
+		body = strings.Split(strings.TrimSpace(payload), "\n")
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.RenderSection("merge plan (local)", headerSummary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionDiverged,
+	}))
+	if len(conflicts) > 0 {
+		b.WriteString(ui.RenderSection("next", "inspect conflicts with `gk precheck <target>` before merging.", nil, ui.SectionOpts{
+			Layout: ui.SectionLayoutBar,
+			Color:  ui.SectionAction,
+		}))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
+// renderAIMergePlanHeader returns just the bar-section header for the
+// AI plan: title row with the summary slot and the section's trailing
+// blank line, no body. Body content (the AI summary) and the verdict
+// footer are appended separately via decorateMergePlanSummary so the
+// existing two-helper composition still works.
 func renderAIMergePlanHeader(target, current, providerName string, conflictCount int, colorize bool) string {
-	title := "Merge plan (AI): "
-	clean := "yes"
-	if colorize {
-		title = color.New(color.FgCyan, color.Bold).Sprint(title)
-		clean = color.New(color.FgGreen).Sprint(clean)
-	}
+	cleanLabel := "clean"
 	if conflictCount > 0 {
-		clean = fmt.Sprintf("no (%d conflict(s))", conflictCount)
-		if colorize {
-			clean = color.New(color.FgRed).Sprint(clean)
-		}
+		cleanLabel = fmt.Sprintf("%d conflict(s)", conflictCount)
 	}
-	return fmt.Sprintf("%s%s -> %s\nSource: AI summary via %s\nDirection: merge %s into %s\nClean: %s",
-		title,
-		target,
-		current,
-		providerName,
-		target,
-		current,
-		clean,
-	)
+	summary := fmt.Sprintf("%s → %s · %s · via %s", target, current, cleanLabel, providerName)
+	return ui.RenderSection("merge plan (AI)", summary, nil, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionDiverged,
+	})
 }
 
 func currentMergeBranch(ctx context.Context, client *git.Client) string {
@@ -787,43 +787,88 @@ func currentMergeBranch(ctx context.Context, client *git.Client) string {
 }
 
 // decorateMergePlanSummary colour-codes the cleaned AI summary and
-// appends a clear verdict line so the user can tell at a glance
+// emits the closing VERDICT section so the user can tell at a glance
 // whether anything needs attention. Section labels (SUMMARY / RISK /
-// INSPECT / NEXT) get a cyan header tint; the line after RISK is
-// scanned for low/moderate/high keywords and tinted accordingly.
+// INSPECT / NEXT) inside the AI text get a cyan header tint; the line
+// after RISK is scanned for low/moderate/high keywords and tinted
+// accordingly. The decorated body is indented by ui.SectionIndent so
+// it visually attaches to the MERGE PLAN section emitted upstream by
+// renderAIMergePlanHeader, and the verdict closes the block as its
+// own bar section whose chrome reflects the severity (action when
+// conflicts/HIGH risk, caution for MODERATE, health when clean).
 func decorateMergePlanSummary(text string, conflictCount int, colorize bool) string {
+	var body string
 	if !colorize {
-		return text + "\n" + plainVerdict(text, conflictCount)
-	}
-	header := color.New(color.FgCyan, color.Bold).SprintFunc()
-	low := color.New(color.FgGreen, color.Bold).SprintFunc()
-	med := color.New(color.FgYellow, color.Bold).SprintFunc()
-	high := color.New(color.FgRed, color.Bold).SprintFunc()
+		body = text
+	} else {
+		header := color.New(color.FgCyan, color.Bold).SprintFunc()
+		low := color.New(color.FgGreen, color.Bold).SprintFunc()
+		med := color.New(color.FgYellow, color.Bold).SprintFunc()
+		high := color.New(color.FgRed, color.Bold).SprintFunc()
 
-	lines := strings.Split(text, "\n")
-	prevHeader := ""
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch trimmed {
-		case "SUMMARY", "RISK", "INSPECT", "NEXT":
-			lines[i] = header(trimmed)
-			prevHeader = trimmed
-			continue
-		}
-		if prevHeader == "RISK" && trimmed != "" {
-			lower := strings.ToLower(trimmed)
-			switch {
-			case strings.Contains(lower, "high") || strings.Contains(lower, "severe") || strings.Contains(lower, "critical"):
-				lines[i] = high(line)
-			case strings.Contains(lower, "moderate") || strings.Contains(lower, "medium"):
-				lines[i] = med(line)
-			case strings.Contains(lower, "low") || strings.Contains(lower, "minor") || strings.Contains(lower, "none") || strings.Contains(lower, "no risk"):
-				lines[i] = low(line)
+		lines := strings.Split(text, "\n")
+		prevHeader := ""
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			switch trimmed {
+			case "SUMMARY", "RISK", "INSPECT", "NEXT":
+				lines[i] = header(trimmed)
+				prevHeader = trimmed
+				continue
 			}
-			prevHeader = "" // only colour the first non-empty line under RISK
+			if prevHeader == "RISK" && trimmed != "" {
+				lower := strings.ToLower(trimmed)
+				switch {
+				case strings.Contains(lower, "high") || strings.Contains(lower, "severe") || strings.Contains(lower, "critical"):
+					lines[i] = high(line)
+				case strings.Contains(lower, "moderate") || strings.Contains(lower, "medium"):
+					lines[i] = med(line)
+				case strings.Contains(lower, "low") || strings.Contains(lower, "minor") || strings.Contains(lower, "none") || strings.Contains(lower, "no risk"):
+					lines[i] = low(line)
+				}
+				prevHeader = "" // only colour the first non-empty line under RISK
+			}
 		}
+		body = strings.Join(lines, "\n")
 	}
-	return strings.Join(lines, "\n") + "\n\n" + colorVerdict(text, conflictCount)
+
+	var b strings.Builder
+	for _, ln := range strings.Split(body, "\n") {
+		b.WriteString(ui.SectionIndent)
+		b.WriteString(ln)
+		b.WriteByte('\n')
+	}
+
+	verdictText := plainVerdict(text, conflictCount)
+	if colorize {
+		verdictText = colorVerdict(text, conflictCount)
+	}
+	chrome := mergeVerdictChrome(text, conflictCount)
+	b.WriteString(ui.RenderSection("verdict", verdictText, nil, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  chrome,
+	}))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// mergeVerdictChrome maps the severity of an AI merge plan to the
+// appropriate ui section colour. Mirrors the conflict/risk decision
+// tree in colorVerdict: orange when something needs attention
+// (conflicts or HIGH risk), mustard for moderate risk, olive when
+// clean — matching the doctor SUMMARY semantics so verdicts read
+// consistently across commands.
+func mergeVerdictChrome(text string, conflictCount int) *color.Color {
+	if conflictCount > 0 {
+		return ui.SectionAction
+	}
+	switch detectMergeRisk(text) {
+	case "high":
+		return ui.SectionAction
+	case "moderate":
+		return ui.SectionCaution
+	default:
+		return ui.SectionHealth
+	}
 }
 
 // colorVerdict prints a single "✓ ..." or "⚠ ..." line below the AI

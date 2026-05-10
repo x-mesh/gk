@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
+
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -52,11 +54,11 @@ func TestRunMergeCorePrechecksAndMerges(t *testing.T) {
 	if !strings.Contains(errOut.String(), "merged main") {
 		t.Fatalf("expected merge summary, got:\n%s", errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "Merge plan") {
-		t.Fatalf("expected merge plan, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "MERGE PLAN") {
+		t.Fatalf("expected merge plan section, got:\n%s", errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "Source: local git facts") {
-		t.Fatalf("expected local plan source, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "via local git") {
+		t.Fatalf("expected local plan source in summary slot, got:\n%s", errOut.String())
 	}
 }
 
@@ -85,8 +87,8 @@ func TestRunMergeCoreBlocksPrecheckConflicts(t *testing.T) {
 	if strings.Contains(joinedShipCalls(runner.Calls), "merge --no-edit main") {
 		t.Fatal("merge should not run after precheck conflict")
 	}
-	if !strings.Contains(errOut.String(), "Clean: no") {
-		t.Fatalf("expected conflict plan, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "1 conflict(s)") {
+		t.Fatalf("expected conflict count in plan summary, got:\n%s", errOut.String())
 	}
 }
 
@@ -112,10 +114,10 @@ func TestRunMergeCorePlanOnlyDoesNotMerge(t *testing.T) {
 	if strings.Contains(joinedShipCalls(runner.Calls), "merge --no-edit main") {
 		t.Fatal("plan-only should not merge")
 	}
-	if !strings.Contains(errOut.String(), "Merge plan") {
-		t.Fatalf("expected merge plan, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "MERGE PLAN") {
+		t.Fatalf("expected merge plan section, got:\n%s", errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "main -> feature/ship") {
+	if !strings.Contains(errOut.String(), "main → feature/ship") {
 		t.Fatalf("expected explicit merge direction, got:\n%s", errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "it does NOT merge feature/ship into main") {
@@ -172,7 +174,7 @@ func TestRunMergeCorePlanOnlyNoAIUsesLocalPlan(t *testing.T) {
 	if strings.Contains(joinedShipCalls(runner.Calls), "merge --no-edit main") {
 		t.Fatal("plan-only should not merge")
 	}
-	if !strings.Contains(errOut.String(), "Merge plan (local)") {
+	if !strings.Contains(errOut.String(), "MERGE PLAN (LOCAL)") {
 		t.Fatalf("expected local merge plan, got:\n%s", errOut.String())
 	}
 }
@@ -642,24 +644,40 @@ func TestRunMergeCorePlanUsesAISummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runMergeCore: %v", err)
 	}
-	if !strings.Contains(errOut.String(), "Merge plan (AI): main -> HEAD") {
-		t.Fatalf("expected AI plan header, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "MERGE PLAN (AI)") {
+		t.Fatalf("expected AI plan section banner, got:\n%s", errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "Direction: merge main into HEAD") {
-		t.Fatalf("expected AI direction header, got:\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "main → HEAD") {
+		t.Fatalf("expected target → current in summary slot, got:\n%s", errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "AI says merge is low risk.") {
 		t.Fatalf("expected AI summary, got:\n%s", errOut.String())
 	}
+	if !strings.Contains(errOut.String(), "VERDICT") {
+		t.Fatalf("expected VERDICT footer section, got:\n%s", errOut.String())
+	}
 }
 
 func TestRenderAIMergePlanHeaderNoColor(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prev })
+
 	got := renderAIMergePlanHeader("main", "feature", "gemini", 0, false)
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("header should not contain ANSI escapes: %q", got)
 	}
-	if !strings.Contains(got, "Merge plan (AI): main -> feature") {
-		t.Fatalf("unexpected header: %q", got)
+	// New bar-section format: title is uppercased, target → current
+	// + clean state + provider live in the inline summary slot.
+	for _, want := range []string{
+		"MERGE PLAN (AI)",
+		"main → feature",
+		"clean",
+		"via gemini",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("header missing %q; full output:\n%s", want, got)
+		}
 	}
 }
 

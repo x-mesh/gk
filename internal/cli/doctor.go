@@ -19,6 +19,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitsafe"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // doctorStatus is the three-way status of a single check.
@@ -348,11 +349,15 @@ func countStatus(checks []doctorCheck, s doctorStatus) int {
 }
 
 // writeDoctorTable renders an aligned, coloured table grouped by
-// "Environment" (toolchain — git/pager/editor/AI providers) and
-// "Repository state" (lock/in-progress/dirty). Colours follow the
-// usual traffic-light convention: green PASS / yellow WARN / red FAIL.
+// "environment" (toolchain — git/pager/editor/AI providers) and
+// "repository state" (lock/in-progress/dirty), then a final "summary"
+// section with the aggregate verdict. Per-row markers follow the
+// traffic-light convention (green PASS / yellow WARN / red FAIL); the
+// section chrome uses the project-wide ui.SectionColor palette so the
+// output reads as part of the same visual family as `gk status`.
 func writeDoctorTable(w io.Writer, checks []doctorCheck) {
 	const nameCol = 22
+	layout := ui.SectionLayoutBar
 
 	envChecks := make([]doctorCheck, 0, len(checks))
 	repoChecks := make([]doctorCheck, 0)
@@ -364,43 +369,88 @@ func writeDoctorTable(w io.Writer, checks []doctorCheck) {
 		}
 	}
 
-	header := color.New(color.Bold, color.FgCyan).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 	fixLabel := color.New(color.FgMagenta).SprintFunc()
 
-	render := func(title string, group []doctorCheck) {
+	formatGroup := func(group []doctorCheck) []string {
+		out := make([]string, 0, len(group)*2)
+		for _, c := range group {
+			marker := statusMarker(c.Status)
+			out = append(out, fmt.Sprintf("%s  %-*s  %s", marker, nameCol, c.Name, c.Detail))
+			if c.Fix != "" {
+				out = append(out, fmt.Sprintf("    %-*s  %s %s", nameCol, "", fixLabel("fix:"), faint(c.Fix)))
+			}
+		}
+		return out
+	}
+
+	// summarize compresses a group's pass/warn/fail counts into a
+	// short headline like "6 ✓ · 1 ✗" for the section's summary slot.
+	// Zero-count categories are dropped so the headline only carries
+	// signal — a clean group reads "3 ✓" rather than "3 ✓ · 0 ⚠ · 0 ✗".
+	summarize := func(group []doctorCheck) string {
+		p := countStatus(group, statusPass)
+		wc := countStatus(group, statusWarn)
+		f := countStatus(group, statusFail)
+		var parts []string
+		if p > 0 {
+			parts = append(parts, fmt.Sprintf("%d ✓", p))
+		}
+		if wc > 0 {
+			parts = append(parts, fmt.Sprintf("%d ⚠", wc))
+		}
+		if f > 0 {
+			parts = append(parts, fmt.Sprintf("%d ✗", f))
+		}
+		return strings.Join(parts, " · ")
+	}
+
+	renderGroup := func(title string, group []doctorCheck) {
 		if len(group) == 0 {
 			return
 		}
-		fmt.Fprintln(w, header("─── "+title+" "+strings.Repeat("─", 50-len(title))))
-		for _, c := range group {
-			marker := statusMarker(c.Status)
-			fmt.Fprintf(w, "%s  %-*s  %s\n", marker, nameCol, c.Name, c.Detail)
-			if c.Fix != "" {
-				fmt.Fprintf(w, "     %-*s  %s %s\n", nameCol, "", fixLabel("fix:"), faint(c.Fix))
-			}
-		}
-		fmt.Fprintln(w)
+		fmt.Fprint(w, ui.RenderSection(title, summarize(group), formatGroup(group), ui.SectionOpts{
+			Layout: layout,
+			Color:  ui.SectionColor(title),
+		}))
 	}
 
-	render("Environment", envChecks)
-	render("Repository state", repoChecks)
+	renderGroup("environment", envChecks)
+	renderGroup("repository state", repoChecks)
 
+	// Aggregate footer — rendered as another section so it sits inside
+	// the same visual rhythm. Chrome colour shifts with severity:
+	// olive when everything passes, mustard for warnings, orange when
+	// anything fails (matching the CTA palette in `gk status`).
 	pass := countStatus(checks, statusPass)
 	warn := countStatus(checks, statusWarn)
 	fail := countStatus(checks, statusFail)
 	passColor := color.New(color.FgGreen).SprintFunc()
 	warnColor := color.New(color.FgYellow).SprintFunc()
 	failColor := color.New(color.FgRed).SprintFunc()
-	fmt.Fprintf(w, "%s · %s · %s\n",
+	overall := fmt.Sprintf("%s · %s · %s",
 		passColor(fmt.Sprintf("%d PASS", pass)),
 		warnColor(fmt.Sprintf("%d WARN", warn)),
 		failColor(fmt.Sprintf("%d FAIL", fail)))
 
+	var body []string
 	if fail+warn > 0 {
 		hintColor := color.New(color.FgCyan).SprintFunc()
-		fmt.Fprintln(w, hintColor("→ run `gk doctor --fix` to walk each finding interactively"))
+		body = []string{hintColor("→ run `gk doctor --fix` to walk each finding interactively")}
 	}
+
+	chrome := ui.SectionHealth
+	switch {
+	case fail > 0:
+		chrome = ui.SectionAction
+	case warn > 0:
+		chrome = ui.SectionCaution
+	}
+
+	fmt.Fprint(w, ui.RenderSection("summary", overall, body, ui.SectionOpts{
+		Layout: layout,
+		Color:  chrome,
+	}))
 }
 
 func statusMarker(s doctorStatus) string {

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // RenderOptions는 렌더링 동작을 제어하는 옵션이다.
@@ -56,34 +58,54 @@ func newColorSet(noColor bool) colorSet {
 
 // ── 파일 헤더 렌더링 ────────────────────────────────────────────
 
-// renderFileHeader는 파일 헤더를 렌더링한다.
-// 볼드체 파일명 + 상태 + 구분선(─)
+// renderFileHeader는 파일 헤더를 렌더링한다. ui.RenderSection의 rule
+// 레이아웃을 사용해 status / doctor / pull / merge / sync와 동일한
+// 시각 언어를 공유한다 — 길이 64로 고정된 가로줄이 기존 60-char `─`
+// 패턴을 대체하며, 파일 상태가 chrome 색상을 결정한다:
+//
+//	added       → SectionHealth   (olive)
+//	deleted     → SectionAction   (orange)
+//	renamed/copied → SectionDiverged (violet)
+//	mode-only   → SectionMuted    (faint cyan)
+//	modified    → SectionInfo     (steel blue, default)
+//
+// 파일 경로는 KeepCase=true로 원본 case를 유지한다 — 일반 섹션 라벨이
+// 짧은 태그라 ToUpper가 자연스러운 것과 달리 path는 content 자체이기
+// 때문. 섹션의 trailing blank line을 trim해 hunk가 빈 줄 없이 바로
+// 이어지도록 한다 (file 간 빈 줄은 Render가 별도로 emit).
 func renderFileHeader(w io.Writer, f *DiffFile, cs colorSet) {
-	// 파일 경로 결정
+	_ = cs // colorSet은 더 이상 헤더 렌더링에 쓰이지 않지만 시그니처 유지
 	path := f.NewPath
 	if f.Status == StatusDeleted {
 		path = f.OldPath
 	}
 
-	// 상태 표시
 	var statusStr string
+	chrome := ui.SectionInfo
 	switch f.Status {
 	case StatusAdded:
-		statusStr = cs.green(" [added]")
+		statusStr = "[added]"
+		chrome = ui.SectionHealth
 	case StatusDeleted:
-		statusStr = cs.red(" [deleted]")
+		statusStr = "[deleted]"
+		chrome = ui.SectionAction
 	case StatusRenamed:
-		statusStr = cs.cyan(fmt.Sprintf(" [renamed: %s → %s]", f.OldPath, f.NewPath))
+		statusStr = fmt.Sprintf("[renamed: %s → %s]", f.OldPath, f.NewPath)
+		chrome = ui.SectionDiverged
 	case StatusCopied:
-		statusStr = cs.cyan(fmt.Sprintf(" [copied: %s → %s]", f.OldPath, f.NewPath))
+		statusStr = fmt.Sprintf("[copied: %s → %s]", f.OldPath, f.NewPath)
+		chrome = ui.SectionDiverged
 	case StatusModeChanged:
-		statusStr = cs.faintFmt(" [mode: %s → %s]", f.OldMode, f.NewMode)
-	default:
-		statusStr = ""
+		statusStr = fmt.Sprintf("[mode: %s → %s]", f.OldMode, f.NewMode)
+		chrome = ui.SectionMuted
 	}
 
-	fmt.Fprintf(w, "%s%s\n", cs.bold(path), statusStr)
-	fmt.Fprintln(w, cs.faint(strings.Repeat("─", 60)))
+	block := ui.RenderSection(path, statusStr, nil, ui.SectionOpts{
+		Layout:   ui.SectionLayoutRule,
+		Color:    chrome,
+		KeepCase: true,
+	})
+	fmt.Fprint(w, strings.TrimRight(block, "\n")+"\n")
 }
 
 // ── Hunk 헤더 렌더링 ────────────────────────────────────────────

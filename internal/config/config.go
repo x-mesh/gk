@@ -186,13 +186,20 @@ type StatusConfig struct {
 	XYStyle string `mapstructure:"xy_style" yaml:"xy_style"`
 	// Density controls how much information `gk status` packs into the
 	// terminal. "normal" (default) keeps the legacy compact output;
-	// "rich" wraps the branch + working-tree + next-action sections in
-	// square boxes, enables the divergence diagram and 7-day activity
-	// sparkline, and removes the 24h gate on the "last commit" tag so
-	// the SHA + age are always shown. The CLI flag `-v` / `--verbose`
-	// (count ≥ 1) escalates to rich for a single invocation regardless
-	// of the config value.
+	// "rich" splits the branch + working-tree + next-action sections
+	// into titled blocks, enables the divergence diagram and 7-day
+	// activity sparkline, and removes the 24h gate on the "last commit"
+	// tag so the SHA + age are always shown. The CLI flag `-v` /
+	// `--verbose` (count ≥ 1) escalates to rich for a single invocation
+	// regardless of the config value.
 	Density string `mapstructure:"density" yaml:"density"`
+	// Layout selects how rich-mode sections are framed. "bar" (default)
+	// prefixes each title with a coloured ▎ bar; "rule" brackets the
+	// title with horizontal rules. Both replace the legacy box layout
+	// because the box's per-line padding misaligned with wide-character
+	// content (한글/이모지/coloured glyphs). Ignored when density is
+	// "normal".
+	Layout string `mapstructure:"layout" yaml:"layout"`
 }
 
 // UIConfig controls terminal UI behaviour.
@@ -379,6 +386,7 @@ func Defaults() Config {
 			AutoFetch: false,
 			XYStyle:   "labels",
 			Density:   "normal",
+			Layout:    "bar",
 		},
 		UI: UIConfig{
 			Color:  "auto",

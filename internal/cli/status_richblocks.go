@@ -11,12 +11,12 @@ import (
 )
 
 // renderDivergenceDiagram returns a small ASCII branch-divergence
-// diagram suitable for the rich-mode `┌─ divergence ─┐` block. The
-// shape shows how many commits each side has diverged from the merge
-// base — emitted only when there is actual divergence to draw, since
+// diagram suitable for the rich-mode `divergence` section. The shape
+// shows how many commits each side has diverged from the merge base
+// — emitted only when there is actual divergence to draw, since
 // `↑0 ↓0` is just two empty rays. The merge-base SHA is fetched once;
 // errors collapse the function to an empty result rather than emitting
-// a half-rendered box.
+// a half-rendered section.
 //
 //	   o─o─o  ↑3 you
 //	  /
@@ -86,19 +86,20 @@ func displayRemoteSide(upstream string) string {
 }
 
 // renderActivityHeatmap returns the 7-day commit-sparkline block for
-// the rich-mode `┌─ activity 7d ─┐` section. The heatmap counts
-// commits per local day (Mon..Sun, today on the right edge) and
-// scales them to an 8-cell glyph ramp. The total commit count is
-// appended next to the sparkline so a single number conveys the
-// magnitude alongside the shape.
+// the rich-mode `activity 7d` section. The heatmap counts commits per
+// local day (Mon..Sun, today on the right edge) and scales them to an
+// 8-cell glyph ramp. The total commit count is returned separately so
+// the caller can hoist it into the section's summary slot rather than
+// repeating the magnitude inside the body.
 //
-//	▁▂▅█▃▁▂   23 commits
-//	M  T  W  T  F  S  S
+//	▁ ▂ ▅ █ ▃ ▁ ▂        (body[0], sparkline)
+//	M T W T F S S        (body[1], day labels)
+//	23                   (total, hoisted to summary)
 //
-// On `git log` failure the block is omitted entirely; the rich layout
-// is informational and a missing sparkline is preferable to a noisy
-// half-rendered one.
-func renderActivityHeatmap(ctx context.Context, runner *git.ExecRunner) []string {
+// On `git log` failure the block is omitted entirely (ok=false); the
+// rich layout is informational and a missing sparkline is preferable
+// to a noisy half-rendered one.
+func renderActivityHeatmap(ctx context.Context, runner *git.ExecRunner) (lines []string, total int, ok bool) {
 	out, _, err := runner.Run(ctx, "log",
 		"--since=7.days.ago",
 		"--no-merges",
@@ -106,13 +107,12 @@ func renderActivityHeatmap(ctx context.Context, runner *git.ExecRunner) []string
 		"--date=unix",
 	)
 	if err != nil {
-		return nil
+		return nil, 0, false
 	}
 	now := time.Now()
 	// `today` index 6, `today-6` index 0 — the most recent day sits
 	// on the right edge so the eye lands on "now" first.
 	counts := make([]int, 7)
-	total := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -133,9 +133,9 @@ func renderActivityHeatmap(ctx context.Context, runner *git.ExecRunner) []string
 	}
 	if total == 0 {
 		return []string{
-			"▁ ▁ ▁ ▁ ▁ ▁ ▁   0 commits",
+			"▁ ▁ ▁ ▁ ▁ ▁ ▁",
 			heatmapDayLabels(now),
-		}
+		}, 0, true
 	}
 	max := 0
 	for _, c := range counts {
@@ -164,9 +164,9 @@ func renderActivityHeatmap(ctx context.Context, runner *git.ExecRunner) []string
 		cells[i] = string(ramp[idx])
 	}
 	return []string{
-		fmt.Sprintf("%s   %d commits", strings.Join(cells, " "), total),
+		strings.Join(cells, " "),
 		heatmapDayLabels(now),
-	}
+	}, total, true
 }
 
 // heatmapDayLabels returns the 7-character day-of-week strip aligned

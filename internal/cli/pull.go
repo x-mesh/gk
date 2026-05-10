@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -571,14 +572,19 @@ func printDivergenceRefusal(w io.Writer, runner git.Runner, ctx context.Context,
 	yellow := color.YellowString
 	faint := color.New(color.Faint).SprintFunc()
 
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s histories diverged.\n", yellow("⚠"))
-	fmt.Fprintf(w, "  local has %s unpushed commit%s, upstream %s has %s new commit%s.\n",
-		bold(strconv.Itoa(ahead)), plural(ahead),
-		bold(upstream),
-		bold(strconv.Itoa(behind)), plural(behind))
+	// Section 1 — DIVERGED. Headline summary uses the same ↑/↓ shape
+	// as `gk status` / `gk doctor` so users recognise it instantly,
+	// and the chrome violet matches ui.SectionDiverged across the CLI.
+	body := []string{
+		fmt.Sprintf("local has %s unpushed commit%s, upstream %s has %s new commit%s.",
+			bold(strconv.Itoa(ahead)), plural(ahead),
+			bold(upstream),
+			bold(strconv.Itoa(behind)), plural(behind)),
+	}
 
-	// One-line list of the at-risk local commits (capped).
+	// At-risk local commits (capped). Rendered as a sub-block inside
+	// the same DIVERGED section — splitting them into a separate
+	// section would over-fragment what is conceptually one warning.
 	if commits, _, err := runner.Run(ctx, "log",
 		fmt.Sprintf("--max-count=%d", pullCommitLimit),
 		"--pretty=format:%h %s",
@@ -586,30 +592,51 @@ func printDivergenceRefusal(w io.Writer, runner git.Runner, ctx context.Context,
 	); err == nil {
 		lines := strings.Split(strings.TrimRight(string(commits), "\n"), "\n")
 		if len(lines) > 0 && lines[0] != "" {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, "  local commits at risk (SHAs change on rebase):")
+			body = append(body, "", "at-risk SHAs (rewritten on rebase):")
 			for _, line := range lines {
 				if line == "" {
 					continue
 				}
 				parts := strings.SplitN(line, " ", 2)
 				if len(parts) == 2 {
-					fmt.Fprintf(w, "    %s  %s\n", yellow(parts[0]), parts[1])
+					body = append(body, fmt.Sprintf("  %s  %s", yellow(parts[0]), parts[1]))
 				}
 			}
 			if ahead > pullCommitLimit {
-				fmt.Fprintf(w, "    %s\n", faint(fmt.Sprintf("… +%d more", ahead-pullCommitLimit)))
+				body = append(body, fmt.Sprintf("  %s", faint(fmt.Sprintf("… +%d more", ahead-pullCommitLimit))))
 			}
 		}
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  pick one:")
-	fmt.Fprintf(w, "    %s   %s\n", bold("gk pull --rebase"), faint("replay local on top of upstream (rewrites SHA)"))
-	fmt.Fprintf(w, "    %s    %s\n", bold("gk pull --merge"), faint("create a merge commit (preserves SHA)"))
-	fmt.Fprintf(w, "    %s   %s\n", bold("gk pull --fetch-only"), faint("just fetch, decide later"))
-	fmt.Fprintln(w, faint("  a backup ref is created automatically before --rebase or --merge."))
-	fmt.Fprintln(w)
+	divSummary := fmt.Sprintf("↑%d you · ↓%d %s", ahead, behind, upstream)
+	fmt.Fprint(w, ui.RenderSection("diverged", divSummary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionColor("diverged"),
+	}))
+
+	// Section 2 — PICK ONE. Orange chrome (SectionAction) signals
+	// "this is the call to action"; consistent with NEXT in `gk
+	// status`. Manual padding so labels line up — fmt's %-Ns padding
+	// would mis-count after ANSI escapes.
+	formatOpt := func(cmd, desc string) string {
+		const labelWidth = 22
+		pad := labelWidth - len(cmd)
+		if pad < 1 {
+			pad = 1
+		}
+		return bold(cmd) + strings.Repeat(" ", pad) + faint(desc)
+	}
+	options := []string{
+		formatOpt("gk pull --rebase", "replay local on top of upstream (rewrites SHA)"),
+		formatOpt("gk pull --merge", "create a merge commit (preserves SHA)"),
+		formatOpt("gk pull --fetch-only", "just fetch, decide later"),
+		"",
+		faint("a backup ref is created automatically before --rebase or --merge."),
+	}
+	fmt.Fprint(w, ui.RenderSection("pick one", "", options, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionAction,
+	}))
 }
 
 // resolveStrategyFromRunner is the testable core of the strategy
@@ -708,27 +735,35 @@ func inProgressLabel(k gitstate.StateKind) string {
 	}
 }
 
-// printPullBlockedByState explains why `gk pull` refuses to proceed when
-// a prior integration is still paused. Reuses the same conflict-file
-// listing as the in-flight conflict banner so the user sees the exact
-// same recovery surface whether they hit a fresh conflict or run pull
-// while one is already pending.
+// printPullBlockedByState explains why `gk pull` refuses to proceed
+// when a prior integration is still paused. Output is composed of
+// three bar sections — BLOCKED (the diagnosis + conflict file lists),
+// RESOLVE FIRST (the recovery commands), and an optional BACKUP — so
+// the layout matches `gk pull --rebase` divergence and the rest of
+// the gk visual family. Sub-renderers (renderConflictFileLists,
+// renderInlineConflicts) emit into a buffer so their multi-line
+// content lands inside the BLOCKED section's body indent rather than
+// flowing flush-left between sections.
 func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Client, runner git.Runner, kind gitstate.StateKind) {
-	yellow := color.YellowString
 	red := color.RedString
 	green := color.GreenString
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
 	label := inProgressLabel(kind)
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s cannot pull: a %s is already in progress\n", yellow("✗"), bold(label))
 
 	repoDir := ""
 	if er, ok := runner.(*git.ExecRunner); ok {
 		repoDir = er.Dir
 	}
 
+	// Capture sub-renderer output so the file lists + inline conflict
+	// excerpts can be inlined as body lines under the BLOCKED bar.
+	// Sub-renderers already include their own leading indent; the
+	// section adds its own indent on top, which compounds — accept
+	// the resulting deeper indent as a deliberate "this is detail
+	// inside the diagnosis" cue.
+	var detailBuf bytes.Buffer
 	var info *git.RebaseConflictInfo
 	switch kind {
 	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
@@ -740,56 +775,85 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 					short = short[:7]
 				}
 				if info.StoppedSubj != "" {
-					fmt.Fprintf(w, "  paused on %s  %s\n", bold(short), info.StoppedSubj)
+					fmt.Fprintf(&detailBuf, "paused on %s  %s\n", bold(short), info.StoppedSubj)
 				} else {
-					fmt.Fprintf(w, "  paused on %s\n", bold(short))
+					fmt.Fprintf(&detailBuf, "paused on %s\n", bold(short))
 				}
 			}
 			if info.Total > 0 {
-				fmt.Fprintf(w, "  progress %d/%d\n", info.Done, info.Total)
+				fmt.Fprintf(&detailBuf, "progress %d/%d\n", info.Done, info.Total)
 			}
-			renderConflictFileLists(w, info, red, green)
+			renderConflictFileLists(&detailBuf, info, red, green)
 		} else {
 			info = probeUnmergedFiles(ctx, runner)
-			renderConflictFileLists(w, info, red, green)
+			renderConflictFileLists(&detailBuf, info, red, green)
 		}
 	default:
-		// Merge / cherry-pick / revert — only the file lists matter.
 		info = probeUnmergedFiles(ctx, runner)
-		renderConflictFileLists(w, info, red, green)
+		renderConflictFileLists(&detailBuf, info, red, green)
 	}
 
 	if info != nil && len(info.Unmerged) > 0 {
-		renderInlineConflicts(w, repoDir, info.Unmerged)
+		renderInlineConflicts(&detailBuf, repoDir, info.Unmerged)
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  resolve first:")
-	fmt.Fprintf(w, "    1. fix conflict markers — pick one:\n")
-	fmt.Fprintf(w, "         %s             %s\n",
-		bold("gk resolve"), faint("AI-assisted (preview with --dry-run)"))
-	fmt.Fprintf(w, "         %s   %s\n",
-		bold("gk resolve --strategy ours"), faint("take HEAD across all conflicts"))
-	fmt.Fprintf(w, "         %s %s\n",
-		bold("gk resolve --strategy theirs"), faint("take incoming across all conflicts"))
-	fmt.Fprintf(w, "         %s            %s\n",
-		faint("manual:"),
-		faint("edit each file, then "+bold("git add <file>")))
+	summary := fmt.Sprintf("cannot pull: a %s is already in progress", bold(label))
+	bodyLines := splitTrailing(detailBuf.String())
+	fmt.Fprint(w, ui.RenderSection("blocked", summary, bodyLines, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionAction,
+	}))
+
+	// RESOLVE FIRST — recovery commands. Manual padding so descriptions
+	// align under coloured labels (fmt's %-Ns padding miscounts after
+	// ANSI escapes). The section's inline summary slot is left empty
+	// because the body itself is the call to action.
+	resolveBody := []string{
+		"1. fix conflict markers — pick one:",
+		"     " + bold("gk resolve") + "             " + faint("AI-assisted (preview with --dry-run)"),
+		"     " + bold("gk resolve --strategy ours") + "   " + faint("take HEAD across all conflicts"),
+		"     " + bold("gk resolve --strategy theirs") + " " + faint("take incoming across all conflicts"),
+		"     " + faint("manual:") + "            " + faint("edit each file, then "+bold("git add <file>")),
+	}
 	if kind == gitstate.StateRebaseMerge || kind == gitstate.StateRebaseApply {
-		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(finish the paused rebase)"))
-		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard the rebase, return to pre-pull state)"))
+		resolveBody = append(resolveBody,
+			"2. "+bold("gk continue")+"         "+faint("(finish the paused rebase)"),
+			"   "+bold("gk abort")+"            "+faint("(discard the rebase, return to pre-pull state)"),
+		)
 	} else {
-		fmt.Fprintf(w, "    2. %s         %s\n", bold("gk continue"), faint("(complete the paused operation)"))
-		fmt.Fprintf(w, "       %s            %s\n", bold("gk abort"), faint("(discard it)"))
+		resolveBody = append(resolveBody,
+			"2. "+bold("gk continue")+"         "+faint("(complete the paused operation)"),
+			"   "+bold("gk abort")+"            "+faint("(discard it)"),
+		)
 	}
-	fmt.Fprintln(w, "  then re-run `gk pull`.")
+	resolveBody = append(resolveBody, "", faint("then re-run `gk pull`."))
+	fmt.Fprint(w, ui.RenderSection("resolve first", "", resolveBody, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionAction,
+	}))
 
+	// Optional BACKUP — only when a backup ref exists for the current
+	// branch. The ref itself is the headline; no body needed.
 	if branch, err := client.CurrentBranch(ctx); err == nil && branch != "" {
 		if ref := client.LatestBackupRef(ctx, branch); ref != "" {
-			fmt.Fprintf(w, "\n  %s   %s\n", faint("backup:"), bold(ref))
+			fmt.Fprint(w, ui.RenderSection("backup", ref, nil, ui.SectionOpts{
+				Layout: ui.SectionLayoutBar,
+				Color:  ui.SectionMuted,
+			}))
 		}
 	}
-	fmt.Fprintln(w)
+}
+
+// splitTrailing splits s on \n and drops a single trailing empty
+// element produced by content that ends in \n. Empty input returns nil
+// so callers can pass the result straight to ui.RenderSection without
+// leaving a stray blank body row.
+func splitTrailing(s string) []string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
 
 // printIntegrationConflict renders a richer paused-integration banner
@@ -797,8 +861,14 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 // far through the plan we are, which files still carry markers, which
 // auto-merged cleanly, and what to type next. mode is "rebase" or
 // "merge"; the resolution commands differ slightly between them.
+//
+// Output is composed of bar sections — PAUSED (diagnosis + conflict
+// detail captured from sub-renderers), RESOLVE (recovery commands),
+// optional BACKUP (recovery ref), and optional AUTOSTASH (the
+// "stash still applied" warning). Mirrors printPullBlockedByState so
+// the user sees the same shape whether they collide on a fresh pull
+// or run pull while one is already paused.
 func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Client, runner git.Runner, mode string, stashed bool) {
-	yellow := color.YellowString
 	red := color.RedString
 	green := color.GreenString
 	bold := color.New(color.Bold).SprintFunc()
@@ -809,11 +879,11 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 		repoDir = er.Dir
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s %s paused on conflict\n", yellow("✗"), mode)
-
+	// Capture paused-state detail + conflict file lists + inline
+	// conflict preview into a buffer so they sit inside the PAUSED
+	// section's body indent.
+	var detailBuf bytes.Buffer
 	var info *git.RebaseConflictInfo
-	// rebase-specific context: which commit stopped us, position in plan.
 	if mode == "rebase" {
 		info, _ = client.RebaseConflictStatus(ctx)
 		if info != nil {
@@ -823,74 +893,84 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 					short = short[:7]
 				}
 				if info.StoppedSubj != "" {
-					fmt.Fprintf(w, "  applying %s  %s\n", bold(short), info.StoppedSubj)
+					fmt.Fprintf(&detailBuf, "applying %s  %s\n", bold(short), info.StoppedSubj)
 				} else {
-					fmt.Fprintf(w, "  applying %s\n", bold(short))
+					fmt.Fprintf(&detailBuf, "applying %s\n", bold(short))
 				}
 			}
 			if info.Total > 0 {
-				fmt.Fprintf(w, "  progress %d/%d  %s\n",
+				fmt.Fprintf(&detailBuf, "progress %d/%d  %s\n",
 					info.Done, info.Total,
 					faint(fmt.Sprintf("(%d remaining after this)", info.Remaining())))
 			}
-			renderConflictFileLists(w, info, red, green)
+			renderConflictFileLists(&detailBuf, info, red, green)
 		} else {
 			info = probeUnmergedFiles(ctx, runner)
-			renderConflictFileLists(w, info, red, green)
+			renderConflictFileLists(&detailBuf, info, red, green)
 		}
 	} else {
-		// Merge: no rebase metadata; just probe the working tree.
 		info = probeUnmergedFiles(ctx, runner)
-		renderConflictFileLists(w, info, red, green)
+		renderConflictFileLists(&detailBuf, info, red, green)
 	}
 
-	// Inline preview of the first conflict region — usually enough for
-	// the user to decide "trivial rename, fix in 30s" vs "open editor".
 	if info != nil && len(info.Unmerged) > 0 {
-		renderInlineConflicts(w, repoDir, info.Unmerged)
+		renderInlineConflicts(&detailBuf, repoDir, info.Unmerged)
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  resolve:")
-	fmt.Fprintf(w, "    1. fix conflict markers — pick one:\n")
-	fmt.Fprintf(w, "         %s             %s\n",
-		bold("gk resolve"), faint("AI-assisted (preview with --dry-run)"))
-	fmt.Fprintf(w, "         %s   %s\n",
-		bold("gk resolve --strategy ours"), faint("take HEAD across all conflicts"))
-	fmt.Fprintf(w, "         %s %s\n",
-		bold("gk resolve --strategy theirs"), faint("take incoming across all conflicts"))
-	fmt.Fprintf(w, "         %s            %s\n",
-		faint("manual:"),
-		faint("edit each file, remove "+bold("<<<<<<<")+" / "+bold("=======")+" / "+bold(">>>>>>>")+" markers, then "+bold("git add <file>")))
+	summary := fmt.Sprintf("%s paused on conflict", mode)
+	bodyLines := splitTrailing(detailBuf.String())
+	fmt.Fprint(w, ui.RenderSection("paused", summary, bodyLines, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionAction,
+	}))
+
+	// RESOLVE — recovery commands. Manual padding so descriptions
+	// align under coloured labels (fmt's %-Ns padding miscounts after
+	// ANSI escapes).
+	resolveBody := []string{
+		"1. fix conflict markers — pick one:",
+		"     " + bold("gk resolve") + "             " + faint("AI-assisted (preview with --dry-run)"),
+		"     " + bold("gk resolve --strategy ours") + "   " + faint("take HEAD across all conflicts"),
+		"     " + bold("gk resolve --strategy theirs") + " " + faint("take incoming across all conflicts"),
+		"     " + faint("manual:") + "            " + faint("edit each file, remove "+bold("<<<<<<<")+" / "+bold("=======")+" / "+bold(">>>>>>>")+" markers, then "+bold("git add <file>")),
+	}
 	if mode == "rebase" {
-		fmt.Fprintf(w, "    2. %s         %s\n",
-			bold("gk continue"), faint("(finish this commit, proceed to next pick)"))
-		fmt.Fprintf(w, "       %s            %s\n",
-			bold("gk abort"), faint("(give up rebase, return to pre-pull state)"))
+		resolveBody = append(resolveBody,
+			"2. "+bold("gk continue")+"         "+faint("(finish this commit, proceed to next pick)"),
+			"   "+bold("gk abort")+"            "+faint("(give up rebase, return to pre-pull state)"),
+		)
 	} else {
-		fmt.Fprintf(w, "    2. %s         %s\n",
-			bold("gk continue"), faint("(create the merge commit)"))
-		fmt.Fprintf(w, "       %s            %s\n",
-			bold("gk abort"), faint("(discard the merge attempt)"))
+		resolveBody = append(resolveBody,
+			"2. "+bold("gk continue")+"         "+faint("(create the merge commit)"),
+			"   "+bold("gk abort")+"            "+faint("(discard the merge attempt)"),
+		)
 	}
+	fmt.Fprint(w, ui.RenderSection("resolve", "", resolveBody, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionAction,
+	}))
 
-	// Backup ref hint — only show when we actually have one for the
-	// current branch, so the user sees something they can copy.
+	// Optional BACKUP — ref headline + recover-hint body.
 	if branch, err := client.CurrentBranch(ctx); err == nil && branch != "" {
 		if ref := client.LatestBackupRef(ctx, branch); ref != "" {
-			fmt.Fprintf(w, "\n  %s   %s\n",
-				faint("backup:"),
-				bold(ref))
-			fmt.Fprintf(w, "  %s\n",
-				faint("   → recover with `git reset --hard "+ref+"` if you need to bail"))
+			fmt.Fprint(w, ui.RenderSection("backup", ref, []string{
+				faint("→ recover with `git reset --hard " + ref + "` if you need to bail"),
+			}, ui.SectionOpts{
+				Layout: ui.SectionLayoutBar,
+				Color:  ui.SectionMuted,
+			}))
 		}
 	}
 
+	// Optional AUTOSTASH warning — only when the integration ran with
+	// an autostash that's still applied. SectionCaution (mustard)
+	// matches the doctor WARN tier.
 	if stashed {
-		fmt.Fprintf(w, "\n%s autostash still applied — pop manually with `git stash pop` if you abort\n",
-			yellow("!"))
+		fmt.Fprint(w, ui.RenderSection("autostash", "still applied — pop manually with `git stash pop` if you abort", nil, ui.SectionOpts{
+			Layout: ui.SectionLayoutBar,
+			Color:  ui.SectionCaution,
+		}))
 	}
-	fmt.Fprintln(w)
 }
 
 // probeUnmergedFiles is a fallback for code paths where we don't have

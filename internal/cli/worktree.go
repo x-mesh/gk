@@ -120,6 +120,12 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	}
 
 	w := cmd.OutOrStdout()
+
+	// Build the table body and accumulate per-state counts so the
+	// section's title summary can carry the magnitude (n entries · m
+	// detached · k locked) without forcing the user to scan the table.
+	body := make([]string, 0, len(entries))
+	var detached, locked, prunable int
 	for _, e := range entries {
 		label := e.Branch
 		switch {
@@ -127,22 +133,41 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			label = "(bare)"
 		case e.Detached:
 			label = "(detached HEAD)"
+			detached++
 		case label == "":
 			label = "-"
 		}
 		marks := ""
 		if e.Locked {
 			marks += " [locked]"
+			locked++
 		}
 		if e.Prunable {
 			marks += " [prunable]"
+			prunable++
 		}
 		short := e.Head
 		if len(short) > 7 {
 			short = short[:7]
 		}
-		fmt.Fprintf(w, "%-40s  %-8s  %s%s\n", e.Path, short, label, marks)
+		body = append(body, fmt.Sprintf("%-40s  %-8s  %s%s", e.Path, short, label, marks))
 	}
+
+	summary := fmt.Sprintf("%d %s", len(entries), pluralize(len(entries), "entry", "entries"))
+	if detached > 0 {
+		summary += fmt.Sprintf(" · %d detached", detached)
+	}
+	if locked > 0 {
+		summary += fmt.Sprintf(" · %d locked", locked)
+	}
+	if prunable > 0 {
+		summary += fmt.Sprintf(" · %d prunable", prunable)
+	}
+
+	fmt.Fprint(w, ui.RenderSection("worktrees", summary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionInfo,
+	}))
 	return nil
 }
 

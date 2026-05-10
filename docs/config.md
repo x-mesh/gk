@@ -306,6 +306,51 @@ output:
 
 ---
 
+### `status.density`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `normal` |
+| CLI flag | `-v` / `--verbose` (escalates to `rich` for one call) |
+
+Controls how much information `gk status` packs into the terminal.
+
+| Value | Behavior |
+|-------|---------|
+| `normal` | Compact single-line summary — branch, working tree counts, next-step hint |
+| `rich` | Branch / working tree / divergence / 7-day activity / next-action sections; surfaces SHA + commit age unconditionally |
+
+```yaml
+status:
+  density: rich
+```
+
+---
+
+### `status.layout`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `bar` |
+| CLI flag | none |
+
+Selects how rich-mode sections are framed. Ignored when `status.density` is `normal`. Both layouts are independent of body width — wide-character content (한글, emoji, coloured glyphs) cannot misalign the chrome, which the legacy box layout it replaced did not guarantee.
+
+| Value | Behavior |
+|-------|---------|
+| `bar` | Each section title is prefixed with a coloured `█` bar; body indented two spaces below |
+| `rule` | Each section title sits between horizontal rules (`── TITLE ──────`) sized to `min(64, TTY width)` |
+
+```yaml
+status:
+  density: rich
+  layout: rule
+```
+
+---
+
 ### `branch.stale_days`
 
 | | |

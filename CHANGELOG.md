@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-05-11
+
+### Changed
+
+- **Rich-mode `gk status` no longer wraps sections in single-line boxes.**
+  The legacy box renderer padded each line to a fixed width, which
+  misaligned with wide-character content (한글, emoji, coloured glyphs)
+  and pushed the right wall onto the next row on narrow or resized
+  TTYs. Sections are now framed with a coloured `█` bar (default) or
+  bracketed by horizontal rules, neither of which depends on body
+  width. Choose between the two via `status.layout: bar | rule` in
+  `.gk.yaml`; `bar` is the default. The `gk status -v` rich output
+  also gains an inline title-row summary so the headline ("main →
+  origin/main · ↑3 ↓0", "53 commits last 7 days", etc.) reads
+  immediately without descending into the body.
+
+- **`gk doctor` adopts the same rich-mode section UI.** Environment /
+  Repository state / Summary now render as bar sections, with per-section
+  pass/warn/fail counts hoisted into the title row and a severity-aware
+  Summary chrome (orange when anything fails, mustard for warnings,
+  olive when clean).
+
+- **`gk pull` blocked / paused / diverged banners share the section
+  vocabulary.** The diverged-refusal hint splits into DIVERGED + PICK
+  ONE bar sections, and the in-progress / paused-conflict banners
+  expand into PAUSED (or BLOCKED) + RESOLVE + optional BACKUP /
+  AUTOSTASH sections. Conflict file lists and the inline conflict
+  preview are captured into the parent section's body so they sit
+  inside the diagnosis frame.
+
+- **`gk merge` AI / local plan render as MERGE PLAN + VERDICT
+  sections.** The target → current direction and conflict count live
+  in the title's summary slot; the AI body keeps its
+  SUMMARY / RISK / INSPECT / NEXT inline labels but is wrapped in a
+  bar frame, and the trailing verdict is its own section whose chrome
+  reflects the severity (orange when conflicts/HIGH risk, mustard for
+  moderate, olive when clean).
+
+- **`gk sync` STALE BASE warning and SYNCED result use bar sections.**
+  Streaming progress lines (`fetching origin/main`,
+  `integrating main into feature ...`) stay flat — only the diagnostic
+  warning and the final result block carry section chrome.
+
+- **`gk diff` per-file headers use horizontal-rule sections.** The
+  legacy 60-char `─` separator is now a `── path ──` rule with
+  status-tinted chrome (added → olive, deleted → orange, renamed/copied
+  → violet, mode-only → faint).
+
+- **`gk worktree list` gains a section header.** New
+  `WORKTREES   N entries · M detached · K locked` summary above the
+  table; the table body itself is unchanged.
+
+### Added
+
+- **`status.layout: bar | rule` config option** for rich-mode framing.
+  Defaults to `bar`. Ignored when `status.density` is `normal`. Both
+  layouts are independent of body width, so wide characters in branch
+  names, file paths, or status badges no longer push the chrome out
+  of alignment.
+
+- **`status.density` and `status.layout` are now documented in
+  `docs/config.md`** with their full value tables.
+
+- **`internal/ui` section helpers** — `RenderSection`,
+  `RenderNextAction`, `SectionColor`, plus intent-named colour vars
+  (`SectionInfo`, `SectionCaution`, `SectionDiverged`, `SectionHealth`,
+  `SectionAction`, `SectionMuted`) and a `KeepCase` opt for paths /
+  proper nouns. Reused by status, doctor, pull, merge, sync, diff,
+  and worktree so the same section name always means the same colour.
+
+### Internal
+
+- Removed the legacy `renderBox` / `renderNextActionBlock` helpers
+  (~120 lines) and the `visibleWidth`-based padding logic that
+  misaligned with wide characters. Replaced by `internal/ui/section.go`
+  whose chrome is independent of body width.
+- Refactored `renderActivityHeatmap` to return
+  `(lines, total, ok)` so the total can be hoisted into the section's
+  summary slot rather than stitched into the sparkline string.
+- 18-case golden test suite for `internal/ui/section.go` covering
+  bar / rule layouts, summary slot variants, NoColor, KeepCase, and
+  a regression for body-width chrome bleed.
+
 ## [0.41.1] - 2026-05-10
 
 ### Fixed

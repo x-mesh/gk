@@ -1822,7 +1822,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	}
 
 	if density == "rich" {
-		flushRichStatus(cmd.Context(), realW, richBuf.String(), allGrouped, st, runner, statusLayout(cfg))
+		flushRichStatus(cmd, realW, richBuf.String(), allGrouped, st, runner, statusLayout(cfg), displayBranch, displayUpstream, baseRes.Resolved)
 	}
 	if err := maybeRenderStatusAssist(cmd.Context(), cmd, cfg, runner, st, allGrouped, baseRes, realW, cmd.ErrOrStderr()); err != nil {
 		return exitCode, err
@@ -1842,39 +1842,22 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 // (skipped when ↑0 ↓0 or no upstream) and a 7-day commit sparkline.
 // Both are best-effort — git failures collapse the block instead of
 // emitting a half-rendered section.
-func flushRichStatus(ctx context.Context, w io.Writer, body string, g groupedEntries, st *git.Status, runner *git.ExecRunner, layout ui.SectionLayout) {
+func flushRichStatus(cmd *cobra.Command, w io.Writer, body string, g groupedEntries, st *git.Status, runner *git.ExecRunner, layout ui.SectionLayout, displayBranch, displayUpstream, baseTrunk string) {
+	ctx := cmd.Context()
 	body = strings.TrimRight(body, "\n")
 	lines := strings.Split(body, "\n")
-	var branchLine string
 	rest := lines
+	// Skip the legacy branch line emitted by runStatusOnce — the dedicated
+	// renderBranchSection below produces the canonical BRANCH section and
+	// the legacy line was prone to losing the branch name to dim wrapping
+	// at the section chrome.
 	for i, ln := range lines {
 		if strings.TrimSpace(ln) != "" {
-			branchLine = ln
 			rest = lines[i+1:]
 			break
 		}
 	}
-	if branchLine != "" {
-		// The legacy branch-head layout prefixes the line with a
-		// faint "branch: " label. The rich box title already says
-		// "branch", so strip the redundant prefix when present —
-		// the gauge-head layout never has the prefix and is left
-		// alone. We have to walk past the ANSI escape that paints
-		// the label faint before checking the literal token.
-		trimmed := branchLine
-		if i := strings.Index(trimmed, "branch:"); i >= 0 && i < 12 {
-			// Skip past "branch:" + any color reset and the
-			// trailing space the legacy format emits.
-			rest := trimmed[i+len("branch:"):]
-			rest = strings.TrimLeft(rest, " \x1b[m")
-			trimmed = rest
-		}
-		// The branch line is the entire content of the section, so
-		// hoist it into the title's summary slot and leave the body
-		// empty. This collapses what was previously two lines (title
-		// + body) into a single dense row.
-		fmt.Fprint(w, renderSection("branch", trimmed, nil, layout))
-	}
+	fmt.Fprint(w, renderBranchSection(cmd, runner, st, layout, displayBranch, displayUpstream, baseTrunk))
 	treeTitle := "working tree"
 	hasTreeEntries := len(g.Staged) > 0 || len(g.Modified) > 0 || len(g.Untracked) > 0 || len(g.Unmerged) > 0
 	if !hasTreeEntries {

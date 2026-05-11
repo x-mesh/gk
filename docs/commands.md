@@ -682,8 +682,10 @@ gk st [flags]
 | `--xy-style` | `labels` (from `status.xy_style`) | Per-entry state column: `labels` (`new`/`mod`/`staged`/`conflict`, self-documenting, default), `glyphs` (`+` `~` `●` `⚔` `#`, compact), or `raw` (git's two-character code like `??`/`.M`/`UU`). |
 | `--top N` | 0 (unlimited) | Limit the entry list to N paths after action-priority sorting: conflicts → staged → modified → untracked, then path. A `… +K more (total · showing top N)` footer surfaces the hidden remainder so truncation is never silent. |
 | `--exit-code` | false | Exit with a status-specific code after printing: `0` clean, `1` committable dirty, `2` submodule-only dirty, `3` conflicts, `4` behind upstream. |
-| `--watch` | false | Refresh human-readable status until interrupted. Not supported with `--json` or `--exit-code`. |
-| `--watch-interval <duration>` | `2s` | Refresh interval for `--watch`, e.g. `500ms`, `2s`, `1m`. |
+| `--watch` | false | Refresh human-readable status until interrupted. On a TTY, runs in the alt-screen with flicker-free repaints; falls back to a scroll-style reprint when stdout is piped. Not supported with `--json` or `--exit-code`. |
+| `--watch-interval <duration>` | `2s` | Initial refresh interval for `--watch`, e.g. `500ms`, `2s`, `1m`. Clamped to `[250ms, 60s]`. |
+
+`--watch` keys (TTY only): `r` force refresh · `p`/`space` pause/resume · `+`/`-` double/halve interval · `q`/`esc`/`Ctrl-C` quit. The header shows the active interval, last refresh time, a `(no change)` marker when consecutive frames hash identically, and a `● just changed` accent (~1.5s pulse) followed by a quiet `changed HH:MM:SS` timestamp whenever the frame transitions. Body lines that are new in the latest frame get a cyan `▎` left-gutter mark for the same 1.5s window so the eye lands on *what* changed, not just *that* something did. Set `GK_WATCH_DEBUG=1` to dump rotating normalized frames to `/tmp/gk-watch-frame-{0..3}.txt` for diffing false-positive pulses.
 | `--ai` | false | Append a plain-language AI explanation of the current state and next safe actions. Not supported with `--json` or `--watch`; falls back to a local plan if no provider is available. |
 | `--provider <name>` | `ai.provider` | Provider override for `--ai`. |
 | `--lang <code>` | `output.lang` / `ai.lang` | Language override for `--ai`, e.g. `en` or `ko`. |

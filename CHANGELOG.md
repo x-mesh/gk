@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-05-11
+
+### Changed
+
+- **`gk update` no longer hits the GitHub REST API on the happy path.**
+  `brew` and `go-install` installs now short-circuit before any network
+  call — both have their own version resolution, so the banner-only
+  `current → latest` round-trip was burning the 60 req/hr anonymous
+  quota for nothing. Manual installs (and `--check` / `--to`) resolve
+  the latest tag from `https://github.com/x-mesh/gk/releases/latest` via
+  the standard 302 redirect (the trick `install.sh` already uses); the
+  api.github.com JSON endpoint is kept as a quiet fallback for proxied
+  environments. Result: `gk update` from a brew install no longer fails
+  with `403 rate limit exceeded`.
+
+- **`gk status --watch` is now flicker-free and interactive.** The
+  legacy `\033[H\033[2J` clear-then-paint loop produced a visible blank
+  flash on every tick. Watch mode now runs as a bubbletea program
+  against the alt-screen with full-frame buffered redraws — visually
+  identical content costs zero repaint bytes. Adds a header status line
+  (`gk watch · every 2s · last 14:23:01 · ● just changed · [keys]`) and
+  live keyboard controls: `r` force refresh, `p` / `space` pause,
+  `+` / `-` double / halve interval (clamped to `[250ms, 60s]`),
+  `q` / `esc` / `Ctrl-C` quit. Lines that are new in the latest frame
+  get a cyan `▎` left-gutter marker for ~1.5s after each transition so
+  the eye lands on *what* changed; the 2-column gutter is reserved
+  unconditionally so the body never shifts horizontally when the pulse
+  drops. Hash equality runs on the ANSI-stripped, line-trimmed canonical
+  form, so styling reorders no longer fire false-positive pulses.
+  Non-TTY stdout (pipes, CI, redirection) keeps the legacy scroll-style
+  reprint so `gk status --watch | tee log` still works. Set
+  `GK_WATCH_DEBUG=1` to dump the four most recent normalized frames to
+  `/tmp/gk-watch-frame-{0..3}.txt` for diagnosing rare false-positive
+  pulses.
+
 ## [0.42.0] - 2026-05-11
 
 ### Changed

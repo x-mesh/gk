@@ -754,6 +754,18 @@ ahead/behind counts, conflict counts, and a short path preview. It does
 not receive patch contents. It may only recommend commands from gk's
 precomputed safe command list.
 
+### BRANCH section (rich mode)
+
+Rich-mode `gk status` (`-v`) renders a dedicated **BRANCH** section that always surfaces the current branch name, upstream, divergence, and last-commit age — and tags the worktree when the invocation runs from a linked (non-primary) one.
+
+```
+█  BRANCH
+   feature/tmux ← main  @ tmux  ⇄ origin/feature/tmux  ↑0 ↓0  · last commit 22m abc1234
+   wt: ~/work/project/agentic/gk/tmux
+```
+
+The `← <parent>` segment names the fork parent, resolved through `branchparent` so per-branch metadata wins over `origin/HEAD`. It is suppressed on the trunk itself and when the resolver can't pin a parent down. The `@ <wt-name>` annotation and the `wt: <path>` line are suppressed when the current worktree is the primary one, keeping the common case terse. Detached HEADs render as `⚠ detached at <sha>`.
+
 ### Upstream fetch (opt-in)
 
 By default `gk status` reads only local state — no network call. Pass `-f`/`--fetch` to refresh the current branch's upstream ref (the one recorded in `branch.<name>.remote` / `branch.<name>.merge`) before reading porcelain output, so the ↑N ↓N counts reflect the live remote rather than the last-cached view. The fetch is intentionally scoped and safe:

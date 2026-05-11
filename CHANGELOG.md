@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-05-11
+
+### Changed
+
+- **`gk status -v` now renders a dedicated BRANCH section.** The legacy
+  rich-mode path extracted the first line of the captured body and
+  shoved it into the section's summary slot, where dim wrapping at the
+  section chrome collided with embedded bold/colour escapes — branch
+  names regularly disappeared from the section the heading was named
+  after, leaving stragglers like `█ BRANCH 22m abc1234` visible without
+  any branch identity. A new `renderBranchSection` writes the branch
+  line as the section body with full control over styling, and surfaces
+  three identity hints the legacy renderer never had: the current
+  worktree (`@ <name>` + `wt: <path>`) when running from a linked
+  worktree, and the fork parent (`← <branch>`) resolved through
+  `branchparent` so per-branch metadata wins over `origin/HEAD`. Both
+  annotations are suppressed on the primary worktree / trunk to keep
+  the common case terse; detached HEADs render as `⚠ detached at <sha>`.
+
 ## [0.43.0] - 2026-05-11
 
 ### Changed

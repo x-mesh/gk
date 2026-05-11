@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk sw --fetch` and picker `f fetch` update remote branch refs before switching.**
+  Remote-only rows still come from cached `refs/remotes/*` for fast startup,
+  but users can now refresh from inside the switch UX instead of exiting to
+  run `git fetch`. The fetch is scoped to the configured remote, prunes stale
+  remote-tracking branches, skips tags and submodules, and opens/reopens the
+  picker with remote rows visible. Direct usage such as
+  `gk sw --fetch feat/new-remote-branch` also works when the branch was just
+  created upstream. The switch filter also searches hidden remote-only rows,
+  so `/ tmux` can surface `origin/tmux` even before pressing `r`.
+
 ## [0.45.0] - 2026-05-11
 
 ### Changed

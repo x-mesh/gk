@@ -1063,7 +1063,7 @@ gk branch unset-parent
 
 ## gk switch
 
-Switch to another branch. When no name is given, opens an interactive fzf-backed picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`).
+Switch to another branch. When no name is given, opens an interactive picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`). The remote-only list is based on cached `refs/remotes/*`; pass `--fetch` up front to refresh and show remote rows immediately, or press `f` in the picker to refresh later.
 
 ### Picker layout
 
@@ -1079,6 +1079,8 @@ Switch to another branch. When no name is given, opens an interactive fzf-backed
 - Remote entries whose short name already matches a local branch are hidden (avoid duplicate picks).
 - `refs/remotes/<remote>/HEAD` aliases are filtered.
 - Sorted recent-first within each group; local first, then remote-only.
+- Picker hotkeys: `r` toggles cached remote-only branches, `f` runs `git fetch --prune` for the configured remote and reopens with remote rows visible.
+- Filtering also searches hidden remote-only branches; `/ tmux` can surface `origin/tmux` even before pressing `r`.
 
 
 ### Synopsis
@@ -1096,6 +1098,7 @@ Alias: `gk sw`.
 | `-c, --create` | false | Create a new branch with the given name before switching (`git switch -c`) |
 | `-f, --force` | false | Discard local changes (`git switch --discard-changes`) |
 | `--detach` | false | Detach HEAD at the ref instead of switching to a branch |
+| `--fetch` | false | Refresh remote branches before switching; when opening the picker, show remote-only rows immediately |
 | `-m, --main` | false | Switch to the detected main/master branch — no branch argument needed |
 | `-d, --develop` | false | Switch to the `develop` / `dev` branch — no branch argument needed |
 
@@ -1124,6 +1127,9 @@ gk switch
 
 # Direct switch
 gk switch feat/login
+
+# Fetch first, then switch to a newly-created remote branch
+gk switch --fetch feat/new-from-remote
 
 # Create and switch in one step
 gk switch -c feat/billing

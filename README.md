@@ -141,7 +141,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk branch set-parent <parent>` | | Record `branch.<current>.gk-parent = <parent>` so `gk status` compares divergence against the actual parent (stacked workflows). Validates against self/cycle (depth ≤10), tags, and non-existent refs; suggests the closest local branch on typos. |
 | `gk branch unset-parent` | | Remove the `gk-parent` config entry. Idempotent. Status output reverts to base-relative divergence. |
 | `gk branch-check` | | Validate current branch name against configured patterns |
-| `gk switch [name]` | `gk sw` | Switch branches; `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev |
+| `gk switch [name]` | `gk sw` | Switch branches; `--fetch` refreshes remote branches first, `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev |
 
 ### Worktree
 | Command | Alias | Description |

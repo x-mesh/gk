@@ -1394,6 +1394,30 @@ Project layout on disk:
 |------|---------|-------------|
 | `-f, --force` | false | Force remove even when the worktree is dirty or locked |
 
+### List columns
+
+`gk worktree list` mirrors `gk sw`'s information density:
+
+```
+█  WORKTREES   5 entries
+     BRANCH           SOURCE                DIFF  AGE  PATH
+   ★ main             ⇄ origin/main               2h   /Users/jinwoo/work/project/agentic/gk
+     fix-bug          from main@e18d988           10d  /Users/jinwoo/.gk/worktree/gk/fix-bug
+     improve-ux       ⇄ origin/improve-ux   ↑52   11d  /Users/jinwoo/.gk/worktree/gk/improve-ux
+```
+
+| Column | Meaning |
+|---|---|
+| `★` | The worktree this invocation runs from. |
+| `BRANCH` | Local branch checked out in the worktree (or `(detached HEAD)` / `(bare)`). |
+| `SOURCE` | `⇄ <upstream>` when an upstream is tracked, otherwise `from <parent>@<sha>` for the resolved fork point, otherwise blank for purely local branches. |
+| `DIFF` | Ahead/behind versus the upstream (`↑3 ↓1`). Empty when in sync or when no upstream is tracked. |
+| `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
+| `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |
+| `FLAGS` | `[locked]` / `[prunable]` markers when present. |
+
+The interactive TUI (run `gk worktree` with no subcommand) carries the same `BRANCH | SOURCE | PATH | FLAGS` columns.
+
 ### Examples
 
 ```bash

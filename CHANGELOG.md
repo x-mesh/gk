@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-05-11
+
+### Changed
+
+- **`gk worktree list` and the `gk wt` TUI gain `gk sw`-style columns.**
+  The legacy three-column layout (`PATH | SHA | BRANCH`) skipped the
+  two questions you actually ask when juggling worktrees: where this
+  branch came from, and how far it has drifted. The list now renders
+  `BRANCH | SOURCE | DIFF | AGE | PATH | FLAGS`, with `★` marking the
+  worktree the invocation runs from. `SOURCE` shows `⇄ <upstream>` when
+  an upstream is tracked, otherwise `from <parent>@<sha>` — the fork
+  point resolved through the same `branchparent` machinery that feeds
+  `gk sw`. `DIFF` mirrors the upstream `↑X ↓Y` pair, `AGE` carries the
+  compact `5m`/`2h`/`10d` last-commit ribbon, and long paths get a
+  middle ellipsis with the basename preserved so the worktree name
+  stays readable on narrow terminals. Inside the TUI the SOURCE cell
+  uses the in-cell colour helpers (`cellCyan`, `cellFaint`) instead of
+  fatih's `\x1b[0m` full-reset variants, so the cursor-row purple
+  highlight bar no longer tears mid-cell on the active row. Global
+  mode (`gk wt -g`) keeps the previous layout — cross-repo branch
+  metadata is out of scope for the cross-project picker.
+
 ## [0.44.0] - 2026-05-11
 
 ### Changed

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -121,21 +122,31 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 
 	w := cmd.OutOrStdout()
 
+	// Enrich entries with branchInfo (upstream, ahead/behind, fork
+	// parent, last-commit age) so the table can mirror `gk sw` columns:
+	// "where this branch came from" + "how far diverged" + "when last
+	// touched" — the three signals you actually want when switching
+	// worktrees. Best-effort: a git failure collapses the enrichment
+	// rather than aborting the whole list.
+	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
+	currentPath := currentWorktreePath(cmd.Context(), runner)
+
 	// Build the table body and accumulate per-state counts so the
 	// section's title summary can carry the magnitude (n entries · m
 	// detached · k locked) without forcing the user to scan the table.
 	body := make([]string, 0, len(entries))
 	var detached, locked, prunable int
+	rows := make([]worktreeRow, 0, len(entries))
 	for _, e := range entries {
-		label := e.Branch
+		branchLabel := e.Branch
 		switch {
 		case e.Bare:
-			label = "(bare)"
+			branchLabel = "(bare)"
 		case e.Detached:
-			label = "(detached HEAD)"
+			branchLabel = "(detached HEAD)"
 			detached++
-		case label == "":
-			label = "-"
+		case branchLabel == "":
+			branchLabel = "-"
 		}
 		marks := ""
 		if e.Locked {
@@ -146,12 +157,19 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			marks += " [prunable]"
 			prunable++
 		}
-		short := e.Head
-		if len(short) > 7 {
-			short = short[:7]
-		}
-		body = append(body, fmt.Sprintf("%-40s  %-8s  %s%s", e.Path, short, label, marks))
+		meta := branchMeta[e.Branch]
+		isCurrent := currentPath != "" && filepath.Clean(e.Path) == filepath.Clean(currentPath)
+		rows = append(rows, worktreeRow{
+			Current: isCurrent,
+			Branch:  branchLabel,
+			Source:  worktreeSourceLabel(meta),
+			Diff:    formatSwitchDiff(meta.Ahead, meta.Behind),
+			Age:     ifZeroTime(meta.LastCommit),
+			Path:    e.Path,
+			Flags:   marks,
+		})
 	}
+	body = append(body, renderWorktreeRows(rows)...)
 
 	summary := fmt.Sprintf("%d %s", len(entries), pluralize(len(entries), "entry", "entries"))
 	if detached > 0 {
@@ -169,6 +187,231 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		Color:  ui.SectionInfo,
 	}))
 	return nil
+}
+
+// worktreeBranchMeta is the slice of branchInfo we actually consume in
+// the worktree-list renderer. Keeping it narrow keeps the test fixtures
+// small and lets us evolve listLocalBranches independently.
+type worktreeBranchMeta struct {
+	Upstream   string
+	Ahead      int
+	Behind     int
+	ForkBranch string
+	ForkPoint  string
+	LastCommit time.Time
+}
+
+func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[string]worktreeBranchMeta {
+	branches, err := listLocalBranches(ctx, runner)
+	if err != nil {
+		return nil
+	}
+	// computeForkPoints needs a default-base hint; reuse the same
+	// resolveBaseForStatus output gk relies on elsewhere. Tolerate
+	// failures: without a default we lose the fork annotation but
+	// still get upstream/diff/age.
+	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
+	if defaultBr != "" {
+		computeForkPoints(ctx, runner, defaultBr, branches)
+	}
+	out := make(map[string]worktreeBranchMeta, len(branches))
+	for _, b := range branches {
+		out[b.Name] = worktreeBranchMeta{
+			Upstream:   b.Upstream,
+			Ahead:      b.Ahead,
+			Behind:     b.Behind,
+			ForkBranch: b.ForkBranch,
+			ForkPoint:  b.ForkPoint,
+			LastCommit: b.LastCommit,
+		}
+	}
+	return out
+}
+
+// resolveDefaultBranchForWorktree returns the trunk used as the
+// computeForkPoints anchor. We deliberately keep this lighter than
+// resolveBaseForStatus (no config layer, no provenance) because the
+// worktree list is a read-only at-a-glance view — a missing trunk
+// only suppresses the fork column, never breaks the table.
+func resolveDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if err == nil {
+		s := strings.TrimSpace(string(out))
+		if i := strings.Index(s, "/"); i >= 0 {
+			return s[i+1:]
+		}
+		return s
+	}
+	// Fallback: probe for the conventional trunk names locally.
+	for _, name := range []string{"main", "master"} {
+		if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+name); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// currentWorktreePath returns the absolute path of the worktree this
+// invocation runs from. Used to mark the active row with a ★. Empty
+// string on failure → no row gets marked, which is harmless.
+func currentWorktreePath(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return ""
+	}
+	p := strings.TrimSpace(string(out))
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
+}
+
+// worktreeSourceLabel collapses upstream / fork-parent / local-only into
+// a single SOURCE-column string mirroring `gk sw`:
+//
+//	"⇄ origin/main"          — upstream tracked
+//	"from main@abc1234"      — no upstream, fork point known
+//	"(local)"                — neither
+func worktreeSourceLabel(m worktreeBranchMeta) string {
+	switch {
+	case m.Upstream != "":
+		return "⇄ " + m.Upstream
+	case m.ForkPoint != "":
+		return fmt.Sprintf("from %s@%s", m.ForkBranch, m.ForkPoint)
+	default:
+		return ""
+	}
+}
+
+// ifZeroTime renders LastCommit as a compact age, or "" when the
+// branch lookup failed entirely. shortAge handles the sub-minute case
+// itself ("now"); we drop that to "" so the AGE column stays quiet
+// for rows we couldn't enrich.
+func ifZeroTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return shortAge(t)
+}
+
+type worktreeRow struct {
+	Current bool
+	Branch  string
+	Source  string
+	Diff    string
+	Age     string
+	Path    string
+	Flags   string
+}
+
+// renderWorktreeRows formats rows as fixed-width columns. Widths are
+// computed from the actual content so columns hug their data; long
+// paths are middle-ellipsised once we exceed a generous cap so the
+// table doesn't blow out narrow terminals. ANSI codes are applied
+// after width computation to keep alignment intact.
+func renderWorktreeRows(rows []worktreeRow) []string {
+	const pathCap = 60
+	wBranch, wSource, wDiff, wAge := len("BRANCH"), len("SOURCE"), len("DIFF"), len("AGE")
+	for _, r := range rows {
+		if w := runeLen(r.Branch); w > wBranch {
+			wBranch = w
+		}
+		if w := runeLen(r.Source); w > wSource {
+			wSource = w
+		}
+		if w := runeLen(r.Diff); w > wDiff {
+			wDiff = w
+		}
+		if w := runeLen(r.Age); w > wAge {
+			wAge = w
+		}
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	cyan := color.CyanString
+	yellow := color.YellowString
+	header := fmt.Sprintf("  %s  %s  %s  %s  %s%s",
+		padRight("BRANCH", wBranch),
+		padRight("SOURCE", wSource),
+		padRight("DIFF", wDiff),
+		padRight("AGE", wAge),
+		"PATH",
+		"",
+	)
+	out := make([]string, 0, len(rows)+1)
+	out = append(out, faint(header))
+	for _, r := range rows {
+		marker := "  "
+		branchCell := r.Branch
+		if r.Current {
+			marker = yellow("★") + " "
+			branchCell = yellow(r.Branch)
+		}
+		sourceCell := r.Source
+		switch {
+		case strings.HasPrefix(sourceCell, "⇄"):
+			sourceCell = cyan(sourceCell)
+		case strings.HasPrefix(sourceCell, "from "):
+			sourceCell = faint(sourceCell)
+		}
+		pathDisplay := compactPath(r.Path, pathCap)
+		flags := r.Flags
+		if flags != "" {
+			flags = faint(flags)
+		}
+		line := fmt.Sprintf("%s%s  %s  %s  %s  %s%s",
+			marker,
+			padRightVisible(branchCell, wBranch),
+			padRightVisible(sourceCell, wSource),
+			padRightVisible(r.Diff, wDiff),
+			padRightVisible(r.Age, wAge),
+			pathDisplay,
+			flags,
+		)
+		out = append(out, line)
+	}
+	return out
+}
+
+// padRight pads s with trailing spaces to reach `width` runes. Counts
+// runes, not bytes, so Unicode characters don't break alignment.
+func padRight(s string, width int) string {
+	pad := width - runeLen(s)
+	if pad <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", pad)
+}
+
+// padRightVisible is padRight that ignores ANSI escape sequences when
+// measuring width — so coloured cells don't shrink the visual column.
+func padRightVisible(s string, width int) string {
+	visible := runeLen(stripANSIForWidth(s))
+	pad := width - visible
+	if pad <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", pad)
+}
+
+func runeLen(s string) int { return len([]rune(s)) }
+
+// compactPath ellipsises a path's *middle* segments when it overflows
+// max. The leading "/" and trailing basename are always kept so the
+// reader can still tell the repo + worktree name at a glance.
+func compactPath(p string, max int) string {
+	if runeLen(p) <= max {
+		return p
+	}
+	base := filepath.Base(p)
+	dir := filepath.Dir(p)
+	// Keep ~30 chars of dir prefix, ellipsis, full basename.
+	keepDir := max - runeLen(base) - 4 // 4 = "/…/" + 1 safety
+	if keepDir < 8 {
+		// Too narrow to be worth compacting; truncate basename instead.
+		return "…" + string([]rune(p)[runeLen(p)-max+1:])
+	}
+	r := []rune(dir)
+	return string(r[:keepDir]) + "/…/" + base
 }
 
 // parseWorktreePorcelain parses the output of `git worktree list --porcelain`.
@@ -461,33 +704,36 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		return rowSource{entries: ents}, nil
 	}
 
-	// loadWorktreeDiffs reads ahead/behind vs upstream from each
-	// branch's `%(upstream:track)` field. Skipped in global mode
-	// (cross-repo iteration is out of scope). Returns nil on
-	// failure → callers render no diff suffix.
-	loadWorktreeDiffs := func(entries []WorktreeEntry) map[string][2]int {
+	// loadBranchMeta reads upstream / ahead-behind / fork-parent for the
+	// current repo's branches in one shot. Skipped in global mode
+	// (cross-repo iteration is out of scope) — global rows still show
+	// the branch but lose the SOURCE/DIFF columns. nil on failure.
+	loadBranchMeta := func() map[string]worktreeBranchMeta {
 		if global {
 			return nil
 		}
-		branches, err := listLocalBranches(ctx, runner)
-		if err != nil {
-			return nil
-		}
-		return worktreeDiffsFromBranches(entries, branches)
+		return loadWorktreeBranchMeta(ctx, runner)
 	}
 
 	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
-		diffs := loadWorktreeDiffs(rs.entries)
+		meta := loadBranchMeta()
 		appendDiff := func(branch string) string {
-			d, ok := diffs[branch]
+			m, ok := meta[branch]
 			if !ok {
 				return branch
 			}
-			suffix := colorSwitchDiff(d[0], d[1])
+			suffix := colorSwitchDiff(m.Ahead, m.Behind)
 			if suffix == "" {
 				return branch
 			}
 			return branch + "  " + suffix
+		}
+		sourceFor := func(branch string) string {
+			m, ok := meta[branch]
+			if !ok {
+				return ""
+			}
+			return worktreeSourceLabel(m)
 		}
 		if global {
 			headers = []string{"PROJECT", "BRANCH", "PATH", "FLAGS"}
@@ -510,25 +756,38 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			})
 			return items, headers
 		}
-		headers = []string{"BRANCH", "PATH", "FLAGS"}
+		headers = []string{"BRANCH", "SOURCE", "PATH", "FLAGS"}
 		items = make([]ui.PickerItem, 0, len(rs.entries)+2)
 		for _, e := range rs.entries {
 			branch, flagsPlain := worktreeRowPartsPlain(e)
+			source := sourceFor(e.Branch)
+			// Inside picker cells we must use cellCyan/cellFaint, not
+			// fatih color helpers, because fatih emits `\x1b[0m` (full
+			// reset) which clobbers bubbles/table's cursor-row purple
+			// background mid-cell — leaving a torn highlight bar plus
+			// poor contrast on the active row. The cell* helpers reset
+			// only the foreground / bold bit they set.
+			switch {
+			case strings.HasPrefix(source, "⇄"):
+				source = cellCyan(source)
+			case strings.HasPrefix(source, "from "):
+				source = cellFaint(source)
+			}
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				Cells:   []string{appendDiff(branch), e.Path, flagsPlain},
+				Cells:   []string{appendDiff(branch), source, e.Path, flagsPlain},
 				Key:     e.Path,
 			})
 		}
 		items = append(items,
 			ui.PickerItem{
 				Display: faint("[+] add new worktree"),
-				Cells:   []string{"[+] add new worktree", "", ""},
+				Cells:   []string{"[+] add new worktree", "", "", ""},
 				Key:     keyAddNew,
 			},
 			ui.PickerItem{
 				Display: faint("[q] quit"),
-				Cells:   []string{"[q] quit", "", ""},
+				Cells:   []string{"[q] quit", "", "", ""},
 				Key:     keyQuit,
 			},
 		)

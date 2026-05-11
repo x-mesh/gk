@@ -100,8 +100,10 @@ func TestWorktree_AddListRemove(t *testing.T) {
 	if err := root2.Execute(); err != nil {
 		t.Fatalf("worktree list failed: %v", err)
 	}
-	if !strings.Contains(buf2.String(), wtPath) {
-		t.Errorf("list missing %s\n%s", wtPath, buf2.String())
+	// The PATH column compactPath-ellipsises long temp dirs but always
+	// preserves the basename, so assert on that.
+	if !strings.Contains(buf2.String(), filepath.Base(wtPath)) {
+		t.Errorf("list missing worktree basename %q\n%s", filepath.Base(wtPath), buf2.String())
 	}
 	if !strings.Contains(buf2.String(), "feat/wt") {
 		t.Errorf("list missing feat/wt branch\n%s", buf2.String())
@@ -402,6 +404,68 @@ func TestResolveWorktreePath_RejectsProjectWithSeparator(t *testing.T) {
 		if _, err := resolveWorktreePath(context.Background(), &git.FakeRunner{}, cfg, "x"); err == nil {
 			t.Errorf("project %q should be rejected", bad)
 		}
+	}
+}
+
+// --- worktree list helpers (sw-style columns) ---
+
+func TestWorktreeSourceLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		meta worktreeBranchMeta
+		want string
+	}{
+		{"upstream wins", worktreeBranchMeta{Upstream: "origin/main", ForkBranch: "main", ForkPoint: "abc1234"}, "⇄ origin/main"},
+		{"fork fallback", worktreeBranchMeta{ForkBranch: "main", ForkPoint: "abc1234"}, "from main@abc1234"},
+		{"local only", worktreeBranchMeta{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := worktreeSourceLabel(tc.meta); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompactPathPreservesBasename(t *testing.T) {
+	long := "/Users/jinwoo/very/deeply/nested/path/that/exceeds/the/cap/feature-branch-with-long-name"
+	got := compactPath(long, 60)
+	if !strings.HasSuffix(got, "feature-branch-with-long-name") {
+		t.Errorf("compactPath should preserve basename, got %q", got)
+	}
+	if runeLen(got) > 60 {
+		t.Errorf("compactPath should respect cap, got len=%d (%q)", runeLen(got), got)
+	}
+}
+
+func TestCompactPathShortStaysIntact(t *testing.T) {
+	short := "/Users/jinwoo/work/gk"
+	if got := compactPath(short, 60); got != short {
+		t.Errorf("short path mutated: %q", got)
+	}
+}
+
+func TestRenderWorktreeRowsHeaderAndCurrentMarker(t *testing.T) {
+	rows := []worktreeRow{
+		{Current: true, Branch: "main", Source: "⇄ origin/main", Path: "/repo"},
+		{Branch: "feat/x", Source: "from main@abc1234", Diff: "↑3", Age: "2h", Path: "/repo/wt"},
+	}
+	out := renderWorktreeRows(rows)
+	if len(out) < 3 {
+		t.Fatalf("expected header + 2 rows, got %d lines", len(out))
+	}
+	header := stripANSIForWidth(out[0])
+	for _, want := range []string{"BRANCH", "SOURCE", "DIFF", "AGE", "PATH"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header missing %q\n%s", want, header)
+		}
+	}
+	if !strings.Contains(out[1], "★") {
+		t.Errorf("current row should carry ★ marker\n%s", out[1])
+	}
+	if strings.Contains(out[2], "★") {
+		t.Errorf("non-current row should not carry ★\n%s", out[2])
 	}
 }
 

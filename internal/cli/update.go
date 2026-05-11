@@ -47,20 +47,32 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 
 	current := CurrentVersion()
 
-	// HTTP timeout sized for a slow link fetching a small JSON blob; archive
-	// downloads use the per-request context which inherits cmd.Context().
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	gh := &update.Client{HTTP: httpClient}
+	// brew and go-install delegate version resolution to their own toolchains
+	// (`brew upgrade` consults the tap; `go install ...@latest` consults the
+	// module proxy). Hitting GitHub here would only feed a "current → latest"
+	// banner — not worth burning the 60req/hr anonymous quota or failing the
+	// command outright on rate-limit. --check still needs a target tag for
+	// the comparison; let it fall through to the network path below.
+	if !check && pinned == "" {
+		switch install.Source {
+		case update.SourceBrew:
+			return runBrewUpgradeWithBanner(cmd, current, install)
+		case update.SourceGoInstall:
+			return printGoInstallHintWithBanner(cmd, current, install)
+		}
+	}
 
-	// Resolve the target version. --to skips the API call entirely so users
-	// behind a captive portal can still force a known-good version.
+	gh := &update.Client{HTTP: newUpdateHTTPClient()}
+
+	// Resolve the target version. --to skips network entirely so users behind
+	// a captive portal can still force a known-good version.
 	target := pinned
 	if target == "" {
 		ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 		defer cancel()
 		target, err = gh.LatestTag(ctx)
 		if err != nil {
-			return fmt.Errorf("look up latest release: %w", err)
+			return err
 		}
 	}
 
@@ -85,19 +97,46 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	}
 
 	switch install.Source {
-	case update.SourceBrew:
-		return runBrewUpgrade(cmd)
-	case update.SourceGoInstall:
-		return printGoInstallHint(cmd)
 	case update.SourceManual:
 		return runManualUpgrade(cmd, gh, install, target)
 	default:
 		// SourceUnknown should be impossible after DetectInstall succeeds,
 		// but treat it as manual rather than panicking — the worst case is
 		// the user gets a download attempt that fails on permissions, which
-		// they can recover from.
+		// they can recover from. Brew/go-install were handled before the
+		// network call above; if we land here with --check or --to set, the
+		// manual path is still the right fallback for SourceUnknown.
 		return runManualUpgrade(cmd, gh, install, target)
 	}
+}
+
+// newUpdateHTTPClient returns the http.Client used for both the github.com
+// redirect probe and the api.github.com JSON fallback. CheckRedirect is set
+// so latestTagRedirect can read the 302 Location header — without this the
+// client would follow to the rendered HTML release page.
+func newUpdateHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func runBrewUpgradeWithBanner(cmd *cobra.Command, current string, install *update.Install) error {
+	fmt.Fprintf(cmd.OutOrStdout(), "current: %s\nsource:  %s (%s)\n",
+		current, install.Source, install.BinaryPath)
+	if DryRun() {
+		fmt.Fprintln(cmd.OutOrStdout(), "(dry-run) would run: brew upgrade x-mesh/tap/gk")
+		return nil
+	}
+	return runBrewUpgrade(cmd)
+}
+
+func printGoInstallHintWithBanner(cmd *cobra.Command, current string, install *update.Install) error {
+	fmt.Fprintf(cmd.OutOrStdout(), "current: %s\nsource:  %s (%s)\n",
+		current, install.Source, install.BinaryPath)
+	return printGoInstallHint(cmd)
 }
 
 func runUpdateCheck(cmd *cobra.Command, install *update.Install, current, target string, cmp int) error {

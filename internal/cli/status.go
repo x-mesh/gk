@@ -1387,33 +1387,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 // exists for shell scripts that consume the integer exit code directly.
 var statusExitFunc = os.Exit
 
-func runStatusWatch(cmd *cobra.Command) error {
-	interval := statusWatchInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for first := true; ; first = false {
-		if !first {
-			if _, ok := ui.TTYWidth(); ok && !NoColorFlag() {
-				fmt.Fprint(cmd.OutOrStdout(), "\033[H\033[2J")
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout())
-			}
-		}
-		if _, err := runStatusOnce(cmd); err != nil {
-			return err
-		}
-		select {
-		case <-cmd.Context().Done():
-			return cmd.Context().Err()
-		case <-ticker.C:
-		}
-	}
-}
-
 func runStatusOnce(cmd *cobra.Command) (int, error) {
 	if NoColorFlag() {
 		color.NoColor = true

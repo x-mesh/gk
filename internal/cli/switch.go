@@ -33,10 +33,13 @@ func init() {
 	cmd.Flags().BoolP("create", "c", false, "create a new branch with the given name before switching")
 	cmd.Flags().BoolP("force", "f", false, "discard local changes (git switch --discard-changes)")
 	cmd.Flags().Bool("detach", false, "detach HEAD at the ref instead of switching to a branch")
+	cmd.Flags().Bool("fetch", false, "refresh remote branches before switching")
 	cmd.Flags().BoolP("main", "m", false, "switch to the detected main/master branch")
 	cmd.Flags().Bool("develop", false, "switch to the develop/dev branch")
 	rootCmd.AddCommand(cmd)
 }
+
+const switchFetchTimeout = 10 * time.Second
 
 func runSwitch(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
@@ -47,6 +50,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	create, _ := cmd.Flags().GetBool("create")
 	force, _ := cmd.Flags().GetBool("force")
 	detach, _ := cmd.Flags().GetBool("detach")
+	fetch, _ := cmd.Flags().GetBool("fetch")
 	toMain, _ := cmd.Flags().GetBool("main")
 	toDevelop, _ := cmd.Flags().GetBool("develop")
 
@@ -57,8 +61,15 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--main/--develop take no branch name and cannot combine with --create")
 	}
 
+	cfg, _ := config.Load(cmd.Flags())
+	remote := configuredRemote(cfg)
+	if fetch {
+		if err := fetchSwitchBranches(ctx, runner, remote); err != nil {
+			return err
+		}
+	}
+
 	if toMain {
-		cfg, _ := config.Load(cmd.Flags())
 		name, err := resolveMainBranch(ctx, runner, client, cfg.Remote)
 		if err != nil {
 			return err
@@ -81,8 +92,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--create requires a branch name")
 	}
 
-	cfg, _ := config.Load(cmd.Flags())
-	pick, err := pickBranchForSwitch(ctx, runner, client, cfg, w, cmd)
+	pick, err := pickBranchForSwitch(ctx, runner, client, cfg, w, cmd, fetch)
 	if err != nil {
 		return err
 	}
@@ -96,6 +106,39 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return doSwitchTrack(ctx, runner, w, pick.TrackRef, force, detach)
 	}
 	return doSwitch(ctx, runner, w, pick.Name, false, force, detach)
+}
+
+func configuredRemote(cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.Remote) != "" {
+		return cfg.Remote
+	}
+	return "origin"
+}
+
+func fetchSwitchBranches(parent context.Context, r git.Runner, remote string) error {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	ctx, cancel := context.WithTimeout(parent, switchFetchTimeout)
+	defer cancel()
+	_, stderr, err := r.Run(ctx,
+		"fetch",
+		"--quiet",
+		"--prune",
+		"--no-tags",
+		"--no-recurse-submodules",
+		remote,
+	)
+	if err != nil {
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return WithHint(fmt.Errorf("fetch %s failed: %s", remote, msg),
+			"check network/credentials, then retry `gk sw --fetch`")
+	}
+	return nil
 }
 
 // resolveMainBranch picks the repo's canonical main branch.
@@ -386,8 +429,7 @@ func canonPath(p string) string {
 // since git would refuse the switch otherwise. Hotkeys (n/d/D) exit
 // the picker so we can drive sub-prompts (text input, confirm),
 // then re-enter on the next iteration.
-func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command) (switchPick, error) {
-	showRemotes := false
+func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command, showRemotes bool) (switchPick, error) {
 
 	// Hoist loop-invariant probes outside the picker re-entry loop.
 	// `cur`, `defaultBr`, and `wt` don't change across n/d/D actions
@@ -481,10 +523,15 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 
 		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, dirty)
 		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes)
+		var filterItems []ui.PickerItem
+		if !showRemotes && len(allRemotes) > 0 {
+			filterItems = buildSwitchItems(nil, allRemotes, cur, wt, dirty)
+		}
 		picker := &ui.TablePicker{
-			Headers:  []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
-			Extras:   extras,
-			Subtitle: subtitle,
+			Headers:     []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
+			Extras:      extras,
+			Subtitle:    subtitle,
+			FilterItems: filterItems,
 		}
 		choice, err := picker.Pick(ctx, "switch", items)
 		if err != nil {
@@ -536,6 +583,19 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 				}
 				return switchPick{}, err
 			}
+		case "f":
+			stop := ui.StartBubbleSpinner("refreshing " + remote + "...")
+			err := fetchSwitchBranches(ctx, runner, remote)
+			stop()
+			if err != nil {
+				fmt.Fprintln(w, "✗ "+err.Error())
+				if h := HintFrom(err); h != "" {
+					fmt.Fprintln(w, "  hint: "+h)
+				}
+				continue
+			}
+			showRemotes = true
+			fmt.Fprintf(w, "refreshed %s\n", remote)
 		}
 	}
 }
@@ -809,7 +869,7 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 	return items
 }
 
-// buildSwitchExtras wires the n/d/D/r hotkeys. Only `r` mutates
+// buildSwitchExtras wires the n/d/D/r/f hotkeys. Only `r` mutates
 // state in place (toggle remote visibility); the rest exit the
 // picker so the caller can drive prompts/confirms outside the
 // bubbletea program. allRemotes is the full enumerated set so the
@@ -823,6 +883,7 @@ func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remote
 		{Key: "n", Help: "n new", Exit: true},
 		{Key: "d", Help: "d delete", Exit: true},
 		{Key: "D", Help: "D force", Exit: true},
+		{Key: "f", Help: "f fetch", Exit: true},
 		{
 			Key:  "r",
 			Help: "r remotes",

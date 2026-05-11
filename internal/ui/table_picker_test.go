@@ -89,6 +89,61 @@ func TestTablePicker_FilterRestoresCursorAfterEmptyResult(t *testing.T) {
 	}
 }
 
+func TestTablePicker_FilterIncludesHiddenFilterItems(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "local:main", Display: "main"},
+	})
+	m.filterOnly = []PickerItem{
+		{Key: "remote:origin/tmux", Display: "tmux remote: origin"},
+	}
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("tmux")
+	m.applyFilter()
+	if len(m.items) != 1 {
+		t.Fatalf("expected hidden remote filter match, got %d items", len(m.items))
+	}
+	if m.items[0].Key != "remote:origin/tmux" {
+		t.Fatalf("expected remote item, got %q", m.items[0].Key)
+	}
+}
+
+func TestTablePicker_FilterDedupesVisibleAndHiddenItems(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "remote:origin/tmux", Display: "tmux remote: origin"},
+	})
+	m.filterOnly = []PickerItem{
+		{Key: "remote:origin/tmux", Display: "tmux remote: origin"},
+	}
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("tmux")
+	m.applyFilter()
+	if len(m.items) != 1 {
+		t.Fatalf("expected duplicate remote to appear once, got %d items", len(m.items))
+	}
+}
+
+func TestTablePicker_FilterKeepsMultipleKeylessHiddenItems(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Display: "local tmux"},
+	})
+	m.filterOnly = []PickerItem{
+		{Display: "remote tmux one"},
+		{Display: "remote tmux two"},
+	}
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("tmux")
+	m.applyFilter()
+	if len(m.items) != 3 {
+		t.Fatalf("expected keyless matches to be preserved, got %d items", len(m.items))
+	}
+	if m.items[1].Display != "remote tmux one" || m.items[2].Display != "remote tmux two" {
+		t.Fatalf("unexpected keyless filter results: %+v", m.items)
+	}
+}
+
 func TestTablePicker_EscAborts(t *testing.T) {
 	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})

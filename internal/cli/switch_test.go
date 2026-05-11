@@ -32,6 +32,7 @@ func buildSwitchCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 	sw.Flags().BoolP("create", "c", false, "")
 	sw.Flags().BoolP("force", "f", false, "")
 	sw.Flags().Bool("detach", false, "")
+	sw.Flags().Bool("fetch", false, "")
 	sw.Flags().BoolP("main", "m", false, "")
 	sw.Flags().Bool("develop", false, "")
 
@@ -85,6 +86,67 @@ func TestListRemoteOnlyBranches(t *testing.T) {
 	// HEAD alias → excluded. Only feature/new remains.
 	if len(got) != 1 || got["feature/new"] != "origin/feature/new" {
 		t.Errorf("unexpected remote-only set: %+v", got)
+	}
+}
+
+func TestFetchSwitchBranches(t *testing.T) {
+	t.Parallel()
+	runner := &git.FakeRunner{}
+	if err := fetchSwitchBranches(context.Background(), runner, "upstream"); err != nil {
+		t.Fatalf("fetchSwitchBranches: %v", err)
+	}
+	if !hasCall(runner, "fetch --quiet --prune --no-tags --no-recurse-submodules upstream") {
+		t.Fatalf("expected bounded fetch call, got %+v", runner.Calls)
+	}
+}
+
+func TestFetchSwitchBranches_DefaultRemoteAndHint(t *testing.T) {
+	t.Parallel()
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"fetch --quiet --prune --no-tags --no-recurse-submodules origin": {
+			ExitCode: 128,
+			Stderr:   "fatal: offline\n",
+		},
+	}}
+	err := fetchSwitchBranches(context.Background(), runner, "")
+	if err == nil || !strings.Contains(err.Error(), "fetch origin failed") {
+		t.Fatalf("expected fetch failure, got %v", err)
+	}
+	if h := HintFrom(err); !strings.Contains(h, "gk sw --fetch") {
+		t.Fatalf("expected retry hint, got %q", h)
+	}
+}
+
+func TestSwitch_FetchThenDirectRemoteBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.CreateBranch("feature/new")
+	upstream.WriteFile("new.txt", "new\n")
+	upstream.Commit("new branch")
+	upstream.Checkout("main")
+
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", upstream.Dir)
+
+	root, buf := buildSwitchCmd(repo.Dir, "--fetch", "feature/new")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("switch --fetch feature/new failed: %v\nout: %s", err, buf.String())
+	}
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	client := git.NewClient(runner)
+	cur, err := client.CurrentBranch(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if cur != "feature/new" {
+		t.Errorf("current = %q, want feature/new", cur)
+	}
+	upstreamRef := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "feature/new@{upstream}"))
+	if upstreamRef != "origin/feature/new" {
+		t.Errorf("upstream = %q, want origin/feature/new", upstreamRef)
 	}
 }
 
@@ -402,6 +464,31 @@ func TestBuildSwitchItems_DirtyMarkerInBranchCell(t *testing.T) {
 				t.Errorf("dirty branch should have *± marker, got %q", cell)
 			}
 		}
+	}
+}
+
+func TestBuildSwitchItems_RemoteOnlyFilterItemDecodesToTrackPick(t *testing.T) {
+	t.Parallel()
+	remotes := []remoteBranchInfo{{
+		Name:       "tmux",
+		TrackRef:   "origin/tmux",
+		Remote:     "origin",
+		LastCommit: now(),
+		Hash:       "7264900",
+	}}
+	items := buildSwitchItems(nil, remotes, "main", switchWorktreeMap{}, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected one remote filter item, got %d", len(items))
+	}
+	if !strings.Contains(stripANSI(items[0].Display), "tmux") {
+		t.Fatalf("remote filter item should include branch name, got %q", items[0].Display)
+	}
+	pick, err := decodeSwitchChoice(items[0])
+	if err != nil {
+		t.Fatalf("decodeSwitchChoice: %v", err)
+	}
+	if !pick.Remote || pick.Name != "tmux" || pick.TrackRef != "origin/tmux" {
+		t.Fatalf("remote filter pick = %+v, want remote tmux origin/tmux", pick)
 	}
 }
 

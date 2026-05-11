@@ -50,17 +50,24 @@ type TablePickerExtraKey struct {
 // Subtitle, when non-empty, is rendered as a faint single line above
 // the filter prompt — used for ambient context like "in worktree: X"
 // that callers want visible while the picker is open.
+//
+// FilterItems are hidden from the unfiltered list but included when the
+// user types a filter query. They are useful for large secondary groups
+// that should not crowd the initial view but should still be discoverable
+// by name.
 type TablePicker struct {
-	Headers  []string
-	Height   int // 0 → auto (min(items+headers+1, 12))
-	Extras   []TablePickerExtraKey
-	Subtitle string
+	Headers     []string
+	Height      int // 0 → auto (min(items+headers+1, 12))
+	Extras      []TablePickerExtraKey
+	Subtitle    string
+	FilterItems []PickerItem
 }
 
 type tablePickerModel struct {
 	t            table.Model
 	items        []PickerItem // visible rows after filtering
 	all          []PickerItem // original list — kept verbatim for re-filter
+	filterOnly   []PickerItem // hidden unless a filter query matches
 	chosen       int          // index into items at the moment of selection
 	chosenItem   PickerItem   // resolved item (so we don't have to re-index)
 	aborted      bool
@@ -188,10 +195,19 @@ func (m *tablePickerModel) applyFilter() {
 	if q == "" {
 		m.items = m.all
 	} else {
-		filtered := make([]PickerItem, 0, len(m.all))
-		for _, it := range m.all {
-			if itemMatchesFilter(it, q) {
-				filtered = append(filtered, it)
+		filtered := make([]PickerItem, 0, len(m.all)+len(m.filterOnly))
+		seen := make(map[string]struct{}, len(m.all)+len(m.filterOnly))
+		for _, source := range [][]PickerItem{m.all, m.filterOnly} {
+			for _, it := range source {
+				if itemMatchesFilter(it, q) {
+					if it.Key != "" {
+						if _, ok := seen[it.Key]; ok {
+							continue
+						}
+						seen[it.Key] = struct{}{}
+					}
+					filtered = append(filtered, it)
+				}
 			}
 		}
 		m.items = filtered
@@ -374,6 +390,7 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 			t:           t,
 			items:       items,
 			all:         items,
+			filterOnly:  p.FilterItems,
 			chosen:      -1,
 			filterInput: filter,
 			extras:      p.Extras,

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-05-11
+
 ### Added
 
 - **`gk sw --fetch` and picker `f fetch` update remote branch refs before switching.**

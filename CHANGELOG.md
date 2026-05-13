@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-05-13
+
+### Added
+
+- **`gk prompt-info --format=segment` for unified prompt labels.** Emits
+  `<repo>/<branch>` inside any git repo (and empty outside), designed to
+  replace starship's `$directory` + `$git_branch` with a single, dedup-
+  friendly segment. The JSON payload also gains a `repo` field on the
+  same schema so prompt frameworks that compose their own segments can
+  pull the project name without an extra `git rev-parse` round-trip.
+
+- **`make install-gk` / `make uninstall-gk` Makefile targets.** Installs
+  the dev build as the canonical `gk` (shadowing the Homebrew binary
+  when `~/.local/bin` precedes `/opt/homebrew/bin` in `$PATH`). Wraps
+  `make install INSTALL_NAME=gk` so the install logic stays in one
+  place. The default `make install` still writes `gk-dev` to keep
+  outside contributors safe from accidentally overriding Homebrew.
+
+### Changed
+
+- **`gk status` BRANCH header now identifies the project.** The header
+  is prefixed with the repo name (`gk · main`) so captures and logs
+  shared elsewhere carry their project context. The `@ <wt-name>`
+  annotation is suppressed when it matches the current branch — the
+  common case under `~/.gk/worktree/<repo>/<branch>` — and the `wt:`
+  path line condenses `$HOME` to `~`.
+
+- **`gk prompt-info` plain output collapses redundant worktree names.**
+  When the worktree directory equals the current branch name, the
+  output is now `wt` instead of `wt:<name>`. The branch name is already
+  next door in the prompt, and `wt:improve-ux` next to a branch segment
+  of `improve-ux` was triple-displaying the same token across cwd,
+  branch, and worktree marker. The `wt:<name>` form is retained when
+  the worktree directory disagrees with the branch (rare but worth
+  surfacing).
+
+### Internal
+
+- `--path-format=absolute` (git 2.31+) hardens `detectPromptInfo` and
+  `detectRepoName` against cwd vs `runner.Dir` drift, replacing a
+  fragile `filepath.Abs` that silently resolved against process cwd
+  instead of the runner's working directory.
+
+- Format dispatch in `prompt-info` split out as `formatPromptInfo` so
+  table-driven tests can exercise `plain`, `segment`, `json`, and
+  unknown-format paths without spinning up a real git repo per case.
+
 ## [0.46.0] - 2026-05-13
 
 ### Added
@@ -1660,7 +1707,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/x-mesh/gk/compare/v0.46.0...v0.47.0
 [0.20.0]: https://github.com/x-mesh/gk/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/x-mesh/gk/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/x-mesh/gk/compare/v0.17.5...v0.18.0

@@ -760,11 +760,11 @@ Rich-mode `gk status` (`-v`) renders a dedicated **BRANCH** section that always 
 
 ```
 █  BRANCH
-   feature/tmux ← main  @ tmux  ⇄ origin/feature/tmux  ↑0 ↓0  · last commit 22m abc1234
+   gk · feature/tmux ← main  @ tmux  ⇄ origin/feature/tmux  ↑0 ↓0  · last commit 22m abc1234
    wt: ~/work/project/agentic/gk/tmux
 ```
 
-The `← <parent>` segment names the fork parent, resolved through `branchparent` so per-branch metadata wins over `origin/HEAD`. It is suppressed on the trunk itself and when the resolver can't pin a parent down. The `@ <wt-name>` annotation and the `wt: <path>` line are suppressed when the current worktree is the primary one, keeping the common case terse. Detached HEADs render as `⚠ detached at <sha>`.
+The `<repo> ·` prefix names the project derived from `--git-common-dir`, so captures and logs shared elsewhere carry their project context. The `← <parent>` segment names the fork parent, resolved through `branchparent` so per-branch metadata wins over `origin/HEAD`; it is suppressed on the trunk itself and when the resolver can't pin a parent down. The `@ <wt-name>` annotation and the `wt: <path>` line are suppressed when the current worktree is the primary one; the annotation is additionally suppressed when the worktree directory name matches the current branch (the common case under `~/.gk/worktree/<repo>/<branch>`) so the same token doesn't appear twice. The `wt:` path condenses `$HOME` to `~`. Detached HEADs render as `⚠ detached at <sha>`.
 
 ### Upstream fetch (opt-in)
 
@@ -1450,27 +1450,33 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ## gk prompt-info
 
-Emit a compact worktree indicator for shell prompt integration. Designed so prompts can flag "you are in a linked worktree" cleanly, without users having to wire `git worktree list` parsing into their PS1.
+Emit a compact label for shell prompt integration. Three formats cover the common needs: a minimal linked-worktree marker (`plain`), a unified `<repo>/<branch>` label suitable for replacing starship's `$directory` + `$git_branch` (`segment`), and a structured payload for prompt frameworks that compose their own segments (`json`).
 
 ### Synopsis
 
 ```
-gk prompt-info [--format=plain|json]
+gk prompt-info [--format=plain|segment|json]
 ```
 
 ### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--format` | `plain` (default) or `json`. |
+| `--format` | `plain` (default), `segment`, or `json`. |
 
 ### Output
 
-| Location | `--format=plain` | `--format=json` |
-|----------|------------------|-----------------|
-| Outside a git repo | *(empty)* | `{"linked":false}` |
-| Inside the primary worktree | *(empty)* | `{"linked":false}` |
-| Inside a linked worktree | `wt:<basename>` | `{"linked":true,"name":"<basename>","path":"<full-path>","branch":"<branch>"}` |
+| Location | `--format=plain` | `--format=segment` | `--format=json` |
+|----------|------------------|--------------------|-----------------|
+| Outside a git repo | *(empty)* | *(empty)* | `{"linked":false}` |
+| Inside any git repo (primary worktree) | *(empty)* | `<repo>/<branch>` | `{"linked":false,"repo":"<repo>","branch":"<branch>"}` |
+| Inside a linked worktree, dir name == branch name | `wt` | `<repo>/<branch>` | `{"linked":true,"repo":"<repo>","name":"<basename>","path":"<full-path>","branch":"<branch>"}` |
+| Inside a linked worktree, dir name != branch | `wt:<basename>` | `<repo>/<branch>` | (same as above) |
+| Detached HEAD inside a repo | as above (marker if linked, else empty) | `<repo>` | `{"linked":...,"repo":"<repo>"}` |
+
+Plain output deduplicates `wt:<name>` to bare `wt` when the worktree directory name equals the branch (gk's default `~/.gk/worktree/<repo>/<branch>` layout makes this the common case) — the branch name is already in the prompt next door, so repeating it would just be noise. The unabbreviated `wt:<name>` is kept for the rare divergent case where the suffix still carries information.
+
+`<repo>` is derived from `git rev-parse --git-common-dir`: the parent directory's basename for regular repos (`<repo>/.git`) and the `.git`-stripped basename for bare repos (`<repo>.git`).
 
 Exit status is always `0` unless `--format` is invalid — prompts can pipe the output unconditionally without risking a non-zero rendering glitch.
 
@@ -1481,7 +1487,7 @@ Exit status is always `0` unless `--format` is invalid — prompts can pipe the 
 ### Examples
 
 ```bash
-# zsh — yellow ⎇ wt:<name> segment only inside linked worktrees
+# zsh — yellow ⎇ wt segment only inside linked worktrees
 function gk_wt() {
   local info=$(gk prompt-info 2>/dev/null)
   [[ -n "$info" ]] && print -n " %F{yellow}⎇ $info%f"
@@ -1497,7 +1503,28 @@ __gk_wt_refresh
 ```
 
 ```toml
-# starship — yellow bubble between $git_status and $git_metrics
+# starship — replace $directory + $git_branch with a single <repo>/<branch>
+# label, keep a yellow ⎇ wt bubble for linked worktrees. Disable the
+# built-in directory and git_branch segments first.
+[directory]
+disabled = true
+[git_branch]
+disabled = true
+
+[custom.gk_context]
+when = 'git rev-parse --git-dir > /dev/null 2>&1'
+command = 'gk prompt-info --format=segment'
+format = '[ $output ]($style)'
+style = "fg:#FFFFFF bg:#6C5CE7"
+shell = ["zsh", "--no-rcs"]
+
+[custom.cwd_fallback]
+when = '! git rev-parse --git-dir > /dev/null 2>&1'
+command = 'basename "$PWD"'
+format = '[ $output ]($style)'
+style = "fg:#FFFFFF bg:#6C5CE7"
+shell = ["zsh", "--no-rcs"]
+
 [custom.gk_worktree]
 command = 'gk prompt-info'
 when = '[ -n "$(gk prompt-info 2>/dev/null)" ]'
@@ -1507,8 +1534,9 @@ shell = ["zsh", "--no-rcs"]
 ```
 
 ```bash
-# Scripting: extract branch via jq
+# Scripting: extract branch or repo via jq
 gk prompt-info --format=json | jq -r '.branch // empty'
+gk prompt-info --format=json | jq -r '.repo // empty'
 ```
 
 ---

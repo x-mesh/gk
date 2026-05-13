@@ -1,4 +1,4 @@
-.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install uninstall release-snapshot check help
+.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install install-gk uninstall uninstall-gk release-snapshot check help
 
 BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
@@ -21,9 +21,20 @@ install: build
 	install -m 755 bin/$(BINARY) $(BINDIR)/$(INSTALL_NAME)
 	@echo "installed: $(BINDIR)/$(INSTALL_NAME)"
 
+# install-gk forces the canonical `gk` name — convenient when the dev
+# build IS the gk you use day-to-day (i.e. you maintain gk itself).
+# Wraps `make install INSTALL_NAME=gk` so all install logic stays in one
+# place. Note this can shadow a Homebrew-managed `gk` depending on PATH
+# order; that's the intended trade-off here.
+install-gk:
+	$(MAKE) install INSTALL_NAME=gk
+
 uninstall:
 	rm -f $(BINDIR)/$(INSTALL_NAME)
 	@echo "removed:   $(BINDIR)/$(INSTALL_NAME)"
+
+uninstall-gk:
+	$(MAKE) uninstall INSTALL_NAME=gk
 
 test:
 	go test ./... -race -cover
@@ -70,7 +81,7 @@ release-snapshot:
 	goreleaser release --snapshot --clean
 
 help:
-	@echo "Targets: build, install, uninstall, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, check, clean, release-snapshot"
+	@echo "Targets: build, install, install-gk, uninstall, uninstall-gk, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, check, clean, release-snapshot"
 	@echo ""
 	@echo "  check             vet + build + test + lint — same gates the CI runs"
 	@echo ""
@@ -81,6 +92,11 @@ help:
 	@echo "  test-cli          CLI package tests (all commands)"
 	@echo "  test-integration  integration tests (privacy gate + fallback chain e2e)"
 	@echo ""
-	@echo "install writes: $(BINDIR)/$(INSTALL_NAME)"
-	@echo "  (the Homebrew 'gk' in /opt/homebrew/bin stays untouched)"
-	@echo "  override the installed name with: make install INSTALL_NAME=gk"
+	@echo "  install           writes $(BINDIR)/$(INSTALL_NAME)  (safe default: gk-dev)"
+	@echo "  install-gk        writes $(BINDIR)/gk               (use the dev build AS gk)"
+	@echo "  uninstall         remove $(BINDIR)/$(INSTALL_NAME)"
+	@echo "  uninstall-gk      remove $(BINDIR)/gk"
+	@echo ""
+	@echo "  default install keeps the Homebrew 'gk' in /opt/homebrew/bin untouched."
+	@echo "  install-gk overrides it (assuming \$$PATH puts ~/.local/bin first)."
+	@echo "  or set it manually: make install INSTALL_NAME=<name>"

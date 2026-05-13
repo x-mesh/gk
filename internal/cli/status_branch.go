@@ -107,8 +107,18 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 
 	wt, _ := currentWorktreeInfo(cmd.Context(), runner)
 	showWT := wt != nil && !wt.IsPrimary
+	// Repo prefix anchors the BRANCH line to a project — useful when
+	// captures/logs are shared, and the only place "what repo am I in?"
+	// reliably surfaces. Worktree directories usually mirror the branch
+	// name, so a separate "@ wt" annotation is redundant against the
+	// branch in the common case; suppress when they coincide.
+	repoName := detectRepoName(cmd.Context(), runner)
+	showWTName := showWT && wt.Name != displayBranch
 
 	var head strings.Builder
+	if repoName != "" {
+		head.WriteString(faint(repoName+" ·") + " ")
+	}
 	detached := st.Branch == "" || st.Branch == "(detached)"
 	if detached {
 		head.WriteString(color.YellowString("⚠ detached"))
@@ -124,7 +134,7 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 		if base != "" && base != displayBranch {
 			head.WriteString(" " + faint("←") + " " + cyan(base))
 		}
-		if showWT {
+		if showWTName {
 			head.WriteString("  " + faint("@") + " " + cyan(wt.Name))
 		}
 		if displayUpstream != "" {
@@ -156,7 +166,7 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 
 	lines := []string{head.String()}
 	if showWT {
-		lines = append(lines, faint("wt:")+" "+wt.Path)
+		lines = append(lines, faint("wt:")+" "+condenseHomePath(wt.Path))
 	}
 	// The "worktrees:" listing duplicates info now surfaced by the shell
 	// prompt (via `gk prompt-info`), so it's gated behind `-vv` to keep
@@ -250,6 +260,36 @@ func renderOtherWorktrees(others []otherWorktreeView) []string {
 		}
 	}
 	return lines
+}
+
+// detectRepoName derives a short, stable project name from git's
+// common-dir output. Handles both layouts:
+//
+//   - regular repo: common-dir = "<repo>/.git"   → repo name = parent dir
+//   - bare repo:    common-dir = "<repo>.git"    → repo name = stripped basename
+//
+// Returns "" on any git error or empty input so the caller (BRANCH header)
+// silently skips the prefix instead of emitting noise.
+func detectRepoName(ctx context.Context, runner *git.ExecRunner) string {
+	// --path-format=absolute (git 2.31+) forces an absolute path back,
+	// independent of the caller's cwd vs. runner.Dir. Without it git
+	// emits something like ".git" relative to its own cwd, and a naive
+	// filepath.Abs would resolve that against process cwd — fine when
+	// they match, wrong inside tests or when runners point elsewhere.
+	out, _, err := runner.Run(ctx, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return ""
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return ""
+	}
+	p = filepath.Clean(p)
+	base := filepath.Base(p)
+	if base == ".git" {
+		return filepath.Base(filepath.Dir(p))
+	}
+	return strings.TrimSuffix(base, ".git")
 }
 
 // condenseHomePath shortens paths under $HOME to "~/..." so the worktree

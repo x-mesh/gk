@@ -150,7 +150,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk worktree add <name>` | | Relative names resolve under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<repo>/<name>`); absolute paths passthrough. Orphan-branch collisions surface an inline reuse/delete/cancel prompt. |
 | `gk worktree list` | | Table or `--json` listing parsed from `git worktree list --porcelain` |
 | `gk worktree remove <path>` | | Removes worktree; dirty/locked get a force prompt, stale admin entries auto-prune |
-| `gk prompt-info` | | Emit `wt:<basename>` when inside a linked worktree (empty in primary/outside-repo) for shell prompt integration. `--format=json` returns `{linked, name, path, branch}` for prompt frameworks (starship, p10k). Detection via `git rev-parse --git-dir` vs `--git-common-dir` (~30ms). |
+| `gk prompt-info` | | Emit a compact label for shell prompts. `plain` (default) prints `wt` (or `wt:<basename>` when the dir disagrees with the branch) inside a linked worktree, empty otherwise. `--format=segment` prints `<repo>/<branch>` for any repo — designed to replace starship's `$directory` + `$git_branch` with a single deduplicated label. `--format=json` returns `{linked, repo, name, path, branch}`. Detection via `git rev-parse --git-dir` vs `--git-common-dir` (~30ms). |
 
 ### Safety
 | Command | Description |
@@ -416,6 +416,8 @@ git clone https://github.com/x-mesh/gk.git
 cd gk
 
 make build          # outputs to bin/gk
+make install        # installs to ~/.local/bin/gk-dev (safe default, no Homebrew collision)
+make install-gk     # installs to ~/.local/bin/gk (use the dev build AS gk)
 make test           # go test ./... -race -cover
 make lint           # golangci-lint run
 make fmt            # gofmt + go mod tidy

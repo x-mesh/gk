@@ -1448,6 +1448,71 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ---
 
+## gk prompt-info
+
+Emit a compact worktree indicator for shell prompt integration. Designed so prompts can flag "you are in a linked worktree" cleanly, without users having to wire `git worktree list` parsing into their PS1.
+
+### Synopsis
+
+```
+gk prompt-info [--format=plain|json]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--format` | `plain` (default) or `json`. |
+
+### Output
+
+| Location | `--format=plain` | `--format=json` |
+|----------|------------------|-----------------|
+| Outside a git repo | *(empty)* | `{"linked":false}` |
+| Inside the primary worktree | *(empty)* | `{"linked":false}` |
+| Inside a linked worktree | `wt:<basename>` | `{"linked":true,"name":"<basename>","path":"<full-path>","branch":"<branch>"}` |
+
+Exit status is always `0` unless `--format` is invalid — prompts can pipe the output unconditionally without risking a non-zero rendering glitch.
+
+### Detection
+
+`gk prompt-info` compares `git rev-parse --git-dir` against `git rev-parse --git-common-dir`. When they differ, the current directory is a linked worktree. This is much faster than enumerating worktrees, so it's safe to call from a prompt that re-renders on every keystroke (~30ms per call).
+
+### Examples
+
+```bash
+# zsh — yellow ⎇ wt:<name> segment only inside linked worktrees
+function gk_wt() {
+  local info=$(gk prompt-info 2>/dev/null)
+  [[ -n "$info" ]] && print -n " %F{yellow}⎇ $info%f"
+}
+PROMPT='... $(gk_wt) ... '
+
+# Zero-overhead variant: refresh only on cd
+typeset -g __gk_wt_cache
+autoload -Uz add-zsh-hook
+__gk_wt_refresh() { __gk_wt_cache=$(gk prompt-info 2>/dev/null); }
+add-zsh-hook chpwd __gk_wt_refresh
+__gk_wt_refresh
+```
+
+```toml
+# starship — yellow bubble between $git_status and $git_metrics
+[custom.gk_worktree]
+command = 'gk prompt-info'
+when = '[ -n "$(gk prompt-info 2>/dev/null)" ]'
+format = '[ ⎇ $output ]($style)'
+style = "fg:#1D3557 bg:#FFD166"
+shell = ["zsh", "--no-rcs"]
+```
+
+```bash
+# Scripting: extract branch via jq
+gk prompt-info --format=json | jq -r '.branch // empty'
+```
+
+---
+
 ## gk continue
 
 Continue the current rebase, merge, or cherry-pick after resolving conflicts.

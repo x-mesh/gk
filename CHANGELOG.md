@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-05-13
+
+### Added
+
+- **`gk prompt-info` for shell prompt integration.** Emits a compact
+  worktree indicator suitable for prompt themes (starship, p10k, plain
+  zsh). Plain output is `wt:<basename>` inside a linked worktree and
+  empty in the primary worktree or outside a repo, so PS1 stays clean
+  in the common case and flags non-primary sessions when it matters.
+  `--format=json` returns `{linked, name, path, branch}` for prompt
+  frameworks that consume structured segments. Detection compares
+  `git rev-parse --git-dir` against `--git-common-dir` (~30ms per call),
+  fast enough for prompts that re-render on every keystroke; a `chpwd`
+  cache pattern is documented for zero-overhead integration.
+
+### Changed
+
+- **`gk sw <branch>` blocked by another worktree now offers both paths.**
+  The previous hint surfaced only `gk worktree remove` — destructive,
+  and the wrong answer when the user just wants to use the branch.
+  The hint now shows two options: `work on it there → cd <path>` and
+  `bring it here → gk worktree remove <path>`. Dirty worktrees steer
+  toward the cd path until the work is committed or stashed. The
+  picker keeps its smart-handoff subshell flow, since selecting a
+  locked branch in the picker is a clearer "take me there" signal.
+
+- **`gk status -vv` surfaces other worktrees with cd-able paths.** The
+  BRANCH block gains a `worktrees: <branch> @ <path>` listing (one per
+  other linked worktree, HOME abbreviated to `~`). Gated behind `-vv`
+  because the same information is intended to live in the shell prompt
+  via `gk prompt-info` — surfacing it on every `gk st` would just be
+  duplicate noise. Detached worktrees show `(detached)` in place of
+  the branch name.
+
 ## [0.45.1] - 2026-05-11
 
 ### Added

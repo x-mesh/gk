@@ -150,6 +150,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk worktree add <name>` | | Relative names resolve under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<repo>/<name>`); absolute paths passthrough. Orphan-branch collisions surface an inline reuse/delete/cancel prompt. |
 | `gk worktree list` | | Table or `--json` listing parsed from `git worktree list --porcelain` |
 | `gk worktree remove <path>` | | Removes worktree; dirty/locked get a force prompt, stale admin entries auto-prune |
+| `gk prompt-info` | | Emit `wt:<basename>` when inside a linked worktree (empty in primary/outside-repo) for shell prompt integration. `--format=json` returns `{linked, name, path, branch}` for prompt frameworks (starship, p10k). Detection via `git rev-parse --git-dir` vs `--git-common-dir` (~30ms). |
 
 ### Safety
 | Command | Description |

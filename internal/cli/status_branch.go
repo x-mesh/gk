@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -157,5 +158,112 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 	if showWT {
 		lines = append(lines, faint("wt:")+" "+wt.Path)
 	}
+	// The "worktrees:" listing duplicates info now surfaced by the shell
+	// prompt (via `gk prompt-info`), so it's gated behind `-vv` to keep
+	// the default BRANCH section terse. Users discovering worktree layout
+	// from scratch or auditing repos with many linked worktrees still
+	// get the full picture with `gk st -vv`.
+	if statusVerbose >= 2 {
+		if others := listOtherWorktrees(cmd.Context(), runner); len(others) > 0 {
+			lines = append(lines, renderOtherWorktrees(others)...)
+		}
+	}
 	return renderSection("branch", "", lines, layout)
+}
+
+// otherWorktreeView is the rendering projection used by listOtherWorktrees.
+// Path is the worktree's filesystem path, Branch is the checked-out branch
+// ("" for detached HEADs), and Bare is true for the rare bare-repo entry
+// (suppressed at render time).
+type otherWorktreeView struct {
+	Path   string
+	Branch string
+	Bare   bool
+}
+
+// listOtherWorktrees enumerates linked worktrees that are NOT the current
+// one. Returns nil for single-worktree repos so the BRANCH section stays
+// terse in the common case. Bare worktrees are excluded.
+func listOtherWorktrees(ctx context.Context, runner *git.ExecRunner) []otherWorktreeView {
+	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	entries := parseWorktreePorcelain(string(out))
+	if len(entries) < 2 {
+		return nil
+	}
+	topOut, _, err := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil
+	}
+	top := strings.TrimSpace(string(topOut))
+	if resolved, err := filepath.EvalSymlinks(top); err == nil {
+		top = resolved
+	}
+	top = filepath.Clean(top)
+
+	var others []otherWorktreeView
+	for _, e := range entries {
+		if e.Bare {
+			continue
+		}
+		ep := e.Path
+		if resolved, err := filepath.EvalSymlinks(ep); err == nil {
+			ep = resolved
+		}
+		if filepath.Clean(ep) == top {
+			continue
+		}
+		branch := e.Branch
+		if e.Detached {
+			branch = ""
+		}
+		others = append(others, otherWorktreeView{Path: e.Path, Branch: branch})
+	}
+	return others
+}
+
+// renderOtherWorktrees returns one rendered line per other worktree.
+// Format: "<branch> @ <path>" so the path is the cd-able target — users
+// can switch by changing directory instead of fighting the worktree-locked
+// constraint. Paths under $HOME are abbreviated with "~". The first line
+// carries a "worktrees:" label so the block is identifiable; continuation
+// lines are indented to align under the first entry.
+func renderOtherWorktrees(others []otherWorktreeView) []string {
+	faint := color.New(color.Faint).SprintFunc()
+	cyan := color.CyanString
+	lines := make([]string, 0, len(others))
+	for i, e := range others {
+		path := condenseHomePath(e.Path)
+		var label string
+		if e.Branch == "" {
+			label = faint("(detached)") + " " + faint("@") + " " + path
+		} else {
+			label = cyan(e.Branch) + " " + faint("@") + " " + path
+		}
+		if i == 0 {
+			lines = append(lines, faint("worktrees:")+" "+label)
+		} else {
+			// 11 spaces aligns under "worktrees: " (10 chars + 1 space)
+			lines = append(lines, "           "+label)
+		}
+	}
+	return lines
+}
+
+// condenseHomePath shortens paths under $HOME to "~/..." so the worktree
+// line stays scannable. Falls back to the original path on any error.
+func condenseHomePath(p string) string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return p
+	}
+	if strings.HasPrefix(p, home+"/") {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	if p == home {
+		return "~"
+	}
+	return p
 }

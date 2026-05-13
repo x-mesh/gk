@@ -74,6 +74,11 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		if !detach {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
+				return err
+			}
+		}
 		return doSwitch(ctx, runner, w, name, false, force, detach)
 	}
 	if toDevelop {
@@ -81,10 +86,20 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		if !detach {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
+				return err
+			}
+		}
 		return doSwitch(ctx, runner, w, name, false, force, detach)
 	}
 
 	if len(args) == 1 {
+		if !create && !detach {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, args[0]); err != nil || done {
+				return err
+			}
+		}
 		return doSwitch(ctx, runner, w, args[0], create, force, detach)
 	}
 
@@ -1041,6 +1056,47 @@ func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice u
 	}
 	fmt.Fprintf(w, "deleted %s\n", target.Name)
 	return nil
+}
+
+// redirectIfWorktreeLocked checks whether branch is already checked out in
+// another worktree. Used by direct-name paths (gk sw <name>, --main,
+// --develop) where the user's intent is to switch HERE.
+// Returns (false, err) with a clear message when locked; (false, nil) when free.
+// Worktree removal is intentionally left to the user — gk sw must not destroy
+// worktrees as a side-effect of a branch switch.
+func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) (bool, error) {
+	wt := loadSwitchWorktrees(ctx, r)
+	entry, locked := wt.byBranch[branch]
+	if !locked {
+		return false, nil
+	}
+	dirtyMap := loadWorktreeDirtyStates(ctx, switchWorktreeMap{
+		byBranch: map[string]WorktreeEntry{entry.Branch: entry},
+		others:   []WorktreeEntry{entry},
+	})
+	// Present BOTH paths — go there to work, or remove to switch here.
+	// Telling users only how to remove a worktree feels like the wrong
+	// answer to "I just want to switch branches" — `cd` is often the
+	// less destructive choice when their real intent is to use that branch.
+	_, isDirty := dirtyMap[entry.Branch]
+	state := ""
+	if isDirty {
+		state = " (has uncommitted changes there)"
+	}
+	hint := fmt.Sprintf(
+		"work on it there → cd %s\n        bring it here → gk worktree remove %s",
+		entry.Path, entry.Path,
+	)
+	if isDirty {
+		hint = fmt.Sprintf(
+			"work on it there → cd %s\n        bring it here → commit/stash there, then gk worktree remove %s",
+			entry.Path, entry.Path,
+		)
+	}
+	return false, WithHint(
+		fmt.Errorf("branch %q is checked out in another worktree at %s%s", branch, entry.Path, state),
+		hint,
+	)
 }
 
 func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, create, force, detach bool) error {

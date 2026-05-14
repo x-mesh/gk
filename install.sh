@@ -6,7 +6,7 @@
 #
 # Env overrides:
 #   GK_VERSION=v0.29.0       pin a specific version (default: latest)
-#   GK_INSTALL_DIR=/path     install location (default: /usr/local/bin, falls back to ~/.local/bin)
+#   GK_INSTALL_DIR=/path     install location (default: ~/.local/bin)
 
 set -eu
 
@@ -67,7 +67,7 @@ fi
 tar -xzf "$tmp/$asset" -C "$tmp" "$BIN" || err "extract failed"
 
 # --- install ----------------------------------------------------------------
-default_dir=/usr/local/bin
+default_dir="$HOME/.local/bin"
 target_dir=${GK_INSTALL_DIR:-$default_dir}
 
 install_to() {
@@ -75,7 +75,8 @@ install_to() {
   mkdir -p "$dir" 2>/dev/null || true
   if [ -w "$dir" ]; then
     install -m 0755 "$tmp/$BIN" "$dir/$BIN"
-  elif [ "$dir" = "$default_dir" ] && command -v sudo >/dev/null 2>&1; then
+  elif command -v sudo >/dev/null 2>&1; then
+    # Only reached when the user overrides GK_INSTALL_DIR to a system path.
     info "$dir not writable — using sudo"
     sudo install -m 0755 "$tmp/$BIN" "$dir/$BIN"
   else
@@ -83,12 +84,7 @@ install_to() {
   fi
 }
 
-if ! install_to "$target_dir"; then
-  fallback="$HOME/.local/bin"
-  info "falling back to $fallback"
-  install_to "$fallback" || err "install failed (no writable target)"
-  target_dir=$fallback
-fi
+install_to "$target_dir" || err "install failed (no writable target: $target_dir)"
 
 info "installed: $target_dir/$BIN ($version)"
 

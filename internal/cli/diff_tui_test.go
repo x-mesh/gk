@@ -123,7 +123,7 @@ func TestRenderFileDiff_Unfolded(t *testing.T) {
 	opts := diff.RenderOptions{NoColor: true}
 	foldState := map[int]bool{}
 
-	result := renderFileDiff(f, opts, foldState)
+	result := renderFileDiff(f, opts, foldState, false)
 	if !strings.Contains(result, "@@ -1,3 +1,4 @@") {
 		t.Error("expected hunk header in output")
 	}
@@ -151,7 +151,7 @@ func TestRenderFileDiff_Folded(t *testing.T) {
 	opts := diff.RenderOptions{NoColor: true}
 	foldState := map[int]bool{0: true}
 
-	result := renderFileDiff(f, opts, foldState)
+	result := renderFileDiff(f, opts, foldState, false)
 	if !strings.Contains(result, "@@ -1,3 +1,4 @@") {
 		t.Error("expected hunk header in output")
 	}

@@ -15,6 +15,12 @@ type RenderOptions struct {
 	NoColor    bool // ANSI 이스케이프 코드 비활성화
 	NoWordDiff bool // 단어 단위 하이라이트 비활성화
 	Context    int  // 컨텍스트 라인 수 (기본 3, 현재 파서에서 제어)
+
+	// ShowRefs는 파일 헤더 바로 아래에 ◀ LeftRef / ▶ RightRef 한 줄을
+	// 표시할지 결정한다. LeftRef/RightRef 둘 다 비어있으면 무시된다.
+	ShowRefs bool
+	LeftRef  string // ◀ 쪽 비교 대상 라벨 (예: "develop")
+	RightRef string // ▶ 쪽 비교 대상 라벨 (예: "origin/main")
 }
 
 // ── 색상/스타일 팩토리 ──────────────────────────────────────────
@@ -106,6 +112,33 @@ func renderFileHeader(w io.Writer, f *DiffFile, cs colorSet) {
 		KeepCase: true,
 	})
 	fmt.Fprint(w, strings.TrimRight(block, "\n")+"\n")
+}
+
+// renderRefLabels는 파일 헤더 바로 아래에 한 줄짜리 ref 라벨을 출력한다.
+// ◀ 화살표(붉은색·deletion 쪽)는 LeftRef를, ▶ 화살표(녹색·addition 쪽)는
+// RightRef를 가리킨다. 화살표는 본문 라인의 ◀/▶ 마커와 동일한 컬러 키를
+// 공유하므로 "왼쪽이 어느 ref인지" 매 화면마다 다시 떠올릴 필요가 없다.
+//
+// LeftRef/RightRef가 둘 다 비어있거나 ShowRefs가 false면 아무것도 출력하지
+// 않는다 — 기존 호출자(예: 테스트)는 옵션을 채우지 않아 그대로 동작한다.
+func renderRefLabels(w io.Writer, opts RenderOptions, cs colorSet) {
+	if !opts.ShowRefs {
+		return
+	}
+	if opts.LeftRef == "" && opts.RightRef == "" {
+		return
+	}
+	left := opts.LeftRef
+	if left == "" {
+		left = "(unknown)"
+	}
+	right := opts.RightRef
+	if right == "" {
+		right = "(unknown)"
+	}
+	fmt.Fprintf(w, "      %s %s   %s %s\n",
+		cs.red("◀"), cs.faint(left),
+		cs.green("▶"), cs.faint(right))
 }
 
 // ── Hunk 헤더 렌더링 ────────────────────────────────────────────
@@ -237,6 +270,7 @@ func Render(w io.Writer, result *DiffResult, opts RenderOptions) error {
 		}
 
 		renderFileHeader(w, &f, cs)
+		renderRefLabels(w, opts, cs)
 
 		if f.IsBinary {
 			fmt.Fprintln(w, cs.faint("Binary file differs"))

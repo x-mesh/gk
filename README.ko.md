@@ -52,15 +52,16 @@ curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh | sh
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh \
-  | GK_VERSION=v0.29.0 GK_INSTALL_DIR=$HOME/.local/bin sh
+  | GK_VERSION=v0.29.0 GK_INSTALL_DIR=/usr/local/bin sh
 ```
 
 [GitHub Releases](https://github.com/x-mesh/gk/releases/latest)에서 직접 받을 수도 있습니다. 파일명에 버전이 없어서 URL이 릴리스마다 바뀌지 않습니다:
 
 ```bash
 # linux amd64 (linux_arm64 / darwin_amd64 / darwin_arm64으로 교체 가능)
+mkdir -p ~/.local/bin
 curl -fsSL https://github.com/x-mesh/gk/releases/latest/download/gk_linux_amd64.tar.gz \
-  | sudo tar -xz -C /usr/local/bin gk
+  | tar -xz -C ~/.local/bin gk
 ```
 
 ### go install

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`install.sh` now defaults to `~/.local/bin` instead of `/usr/local/bin`.**
+  The previous default required a writable system path or a `sudo`
+  escalation, then fell back to `~/.local/bin` anyway — so the common
+  outcome was an inconsistent install location across machines. The
+  user-owned directory is now the default and needs no `sudo`; the
+  `sudo` path remains only as a fallback when `GK_INSTALL_DIR` is
+  overridden to a system path. The manual `tar` snippet in the README
+  was updated to match (`tar -xz -C ~/.local/bin`, no `sudo`).
+
 ## [0.47.0] - 2026-05-13
 
 ### Added

@@ -52,15 +52,16 @@ Pin a version or override the install dir:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/x-mesh/gk/main/install.sh \
-  | GK_VERSION=v0.29.0 GK_INSTALL_DIR=$HOME/.local/bin sh
+  | GK_VERSION=v0.29.0 GK_INSTALL_DIR=/usr/local/bin sh
 ```
 
 Or grab it manually from [GitHub Releases](https://github.com/x-mesh/gk/releases/latest). Filenames don't include the version, so the download URL stays the same across releases:
 
 ```bash
 # linux amd64 — swap for linux_arm64 / darwin_amd64 / darwin_arm64 as needed
+mkdir -p ~/.local/bin
 curl -fsSL https://github.com/x-mesh/gk/releases/latest/download/gk_linux_amd64.tar.gz \
-  | sudo tar -xz -C /usr/local/bin gk
+  | tar -xz -C ~/.local/bin gk
 ```
 
 ### go install

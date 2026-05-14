@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -110,15 +111,27 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	}
 }
 
-// newUpdateHTTPClient returns the http.Client used for both the github.com
-// redirect probe and the api.github.com JSON fallback. CheckRedirect is set
-// so latestTagRedirect can read the 302 Location header — without this the
-// client would follow to the rendered HTML release page.
+// newUpdateHTTPClient returns the http.Client shared by the github.com
+// redirect probe, the api.github.com JSON fallback, and the asset downloads
+// (checksums.txt + the release archive).
+//
+// CheckRedirect suppresses the redirect *only* for the /releases/latest
+// probe, so latestTagRedirect can read the 302 Location header instead of
+// following through to the rendered HTML release page. Asset URLs under
+// /releases/download/ must follow their 302 — GitHub always redirects those
+// to objects.githubusercontent.com, and stopping there would surface the
+// 302 as a "returned 302 Found" fetch error.
 func newUpdateHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) > 0 && strings.HasSuffix(via[0].URL.Path, "/releases/latest") {
+				return http.ErrUseLastResponse
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
 		},
 	}
 }

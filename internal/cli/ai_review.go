@@ -150,7 +150,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	}
 
 	// Privacy Gate: redact diff for remote providers.
-	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Provider, diff, deps.AI)
+	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
 	if err != nil {
 		if deps.Cmd != nil {
 			renderPrivacyFindings(deps.Cmd.ErrOrStderr(), pgFindings)

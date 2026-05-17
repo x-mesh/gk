@@ -163,7 +163,7 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 
 	// Privacy Gate: redact commits for remote providers.
 	commitPayload := strings.Join(commits, "\n")
-	redactedPayload, pgFindings, err := applyPrivacyGate(deps.Provider, commitPayload, deps.AI)
+	redactedPayload, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, commitPayload, deps.AI)
 	if err != nil {
 		if deps.Cmd != nil {
 			renderPrivacyFindings(deps.Cmd.ErrOrStderr(), pgFindings)

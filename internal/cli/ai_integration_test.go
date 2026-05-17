@@ -262,7 +262,7 @@ path/to/.env content
 	remoteProv := provider.NewFake()
 	remoteProv.LocalityVal = provider.LocalityRemote
 
-	redacted, findings, err := applyPrivacyGate(remoteProv, payload, ai)
+	redacted, findings, err := applyPrivacyGate(nil, remoteProv, payload, ai)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -277,7 +277,7 @@ path/to/.env content
 	localProv := provider.NewFake()
 	localProv.LocalityVal = provider.LocalityLocal
 
-	passthrough, findings2, err := applyPrivacyGate(localProv, payload, ai)
+	passthrough, findings2, err := applyPrivacyGate(nil, localProv, payload, ai)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

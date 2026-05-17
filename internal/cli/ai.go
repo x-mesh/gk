@@ -16,6 +16,7 @@ import (
 
 func init() {
 	rootCmd.PersistentFlags().Bool("show-prompt", false, "display the redacted payload sent to the provider")
+	rootCmd.PersistentFlags().Bool("skip-privacy", false, "skip privacy gate abort threshold (redaction still applied)")
 }
 
 // ── Privacy Gate helper ──────────────────────────────────────────────
@@ -26,14 +27,21 @@ func init() {
 //
 // MaxSecrets falls back to ai.commit.privacy.max_secrets (default 10).
 // A negative value disables the threshold so callers can audit findings
-// without aborting.
-func applyPrivacyGate(prov provider.Provider, payload string, cfg config.AIConfig) (string, []aicommit.RedactFinding, error) {
+// without aborting. When cmd has --skip-privacy set, the abort threshold
+// is disabled but redaction is still applied so the LLM never sees raw
+// secrets.
+func applyPrivacyGate(cmd *cobra.Command, prov provider.Provider, payload string, cfg config.AIConfig) (string, []aicommit.RedactFinding, error) {
 	if prov.Locality() != provider.LocalityRemote {
 		return payload, nil, nil
 	}
 	max := cfg.Commit.Privacy.MaxSecrets
 	if max == 0 {
 		max = 10
+	}
+	if cmd != nil {
+		if skip, _ := cmd.Flags().GetBool("skip-privacy"); skip {
+			max = -1
+		}
 	}
 	return aicommit.Redact(payload, aicommit.PrivacyGateOptions{
 		DenyPaths:  cfg.Commit.DenyPaths,
@@ -83,7 +91,8 @@ func renderPrivacyFindings(w io.Writer, findings []aicommit.RedactFinding) {
 		}
 	}
 	fmt.Fprintln(w, "hint: edit the offending lines, narrow with --staged-only,"+
-		" or raise ai.commit.privacy.max_secrets in .gk.yaml")
+		" raise ai.commit.privacy.max_secrets in .gk.yaml,"+
+		" or pass --skip-privacy to bypass the threshold (redaction still applies)")
 }
 
 func displayPattern(p string) string {

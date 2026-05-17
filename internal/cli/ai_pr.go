@@ -183,7 +183,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	}
 
 	// Privacy Gate: redact diff for remote providers.
-	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Provider, diff, deps.AI)
+	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
 	if err != nil {
 		if deps.Cmd != nil {
 			renderPrivacyFindings(deps.Cmd.ErrOrStderr(), pgFindings)

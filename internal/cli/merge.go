@@ -70,6 +70,7 @@ type mergeDeps struct {
 	Confirm     func(string, bool) (bool, error)
 	Out         io.Writer
 	ErrOut      io.Writer
+	Cmd         *cobra.Command // for --show-prompt / --skip-privacy; nil in tests
 }
 
 func runMerge(cmd *cobra.Command, args []string) error {
@@ -99,6 +100,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		Confirm:     ui.Confirm,
 		Out:         os.Stdout,
 		ErrOut:      os.Stderr,
+		Cmd:         cmd,
 	}
 	if flags.into != "" {
 		err = runMergeInto(cmd.Context(), deps, args, flags, func(path string) git.Runner {
@@ -636,7 +638,7 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 	}
 	text := fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
 	if deps.Provider != nil {
-		redacted, _, err := applyPrivacyGate(deps.Provider, payload, deps.Config.AI)
+		redacted, _, err := applyPrivacyGate(deps.Cmd, deps.Provider, payload, deps.Config.AI)
 		if err != nil {
 			reason = fmt.Sprintf("privacy gate: %v", err)
 			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())

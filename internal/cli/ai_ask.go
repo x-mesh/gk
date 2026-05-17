@@ -118,7 +118,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Privacy Gate: redact user input for remote providers.
-	redactedQuestion, pgFindings, pgErr := applyPrivacyGate(prov, question, ai)
+	redactedQuestion, pgFindings, pgErr := applyPrivacyGate(cmd, prov, question, ai)
 	if pgErr != nil {
 		renderPrivacyFindings(cmd.ErrOrStderr(), pgFindings)
 		return fmt.Errorf("ask: privacy gate: %w", pgErr)

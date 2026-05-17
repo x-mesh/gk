@@ -335,7 +335,7 @@ func renderStatusAssist(
 	}
 
 	payload := buildStatusAssistPrompt(facts, lang)
-	redacted, findings, pgErr := applyPrivacyGate(prov, payload, cfg.AI)
+	redacted, findings, pgErr := applyPrivacyGate(cmd, prov, payload, cfg.AI)
 	if pgErr != nil {
 		renderPrivacyFindings(errOut, findings)
 		fmt.Fprintf(errOut, "%s: privacy gate blocked the provider payload; showing local guidance\n", label)

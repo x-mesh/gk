@@ -9,6 +9,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -23,10 +24,12 @@ will be lost. Requires a TTY confirmation or --yes unless --dry-run is set.
 
 Examples:
   gk reset                         # reset to tracked upstream
+  gk reset main                    # reset to main (same as --to main)
   gk reset --to-remote             # reset to <remote>/<current> (bypass upstream)
   gk reset --to origin/main        # reset to a specific ref
   gk reset --yes --clean           # non-interactive, also wipe untracked
 `,
+		Args: cobra.MaximumNArgs(1),
 		RunE: runReset,
 	}
 	cmd.Flags().String("to", "", "override target ref (e.g. origin/main); default: current branch upstream")
@@ -56,10 +59,23 @@ func runReset(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--to and --to-remote are mutually exclusive")
 	}
 
+	// A positional ref is an alias for --to (so `gk reset main` does what it
+	// reads like). Previously it was silently ignored, which let `gk reset main`
+	// run a destructive reset to the upstream while pretending to target main.
+	if len(args) == 1 {
+		pos := args[0]
+		if to != "" {
+			return fmt.Errorf("cannot combine positional ref %q with --to %q", pos, to)
+		}
+		if toRemote {
+			return fmt.Errorf("positional ref %q and --to-remote are mutually exclusive", pos)
+		}
+		to = pos
+	}
+
 	branch, err := client.CurrentBranch(ctx)
 	if err != nil {
-		return WithHint(fmt.Errorf("reset requires a branch: %w", err),
-			"check out a branch first (gk switch <name>)")
+		return WithHint(fmt.Errorf("reset requires a branch: %w", err), resetNoBranchHint(ctx))
 	}
 
 	if toRemote {
@@ -128,6 +144,19 @@ func runReset(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(w, "cleaned untracked files")
 	}
 	return nil
+}
+
+// resetNoBranchHint chooses the remediation hint for a reset that failed
+// because HEAD is not on a branch. During a rebase/merge/cherry-pick/revert the
+// generic "check out a branch" advice is a dead end — `gk switch` is refused
+// mid-operation — so we point at `gk continue` / `gk abort` instead.
+func resetNoBranchHint(ctx context.Context) string {
+	if st, err := gitstate.Detect(ctx, RepoFlag()); err == nil {
+		if h := inProgressHint(st); h != "" {
+			return h
+		}
+	}
+	return "check out a branch first (gk switch <name>)"
 }
 
 // resolveResetTarget returns the upstream ref to reset to.

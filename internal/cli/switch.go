@@ -19,6 +19,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -1114,7 +1115,16 @@ func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, cre
 
 	_, stderr, err := r.Run(ctx, args...)
 	if err != nil {
-		return fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
+		serr := fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
+		// git refuses to switch mid-operation and prints its own advice
+		// (e.g. `git rebase --quit`), which is wrong for gk. Replace it with a
+		// gitstate-aware hint pointing at gk continue / gk abort.
+		if st, derr := gitstate.Detect(ctx, RepoFlag()); derr == nil {
+			if h := inProgressHint(st); h != "" {
+				return WithHint(serr, h)
+			}
+		}
+		return serr
 	}
 	fmt.Fprintf(w, "switched to %s\n", branch)
 	return nil

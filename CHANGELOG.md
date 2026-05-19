@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk reset <ref>` now targets `<ref>` instead of silently ignoring it.**
+  Previously a positional argument was dropped, so `gk reset main` ran a
+  destructive reset to the *current branch's upstream* while pretending to
+  target `main`. The positional ref is now an alias for `--to` (and is
+  rejected when combined with `--to` / `--to-remote`).
+
+### Fixed
+
+- **`gk reset` and `gk switch` now point at `gk continue` / `gk abort` when a
+  rebase, merge, cherry-pick, or revert is in progress.** On a detached HEAD
+  mid-rebase, `gk reset` used to suggest `gk switch` — a dead end, since git
+  refuses to switch branches while rebasing — and `gk switch` leaked git's own
+  `git rebase --quit` advice. Both now detect the in-progress operation (via
+  `gitstate`) and suggest the two real ways out.
+
 ## [0.49.0] - 2026-05-18
 
 ### Changed

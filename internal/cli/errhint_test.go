@@ -6,7 +6,46 @@ import (
 	"testing"
 
 	"github.com/fatih/color"
+
+	"github.com/x-mesh/gk/internal/gitstate"
 )
+
+func TestInProgressHint(t *testing.T) {
+	cases := []struct {
+		name  string
+		state *gitstate.State
+		op    string // expected operation word; "" means hint must be empty
+	}{
+		{"nil", nil, ""},
+		{"none", &gitstate.State{Kind: gitstate.StateNone}, ""},
+		{"rebase-merge", &gitstate.State{Kind: gitstate.StateRebaseMerge}, "rebase"},
+		{"rebase-apply", &gitstate.State{Kind: gitstate.StateRebaseApply}, "rebase"},
+		{"merge", &gitstate.State{Kind: gitstate.StateMerge}, "merge"},
+		{"cherry-pick", &gitstate.State{Kind: gitstate.StateCherryPick}, "cherry-pick"},
+		{"revert", &gitstate.State{Kind: gitstate.StateRevert}, "revert"},
+		{"bisect", &gitstate.State{Kind: gitstate.StateBisect}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inProgressHint(tc.state)
+			if tc.op == "" {
+				if got != "" {
+					t.Fatalf("inProgressHint = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.HasPrefix(got, tc.op+" in progress") {
+				t.Errorf("hint %q does not start with %q", got, tc.op+" in progress")
+			}
+			if !strings.Contains(got, "gk abort") {
+				t.Errorf("hint %q missing 'gk abort'", got)
+			}
+			if !strings.Contains(got, "gk continue") {
+				t.Errorf("hint %q missing 'gk continue'", got)
+			}
+		})
+	}
+}
 
 // withNoColor disables fatih/color's ANSI escapes for the duration of
 // a test so string-equality assertions stay stable regardless of the

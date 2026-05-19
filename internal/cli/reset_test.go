@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -74,7 +76,7 @@ func buildResetCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes.
 	testRoot.PersistentFlags().BoolVar(&flagJSON, "json", false, "")
 	testRoot.PersistentFlags().BoolVar(&flagNoColor, "no-color", true, "")
 
-	rs := &cobra.Command{Use: "reset", RunE: runReset}
+	rs := &cobra.Command{Use: "reset", Args: cobra.MaximumNArgs(1), RunE: runReset}
 	rs.Flags().String("to", "", "")
 	rs.Flags().Bool("to-remote", false, "")
 	rs.Flags().String("remote", "", "")
@@ -178,6 +180,70 @@ func TestReset_ToRemoteAndToMutex(t *testing.T) {
 	err := root.Execute()
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("expected mutually-exclusive error, got %v", err)
+	}
+}
+
+// TestReset_PositionalRefIsToAlias verifies `gk reset <ref>` targets <ref>
+// instead of silently ignoring it (AC1).
+func TestReset_PositionalRefIsToAlias(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+
+	root, buf := buildResetCmd(repo.Dir, "main", "--dry-run")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("reset main --dry-run failed: %v\nout: %s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "target:  main") {
+		t.Errorf("expected positional ref to become target: main, got:\n%s", out)
+	}
+}
+
+// TestReset_PositionalAndToConflict rejects a positional ref together with --to (AC1).
+func TestReset_PositionalAndToConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+
+	root, _ := buildResetCmd(repo.Dir, "main", "--to", "dev", "--dry-run")
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "cannot combine positional ref") {
+		t.Errorf("expected positional+--to conflict error, got %v", err)
+	}
+}
+
+// TestReset_DetachedDuringRebaseHint points at gk abort/continue, not gk switch (AC2).
+func TestReset_DetachedDuringRebaseHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+	// Detach HEAD and fake an in-progress rebase so gitstate.Detect reports it.
+	repo.RunGit("checkout", "--detach")
+	if err := os.MkdirAll(filepath.Join(repo.Dir, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+
+	root, _ := buildResetCmd(repo.Dir, "--to", "main", "--dry-run")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected reset to fail on detached HEAD")
+	}
+	hint := HintFrom(err)
+	if !strings.Contains(hint, "gk abort") || !strings.Contains(hint, "gk continue") {
+		t.Errorf("hint should suggest gk abort/continue, got %q", hint)
+	}
+	if strings.Contains(hint, "gk switch") {
+		t.Errorf("hint should not suggest gk switch during rebase, got %q", hint)
 	}
 }
 

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,39 @@ import (
 	"github.com/x-mesh/gk/internal/testutil"
 	"github.com/x-mesh/gk/internal/ui"
 )
+
+// TestSwitch_RebaseInProgressHint verifies that a switch failing mid-rebase
+// surfaces a gk abort/continue hint instead of git's own `git rebase --quit`
+// advice (AC3).
+func TestSwitch_RebaseInProgressHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+	repo.RunGit("checkout", "--detach")
+	if err := os.MkdirAll(filepath.Join(repo.Dir, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	err := doSwitch(context.Background(), runner, &bytes.Buffer{}, "main", false, false, false)
+	if err == nil {
+		t.Fatal("expected switch to fail mid-rebase")
+	}
+	hint := HintFrom(err)
+	if !strings.Contains(hint, "gk abort") {
+		t.Errorf("hint should suggest gk abort, got %q", hint)
+	}
+	if strings.Contains(hint, "git rebase --quit") {
+		t.Errorf("hint should not echo git's --quit advice, got %q", hint)
+	}
+}
 
 // buildSwitchCmd wires a minimal root with the switch subcommand for tests.
 // It sets --no-color and forces --repo so tests don't depend on package globals.

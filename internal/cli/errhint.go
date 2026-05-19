@@ -8,6 +8,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -91,6 +92,38 @@ func FormatError(err error) string {
 //
 //	return WithHint(err, hintCommand("gk continue"))
 func hintCommand(cmd string) string { return fmt.Sprintf("try: %s", cmd) }
+
+// inProgressHint returns a remediation hint when git is mid-operation
+// (rebase / merge / cherry-pick / revert) and that operation is what blocks the
+// command the user just ran. It names the operation and points at the two real
+// ways out — `gk continue` (finish) or `gk abort` (cancel) — instead of
+// `gk switch`, which git refuses while an operation is in progress.
+//
+// Returns "" for a nil state, StateNone, or StateBisect: callers should fall
+// back to their default hint. (`gk abort` / `gk continue` do not handle bisect,
+// so suggesting them there would be wrong.)
+func inProgressHint(state *gitstate.State) string {
+	if state == nil {
+		return ""
+	}
+	var op string
+	switch state.Kind {
+	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
+		op = "rebase"
+	case gitstate.StateMerge:
+		op = "merge"
+	case gitstate.StateCherryPick:
+		op = "cherry-pick"
+	case gitstate.StateRevert:
+		op = "revert"
+	default:
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s in progress — finish it with 'gk continue' (after resolving with 'gk resolve') or cancel with 'gk abort'",
+		op,
+	)
+}
 
 // isNotAGitRepoError reports whether err originates from running git outside a
 // repository. We check both the wrapped message and the ExitError's stderr so

@@ -1153,8 +1153,11 @@ Fetch the current branch's upstream and hard-reset the working tree to it. **Des
 ### Synopsis
 
 ```
-gk reset [flags]
+gk reset [<ref>] [flags]
 ```
+
+A positional `<ref>` is an alias for `--to` — `gk reset main` is the same as
+`gk reset --to main`.
 
 ### Flags
 
@@ -1167,13 +1170,16 @@ gk reset [flags]
 | `--clean` | false | Also run `git clean -fd` to remove untracked files |
 | `--dry-run` | false | Print what would happen without fetching or resetting |
 
-`--to` and `--to-remote` are mutually exclusive.
+`--to`, `--to-remote`, and a positional `<ref>` are mutually exclusive.
 
 ### Examples
 
 ```bash
 # Reset to the branch's tracked upstream (prompts for confirmation)
 gk reset
+
+# Reset to a specific ref via positional alias (same as --to main)
+gk reset main
 
 # Preview without touching anything
 gk reset --dry-run

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-05-20
+
+### Added
+
+- **`gk switch <name>` now offers to track or create when the branch is
+  missing**, instead of dead-ending on git's `invalid reference`. On a miss it
+  checks the remote: if `<name>` exists there it offers to fetch and track it
+  (default yes — the branch demonstrably exists upstream); otherwise it offers
+  to create the branch from HEAD (default no, so a typo like `gk sw mian`
+  doesn't silently spawn a branch). Off a TTY it prints the matching hint
+  (`gk sw --fetch <name>` or `gk sw -c <name>`) rather than prompting.
+
 ## [0.51.0] - 2026-05-20
 
 ### Added
@@ -1771,7 +1783,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/x-mesh/gk/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/x-mesh/gk/compare/v0.50.1...v0.51.0
 [0.50.1]: https://github.com/x-mesh/gk/compare/v0.50.0...v0.50.1
 [0.50.0]: https://github.com/x-mesh/gk/compare/v0.49.0...v0.50.0

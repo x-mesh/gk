@@ -1065,6 +1065,8 @@ gk branch unset-parent
 
 Switch to another branch. When no name is given, opens an interactive picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`). Pressing `r` in the picker reveals the remote-only rows, fetching first when the cached `refs/remotes/*` view is stale so you see what is actually on the remote; pass `--fetch` up front to refresh and show them immediately.
 
+`gk switch <name>` for a branch that doesn't exist locally no longer dead-ends on git's `invalid reference`: gk checks the remote and offers to fetch and track `<remote>/<name>` when it exists there, otherwise offers to create the branch from HEAD (creation defaults to "no" so a typo doesn't spawn a branch). Off a TTY it prints the matching hint (`gk sw --fetch <name>` or `gk sw -c <name>`) instead of prompting.
+
 ### Picker layout
 
 ```

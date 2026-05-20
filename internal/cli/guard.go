@@ -22,8 +22,8 @@ func init() {
 		Short: "Declarative repo policies (secret scan, signing, commit rules)",
 		Long: `gk guard evaluates every registered policy rule against the repo and
 surfaces violations. Rules live in .gk.yaml under the policies: block; the
-v0.9 MVP ships with secret_patterns (gitleaks-backed when installed) and
-falls back gracefully when gitleaks is absent.
+v0.9 MVP ships with secret_patterns (gitleaks-backed when installed). Without
+gitleaks the rule is a no-op and emits an info note instead of failing.
 `,
 	}
 

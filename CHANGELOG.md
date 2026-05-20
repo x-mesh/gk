@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-05-20
+
 ### Added
 
 - **The `gk switch` picker's `r` (remotes) key now fetches when the view is
@@ -1769,7 +1771,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.50.1...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/x-mesh/gk/compare/v0.50.1...v0.51.0
 [0.50.1]: https://github.com/x-mesh/gk/compare/v0.50.0...v0.50.1
 [0.50.0]: https://github.com/x-mesh/gk/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/x-mesh/gk/compare/v0.48.0...v0.49.0

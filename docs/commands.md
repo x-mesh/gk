@@ -1063,7 +1063,7 @@ gk branch unset-parent
 
 ## gk switch
 
-Switch to another branch. When no name is given, opens an interactive picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`). The remote-only list is based on cached `refs/remotes/*`; pass `--fetch` up front to refresh and show remote rows immediately, or press `f` in the picker to refresh later.
+Switch to another branch. When no name is given, opens an interactive picker that lists both local branches and remote-only tracking branches — picking a remote-only entry creates a local tracking branch automatically (equivalent to `git switch --track <remote>/<branch>`). Pressing `r` in the picker reveals the remote-only rows, fetching first when the cached `refs/remotes/*` view is stale so you see what is actually on the remote; pass `--fetch` up front to refresh and show them immediately.
 
 ### Picker layout
 
@@ -1079,7 +1079,7 @@ Switch to another branch. When no name is given, opens an interactive picker tha
 - Remote entries whose short name already matches a local branch are hidden (avoid duplicate picks).
 - `refs/remotes/<remote>/HEAD` aliases are filtered.
 - Sorted recent-first within each group; local first, then remote-only.
-- Picker hotkeys: `r` toggles cached remote-only branches, `f` runs `git fetch --prune` for the configured remote and reopens with remote rows visible.
+- Picker hotkeys: `r` shows remote-only branches — fetching first when the last successful fetch is stale (older than 60s) or never happened, and toggling instantly otherwise; `f` always forces a `git fetch --prune` for the configured remote. A failed fetch still reveals the cached branches with a warning. When remotes are shown, the subtitle reports freshness (`fetched 3m ago`, `never fetched`, or `fetch failed`).
 - Filtering also searches hidden remote-only branches; `/ tmux` can surface `origin/tmux` even before pressing `r`.
 
 

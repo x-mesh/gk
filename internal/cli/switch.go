@@ -42,6 +42,61 @@ func init() {
 
 const switchFetchTimeout = 10 * time.Second
 
+// switchRemoteStaleAfter is how old the last fetch may be before the picker's
+// `r` (show remotes) key refreshes first. Pressing `r` means "show me what's on
+// the remote" — stale refs would hide a teammate's just-pushed branch — so we
+// fetch when the view is older than this, but skip the network when a fetch
+// happened recently (e.g. gk pull, or the `f` key moments ago) or when offline.
+const switchRemoteStaleAfter = 60 * time.Second
+
+// remoteFetchInfo reports the age of the last *successful* fetch and whether one
+// has happened. It keys off FETCH_HEAD content, not just mtime: git truncates
+// FETCH_HEAD to empty when a fetch fails to reach the remote, and writes the
+// fetched ref list when it succeeds. Using mtime alone would treat a failed
+// fetch as fresh — the staleness gate would then skip a real refresh, and the
+// subtitle would claim "fetched just now" right after a failure.
+func remoteFetchInfo(ctx context.Context, r git.Runner) (age time.Duration, ok bool) {
+	stdout, _, err := r.Run(ctx, "rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return 0, false
+	}
+	path := strings.TrimSpace(string(stdout))
+	if path == "" {
+		return 0, false
+	}
+	// `--git-path` returns a path relative to git's working dir (RepoFlag),
+	// not this process's cwd — resolve it so os.Stat looks in the right place.
+	if !filepath.IsAbs(path) {
+		base := RepoFlag()
+		if base == "" {
+			base, _ = os.Getwd()
+		}
+		path = filepath.Join(base, path)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil || info.Size() == 0 {
+		return 0, false
+	}
+	return time.Since(info.ModTime()), true
+}
+
+// fetchAgeLabel renders the FETCH_HEAD age for the picker subtitle.
+func fetchAgeLabel(age time.Duration, exists bool) string {
+	if !exists {
+		return "never fetched"
+	}
+	switch {
+	case age < time.Minute:
+		return "fetched just now"
+	case age < time.Hour:
+		return fmt.Sprintf("fetched %dm ago", int(age.Minutes()))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("fetched %dh ago", int(age.Hours()))
+	default:
+		return fmt.Sprintf("fetched %dd ago", int(age.Hours()/24))
+	}
+}
+
 func runSwitch(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
@@ -352,7 +407,10 @@ func loadSwitchWorktrees(ctx context.Context, runner git.Runner) switchWorktreeM
 //   - "worktree: <path>" — when running inside a linked worktree.
 //   - "hidden: 2 remote (r)" — when the remote toggle would reveal
 //     more rows; surfaces the hotkey.
-func buildSwitchSubtitle(cur string, wt switchWorktreeMap, allRemotes []remoteBranchInfo, showRemotes bool) string {
+//   - "fetched 3m ago" — when remotes are shown, so the user can judge
+//     how current the list is (and reach for `f` if it's stale). Shows
+//     "fetch failed" instead when the last attempt this session errored.
+func buildSwitchSubtitle(cur string, wt switchWorktreeMap, allRemotes []remoteBranchInfo, showRemotes bool, fetchAge time.Duration, fetched, fetchFailed bool) string {
 	parts := make([]string, 0, 3)
 	if cur != "" {
 		parts = append(parts, "on: "+cur)
@@ -360,7 +418,13 @@ func buildSwitchSubtitle(cur string, wt switchWorktreeMap, allRemotes []remoteBr
 	if wt.linked && wt.current.Path != "" {
 		parts = append(parts, "worktree: "+wt.current.Path)
 	}
-	if !showRemotes && len(allRemotes) > 0 {
+	if showRemotes {
+		if fetchFailed {
+			parts = append(parts, "fetch failed")
+		} else {
+			parts = append(parts, fetchAgeLabel(fetchAge, fetched))
+		}
+	} else if len(allRemotes) > 0 {
 		parts = append(parts, fmt.Sprintf("hidden: %d remote (r)", len(allRemotes)))
 	}
 	return strings.Join(parts, "  ·  ")
@@ -479,6 +543,11 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 	// branch are simply unused.
 	dirty := loadWorktreeDirtyStates(ctx, wt)
 
+	// fetchFailed records that the most recent fetch attempt in this picker
+	// session failed, so the subtitle can say "fetch failed" instead of
+	// reading a misleading freshness off FETCH_HEAD.
+	fetchFailed := false
+
 	for {
 		local, err := listLocalBranches(ctx, runner)
 		if err != nil {
@@ -537,8 +606,9 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			})
 		}
 
-		extras := buildSwitchExtras(&showRemotes, &local, &remotes, allRemotes, &wt, cur, dirty)
-		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes)
+		extras := buildSwitchExtras()
+		fetchAge, fetched := remoteFetchInfo(ctx, runner)
+		subtitle := buildSwitchSubtitle(cur, wt, allRemotes, showRemotes, fetchAge, fetched, fetchFailed)
 		var filterItems []ui.PickerItem
 		if !showRemotes && len(allRemotes) > 0 {
 			filterItems = buildSwitchItems(nil, allRemotes, cur, wt, dirty)
@@ -608,10 +678,39 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 				if h := HintFrom(err); h != "" {
 					fmt.Fprintln(w, "  hint: "+h)
 				}
+				fetchFailed = true
 				continue
 			}
 			showRemotes = true
+			fetchFailed = false
 			fmt.Fprintf(w, "refreshed %s\n", remote)
+		case "r":
+			// Toggle remote visibility. Turning the view ON refreshes first
+			// when the last fetch is stale — pressing `r` means "show me the
+			// remote", which is misleading against cached refs. A failed fetch
+			// (offline / no creds) still reveals the cached remotes plus a
+			// warning rather than blocking. Turning OFF never touches the net.
+			if showRemotes {
+				showRemotes = false
+				continue
+			}
+			if age, ok := remoteFetchInfo(ctx, runner); !ok || age > switchRemoteStaleAfter {
+				stop := ui.StartBubbleSpinner("refreshing " + remote + "...")
+				err := fetchSwitchBranches(ctx, runner, remote)
+				stop()
+				if err != nil {
+					fmt.Fprintln(w, "✗ "+err.Error())
+					if h := HintFrom(err); h != "" {
+						fmt.Fprintln(w, "  hint: "+h)
+					}
+					fmt.Fprintln(w, "  showing cached remote branches")
+					fetchFailed = true
+				} else {
+					fmt.Fprintf(w, "refreshed %s\n", remote)
+					fetchFailed = false
+				}
+			}
+			showRemotes = true
 		}
 	}
 }
@@ -885,34 +984,17 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 	return items
 }
 
-// buildSwitchExtras wires the n/d/D/r/f hotkeys. Only `r` mutates
-// state in place (toggle remote visibility); the rest exit the
-// picker so the caller can drive prompts/confirms outside the
-// bubbletea program. allRemotes is the full enumerated set so the
-// closure can populate *remotes on toggle-on without re-listing.
-func buildSwitchExtras(showRemotes *bool, local *[]branchInfo, remotes *[]remoteBranchInfo, allRemotes []remoteBranchInfo, wt *switchWorktreeMap, cur string, dirty map[string]git.DirtyFlags) []ui.TablePickerExtraKey {
-	rebuild := func() ([]ui.PickerItem, []string, error) {
-		items := buildSwitchItems(*local, *remotes, cur, *wt, dirty)
-		return items, []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}, nil
-	}
+// buildSwitchExtras wires the n/d/D/r/f hotkeys. All of them exit the
+// picker so the caller can drive prompts/confirms (and, for r/f, a fetch
+// spinner) outside the bubbletea program, then re-enter on the next loop
+// iteration with a freshly enumerated branch list.
+func buildSwitchExtras() []ui.TablePickerExtraKey {
 	return []ui.TablePickerExtraKey{
 		{Key: "n", Help: "n new", Exit: true},
 		{Key: "d", Help: "d delete", Exit: true},
 		{Key: "D", Help: "D force", Exit: true},
 		{Key: "f", Help: "f fetch", Exit: true},
-		{
-			Key:  "r",
-			Help: "r remotes",
-			OnPress: func() ([]ui.PickerItem, []string, error) {
-				*showRemotes = !*showRemotes
-				if *showRemotes {
-					*remotes = allRemotes
-				} else {
-					*remotes = nil
-				}
-				return rebuild()
-			},
-		},
+		{Key: "r", Help: "r remotes", Exit: true},
 	}
 }
 

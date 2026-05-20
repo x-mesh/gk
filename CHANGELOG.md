@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `gk switch` picker's `r` (remotes) key now fetches when the view is
+  stale.** Pressing `r` means "show me the remote", so cached refs that hide a
+  teammate's just-pushed branch are a trap. `r` now refreshes first when the
+  last successful fetch is older than 60s (or never happened), and toggles
+  instantly otherwise — staying offline-friendly: a failed fetch reveals the
+  cached branches with a warning rather than blocking. The subtitle shows the
+  freshness (`fetched 3m ago`, `never fetched`, or `fetch failed`). Staleness is
+  judged from FETCH_HEAD content, not just its mtime, so a failed fetch never
+  masquerades as fresh.
+
 ## [0.50.1] - 2026-05-20
 
 ### Fixed

@@ -543,28 +543,113 @@ func TestBuildSwitchSubtitle(t *testing.T) {
 		wt          switchWorktreeMap
 		allRemotes  []remoteBranchInfo
 		showRemotes bool
+		fetchAge    time.Duration
+		fetched     bool
+		fetchFailed bool
 		want        string
 	}{
-		{"empty", "", switchWorktreeMap{}, nil, false, ""},
-		{"current only", "main", switchWorktreeMap{}, nil, false, "on: main"},
+		{"empty", "", switchWorktreeMap{}, nil, false, 0, false, false, ""},
+		{"current only", "main", switchWorktreeMap{}, nil, false, 0, false, false, "on: main"},
 		{"current + linked worktree", "feat/x",
 			switchWorktreeMap{linked: true, current: WorktreeEntry{Path: "/wt/x"}},
-			nil, false,
+			nil, false, 0, false, false,
 			"on: feat/x  ·  worktree: /wt/x"},
 		{"hidden remotes", "main", switchWorktreeMap{},
-			[]remoteBranchInfo{{Name: "a"}, {Name: "b"}}, false,
+			[]remoteBranchInfo{{Name: "a"}, {Name: "b"}}, false, 0, false, false,
 			"on: main  ·  hidden: 2 remote (r)"},
-		{"showRemotes hides hint", "main", switchWorktreeMap{},
-			[]remoteBranchInfo{{Name: "a"}}, true,
-			"on: main"},
+		{"showRemotes shows freshness", "main", switchWorktreeMap{},
+			[]remoteBranchInfo{{Name: "a"}}, true, 3 * time.Minute, true, false,
+			"on: main  ·  fetched 3m ago"},
+		{"showRemotes never fetched", "main", switchWorktreeMap{},
+			[]remoteBranchInfo{{Name: "a"}}, true, 0, false, false,
+			"on: main  ·  never fetched"},
+		{"showRemotes fetch failed", "main", switchWorktreeMap{},
+			[]remoteBranchInfo{{Name: "a"}}, true, 0, false, true,
+			"on: main  ·  fetch failed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildSwitchSubtitle(c.cur, c.wt, c.allRemotes, c.showRemotes)
+			got := buildSwitchSubtitle(c.cur, c.wt, c.allRemotes, c.showRemotes, c.fetchAge, c.fetched, c.fetchFailed)
 			if got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestFetchAgeLabel(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		age     time.Duration
+		fetched bool
+		want    string
+	}{
+		{0, false, "never fetched"},
+		{30 * time.Second, true, "fetched just now"},
+		{5 * time.Minute, true, "fetched 5m ago"},
+		{2 * time.Hour, true, "fetched 2h ago"},
+		{49 * time.Hour, true, "fetched 2d ago"},
+	}
+	for _, c := range cases {
+		if got := fetchAgeLabel(c.age, c.fetched); got != c.want {
+			t.Errorf("fetchAgeLabel(%v, %v) = %q, want %q", c.age, c.fetched, got, c.want)
+		}
+	}
+}
+
+func TestRemoteFetchInfo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	fh := filepath.Join(repo.Dir, ".git", "FETCH_HEAD")
+
+	// No FETCH_HEAD yet → not fetched, so r would treat the view as stale.
+	if _, ok := remoteFetchInfo(ctx, runner); ok {
+		t.Errorf("expected ok=false before any fetch")
+	}
+
+	// Empty FETCH_HEAD (what a *failed* fetch leaves behind) → still not-ok,
+	// so a failed fetch never masquerades as fresh.
+	if err := os.WriteFile(fh, []byte(""), 0o644); err != nil {
+		t.Fatalf("write FETCH_HEAD: %v", err)
+	}
+	if _, ok := remoteFetchInfo(ctx, runner); ok {
+		t.Errorf("empty FETCH_HEAD (failed fetch) should report ok=false")
+	}
+
+	// Non-empty FETCH_HEAD = a successful fetch wrote a ref list.
+	if err := os.WriteFile(fh, []byte("abc123\t\tbranch 'main' of origin\n"), 0o644); err != nil {
+		t.Fatalf("write FETCH_HEAD: %v", err)
+	}
+
+	// Old mtime → stale (would fetch).
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(fh, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	age, ok := remoteFetchInfo(ctx, runner)
+	if !ok || age <= switchRemoteStaleAfter {
+		t.Errorf("expected stale age, got ok=%v age=%v", ok, age)
+	}
+
+	// Fresh mtime → not stale (would skip fetch).
+	now := time.Now()
+	if err := os.Chtimes(fh, now, now); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	age, ok = remoteFetchInfo(ctx, runner)
+	if !ok || age > switchRemoteStaleAfter {
+		t.Errorf("expected fresh age, got ok=%v age=%v", ok, age)
 	}
 }
 

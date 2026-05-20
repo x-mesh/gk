@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-05-20
+
+### Fixed
+
+- **`gk switch` no longer echoes git's `git rebase --quit` advice when it fails
+  mid-operation.** v0.50.0 added the `gk continue` / `gk abort` hint but left
+  git's own (wrong for gk) suggestion in the error body, and the wrapped
+  `ExitError` printed the stderr twice. When gk recognizes the in-progress
+  operation, the message is now a single clean line
+  (`cannot switch to <branch>: a <op> is in progress`) followed by the hint.
+
+### Docs
+
+- **`gk guard` help no longer claims a "graceful fallback" when gitleaks is
+  absent.** Without gitleaks the `secret_patterns` rule is a no-op that emits an
+  info note — it does not run a built-in scan. The old wording could read as if
+  secrets were still being checked.
+
 ## [0.50.0] - 2026-05-20
 
 ### Changed
@@ -1739,7 +1757,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.50.1...HEAD
+[0.50.1]: https://github.com/x-mesh/gk/compare/v0.50.0...v0.50.1
 [0.50.0]: https://github.com/x-mesh/gk/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/x-mesh/gk/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/x-mesh/gk/compare/v0.47.0...v0.48.0

@@ -151,12 +151,21 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 1 {
+		name := args[0]
 		if !create && !detach {
-			if done, err := redirectIfWorktreeLocked(ctx, runner, args[0]); err != nil || done {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
 				return err
 			}
 		}
-		return doSwitch(ctx, runner, w, args[0], create, force, detach)
+		err := doSwitch(ctx, runner, w, name, create, force, detach)
+		// DWIM: a plain `gk sw <name>` against a non-existent ref is almost
+		// always "start (or grab) that branch". Offer to track the remote's
+		// copy when it has one, else to create it — rather than dead-ending on
+		// git's "invalid reference".
+		if err != nil && !create && !detach && isBranchNotFound(err) {
+			return handleSwitchMiss(ctx, runner, w, cfg, name, force, detach)
+		}
+		return err
 	}
 
 	if create {
@@ -177,6 +186,69 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		return doSwitchTrack(ctx, runner, w, pick.TrackRef, force, detach)
 	}
 	return doSwitch(ctx, runner, w, pick.Name, false, force, detach)
+}
+
+// isBranchNotFound reports whether a failed switch was because the ref does
+// not exist (vs. a dirty tree, lock, or non-branch ref).
+func isBranchNotFound(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "invalid reference") ||
+		strings.Contains(s, "did not match any") ||
+		strings.Contains(s, "unknown revision")
+}
+
+// handleSwitchMiss turns a "branch not found" failure into a DWIM prompt: track
+// the remote's copy when it has one, otherwise offer to create the branch. Off
+// a TTY it returns a hinted error instead of prompting. Create defaults to "no"
+// so a typo (gk sw mian) doesn't silently spawn a branch; track defaults to
+// "yes" since the branch demonstrably exists upstream.
+func handleSwitchMiss(ctx context.Context, r git.Runner, w io.Writer, cfg *config.Config, name string, force, detach bool) error {
+	remote := configuredRemote(cfg)
+	if remoteHasBranch(ctx, r, remote, name) {
+		if !ui.IsTerminal() {
+			return WithHint(fmt.Errorf("branch %q not found locally", name),
+				fmt.Sprintf("it exists on %s — run: gk sw --fetch %s", remote, name))
+		}
+		ok, cerr := ui.Confirm(fmt.Sprintf("%q is on %s but not local. Fetch and track it?", name, remote), true)
+		if cerr != nil {
+			return cerr
+		}
+		if !ok {
+			return fmt.Errorf("aborted")
+		}
+		if ferr := fetchSwitchBranches(ctx, r, remote); ferr != nil {
+			return ferr
+		}
+		return doSwitchTrack(ctx, r, w, remote+"/"+name, force, detach)
+	}
+	if !ui.IsTerminal() {
+		return WithHint(fmt.Errorf("branch %q not found", name),
+			fmt.Sprintf("create it with: gk sw -c %s", name))
+	}
+	ok, cerr := ui.Confirm(fmt.Sprintf("Branch %q not found. Create it from HEAD?", name), false)
+	if cerr != nil {
+		return cerr
+	}
+	if !ok {
+		return fmt.Errorf("aborted")
+	}
+	return doSwitch(ctx, r, w, name, true, force, detach)
+}
+
+// remoteHasBranch reports whether <remote> publishes refs/heads/<name>, via a
+// single time-boxed ls-remote. Any error (offline, no such remote, no match)
+// returns false, so the caller falls back to offering branch creation.
+func remoteHasBranch(parent context.Context, r git.Runner, remote, name string) bool {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	ctx, cancel := context.WithTimeout(parent, switchFetchTimeout)
+	defer cancel()
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("checking %s for %s...", remote, name))
+	_, _, err := r.Run(ctx, "ls-remote", "--heads", "--exit-code", remote, "refs/heads/"+name)
+	stop()
+	return err == nil
 }
 
 func configuredRemote(cfg *config.Config) string {

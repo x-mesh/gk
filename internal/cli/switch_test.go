@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,97 @@ func TestSwitch_RebaseInProgressHint(t *testing.T) {
 	if !strings.Contains(err.Error(), "rebase is in progress") &&
 		!strings.Contains(err.Error(), "a rebase is in progress") {
 		t.Errorf("error body should name the in-progress rebase, got %q", err.Error())
+	}
+}
+
+func TestIsBranchNotFound(t *testing.T) {
+	t.Parallel()
+	notFound := []string{
+		"git switch failed: fatal: invalid reference: feat/x: git switch feat/x: exit code 128",
+		"error: pathspec 'feat/y' did not match any file(s) known to git",
+		"fatal: unknown revision feat/z",
+	}
+	other := []string{
+		"git switch failed: fatal: cannot switch branch while rebasing",
+		"error: Your local changes would be overwritten by checkout",
+	}
+	for _, s := range notFound {
+		if !isBranchNotFound(errors.New(s)) {
+			t.Errorf("isBranchNotFound(%q) = false, want true", s)
+		}
+	}
+	for _, s := range other {
+		if isBranchNotFound(errors.New(s)) {
+			t.Errorf("isBranchNotFound(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestRemoteHasBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	up := testutil.NewRepo(t)
+	up.WriteFile("a.txt", "a")
+	up.Commit("a")
+	up.CreateBranch("feat/exists")
+	up.Checkout("main")
+
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", up.Dir)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	if !remoteHasBranch(ctx, runner, "origin", "feat/exists") {
+		t.Error("feat/exists should be reported present on the remote")
+	}
+	if remoteHasBranch(ctx, runner, "origin", "feat/nope") {
+		t.Error("feat/nope should be reported absent")
+	}
+}
+
+// TestSwitch_MissOffersCreateHint: a name absent locally and on the remote
+// (here, no remote at all) yields a non-TTY hint pointing at `gk sw -c`.
+func TestSwitch_MissOffersCreateHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("a")
+
+	root, _ := buildSwitchCmd(repo.Dir, "feat/brand-new")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error switching to a non-existent branch")
+	}
+	if h := HintFrom(err); !strings.Contains(h, "gk sw -c feat/brand-new") {
+		t.Errorf("expected create hint, got err=%q hint=%q", err, h)
+	}
+}
+
+// TestSwitch_MissOffersTrackHint: a name absent locally but present on the
+// (unfetched) remote yields a non-TTY hint pointing at `gk sw --fetch`.
+func TestSwitch_MissOffersTrackHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	up := testutil.NewRepo(t)
+	up.WriteFile("a.txt", "a")
+	up.Commit("a")
+	up.CreateBranch("feat/on-remote")
+	up.Checkout("main")
+
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", up.Dir) // deliberately NOT fetched
+
+	root, _ := buildSwitchCmd(repo.Dir, "feat/on-remote")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error switching to an unfetched remote branch")
+	}
+	if h := HintFrom(err); !strings.Contains(h, "gk sw --fetch feat/on-remote") {
+		t.Errorf("expected track hint, got err=%q hint=%q", err, h)
 	}
 }
 

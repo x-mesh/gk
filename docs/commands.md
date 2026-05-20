@@ -1083,6 +1083,7 @@ Switch to another branch. When no name is given, opens an interactive picker tha
 - Sorted recent-first within each group; local first, then remote-only.
 - Picker hotkeys: `r` shows remote-only branches — fetching first when the last successful fetch is stale (older than 60s) or never happened, and toggling instantly otherwise; `f` always forces a `git fetch --prune` for the configured remote. A failed fetch still reveals the cached branches with a warning. When remotes are shown, the subtitle reports freshness (`fetched 3m ago`, `never fetched`, or `fetch failed`).
 - Filtering also searches hidden remote-only branches; `/ tmux` can surface `origin/tmux` even before pressing `r`.
+- While typing a `/` filter, single keys feed the filter box, so the action hotkeys are inert. `Esc` stages out: the first press leaves the filter box but keeps the narrowed list (so `n`/`d`/`D`/`f`/`r` act on the highlighted row), a second `Esc` clears the filter and restores the full list, and a third (or `Esc` with no active filter) cancels. `q` / `Ctrl+C` cancel immediately from any state.
 
 
 ### Synopsis

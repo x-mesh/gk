@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-05-20
+
+### Changed
+
+- **The `gk switch` picker's action hotkeys (`n`/`d`/`D`/`f`/`r`) now work
+  after filtering.** Typing in the `/` filter used to swallow every key, so
+  once you narrowed to a branch the only move was Enter (switch). `Esc` now
+  stages: the first press leaves the filter box but keeps the narrowed list,
+  so the hotkeys act on the highlighted row; a second `Esc` clears the filter
+  and restores the full list; a third (or `Esc` with no active filter) cancels
+  the picker. `q` and `Ctrl+C` still cancel immediately from any state. This
+  applies to every `TablePicker`-based prompt, not just `gk switch`.
+
 ## [0.52.0] - 2026-05-20
 
 ### Added
@@ -1783,7 +1796,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/x-mesh/gk/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/x-mesh/gk/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/x-mesh/gk/compare/v0.50.1...v0.51.0
 [0.50.1]: https://github.com/x-mesh/gk/compare/v0.50.0...v0.50.1

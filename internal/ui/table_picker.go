@@ -94,11 +94,12 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.aborted = true
 				return m, tea.Quit
 			case tea.KeyEsc:
-				// Clear the filter and exit filter mode.
-				m.filterInput.SetValue("")
+				// Leave typing mode but keep the narrowed list, so the
+				// action hotkeys (delete, new, …) operate on the filtered
+				// result. The filter value is retained; a second esc (in
+				// nav mode) clears it, a third cancels.
 				m.filterInput.Blur()
 				m.filterActive = false
-				m.applyFilter()
 				return m, nil
 			case tea.KeyEnter:
 				// Lock in whatever the cursor is on right now.
@@ -120,7 +121,18 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "esc", "q":
+		case "ctrl+c", "q":
+			m.aborted = true
+			return m, tea.Quit
+		case "esc":
+			// Staged escape: if a filter is still narrowing the list, the
+			// first esc clears it and restores the full list; otherwise
+			// esc cancels the picker.
+			if m.filterInput.Value() != "" {
+				m.filterInput.SetValue("")
+				m.applyFilter()
+				return m, nil
+			}
 			m.aborted = true
 			return m, tea.Quit
 		case "enter":
@@ -289,9 +301,20 @@ func (m tablePickerModel) View() string {
 	} else {
 		filterLine = hintStyle.Render("press / to filter")
 	}
-	helpLine := "↑/↓ navigate · enter select · / filter · esc/q cancel"
-	for _, ex := range m.extras {
-		helpLine = ex.Help + " · " + helpLine
+	var helpLine string
+	if m.filterActive {
+		// While typing, single-letter hotkeys feed the filter box, so the
+		// action keys are inert. Tell the user esc unlocks them.
+		helpLine = "↑/↓ navigate · enter select · esc act on results · ctrl+c cancel"
+	} else {
+		if m.filterInput.Value() != "" {
+			helpLine = "↑/↓ navigate · enter select · / edit filter · esc clear filter · q cancel"
+		} else {
+			helpLine = "↑/↓ navigate · enter select · / filter · esc/q cancel"
+		}
+		for _, ex := range m.extras {
+			helpLine = ex.Help + " · " + helpLine
+		}
 	}
 	help := hintStyle.Render(helpLine)
 	out := ""

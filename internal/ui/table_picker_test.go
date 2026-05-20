@@ -174,6 +174,92 @@ func TestTablePicker_QAborts(t *testing.T) {
 	}
 }
 
+// Esc while typing a filter leaves typing mode but keeps the narrowed
+// list, so action hotkeys can act on the filtered row.
+func TestTablePicker_EscInFilterKeepsNarrowedList(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("alp")
+	m.applyFilter()
+
+	m, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.filterActive {
+		t.Fatal("esc should leave typing mode (filterActive=false)")
+	}
+	if cmd != nil {
+		t.Fatal("esc out of typing mode must not quit the picker")
+	}
+	if m.filterInput.Value() != "alp" {
+		t.Fatalf("filter value should be retained, got %q", m.filterInput.Value())
+	}
+	if len(m.items) != 1 || m.items[0].Key != "a" {
+		t.Fatalf("narrowed list should survive esc, got %+v", m.items)
+	}
+}
+
+// After esc out of typing mode, an action hotkey fires on the filtered row.
+func TestTablePicker_ActionHotkeyAfterFilterEsc(t *testing.T) {
+	items := []PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "d", Help: "d delete", Exit: true},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("bet")
+	m.applyFilter()
+	m, _ = updateAs(m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if got.chosenItem.ExtraAction != "d" {
+		t.Errorf("expected ExtraAction=d after filter esc, got %q", got.chosenItem.ExtraAction)
+	}
+	if got.chosenItem.Key != "b" {
+		t.Errorf("action should target the filtered row, got Key=%q", got.chosenItem.Key)
+	}
+	if cmd == nil {
+		t.Fatal("exit hotkey should quit the picker")
+	}
+}
+
+// Staged escape: with a filter still applied, the first nav-mode esc clears
+// the filter instead of aborting.
+func TestTablePicker_EscClearsFilterBeforeAbort(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	})
+	m.filterInput.SetValue("alp")
+	m.applyFilter()
+
+	// First esc (nav mode, filter set) → clear filter, stay open.
+	m, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.aborted {
+		t.Fatal("first esc should clear the filter, not abort")
+	}
+	if cmd != nil {
+		t.Fatal("clearing the filter must not quit the picker")
+	}
+	if m.filterInput.Value() != "" {
+		t.Fatalf("filter should be cleared, got %q", m.filterInput.Value())
+	}
+	if len(m.items) != 2 {
+		t.Fatalf("full list should be restored, got %d items", len(m.items))
+	}
+
+	// Second esc (no filter) → abort.
+	m, _ = updateAs(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.aborted {
+		t.Fatal("second esc with no filter should abort")
+	}
+}
+
 func TestPickerCell_FallbackToDisplay(t *testing.T) {
 	it := PickerItem{Display: "single"}
 	if got := pickerCell(it, 0); got != "single" {

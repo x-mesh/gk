@@ -93,30 +93,39 @@ func FormatError(err error) string {
 //	return WithHint(err, hintCommand("gk continue"))
 func hintCommand(cmd string) string { return fmt.Sprintf("try: %s", cmd) }
 
+// inProgressOp returns the user-facing name of an in-progress git operation
+// that `gk continue` / `gk abort` can resolve (rebase / merge / cherry-pick /
+// revert). It returns "" for a nil state, StateNone, or StateBisect — the
+// operations those two commands do not handle.
+func inProgressOp(state *gitstate.State) string {
+	if state == nil {
+		return ""
+	}
+	switch state.Kind {
+	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
+		return "rebase"
+	case gitstate.StateMerge:
+		return "merge"
+	case gitstate.StateCherryPick:
+		return "cherry-pick"
+	case gitstate.StateRevert:
+		return "revert"
+	default:
+		return ""
+	}
+}
+
 // inProgressHint returns a remediation hint when git is mid-operation
 // (rebase / merge / cherry-pick / revert) and that operation is what blocks the
 // command the user just ran. It names the operation and points at the two real
 // ways out — `gk continue` (finish) or `gk abort` (cancel) — instead of
 // `gk switch`, which git refuses while an operation is in progress.
 //
-// Returns "" for a nil state, StateNone, or StateBisect: callers should fall
-// back to their default hint. (`gk abort` / `gk continue` do not handle bisect,
-// so suggesting them there would be wrong.)
+// Returns "" when there is no resolvable in-progress operation (see
+// inProgressOp): callers should fall back to their default hint.
 func inProgressHint(state *gitstate.State) string {
-	if state == nil {
-		return ""
-	}
-	var op string
-	switch state.Kind {
-	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
-		op = "rebase"
-	case gitstate.StateMerge:
-		op = "merge"
-	case gitstate.StateCherryPick:
-		op = "cherry-pick"
-	case gitstate.StateRevert:
-		op = "revert"
-	default:
+	op := inProgressOp(state)
+	if op == "" {
 		return ""
 	}
 	return fmt.Sprintf(

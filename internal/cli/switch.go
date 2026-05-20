@@ -1115,16 +1115,21 @@ func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, cre
 
 	_, stderr, err := r.Run(ctx, args...)
 	if err != nil {
-		serr := fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
 		// git refuses to switch mid-operation and prints its own advice
-		// (e.g. `git rebase --quit`), which is wrong for gk. Replace it with a
-		// gitstate-aware hint pointing at gk continue / gk abort.
+		// (e.g. `git rebase --quit`), which is wrong for gk. When we recognize
+		// the in-progress operation, replace git's whole message with a clean
+		// one plus a hint pointing at gk continue / gk abort — don't echo git's
+		// stderr (it would surface the misleading --quit advice and duplicate
+		// the text already carried by the wrapped ExitError).
 		if st, derr := gitstate.Detect(ctx, RepoFlag()); derr == nil {
-			if h := inProgressHint(st); h != "" {
-				return WithHint(serr, h)
+			if op := inProgressOp(st); op != "" {
+				return WithHint(
+					fmt.Errorf("cannot switch to %s: a %s is in progress", branch, op),
+					inProgressHint(st),
+				)
 			}
 		}
-		return serr
+		return fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	fmt.Fprintf(w, "switched to %s\n", branch)
 	return nil

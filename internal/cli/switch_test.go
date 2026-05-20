@@ -41,11 +41,17 @@ func TestSwitch_RebaseInProgressHint(t *testing.T) {
 		t.Fatal("expected switch to fail mid-rebase")
 	}
 	hint := HintFrom(err)
-	if !strings.Contains(hint, "gk abort") {
-		t.Errorf("hint should suggest gk abort, got %q", hint)
+	if !strings.Contains(hint, "gk abort") || !strings.Contains(hint, "gk continue") {
+		t.Errorf("hint should suggest gk abort/continue, got %q", hint)
 	}
-	if strings.Contains(hint, "git rebase --quit") {
-		t.Errorf("hint should not echo git's --quit advice, got %q", hint)
+	// The whole message — not just the hint — must be clean of git's own
+	// (wrong-for-gk) advice, and must name the in-progress operation.
+	if strings.Contains(err.Error(), "git rebase --quit") {
+		t.Errorf("error body should not echo git's --quit advice, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "rebase is in progress") &&
+		!strings.Contains(err.Error(), "a rebase is in progress") {
+		t.Errorf("error body should name the in-progress rebase, got %q", err.Error())
 	}
 }
 

@@ -182,6 +182,11 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 		return nil
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(deps.Provider, deps.AI); err != nil {
+		return fmt.Errorf("pr: %w", err)
+	}
+
 	// Privacy Gate: redact diff for remote providers.
 	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
 	if err != nil {

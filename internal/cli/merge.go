@@ -638,6 +638,11 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 	}
 	text := fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
 	if deps.Provider != nil {
+		if err := ensureRemoteAllowed(deps.Provider, deps.Config.AI); err != nil {
+			reason = err.Error()
+			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
+			goto writePlan
+		}
 		redacted, _, err := applyPrivacyGate(deps.Cmd, deps.Provider, payload, deps.Config.AI)
 		if err != nil {
 			reason = fmt.Sprintf("privacy gate: %v", err)

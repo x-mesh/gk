@@ -161,6 +161,11 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 		return nil
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(deps.Provider, deps.AI); err != nil {
+		return fmt.Errorf("changelog: %w", err)
+	}
+
 	// Privacy Gate: redact commits for remote providers.
 	commitPayload := strings.Join(commits, "\n")
 	redactedPayload, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, commitPayload, deps.AI)

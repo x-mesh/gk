@@ -149,6 +149,11 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 		return nil
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(deps.Provider, deps.AI); err != nil {
+		return fmt.Errorf("review: %w", err)
+	}
+
 	// Privacy Gate: redact diff for remote providers.
 	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
 	if err != nil {

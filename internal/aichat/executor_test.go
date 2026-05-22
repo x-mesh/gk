@@ -25,10 +25,9 @@ func newTestExecutor() (*CommandExecutor, *bytes.Buffer, *bytes.Buffer, *git.Fak
 		},
 	}
 	exec := &CommandExecutor{
-		Runner:       runner,
-		Out:          out,
-		ErrOut:       errOut,
-		SafetyConfig: SafetyConfig{SafetyConfirm: true},
+		Runner: runner,
+		Out:    out,
+		ErrOut: errOut,
 		ConfirmFunc: func(prompt string) (bool, error) {
 			return true, nil // default: always confirm
 		},
@@ -443,14 +442,14 @@ func TestExecute_JSON_OutputsJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: safety_confirm=false — dangerous commands still require confirmation
-// because --yes mode always confirms dangerous commands (security hardening).
+// Test: dangerous commands always require an extra confirmation (the gate is
+// not configurable — even without --force, a dangerous command is confirmed
+// in addition to the normal prompt).
 // ---------------------------------------------------------------------------
 
-func TestExecute_SafetyConfirmFalse_StillConfirmsDangerous(t *testing.T) {
+func TestExecute_DangerousAlwaysConfirms(t *testing.T) {
 	prompts := []string{}
 	exec, _, _, _ := newTestExecutor()
-	exec.SafetyConfig.SafetyConfirm = false
 	exec.ConfirmFunc = func(prompt string) (bool, error) {
 		prompts = append(prompts, prompt)
 		return true, nil
@@ -463,8 +462,8 @@ func TestExecute_SafetyConfirmFalse_StillConfirmsDangerous(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Normal confirmation + dangerous command confirmation (security hardening:
-	// dangerous commands always require confirmation regardless of SafetyConfirm).
+	// Normal confirmation + dangerous command confirmation: dangerous
+	// commands always require confirmation (gate not configurable).
 	if len(prompts) != 2 {
 		t.Errorf("expected 2 confirmation prompts (normal + dangerous), got %d: %v", len(prompts), prompts)
 	}

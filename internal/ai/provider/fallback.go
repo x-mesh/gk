@@ -35,13 +35,23 @@ func (fc *FallbackChain) Name() string {
 	return "fallback"
 }
 
-// Locality returns the locality of the first provider, or
-// LocalityRemote when the chain is empty.
+// Locality returns LocalityRemote when ANY provider in the chain is
+// remote (or the chain is empty). This is deliberately conservative for
+// privacy: a local-first chain can fail over to a remote provider at
+// runtime, so reporting only the first provider's locality would let the
+// privacy gate skip redaction and then upload an un-redacted payload to
+// the fallback. Treating the whole chain as remote keeps redaction on
+// whenever a remote provider could ever be reached.
 func (fc *FallbackChain) Locality() Locality {
-	if len(fc.Providers) > 0 {
-		return fc.Providers[0].Locality()
+	if len(fc.Providers) == 0 {
+		return LocalityRemote
 	}
-	return LocalityRemote
+	for _, p := range fc.Providers {
+		if p.Locality() == LocalityRemote {
+			return LocalityRemote
+		}
+	}
+	return LocalityLocal
 }
 
 // Available returns nil if any provider in the chain is available.

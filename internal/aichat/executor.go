@@ -12,23 +12,22 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 )
 
-// SafetyConfig controls safety-related behaviour of CommandExecutor.
-type SafetyConfig struct {
-	SafetyConfirm bool // when true, dangerous commands require extra confirmation
-}
-
 // ConfirmFunc asks the user a yes/no question and returns the answer.
 // prompt is the question text. The function should return true for yes.
 type ConfirmFunc func(prompt string) (bool, error)
 
 // CommandExecutor previews and executes an ExecutionPlan.
+//
+// Dangerous commands (RiskHigh) ALWAYS require an extra confirmation unless
+// --force is passed; there is intentionally no config knob to disable that
+// gate (a removed `SafetyConfirm` option used to imply otherwise but never
+// actually did).
 type CommandExecutor struct {
-	Runner       git.Runner
-	Out          io.Writer
-	ErrOut       io.Writer
-	EasyEngine   *easy.Engine
-	SafetyConfig SafetyConfig
-	Dbg          func(string, ...any)
+	Runner     git.Runner
+	Out        io.Writer
+	ErrOut     io.Writer
+	EasyEngine *easy.Engine
+	Dbg        func(string, ...any)
 
 	// ConfirmFunc is called to ask the user for confirmation.
 	// If nil, defaults to reading from stdin (y/n/Enter).
@@ -118,7 +117,7 @@ func (e *CommandExecutor) Preview(plan *ExecutionPlan) string {
 //  2. --dry-run → print plan, return without executing
 //  3. --json → marshal plan to JSON, return without executing
 //  4. Normal: show preview + ask y/n (Enter = yes)
-//  5. Dangerous commands: extra per-command confirmation (SafetyConfirm=true)
+//  5. Dangerous commands: extra per-command confirmation (always; not configurable)
 //  6. --yes: skip normal confirmation, dangerous still confirmed
 //  7. --force: skip ALL confirmations
 //  8. Create backup ref before first dangerous command
@@ -207,7 +206,7 @@ func (e *CommandExecutor) Execute(ctx context.Context, plan *ExecutionPlan, opts
 		// Extra confirmation for dangerous commands.
 		// --force skips all confirmations.
 		// --yes skips normal confirmation but dangerous commands ALWAYS
-		// require confirmation regardless of SafetyConfirm setting.
+		// require confirmation (this gate is not configurable).
 		if isDangerous && !opts.Force {
 			reason := cmd.RiskReason
 			if reason == "" {
@@ -379,6 +378,22 @@ func (e *CommandExecutor) runCommand(ctx context.Context, command string) Comman
 
 	switch strings.ToLower(prefix) {
 	case "git":
+		// Defense-in-depth: re-check the subcommand whitelist at execution
+		// time. PlannedCommand.Validate() runs at parse time, but that is a
+		// different seam — if a plan reaches the runner by another path, the
+		// runner must not execute an un-whitelisted subcommand (e.g. `git
+		// config`, `git credential`). The first non-flag token is the
+		// subcommand.
+		if len(args) == 0 {
+			cr.Error = fmt.Errorf("git command requires a subcommand")
+			cr.ExitCode = 1
+			return cr
+		}
+		if !allowedGitSubcmds[strings.ToLower(args[0])] {
+			cr.Error = fmt.Errorf("do: security: git subcommand not allowed: %s", args[0])
+			cr.ExitCode = 1
+			return cr
+		}
 		// Validate: block dangerous git arguments like -c.
 		if err := validateGitArgs(args); err != nil {
 			cr.Error = fmt.Errorf("do: security: %w", err)

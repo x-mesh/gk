@@ -48,8 +48,34 @@ var dangerousPatterns = []dangerousPattern{
 		reason: "rewrites history",
 	},
 	{
-		re:     regexp.MustCompile(`(?i)^git\s+checkout\s+--\s+\.`),
+		// Any `git checkout -- <pathspec>` discards working-tree changes,
+		// not just `checkout -- .` — match any pathspec after the `--`.
+		re:     regexp.MustCompile(`(?i)^git\s+checkout\s+--\s+\S`),
 		reason: "discards working tree changes",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+restore\b`),
+		reason: "discards changes (working tree or index)",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+rm\b`),
+		reason: "removes tracked files",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+stash\s+(drop|clear)\b`),
+		reason: "discards stashed changes",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+update-ref\s+.*-d\b`),
+		reason: "deletes a ref",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+reflog\s+(expire|delete)\b`),
+		reason: "prunes reflog recovery history",
+	},
+	{
+		re:     regexp.MustCompile(`(?i)^git\s+gc\s+.*--prune\b`),
+		reason: "prunes unreachable objects",
 	},
 	// --- configuration / credential manipulation ---
 	{

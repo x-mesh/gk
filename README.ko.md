@@ -279,7 +279,7 @@ ai:
     max_groups: 10
     max_tokens: 24000
     timeout: "30s"
-    allow_remote: true       # false 이면 remote Locality provider 전체 차단
+    allow_remote: true       # repo 전체: false면 commit뿐 아니라 모든 AI 명령에서 remote provider 차단
     trailer: false           # true 이면 각 커밋에 "AI-Assisted-By: <provider>@<version>" trailer
     audit: false             # true 이면 .git/gk-ai-commit/audit.jsonl 에 JSONL 기록
     deny_paths:              # 프로세스를 떠나기 전 무조건 스킵되는 glob 목록

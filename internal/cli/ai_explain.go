@@ -126,6 +126,11 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		inputPayload = strings.Join(args, " ")
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(prov, ai); err != nil {
+		return fmt.Errorf("explain: %w", err)
+	}
+
 	// Privacy Gate: redact user input for remote providers.
 	redactedInput, pgFindings, pgErr := applyPrivacyGate(cmd, prov, inputPayload, ai)
 	if pgErr != nil {

@@ -19,6 +19,33 @@ func init() {
 	rootCmd.PersistentFlags().Bool("skip-privacy", false, "skip privacy gate abort threshold (redaction still applied)")
 }
 
+// aiAutoOrder is the canonical provider auto-detect order, shared by the
+// factory's AutoOrder default and buildFallbackChain so a single command
+// and a fallback chain probe providers in the same sequence.
+var aiAutoOrder = []string{"anthropic", "openai", "nvidia", "groq", "gemini", "qwen", "kiro"}
+
+// ── Remote-policy gate ───────────────────────────────────────────────
+
+// ensureRemoteAllowed enforces the local-only policy across EVERY AI entry
+// point, not just `gk commit`. When the resolved provider is remote and
+// ai.commit.allow_remote is false, the caller must refuse rather than
+// upload the payload to a vendor. This mirrors aicommit.Preflight's check
+// (which previously guarded commit alone) so the policy is consistent
+// whether the user runs commit, pr, review, changelog, ask, explain, do,
+// status --ai, or merge --ai.
+//
+// allow_remote lives under ai.commit for historical reasons but is treated
+// as the repo-wide remote policy. A nil provider passes (nothing to send).
+func ensureRemoteAllowed(prov provider.Provider, cfg config.AIConfig) error {
+	if prov == nil {
+		return nil
+	}
+	if prov.Locality() == provider.LocalityRemote && !cfg.Commit.AllowRemote {
+		return fmt.Errorf("provider %q is remote; set ai.commit.allow_remote=true to opt in", prov.Name())
+	}
+	return nil
+}
+
 // ── Privacy Gate helper ──────────────────────────────────────────────
 
 // applyPrivacyGate redacts the payload when the provider is remote.
@@ -123,7 +150,7 @@ func showPromptIfRequested(cmd *cobra.Command, payload string) bool {
 // they never waste time on doomed API calls.
 func buildFallbackChain(order []string, runner provider.CommandRunner) (*provider.FallbackChain, error) {
 	if len(order) == 0 {
-		order = []string{"nvidia", "gemini", "qwen", "kiro"}
+		order = aiAutoOrder
 	}
 	if runner == nil {
 		runner = provider.ExecRunner{}

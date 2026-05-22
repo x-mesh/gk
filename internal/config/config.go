@@ -87,12 +87,14 @@ type AIAssistConfig struct {
 // AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
 // `gk ask`). Timeout is a Go duration string for AI provider calls
 // (default "30s"). MaxTokens caps the response token budget (default
-// 4096). SafetyConfirm controls whether `gk do` requires an extra
-// confirmation prompt for dangerous commands (default true).
+// 4096).
+//
+// Dangerous `gk do` commands always require an extra confirmation (unless
+// --force); that gate is not configurable. A former `safety_confirm` field
+// implied it could be turned off but never actually did, so it was removed.
 type AIChatConfig struct {
-	Timeout       string `mapstructure:"timeout"        yaml:"timeout"`
-	MaxTokens     int    `mapstructure:"max_tokens"     yaml:"max_tokens"`
-	SafetyConfirm bool   `mapstructure:"safety_confirm" yaml:"safety_confirm"`
+	Timeout   string `mapstructure:"timeout"    yaml:"timeout"`
+	MaxTokens int    `mapstructure:"max_tokens" yaml:"max_tokens"`
 }
 
 // AIAnthropicConfig controls the Claude provider. Empty fields fall
@@ -483,9 +485,8 @@ func Defaults() Config {
 				Cache:       true,
 			},
 			Chat: AIChatConfig{
-				Timeout:       "30s",
-				MaxTokens:     4096,
-				SafetyConfirm: true,
+				Timeout:   "30s",
+				MaxTokens: 4096,
 			},
 			Commit: AICommitConfig{
 				Mode:        "interactive",

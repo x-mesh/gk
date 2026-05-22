@@ -207,9 +207,11 @@ ai:
     # Per-provider timeout (Go duration). Stuck subprocess is cancelled.
     timeout: 30s
 
-    # When false, providers whose Locality() is "remote" are blocked.
-    # All three shipped providers (gemini/qwen/kiro-cli) are remote,
-    # so flip this to false only if you will add a local provider.
+    # When false, providers whose Locality() is "remote" are blocked for
+    # EVERY AI command (commit, pr, review, changelog, ask, explain, do,
+    # status --ai, merge --ai), not just commit — it is the repo-wide
+    # "no external LLM" switch. The shipped HTTP/CLI providers are remote,
+    # so flip this to false only if you run a local provider.
     allow_remote: true
 
     # When true, each generated commit carries a trailer:

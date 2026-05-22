@@ -278,7 +278,7 @@ ai:
     max_groups: 10
     max_tokens: 24000
     timeout: "30s"
-    allow_remote: true       # set false to block all three shipped providers (Locality=remote)
+    allow_remote: true       # repo-wide: set false to block remote providers for EVERY AI command, not just commit
     trailer: false           # true → append "AI-Assisted-By: <provider>@<version>" to each commit
     audit: false             # true → append JSONL to .git/gk-ai-commit/audit.jsonl
     deny_paths:              # globs always skipped before anything leaves the process

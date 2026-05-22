@@ -17,6 +17,12 @@ type IntentParser struct {
 	Lang       string
 	Timeout    time.Duration
 	Dbg        func(string, ...any)
+	// Redact, when set, sanitizes the fully-assembled prompt (user input +
+	// repo context) before it leaves the process. ai_do wires this to the
+	// privacy gate so that context — branch names, paths, reflog — is
+	// redacted for remote providers, not just the user input. Returning an
+	// error aborts the parse (e.g. too many secrets) rather than uploading.
+	Redact func(string) (string, error)
 }
 
 // dbg is a helper that calls p.Dbg if non-nil.
@@ -50,6 +56,18 @@ func (p *IntentParser) Parse(ctx context.Context, input string) (*ExecutionPlan,
 
 	// 2. Build the user prompt.
 	userPrompt := buildDoUserPrompt(input, repoCtx, p.Lang)
+
+	// 2b. Redact the assembled prompt (input + repo context) before it
+	// leaves the process. The caller redacts the raw input separately, but
+	// the repo context is added here, so without this pass branch names,
+	// paths, and reflog entries would reach a remote provider un-redacted.
+	if p.Redact != nil {
+		redacted, err := p.Redact(userPrompt)
+		if err != nil {
+			return nil, err
+		}
+		userPrompt = redacted
+	}
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := p.Summarizer.Summarize(ctx, provider.SummarizeInput{

@@ -133,6 +133,11 @@ func runDo(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("do: provider %q does not support Summarize", prov.Name())
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(prov, ai); err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+
 	// Privacy Gate: redact user input for remote providers.
 	redactedInput, pgFindings, pgErr := applyPrivacyGate(cmd, prov, input, ai)
 	if pgErr != nil {
@@ -154,6 +159,12 @@ func runDo(cmd *cobra.Command, args []string) error {
 		Lang:       fallbackLang(ai.Lang),
 		Timeout:    timeout,
 		Dbg:        Dbg,
+		// Redact the assembled prompt (input + repo context) for remote
+		// providers — the gate above only covered the raw input.
+		Redact: func(s string) (string, error) {
+			red, _, rerr := applyPrivacyGate(cmd, prov, s, ai)
+			return red, rerr
+		},
 	}
 
 	Dbg("do: prompt size=%d bytes", len(redactedInput))
@@ -181,10 +192,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		Out:        cmd.OutOrStdout(),
 		ErrOut:     cmd.ErrOrStderr(),
 		EasyEngine: EasyEngine(),
-		SafetyConfig: aichat.SafetyConfig{
-			SafetyConfirm: ai.Chat.SafetyConfirm,
-		},
-		Dbg: Dbg,
+		Dbg:        Dbg,
 	}
 
 	// Wire up the confirm function using bufio for interactive prompts.

@@ -211,6 +211,19 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Privacy gate the ACTUAL compose payload. collectGroupDiffs returns
+	// raw `git diff` output; the earlier applyPrivacyGate call only redacted
+	// the secret-scan summary used for --show-prompt, so without this the
+	// real diff reached a remote provider un-redacted. Apply per group; the
+	// gate is a no-op for local providers (Locality check inside).
+	for k, d := range diffs {
+		red, pgFindings, pgErr := applyPrivacyGate(cmd, prov, d, ai)
+		if pgErr != nil {
+			renderPrivacyFindings(cmd.ErrOrStderr(), pgFindings)
+			return fmt.Errorf("commit: privacy gate (diff): %w", pgErr)
+		}
+		diffs[k] = red
+	}
 	heuristicN := aicommit.CountHeuristicGroups(groups, ai.Lang)
 	llmN := len(groups) - heuristicN
 	if heuristicN > 0 {

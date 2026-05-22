@@ -117,6 +117,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("ask: provider %q does not support Summarize", prov.Name())
 	}
 
+	// Remote policy: refuse to upload when allow_remote is off.
+	if err := ensureRemoteAllowed(prov, ai); err != nil {
+		return fmt.Errorf("ask: %w", err)
+	}
+
 	// Privacy Gate: redact user input for remote providers.
 	redactedQuestion, pgFindings, pgErr := applyPrivacyGate(cmd, prov, question, ai)
 	if pgErr != nil {

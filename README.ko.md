@@ -89,6 +89,7 @@ gk pull                      # fetch + rebase, upstream 자동 감지
 gk pull --strategy ff-only   # fast-forward only; 히스토리 분기 시 에러
 gk merge main                # main 브랜치를 현재 브랜치로 병합 (precheck 포함)
 gk sync                      # fetch + fast-forward only (rebase 없음)
+gk refresh                   # main + develop을 각자 원격으로 ff (gk re); 현재 브랜치는 그대로
 gk status                    # 간결한 작업 트리 요약
 gk next                      # 현재 상태를 쉬운 말로 설명하고 다음 행동 제안
 gk log                       # 짧고 컬러풀한 커밋 로그

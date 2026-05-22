@@ -72,6 +72,21 @@ sync:
   # Override per-invocation with `--strategy <mode>`.
   strategy: rebase
 
+refresh:
+  # Long-lived branches that `gk refresh` (alias: `gk re`) fast-forwards to
+  # their remote counterparts (origin/<branch>). refresh NEVER rebases or
+  # merges across branches — each branch only moves to its own remote, and
+  # only as a fast-forward, so it is safe on shared branches: a diverged
+  # branch is skipped with a hint, never rewritten.
+  #
+  # Leave empty to resolve the list dynamically per repo: the canonical main
+  # branch (origin/HEAD → main → master) plus develop/dev when they exist.
+  # Set an explicit list to override (add a release branch, or track master
+  # only). Positional args win over both: `gk refresh main release/1.x`.
+  # tracked:
+  #   - main
+  #   - develop
+
 branch:
   # Threshold in days for `gk branch list --stale`.
   stale_days: 30

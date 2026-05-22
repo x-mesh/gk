@@ -12,6 +12,7 @@ type Config struct {
 	Push       PushConfig      `mapstructure:"push"        yaml:"push"`
 	Pull       PullConfig      `mapstructure:"pull"        yaml:"pull"`
 	Sync       SyncConfig      `mapstructure:"sync"        yaml:"sync"`
+	Refresh    RefreshConfig   `mapstructure:"refresh"     yaml:"refresh"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
@@ -248,6 +249,19 @@ type SyncConfig struct {
 	Strategy string `mapstructure:"strategy" yaml:"strategy"`
 }
 
+// RefreshConfig controls `gk refresh`. Tracked lists the long-lived
+// branches that `gk refresh` fast-forwards to their remote counterparts
+// (origin/<branch>). It never rebases or merges across branches, so it is
+// safe on shared branches: a diverged branch is skipped, not rewritten.
+//
+// Empty (the default) means gk resolves the list dynamically per repo:
+// the canonical main branch (origin/HEAD → main → master) plus develop/dev
+// when they exist locally. Set an explicit list to override — e.g. to add
+// a long-lived release branch, or to refresh master only.
+type RefreshConfig struct {
+	Tracked []string `mapstructure:"tracked" yaml:"tracked"`
+}
+
 // PreflightConfig controls the sequence of checks gk preflight runs.
 type PreflightConfig struct {
 	Steps []PreflightStep `mapstructure:"steps" yaml:"steps"`
@@ -418,6 +432,10 @@ func Defaults() Config {
 		},
 		Sync: SyncConfig{
 			Strategy: "rebase",
+		},
+		Refresh: RefreshConfig{
+			// nil → resolve dynamically (main/master + develop/dev).
+			Tracked: nil,
 		},
 		Preflight: PreflightConfig{
 			Steps: []PreflightStep{

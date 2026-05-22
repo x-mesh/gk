@@ -91,6 +91,7 @@ gk pull --fetch-only         # fetch without integrating
 gk merge main                # precheck + merge main into current branch
 gk sync                      # rebase onto local <base> (offline)
 gk sync --fetch              # one-shot: fetch + ff local <base> + rebase
+gk refresh                   # ff main + develop to their remotes (gk re); never leaves your branch
 gk diff                      # color, line-numbered, word-level diff viewer
 gk status                    # concise working-tree summary
 gk next                      # plain-language status explanation and next steps

@@ -296,8 +296,19 @@ ai:
   assist:
     mode: "off"              # off | suggest | auto
     status: true             # enables gk status --ai / gk next surfaces
-    include_diff: false      # status assistant currently sends facts, not patches
+    include_diff: false      # add the (truncated, privacy-gated) diff so the assistant reasons about WHAT changed
+    diff_budget: 8000        # max diff bytes when include_diff is on
+    max_tokens: 1200         # response cap
+    timeout_secs: 8          # per-call timeout; falls back to local guidance on timeout
+    cache: true              # cache by repo state (.git/gk-ai-cache); unchanged tree reuses the answer
 ```
+
+`gk status --ai` is grounded on structured repo facts and refuses to hallucinate
+destructive commands: the prompt forbids them, and any `reset --hard` / `push --force`
+that still slips into the answer is flagged with a caution footer. `mode: auto` skips
+the provider entirely when the tree is idle (clean + in sync). `gk status --ai --json`
+prints the structured facts (branch, counts, recommended commands) for editors/scripts
+without calling a provider.
 
 ### Safety rails (every run)
 

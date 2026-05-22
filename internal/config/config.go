@@ -61,13 +61,27 @@ type AIConfig struct {
 //   - "auto": run the configured AI assistant automatically for enabled
 //     surfaces such as `gk status`.
 //
-// Status gates the `gk status` surface. IncludeDiff is reserved for future
-// richer prompts; the current status assistant sends structured repo facts
-// only, not patch contents.
+// Status gates the `gk status` surface.
+//
+// IncludeDiff adds the working-tree diff (truncated to DiffBudget bytes and
+// run through the privacy gate) to the prompt, so the assistant can reason
+// about *what* changed rather than only file counts. Off by default — it
+// raises token cost and widens the data sent to remote providers.
+//
+// DiffBudget caps the diff size in bytes when IncludeDiff is on (default
+// 8000). MaxTokens is the advisory response cap (default 1200). TimeoutSecs
+// bounds a single status AI call so `gk status` never hangs on a slow
+// provider (default 8). Cache stores the result keyed by the repo state so
+// repeated/auto invocations on an unchanged tree skip the provider entirely
+// (default true).
 type AIAssistConfig struct {
 	Mode        string `mapstructure:"mode"         yaml:"mode"`
 	Status      bool   `mapstructure:"status"       yaml:"status"`
 	IncludeDiff bool   `mapstructure:"include_diff" yaml:"include_diff"`
+	DiffBudget  int    `mapstructure:"diff_budget"  yaml:"diff_budget"`
+	MaxTokens   int    `mapstructure:"max_tokens"   yaml:"max_tokens"`
+	TimeoutSecs int    `mapstructure:"timeout_secs" yaml:"timeout_secs"`
+	Cache       bool   `mapstructure:"cache"        yaml:"cache"`
 }
 
 // AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
@@ -463,6 +477,10 @@ func Defaults() Config {
 				Mode:        "off",
 				Status:      true,
 				IncludeDiff: false,
+				DiffBudget:  8000,
+				MaxTokens:   1200,
+				TimeoutSecs: 8,
+				Cache:       true,
 			},
 			Chat: AIChatConfig{
 				Timeout:       "30s",

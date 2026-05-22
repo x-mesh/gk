@@ -1394,10 +1394,6 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	cfg, _ := loadStatusConfig()
 	effectiveVis = resolveStatusVis(cmd, cfg)
 	effectiveXYStyle = resolveXYStyle(cmd, cfg)
-	if JSONOut() && statusAssistExplicit(cmd) {
-		return 1, fmt.Errorf("status --ai does not support --json; use `gk next` for human-readable guidance")
-	}
-
 	// --legend short-circuits everything: print the glyph/color key for
 	// the currently-active viz set and return. Useful for first-run users
 	// or anyone wondering "what does ⊛ mean on this row?".
@@ -1426,6 +1422,13 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 
 	realW := cmd.OutOrStdout()
 	if JSONOut() {
+		// `--ai --json` emits the grounded assist facts (the same snapshot
+		// the prompt is built from) instead of the porcelain JSON, so
+		// editors/scripts get the structured next-action data without a
+		// provider call.
+		if statusAssistExplicit(cmd) {
+			return exitCode, renderStatusAssistJSON(cmd.Context(), realW, runner, client, cfg, st, allGrouped)
+		}
 		return exitCode, renderStatusJSON(realW, st, allGrouped, listEntries)
 	}
 	// Rich density wraps the normal-path output (branch + tree + footer)

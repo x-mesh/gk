@@ -297,8 +297,18 @@ ai:
   assist:
     mode: "off"              # off | suggest | auto
     status: true             # true이면 gk status --ai / gk next 활성
-    include_diff: false      # 현재 status assistant는 patch 본문을 보내지 않음
+    include_diff: false      # diff(절단·privacy gate 통과)를 함께 보내 "무엇이 바뀌었는지" 추론
+    diff_budget: 8000        # include_diff 시 diff 최대 바이트
+    max_tokens: 1200         # 응답 길이 상한
+    timeout_secs: 8          # 호출당 타임아웃; 초과 시 로컬 안내로 폴백
+    cache: true              # repo 상태 기준 캐시(.git/gk-ai-cache); 변경 없으면 재사용
 ```
+
+`gk status --ai`는 구조화된 repo facts에 기반하며 파괴적 명령을 환각하지 않습니다.
+프롬프트가 이를 금지하고, 그래도 응답에 `reset --hard` / `push --force`가 섞이면
+주의 푸터로 표시합니다. `mode: auto`는 트리가 idle(clean + 동기화)이면 provider 호출을
+건너뜁니다. `gk status --ai --json`은 provider 호출 없이 구조화된 facts(브랜치·카운트·추천
+명령)를 출력합니다.
 
 ### 안전 장치
 

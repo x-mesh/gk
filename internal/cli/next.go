@@ -59,5 +59,9 @@ func runNext(cmd *cobra.Command, _ []string) error {
 	}
 	providerOverride, langOverride := readStatusAssistOverrides(cmd)
 	facts := collectStatusAssistFacts(ctx, runner, cfg, st, grouped, baseRes)
-	return renderStatusAssist(ctx, cmd, cmd.OutOrStdout(), cmd.ErrOrStderr(), facts, cfg, providerOverride, langOverride)
+	diff := ""
+	if cfg != nil && cfg.AI.Assist.IncludeDiff {
+		diff = collectStatusDiff(ctx, runner, statusAssistDiffBudget(cfg))
+	}
+	return renderStatusAssist(ctx, cmd, runner, cmd.OutOrStdout(), cmd.ErrOrStderr(), facts, cfg, providerOverride, langOverride, diff)
 }

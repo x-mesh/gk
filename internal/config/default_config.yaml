@@ -168,7 +168,27 @@ ai:
   assist:
     mode: off
     status: true
+
+    # Add the working-tree diff to the `gk status --ai` prompt so the
+    # assistant can reason about WHAT changed, not just file counts. Off by
+    # default: it costs tokens and sends patch content to remote providers
+    # (still routed through the privacy gate / deny_paths first).
     include_diff: false
+
+    # Max diff size in bytes when include_diff is on (truncated head-first).
+    diff_budget: 8000
+
+    # Advisory cap on the AI response length.
+    max_tokens: 1200
+
+    # Hard timeout (seconds) for a single status AI call. On timeout gk
+    # falls back to the deterministic local guidance — status never hangs.
+    timeout_secs: 8
+
+    # Cache the AI answer keyed by repo state (HEAD + working tree + diff +
+    # lang + provider). Unchanged tree → reuse, so repeated runs and
+    # `mode: auto` don't re-bill the provider. Cache lives in .git/gk-ai-cache.
+    cache: true
 
   commit:
     # Execution mode when no flag is passed.

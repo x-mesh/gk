@@ -66,7 +66,7 @@ func (a *Anthropic) Available(_ context.Context) error {
 
 func (a *Anthropic) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	userPrompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt)
+	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt, 0)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -81,7 +81,7 @@ func (a *Anthropic) Classify(ctx context.Context, in ClassifyInput) (ClassifyRes
 
 func (a *Anthropic) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	userPrompt := buildComposeUserPrompt(in)
-	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt)
+	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt, 0)
 	if err != nil {
 		return ComposeResult{}, err
 	}
@@ -96,7 +96,7 @@ func (a *Anthropic) Compose(ctx context.Context, in ComposeInput) (ComposeResult
 
 func (a *Anthropic) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
 	userPrompt := buildSummarizeUserPrompt(in)
-	content, model, tokens, err := a.invoke(ctx, summarizeSystemPrompt, userPrompt)
+	content, model, tokens, err := a.invoke(ctx, summarizeSystemPrompt, userPrompt, in.MaxTokens)
 	if err != nil {
 		return SummarizeResult{}, err
 	}
@@ -105,7 +105,7 @@ func (a *Anthropic) Summarize(ctx context.Context, in SummarizeInput) (Summarize
 
 func (a *Anthropic) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
 	userPrompt := gitignoreUserPromptPrefix + projectInfo
-	content, _, _, err := a.invoke(ctx, gitignoreSystemPrompt, userPrompt)
+	content, _, _, err := a.invoke(ctx, gitignoreSystemPrompt, userPrompt, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +119,29 @@ type anthropicMessage struct {
 	Content string `json:"content"`
 }
 
+// anthropicCacheControl marks a content block as a prompt-cache checkpoint.
+// The only supported type today is "ephemeral" (~5 min TTL).
+type anthropicCacheControl struct {
+	Type string `json:"type"`
+}
+
+// anthropicSystemBlock is one structured `system` content block. We send
+// the system prompt as a single-element array (rather than a plain string)
+// so we can attach cache_control and have Anthropic cache the large,
+// stable prefix. gk commit calls Compose N times per group with an
+// identical system prompt, so caching the prefix turns repeated full-price
+// input tokens into cheap cache reads.
+type anthropicSystemBlock struct {
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model     string                 `json:"model"`
+	MaxTokens int                    `json:"max_tokens"`
+	System    []anthropicSystemBlock `json:"system,omitempty"`
+	Messages  []anthropicMessage     `json:"messages"`
 }
 
 type anthropicContentBlock struct {
@@ -134,6 +152,11 @@ type anthropicContentBlock struct {
 type anthropicUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// Cache accounting. Anthropic returns these only when prompt caching
+	// is in play: cache_creation counts tokens written to the cache on a
+	// miss, cache_read counts tokens served from the cache on a hit.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 type anthropicResponse struct {
@@ -150,14 +173,14 @@ type anthropicResponse struct {
 // invoke sends a Messages API request and returns the joined text from
 // every content block plus model/token bookkeeping. Retries on
 // 429/5xx using the same backoff strategy as Nvidia.invoke.
-func (a *Anthropic) invoke(ctx context.Context, sys, user string) (content, model string, tokensUsed int, err error) {
+func (a *Anthropic) invoke(ctx context.Context, sys, user string, maxTokens int) (content, model string, tokensUsed int, err error) {
 	if a.apiKey() == "" {
 		return "", "", 0, fmt.Errorf("%w: ANTHROPIC_API_KEY not set", ErrUnauthenticated)
 	}
 	body, mErr := json.Marshal(anthropicRequest{
 		Model:     a.modelOrDefault(),
-		MaxTokens: a.maxTokens(),
-		System:    sys,
+		MaxTokens: a.resolveMaxTokens(maxTokens),
+		System:    systemBlocks(sys),
 		Messages:  []anthropicMessage{{Role: "user", Content: user}},
 	})
 	if mErr != nil {
@@ -213,10 +236,35 @@ func (a *Anthropic) invoke(ctx context.Context, sys, user string) (content, mode
 		if text == "" {
 			return "", "", 0, fmt.Errorf("%w: empty content", ErrProviderResponse)
 		}
-		tokens := parsed.Usage.InputTokens + parsed.Usage.OutputTokens
+		tokens := parsed.Usage.total()
 		return text, parsed.Model, tokens, nil
 	}
 	return "", "", 0, errors.New("anthropic: exhausted retries")
+}
+
+// systemBlocks turns a plain system prompt into the structured `system`
+// array Anthropic expects, attaching an ephemeral cache_control marker so
+// the (large, stable) prompt prefix is cached across calls. cache_control
+// is GA — no `anthropic-beta` header is required; the marker alone enables
+// caching. An empty prompt yields nil so the `omitempty` field is dropped
+// from the request entirely, preserving the no-system behaviour.
+func systemBlocks(sys string) []anthropicSystemBlock {
+	if sys == "" {
+		return nil
+	}
+	return []anthropicSystemBlock{{
+		Type:         "text",
+		Text:         sys,
+		CacheControl: &anthropicCacheControl{Type: "ephemeral"},
+	}}
+}
+
+// total returns the full input+output token count, folding in cache
+// creation/read tokens. Anthropic reports cached input separately from
+// input_tokens, so summing them keeps the bookkeeping consistent with the
+// pre-caching behaviour (where all input was counted in input_tokens).
+func (u anthropicUsage) total() int {
+	return u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 }
 
 func (a *Anthropic) classifyStatus(code int) error {
@@ -256,6 +304,15 @@ func (a *Anthropic) maxTokens() int {
 		return a.MaxTokens
 	}
 	return defaultAnthropicMaxTok
+}
+
+// resolveMaxTokens honours a per-call cap (SummarizeInput.MaxTokens) when
+// positive, else falls back to the adapter's configured/default cap.
+func (a *Anthropic) resolveMaxTokens(n int) int {
+	if n > 0 {
+		return n
+	}
+	return a.maxTokens()
 }
 
 func (a *Anthropic) maxRetry() int {

@@ -207,18 +207,30 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 		return fmt.Errorf("pr: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
-	// Call Summarize.
+	// Cache: a PR body is deterministic in (diff, commits, lang, provider),
+	// so a re-run on the same branch tip reuses the previous draft.
+	lang := fallbackLang(deps.Lang)
+	cacheKey := aiCacheKey("pr", redactedDiff, strings.Join(commits, "\n"), lang, deps.Provider.Name())
+	if cached, ok := readAICache(ctx, deps.Runner, "pr", cacheKey); ok {
+		return outputPRResult(deps.Out, deps.ErrOut, cached, flags.output)
+	}
+
+	// Call Summarize, bounded by the chat timeout.
+	callCtx, cancel := aiCallContext(ctx, deps.AI)
+	defer cancel()
 	stop := ui.StartBubbleSpinner(fmt.Sprintf("pr — drafting summary via %s", deps.Provider.Name()))
-	result, err := sum.Summarize(ctx, provider.SummarizeInput{
-		Kind:    "pr",
-		Diff:    redactedDiff,
-		Commits: commits,
-		Lang:    fallbackLang(deps.Lang),
+	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
+		Kind:      "pr",
+		Diff:      redactedDiff,
+		Commits:   commits,
+		Lang:      lang,
+		MaxTokens: aiChatMaxTokens(deps.AI),
 	})
 	stop()
 	if err != nil {
 		return fmt.Errorf("pr: summarize: %w", err)
 	}
+	writeAICache(ctx, deps.Runner, "pr", cacheKey, result.Text)
 
 	// Output.
 	return outputPRResult(deps.Out, deps.ErrOut, result.Text, flags.output)

@@ -17,6 +17,7 @@ type ErrorAnalyzer struct {
 	Context    *RepoContextCollector
 	Lang       string
 	Timeout    time.Duration
+	MaxTokens  int // advisory response cap; 0 = provider default
 	Dbg        func(string, ...any)
 }
 
@@ -109,9 +110,10 @@ func (a *ErrorAnalyzer) DiagnoseError(ctx context.Context, errorMsg string) (str
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := a.Summarizer.Summarize(ctx, provider.SummarizeInput{
-		Kind: "explain",
-		Diff: userPrompt,
-		Lang: a.Lang,
+		Kind:      "explain",
+		Diff:      userPrompt,
+		Lang:      a.Lang,
+		MaxTokens: a.MaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("explain: AI provider error: %w", err)
@@ -149,9 +151,10 @@ func (a *ErrorAnalyzer) ExplainLast(ctx context.Context) (string, error) {
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := a.Summarizer.Summarize(ctx, provider.SummarizeInput{
-		Kind: "explain-last",
-		Diff: userPrompt,
-		Lang: a.Lang,
+		Kind:      "explain-last",
+		Diff:      userPrompt,
+		Lang:      a.Lang,
+		MaxTokens: a.MaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("explain-last: AI provider error: %w", err)

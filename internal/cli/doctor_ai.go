@@ -6,8 +6,105 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
+
+	"github.com/x-mesh/gk/internal/config"
 )
+
+// aiAPISpec describes one HTTP-API provider the doctor knows how to
+// probe. endpoint is the *default* reachability URL; it is replaced at
+// runtime when the user overrides it in config (ai.<name>.endpoint).
+type aiAPISpec struct {
+	name     string
+	envKey   string
+	endpoint string
+}
+
+// aiCLISpec describes one CLI-binary provider the doctor knows about.
+type aiCLISpec struct {
+	name string
+}
+
+// defaultAIAPISpecs and defaultAICLISpecs enumerate the providers gk
+// can drive. Kept as package-level data so both the live check path and
+// the tests share one source of truth.
+var defaultAIAPISpecs = []aiAPISpec{
+	{name: "anthropic", envKey: "ANTHROPIC_API_KEY", endpoint: "https://api.anthropic.com/v1/messages"},
+	{name: "openai", envKey: "OPENAI_API_KEY", endpoint: "https://api.openai.com/v1/models"},
+	{name: "nvidia", envKey: "NVIDIA_API_KEY", endpoint: "https://integrate.api.nvidia.com/v1/models"},
+	{name: "groq", envKey: "GROQ_API_KEY", endpoint: "https://api.groq.com/openai/v1/models"},
+}
+
+var defaultAICLISpecs = []aiCLISpec{
+	{name: "gemini"},
+	{name: "qwen"},
+	{name: "kiro-cli"},
+}
+
+// aiDoctorChecks builds the full set of AI provider rows, honouring the
+// resolved config: per-provider endpoint overrides are probed instead of
+// the built-in defaults, and the configured default provider
+// (cfg.AI.Provider) is flagged so the user can see which one `gk commit`
+// will actually reach for. cfg may be nil (config failed to load) — in
+// that case the built-in defaults are used so the AI section still
+// renders.
+func aiDoctorChecks(cfg *config.Config) []doctorCheck {
+	defaultProvider := ""
+	if cfg != nil {
+		defaultProvider = strings.TrimSpace(cfg.AI.Provider)
+	}
+
+	checks := make([]doctorCheck, 0, len(defaultAIAPISpecs)+len(defaultAICLISpecs))
+	for _, spec := range defaultAIAPISpecs {
+		endpoint := spec.endpoint
+		overridden := false
+		if cfg != nil {
+			if ep := configEndpointFor(cfg, spec.name); ep != "" {
+				endpoint = ep
+				overridden = true
+			}
+		}
+		checks = append(checks, decorateDefaultProvider(
+			checkAIAPIProvider(spec.name, spec.envKey, endpoint, overridden),
+			spec.name, defaultProvider))
+	}
+	for _, spec := range defaultAICLISpecs {
+		checks = append(checks, decorateDefaultProvider(
+			checkAIProvider(spec.name), spec.name, defaultProvider))
+	}
+	return checks
+}
+
+// configEndpointFor returns the user-configured endpoint override for an
+// HTTP-API provider, or "" when no override is set. Only HTTP-API
+// providers carry an endpoint in config; CLI providers return "".
+func configEndpointFor(cfg *config.Config, name string) string {
+	switch name {
+	case "anthropic":
+		return strings.TrimSpace(cfg.AI.Anthropic.Endpoint)
+	case "openai":
+		return strings.TrimSpace(cfg.AI.OpenAI.Endpoint)
+	case "nvidia":
+		return strings.TrimSpace(cfg.AI.Nvidia.Endpoint)
+	case "groq":
+		return strings.TrimSpace(cfg.AI.Groq.Endpoint)
+	default:
+		return ""
+	}
+}
+
+// decorateDefaultProvider annotates the check that matches the
+// configured default provider (ai.provider) so the report makes clear
+// which provider `gk commit` will use by default. Matching is on the
+// provider's bare name (the suffix after "ai api: " / "ai provider: ").
+func decorateDefaultProvider(c doctorCheck, providerName, defaultProvider string) doctorCheck {
+	if defaultProvider == "" || providerName != defaultProvider {
+		return c
+	}
+	c.Name = c.Name + " (default)"
+	return c
+}
 
 // checkAIProvider emits one doctorCheck row per AI CLI that `gk
 // commit` can drive. Missing binaries are WARN (optional dependency),
@@ -41,14 +138,17 @@ func checkAIProvider(name string) doctorCheck {
 	}
 
 	authOK, hint := providerAuthHint(name)
-	detail := path
 	if authOK {
-		return doctorCheck{Name: "ai provider: " + name, Status: statusPass, Detail: detail}
+		return doctorCheck{
+			Name:   "ai provider: " + name,
+			Status: statusPass,
+			Detail: path + " · auth configured (validity not verified)",
+		}
 	}
 	return doctorCheck{
 		Name:   "ai provider: " + name,
 		Status: statusWarn,
-		Detail: detail + " (auth unconfigured)",
+		Detail: path + " · auth not configured",
 		Fix:    hint,
 	}
 }
@@ -60,12 +160,24 @@ func checkAIProvider(name string) doctorCheck {
 // most common failure (proxy, DNS, captive portal) wouldn't surface
 // until the first real `gk commit`.
 //
+// The probe is an *unauthenticated* GET, so it can only tell us two
+// things: (a) the key is present in the environment ("set") and (b) the
+// endpoint is reachable from this host. It deliberately does NOT verify
+// that the key is valid — the wording reflects that so a "set" row is
+// never mistaken for "authenticated". The key value itself is never
+// printed; only set/unset is reported.
+//
 // Probe interpretation:
 //
 //	200 / 401 / 403 / 404 / 405 → endpoint reachable (any response is enough)
 //	5xx                         → endpoint is up but degraded
 //	dial / timeout / TLS errors → network blocked
-func checkAIAPIProvider(name, envKey, endpoint string) doctorCheck {
+func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden bool) doctorCheck {
+	endpointNote := "endpoint"
+	if endpointOverridden {
+		endpointNote = "custom endpoint"
+	}
+
 	if os.Getenv(envKey) == "" {
 		return doctorCheck{
 			Name:   "ai api: " + name,
@@ -80,7 +192,7 @@ func checkAIAPIProvider(name, envKey, endpoint string) doctorCheck {
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusPass,
-			Detail: envKey + " set",
+			Detail: envKey + " set (validity not verified)",
 		}
 	}
 
@@ -90,20 +202,20 @@ func checkAIAPIProvider(name, envKey, endpoint string) doctorCheck {
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusPass,
-			Detail: fmt.Sprintf("%s set · endpoint %d", envKey, status),
+			Detail: fmt.Sprintf("%s set (validity not verified) · %s reachable [HTTP %d]", envKey, endpointNote, status),
 		}
 	case err != nil:
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusWarn,
-			Detail: fmt.Sprintf("%s set · probe failed: %v", envKey, err),
+			Detail: fmt.Sprintf("%s set (validity not verified) · %s probe failed: %v", envKey, endpointNote, err),
 			Fix:    "check network/proxy reachability to " + endpoint,
 		}
 	default:
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusWarn,
-			Detail: fmt.Sprintf("%s set · endpoint returned %d", envKey, status),
+			Detail: fmt.Sprintf("%s set (validity not verified) · %s returned HTTP %d", envKey, endpointNote, status),
 			Fix:    "the provider returned a server error — try again later or check the provider's status page",
 		}
 	}
@@ -135,7 +247,9 @@ func probeAIAPI(endpoint string) (reachable bool, status int, err error) {
 
 // providerAuthHint returns (ok, remediation). Heuristic only — we do
 // not spawn subprocesses here so false-negatives turn into runtime
-// errors with a clearer message later on.
+// errors with a clearer message later on. "ok" means an auth source
+// (API key env var or, for OAuth CLIs, the expectation that the CLI was
+// signed in) is *present*, not that it is valid.
 func providerAuthHint(name string) (bool, string) {
 	switch name {
 	case "gemini":

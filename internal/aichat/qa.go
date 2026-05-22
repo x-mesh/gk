@@ -17,6 +17,7 @@ type QAEngine struct {
 	Context    *RepoContextCollector
 	Lang       string
 	Timeout    time.Duration
+	MaxTokens  int // advisory response cap; 0 = provider default
 	Dbg        func(string, ...any)
 }
 
@@ -138,9 +139,10 @@ func (q *QAEngine) Answer(ctx context.Context, question string) (string, error) 
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := q.Summarizer.Summarize(ctx, provider.SummarizeInput{
-		Kind: "ask",
-		Diff: userPrompt,
-		Lang: q.Lang,
+		Kind:      "ask",
+		Diff:      userPrompt,
+		Lang:      q.Lang,
+		MaxTokens: q.MaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("ask: AI provider error: %w", err)

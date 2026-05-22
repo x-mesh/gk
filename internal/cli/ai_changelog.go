@@ -188,19 +188,38 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 		return fmt.Errorf("changelog: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
-	// Call Summarize.
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("changelog — drafting via %s", deps.Provider.Name()))
-	result, err := sum.Summarize(ctx, provider.SummarizeInput{
-		Kind:    "changelog",
-		Commits: redactedCommits,
-		Lang:    fallbackLang(deps.Lang),
-	})
-	stop()
-	if err != nil {
-		return fmt.Errorf("changelog: summarize: %w", err)
+	// Cache: a changelog is deterministic in (commits, lang, provider).
+	lang := fallbackLang(deps.Lang)
+	cacheKey := aiCacheKey("changelog", redactedPayload, lang, deps.Provider.Name())
+	var text, model string
+	if cached, ok := readAICache(ctx, deps.Runner, "changelog", cacheKey); ok {
+		text = cached
+	} else {
+		callCtx, cancel := aiCallContext(ctx, deps.AI)
+		defer cancel()
+		stop := ui.StartBubbleSpinner(fmt.Sprintf("changelog — drafting via %s", deps.Provider.Name()))
+		result, err := sum.Summarize(callCtx, provider.SummarizeInput{
+			Kind:      "changelog",
+			Commits:   redactedCommits,
+			Lang:      lang,
+			MaxTokens: aiChatMaxTokens(deps.AI),
+		})
+		stop()
+		if err != nil {
+			return fmt.Errorf("changelog: summarize: %w", err)
+		}
+		text, model = result.Text, result.Model
+		writeAICache(ctx, deps.Runner, "changelog", cacheKey, text)
 	}
 
-	// Output based on --format (both markdown and json output raw text as-is).
-	fmt.Fprint(deps.Out, result.Text)
+	// Output based on --format.
+	if strings.EqualFold(flags.format, "json") {
+		return writeAIJSON(deps.Out, map[string]string{
+			"provider":  deps.Provider.Name(),
+			"model":     model,
+			"changelog": strings.TrimSpace(text),
+		})
+	}
+	fmt.Fprint(deps.Out, text)
 	return nil
 }

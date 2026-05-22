@@ -95,7 +95,14 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		}
 		prov = fc
 	} else {
-		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
+		opts := aiFactoryOptionsFromAI(ai)
+		// ai.commit.timeout, when set, is the per-call HTTP timeout for the
+		// commit provider (overrides the per-provider default). Previously
+		// this config field was never read.
+		if d := parseDurationOrDefault(ai.Commit.Timeout, 0); d > 0 {
+			opts.Timeout = d
+		}
+		p, pErr := provider.NewProvider(ctx, opts)
 		if pErr != nil {
 			return fmt.Errorf("commit: provider: %w", pErr)
 		}

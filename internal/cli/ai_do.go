@@ -158,6 +158,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		Safety:     &aichat.SafetyClassifier{},
 		Lang:       fallbackLang(ai.Lang),
 		Timeout:    timeout,
+		MaxTokens:  aiChatMaxTokens(ai),
 		Dbg:        Dbg,
 		// Redact the assembled prompt (input + repo context) for remote
 		// providers — the gate above only covered the raw input.

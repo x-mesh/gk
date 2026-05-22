@@ -87,7 +87,7 @@ func (n *Nvidia) Available(_ context.Context) error {
 // Classify implements Provider.
 func (n *Nvidia) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	userPrompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true)
+	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, 0)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -103,7 +103,7 @@ func (n *Nvidia) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult
 // Compose implements Provider.
 func (n *Nvidia) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	userPrompt := buildComposeUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true)
+	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, 0)
 	if err != nil {
 		return ComposeResult{}, err
 	}
@@ -120,7 +120,7 @@ func (n *Nvidia) Compose(ctx context.Context, in ComposeInput) (ComposeResult, e
 // is free-form text, so we disable json_object response_format.
 func (n *Nvidia) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
 	userPrompt := buildSummarizeUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, summarizeSystemPrompt, userPrompt, false)
+	content, model, tokens, err := n.invoke(ctx, summarizeSystemPrompt, userPrompt, false, in.MaxTokens)
 	if err != nil {
 		return SummarizeResult{}, err
 	}
@@ -130,7 +130,7 @@ func (n *Nvidia) Summarize(ctx context.Context, in SummarizeInput) (SummarizeRes
 // SuggestGitignore implements GitignoreSuggester.
 func (n *Nvidia) SuggestGitignore(ctx context.Context, projectInfo string) ([]string, error) {
 	userPrompt := gitignoreUserPromptPrefix + projectInfo
-	content, _, _, err := n.invoke(ctx, gitignoreSystemPrompt, userPrompt, false)
+	content, _, _, err := n.invoke(ctx, gitignoreSystemPrompt, userPrompt, false, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ type chatUsage struct {
 // jsonMode controls response_format: true sets {"type":"json_object"}
 // (used by Classify/Compose), false omits it (used by Summarize
 // which returns free-form text).
-func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonMode bool) (content, model string, tokensUsed int, err error) {
+func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonMode bool, maxTokens int) (content, model string, tokensUsed int, err error) {
 	endpoint := n.endpoint()
 	apiKey := n.apiKey()
 	mdl := n.model()
@@ -198,6 +198,9 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 			{Role: "system", Content: sysPrompt},
 			{Role: "user", Content: userPrompt},
 		},
+		// max_tokens is omitempty: 0 leaves the provider default in place,
+		// a positive per-call cap (SummarizeInput.MaxTokens) is honoured.
+		MaxTokens: maxTokens,
 	}
 	if jsonMode {
 		reqBody.ResponseFormat = &responseFormat{Type: "json_object"}
@@ -402,7 +405,7 @@ func truncateBody(b []byte) string {
 // AnalyzeBranches implements BranchAnalyzer.
 func (n *Nvidia) AnalyzeBranches(ctx context.Context, in BranchAnalysisInput) (BranchAnalysisResult, error) {
 	userPrompt := buildBranchAnalysisUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, branchAnalysisSystemPrompt, userPrompt, true)
+	content, model, tokens, err := n.invoke(ctx, branchAnalysisSystemPrompt, userPrompt, true, 0)
 	if err != nil {
 		return BranchAnalysisResult{}, err
 	}
@@ -418,7 +421,7 @@ func (n *Nvidia) AnalyzeBranches(ctx context.Context, in BranchAnalysisInput) (B
 // ResolveConflicts implements ConflictResolver.
 func (n *Nvidia) ResolveConflicts(ctx context.Context, in ConflictResolutionInput) (ConflictResolutionResult, error) {
 	userPrompt := buildConflictResolutionUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, conflictResolutionSystemPrompt, userPrompt, true)
+	content, model, tokens, err := n.invoke(ctx, conflictResolutionSystemPrompt, userPrompt, true, 0)
 	if err != nil {
 		return ConflictResolutionResult{}, err
 	}

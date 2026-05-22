@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -138,9 +139,17 @@ func TestAIReviewCoreFormatJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// For both text and json, we output the raw text from the provider.
-	if !strings.Contains(out.String(), `"files"`) {
-		t.Errorf("json output should contain provider result, got: %s", out.String())
+	// --format json now emits real structured JSON: a top-level object with
+	// provider/model and the review text under "review".
+	var got map[string]string
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if got["provider"] != "fake" {
+		t.Errorf("provider = %q, want fake", got["provider"])
+	}
+	if !strings.Contains(got["review"], `"files"`) {
+		t.Errorf("review field should carry the provider text, got: %q", got["review"])
 	}
 }
 

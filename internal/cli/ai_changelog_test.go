@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -157,8 +158,17 @@ func TestAIChangelogCoreFormatJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out.String(), `"features"`) {
-		t.Errorf("json output should contain provider result, got: %s", out.String())
+	// --format json now emits real structured JSON: provider/model plus the
+	// changelog text under "changelog".
+	var got map[string]string
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if got["provider"] != "fake" {
+		t.Errorf("provider = %q, want fake", got["provider"])
+	}
+	if !strings.Contains(got["changelog"], `"features"`) {
+		t.Errorf("changelog field should carry the provider text, got: %q", got["changelog"])
 	}
 }
 

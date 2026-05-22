@@ -174,19 +174,38 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 		return fmt.Errorf("review: provider %q does not support Summarize", deps.Provider.Name())
 	}
 
-	// Call Summarize.
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", deps.Provider.Name()))
-	result, err := sum.Summarize(ctx, provider.SummarizeInput{
-		Kind: "review",
-		Diff: redactedDiff,
-		Lang: fallbackLang(deps.Lang),
-	})
-	stop()
-	if err != nil {
-		return fmt.Errorf("review: summarize: %w", err)
+	// Cache: a review is deterministic in (diff, lang, provider).
+	lang := fallbackLang(deps.Lang)
+	cacheKey := aiCacheKey("review", redactedDiff, lang, deps.Provider.Name())
+	var text, model string
+	if cached, ok := readAICache(ctx, deps.Runner, "review", cacheKey); ok {
+		text = cached
+	} else {
+		callCtx, cancel := aiCallContext(ctx, deps.AI)
+		defer cancel()
+		stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", deps.Provider.Name()))
+		result, err := sum.Summarize(callCtx, provider.SummarizeInput{
+			Kind:      "review",
+			Diff:      redactedDiff,
+			Lang:      lang,
+			MaxTokens: aiChatMaxTokens(deps.AI),
+		})
+		stop()
+		if err != nil {
+			return fmt.Errorf("review: summarize: %w", err)
+		}
+		text, model = result.Text, result.Model
+		writeAICache(ctx, deps.Runner, "review", cacheKey, text)
 	}
 
 	// Output based on --format.
-	fmt.Fprint(deps.Out, result.Text)
+	if strings.EqualFold(flags.format, "json") {
+		return writeAIJSON(deps.Out, map[string]string{
+			"provider": deps.Provider.Name(),
+			"model":    model,
+			"review":   strings.TrimSpace(text),
+		})
+	}
+	fmt.Fprint(deps.Out, text)
 	return nil
 }

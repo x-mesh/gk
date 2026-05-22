@@ -141,6 +141,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		Context:    &aichat.RepoContextCollector{Runner: runner, TokenBudget: 2000, Dbg: Dbg},
 		Lang:       fallbackLang(ai.Lang),
 		Timeout:    timeout,
+		MaxTokens:  aiChatMaxTokens(ai),
 		Dbg:        Dbg,
 	}
 

@@ -2,27 +2,34 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
 )
-
-func init() {
-	rootCmd.PersistentFlags().Bool("show-prompt", false, "display the redacted payload sent to the provider")
-	rootCmd.PersistentFlags().Bool("skip-privacy", false, "skip privacy gate abort threshold (redaction still applied)")
-}
 
 // aiAutoOrder is the canonical provider auto-detect order, shared by the
 // factory's AutoOrder default and buildFallbackChain so a single command
 // and a fallback chain probe providers in the same sequence.
 var aiAutoOrder = []string{"anthropic", "openai", "nvidia", "groq", "gemini", "qwen", "kiro"}
+
+func init() {
+	rootCmd.PersistentFlags().Bool("show-prompt", false, "display the redacted payload sent to the provider")
+	rootCmd.PersistentFlags().Bool("skip-privacy", false, "skip privacy gate abort threshold (redaction still applied)")
+}
 
 // ── Remote-policy gate ───────────────────────────────────────────────
 
@@ -176,4 +183,103 @@ func buildFallbackChain(order []string, runner provider.CommandRunner) (*provide
 		Providers: providers,
 		Dbg:       Dbg,
 	}, nil
+}
+
+// ── AI response cache (shared) ───────────────────────────────────────
+//
+// A small content-addressed cache under .git/gk-ai-cache/<kind>/<key>.
+// Callers derive a key from the deterministic inputs (diff, range, lang,
+// provider) so an unchanged input reuses the previous answer and a changed
+// input misses naturally. Living inside .git keeps it out of the work tree
+// and untracked. All failures are silent — caching is an optimization, not
+// a correctness guarantee.
+
+// aiCacheKey derives a stable 16-hex-char key from the given parts.
+func aiCacheKey(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// aiCacheDir resolves .git/gk-ai-cache/<kind>, creating nothing. ok=false
+// when the git dir cannot be located (not a repo).
+func aiCacheDir(ctx context.Context, runner git.Runner, kind string) (string, bool) {
+	if runner == nil {
+		return "", false
+	}
+	out, _, err := runner.Run(ctx, "rev-parse", "--git-path", "gk-ai-cache")
+	if err != nil {
+		return "", false
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(p) {
+		base := runnerDir(runner)
+		if base == "" {
+			base = RepoFlag()
+		}
+		p = filepath.Join(base, p)
+	}
+	return filepath.Join(p, kind), true
+}
+
+func readAICache(ctx context.Context, runner git.Runner, kind, key string) (string, bool) {
+	dir, ok := aiCacheDir(ctx, runner, kind)
+	if !ok {
+		return "", false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, key))
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func writeAICache(ctx context.Context, runner git.Runner, kind, key, text string) {
+	dir, ok := aiCacheDir(ctx, runner, kind)
+	if !ok {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	tmp := filepath.Join(dir, key+".tmp")
+	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, filepath.Join(dir, key))
+}
+
+// writeAIJSON marshals v as indented JSON to w. Backs the `--format json`
+// outputs so they emit real structured data instead of raw provider prose.
+func writeAIJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// aiChatMaxTokens is the advisory response cap for the chat-style AI
+// commands (pr, review, changelog, ask, explain, do). Reads
+// ai.chat.max_tokens, falling back to 4096.
+func aiChatMaxTokens(ai config.AIConfig) int {
+	if ai.Chat.MaxTokens > 0 {
+		return ai.Chat.MaxTokens
+	}
+	return 4096
+}
+
+// aiCallContext bounds a single AI call so a command never hangs on a slow
+// provider (including a long fallback chain). Derives the deadline from
+// ai.chat.timeout (default 30s). The caller must defer the returned cancel.
+func aiCallContext(ctx context.Context, ai config.AIConfig) (context.Context, context.CancelFunc) {
+	d := parseDurationOrDefault(ai.Chat.Timeout, 30*time.Second)
+	if d <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, d)
 }

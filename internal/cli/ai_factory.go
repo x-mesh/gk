@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 )
@@ -30,19 +32,26 @@ func aiFactoryOptionsFromAI(ai config.AIConfig) provider.FactoryOptions {
 		Runner: provider.ExecRunner{},
 		Name:   ai.Provider,
 	}
+	// timeoutFor parses a provider's config timeout string ("60s"); a zero
+	// result leaves the adapter default in place.
+	timeoutFor := func(s string) time.Duration { return parseDurationOrDefault(s, 0) }
 	switch ai.Provider {
 	case "anthropic", "claude":
 		opts.Model = ai.Anthropic.Model
 		opts.Endpoint = ai.Anthropic.Endpoint
+		opts.Timeout = timeoutFor(ai.Anthropic.Timeout)
 	case "openai":
 		opts.Model = ai.OpenAI.Model
 		opts.Endpoint = ai.OpenAI.Endpoint
+		opts.Timeout = timeoutFor(ai.OpenAI.Timeout)
 	case "groq":
 		opts.Model = ai.Groq.Model
 		opts.Endpoint = ai.Groq.Endpoint
+		opts.Timeout = timeoutFor(ai.Groq.Timeout)
 	case "nvidia":
 		opts.Model = ai.Nvidia.Model
 		opts.Endpoint = ai.Nvidia.Endpoint
+		opts.Timeout = timeoutFor(ai.Nvidia.Timeout)
 	}
 	return opts
 }

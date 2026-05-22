@@ -142,8 +142,9 @@ ai:
   # disables every `gk ai *` subcommand with a clear error.
   enabled: true
 
-  # Default provider. Empty = auto-detect in order: nvidia → gemini → qwen → kiro-cli.
-  # Override per-invocation with `--provider nvidia|gemini|qwen|kiro`.
+  # Default provider. Empty = auto-detect in order:
+  #   anthropic → openai → nvidia → groq → gemini → qwen → kiro-cli.
+  # Override per-invocation with `--provider anthropic|openai|nvidia|groq|gemini|qwen|kiro`.
   #
   # Install hints:
   #   nvidia   — no binary needed; set NVIDIA_API_KEY env var
@@ -155,8 +156,20 @@ ai:
 
   # NVIDIA provider settings. Uses the OpenAI-compatible Chat Completions API
   # directly over HTTP — no external binary required. Auth: NVIDIA_API_KEY env var.
+  # `timeout` (Go duration) is the per-HTTP-call timeout for this provider;
+  # anthropic/openai/groq accept the same key under their own block.
   nvidia:
     timeout: "60s"
+
+  # Chat-style commands (gk do / ask / explain, and the response cap shared by
+  # pr / review / changelog).
+  chat:
+    # Per-call timeout (Go duration). The call falls back / errors out instead
+    # of hanging when the provider is slow.
+    timeout: "30s"
+    # Advisory response token cap forwarded to the provider (0 = provider
+    # default). Applies to do/ask/explain and pr/review/changelog.
+    max_tokens: 4096
 
   # Commit-message language. BCP-47 short code. Override via `--lang`.
   lang: en

@@ -16,6 +16,7 @@ type IntentParser struct {
 	Safety     *SafetyClassifier
 	Lang       string
 	Timeout    time.Duration
+	MaxTokens  int // advisory response cap; 0 = provider default
 	Dbg        func(string, ...any)
 	// Redact, when set, sanitizes the fully-assembled prompt (user input +
 	// repo context) before it leaves the process. ai_do wires this to the
@@ -71,9 +72,10 @@ func (p *IntentParser) Parse(ctx context.Context, input string) (*ExecutionPlan,
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := p.Summarizer.Summarize(ctx, provider.SummarizeInput{
-		Kind: "do",
-		Diff: userPrompt,
-		Lang: p.Lang,
+		Kind:      "do",
+		Diff:      userPrompt,
+		Lang:      p.Lang,
+		MaxTokens: p.MaxTokens,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("do: AI provider error: %w", err)

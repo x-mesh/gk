@@ -83,6 +83,13 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	gitDir := resolveGitDir(ctx, runner)
 
+	// Resolve config once up front so the AI section can honour
+	// per-provider endpoint overrides and the configured default
+	// provider. A parse error is reported by checkConfig below; here we
+	// just fall back to nil so the AI rows still render with built-in
+	// defaults.
+	cfg, _ := config.Load(cmd.Flags())
+
 	checks := []doctorCheck{
 		checkGitVersion(ctx, runner),
 		checkPager(),
@@ -99,18 +106,10 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	// gk still works without any of them; `gk commit` falls back to a
 	// non-AI message when no provider is configured.
 	if flagVerbose || doctorAIRequested(cmd) {
-		checks = append(checks,
-			checkAIAPIProvider("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
-			checkAIAPIProvider("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models"),
-			checkAIAPIProvider("nvidia", "NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1/models"),
-			checkAIAPIProvider("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
-			checkAIProvider("gemini"),
-			checkAIProvider("qwen"),
-			checkAIProvider("kiro-cli"),
-		)
+		checks = append(checks, aiDoctorChecks(cfg)...)
 	}
 	remote := "origin"
-	if cfg, _ := config.Load(cmd.Flags()); cfg != nil && cfg.Remote != "" {
+	if cfg != nil && cfg.Remote != "" {
 		remote = cfg.Remote
 	}
 	if gitDir != "" {

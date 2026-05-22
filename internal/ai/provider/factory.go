@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // FactoryOptions selects and configures a Provider.
@@ -25,6 +26,11 @@ type FactoryOptions struct {
 	// Endpoint optionally overrides the adapter's default endpoint URL.
 	// Same applicability as Model.
 	Endpoint string
+	// Timeout optionally overrides the per-request HTTP timeout for the
+	// HTTP-based adapters (anthropic, openai, groq, nvidia). Zero leaves
+	// the adapter default (60s). CLI adapters ignore it — the command-level
+	// context deadline bounds those instead.
+	Timeout time.Duration
 }
 
 // NewProvider returns a ready-to-use Provider. When Name is set, the
@@ -81,6 +87,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Endpoint != "" {
 			a.Endpoint = opts.Endpoint
 		}
+		if opts.Timeout > 0 {
+			a.Timeout = opts.Timeout
+			a.Client = NewDefaultHTTPClient(opts.Timeout)
+		}
 		return a, nil
 	case "openai":
 		o := NewOpenAI()
@@ -91,6 +101,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 			o.Endpoint = opts.Endpoint
 		}
 		o.nv = o.toNvidia() // re-wire after override
+		if opts.Timeout > 0 {
+			o.nv.Timeout = opts.Timeout
+			o.nv.Client = NewDefaultHTTPClient(opts.Timeout)
+		}
 		return o, nil
 	case "nvidia":
 		n := NewNvidia()
@@ -99,6 +113,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		}
 		if opts.Endpoint != "" {
 			n.Endpoint = opts.Endpoint
+		}
+		if opts.Timeout > 0 {
+			n.Timeout = opts.Timeout
+			n.Client = NewDefaultHTTPClient(opts.Timeout)
 		}
 		return n, nil
 	case "groq":
@@ -110,6 +128,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 			g.Endpoint = opts.Endpoint
 		}
 		g.nv = g.toNvidia()
+		if opts.Timeout > 0 {
+			g.nv.Timeout = opts.Timeout
+			g.nv.Client = NewDefaultHTTPClient(opts.Timeout)
+		}
 		return g, nil
 	case "gemini":
 		g := NewGemini()

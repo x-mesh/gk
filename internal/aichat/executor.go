@@ -3,8 +3,11 @@ package aichat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -28,6 +31,12 @@ type CommandExecutor struct {
 	ErrOut     io.Writer
 	EasyEngine *easy.Engine
 	Dbg        func(string, ...any)
+
+	// GkPath is the path to the gk binary, used to run gk-native commands
+	// (sync, ship, …) that have no git equivalent by re-executing gk
+	// itself. Empty disables that path (the command is reported as not
+	// runnable here). Wire it from os.Executable().
+	GkPath string
 
 	// ConfirmFunc is called to ask the user for confirmation.
 	// If nil, defaults to reading from stdin (y/n/Enter).
@@ -426,9 +435,23 @@ func (e *CommandExecutor) runCommand(ctx context.Context, command string) Comman
 			return cr
 		}
 		if gitEquiv == "" {
-			// No direct git equivalent — report as not executable.
-			cr.Error = fmt.Errorf("gk %s cannot be executed via git runner; run it directly", subcmd)
-			cr.ExitCode = 1
+			// gk-native command (sync, ship, …): no git equivalent, so run
+			// the real gk binary, inheriting the terminal. Requires GkPath.
+			if e.GkPath == "" {
+				cr.Error = fmt.Errorf("gk %s cannot be executed here; run it directly", subcmd)
+				cr.ExitCode = 1
+				return cr
+			}
+			c := exec.CommandContext(ctx, e.GkPath, args...)
+			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if rErr := c.Run(); rErr != nil {
+				cr.Error = rErr
+				cr.ExitCode = 1
+				var ee *exec.ExitError
+				if errors.As(rErr, &ee) {
+					cr.ExitCode = ee.ExitCode()
+				}
+			}
 			return cr
 		}
 		// Replace gk subcommand with git equivalent, keep remaining args.

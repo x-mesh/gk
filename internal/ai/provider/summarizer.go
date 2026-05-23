@@ -12,8 +12,12 @@ type Summarizer interface {
 
 // SummarizeInput describes what to summarize and how.
 type SummarizeInput struct {
-	Kind      string   // "pr" | "review" | "changelog"
-	Diff      string   // unified diff content
+	// Kind selects the prompt template. Known values:
+	//   "pr" | "review" | "changelog" | "merge-plan" | "status" |
+	//   "do" | "ask" | "explain" | "explain-last"
+	// Unknown kinds fall back to a generic summary.
+	Kind      string
+	Diff      string   // unified diff content (or the assembled prompt payload)
 	Commits   []string // commit messages in the range
 	Lang      string   // BCP-47 output language (e.g. "en", "ko")
 	MaxTokens int      // advisory cap; 0 = no cap

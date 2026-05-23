@@ -143,9 +143,10 @@ func (g *Gemini) invoke(ctx context.Context, userPrompt string, stdinExtra []byt
 	if err != nil && len(stdout) == 0 {
 		return nil, fmt.Errorf("gemini: %w (stderr=%s)", err, string(stderr))
 	}
-	// Strip stderr [STARTUP] noise — we don't use stderr here but this
-	// anchors the design intent.
-	_ = filterGeminiStderr(stderr)
+	// Strip stderr [STARTUP] noise; keep the rest so an auth/quota error
+	// that comes back on stderr with empty stdout surfaces to the user
+	// instead of a bare "empty response".
+	filteredStderr := strings.TrimSpace(string(filterGeminiStderr(stderr)))
 
 	var env geminiResponse
 	if jerr := json.Unmarshal(stdout, &env); jerr != nil {
@@ -165,6 +166,9 @@ func (g *Gemini) invoke(ctx context.Context, userPrompt string, stdinExtra []byt
 	}
 	// Synthesize prompt-content error if the envelope was valid but empty.
 	if strings.TrimSpace(env.Response) == "" {
+		if filteredStderr != "" {
+			return nil, fmt.Errorf("%w: empty response (stderr=%s)", ErrProviderResponse, filteredStderr)
+		}
 		return nil, fmt.Errorf("%w: empty response", ErrProviderResponse)
 	}
 	return &env, nil

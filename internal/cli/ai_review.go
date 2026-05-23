@@ -23,11 +23,14 @@ func init() {
 provider's Summarize capability.
 
 By default the staged diff (git diff --cached) is reviewed. Use --range
-to specify a ref range like "ref1..ref2". Output format is plain text
-by default; use --format json for structured output.`,
+to specify a ref range like "ref1..ref2", or --base <branch> to review the
+whole branch (everything since it forked from <branch>, via merge-base, so
+the base's own new commits don't pollute the review). Output format is plain
+text by default; use --format json for structured output.`,
 		RunE: runAIReview,
 	}
 	cmd.Flags().String("range", "", `ref range to review (e.g. "main..HEAD"); default: staged diff`)
+	cmd.Flags().String("base", "", "review the whole branch since it forked from <branch> (merge-base diff)")
 	cmd.Flags().String("format", "text", `output format: "text" (default) or "json"`)
 	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	cmd.Flags().String("provider", "", "override ai.provider")
@@ -38,6 +41,7 @@ by default; use --format json for structured output.`,
 // aiReviewFlags captures CLI flags for `gk review`.
 type aiReviewFlags struct {
 	rangeRef string // e.g. "main..HEAD"; empty = staged diff
+	base     string // review the whole branch via merge-base <base>..HEAD
 	format   string // "text" | "json"
 	dryRun   bool
 	provider string
@@ -46,6 +50,7 @@ type aiReviewFlags struct {
 func readAIReviewFlags(cmd *cobra.Command) aiReviewFlags {
 	var f aiReviewFlags
 	f.rangeRef, _ = cmd.Flags().GetString("range")
+	f.base, _ = cmd.Flags().GetString("base")
 	f.format, _ = cmd.Flags().GetString("format")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.provider, _ = cmd.Flags().GetString("provider")
@@ -111,16 +116,34 @@ type aiReviewDeps struct {
 }
 
 func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags) error {
-	// Compute diff: --range or staged.
+	// Compute diff: --range > --base (merge-base) > staged.
 	var diff string
-	if flags.rangeRef != "" {
+	switch {
+	case flags.rangeRef != "":
 		Dbg("review: using range diff %s", flags.rangeRef)
 		out, _, err := deps.Runner.Run(ctx, "diff", flags.rangeRef)
 		if err != nil {
 			return fmt.Errorf("review: diff %s: %w", flags.rangeRef, err)
 		}
 		diff = string(out)
-	} else {
+	case flags.base != "":
+		// Review the whole branch: diff from the fork point so the base's
+		// own newer commits don't show up (the 2-dot `base..HEAD` pitfall).
+		mbOut, _, err := deps.Runner.Run(ctx, "merge-base", "HEAD", flags.base)
+		if err != nil {
+			return fmt.Errorf("review: merge-base HEAD %s: %w", flags.base, err)
+		}
+		mergeBase := strings.TrimSpace(string(mbOut))
+		if mergeBase == "" {
+			return fmt.Errorf("review: could not determine merge-base between HEAD and %s", flags.base)
+		}
+		Dbg("review: using merge-base diff %s..HEAD", mergeBase)
+		out, _, err := deps.Runner.Run(ctx, "diff", mergeBase+"..HEAD")
+		if err != nil {
+			return fmt.Errorf("review: diff %s..HEAD: %w", mergeBase, err)
+		}
+		diff = string(out)
+	default:
 		Dbg("review: using staged diff")
 		out, _, err := deps.Runner.Run(ctx, "diff", "--cached")
 		if err != nil {

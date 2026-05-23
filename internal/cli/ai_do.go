@@ -188,22 +188,27 @@ func runDo(cmd *cobra.Command, args []string) error {
 	isTTY := ui.IsTerminal()
 
 	// CommandExecutor: preview + execute.
+	gkPath, _ := os.Executable()
 	executor := &aichat.CommandExecutor{
 		Runner:     runner,
 		Out:        cmd.OutOrStdout(),
 		ErrOut:     cmd.ErrOrStderr(),
 		EasyEngine: EasyEngine(),
+		GkPath:     gkPath,
 		Dbg:        Dbg,
 	}
 
 	// Wire up the confirm function using bufio for interactive prompts.
+	// The scanner is created ONCE and captured: a fresh bufio.Scanner per
+	// prompt can buffer-ahead and swallow the next answer when a plan asks
+	// for several confirmations (e.g. multiple dangerous commands).
+	stdinScanner := bufio.NewScanner(os.Stdin)
 	executor.ConfirmFunc = func(prompt string) (bool, error) {
 		fmt.Fprint(cmd.OutOrStdout(), prompt)
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() {
+		if !stdinScanner.Scan() {
 			return false, nil
 		}
-		answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+		answer := strings.ToLower(strings.TrimSpace(stdinScanner.Text()))
 		return answer == "" || answer == "y" || answer == "yes", nil
 	}
 

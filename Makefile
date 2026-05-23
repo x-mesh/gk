@@ -1,4 +1,4 @@
-.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration lint fmt vet tidy clean install install-gk uninstall uninstall-gk release-snapshot check help
+.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration test-e2e lint fmt vet tidy clean install install-gk uninstall uninstall-gk release-snapshot check help
 
 BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
@@ -55,6 +55,9 @@ test-cli:
 test-integration:
 	go test ./internal/cli/ -race -run "Integration" -count=1 -v
 
+test-e2e:
+	go test -tags e2e ./internal/e2e/ -count=1 -v
+
 lint:
 	golangci-lint run
 
@@ -81,7 +84,7 @@ release-snapshot:
 	goreleaser release --snapshot --clean
 
 help:
-	@echo "Targets: build, install, install-gk, uninstall, uninstall-gk, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, lint, fmt, vet, tidy, check, clean, release-snapshot"
+	@echo "Targets: build, install, install-gk, uninstall, uninstall-gk, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, test-e2e, lint, fmt, vet, tidy, check, clean, release-snapshot"
 	@echo ""
 	@echo "  check             vet + build + test + lint — same gates the CI runs"
 	@echo ""
@@ -91,6 +94,7 @@ help:
 	@echo "  test-privacy      Privacy Gate tests (redaction, threshold, audit)"
 	@echo "  test-cli          CLI package tests (all commands)"
 	@echo "  test-integration  integration tests (privacy gate + fallback chain e2e)"
+	@echo "  test-e2e          end-to-end tests driving the built gk binary (-tags e2e)"
 	@echo ""
 	@echo "  install           writes $(BINDIR)/$(INSTALL_NAME)  (safe default: gk-dev)"
 	@echo "  install-gk        writes $(BINDIR)/gk               (use the dev build AS gk)"

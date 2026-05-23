@@ -232,6 +232,51 @@ manually with a shell loop if you need it.
 
 ---
 
+## gk refresh
+
+Fast-forward long-lived branches to their remote counterparts in one command,
+without leaving the branch you are on. Each tracked branch only fast-forwards
+to its own remote (`main ←ff── origin/main`, `develop ←ff── origin/develop`) —
+it never rebases or merges across branches, so it is safe on shared branches:
+a diverged branch is skipped with a hint instead of being rewritten.
+
+Branches you are not standing on move via `update-ref` (the working tree is
+untouched), so `gk refresh` works even from a feature branch with a dirty tree.
+
+Alias: `gk re`.
+
+### Synopsis
+
+```
+gk refresh [branch...] [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--no-fetch` | false | Skip the network fetch; fast-forward against already-cached remote refs |
+
+### Target resolution
+
+First match wins:
+
+1. positional args (`gk refresh main release/1.x`)
+2. `refresh.tracked` in `.gk.yaml`
+3. dynamic — the repo's main branch (origin/HEAD → main → master) plus
+   develop/dev when they exist locally
+
+### Examples
+
+```
+gk refresh                 # ff main + develop to their remotes
+gk re                      # alias
+gk refresh main            # only main
+gk refresh --no-fetch      # use cached remote refs (offline)
+```
+
+---
+
 ## gk pull
 
 Fetch and rebase the current branch onto the base branch.
@@ -866,6 +911,7 @@ gk next [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--run`, `-r` | false | Execute the single top recommended next step after confirmation. The command is taken from gk's deterministic action allowlist (never free-form AI output); risky commands and non-TTY sessions are refused with a copy-paste hint. |
 | `--provider <name>` | `ai.provider` | Provider override. |
 | `--lang <code>` | `output.lang` / `ai.lang` | Language override, e.g. `en` or `ko`. |
 
@@ -2238,16 +2284,21 @@ gk review [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--range <ref1>..<ref2>` | | Review the diff between two refs instead of staged changes |
+| `--base <branch>` | | Review the whole branch from its fork point (`merge-base <branch> HEAD`), so the base branch's own commits don't pollute the review |
 | `--format <fmt>` | `text` | Output format: `text` or `json` |
 | `--dry-run` | false | Print the prompt that would be sent without calling the provider |
-| `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
+| `--provider <name>` | config | Override `ai.provider` (`anthropic` \| `openai` \| `nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 
 #### What it does
 
-1. Without `--range`: reviews the staged diff (`git diff --cached`).
-2. With `--range`: reviews the diff between the two specified refs.
-3. Calls the provider's Summarize capability with Kind="review".
-4. Outputs file-level comments with severity (info/warning/error) and suggested fixes.
+Diff selection (first match wins): `--range` > `--base` (merge-base) > staged
+(`git diff --cached`). It then calls the provider's Summarize capability with
+Kind="review" and renders **actionable findings**: a verdict
+(`approve`/`comment`/`changes_requested`), then each finding's severity
+(`critical`/`high`/`medium`/`low`), location (`path:line`), what is wrong, why
+it matters, and a concrete fix. `--format json` emits the same as structured
+JSON; if the provider doesn't return the findings contract, the raw text is
+shown instead.
 
 If the diff is empty, prints a message indicating no changes to review and exits with code 0.
 

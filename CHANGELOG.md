@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-05-23
+
+### Added
+
+- **`gk refresh` (alias `gk re`)** fast-forwards your long-lived branches
+  (main, develop) to their remote counterparts in one command, without leaving
+  the branch you are on. Each tracked branch only fast-forwards to its own
+  remote — never a cross-branch rebase — so it is safe on shared branches: a
+  diverged branch is skipped with a hint instead of being rewritten. The list
+  resolves from `refresh.tracked` in `.gk.yaml`, falling back to the repo's
+  main plus develop/dev when unset.
+- **`gk next --run` (`-r`)** executes the single top recommended next step
+  after confirmation. The command comes from gk's deterministic action
+  allowlist (never free-form AI output): gk-native commands re-execute the gk
+  binary, git commands run directly, and risky or non-TTY cases are refused.
+- **`gk review --base <branch>`** reviews the whole branch from its fork point
+  (merge-base) so the base branch's own commits don't pollute the review.
+- **`gk status --ai --json`** emits the structured status facts (branch,
+  counts, recommended commands) for editors and scripts, with no provider call.
+
+### Changed
+
+- **`--ai` output is now advisory, not just a summary.** `gk review` returns
+  severity-ordered, actionable findings (`path:line`, what is wrong, why, and a
+  concrete fix); `gk status --ai` and `gk next` lead with a single RECOMMEND +
+  WHY + ALTERNATIVE instead of a flat menu; `gk pr` opens with the key takeaway
+  and adds Reviewer-focus and Risks-&-mitigations sections. The shared system
+  prompt now coaches (prioritize, state trade-offs) rather than describe.
+- **AI calls are bounded and cheaper to repeat.** Every AI command honours a
+  per-call timeout and `max_tokens`, caches results by repository state under
+  `.git/gk-ai-cache` (an unchanged tree reuses the answer), and Anthropic
+  requests use prompt caching for the fixed system prompt. `gk review` and
+  `gk changelog` `--format json` now emit real structured JSON instead of raw
+  text, and the provider auto-detect order is unified across commands
+  (anthropic → openai → nvidia → groq → gemini → qwen → kiro).
+- **`gk status --ai` is grounded and guarded.** It can include the working-tree
+  diff (`ai.assist.include_diff`), flags hard-to-undo commands in the answer
+  with a caution footer, and in `mode: auto` skips the provider entirely when
+  the tree is idle.
+
+### Fixed
+
+- **`gk commit` no longer drops files the AI classifier leaves out.** Files the
+  model omitted from every group were silently skipped and never committed, so
+  one run could miss changes and force a re-run. The classifier now ignores
+  phantom paths the model invents and sweeps any uncovered file into a fallback
+  group, so a single `gk commit` covers everything in scope.
+- **AI privacy and remote policy now apply to every command.** The privacy gate
+  redacts the actual commit diff sent to providers (previously only a summary
+  was redacted); `ai.commit.allow_remote=false` is enforced across
+  pr/review/changelog/ask/explain/do/status/merge, not just commit; and `gk do`
+  is hardened — it re-checks the git subcommand allowlist at execution time,
+  treats `rm`/`restore`/`checkout -- <path>`/`stash drop` as dangerous, and
+  redacts repository context before it leaves the process.
+- **`gk doctor --ai` reports accurately.** It honours configured provider
+  endpoints, distinguishes "key set (validity not verified)" from "endpoint
+  reachable", and surfaces a provider's stderr (auth/quota) instead of a bare
+  "empty response".
+
+### Removed
+
+- **`ai.chat.safety_confirm`** — the config field was a no-op (dangerous
+  `gk do` commands always require confirmation), so it was removed rather than
+  imply a toggle that never worked.
+
 ## [0.53.0] - 2026-05-20
 
 ### Changed

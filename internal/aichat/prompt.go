@@ -28,12 +28,18 @@ JSON schema:
 const explainSystemPrompt = `You diagnose git errors and explain git commands.
 Rules:
 - Structure output in three sections: Cause, Solution, Prevention.
-- Include specific gk/git commands in the Solution section.
+- In Solution, lead with the single safest recommended command, then list
+  alternatives and when to prefer each.
+- Call out any irreversible step explicitly before recommending it.
+- Include specific gk/git commands; prefer gk over raw git.
 - Reference the user's actual branch names and file paths from the context.`
 
 // askSystemPrompt is the additional system prompt for gk ask.
 const askSystemPrompt = `You answer git/gk questions using the repository context provided.
 Rules:
+- Lead with a direct answer, then the recommended next command and one
+  alternative when relevant.
+- Note any risk or caveat before an irreversible command.
 - Use the user's actual branch names, commit hashes, and file names in examples.
 - End with 1-3 related gk commands the user can try.
 - If the question is not about git/gk, politely redirect.`

@@ -173,7 +173,7 @@ func TestNvidiaSummarize_PromptContainsKindContent(t *testing.T) {
 		wantSub string // substring expected in the user prompt
 	}{
 		{"pr", "Pull Request"},
-		{"review", "code review"},
+		{"review", "ACTIONABLE findings"},
 		{"changelog", "changelog"},
 	}
 	for _, tt := range tests {

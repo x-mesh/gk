@@ -118,7 +118,7 @@ func TestAIReviewCoreRangeDiff(t *testing.T) {
 func TestAIReviewCoreFormatJSON(t *testing.T) {
 	fake := provider.NewFake()
 	fake.SummarizeResponses = []provider.SummarizeResult{
-		{Text: `{"files":[{"path":"foo.go","severity":"info"}]}`, Model: "m", TokensUsed: 5},
+		{Text: `{"verdict":"changes_requested","summary":"two issues","findings":[{"severity":"high","loc":"foo.go:42","issue":"nil deref","why":"panics","fix":"guard nil"}]}`, Model: "m", TokensUsed: 5},
 	}
 
 	runner := &git.FakeRunner{
@@ -139,17 +139,52 @@ func TestAIReviewCoreFormatJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// --format json now emits real structured JSON: a top-level object with
-	// provider/model and the review text under "review".
-	var got map[string]string
+	// --format json now emits the structured actionable-findings contract.
+	var got reviewFindings
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
 	}
-	if got["provider"] != "fake" {
-		t.Errorf("provider = %q, want fake", got["provider"])
+	if got.Provider != "fake" {
+		t.Errorf("provider = %q, want fake", got.Provider)
 	}
-	if !strings.Contains(got["review"], `"files"`) {
-		t.Errorf("review field should carry the provider text, got: %q", got["review"])
+	if got.Verdict != "changes_requested" {
+		t.Errorf("verdict = %q", got.Verdict)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Loc != "foo.go:42" {
+		t.Errorf("findings not parsed into structure: %+v", got.Findings)
+	}
+}
+
+func TestAIReviewCoreTextRendersFindings(t *testing.T) {
+	fake := provider.NewFake()
+	fake.SummarizeResponses = []provider.SummarizeResult{
+		{Text: `{"verdict":"changes_requested","summary":"s","findings":[{"severity":"high","loc":"foo.go:42","issue":"nil deref","why":"panics","fix":"guard"}]}`, Model: "m"},
+	}
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{"diff --cached": {Stdout: "d"}}}
+	out := &bytes.Buffer{}
+	if err := runAIReviewCore(context.Background(), aiReviewDeps{
+		Runner: runner, Provider: fake, Lang: "en", Out: out, ErrOut: &bytes.Buffer{},
+	}, aiReviewFlags{format: "text"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := stripped(out.String())
+	for _, want := range []string{"HIGH", "foo.go:42", "nil deref", "changes requested"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("text output missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestParseReviewFindings(t *testing.T) {
+	if _, ok := parseReviewFindings("not json at all"); ok {
+		t.Error("non-JSON should not parse")
+	}
+	if _, ok := parseReviewFindings(`{"unrelated":1}`); ok {
+		t.Error("unrelated JSON should not parse as findings")
+	}
+	fr, ok := parseReviewFindings("```json\n{\"verdict\":\"approve\",\"summary\":\"ok\"}\n```")
+	if !ok || fr.Verdict != "approve" {
+		t.Errorf("fenced JSON should parse: ok=%v fr=%+v", ok, fr)
 	}
 }
 

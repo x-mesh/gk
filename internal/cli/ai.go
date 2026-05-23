@@ -19,6 +19,7 @@ import (
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // aiAutoOrder is the canonical provider auto-detect order, shared by the
@@ -253,6 +254,30 @@ func writeAICache(ctx context.Context, runner git.Runner, kind, key, text string
 		return
 	}
 	_ = os.Rename(tmp, filepath.Join(dir, key))
+}
+
+// emitAIAdvice renders a free-text AI answer as a titled section, appending
+// a caution when the model mentioned a hard-to-undo command. Shared by the
+// terminal-read AI surfaces (status, ask, explain) so they get consistent
+// chrome and the same post-hoc safety guard. Paste-oriented outputs (pr,
+// changelog) deliberately stay raw — section chrome would pollute content
+// the user copies elsewhere.
+func emitAIAdvice(out io.Writer, title, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	lines := strings.Split(text, "\n")
+	if danger := flagDangerousMentions(text); len(danger) > 0 {
+		lines = append(lines, "",
+			"⚠ mentions hard-to-undo commands: "+strings.Join(danger, ", ")+
+				" — verify before running.")
+	}
+	fmt.Fprintln(out)
+	fmt.Fprint(out, ui.RenderSection(title, "", lines, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionInfo,
+	}))
 }
 
 // writeAIJSON marshals v as indented JSON to w. Backs the `--format json`

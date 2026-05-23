@@ -182,6 +182,6 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), result)
+	emitAIAdvice(cmd.OutOrStdout(), "explain", result)
 	return nil
 }

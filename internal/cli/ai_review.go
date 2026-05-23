@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -198,7 +199,17 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 		writeAICache(ctx, deps.Runner, "review", cacheKey, text)
 	}
 
-	// Output based on --format.
+	// Output: prefer the actionable-findings contract; fall back to raw
+	// text when the provider didn't honour it (e.g. some CLI providers).
+	if fr, ok := parseReviewFindings(text); ok {
+		fr.Provider = deps.Provider.Name()
+		fr.Model = model
+		if strings.EqualFold(flags.format, "json") {
+			return writeAIJSON(deps.Out, fr)
+		}
+		renderReviewFindings(deps.Out, fr)
+		return nil
+	}
 	if strings.EqualFold(flags.format, "json") {
 		return writeAIJSON(deps.Out, map[string]string{
 			"provider": deps.Provider.Name(),
@@ -206,6 +217,91 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 			"review":   strings.TrimSpace(text),
 		})
 	}
-	fmt.Fprint(deps.Out, text)
+	emitAIAdvice(deps.Out, "review", text)
 	return nil
+}
+
+// reviewFindings is the actionable-review contract the review prompt asks
+// the model to emit (see buildSummarizeUserPrompt, Kind "review").
+type reviewFindings struct {
+	Provider string          `json:"provider,omitempty"`
+	Model    string          `json:"model,omitempty"`
+	Verdict  string          `json:"verdict"`
+	Summary  string          `json:"summary"`
+	Findings []reviewFinding `json:"findings"`
+}
+
+type reviewFinding struct {
+	Severity string `json:"severity"`
+	Loc      string `json:"loc"`
+	Issue    string `json:"issue"`
+	Why      string `json:"why"`
+	Fix      string `json:"fix"`
+}
+
+// parseReviewFindings extracts the review JSON contract from model output,
+// tolerating Markdown fences or surrounding prose by slicing the outermost
+// {...}. ok=false when no usable contract is present, so the caller can
+// fall back to rendering the raw text.
+func parseReviewFindings(text string) (reviewFindings, bool) {
+	s := strings.TrimSpace(text)
+	if i := strings.IndexByte(s, '{'); i >= 0 {
+		if j := strings.LastIndexByte(s, '}'); j > i {
+			s = s[i : j+1]
+		}
+	}
+	var fr reviewFindings
+	if err := json.Unmarshal([]byte(s), &fr); err != nil {
+		return reviewFindings{}, false
+	}
+	if fr.Verdict == "" && fr.Summary == "" && len(fr.Findings) == 0 {
+		return reviewFindings{}, false
+	}
+	return fr, true
+}
+
+// renderReviewFindings prints the findings as a severity-ordered checklist
+// in a titled section, colour-keyed by verdict.
+func renderReviewFindings(out io.Writer, fr reviewFindings) {
+	sectionColor := ui.SectionInfo
+	switch strings.ToLower(fr.Verdict) {
+	case "changes_requested":
+		sectionColor = ui.SectionCaution
+	case "approve":
+		sectionColor = ui.SectionHealth
+	}
+	summary := strings.TrimSpace(fr.Summary)
+	if fr.Verdict != "" {
+		v := strings.ReplaceAll(fr.Verdict, "_", " ")
+		if summary != "" {
+			summary = v + " · " + summary
+		} else {
+			summary = v
+		}
+	}
+	var body []string
+	if len(fr.Findings) == 0 {
+		body = append(body, "no blocking findings")
+	}
+	for _, f := range fr.Findings {
+		head := "[" + strings.ToUpper(f.Severity) + "]"
+		if f.Loc != "" {
+			head += " " + f.Loc
+		}
+		body = append(body, head)
+		if f.Issue != "" {
+			body = append(body, "  "+f.Issue)
+		}
+		if f.Why != "" {
+			body = append(body, "  why: "+f.Why)
+		}
+		if f.Fix != "" {
+			body = append(body, "  fix: "+f.Fix)
+		}
+	}
+	fmt.Fprintln(out)
+	fmt.Fprint(out, ui.RenderSection("review", summary, body, ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  sectionColor,
+	}))
 }

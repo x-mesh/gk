@@ -662,6 +662,7 @@ func buildStatusAssistPrompt(facts statusAssistFacts, lang, diff string) string 
 	fmt.Fprintln(&b, "    WHY: <one line tied to a fact above — ahead/behind/conflicts/operation/...>")
 	fmt.Fprintln(&b, "    ALTERNATIVE: <command> — <when to prefer it instead>")
 	fmt.Fprintln(&b, "- Then at most 3 short lines of extra context. Do not list every command.")
+	fmt.Fprintln(&b, "- Do not prefix the answer with a language code or label (no \"KO:\" / \"EN:\").")
 	fmt.Fprintln(&b, "- Do not invent branches, files, commits, or remote state.")
 	fmt.Fprintln(&b, "- Never recommend destructive or history-rewriting commands (reset --hard, push --force, clean -f, branch -D, filter-repo).")
 	fmt.Fprintln(&b, "- Prefer safe, reversible steps before push, reset, or history rewrite.")

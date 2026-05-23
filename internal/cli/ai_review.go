@@ -280,7 +280,21 @@ func parseReviewFindings(text string) (reviewFindings, bool) {
 	if fr.Verdict == "" && fr.Summary == "" && len(fr.Findings) == 0 {
 		return reviewFindings{}, false
 	}
+	for i := range fr.Findings {
+		fr.Findings[i].Loc = cleanReviewLoc(fr.Findings[i].Loc)
+	}
 	return fr, true
+}
+
+// cleanReviewLoc strips git's diff path prefixes (a/, b/) that models often
+// echo into the cited location ("a/parser.go:14" → "parser.go:14"). The
+// rare repo with a top-level a/ or b/ directory loses the prefix; the
+// readability win is worth it.
+func cleanReviewLoc(loc string) string {
+	loc = strings.TrimSpace(loc)
+	loc = strings.TrimPrefix(loc, "a/")
+	loc = strings.TrimPrefix(loc, "b/")
+	return loc
 }
 
 // renderReviewFindings prints the findings as a severity-ordered checklist

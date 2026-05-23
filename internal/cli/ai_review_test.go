@@ -175,6 +175,27 @@ func TestAIReviewCoreTextRendersFindings(t *testing.T) {
 	}
 }
 
+func TestCleanReviewLoc(t *testing.T) {
+	cases := map[string]string{
+		"a/foo.go:14": "foo.go:14",
+		"b/x/y.go:3":  "x/y.go:3",
+		"foo.go:1":    "foo.go:1",
+		" a/z ":       "z",
+	}
+	for in, want := range cases {
+		if got := cleanReviewLoc(in); got != want {
+			t.Errorf("cleanReviewLoc(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseReviewFindingsCleansLoc(t *testing.T) {
+	fr, ok := parseReviewFindings(`{"verdict":"comment","findings":[{"severity":"high","loc":"a/foo.go:14"}]}`)
+	if !ok || len(fr.Findings) != 1 || fr.Findings[0].Loc != "foo.go:14" {
+		t.Errorf("loc not cleaned at parse: ok=%v findings=%+v", ok, fr.Findings)
+	}
+}
+
 func TestParseReviewFindings(t *testing.T) {
 	if _, ok := parseReviewFindings("not json at all"); ok {
 		t.Error("non-JSON should not parse")

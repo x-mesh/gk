@@ -190,7 +190,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Description |
 |---|---|
 | `gk commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
-| `gk next` | Explain the current repository state in plain language and suggest safe next commands. Falls back to a local rule-based plan when no AI provider is available |
+| `gk next` | Explain the current repository state in plain language and suggest safe next commands. Falls back to a local rule-based plan when no AI provider is available. `--run`/`-r` executes the top recommended step (from gk's deterministic allowlist, never free-form AI output) after confirmation; risky commands are refused |
 | `gk pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
 | `gk review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
 | `gk changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |

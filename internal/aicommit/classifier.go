@@ -216,6 +216,12 @@ func overrideWithPathRules(groups []provider.Group, files []FileChange) []provid
 	for _, g := range groups {
 		primary := groupHasPrimaryFile(g)
 		for _, p := range g.Files {
+			// Ignore paths the LLM invented or normalized away — only
+			// real gathered files may be committed (otherwise a later
+			// `git commit -- <path>` fails on a phantom path).
+			if _, known := fileByPath[p]; !known {
+				continue
+			}
 			ht := heuristicType(p)
 			if ht != "" && ht != g.Type && !isAuxiliaryForPrimaryGroup(ht, primary) {
 				addTo(ht, "", p)
@@ -226,6 +232,30 @@ func overrideWithPathRules(groups []provider.Group, files []FileChange) []provid
 			if _, ok := rationale[key{typ: g.Type, scope: g.Scope}]; !ok {
 				rationale[key{typ: g.Type, scope: g.Scope}] = g.Rationale
 			}
+		}
+	}
+
+	// Coverage guard: the LLM sometimes omits files from every group.
+	// Without this they are silently dropped and never committed, forcing
+	// the user to re-run `gk commit`. Sweep any uncovered gathered file
+	// into its heuristic type (or "chore") so one run commits everything.
+	covered := make(map[string]bool)
+	for _, ps := range bucket {
+		for _, p := range ps {
+			covered[p] = true
+		}
+	}
+	for _, f := range files {
+		if covered[f.Path] {
+			continue
+		}
+		t := heuristicType(f.Path)
+		if t == "" {
+			t = "chore"
+		}
+		addTo(t, "", f.Path)
+		if _, ok := rationale[key{typ: t}]; !ok {
+			rationale[key{typ: t}] = "swept in (uncovered by classifier)"
 		}
 	}
 

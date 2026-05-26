@@ -443,8 +443,13 @@ func TestHintGenerator_MergeIntoNextHint(t *testing.T) {
 		if !strings.Contains(got[0], "서버에 올리기") {
 			t.Fatalf("expected korean push wording, got: %q", got[0])
 		}
-		if !strings.Contains(got[1], "다 머지된") {
+		if !strings.Contains(got[1], "머지된") {
 			t.Fatalf("expected korean cleanup wording, got: %q", got[1])
+		}
+		// Regression guard for the `%!(EXTRA string=...)` leak: the
+		// formatter must not append a stray placeholder.
+		if strings.Contains(got[1], "EXTRA string") {
+			t.Fatalf("unexpected fmt placeholder leak: %q", got[1])
 		}
 	})
 

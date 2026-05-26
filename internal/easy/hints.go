@@ -143,7 +143,10 @@ func (g *HintGenerator) MergeIntoNextHint(receiver string, sourceFullyMerged boo
 		out = append(out, h)
 	}
 	if sourceFullyMerged && source != "" && source != receiver {
-		if h := g.Generate("hint.merge.into.cleanup_source", source, source); h != "" {
+		// Single `%s` in both ModeNormal and ModeEasy — passing source
+		// twice used to leak as `%!(EXTRA string=...)` on the normal
+		// path because the formatter received an extra arg.
+		if h := g.Generate("hint.merge.into.cleanup_source", source); h != "" {
 			out = append(out, h)
 		}
 	}

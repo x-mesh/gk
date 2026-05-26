@@ -50,7 +50,7 @@ func runConfigInit(cmd *cobra.Command, _ []string) error {
 	err := config.WriteDefaultConfig(path, force)
 	switch {
 	case err == nil:
-		fmt.Fprintf(cmd.OutOrStdout(), "created: %s\n", path)
+		fmt.Fprintln(cmd.OutOrStdout(), successLine("created", path))
 		return nil
 	case errors.Is(err, config.ErrConfigExists):
 		fmt.Fprintf(cmd.OutOrStdout(), "skipped: %s (already exists — pass --force to overwrite)\n", path)

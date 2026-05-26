@@ -89,7 +89,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if _, _, err := gitRunner.Run(context.Background(), "init"); err != nil {
 			return fmt.Errorf("gk init: git init: %w", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "initialized git repository")
+		fmt.Fprintln(cmd.OutOrStdout(), successLine("initialized", "git repository"))
 	}
 
 	// 프로젝트 분석

@@ -695,6 +695,55 @@ func TestRenderMergeSummaryNoCommitHeadUnchanged(t *testing.T) {
 	}
 }
 
+// TestStylizeHintLine — the next:/also:/hint: nudge lines printed by
+// any gk command get re-painted (label dim, command cyan, parenthetical
+// meta dim). The test is color-agnostic on purpose: it asserts the
+// textual substrings survive, since downstream tests scan for
+// "gk push --from" / "gk branch delete" without caring about ANSI.
+func TestStylizeHintLine(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		wantIn []string
+	}{
+		{
+			name:   "next-line keeps the gk command verbatim",
+			in:     "next: gk push --from main",
+			wantIn: []string{"next:", "gk push --from main"},
+		},
+		{
+			name:   "also-line keeps command and the parenthetical meta",
+			in:     "also: gk branch delete develop (fully merged)",
+			wantIn: []string{"also:", "gk branch delete develop", "(fully merged)"},
+		},
+		{
+			name:   "hint-line gets the same treatment",
+			in:     "hint: run gk commit --abort to undo",
+			wantIn: []string{"hint:", "run gk commit --abort to undo"},
+		},
+		{
+			name:   "easy-mode line falls through unchanged",
+			in:     "↑ next: upload to the server with gk push --from main",
+			wantIn: []string{"↑ next:", "gk push --from main"},
+		},
+		{
+			name:   "unrelated line falls through unchanged",
+			in:     "some other hint line",
+			wantIn: []string{"some other hint line"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stylizeHintLine(tc.in)
+			for _, want := range tc.wantIn {
+				if !strings.Contains(got, want) {
+					t.Errorf("stylizeHintLine(%q) = %q; missing %q", tc.in, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCleanMergePlanSummaryRemovesMarkdownArtifacts(t *testing.T) {
 	got := cleanMergePlanSummary(">\n\n# Merge Plan\n\n## Risk\n```bash\nmake test\n```\nNEXT\n")
 	if strings.Contains(got, ">") {

@@ -89,7 +89,7 @@ func runNext(cmd *cobra.Command, _ []string) error {
 // are refused outright, and a TTY is required so the user can confirm.
 func runRecommendedAction(ctx context.Context, cmd *cobra.Command, runner git.Runner, facts statusAssistFacts) error {
 	if len(facts.Actions) == 0 {
-		fmt.Fprintln(cmd.ErrOrStderr(), "next: nothing to run — already in good shape")
+		fmt.Fprintln(cmd.ErrOrStderr(), stylizeHintLine("next: nothing to run — already in good shape"))
 		return nil
 	}
 	cmdline := strings.TrimSpace(facts.Actions[0].Command)

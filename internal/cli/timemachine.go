@@ -475,9 +475,9 @@ func runTimemachineRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "restored to %s (%s)\n", shortSHA(res.To), target)
-	fmt.Fprintf(w, "backup saved at %s\n", res.BackupRef)
-	fmt.Fprintf(w, "to revert: gk timemachine restore %s --mode hard\n", res.BackupRef)
+	fmt.Fprintln(w, successLinef("restored", "to %s (%s)", shortSHA(res.To), target))
+	fmt.Fprintf(w, "%s %s\n", cellFaint("backup saved at"), res.BackupRef)
+	fmt.Fprintln(w, stylizeHintLine(fmt.Sprintf("hint: gk timemachine restore %s --mode hard", res.BackupRef)))
 	if res.AutostashRef != "" {
 		fmt.Fprintf(w, "note: autostash pop had conflicts; resolve via: git stash pop %s\n", res.AutostashRef)
 	}

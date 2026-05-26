@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -225,12 +224,9 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		return err
 	}
 
-	hintLabel := color.New(color.FgMagenta, color.Bold).Sprint("hint:")
-	cmdStyle := color.New(color.Faint).SprintFunc()
-	fmt.Fprintf(cmd.OutOrStdout(), "undone to %s\n", shortSHA(res.To))
-	fmt.Fprintf(cmd.OutOrStdout(), "backup saved at %s\n", res.BackupRef)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s to revert this undo, run → %s\n",
-		hintLabel, cmdStyle("git reset --hard "+res.BackupRef))
+	fmt.Fprintln(cmd.OutOrStdout(), successLinef("undone", "to %s", shortSHA(res.To)))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cellFaint("backup saved at"), res.BackupRef)
+	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf("hint: git reset --hard %s", res.BackupRef)))
 	return nil
 }
 

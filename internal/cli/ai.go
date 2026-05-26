@@ -125,9 +125,9 @@ func renderPrivacyFindings(w io.Writer, findings []aicommit.RedactFinding) {
 				r.f.Placeholder, r.f.Line, displayPattern(r.f.Pattern), r.f.Original)
 		}
 	}
-	fmt.Fprintln(w, "hint: edit the offending lines, narrow with --staged-only,"+
+	fmt.Fprintln(w, stylizeHintLine("hint: edit the offending lines, narrow with --staged-only,"+
 		" raise ai.commit.privacy.max_secrets in .gk.yaml,"+
-		" or pass --skip-privacy to bypass the threshold (redaction still applies)")
+		" or pass --skip-privacy to bypass the threshold (redaction still applies)"))
 }
 
 func displayPattern(p string) string {

@@ -19,8 +19,9 @@ import (
 )
 
 func TestCalendarLines(t *testing.T) {
+	prevNoColor := color.NoColor
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = prevNoColor })
 
 	mon := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC) // Monday
 	dates := []time.Time{
@@ -65,8 +66,9 @@ func TestCcClassify(t *testing.T) {
 }
 
 func TestCcColorize(t *testing.T) {
+	prevNoColor := color.NoColor
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = prevNoColor })
 
 	// With NoColor, the colorize helper still returns the type portion
 	// verbatim, so we can assert the output composition deterministically.
@@ -104,8 +106,9 @@ Signed-off-by: Carol <c@ex.com>
 }
 
 func TestRenderImpactBar(t *testing.T) {
+	prevNoColor := color.NoColor
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = prevNoColor })
 	if got := renderImpactBar(0, 0, 100); got != "" {
 		t.Errorf("expected empty bar for 0 changes, got %q", got)
 	}
@@ -260,8 +263,9 @@ func TestResolveLogVis(t *testing.T) {
 }
 
 func TestPulseLine(t *testing.T) {
+	prevNoColor := color.NoColor
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = prevNoColor })
 
 	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
 	dates := []time.Time{

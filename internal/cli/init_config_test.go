@@ -32,7 +32,7 @@ func TestRunInitConfigWritesToCustomOut(t *testing.T) {
 	if err := runInitConfig(found, nil); err != nil {
 		t.Fatalf("runInitConfig: %v", err)
 	}
-	if !strings.Contains(buf.String(), "created:") {
+	if !strings.Contains(buf.String(), "created "+target) {
 		t.Errorf("stdout: %q", buf.String())
 	}
 	data, err := os.ReadFile(target)

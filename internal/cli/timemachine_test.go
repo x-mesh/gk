@@ -67,7 +67,7 @@ func TestTimemachineRestore_MovesHEAD_Mixed(t *testing.T) {
 	if !strings.Contains(out, "refs/gk/timemachine-backup/") {
 		t.Errorf("expected backup ref in output, got: %q", out)
 	}
-	if !strings.Contains(out, "to revert: gk timemachine restore") {
+	if !strings.Contains(out, "hint: gk timemachine restore") {
 		t.Errorf("expected revert hint, got: %q", out)
 	}
 }

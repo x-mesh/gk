@@ -148,7 +148,7 @@ tail
 
 func TestConflictAnatomy(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "f.ts"), []byte("<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n"), 0644); err != nil {
@@ -195,7 +195,7 @@ func TestFetchDebounceMarker(t *testing.T) {
 
 func TestFileKindGlyph(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	cases := []struct {
 		path      string
@@ -243,7 +243,7 @@ func TestTopDir(t *testing.T) {
 
 func TestRenderStatusHeatmap(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	entries := []git.StatusEntry{
 		{Path: "src/api/a.go", XY: "M.", Kind: 0},
@@ -334,7 +334,7 @@ func TestRenderStashSummary(t *testing.T) {
 		t.Skip("integration test skipped in short mode")
 	}
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	r := testutil.NewRepo(t)
 	runner := &git.ExecRunner{Dir: r.Dir}
@@ -575,7 +575,7 @@ func keysOf(m map[string]*treeNode) []string {
 
 func TestRenderStatusTree_Output(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	entries := []git.StatusEntry{
 		{Path: "src/api/user.ts", XY: ".M"},
@@ -611,7 +611,7 @@ func TestGroupEntriesSeparatesSubmoduleDirtiness(t *testing.T) {
 
 func TestRenderSubmoduleSection(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	buf := &bytes.Buffer{}
 	renderSubmoduleSection(context.Background(), buf, nil, []git.StatusEntry{
@@ -627,7 +627,7 @@ func TestRenderSubmoduleSection(t *testing.T) {
 
 func TestRenderSubmoduleSectionVerboseAction(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	buf := &bytes.Buffer{}
 	renderSubmoduleSection(context.Background(), buf, nil, []git.StatusEntry{
@@ -640,7 +640,7 @@ func TestRenderSubmoduleSectionVerboseAction(t *testing.T) {
 
 func TestRenderEntryStateSubmoduleGitlink(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	e := git.StatusEntry{Path: "ghostty", XY: ".M", Sub: "SC..", Kind: git.KindOrdinary}
 	if got := renderEntryState(e, xyStyleLabels); !strings.Contains(got, "submod") {
@@ -653,7 +653,7 @@ func TestRenderEntryStateSubmoduleGitlink(t *testing.T) {
 
 func TestRenderEntryStateSplit(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	e := git.StatusEntry{Path: "app.go", XY: "MM", Kind: git.KindOrdinary}
 	if got := renderEntryState(e, xyStyleLabels); !strings.Contains(got, "split") {
@@ -813,7 +813,7 @@ func TestRenderStatusJSON(t *testing.T) {
 
 func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	entries := []git.StatusEntry{
 		{Path: "src/api/v2/auth.ts", XY: ".M"},
@@ -903,7 +903,7 @@ func TestUntrackedAge(t *testing.T) {
 
 func TestRenderTypesChip(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	mk := func(paths ...string) []git.StatusEntry {
 		out := make([]git.StatusEntry, 0, len(paths))
@@ -970,7 +970,7 @@ func TestRenderTypesChip(t *testing.T) {
 
 func TestRenderProgressMeter(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	mk := func(c, s, m, u int) groupedEntries {
 		g := groupedEntries{}
@@ -1020,7 +1020,7 @@ func TestRenderProgressMeter(t *testing.T) {
 
 func TestRenderDensityBar(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	mk := func(c, s, m, u int) groupedEntries {
 		g := groupedEntries{}
@@ -1076,7 +1076,7 @@ func TestRenderDensityBar(t *testing.T) {
 
 func TestRenderDivergenceGauge(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	cases := []struct {
 		name           string
@@ -1281,7 +1281,7 @@ func TestCompactUpstreamSuffix(t *testing.T) {
 
 func TestFormatDiffStat(t *testing.T) {
 	color.NoColor = true
-	t.Cleanup(func() { color.NoColor = false })
+	t.Cleanup(func() { color.NoColor = true })
 
 	cases := []struct {
 		name   string
@@ -1356,7 +1356,7 @@ func TestXYStyle(t *testing.T) {
 
 	t.Run("renderXY labels mode pads to 8 cells", func(t *testing.T) {
 		color.NoColor = true
-		t.Cleanup(func() { color.NoColor = false })
+		t.Cleanup(func() { color.NoColor = true })
 		got := renderXY(".M", xyStyleLabels)
 		if got != "mod     " {
 			t.Errorf("padded labels: got %q (len %d)", got, len(got))
@@ -1365,7 +1365,7 @@ func TestXYStyle(t *testing.T) {
 
 	t.Run("renderXY raw mode preserves git code", func(t *testing.T) {
 		color.NoColor = true
-		t.Cleanup(func() { color.NoColor = false })
+		t.Cleanup(func() { color.NoColor = true })
 		if got := renderXY("??", xyStyleRaw); got != "??" {
 			t.Errorf("raw mode should preserve code, got %q", got)
 		}
@@ -1373,7 +1373,7 @@ func TestXYStyle(t *testing.T) {
 
 	t.Run("renderXY glyphs mode returns single glyph", func(t *testing.T) {
 		color.NoColor = true
-		t.Cleanup(func() { color.NoColor = false })
+		t.Cleanup(func() { color.NoColor = true })
 		if got := renderXY("??", xyStyleGlyphs); got != "+" {
 			t.Errorf("glyphs mode: got %q", got)
 		}

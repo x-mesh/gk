@@ -152,7 +152,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if len(files) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no working-tree changes to commit")
 		if hint := wipChainSkipHint(wipDisabled, wipCommit); hint != "" {
-			fmt.Fprintln(cmd.OutOrStdout(), hint)
+			fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(hint))
 		}
 		return nil
 	}
@@ -593,7 +593,7 @@ func runAICommitAbort(ctx context.Context, cmd *cobra.Command, runner git.Runner
 	if err := aicommit.AbortRestore(ctx, runner, latest); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "commit: restored HEAD to %s\n", latest)
+	fmt.Fprintln(cmd.OutOrStdout(), successLinef("commit: restored HEAD", "to %s", latest))
 	return nil
 }
 
@@ -859,7 +859,8 @@ func printBackupHint(out interface{ Write(p []byte) (int, error) }, backup strin
 	if backup == "" {
 		return
 	}
-	fmt.Fprintf(out, "\nhint: run `gk commit --abort` to restore HEAD to %s\n", backup)
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, stylizeHintLine(fmt.Sprintf("hint: run `gk commit --abort` to restore HEAD to %s", backup)))
 }
 
 // printApplySummary prints the final commit list (or dry-run plan).
@@ -868,7 +869,8 @@ func printApplySummary(out interface{ Write(p []byte) (int, error) }, kept []aic
 		fmt.Fprintf(out, "commit: dry-run — %d commit(s) would be made (backup ref: %s)\n", len(kept), res.BackupRef)
 		return
 	}
-	fmt.Fprintf(out, "commit: created %d commit(s) (backup ref: %s)\n", len(kept), res.BackupRef)
+	fmt.Fprint(out, successLinef("commit: created", "%d commit(s)", len(kept)))
+	fmt.Fprintln(out, " "+cellFaint("(backup ref: "+res.BackupRef+")"))
 	for i, m := range kept {
 		sha := ""
 		if i < len(res.CommitShas) {

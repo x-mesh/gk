@@ -477,7 +477,7 @@ func renderMergeIntoNextHint(out io.Writer, source, receiver string) {
 		if line == "" {
 			continue
 		}
-		fmt.Fprintln(out, "  "+line)
+		fmt.Fprintln(out, "  "+stylizeHintLine(line))
 	}
 }
 
@@ -608,8 +608,10 @@ func renderMergeSummary(ctx context.Context, out io.Writer, runner git.Runner, p
 	if pre == "" || post == "" {
 		return
 	}
+	check := cellGreenBold("✓")
 	if flags.noCommit || flags.squash {
-		fmt.Fprintf(out, "merged %s into %s index/worktree (HEAD %s)\n", target, current, shortSHA(post))
+		fmt.Fprintf(out, "%s merged %s into %s index/worktree (HEAD %s)\n",
+			check, target, current, shortSHA(post))
 		return
 	}
 	if pre == post {
@@ -620,7 +622,9 @@ func renderMergeSummary(ctx context.Context, out io.Writer, runner git.Runner, p
 	if n, _, err := runner.Run(ctx, "rev-list", "--count", pre+".."+post); err == nil {
 		count, _ = strconv.Atoi(strings.TrimSpace(string(n)))
 	}
-	fmt.Fprintf(out, "merged %s into %s: %s → %s (+%d commit%s)\n", target, current, shortSHA(pre), shortSHA(post), count, plural(count))
+	delta := cellGreen(fmt.Sprintf("+%d commit%s", count, plural(count)))
+	fmt.Fprintf(out, "%s merged %s into %s: %s → %s (%s)\n",
+		check, target, current, shortSHA(pre), shortSHA(post), delta)
 }
 
 func resolveMergePlanProvider(ctx context.Context, ai config.AIConfig) (provider.Provider, error) {

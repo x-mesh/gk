@@ -1285,7 +1285,7 @@ func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, cre
 		}
 		return fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	fmt.Fprintf(w, "switched to %s\n", branch)
+	fmt.Fprintln(w, successLine("switched to", branch))
 	return nil
 }
 
@@ -1312,6 +1312,6 @@ func doSwitchTrack(ctx context.Context, r git.Runner, w io.Writer, trackRef stri
 	if i := strings.IndexByte(trackRef, '/'); i >= 0 {
 		short = trackRef[i+1:]
 	}
-	fmt.Fprintf(w, "switched to %s (tracking %s)\n", short, trackRef)
+	fmt.Fprintln(w, successLinef("switched to", "%s (tracking %s)", short, trackRef))
 	return nil
 }

@@ -135,13 +135,13 @@ func runReset(cmd *cobra.Command, args []string) error {
 	if _, stderr, err := runner.Run(ctx, "reset", "--hard", target); err != nil {
 		return fmt.Errorf("reset --hard %s: %s: %w", target, strings.TrimSpace(string(stderr)), err)
 	}
-	fmt.Fprintf(w, "reset: %s is now at %s\n", branch, target)
+	fmt.Fprintln(w, successLinef("reset", "%s → %s", branch, target))
 
 	if clean {
 		if _, stderr, err := runner.Run(ctx, "clean", "-fd"); err != nil {
 			return fmt.Errorf("clean -fd: %s: %w", strings.TrimSpace(string(stderr)), err)
 		}
-		fmt.Fprintln(w, "cleaned untracked files")
+		fmt.Fprintln(w, successLine("cleaned", "untracked files"))
 	}
 	return nil
 }

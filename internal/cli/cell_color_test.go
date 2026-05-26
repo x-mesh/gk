@@ -7,13 +7,19 @@ import (
 	"github.com/fatih/color"
 )
 
-// setNoColor temporarily flips color.NoColor for the duration of fn.
-// Restores the original value via t.Cleanup so test ordering is safe.
+// setNoColor temporarily flips both color.NoColor and flagNoColor for
+// the duration of fn (colorOff() honors both). Restores the original
+// values via t.Cleanup so test ordering is safe.
 func setNoColor(t *testing.T, v bool, fn func()) {
 	t.Helper()
-	prev := color.NoColor
+	prevGlobal := color.NoColor
+	prevFlag := flagNoColor
 	color.NoColor = v
-	t.Cleanup(func() { color.NoColor = prev })
+	flagNoColor = v
+	t.Cleanup(func() {
+		color.NoColor = prevGlobal
+		flagNoColor = prevFlag
+	})
 	fn()
 }
 

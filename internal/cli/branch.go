@@ -407,14 +407,14 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 					fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s/%s: %s\n", remoteName, name, strings.TrimSpace(string(stderr)))
 					continue
 				}
-				fmt.Fprintf(w, "deleted: %s/%s\n", remoteName, name)
+				fmt.Fprintln(w, successLinef("deleted", "%s/%s", remoteName, name))
 				continue
 			}
 			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, strings.TrimSpace(string(stderr)))
 				continue
 			}
-			fmt.Fprintf(w, "deleted: %s\n", name)
+			fmt.Fprintln(w, successLine("deleted", name))
 		}
 		return nil
 	}
@@ -425,7 +425,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	for _, name := range result.Deleted {
-		fmt.Fprintf(w, "deleted: %s\n", name)
+		fmt.Fprintln(w, successLine("deleted", name))
 	}
 	return nil
 }
@@ -508,7 +508,7 @@ func runBranchSetParent(cmd *cobra.Command, args []string) error {
 	if err := branchparent.NewConfig(client).SetParent(cmd.Context(), current, parent); err != nil {
 		return fmt.Errorf("failed to set parent: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "set parent of %s to %s\n", current, parent)
+	fmt.Fprintln(cmd.OutOrStdout(), successLinef("set parent", "%s → %s", current, parent))
 	return nil
 }
 
@@ -527,6 +527,6 @@ func runBranchUnsetParent(cmd *cobra.Command, _ []string) error {
 	if err := branchparent.NewConfig(client).UnsetParent(cmd.Context(), current); err != nil {
 		return fmt.Errorf("failed to unset parent: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "unset parent of %s\n", current)
+	fmt.Fprintln(cmd.OutOrStdout(), successLine("unset parent", current))
 	return nil
 }

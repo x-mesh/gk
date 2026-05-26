@@ -2,6 +2,14 @@ package cli
 
 import "github.com/fatih/color"
 
+// colorOff reports whether ANSI should be stripped — honors both
+// fatih/color's global (which auto-flips for non-TTY captures) and
+// gk's own --no-color flag so test harnesses that set either signal
+// get the plain text path.
+func colorOff() bool {
+	return color.NoColor || NoColorFlag()
+}
+
 // Cell color helpers — emit foreground (or bold) ANSI sequences that
 // reset ONLY the attribute they set, never the background. This lets
 // bubbles/table's Selected style (purple background on the cursor row)
@@ -24,42 +32,49 @@ const (
 )
 
 func cellRed(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiFgRed + s + ansiResetFg
 }
 
 func cellGreen(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiFgGreen + s + ansiResetFg
 }
 
 func cellYellow(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiFgYellow + s + ansiResetFg
 }
 
 func cellCyan(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiFgCyan + s + ansiResetFg
 }
 
 func cellRedBold(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiBold + ansiFgRed + s + ansiResetFg + ansiResetBold
 }
 
+func cellGreenBold(s string) string {
+	if colorOff() {
+		return s
+	}
+	return ansiBold + ansiFgGreen + s + ansiResetFg + ansiResetBold
+}
+
 func cellFaint(s string) string {
-	if color.NoColor {
+	if colorOff() {
 		return s
 	}
 	return ansiFaint + s + ansiResetBold

@@ -692,7 +692,7 @@ func TestRunBranchSetParent_Happy(t *testing.T) {
 	if err := runBranchSetParent(cmd, []string{"feat/parent"}); err != nil {
 		t.Fatalf("set-parent should succeed, got: %v", err)
 	}
-	if !strings.Contains(buf.String(), "set parent of feat/sub to feat/parent") {
+	if !strings.Contains(buf.String(), "set parent feat/sub → feat/parent") {
 		t.Errorf("expected confirmation message, got: %q", buf.String())
 	}
 	out, _, err := (&git.ExecRunner{Dir: repo.Dir}).Run(context.Background(),

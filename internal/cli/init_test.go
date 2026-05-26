@@ -366,8 +366,8 @@ func TestInitCmd_DeprecatedConfigAlias(t *testing.T) {
 	}
 
 	// 파일이 생성되었는지 확인
-	if !strings.Contains(buf.String(), "created:") {
-		t.Errorf("stdout should contain 'created:', got: %q", buf.String())
+	if !strings.Contains(buf.String(), "created ") {
+		t.Errorf("stdout should contain 'created ', got: %q", buf.String())
 	}
 }
 

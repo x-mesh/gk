@@ -64,7 +64,8 @@ func createWipCommit(ctx context.Context, runner git.Runner, w io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("git commit: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	fmt.Fprintln(w, "wip commit created — run 'gk unwip' to restore")
+	fmt.Fprintln(w, successLine("wip commit created", ""))
+	fmt.Fprintln(w, stylizeHintLine("hint: gk unwip   # restore working tree"))
 	return nil
 }
 
@@ -85,7 +86,8 @@ func runUnwip(cmd *cobra.Command, args []string) error {
 	if _, stderr, err := runner.Run(ctx, "reset", "HEAD~1"); err != nil {
 		return fmt.Errorf("git reset HEAD~1: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	fmt.Fprintln(w, "wip commit undone — changes returned to working tree")
+	fmt.Fprintln(w, successLine("wip commit undone", ""))
+	fmt.Fprintln(w, cellFaint("  changes returned to working tree"))
 	return nil
 }
 

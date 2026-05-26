@@ -225,7 +225,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		// NonTTYError has exit code 2.
 		if _, ok := err.(*aichat.NonTTYError); ok {
 			fmt.Fprintln(cmd.ErrOrStderr(), err.Error())
-			fmt.Fprintln(cmd.ErrOrStderr(), "hint: pass --yes or --dry-run for non-interactive use")
+			fmt.Fprintln(cmd.ErrOrStderr(), stylizeHintLine("hint: pass --yes or --dry-run for non-interactive use"))
 			return err
 		}
 		return err

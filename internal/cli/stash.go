@@ -94,7 +94,7 @@ func runStashPush(cmd *cobra.Command, args []string) error {
 	if err := stash.Push(cmd.Context(), runner, msg, includeUntracked); err != nil {
 		return err
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "stashed")
+	fmt.Fprintln(cmd.OutOrStdout(), successLine("stashed", ""))
 	return nil
 }
 
@@ -107,7 +107,7 @@ func runStashPop(cmd *cobra.Command, args []string) error {
 	if err := stash.Pop(cmd.Context(), runner, ref); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "popped %s\n", ref)
+	fmt.Fprintln(cmd.OutOrStdout(), successLine("popped", ref))
 	return nil
 }
 
@@ -120,7 +120,7 @@ func runStashApply(cmd *cobra.Command, args []string) error {
 	if err := stash.Apply(cmd.Context(), runner, ref); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "applied %s\n", ref)
+	fmt.Fprintln(cmd.OutOrStdout(), successLine("applied", ref))
 	return nil
 }
 
@@ -133,7 +133,7 @@ func runStashDrop(cmd *cobra.Command, args []string) error {
 	if err := stash.Drop(cmd.Context(), runner, ref); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "dropped %s\n", ref)
+	fmt.Fprintln(cmd.OutOrStdout(), successLine("dropped", ref))
 	return nil
 }
 

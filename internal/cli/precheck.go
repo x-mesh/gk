@@ -122,26 +122,30 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// writePrecheckHuman emits the human-readable report.
+// writePrecheckHuman emits the human-readable report. The explicit
+// `color` flag is honored over `color.NoColor` because callers may
+// have stripped color separately (--no-color flag, captured output).
+// ANSI sequences below use the cell-safe FG-only reset (`\x1b[39m`) so
+// they compose with table backgrounds the way cell_color.go helpers do.
 func writePrecheckHuman(w io.Writer, res precheckResult, color bool) {
+	tick, cross := "✓", "✗"
+	hintLabel, hintCmd := "next:", fmt.Sprintf("git merge %s    # then gk edit-conflict", res.Target)
+	if color {
+		tick = ansiBold + ansiFgGreen + tick + ansiResetFg + ansiResetBold
+		cross = ansiBold + ansiFgRed + cross + ansiResetFg + ansiResetBold
+		hintLabel = ansiFaint + hintLabel + ansiResetBold
+		hintCmd = ansiFgCyan + hintCmd + ansiResetFg
+	}
 	if res.Clean {
-		if color {
-			fmt.Fprintf(w, "\033[32m✓\033[0m clean merge: HEAD → %s\n", res.Target)
-		} else {
-			fmt.Fprintf(w, "✓ clean merge: HEAD → %s\n", res.Target)
-		}
+		fmt.Fprintf(w, "%s clean merge: HEAD → %s\n", tick, res.Target)
 		return
 	}
-	if color {
-		fmt.Fprintf(w, "\033[31m✗\033[0m %d conflict(s) merging HEAD into %s:\n", len(res.Conflicts), res.Target)
-	} else {
-		fmt.Fprintf(w, "✗ %d conflict(s) merging HEAD into %s:\n", len(res.Conflicts), res.Target)
-	}
+	fmt.Fprintf(w, "%s %d conflict(s) merging HEAD into %s:\n", cross, len(res.Conflicts), res.Target)
 	for _, p := range res.Conflicts {
 		fmt.Fprintf(w, "  %s\n", p)
 	}
-	fmt.Fprintln(w, "\nnext: resolve locally via")
-	fmt.Fprintf(w, "  git merge %s    # then gk edit-conflict\n", res.Target)
+	fmt.Fprintf(w, "\n%s resolve locally via\n", hintLabel)
+	fmt.Fprintf(w, "  %s\n", hintCmd)
 }
 
 // scanMergeConflicts returns the list of conflicted paths when merging `theirs`

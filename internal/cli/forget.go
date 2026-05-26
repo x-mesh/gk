@@ -247,12 +247,12 @@ func runForget(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintln(w, "history rewritten.")
 	if captured != nil && captured.URL != "" && branch != "" {
-		fmt.Fprintln(w, "next:")
-		fmt.Fprintf(w, "  git push --force-with-lease %s %s\n", captured.Name, branch)
-		fmt.Fprintln(w, "  # collaborators must re-clone or run:")
-		fmt.Fprintf(w, "  #   git fetch %s && git reset --hard %s/%s\n", captured.Name, captured.Name, branch)
+		fmt.Fprintln(w, stylizeHintLabel("next:"))
+		fmt.Fprintln(w, stylizeHintCommand(fmt.Sprintf("  git push --force-with-lease %s %s", captured.Name, branch)))
+		fmt.Fprintln(w, stylizeHintCommand("  # collaborators must re-clone or run:"))
+		fmt.Fprintln(w, stylizeHintCommand(fmt.Sprintf("  #   git fetch %s && git reset --hard %s/%s", captured.Name, captured.Name, branch)))
 	}
-	fmt.Fprintf(w, "rollback: git update-ref --stdin < %s\n", backup.Manifest)
+	fmt.Fprintln(w, stylizeHintLine(fmt.Sprintf("rollback: git update-ref --stdin < %s", backup.Manifest)))
 	return nil
 }
 
@@ -351,12 +351,12 @@ func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "next:")
-	fmt.Fprintln(w, "  gk forget --analyze <path>             # narrow to one path for an exact reclaim estimate")
-	fmt.Fprintln(w, "  gk forget --analyze -i                 # multi-select picker → forget chosen paths")
-	fmt.Fprintln(w, "  echo <path>/ >> .gitignore && gk forget   # forget a path from history")
-	fmt.Fprintln(w, "  gk forget --analyze --sort churn       # rank by rewrite count (lock files etc.)")
-	fmt.Fprintln(w, "  gk forget --analyze --depth 2          # finer-grained directory grouping")
+	fmt.Fprintln(w, stylizeHintLabel("next:"))
+	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze <path>             # narrow to one path for an exact reclaim estimate"))
+	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze -i                 # multi-select picker → forget chosen paths"))
+	fmt.Fprintln(w, stylizeHintCommand("  echo <path>/ >> .gitignore && gk forget   # forget a path from history"))
+	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze --sort churn       # rank by rewrite count (lock files etc.)"))
+	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze --depth 2          # finer-grained directory grouping"))
 	fmt.Fprintln(w, "  gk forget --analyze --json             # machine-readable for CI/dashboards")
 	return nil
 }

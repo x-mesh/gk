@@ -280,6 +280,6 @@ func runGuardInit(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "created %s\n", outPath)
-	fmt.Fprintln(cmd.OutOrStdout(), "next: uncomment rules, then run `gk guard check`")
+	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine("next: uncomment rules, then run `gk guard check`"))
 	return nil
 }

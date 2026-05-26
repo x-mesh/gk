@@ -1958,11 +1958,11 @@ func suggestNextAction(g groupedEntries, st *git.Status) (next, why string) {
 	case dirty:
 		return "gk commit --dry-run", "uncommitted changes ready"
 	case ahead > 0 && behind > 0:
-		return "gk sync", fmt.Sprintf("diverged ↑%d ↓%d vs %s", ahead, behind, st.Upstream)
+		return "gk sync", fmt.Sprintf("diverged ↑%d ↓%d", ahead, behind)
 	case behind > 0:
-		return "gk pull", fmt.Sprintf("↓%d vs %s — fetch remote commits", behind, st.Upstream)
+		return "gk pull", fmt.Sprintf("behind by %d", behind)
 	case ahead > 0:
-		return "gk push", fmt.Sprintf("↑%d vs %s — publish local commits", ahead, st.Upstream)
+		return "gk push", fmt.Sprintf("ahead by %d", ahead)
 	case !hasUpstream:
 		return "git branch --set-upstream-to=origin/<branch>", "no upstream configured"
 	default:

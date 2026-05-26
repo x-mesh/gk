@@ -242,8 +242,10 @@ gk commit [flags]
       --ci                         CI mode — require --force or --dry-run, never prompt
       --dry-run                    show the plan and exit without committing
   -f, --force                      apply commits without interactive review
+      --force-wip                  unwrap WIP chain even when some commits are already pushed (rewrites pushed history; requires force-push afterward)
       --include-unstaged           include unstaged + untracked changes (default true)
       --lang string                override ai.lang (en|ko|...)
+      --no-wip-unwrap              skip detection/unwrap of WIP-like commits in HEAD chain
       --provider string            override ai.provider (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                only consider already-staged changes
   -y, --yes                        accept every prompt (alias for --force when non-TTY)

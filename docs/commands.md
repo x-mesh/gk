@@ -2185,6 +2185,8 @@ gk commit [flags]
 | `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
 | `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable) |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
+| `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
+| `--force-wip` | false | Unwrap the WIP chain even when some commits are already pushed (rewrites pushed history; rerun `git push --force-with-lease` afterward) |
 | `--ci` | false | CI mode — require `--force` or `--dry-run`, never prompt |
 | `-y`, `--yes` | false | Accept every prompt (alias for `--force` when non-TTY) |
 

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-05-26
+
+### Added
+
+- **`gk commit --force-wip`** bypasses the per-commit "already pushed"
+  gate during the WIP-chain auto-unwrap, so a stack of save-point
+  commits already on the remote can still be rewritten. A pre-reset
+  stderr warning calls out that `git push --force-with-lease` is
+  required afterward.
+
+### Changed
+
+- **`gk commit` now unwraps WIP-like chains on protected branches.**
+  Previously `develop` / `main` / `master` / `trunk` short-circuited
+  the chain detector outright, leaving stacks of `WIP(...)` commits
+  unaddressed and the feature looking silently dead. The per-commit
+  push detection (`git branch -r --contains`) remains the safety net,
+  so already-pushed history is still left untouched by default.
+- **Skipped WIP chains now surface a hint.** When the detector finds
+  WIP commits but refuses to unwrap (already pushed, detached HEAD,
+  merge commit, or `--no-wip-unwrap`), `gk commit` prints a one-line
+  `hint:` after the `no working-tree changes to commit` line instead
+  of staying silent.
+
 ## [0.54.0] - 2026-05-23
 
 ### Added

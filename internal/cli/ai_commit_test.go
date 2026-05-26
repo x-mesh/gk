@@ -286,10 +286,10 @@ func TestInspectWIPCommitForAICommit_ForceWIPIncludesPushed(t *testing.T) {
 func TestInspectWIPCommitForAICommit_PushedAtHEADReportsReason(t *testing.T) {
 	const wipSHA = "wippush1"
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"rev-parse --abbrev-ref HEAD":     {Stdout: "develop\n"},
-		"log -1 --format=%s HEAD~0":       {Stdout: "WIP: pushed\n"},
-		"rev-parse HEAD~0":                {Stdout: wipSHA + "\n"},
-		"log -1 --format=%P HEAD~0":       {Stdout: wipSHA + "-parent\n"},
+		"rev-parse --abbrev-ref HEAD":    {Stdout: "develop\n"},
+		"log -1 --format=%s HEAD~0":      {Stdout: "WIP: pushed\n"},
+		"rev-parse HEAD~0":               {Stdout: wipSHA + "\n"},
+		"log -1 --format=%P HEAD~0":      {Stdout: wipSHA + "-parent\n"},
 		"branch -r --contains " + wipSHA: {Stdout: "  origin/develop\n"},
 	}}
 	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}

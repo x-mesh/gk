@@ -111,14 +111,14 @@ type DetectWIPChainOptions struct {
 type StopReason string
 
 const (
-	StopReasonNone           StopReason = ""               // shouldn't happen in practice — kept for zero value
-	StopReasonNonWIPSubject  StopReason = "non-wip"        // hit a normal commit (usual stop condition)
-	StopReasonDetachedHEAD   StopReason = "detached-head"  // refused outright; no branch to recover from
-	StopReasonPushed         StopReason = "pushed"         // hit a commit already on a remote
-	StopReasonMergeCommit    StopReason = "merge-commit"   // multi-parent — unwrap is risky
-	StopReasonRootCommit     StopReason = "root-commit"    // reached repo root (parentless WIP)
-	StopReasonMaxChain       StopReason = "max-chain"      // walked MaxChain entries and they were all WIP
-	StopReasonShallowHistory StopReason = "shallow"        // HEAD~i missing (shallow clone, etc.)
+	StopReasonNone           StopReason = ""              // shouldn't happen in practice — kept for zero value
+	StopReasonNonWIPSubject  StopReason = "non-wip"       // hit a normal commit (usual stop condition)
+	StopReasonDetachedHEAD   StopReason = "detached-head" // refused outright; no branch to recover from
+	StopReasonPushed         StopReason = "pushed"        // hit a commit already on a remote
+	StopReasonMergeCommit    StopReason = "merge-commit"  // multi-parent — unwrap is risky
+	StopReasonRootCommit     StopReason = "root-commit"   // reached repo root (parentless WIP)
+	StopReasonMaxChain       StopReason = "max-chain"     // walked MaxChain entries and they were all WIP
+	StopReasonShallowHistory StopReason = "shallow"       // HEAD~i missing (shallow clone, etc.)
 )
 
 const defaultMaxChain = 10

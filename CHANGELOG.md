@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-05-26
+
+### Changed
+
+- **Success messages now lead with a green `✓`.** `gk stash` (push /
+  pop / apply / drop), `gk reset`, `gk switch`, `gk branch delete`,
+  `gk branch set-parent` / `unset-parent`, `gk init`, `gk wip` /
+  `unwip`, `gk undo`, `gk commit` (created / restored), `gk
+  timemachine restore`, and `gk config init` now print a single
+  consistent shape — `✓ <verb> <target>` — with the verb plain and
+  the target in green. NoColor / CI captures degrade to plain text
+  the same way the existing cell color helpers do.
+- **Post-action `next:` / `also:` / `hint:` nudge lines are
+  consistently styled.** Label dimmed, runnable command (`gk …` /
+  `git …`) cyan, trailing `(meta)` annotation dimmed. Applies across
+  `gk merge --into`, `gk forget`, `gk guard init`, `gk precheck`,
+  `gk next`, `gk do`, `gk commit` (abort hint, WIP-chain skip hint),
+  and `gk ai` (privacy gate). Advisory prose without an embedded
+  command keeps the label dim and leaves the body unstyled.
+- **`gk status` sync hints now expose the count in Normal mode.** The
+  `try: gk push` / `gk pull` / `gk sync` lines pick up the `↑N` /
+  `↓N` annotation the catalog had only been showing in Easy Mode.
+  Same wording in EN and KO.
+
+### Fixed
+
+- **`gk merge --into` cleanup hint no longer leaks `%!(EXTRA
+  string=…)`.** The i18n `hint.merge.into.cleanup_source` Normal-mode
+  template carried fewer `%s` placeholders than the caller passed, so
+  `fmt.Sprintf` appended the leftover argument as a visible error
+  fragment. Fixed by aligning template and caller arg counts.
+- **Same class of mismatch closed for `gk status` sync hints.**
+  `hint.status.ahead`, `hint.status.behind`, and `hint.status.diverged`
+  Normal-mode templates had 0 `%s` but the caller passed 1–2 counts.
+  Currently masked by an upstream guard but a latent fmt leak waiting
+  for the guard to change.
+- **`gk precheck` ANSI sequences are now cell-safe.** Replaced raw
+  `\x1b[0m` full-reset codes with the partial `\x1b[39m` / `\x1b[22m`
+  resets the rest of the cell color helpers use, so they compose with
+  table backgrounds without breaking the row highlight.
+
+### Internal
+
+- New shared helpers `successLine` / `successLinef` and
+  `stylizeHintLine` / `stylizeHintLabel` / `stylizeHintCommand`
+  centralize the success-and-hint formatting so future commands pick
+  it up without re-inventing ANSI.
+- `colorOff()` introduced so `cellGreen` / `cellCyan` / `cellFaint`
+  honor both fatih/color's `NoColor` global and gk's `--no-color`
+  flag. Test harnesses get a stable plain-text path either way.
+- New `TestMain` in `internal/cli` forces `flagNoColor=true` for the
+  whole package so substring assertions no longer race with sibling
+  tests that toggle color state.
+
 ## [0.55.0] - 2026-05-26
 
 ### Added

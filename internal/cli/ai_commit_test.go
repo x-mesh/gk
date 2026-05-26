@@ -38,6 +38,7 @@ func TestAICommitHelpListsFlags(t *testing.T) {
 		"--force", "--dry-run", "--provider", "--lang",
 		"--staged-only", "--include-unstaged", "--abort",
 		"--allow-secret-kind", "--ci", "--yes",
+		"--no-wip-unwrap", "--force-wip",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing flag %q\n%s", want, out)
@@ -91,7 +92,7 @@ func TestInspectWIPCommitForAICommitIncludesFiles(t *testing.T) {
 	}}
 
 	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}
-	wip, err := inspectWIPCommitForAICommit(context.Background(), runner, cfg, []string{"main"}, false)
+	wip, err := inspectWIPCommitForAICommit(context.Background(), runner, cfg, false, false)
 	if err != nil {
 		t.Fatalf("inspectWIPCommitForAICommit: %v", err)
 	}
@@ -192,6 +193,115 @@ func TestUnwrapWIPCommitRefusesWhenHEADMoved(t *testing.T) {
 	calls := joinedShipCalls(runner.Calls)
 	if strings.Contains(calls, "reset HEAD~") {
 		t.Errorf("must not reset after HEAD-moved detection; calls:\n%s", calls)
+	}
+}
+
+// TestWIPChainSkipHint_PushedAtHEAD — the user-facing fallout from
+// the develop/main story: when DetectWIPChain returned an empty chain
+// because every WIP at HEAD is already on a remote, the CLI must
+// surface the `--force-wip` escape hatch instead of going silent.
+func TestWIPChainSkipHint_PushedAtHEAD(t *testing.T) {
+	got := wipChainSkipHint(false, wipCommitForAICommit{
+		Present:    false,
+		StopReason: aicommit.StopReasonPushed,
+	})
+	if !strings.Contains(got, "--force-wip") {
+		t.Errorf("hint must point at --force-wip; got %q", got)
+	}
+}
+
+// TestWIPChainSkipHint_Disabled — when the feature is turned off,
+// the hint must say so plainly so users don't blame protected
+// branches or anything else.
+func TestWIPChainSkipHint_Disabled(t *testing.T) {
+	got := wipChainSkipHint(true, wipCommitForAICommit{})
+	if !strings.Contains(got, "disabled") {
+		t.Errorf("hint must mention 'disabled'; got %q", got)
+	}
+}
+
+// TestWIPChainSkipHint_NormalNonWIP — staying out of the way on the
+// common case (HEAD isn't WIP at all) keeps everyday output quiet.
+func TestWIPChainSkipHint_NormalNonWIP(t *testing.T) {
+	got := wipChainSkipHint(false, wipCommitForAICommit{
+		Present:    false,
+		StopReason: aicommit.StopReasonNonWIPSubject,
+	})
+	if got != "" {
+		t.Errorf("non-WIP HEAD must NOT produce a hint; got %q", got)
+	}
+}
+
+// TestWIPChainSkipHint_DetachedHEAD — actionable hint for the one
+// case where the walk refuses outright.
+func TestWIPChainSkipHint_DetachedHEAD(t *testing.T) {
+	got := wipChainSkipHint(false, wipCommitForAICommit{
+		Present:    false,
+		StopReason: aicommit.StopReasonDetachedHEAD,
+	})
+	if !strings.Contains(got, "detached") {
+		t.Errorf("hint must mention detached HEAD; got %q", got)
+	}
+}
+
+// TestInspectWIPCommitForAICommit_ForceWIPIncludesPushed — wiring
+// check: with forceWIP=true the underlying DetectWIPChain receives
+// AllowPushed=true, so a pushed WIP at HEAD~1 is rolled into the chain.
+func TestInspectWIPCommitForAICommit_ForceWIPIncludesPushed(t *testing.T) {
+	const wipSHA1, wipSHA2 = "wipsha11", "wipsha22"
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --abbrev-ref HEAD":                       {Stdout: "develop\n"},
+		"log -1 --format=%s HEAD~0":                         {Stdout: "WIP: local\n"},
+		"rev-parse HEAD~0":                                  {Stdout: wipSHA1 + "\n"},
+		"log -1 --format=%P HEAD~0":                         {Stdout: wipSHA1 + "-parent\n"},
+		"diff -z --name-status " + wipSHA1 + "^ " + wipSHA1: {Stdout: "M\x00a.go\x00"},
+		"log -1 --format=%s HEAD~1":                         {Stdout: "WIP: pushed\n"},
+		"rev-parse HEAD~1":                                  {Stdout: wipSHA2 + "\n"},
+		"log -1 --format=%P HEAD~1":                         {Stdout: wipSHA2 + "-parent\n"},
+		"diff -z --name-status " + wipSHA2 + "^ " + wipSHA2: {Stdout: "M\x00b.go\x00"},
+		"log -1 --format=%s HEAD~2":                         {Stdout: "feat: real\n"},
+		"rev-parse HEAD":                                    {Stdout: wipSHA1 + "\n"},
+		// branch -r --contains: only HEAD~1 is on a remote. With
+		// forceWIP=true the gate is skipped so both lookups still
+		// resolve cleanly.
+		"branch -r --contains " + wipSHA1: {Stdout: ""},
+		"branch -r --contains " + wipSHA2: {Stdout: "  origin/develop\n"},
+	}}
+	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}
+	wip, err := inspectWIPCommitForAICommit(context.Background(), runner, cfg, false, true)
+	if err != nil {
+		t.Fatalf("inspectWIPCommitForAICommit: %v", err)
+	}
+	if !wip.Present || wip.ChainLen != 2 {
+		t.Fatalf("forceWIP must pull the pushed commit into the chain; got %+v", wip)
+	}
+	if !wip.ForcePushBypass {
+		t.Errorf("ForcePushBypass must propagate; got %+v", wip)
+	}
+}
+
+// TestInspectWIPCommitForAICommit_PushedAtHEADReportsReason — without
+// --force-wip, a pushed HEAD WIP yields Present=false but the
+// StopReason rides along so the CLI can render the hint.
+func TestInspectWIPCommitForAICommit_PushedAtHEADReportsReason(t *testing.T) {
+	const wipSHA = "wippush1"
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --abbrev-ref HEAD":     {Stdout: "develop\n"},
+		"log -1 --format=%s HEAD~0":       {Stdout: "WIP: pushed\n"},
+		"rev-parse HEAD~0":                {Stdout: wipSHA + "\n"},
+		"log -1 --format=%P HEAD~0":       {Stdout: wipSHA + "-parent\n"},
+		"branch -r --contains " + wipSHA: {Stdout: "  origin/develop\n"},
+	}}
+	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}
+	wip, err := inspectWIPCommitForAICommit(context.Background(), runner, cfg, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wip.Present {
+		t.Errorf("Present must be false when chain is empty; got %+v", wip)
+	}
+	if wip.StopReason != aicommit.StopReasonPushed {
+		t.Errorf("StopReason: want %q, got %q", aicommit.StopReasonPushed, wip.StopReason)
 	}
 }
 

@@ -150,7 +150,7 @@ func TestDetectWIPChainSingle(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, _, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestDetectWIPChainMultiple(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, _, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +191,12 @@ func TestDetectWIPChainStopsAtNonWIP(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, reason, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if len(chain) != 0 {
 		t.Errorf("non-WIP HEAD must yield empty chain, got %v", chainSubjects(chain))
+	}
+	if reason != StopReasonNonWIPSubject {
+		t.Errorf("stop reason: want %q, got %q", StopReasonNonWIPSubject, reason)
 	}
 }
 
@@ -208,7 +211,7 @@ func TestDetectWIPChainDetachedHEAD(t *testing.T) {
 	r := chainRunner(commits, "HEAD", "")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, _, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,25 +220,29 @@ func TestDetectWIPChainDetachedHEAD(t *testing.T) {
 	}
 }
 
-// TestDetectWIPChainProtectedFallback — the M1 fix from x-review.
-// Empty ProtectedBranches falls back to {main, master, develop, trunk}
-// rather than disabling the guard.
-func TestDetectWIPChainProtectedFallback(t *testing.T) {
+// TestDetectWIPChainOnMainBranchUnpushed — protected branch names
+// (main/master/develop/trunk) used to refuse the chain outright. After
+// the v0.55+ rework the per-commit push gate is the only safety net,
+// so a fully-local WIP stack on `main` must still be detected.
+func TestDetectWIPChainOnMainBranchUnpushed(t *testing.T) {
 	commits := []chainCommit{
-		{SHA: "aaa", Subject: "wip: bad", NameStatus: "M\ta.go\n"},
+		{SHA: "aaa", Subject: "wip: local on main", NameStatus: "M\ta.go\n"},
+		{SHA: "bbb", Subject: "feat: real commit", NameStatus: ""},
 	}
 	r := chainRunner(commits, "main", "")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
-		Patterns:          pats,
-		ProtectedBranches: nil, // user mis-configured to empty
+	chain, reason, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
+		Patterns: pats,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chain) != 0 {
-		t.Errorf("empty ProtectedBranches must fall back to built-in list; got %v", chainSubjects(chain))
+	if len(chain) != 1 || chain[0].SHA != "aaa" {
+		t.Errorf("main + unpushed WIP must be detected; got %v", chainSubjects(chain))
+	}
+	if reason != StopReasonNonWIPSubject {
+		t.Errorf("stop reason: want %q, got %q", StopReasonNonWIPSubject, reason)
 	}
 }
 
@@ -249,7 +256,7 @@ func TestDetectWIPChainRootCommit(t *testing.T) {
 	r := chainRunner(commits, "improve", "")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, _, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if err != nil {
 		t.Fatalf("root commit must NOT abort: %v", err)
 	}
@@ -258,22 +265,31 @@ func TestDetectWIPChainRootCommit(t *testing.T) {
 	}
 }
 
-func TestDetectWIPChainProtectedBranch(t *testing.T) {
+// TestDetectWIPChainAllowPushedBypassesGate — `gk commit --force-wip`
+// sets AllowPushed=true so the walk continues even when the next
+// commit is already on a remote. The chain length grows to include the
+// pushed commit; StopReason should NOT be "pushed".
+func TestDetectWIPChainAllowPushedBypassesGate(t *testing.T) {
 	commits := []chainCommit{
-		{SHA: "aaa", Subject: "wip: bad", NameStatus: "M\ta.go\n"},
+		{SHA: "aaa", Subject: "wip: local", NameStatus: "M\ta.go\n", Pushed: false},
+		{SHA: "bbb", Subject: "wip: pushed", NameStatus: "M\tb.go\n", Pushed: true},
+		{SHA: "ccc", Subject: "feat: real", NameStatus: ""},
 	}
-	r := chainRunner(commits, "main", "origin/main")
+	r := chainRunner(commits, "develop", "origin/develop")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
-		Patterns:          pats,
-		ProtectedBranches: []string{"main", "develop"},
+	chain, reason, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
+		Patterns:    pats,
+		AllowPushed: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chain) != 0 {
-		t.Errorf("protected branch must yield empty chain, got %v", chainSubjects(chain))
+	if len(chain) != 2 {
+		t.Fatalf("AllowPushed=true must include the pushed WIP; got %v", chainSubjects(chain))
+	}
+	if reason != StopReasonNonWIPSubject {
+		t.Errorf("stop reason: want %q, got %q", StopReasonNonWIPSubject, reason)
 	}
 }
 
@@ -285,9 +301,31 @@ func TestDetectWIPChainStopsAtPushedCommit(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, reason, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if len(chain) != 1 {
 		t.Errorf("want chain to stop at pushed commit (length 1), got %d", len(chain))
+	}
+	if reason != StopReasonPushed {
+		t.Errorf("stop reason: want %q, got %q", StopReasonPushed, reason)
+	}
+}
+
+// TestDetectWIPChainPushedAtHEADReportsReason — when even the HEAD WIP
+// commit is already on a remote, chain is empty but StopReason must be
+// "pushed" so the CLI can prompt the user with --force-wip.
+func TestDetectWIPChainPushedAtHEADReportsReason(t *testing.T) {
+	commits := []chainCommit{
+		{SHA: "aaa", Subject: "wip: already pushed", NameStatus: "M\ta.go\n", Pushed: true},
+	}
+	r := chainRunner(commits, "improve", "origin/improve")
+	pats, _ := CompileWIPPatterns(nil)
+
+	chain, reason, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	if len(chain) != 0 {
+		t.Errorf("HEAD already pushed must yield empty chain; got %v", chainSubjects(chain))
+	}
+	if reason != StopReasonPushed {
+		t.Errorf("stop reason: want %q, got %q", StopReasonPushed, reason)
 	}
 }
 
@@ -299,9 +337,12 @@ func TestDetectWIPChainStopsAtMergeCommit(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	chain, reason, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
 	if len(chain) != 1 {
 		t.Errorf("merge commit must stop chain (length 1), got %d", len(chain))
+	}
+	if reason != StopReasonMergeCommit {
+		t.Errorf("stop reason: want %q, got %q", StopReasonMergeCommit, reason)
 	}
 }
 
@@ -316,12 +357,15 @@ func TestDetectWIPChainRespectsMaxChain(t *testing.T) {
 	r := chainRunner(commits, "improve", "origin/improve")
 	pats, _ := CompileWIPPatterns(nil)
 
-	chain, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
+	chain, reason, _ := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{
 		Patterns: pats,
 		MaxChain: 3,
 	})
 	if len(chain) != 3 {
 		t.Errorf("MaxChain=3, got %d", len(chain))
+	}
+	if reason != StopReasonMaxChain {
+		t.Errorf("stop reason: want %q, got %q", StopReasonMaxChain, reason)
 	}
 }
 

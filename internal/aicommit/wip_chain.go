@@ -32,11 +32,6 @@ var defaultWIPPatterns = []string{
 	`^squash!`,
 }
 
-// builtinProtectedBranches is the fallback list when the caller's
-// ProtectedBranches is empty. Keeps the safety net active even when
-// `branch.protected` is mis-configured to []  — fail-closed semantic.
-var builtinProtectedBranches = []string{"main", "master", "develop", "trunk"}
-
 const (
 	// wipPatternMaxLen caps an individual user pattern length, blocking
 	// pathological config from blowing up regexp compile time. RE2
@@ -101,37 +96,65 @@ type DetectWIPChainOptions struct {
 	// Patterns is the compiled regex list. Use CompileWIPPatterns to
 	// build, which already merges defaults + custom.
 	Patterns []*regexp.Regexp
-	// ProtectedBranches are branch names where chain unwrap is
-	// refused outright (main, master, develop, etc.). Empty falls
-	// back to the built-in list — the guard is never disabled.
-	ProtectedBranches []string
+	// AllowPushed disables the per-commit `branch -r --contains` gate
+	// that stops the walk at the first commit already on a remote. Set
+	// by `gk commit --force-wip` when the user explicitly accepts that
+	// unwrapping will rewrite already-pushed history (force-push
+	// required afterward).
+	AllowPushed bool
 }
+
+// StopReason is the *why* attached to the end of a DetectWIPChain walk.
+// It is reported regardless of whether the returned chain is empty or
+// non-empty, so the CLI can explain "we found 2 then stopped at a
+// pushed commit" or "we found nothing because HEAD isn't WIP".
+type StopReason string
+
+const (
+	StopReasonNone           StopReason = ""               // shouldn't happen in practice — kept for zero value
+	StopReasonNonWIPSubject  StopReason = "non-wip"        // hit a normal commit (usual stop condition)
+	StopReasonDetachedHEAD   StopReason = "detached-head"  // refused outright; no branch to recover from
+	StopReasonPushed         StopReason = "pushed"         // hit a commit already on a remote
+	StopReasonMergeCommit    StopReason = "merge-commit"   // multi-parent — unwrap is risky
+	StopReasonRootCommit     StopReason = "root-commit"    // reached repo root (parentless WIP)
+	StopReasonMaxChain       StopReason = "max-chain"      // walked MaxChain entries and they were all WIP
+	StopReasonShallowHistory StopReason = "shallow"        // HEAD~i missing (shallow clone, etc.)
+)
 
 const defaultMaxChain = 10
 
 // DetectWIPChain walks HEAD backward as long as each commit's subject
-// matches a WIP pattern, stopping at the first non-match. Returns the
-// chain in HEAD-first order (chain[0] is HEAD, chain[N-1] is the
-// oldest WIP). Empty result when HEAD is already non-WIP, the current
-// branch is protected, or every WIP commit has been pushed.
+// matches a WIP pattern, returning the chain in HEAD-first order
+// (chain[0] is HEAD, chain[N-1] is the oldest WIP) along with a
+// StopReason explaining why the walk ended.
 //
-// Safety stops:
+// Safety stops (each maps to a StopReason; chain is whatever was
+// successfully collected up to that point):
 //   - Detached HEAD (`rev-parse --abbrev-ref HEAD` returns "HEAD")
-//     → return nil, refuse outright. detached-HEAD reset rewinds the
-//     pointer with no branch to recover from.
-//   - Current branch in ProtectedBranches → return nil. Empty list
-//     falls back to {main, master, develop, trunk} so the guard is
-//     never silently disabled.
-//   - Commit reachable from any remote tracking branch → stop chain.
-//     We use `git branch -r --contains <sha>` rather than relying on
+//     → return (nil, StopReasonDetachedHEAD). detached-HEAD reset
+//     rewinds the pointer with no branch to recover from.
+//   - Commit reachable from any remote tracking branch → stop. Uses
+//     `git branch -r --contains <sha>` rather than relying on
 //     `@{upstream}` so manually-pushed commits (`git push origin HEAD`
-//     without `-u`) are still caught.
-//   - Merge commit → stop chain (multi-parent unwrap is risky).
+//     without `-u`) are still caught. Bypass with AllowPushed.
+//   - Merge commit → stop (multi-parent unwrap is risky).
 //   - MaxChain reached → stop, take what we have.
+//   - Root commit → include it (diff-tree --root handles file list)
+//     but stop walking (no parent left).
+//   - First commit that doesn't match a WIP pattern → stop. This is
+//     the normal terminator and the most common StopReason.
 //
-// Any unexpected git error returns (nil, err) — the caller should
-// treat that as "skip the unwrap step" rather than aborting commit.
-func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainOptions) ([]WIPCommit, error) {
+// Note: protected branch names are NOT a stop condition here. The
+// per-commit push gate is sufficient — branch-name guarding caused
+// the entire feature to refuse silently on `develop`/`main` even when
+// every WIP commit was purely local. Callers that need extra restraint
+// can set AllowPushed=false (the default) which already keeps pushed
+// history untouched.
+//
+// Any unexpected git error returns (chain-so-far, "", err) — the
+// caller should treat that as "skip the unwrap step" rather than
+// aborting commit.
+func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainOptions) ([]WIPCommit, StopReason, error) {
 	max := opts.MaxChain
 	if max <= 0 {
 		max = defaultMaxChain
@@ -143,16 +166,7 @@ func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainO
 		// Detached HEAD: rev-parse --abbrev-ref returns the literal
 		// "HEAD". Refuse — we can't safely rewrite a detached pointer.
 		if curName == "HEAD" {
-			return nil, nil
-		}
-		protected := opts.ProtectedBranches
-		if len(protected) == 0 {
-			protected = builtinProtectedBranches
-		}
-		for _, p := range protected {
-			if curName == p {
-				return nil, nil
-			}
+			return nil, StopReasonDetachedHEAD, nil
 		}
 	}
 
@@ -162,35 +176,37 @@ func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainO
 		subjOut, _, err := runner.Run(ctx, "log", "-1", "--format=%s", ref)
 		if err != nil {
 			// HEAD~i doesn't exist (shallow history). Stop.
-			break
+			return chain, StopReasonShallowHistory, nil
 		}
 		subject := strings.TrimSpace(string(subjOut))
 		if !IsWIPSubject(subject, opts.Patterns) {
-			break
+			return chain, StopReasonNonWIPSubject, nil
 		}
 
 		shaOut, _, err := runner.Run(ctx, "rev-parse", ref)
 		if err != nil {
-			break
+			return chain, StopReasonShallowHistory, nil
 		}
 		sha := strings.TrimSpace(string(shaOut))
 
 		parentsOut, _, _ := runner.Run(ctx, "log", "-1", "--format=%P", ref)
 		parents := strings.Fields(strings.TrimSpace(string(parentsOut)))
 		if len(parents) > 1 {
-			break
+			return chain, StopReasonMergeCommit, nil
 		}
 
-		// Push detection — fail-closed against any remote tracking ref.
-		// Output non-empty means at least one origin/<x> has the commit.
-		remOut, _, _ := runner.Run(ctx, "branch", "-r", "--contains", sha)
-		if strings.TrimSpace(string(remOut)) != "" {
-			break
+		if !opts.AllowPushed {
+			// Push detection — fail-closed against any remote tracking ref.
+			// Output non-empty means at least one origin/<x> has the commit.
+			remOut, _, _ := runner.Run(ctx, "branch", "-r", "--contains", sha)
+			if strings.TrimSpace(string(remOut)) != "" {
+				return chain, StopReasonPushed, nil
+			}
 		}
 
 		files, ferr := wipChainFiles(ctx, runner, sha, len(parents) == 0)
 		if ferr != nil {
-			return nil, ferr
+			return chain, StopReasonNone, ferr
 		}
 		chain = append(chain, WIPCommit{
 			SHA:     sha,
@@ -199,10 +215,10 @@ func DetectWIPChain(ctx context.Context, runner git.Runner, opts DetectWIPChainO
 		})
 		if len(parents) == 0 {
 			// Root commit: no parent to walk further. Stop.
-			break
+			return chain, StopReasonRootCommit, nil
 		}
 	}
-	return chain, nil
+	return chain, StopReasonMaxChain, nil
 }
 
 // wipChainFiles returns the file list for a commit. Uses

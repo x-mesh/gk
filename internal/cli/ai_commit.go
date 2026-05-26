@@ -58,6 +58,7 @@ the most recent run.
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
 	cmd.Flags().Bool("no-wip-unwrap", false, "skip detection/unwrap of WIP-like commits in HEAD chain")
+	cmd.Flags().Bool("force-wip", false, "unwrap WIP chain even when some commits are already pushed (rewrites pushed history; requires force-push afterward)")
 
 	rootCmd.AddCommand(cmd)
 }
@@ -122,10 +123,15 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	Dbg("commit: preflight ok")
 
 	wipDisabled := flags.noWIPUnwrap || !ai.Commit.WIPEnabled
-	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, cfg.Branch.Protected, wipDisabled)
+	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, wipDisabled, flags.forceWIP)
 	if err != nil {
 		return err
 	}
+	// `cfg.Branch.Protected` was previously consumed here as a branch-name
+	// veto on WIP unwrap, which silently disabled the feature on develop /
+	// main. The per-commit push gate inside DetectWIPChain is sufficient,
+	// so the list is intentionally no longer read in this path.
+	_ = cfg.Branch.Protected
 
 	// Gather WIP.
 	scope := aicommit.ScopeAll
@@ -145,7 +151,14 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	files = appendWIPCommitFiles(files, wipCommit.Files)
 	if len(files) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no working-tree changes to commit")
+		if hint := wipChainSkipHint(wipDisabled, wipCommit); hint != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), hint)
+		}
 		return nil
+	}
+	if wipCommit.Present && wipCommit.ForcePushBypass {
+		fmt.Fprintln(cmd.ErrOrStderr(),
+			"⚠ commit: --force-wip set — chain may include already-pushed commits; rerun `git push --force-with-lease` after the rewrite")
 	}
 	Dbg("commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
@@ -323,6 +336,14 @@ type wipCommitForAICommit struct {
 	// don't reset against a stale offset.
 	HeadSHA string
 	Files   []aicommit.FileChange
+	// StopReason explains why the chain walk ended. Set on every call,
+	// regardless of Present, so the CLI can render an actionable hint
+	// when the chain came back empty.
+	StopReason aicommit.StopReason
+	// ForcePushBypass is true when the user passed --force-wip and the
+	// chain may include commits already on a remote — drives a one-line
+	// stderr warning before reset.
+	ForcePushBypass bool
 }
 
 // runCommitDryRunPreview produces a cost-aware plan without making any
@@ -440,10 +461,12 @@ func fallbackStr(s, d string) string {
 // inspectWIPCommitForAICommit walks HEAD backward as long as each
 // commit's subject matches a WIP pattern (defaults + user-config
 // additions), so a stack of save-point commits can be folded into one
-// AI plan. cfg.WIPMaxChain caps the walk; protected branches and
-// already-pushed commits stop it for safety. When --no-wip-unwrap is
-// set the function returns immediately without touching git.
-func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg config.AICommitConfig, branchProtected []string, disabled bool) (wipCommitForAICommit, error) {
+// AI plan. cfg.WIPMaxChain caps the walk. Already-pushed commits stop
+// it by default; --force-wip (forceWIP=true) bypasses that gate. When
+// --no-wip-unwrap is set the function returns immediately without
+// touching git — the caller distinguishes the disabled case via the
+// StopReason being empty.
+func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg config.AICommitConfig, disabled, forceWIP bool) (wipCommitForAICommit, error) {
 	if disabled {
 		return wipCommitForAICommit{}, nil
 	}
@@ -451,24 +474,56 @@ func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg con
 	if err != nil {
 		return wipCommitForAICommit{}, fmt.Errorf("commit: wip patterns: %w", err)
 	}
-	chain, err := aicommit.DetectWIPChain(ctx, runner, aicommit.DetectWIPChainOptions{
-		MaxChain:          cfg.WIPMaxChain,
-		Patterns:          patterns,
-		ProtectedBranches: branchProtected,
+	chain, reason, err := aicommit.DetectWIPChain(ctx, runner, aicommit.DetectWIPChainOptions{
+		MaxChain:    cfg.WIPMaxChain,
+		Patterns:    patterns,
+		AllowPushed: forceWIP,
 	})
 	if err != nil {
 		return wipCommitForAICommit{}, fmt.Errorf("commit: detect WIP chain: %w", err)
 	}
 	if len(chain) == 0 {
-		return wipCommitForAICommit{}, nil
+		return wipCommitForAICommit{StopReason: reason}, nil
 	}
 	headOut, _, _ := runner.Run(ctx, "rev-parse", "HEAD")
 	return wipCommitForAICommit{
-		Present:  true,
-		ChainLen: len(chain),
-		HeadSHA:  strings.TrimSpace(string(headOut)),
-		Files:    aicommit.MergeChainFiles(chain),
+		Present:         true,
+		ChainLen:        len(chain),
+		HeadSHA:         strings.TrimSpace(string(headOut)),
+		Files:           aicommit.MergeChainFiles(chain),
+		StopReason:      reason,
+		ForcePushBypass: forceWIP,
 	}, nil
+}
+
+// wipChainSkipHint returns a one-line stdout hint when DetectWIPChain
+// found nothing actionable. It is printed right after the
+// "no working-tree changes to commit" line so users on a protected /
+// post-push state stop seeing the feature as silently dead.
+//
+// Returns "" when nothing useful can be said (chain was simply
+// non-WIP, or stop reason was a benign sentinel).
+func wipChainSkipHint(disabled bool, wc wipCommitForAICommit) string {
+	if disabled {
+		return "hint: WIP chain auto-unwrap is disabled (--no-wip-unwrap or ai.commit.wip_enabled=false)"
+	}
+	if wc.Present {
+		// Chain was non-empty and processed (or about to be); no skip
+		// hint needed — unwrap path emits its own line later.
+		return ""
+	}
+	switch wc.StopReason {
+	case aicommit.StopReasonPushed:
+		return "hint: WIP commit(s) at HEAD are already pushed — rerun with --force-wip to unwrap them anyway (rewrites pushed history)"
+	case aicommit.StopReasonDetachedHEAD:
+		return "hint: WIP chain unwrap is disabled on detached HEAD — check out a branch first"
+	case aicommit.StopReasonMergeCommit:
+		return "hint: WIP unwrap stopped at a merge commit (multi-parent unwrap is unsafe)"
+	default:
+		// non-WIP head, shallow history, root commit with non-WIP subject,
+		// etc. — silence keeps everyday output clean.
+		return ""
+	}
 }
 
 func appendWIPCommitFiles(files, wipFiles []aicommit.FileChange) []aicommit.FileChange {
@@ -555,6 +610,7 @@ type aiCommitFlags struct {
 	ci               bool
 	yes              bool
 	noWIPUnwrap      bool
+	forceWIP         bool
 }
 
 func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
@@ -570,6 +626,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.ci, _ = cmd.Flags().GetBool("ci")
 	f.yes, _ = cmd.Flags().GetBool("yes")
 	f.noWIPUnwrap, _ = cmd.Flags().GetBool("no-wip-unwrap")
+	f.forceWIP, _ = cmd.Flags().GetBool("force-wip")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
 	}

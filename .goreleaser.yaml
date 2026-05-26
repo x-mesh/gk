@@ -42,23 +42,25 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
-brews:
+# goreleaser v2.16 removed `brews:` (deprecated since v2.10). The Homebrew
+# tap is now published as a cask via `homebrew_casks:`. Casks don't support
+# the `test:` / `install:` blocks the old formula had — binaries are wired
+# up by listing them under `binaries:` and Homebrew installs them directly.
+# `bin.install "gk"` + `system "#{bin}/gk --version"` are no longer
+# applicable shapes here.
+homebrew_casks:
   - name: gk
+    binaries:
+      - gk
     repository:
       owner: x-mesh
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
     homepage: https://github.com/x-mesh/gk
     description: "Lightweight Go git helper CLI (pull, log, status, branch)"
-    license: MIT
     commit_author:
       name: gk-bot
       email: bot@gk.dev
-    test: |
-      system "#{bin}/gk --version"
-    install: |
-      bin.install "gk"
     caveats: |
       gk uses git under the hood. Ensure git >= 2.30 is installed.

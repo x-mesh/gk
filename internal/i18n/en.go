@@ -67,7 +67,7 @@ var enMessages = map[string]map[Mode]string{
 		ModeEasy:   "✓ Your working folder is clean and in sync with the server",
 	},
 	"hint.status.ahead": {
-		ModeNormal: "try: gk push",
+		ModeNormal: "try: gk push  (↑%d)",
 		ModeEasy:   "↑ You have %d commit(s) to upload → gk push",
 	},
 	"hint.status.ahead.minimal": {
@@ -75,7 +75,7 @@ var enMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk push",
 	},
 	"hint.status.behind": {
-		ModeNormal: "try: gk pull",
+		ModeNormal: "try: gk pull  (↓%d)",
 		ModeEasy:   "↓ The server has %d new commit(s) → gk pull",
 	},
 	"hint.status.behind.minimal": {
@@ -83,7 +83,7 @@ var enMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk pull",
 	},
 	"hint.status.diverged": {
-		ModeNormal: "try: gk sync",
+		ModeNormal: "try: gk sync  (↑%d ↓%d)",
 		ModeEasy:   "↕ Both sides have new commits (↑%d ↓%d) → gk sync",
 	},
 	"hint.status.diverged.minimal": {
@@ -283,7 +283,7 @@ var enMessages = map[string]map[Mode]string{
 	},
 	"hint.merge.into.cleanup_source": {
 		ModeNormal: "also: gk branch delete %s (fully merged)",
-		ModeEasy:   "※ cleanup: %s is fully merged — gk branch delete %s",
+		ModeEasy:   "※ cleanup: gk branch delete %s — fully merged",
 	},
 	"hint.merge.into.cleanup_source.minimal": {
 		ModeNormal: "gk branch delete %s",

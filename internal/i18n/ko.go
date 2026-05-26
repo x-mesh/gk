@@ -67,7 +67,7 @@ var koMessages = map[string]map[Mode]string{
 		ModeEasy:   "✓ 작업 폴더가 깨끗하고 서버와도 동기화되어 있습니다",
 	},
 	"hint.status.ahead": {
-		ModeNormal: "try: gk push",
+		ModeNormal: "try: gk push  (↑%d)",
 		ModeEasy:   "↑ 서버에 올릴 커밋이 %d개 있습니다 → gk push",
 	},
 	"hint.status.ahead.minimal": {
@@ -75,7 +75,7 @@ var koMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk push",
 	},
 	"hint.status.behind": {
-		ModeNormal: "try: gk pull",
+		ModeNormal: "try: gk pull  (↓%d)",
 		ModeEasy:   "↓ 서버에 새 커밋이 %d개 있습니다 → gk pull",
 	},
 	"hint.status.behind.minimal": {
@@ -83,7 +83,7 @@ var koMessages = map[string]map[Mode]string{
 		ModeEasy:   "gk pull",
 	},
 	"hint.status.diverged": {
-		ModeNormal: "try: gk sync",
+		ModeNormal: "try: gk sync  (↑%d ↓%d)",
 		ModeEasy:   "↕ 양쪽에 새 커밋이 있습니다 (↑%d ↓%d) → gk sync",
 	},
 	"hint.status.diverged.minimal": {
@@ -283,7 +283,7 @@ var koMessages = map[string]map[Mode]string{
 	},
 	"hint.merge.into.cleanup_source": {
 		ModeNormal: "also: gk branch delete %s (fully merged)",
-		ModeEasy:   "※ 정리: 다 머지된 %s 브랜치 — gk branch delete %s",
+		ModeEasy:   "※ 정리: gk branch delete %s — 이미 머지된 브랜치",
 	},
 	"hint.merge.into.cleanup_source.minimal": {
 		ModeNormal: "gk branch delete %s",

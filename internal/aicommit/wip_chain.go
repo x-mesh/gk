@@ -71,13 +71,29 @@ func CompileWIPPatterns(custom []string) ([]*regexp.Regexp, error) {
 }
 
 // IsWIPSubject returns true when subject matches any compiled pattern.
+//
+// Subjects are first stripped of a leading noise prefix (runs of
+// backticks and whitespace) before matching. Past LLM runs occasionally
+// leaked fenced-code-block markers into the subject line — without this
+// normalization a polluted subject like "``` WIP(...)" would slip past
+// the WIP-anchored patterns and break chain unwrap.
 func IsWIPSubject(subject string, patterns []*regexp.Regexp) bool {
+	normalized := stripNoisePrefix(subject)
 	for _, re := range patterns {
-		if re.MatchString(subject) {
+		if re.MatchString(normalized) {
 			return true
 		}
 	}
 	return false
+}
+
+// stripNoisePrefix removes leading backticks and Unicode whitespace.
+// Intentionally conservative — only the characters we have observed
+// contaminating subjects are trimmed, so unrelated punctuation in a
+// genuine subject still anchors `^`-based patterns where the user
+// expects.
+func stripNoisePrefix(s string) string {
+	return strings.TrimLeft(s, "` \t\r\n ")
 }
 
 // WIPCommit is one entry in the detected unwrap chain.

@@ -59,6 +59,18 @@ func TestIsWIPSubjectMatches(t *testing.T) {
 		{"feat(switch): add interactive picker", false},
 		{"chore: update lockfiles", false},
 		{"docs: explain the deny_paths convention", false},
+		// Subjects polluted with leading fence markers / whitespace —
+		// fenced code blocks that earlier LLM runs leaked into the
+		// commit subject. These should still be recognized as WIP so
+		// the unwrap chain can pick them up. See wip_chain.go for the
+		// `stripNoisePrefix` helper that normalizes before matching.
+		{"``` WIP(memleak): release panels on last-tab close", true},
+		{"  WIP(autoreply): serialize poller ticks", true},
+		{"```fixup! original", true},
+		{"`` WIP only-two-backticks", true},
+		// Backticks AFTER the keyword should still not match — only
+		// the leading-prefix case is forgiving.
+		{"feat: ```code in subject``` WIP-ish", false},
 	}
 	for _, tc := range cases {
 		got := IsWIPSubject(tc.subject, pats)
@@ -178,6 +190,34 @@ func TestDetectWIPChainMultiple(t *testing.T) {
 	}
 	if len(chain) != 3 {
 		t.Fatalf("want 3 commits in chain, got %d (subjects: %v)", len(chain), chainSubjects(chain))
+	}
+	if chain[0].SHA != "aaa" || chain[2].SHA != "ccc" {
+		t.Errorf("chain order wrong: %v", chainSubjects(chain))
+	}
+}
+
+// TestDetectWIPChainPollutedSubjects reproduces the term-mesh
+// 2026-05-26 case where leading fenced-code-block markers in subjects
+// (left over from earlier LLM output) prevented WIP detection. Before
+// stripNoisePrefix the chain walk stopped at HEAD because "``` WIP(...)"
+// failed the `^[Ww][Ii][Pp]\b` anchor.
+func TestDetectWIPChainPollutedSubjects(t *testing.T) {
+	commits := []chainCommit{
+		{SHA: "aaa", Subject: "``` WIP(memleak): release panels on last-tab close", NameStatus: "M\ta.go"},
+		{SHA: "bbb", Subject: "WIP(autoreply): serialize poller ticks", NameStatus: "M\tb.go"},
+		{SHA: "ccc", Subject: "``` WIP(surface-lease): annotate close path ", NameStatus: "M\tc.go"},
+		{SHA: "ddd", Subject: "feat: real commit before WIPs", NameStatus: ""},
+	}
+	r := chainRunner(commits, "develop", "origin/develop")
+	pats, _ := CompileWIPPatterns(nil)
+
+	chain, _, err := DetectWIPChain(context.Background(), r, DetectWIPChainOptions{Patterns: pats})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chain) != 3 {
+		t.Fatalf("want 3 commits in chain (HEAD-polluted subjects), got %d: %v",
+			len(chain), chainSubjects(chain))
 	}
 	if chain[0].SHA != "aaa" || chain[2].SHA != "ccc" {
 		t.Errorf("chain order wrong: %v", chainSubjects(chain))

@@ -62,5 +62,17 @@ homebrew_casks:
     commit_author:
       name: gk-bot
       email: bot@gk.dev
+    # Strip the com.apple.quarantine xattr that Homebrew applies to every
+    # cask download. Without this, macOS Gatekeeper silently moves the
+    # unsigned `gk` binary to the Trash on first launch — the published
+    # release isn't codesigned/notarized and we don't intend to pay for
+    # the Apple Developer Program just to ship a CLI. The staged copy
+    # under #{staged_path} is what the `binary "gk"` symlink in
+    # /opt/homebrew/bin ultimately resolves to, so cleaning the attribute
+    # there is enough.
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/gk"]
     caveats: |
       gk uses git under the hood. Ensure git >= 2.30 is installed.

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-05-27
+
+### Fixed
+
+- **`brew install --cask` 사용자가 macOS Gatekeeper 때문에 `gk` 바이너리가
+  설치 직후 휴지통으로 사라지던 문제 수정.** GoReleaser가 발행하는 cask에
+  `postflight` 훅을 추가해 `#{staged_path}/gk`의 `com.apple.quarantine`
+  확장 속성을 제거한다. macOS Sequoia(15+)에서 첫 실행 시 "확인되지 않은
+  개발자" 모달이 한 번 뜰 수 있으나, 더 이상 바이너리가 자동 격리되지는
+  않는다. 코드사인/공증 없이 unsigned CLI를 brew로 배포하기 위한 우회로,
+  `install.sh`로 수동 설치한 경우와 `gk update`의 manual 분기에는 영향이
+  없다.
+- **`internal/cli` `TestFormatError_*`가 개발자의 `~/.config/gk/config.yaml`에
+  따라 결과가 갈리던 테스트 격리 결함 수정.** non-Easy Mode의 `gk:` 접두
+  출력을 검증하는 두 테스트가 Easy Mode를 명시적으로 끄지 않아,
+  `output.easy: true`가 설정된 환경에서 항상 실패했다. `disableEasyForTest(t)`
+  헬퍼를 도입해 두 테스트가 사용자 설정과 무관하게 동작한다.
+
 ## [0.57.0] - 2026-05-27
 
 ### Added

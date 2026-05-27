@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-05-27
+
+### Added
+
+- **`gk prompt-info` opt-in signals.** New `--include=wip,dirty,ahead,behind,state`
+  flag emits space-separated tokens (`wip`, `±N`, `↑N`, `↓N`, `!<state>`)
+  alongside the existing worktree marker. JSON output grows matching opt-in
+  fields. Each signal is gated because every one adds at least one extra git
+  call per prompt render — pick what you need.
+- **WIP chain grouping in `gk log` viz output.** Consecutive WIP commits (2+)
+  are now bracketed with `┌│└` gutter glyphs. Singletons stay unmarked. A
+  faint `┊ ~Nh gap` line appears between adjacent rows whose author times
+  differ by 4h+ — commits are never collapsed, only the time discontinuity
+  is surfaced.
+- **`gk log --full` flag.** Suppresses the default subject-trim. Without
+  `--full`, long subjects on narrow TTYs are truncated with a faint `…`
+  instead of wrapping, which previously broke gutter and tag-rule alignment.
+  Output to a pipe or file is never trimmed, so machine consumers still see
+  the full subject.
+
+### Changed
+
+- **`gk log` scope tally now sums to the full commit count.** The header
+  line (`scope: N commits · …`) previously listed only Conventional-Commits
+  classifications; it now falls back to `wip` / `release` / `merge` /
+  `other` for everything else, so the buckets add up to N.
+
 ## [0.56.0] - 2026-05-26
 
 ### Changed

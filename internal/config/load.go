@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -87,7 +88,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// --- 3. Repo-local .gk.yaml ---
-	if repoRoot, err := gitRepoRoot(); err == nil && repoRoot != "" {
+	if repoRoot, err := cachedGitRepoRoot(); err == nil && repoRoot != "" {
 		localCfg := filepath.Join(repoRoot, ".gk.yaml")
 		if _, statErr := os.Stat(localCfg); statErr == nil {
 			v2 := viper.New()
@@ -101,7 +102,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// --- 4. git config gk.* ---
-	gkMap, err := ReadGK()
+	gkMap, err := cachedReadGK()
 	if err == nil && len(gkMap) > 0 {
 		if mergeErr := v.MergeConfigMap(gkMap); mergeErr != nil {
 			return nil, mergeErr
@@ -158,6 +159,90 @@ func gitRepoRoot() (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// Load caches its two git-fork helpers (repo root + gk.* config) keyed
+// on the process's current working directory. A gk command process
+// never chdir's mid-run, so subsequent Load() calls from the same
+// command share the work. Tests that chdir between scenarios still
+// see fresh reads because the cwd key invalidates automatically — no
+// explicit reset hook needed.
+var (
+	loadCacheMu      sync.Mutex
+	loadCacheWd      string
+	cachedRepoRoot   string
+	cachedRepoErr    error
+	cachedRepoRootOK bool
+	cachedGKMap      map[string]any
+	cachedGKErr      error
+	cachedGKOK       bool
+)
+
+// loadCacheKey returns the cwd used as the cache key. We re-read it on
+// every Load call; getwd is a single syscall (~µs) compared to the
+// git fork it replaces (~ms).
+func loadCacheKey() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
+}
+
+// invalidateLoadCacheIfMoved drops cached state when cwd changes.
+// Called with the mutex held.
+func invalidateLoadCacheIfMoved(wd string) {
+	if wd != loadCacheWd {
+		loadCacheWd = wd
+		cachedRepoRootOK = false
+		cachedGKOK = false
+	}
+}
+
+func cachedGitRepoRoot() (string, error) {
+	wd := loadCacheKey()
+	loadCacheMu.Lock()
+	defer loadCacheMu.Unlock()
+	invalidateLoadCacheIfMoved(wd)
+	if cachedRepoRootOK {
+		return cachedRepoRoot, cachedRepoErr
+	}
+	cachedRepoRoot, cachedRepoErr = gitRepoRoot()
+	cachedRepoRootOK = true
+	return cachedRepoRoot, cachedRepoErr
+}
+
+func cachedReadGK() (map[string]any, error) {
+	wd := loadCacheKey()
+	loadCacheMu.Lock()
+	defer loadCacheMu.Unlock()
+	invalidateLoadCacheIfMoved(wd)
+	if cachedGKOK {
+		return cloneNestedMap(cachedGKMap), cachedGKErr
+	}
+	cachedGKMap, cachedGKErr = ReadGK()
+	cachedGKOK = true
+	return cloneNestedMap(cachedGKMap), cachedGKErr
+}
+
+// cloneNestedMap returns a deep copy of m. ReadGK's result is fed to
+// viper.MergeConfigMap which lowercases keys in place (insensitiviseMap),
+// so handing out the cached map directly would corrupt subsequent reads.
+// The map is small (one entry per gk.* key) so the clone cost is
+// negligible vs the git fork it saves.
+func cloneNestedMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			out[k] = cloneNestedMap(sub)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // isNoSuchFile reports whether err is a "no such file or directory" error.

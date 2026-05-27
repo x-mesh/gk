@@ -845,9 +845,14 @@ type untrackedDivergent struct {
 
 // scanUntrackedDivergent walks every local branch and reports those that
 // satisfy: no upstream configured + a same-named remote ref exists +
-// the two refs differ. Pure cached-ref scan (for-each-ref + rev-parse +
-// rev-list); no fetch. Branches without a same-named remote ref are
-// intentionally skipped — those are the fork/personal-branch case.
+// the two refs differ. Pure cached-ref scan (for-each-ref + rev-list);
+// no fetch. Branches without a same-named remote ref are intentionally
+// skipped — those are the fork/personal-branch case.
+//
+// The remote-ref existence test is satisfied with one for-each-ref over
+// refs/remotes/<remote> (O(1) forks) rather than a rev-parse per
+// candidate branch (O(N) forks); repos with several orphan branches see
+// most of the savings.
 func scanUntrackedDivergent(ctx context.Context, r git.Runner, remote string) []untrackedDivergent {
 	if remote == "" {
 		remote = "origin"
@@ -860,6 +865,7 @@ func scanUntrackedDivergent(ctx context.Context, r git.Runner, remote string) []
 	if err != nil {
 		return nil
 	}
+	remoteRefs := loadRemoteRefSet(ctx, r, remote)
 	var result []untrackedDivergent
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if line == "" {
@@ -874,7 +880,7 @@ func scanUntrackedDivergent(ctx context.Context, r git.Runner, remote string) []
 			continue
 		}
 		implicit := remote + "/" + branch
-		if !git.RefExists(ctx, r, "refs/remotes/"+implicit) {
+		if !remoteRefs[implicit] {
 			continue
 		}
 		ahead, behind, ok := branchDivergence(ctx, r, implicit, branch)
@@ -886,6 +892,29 @@ func scanUntrackedDivergent(ctx context.Context, r git.Runner, remote string) []
 		})
 	}
 	return result
+}
+
+// loadRemoteRefSet returns the set of remote-tracking ref shortnames
+// (e.g. "origin/main") under refs/remotes/<remote>. One for-each-ref
+// call replaces N per-branch rev-parse probes. Returns an empty set on
+// error so callers degrade to "no implicit upstream found" rather than
+// surfacing a partial scan.
+func loadRemoteRefSet(ctx context.Context, r git.Runner, remote string) map[string]bool {
+	set := map[string]bool{}
+	out, _, err := r.Run(ctx,
+		"for-each-ref",
+		"--format=%(refname:short)",
+		"refs/remotes/"+remote,
+	)
+	if err != nil {
+		return set
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line != "" {
+			set[line] = true
+		}
+	}
+	return set
 }
 
 // renderOtherUntrackedHint summarizes untracked-divergent branches *other*
@@ -1044,10 +1073,25 @@ func renderLocalBaseStaleSubline(ctx context.Context, runner *git.ExecRunner, cf
 		remote = cfg.Remote
 	}
 	upstream := remote + "/" + base
-	if !git.RefExists(ctx, runner, "refs/heads/"+base) {
+	// Probe both refs in one for-each-ref so the staleness subline costs
+	// one fork instead of two when the base ref pair is fully present —
+	// which is the common case for any branch with a tracked trunk.
+	refsOut, _, refsErr := runner.Run(ctx,
+		"for-each-ref",
+		"--format=%(refname:short)",
+		"refs/heads/"+base,
+		"refs/remotes/"+upstream,
+	)
+	if refsErr != nil {
 		return ""
 	}
-	if !git.RefExists(ctx, runner, "refs/remotes/"+upstream) {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimRight(string(refsOut), "\n"), "\n") {
+		if line != "" {
+			seen[line] = true
+		}
+	}
+	if !seen[base] || !seen[upstream] {
 		return ""
 	}
 	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", "refs/heads/"+base+"..."+upstream)

@@ -76,20 +76,12 @@ func init() {
 	// Install subprocess hooks once per process invocation before the
 	// selected subcommand runs. Flag parsing happens before PreRun, so
 	// by the time this fires flagDebug reflects the -d / GK_DEBUG state.
+	// Easy Mode initialisation is deferred to the first EasyEngine()
+	// call — config.Load forks `git rev-parse` and `git config` under
+	// the hood, and hot-path commands like `prompt-info` that never
+	// touch the engine should not pay for that.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		installDebugHooks()
-		// Initialise Easy Mode engine from config + CLI flags.
-		// config.Load may fail (e.g. not in a git repo); that is fine —
-		// we fall back to defaults so the engine still resolves flags.
-		cfg, _ := config.Load(nil)
-		if cfg != nil {
-			easyEngine = easy.NewEngine(cfg.Output, flagEasy, flagNoEasy)
-		} else {
-			easyEngine = easy.NewEngine(config.Defaults().Output, flagEasy, flagNoEasy)
-		}
-		if flagDebug {
-			easyEngine.SetDebugFn(Dbg)
-		}
 		return nil
 	}
 }
@@ -146,13 +138,35 @@ func NoEasyFlag() bool  { return flagNoEasy }
 // tests override it via SetDebugWriter to assert on emitted log lines.
 var debugWriter io.Writer = os.Stderr
 
-// easyEngine is the package-level Easy Mode engine, initialised in
-// PersistentPreRunE. Nil until the first subcommand runs.
-var easyEngine *easy.Engine
+// easyEngine is the package-level Easy Mode engine, lazily initialised
+// on the first EasyEngine() call. Deferring construction skips config
+// loading (which forks two git subprocesses for layered config + gk.*
+// keys) for commands that never read the engine.
+var (
+	easyEngine     *easy.Engine
+	easyEngineOnce sync.Once
+)
 
-// EasyEngine returns the package-level Easy Mode engine. May be nil if
-// PersistentPreRunE has not yet run or config loading failed.
-func EasyEngine() *easy.Engine { return easyEngine }
+// EasyEngine returns the package-level Easy Mode engine, building it
+// on first access. The construction path mirrors what PersistentPreRunE
+// used to do eagerly: load layered config, fall back to defaults on
+// error, then wire the debug fn when --debug is on. Tests that invoke
+// command RunE directly (bypassing the cobra Execute path) still get a
+// usable engine the moment they call EasyEngine().
+func EasyEngine() *easy.Engine {
+	easyEngineOnce.Do(func() {
+		cfg, _ := config.Load(nil)
+		out := config.Defaults().Output
+		if cfg != nil {
+			out = cfg.Output
+		}
+		easyEngine = easy.NewEngine(out, flagEasy, flagNoEasy)
+		if flagDebug {
+			easyEngine.SetDebugFn(Dbg)
+		}
+	})
+	return easyEngine
+}
 
 // SetDebugWriter overrides the destination for Dbg output. Returns the
 // previous writer so callers can restore on cleanup. Safe to call from

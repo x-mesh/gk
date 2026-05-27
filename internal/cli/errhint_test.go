@@ -3,12 +3,32 @@ package cli
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/gitstate"
 )
+
+// disableEasyForTest forces Easy Mode off for the duration of the test
+// regardless of the developer's ~/.config/gk/config.yaml. Tests that
+// assert the non-Easy "gk:" error prefix must call this — without it the
+// EasyEngine resolves from user config and FormatError takes the EasyFormatter
+// branch (which prefixes with ✗), causing local-only test failures.
+func disableEasyForTest(t *testing.T) {
+	t.Helper()
+	prevEng := easyEngine
+	prevNoEasy := flagNoEasy
+	flagNoEasy = true
+	easyEngine = nil
+	easyEngineOnce = sync.Once{}
+	t.Cleanup(func() {
+		easyEngine = prevEng
+		flagNoEasy = prevNoEasy
+		easyEngineOnce = sync.Once{}
+	})
+}
 
 func TestInProgressHint(t *testing.T) {
 	cases := []struct {
@@ -103,6 +123,7 @@ func TestHintFrom_NoHint(t *testing.T) {
 }
 
 func TestFormatError_NoHint(t *testing.T) {
+	disableEasyForTest(t)
 	withNoColor(t)
 	got := FormatError(errors.New("boom"))
 	want := "gk: boom"
@@ -112,6 +133,7 @@ func TestFormatError_NoHint(t *testing.T) {
 }
 
 func TestFormatError_WithHint(t *testing.T) {
+	disableEasyForTest(t)
 	withNoColor(t)
 	err := WithHint(errors.New("boom"), "try: gk abort")
 	got := FormatError(err)

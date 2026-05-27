@@ -12,10 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
@@ -43,6 +46,7 @@ func init() {
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
 	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes")
 	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
+	cmd.Flags().Bool("full", false, "do not truncate long subjects to terminal width")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -864,23 +868,44 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	if tagsRule {
 		tags = fetchTags(ctx, runner)
 	}
-	width, _ := ui.TTYWidth()
+	ttyW, _ := ui.TTYWidth()
+	width := ttyW
 	if width <= 0 {
 		width = 72
+	}
+	// Long subjects wrap badly on narrow terminals — the second visual
+	// line dedents to column 0 and reads as a sibling commit, breaking
+	// gutter/tag-rule alignment. Default to trim-with-ellipsis when we
+	// actually know the TTY width; --full opts out, and a non-TTY stdout
+	// (pipe/redirect, ttyW == 0) leaves output untouched so downstream
+	// tools see the full subject.
+	full, _ := cmd.Flags().GetBool("full")
+	trimWidth := 0
+	if !full && ttyW > 0 {
+		trimWidth = ttyW
 	}
 
 	w := cmd.OutOrStdout()
 
-	// Pre-scan: compute the CC type tally BEFORE rendering commits so it
+	// WIP detection feeds both the scope-tally fallback (so wip/release/merge
+	// show up alongside cc types) and the gutter grouping below. Default
+	// patterns are enough — user-custom patterns aren't plumbed here yet.
+	wipPatterns, _ := aicommit.CompileWIPPatterns(nil)
+	isWIP := func(s string) bool { return aicommit.IsWIPSubject(s, wipPatterns) }
+
+	// Pre-scan: compute the scope tally BEFORE rendering commits so it
 	// can anchor the top of the output as a context header. Printing it
 	// at the bottom visually parented it to the last commit row (via the
 	// 9-space indent) and hid whole-range info as a commit-level detail.
+	//
+	// Fallback buckets ensure the tally sums to len(records): commits whose
+	// subject isn't a Conventional-Commits header fall into wip/release/
+	// merge/other so the user sees the full distribution, not just the cc
+	// slice.
 	typeCounts := map[string]int{}
 	if v.cc {
 		for _, r := range records {
-			if t, _ := ccClassify(r.subject); t != "" {
-				typeCounts[t]++
-			}
+			typeCounts[classifyScopeBucket(r.subject, isWIP)]++
 		}
 	}
 	if v.cc && len(typeCounts) > 0 {
@@ -888,7 +913,12 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		for k := range typeCounts {
 			keys = append(keys, k)
 		}
-		sort.Slice(keys, func(i, j int) bool { return typeCounts[keys[i]] > typeCounts[keys[j]] })
+		sort.Slice(keys, func(i, j int) bool {
+			if typeCounts[keys[i]] != typeCounts[keys[j]] {
+				return typeCounts[keys[i]] > typeCounts[keys[j]]
+			}
+			return keys[i] < keys[j]
+		})
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			parts = append(parts, fmt.Sprintf("%s=%d", k, typeCounts[k]))
@@ -897,14 +927,45 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		fmt.Fprintln(w, faint(fmt.Sprintf("scope: %d commits · %s", len(records), strings.Join(parts, " "))))
 	}
 
-	for _, r := range records {
+	// Mark each commit's role in a consecutive-WIP run. Singletons stay
+	// unmarked — gutter only kicks in when a run is 2+ long, which is the
+	// situation that actually benefits from visual grouping.
+	wipRoles := computeWIPRoles(records, isWIP)
+	gutterFaint := color.New(color.Faint).SprintFunc()
+	const gapThreshold = 4 * time.Hour
+
+	for i, r := range records {
 		if tagsRule {
 			if t, ok := tags[r.short]; ok {
 				fmt.Fprintln(w, renderTagRule(t, width))
 			}
 		}
 
+		// Inside a WIP run, flag a visible time discontinuity between
+		// neighboring rows. Doesn't hide any commit — just inserts one
+		// faint marker line so the user can tell "next morning" from
+		// "same session".
+		if i > 0 && wipRoles[i] != "" && wipRoles[i-1] != "" && wipRoles[i] != "head" {
+			prev := records[i-1].authorTime
+			cur := r.authorTime
+			if !prev.IsZero() && !cur.IsZero() {
+				if d := prev.Sub(cur); d >= gapThreshold {
+					fmt.Fprintln(w, gutterFaint("┊ ~"+formatAge(d)+" gap"))
+				}
+			}
+		}
+
 		var prefix, suffix strings.Builder
+		switch wipRoles[i] {
+		case "head":
+			prefix.WriteString(gutterFaint("┌ "))
+		case "mid":
+			prefix.WriteString(gutterFaint("│ "))
+		case "tail":
+			prefix.WriteString(gutterFaint("└ "))
+		default:
+			prefix.WriteString("  ")
+		}
 		if v.safety {
 			// Color by severity: `✎` amended is red-bold because force-pushing
 			// a rewritten commit can break collaborators; `◇` unpushed is
@@ -956,7 +1017,11 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			}
 		}
 
-		fmt.Fprintln(w, prefix.String()+line+suffix.String())
+		out := prefix.String() + line + suffix.String()
+		if trimWidth > 0 {
+			out = trimToVisible(out, trimWidth)
+		}
+		fmt.Fprintln(w, out)
 	}
 	return nil
 }
@@ -1381,4 +1446,174 @@ func parseJSONLog(raw []byte) []LogEntry {
 		})
 	}
 	return out
+}
+
+// classifyScopeBucket returns the scope-header bucket for a commit subject.
+// Tries the Conventional-Commits classifier first; if that misses, falls
+// back to wip/release/merge/other so the tally line covers every commit
+// instead of silently dropping rows the cc regex doesn't match.
+//
+// Release/merge detection is subject-prefix based (HasPrefix "Release " /
+// "Merge "), matching what `gk release` and `git merge` emit by default.
+// Parent-count would be more precise for merges but isn't worth a second
+// git invocation here — the prefix check is wrong only when a normal
+// commit's subject literally starts with "Merge " or "Release ", which
+// the user shouldn't be writing anyway.
+func classifyScopeBucket(subject string, isWIP func(string) bool) string {
+	if t, _ := ccClassify(subject); t != "" {
+		return t
+	}
+	if isWIP(subject) {
+		return "wip"
+	}
+	s := strings.TrimSpace(subject)
+	if strings.HasPrefix(s, "Release ") {
+		return "release"
+	}
+	if strings.HasPrefix(s, "Merge ") {
+		return "merge"
+	}
+	return "other"
+}
+
+// computeWIPRoles labels each record's position inside a maximal run of
+// consecutive WIP commits. Returned roles per index:
+//
+//   - ""     : not in a 2+ WIP run (singletons stay unmarked)
+//   - "head" : HEAD-most commit of a run
+//   - "mid"  : interior commit
+//   - "tail" : oldest commit of a run
+//
+// Records arrive HEAD-first, so "head" precedes "tail" by index. The
+// caller drives the gutter (┌ │ └) off these labels. Singletons are left
+// blank on purpose — a single WIP commit doesn't benefit from a gutter,
+// and drawing one would just add visual noise to ordinary rows.
+func computeWIPRoles(records []commitRecord, isWIP func(string) bool) []string {
+	roles := make([]string, len(records))
+	i := 0
+	for i < len(records) {
+		if !isWIP(records[i].subject) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(records) && isWIP(records[j].subject) {
+			j++
+		}
+		if j-i >= 2 {
+			roles[i] = "head"
+			for k := i + 1; k < j-1; k++ {
+				roles[k] = "mid"
+			}
+			roles[j-1] = "tail"
+		}
+		i = j
+	}
+	return roles
+}
+
+// trimToVisible truncates s to at most max visible terminal cells while
+// preserving SGR escape sequences (which occupy zero cells) so colors
+// keep rendering correctly past the cut. When truncation happens the
+// result ends with an SGR reset followed by a faint ellipsis, so the
+// ellipsis itself stays uncolored regardless of what color was active
+// at the cut point.
+//
+// max <= 0 disables trimming (returns s unchanged). Callers pass 0 for
+// non-TTY stdout (pipes/redirects) so machine consumers see the full
+// subject — the trim is a *display* concern, not a data concern.
+//
+// Width is measured per-rune via go-runewidth, so wide-cell characters
+// (CJK, emoji) consume their true cell count.
+func trimToVisible(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	if visibleCellWidth(s) <= max {
+		return s
+	}
+	var b strings.Builder
+	cells := 0
+	i := 0
+	for i < len(s) {
+		if isCSIStart(s, i) {
+			end := csiEnd(s, i)
+			if end < 0 {
+				// Malformed escape — stop here rather than emit garbage.
+				break
+			}
+			b.WriteString(s[i : end+1])
+			i = end + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size <= 1 {
+			i += max1(size)
+			continue
+		}
+		rw := runewidth.RuneWidth(r)
+		// Reserve 1 cell for the ellipsis.
+		if cells+rw > max-1 {
+			break
+		}
+		b.WriteRune(r)
+		cells += rw
+		i += size
+	}
+	b.WriteString("\x1b[0m")
+	b.WriteString(color.New(color.Faint).Sprint("…"))
+	return b.String()
+}
+
+// visibleCellWidth returns the on-screen cell width of s, treating SGR
+// (and other CSI) escape sequences as zero-width.
+func visibleCellWidth(s string) int {
+	cells := 0
+	i := 0
+	for i < len(s) {
+		if isCSIStart(s, i) {
+			end := csiEnd(s, i)
+			if end < 0 {
+				return cells
+			}
+			i = end + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size <= 1 {
+			i += max1(size)
+			continue
+		}
+		cells += runewidth.RuneWidth(r)
+		i += size
+	}
+	return cells
+}
+
+// isCSIStart reports whether s[i:] begins with the CSI introducer "\x1b[".
+func isCSIStart(s string, i int) bool {
+	return i+1 < len(s) && s[i] == 0x1b && s[i+1] == '['
+}
+
+// csiEnd returns the index of a CSI escape sequence's final byte. CSI
+// escapes terminate on any byte in 0x40..0x7E ('@' through '~'), which
+// covers SGR ('m') and every other CSI variant gk's output might emit.
+// Returns -1 when the escape is unterminated.
+func csiEnd(s string, start int) int {
+	for k := start + 2; k < len(s); k++ {
+		c := s[k]
+		if c >= 0x40 && c <= 0x7E {
+			return k
+		}
+	}
+	return -1
+}
+
+// max1 returns n bounded below by 1, so decode loops always advance at
+// least one byte on invalid UTF-8 and don't spin.
+func max1(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
 }

@@ -650,3 +650,65 @@ func TestCollectRecentlyAmended_FreshRepo(t *testing.T) {
 		t.Errorf("no amendments → expected empty map, got %v", m)
 	}
 }
+
+func TestVisibleCellWidth_StripsCSI(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"hello", 5},
+		{"\x1b[31mhello\x1b[0m", 5},
+		{"\x1b[1;33mWIP\x1b[0m(scope)", 10},
+		{"한글", 4}, // CJK wide cells
+		{"", 0},
+	}
+	for _, c := range cases {
+		if got := visibleCellWidth(c.in); got != c.want {
+			t.Errorf("visibleCellWidth(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestTrimToVisible_NoOpWhenShort(t *testing.T) {
+	in := "\x1b[31mhello\x1b[0m"
+	if got := trimToVisible(in, 10); got != in {
+		t.Errorf("expected passthrough when fits, got %q", got)
+	}
+}
+
+func TestTrimToVisible_DisabledOnZero(t *testing.T) {
+	in := "any long content with \x1b[31mcolor\x1b[0m"
+	if got := trimToVisible(in, 0); got != in {
+		t.Errorf("max=0 must be a no-op, got %q", got)
+	}
+}
+
+func TestTrimToVisible_PreservesEscapes(t *testing.T) {
+	// 5 visible cells of red + non-color text. Trim to 6 cells leaves 5
+	// for content + 1 for the ellipsis. The leading SGR must survive in
+	// the output so the kept prefix still renders red.
+	in := "\x1b[31mhello\x1b[0m world"
+	got := trimToVisible(in, 6)
+	if !strings.Contains(got, "\x1b[31m") {
+		t.Errorf("expected leading SGR preserved, got %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected ellipsis on truncated output, got %q", got)
+	}
+	if visibleCellWidth(got) > 6 {
+		t.Errorf("trimmed visible width = %d, want ≤ 6", visibleCellWidth(got))
+	}
+}
+
+func TestTrimToVisible_CJKWideCells(t *testing.T) {
+	// 한글 each renders as 2 cells; "한글ABC" = 4 + 3 = 7 cells.
+	// Trim to 5: keeps "한글" (4 cells) + ellipsis (1 cell) = 5.
+	in := "한글ABC"
+	got := trimToVisible(in, 5)
+	if visibleCellWidth(got) > 5 {
+		t.Errorf("CJK trim overshot: width=%d, output=%q", visibleCellWidth(got), got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected ellipsis, got %q", got)
+	}
+}

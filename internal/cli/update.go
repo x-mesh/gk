@@ -20,7 +20,9 @@ func init() {
 		Short: "Update gk to the latest release",
 		Long: `Self-update gk based on how it was installed.
 
-  brew      → forwards to 'brew upgrade x-mesh/tap/gk'
+  brew      → forwards to 'brew upgrade x-mesh/tap/gk' (or
+              'brew upgrade --cask x-mesh/tap/gk' when the binary lives
+              under Caskroom; the tap moved from formula to cask at v0.55)
   manual    → downloads the matching archive from the latest release,
               verifies the published sha256, and atomically replaces the
               running binary in place. Escalates with sudo when the
@@ -137,13 +139,13 @@ func newUpdateHTTPClient() *http.Client {
 }
 
 func runBrewUpgradeWithBanner(cmd *cobra.Command, current string, install *update.Install) error {
-	fmt.Fprintf(cmd.OutOrStdout(), "current: %s\nsource:  %s (%s)\n",
-		current, install.Source, install.BinaryPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "current: %s\nsource:  %s/%s (%s)\n",
+		current, install.Source, install.BrewKind, install.BinaryPath)
 	if DryRun() {
-		fmt.Fprintln(cmd.OutOrStdout(), "(dry-run) would run: brew upgrade x-mesh/tap/gk")
+		fmt.Fprintf(cmd.OutOrStdout(), "(dry-run) would run: %s\n", brewUpgradeCommandString(install.BrewKind))
 		return nil
 	}
-	return runBrewUpgrade(cmd)
+	return runBrewUpgrade(cmd, install.BrewKind)
 }
 
 func printGoInstallHintWithBanner(cmd *cobra.Command, current string, install *update.Install) error {
@@ -154,8 +156,12 @@ func printGoInstallHintWithBanner(cmd *cobra.Command, current string, install *u
 
 func runUpdateCheck(cmd *cobra.Command, install *update.Install, current, target string, cmp int) error {
 	out := cmd.OutOrStdout()
+	srcLabel := install.Source.String()
+	if install.BrewKind != update.BrewKindNone {
+		srcLabel = srcLabel + "/" + string(install.BrewKind)
+	}
 	if cmp >= 0 {
-		fmt.Fprintf(out, "up-to-date: %s (latest %s, source %s)\n", current, target, install.Source)
+		fmt.Fprintf(out, "up-to-date: %s (latest %s, source %s)\n", current, target, srcLabel)
 		return nil
 	}
 	fmt.Fprintf(out, "update available: %s\n", update.FormatPlan(current, target))
@@ -165,16 +171,33 @@ func runUpdateCheck(cmd *cobra.Command, install *update.Install, current, target
 	return nil
 }
 
-func runBrewUpgrade(cmd *cobra.Command) error {
+func runBrewUpgrade(cmd *cobra.Command, kind update.BrewKind) error {
 	if _, err := exec.LookPath("brew"); err != nil {
 		return fmt.Errorf("brew not found on PATH; reinstall via the install.sh script or run brew yourself")
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "→ brew upgrade x-mesh/tap/gk")
-	c := exec.Command("brew", "upgrade", "x-mesh/tap/gk") //nolint:gosec // user-driven self-update
+	args := brewUpgradeArgs(kind)
+	fmt.Fprintf(cmd.OutOrStdout(), "→ %s\n", brewUpgradeCommandString(kind))
+	c := exec.Command("brew", args...) //nolint:gosec // user-driven self-update
 	c.Stdin = os.Stdin
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
 	return c.Run()
+}
+
+// brewUpgradeArgs returns the exec args for `brew upgrade` tailored to
+// the install shape. Cask installs need the explicit `--cask` flag
+// because the tap still carries a stale `Formula/gk.rb` from the v0.54
+// era; without the flag brew matches the formula and the upgrade
+// becomes a no-op on the old version.
+func brewUpgradeArgs(kind update.BrewKind) []string {
+	if kind == update.BrewKindCask {
+		return []string{"upgrade", "--cask", "x-mesh/tap/gk"}
+	}
+	return []string{"upgrade", "x-mesh/tap/gk"}
+}
+
+func brewUpgradeCommandString(kind update.BrewKind) string {
+	return "brew " + strings.Join(brewUpgradeArgs(kind), " ")
 }
 
 func printGoInstallHint(cmd *cobra.Command) error {

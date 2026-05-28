@@ -62,6 +62,35 @@ func TestSourceString(t *testing.T) {
 	}
 }
 
+func TestClassifyBrewKind(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want BrewKind
+	}{
+		// Cask paths — must dispatch `brew upgrade --cask` from
+		// `gk update`. Tap migrated formula → cask at v0.55.
+		{"apple-silicon cask", "/opt/homebrew/Caskroom/gk/0.57.1/gk", BrewKindCask},
+		{"linuxbrew cask", "/home/linuxbrew/.linuxbrew/Caskroom/gk/0.57.1/gk", BrewKindCask},
+		// Formula paths — legacy install layout still on the tap as
+		// the deprecated Formula/gk.rb. `brew upgrade x-mesh/tap/gk`
+		// (no --cask) is correct for these.
+		{"apple-silicon formula", "/opt/homebrew/Cellar/gk/0.54.0/bin/gk", BrewKindFormula},
+		{"intel formula", "/usr/local/Cellar/gk/0.54.0/bin/gk", BrewKindFormula},
+		// Edge: brew prefix but no Caskroom/Cellar token. Fall back to
+		// formula — historically the only shape, and `brew upgrade`
+		// without --cask is the safer guess.
+		{"brew bin shim", "/opt/homebrew/bin/gk", BrewKindFormula},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyBrewKind(tc.path); got != tc.want {
+				t.Errorf("classifyBrewKind(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAssetName(t *testing.T) {
 	in := &Install{OS: "linux", Arch: "amd64"}
 	if got, want := in.AssetName(), "gk_linux_amd64.tar.gz"; got != want {

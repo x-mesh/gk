@@ -50,13 +50,25 @@ func (s Source) String() string {
 	}
 }
 
+// BrewKind distinguishes the two Homebrew install shapes — the tap was
+// migrated from a formula to a cask at v0.55+ and `brew upgrade` needs
+// the `--cask` flag for the new shape. Empty for non-brew installs.
+type BrewKind string
+
+const (
+	BrewKindNone    BrewKind = ""
+	BrewKindFormula BrewKind = "formula"
+	BrewKindCask    BrewKind = "cask"
+)
+
 // Install is the resolved environment for the running gk binary.
 type Install struct {
 	Source     Source
-	BinaryPath string // resolved absolute path of the running gk binary
-	Dir        string // filepath.Dir(BinaryPath) — where a sibling gk.new lands
-	OS         string // runtime.GOOS
-	Arch       string // runtime.GOARCH
+	BrewKind   BrewKind // formula/cask when Source == SourceBrew; empty otherwise
+	BinaryPath string   // resolved absolute path of the running gk binary
+	Dir        string   // filepath.Dir(BinaryPath) — where a sibling gk.new lands
+	OS         string   // runtime.GOOS
+	Arch       string   // runtime.GOARCH
 }
 
 // AssetName is the archive filename published in releases for this platform.
@@ -113,6 +125,9 @@ func DetectInstall() (*Install, error) {
 		Arch:       runtime.GOARCH,
 	}
 	in.Source = classify(resolved)
+	if in.Source == SourceBrew {
+		in.BrewKind = classifyBrewKind(resolved)
+	}
 	return in, nil
 }
 
@@ -128,6 +143,25 @@ func classify(path string) Source {
 		return SourceGoInstall
 	}
 	return SourceManual
+}
+
+// classifyBrewKind separates cask from formula by looking for the
+// `/Caskroom/` segment in the resolved binary path. Both layouts live
+// under the same brew prefix, but cask stages artifacts under
+// `<prefix>/Caskroom/<name>/<version>/...` while formula stages under
+// `<prefix>/Cellar/<name>/<version>/...`.
+//
+// Falls back to BrewKindFormula when neither marker is found —
+// historically that was the only shape, and `brew upgrade` without
+// `--cask` is the safer guess against an old install layout.
+func classifyBrewKind(path string) BrewKind {
+	if strings.Contains(path, "/Caskroom/") {
+		return BrewKindCask
+	}
+	if strings.Contains(path, "/Cellar/") {
+		return BrewKindFormula
+	}
+	return BrewKindFormula
 }
 
 func isGoInstallPath(path string) bool {

@@ -6,7 +6,35 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/x-mesh/gk/internal/update"
 )
+
+// TestBrewUpgradeArgs guards the cask migration: a Caskroom binary
+// must dispatch `brew upgrade --cask x-mesh/tap/gk`, otherwise brew
+// matches the legacy Formula/gk.rb pinned to v0.54.0 and the upgrade
+// silently no-ops on an old version.
+func TestBrewUpgradeArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		kind update.BrewKind
+		want []string
+	}{
+		{"cask", update.BrewKindCask, []string{"upgrade", "--cask", "x-mesh/tap/gk"}},
+		{"formula", update.BrewKindFormula, []string{"upgrade", "x-mesh/tap/gk"}},
+		// Zero value falls back to formula. Historical safety:
+		// `brew upgrade` without `--cask` works on pre-v0.55 installs.
+		{"empty kind", update.BrewKindNone, []string{"upgrade", "x-mesh/tap/gk"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := brewUpgradeArgs(tc.kind)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("brewUpgradeArgs(%q) = %v, want %v", tc.kind, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestUpdateHTTPClientFollowsAssetRedirect is the regression guard for the
 // bug where newUpdateHTTPClient's CheckRedirect unconditionally returned

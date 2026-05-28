@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-05-28
+
+### Fixed
+
+- **`gk resolve --ai`가 `ai:` 설정이 있는 환경에서 설정 로딩에 실패하던 회귀
+  수정.** v0.58.0에서 추가된 `--ai` 플래그 이름이 top-level `ai` 설정 섹션과
+  겹쳐, `config.Load`의 `BindPFlags`가 `ai` 섹션(맵)을 플래그의 bool 값으로
+  덮어쓰면서 `'ai' expected a map or struct, got "bool"`로 죽었다. `.gk.yaml`
+  이나 전역 설정에 `ai:` 블록이 있으면 `--ai` 없이 `gk resolve`만 실행해도
+  재현됐다. 이제 이름이 설정 섹션(`ai`, `commit`, `push`, `pull`, `branch`,
+  `output` 등)과 충돌하는 플래그는 pflag→viper 바인딩에서 제외한다 — 해당
+  플래그는 config 오버라이드가 아니라 명령 로컬 스위치이기 때문이다.
+
 ## [0.59.0] - 2026-05-28
 
 ### Added
@@ -2017,7 +2030,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.59.1...HEAD
+[0.59.1]: https://github.com/x-mesh/gk/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/x-mesh/gk/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/x-mesh/gk/compare/v0.57.1...v0.58.0
 [0.53.0]: https://github.com/x-mesh/gk/compare/v0.52.0...v0.53.0

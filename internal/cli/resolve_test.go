@@ -42,7 +42,7 @@ func TestResolveHelpListsFlags(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"--dry-run", "--no-ai", "--no-backup", "--strategy",
+		"--dry-run", "--no-ai", "--no-backup", "--strategy", "--ai",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing flag %q\n%s", want, out)
@@ -100,6 +100,50 @@ func TestResolveStrategyAiIsValid(t *testing.T) {
 	err := runResolveWithContext(t, cmd, nil)
 	if err != nil && strings.Contains(err.Error(), "invalid strategy") {
 		t.Errorf("ai should be a valid strategy, got: %v", err)
+	}
+}
+
+func TestResolveAIShortcutConflictsWithNoAI(t *testing.T) {
+	cmd, _, _ := rootCmd.Find([]string{"resolve"})
+	_ = cmd.Flags().Set("ai", "true")
+	_ = cmd.Flags().Set("no-ai", "true")
+	defer func() {
+		_ = cmd.Flags().Set("ai", "false")
+		_ = cmd.Flags().Set("no-ai", "false")
+	}()
+
+	err := runResolveWithContext(t, cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "--ai and --no-ai are mutually exclusive") {
+		t.Errorf("expected mutual-exclusion error, got: %v", err)
+	}
+}
+
+func TestResolveAIShortcutConflictsWithStrategy(t *testing.T) {
+	cmd, _, _ := rootCmd.Find([]string{"resolve"})
+	_ = cmd.Flags().Set("ai", "true")
+	_ = cmd.Flags().Set("strategy", "ours")
+	defer func() {
+		_ = cmd.Flags().Set("ai", "false")
+		_ = cmd.Flags().Set("strategy", "")
+	}()
+
+	err := runResolveWithContext(t, cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "--ai conflicts with --strategy ours") {
+		t.Errorf("expected strategy-conflict error, got: %v", err)
+	}
+}
+
+func TestResolveAIShortcutAloneIsValid(t *testing.T) {
+	cmd, _, _ := rootCmd.Find([]string{"resolve"})
+	_ = cmd.Flags().Set("ai", "true")
+	defer func() { _ = cmd.Flags().Set("ai", "false") }()
+
+	// --ai maps to --strategy ai; it must not trip strategy validation, and
+	// since no AI provider is configured in tests it should surface the
+	// provider-requirement error rather than an invalid-strategy error.
+	err := runResolveWithContext(t, cmd, nil)
+	if err != nil && strings.Contains(err.Error(), "invalid strategy") {
+		t.Errorf("--ai should map to a valid strategy, got: %v", err)
 	}
 }
 

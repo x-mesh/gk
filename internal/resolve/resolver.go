@@ -67,7 +67,17 @@ func (r *Resolver) ParseConflictFiles(paths []string) ([]ConflictFile, []string,
 		data, err := r.readFile(p)
 		if err != nil {
 			if r.Stderr != nil {
-				fmt.Fprintf(r.Stderr, "warning: gk resolve: could not read %s: %v\n", p, err)
+				if os.IsNotExist(err) {
+					// Unmerged in the index but absent from the working tree —
+					// usually a delete/modify conflict or a file the user removed
+					// mid-conflict. gk can't parse what isn't there, so point the
+					// user at the two git commands that clear the unmerged stage.
+					fmt.Fprintf(r.Stderr, "warning: gk resolve: %s is unmerged in the index but missing from the working tree\n", p)
+					fmt.Fprintf(r.Stderr, "  hint: to drop the file, run:  git rm -- %s\n", p)
+					fmt.Fprintf(r.Stderr, "  hint: to keep a side, run:    git checkout --ours -- %s   (or --theirs), then git add -- %s\n", p, p)
+				} else {
+					fmt.Fprintf(r.Stderr, "warning: gk resolve: could not read %s: %v\n", p, err)
+				}
 			}
 			skipped = append(skipped, p)
 			continue

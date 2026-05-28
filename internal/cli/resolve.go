@@ -25,6 +25,7 @@ func init() {
 	resolveCmd.Flags().Bool("no-ai", false, "disable AI analysis")
 	resolveCmd.Flags().Bool("no-backup", false, "skip .orig backup file creation")
 	resolveCmd.Flags().String("strategy", "", "apply strategy to all conflicts: ours, theirs, ai")
+	resolveCmd.Flags().Bool("ai", false, "shortcut for --strategy ai (resolve every conflict with AI)")
 	rootCmd.AddCommand(resolveCmd)
 }
 
@@ -35,6 +36,19 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	noAI, _ := cmd.Flags().GetBool("no-ai")
 	noBackup, _ := cmd.Flags().GetBool("no-backup")
 	strategy, _ := cmd.Flags().GetString("strategy")
+	aiShortcut, _ := cmd.Flags().GetBool("ai")
+
+	// --ai is sugar for --strategy ai. Reject combinations that contradict it
+	// rather than silently picking a winner.
+	if aiShortcut {
+		if noAI {
+			return fmt.Errorf("gk resolve: --ai and --no-ai are mutually exclusive")
+		}
+		if strategy != "" && strategy != "ai" {
+			return fmt.Errorf("gk resolve: --ai conflicts with --strategy %s", strategy)
+		}
+		strategy = "ai"
+	}
 
 	// Validate strategy value.
 	switch resolve.Strategy(strategy) {

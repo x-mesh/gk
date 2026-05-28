@@ -3,12 +3,43 @@ package resolve
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 )
+
+// TestParseConflictFiles_MissingFileHint — when a path is unmerged in the
+// index but absent from the working tree (delete/modify conflict, or the user
+// deleted it mid-conflict), gk can't parse it. It must skip the file and emit
+// actionable git rm / git checkout hints instead of a bare read error.
+func TestParseConflictFiles_MissingFileHint(t *testing.T) {
+	stderr := &bytes.Buffer{}
+	r := &Resolver{
+		Stderr:   stderr,
+		ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
+	}
+
+	_, skipped, err := r.ParseConflictFiles([]string{".xm/traces/.active"})
+	if err != nil {
+		t.Fatalf("ParseConflictFiles: %v", err)
+	}
+	if len(skipped) != 1 || skipped[0] != ".xm/traces/.active" {
+		t.Fatalf("want skipped=[.xm/traces/.active], got %v", skipped)
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"missing from the working tree",
+		"git rm -- .xm/traces/.active",
+		"git checkout --ours -- .xm/traces/.active",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hint missing %q\n%s", want, out)
+		}
+	}
+}
 
 // TestResolverRun_StateNoneWithUnmergedAcceptsThePath — regression
 // guard for the v0.37.1 fix: when `git stash apply`, `git apply

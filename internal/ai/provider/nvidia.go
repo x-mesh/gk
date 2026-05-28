@@ -120,7 +120,7 @@ func (n *Nvidia) Compose(ctx context.Context, in ComposeInput) (ComposeResult, e
 // is free-form text, so we disable json_object response_format.
 func (n *Nvidia) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
 	userPrompt := buildSummarizeUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, summarizeSystemPrompt, userPrompt, false, in.MaxTokens)
+	content, model, tokens, err := n.invoke(ctx, summarizeSystem(in), userPrompt, false, in.MaxTokens)
 	if err != nil {
 		return SummarizeResult{}, err
 	}

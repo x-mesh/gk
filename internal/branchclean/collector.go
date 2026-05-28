@@ -83,12 +83,45 @@ func (c *Collector) CollectAll(ctx context.Context, opts CleanOptions) ([]Branch
 	}
 
 	deduped := DeduplicateEntries(all)
-	// Enrich each entry with the branch's reflog-derived creation date.
-	// Done after dedup so we don't pay the per-branch fork twice.
+	// Enrich each entry with the branch's reflog-derived creation date
+	// and any worktree that has it checked out. Done after dedup so we
+	// don't pay the per-branch fork twice.
+	wt := worktreeBranches(ctx, c.Runner)
 	for i := range deduped {
 		deduped[i].CreatedAt = branchCreatedAt(ctx, c.Runner, deduped[i].Name)
+		if !deduped[i].IsRemote {
+			deduped[i].Worktree = wt[deduped[i].Name]
+		}
 	}
 	return deduped, nil
+}
+
+// worktreeBranches maps each local branch name to the worktree path that
+// has it checked out. Git refuses `git branch -d/-D` for a branch held by
+// a worktree, so the cleaner uses this to deselect and flag those entries.
+// Returns an empty map on any error — worktree info is advisory.
+func worktreeBranches(ctx context.Context, r git.Runner) map[string]string {
+	stdout, _, err := r.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	var path string
+	for _, line := range strings.Split(string(stdout), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			ref := strings.TrimPrefix(line, "branch ")
+			name := strings.TrimPrefix(ref, "refs/heads/")
+			if name != "" && path != "" {
+				out[name] = path
+			}
+		case line == "":
+			path = ""
+		}
+	}
+	return out
 }
 
 // branchCreatedAt parses the oldest entry of a branch's reflog to find

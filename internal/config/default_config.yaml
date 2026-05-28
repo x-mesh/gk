@@ -173,6 +173,18 @@ ai:
   #   model: "gpt-4o-mini"
   #   api_key: "sk-..."      # overrides OPENAI_API_KEY when set
 
+  # Custom, user-named providers. Point `provider:` at any name not in the
+  # built-in set (anthropic/openai/nvidia/groq/gemini/qwen/kiro) and gk builds
+  # it from the entry's `format` (wire protocol: openai | anthropic | nvidia |
+  # groq; defaults to openai). The remaining keys override the adapter defaults
+  # exactly like the dedicated blocks above. Built-in names need no entry here.
+  # providers:
+  #   my-gateway:
+  #     format: openai
+  #     endpoint: "https://your-gateway.example.com/v1/chat/completions"
+  #     model: "your-model"
+  #     # api_key: "..."
+
   # Chat-style commands (gk do / ask / explain, and the response cap shared by
   # pr / review / changelog).
   chat:

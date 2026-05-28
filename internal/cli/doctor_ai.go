@@ -92,6 +92,9 @@ func configEndpointFor(cfg *config.Config, name string) string {
 	case "groq":
 		return strings.TrimSpace(cfg.AI.Groq.Endpoint)
 	default:
+		if custom, ok := cfg.AI.CustomProvider(name); ok {
+			return strings.TrimSpace(custom.Endpoint)
+		}
 		return ""
 	}
 }
@@ -110,6 +113,9 @@ func configAPIKeyFor(cfg *config.Config, name string) string {
 	case "groq":
 		return strings.TrimSpace(cfg.AI.Groq.APIKey)
 	default:
+		if custom, ok := cfg.AI.CustomProvider(name); ok {
+			return strings.TrimSpace(custom.APIKey)
+		}
 		return ""
 	}
 }

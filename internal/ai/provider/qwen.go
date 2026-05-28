@@ -101,7 +101,7 @@ func (q *Qwen) Compose(ctx context.Context, in ComposeInput) (ComposeResult, err
 // Summarize implements Summarizer.
 func (q *Qwen) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
 	prompt := buildSummarizeUserPrompt(in)
-	raw, err := q.invokeWithSystem(ctx, prompt, summarizeSystemPrompt, nil)
+	raw, err := q.invokeWithSystem(ctx, prompt, summarizeSystem(in), nil)
 	if err != nil {
 		return SummarizeResult{}, err
 	}

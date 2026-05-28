@@ -145,6 +145,24 @@ func TestFormatCandidateLabel_WithoutAI(t *testing.T) {
 	}
 }
 
+func TestFormatCandidateLabel_WorktreeMarker(t *testing.T) {
+	c := branchclean.CleanCandidate{
+		BranchEntry: branchclean.BranchEntry{
+			Name:           "fix-bug",
+			Status:         branchclean.StatusMerged,
+			LastCommitDate: time.Now().AddDate(0, 0, -7),
+			Worktree:       "/Users/x/.gk/worktree/gk/fix-bug",
+		},
+	}
+	label := FormatCandidateLabel(c)
+	if !strings.Contains(label, "worktree") {
+		t.Errorf("expected worktree marker in label: %s", label)
+	}
+	if !strings.Contains(label, "gk wt remove") {
+		t.Errorf("expected remediation hint in label: %s", label)
+	}
+}
+
 func TestFormatCandidateLabel_Today(t *testing.T) {
 	c := branchclean.CleanCandidate{
 		BranchEntry: branchclean.BranchEntry{

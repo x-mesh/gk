@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"time"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -56,6 +57,24 @@ func aiFactoryOptionsFromAI(ai config.AIConfig) provider.FactoryOptions {
 		opts.Endpoint = ai.Nvidia.Endpoint
 		opts.Timeout = timeoutFor(ai.Nvidia.Timeout)
 		opts.APIKey = ai.Nvidia.APIKey
+	default:
+		// A name outside the built-in whitelist: resolve it against the
+		// custom `ai.providers.<name>` map. Build it from the entry's wire
+		// Format (default "openai") so `provider: kiro-api` reaches the
+		// OpenAI adapter with the user's endpoint/model. When the name is
+		// not registered, opts.Name is left as-is and NewProvider surfaces
+		// the "unknown provider" error.
+		if custom, ok := ai.CustomProvider(ai.Provider); ok {
+			format := strings.TrimSpace(custom.Format)
+			if format == "" {
+				format = "openai"
+			}
+			opts.Name = format
+			opts.Model = custom.Model
+			opts.Endpoint = custom.Endpoint
+			opts.Timeout = timeoutFor(custom.Timeout)
+			opts.APIKey = custom.APIKey
+		}
 	}
 	return opts
 }

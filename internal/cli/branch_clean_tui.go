@@ -34,6 +34,11 @@ func FormatCandidateLabel(c branchclean.CleanCandidate) string {
 	b.WriteString("  [")
 	b.WriteString(string(c.Status))
 	b.WriteString("]")
+	// worktree가 점유한 브랜치는 삭제가 불가하므로 명시한다 — 기본
+	// 미선택 상태이고, 선택해도 git이 거부한다.
+	if c.Worktree != "" {
+		b.WriteString("  [worktree — gk wt remove first]")
+	}
 
 	if c.AICategory != "" {
 		fmt.Fprintf(&b, "  %s: %s", c.AICategory, c.AISummary)

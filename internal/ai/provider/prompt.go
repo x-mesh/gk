@@ -112,11 +112,33 @@ const summarizeSystemPrompt = `You are a senior engineer pair-reviewing inside t
   push --force, clean -f, branch -D, filter-repo) as a first option.
 - Be concise: every line should help the reader decide or act.`
 
+// summarizeSystem returns the system prompt for a Summarize call: the
+// caller-supplied SystemPrompt when set, otherwise the generic
+// summarizeSystemPrompt. Centralises the fallback so every adapter
+// (anthropic/nvidia/gemini/kiro/qwen) honours an override identically.
+func summarizeSystem(in SummarizeInput) string {
+	if s := strings.TrimSpace(in.SystemPrompt); s != "" {
+		return in.SystemPrompt
+	}
+	return summarizeSystemPrompt
+}
+
 // buildSummarizeUserPrompt composes the user prompt for Summarize.
 // The prompt structure varies by Kind: "pr", "review", or "changelog".
 func buildSummarizeUserPrompt(in SummarizeInput) string {
 	var b strings.Builder
 	lang := fallback(in.Lang, "en")
+
+	// "status" supplies its own role/instructions via SystemPrompt and its
+	// Diff field already carries the assembled FACTS/DIFF data block. Emit
+	// it verbatim (with only the language directive) — no "summarize" task
+	// header and no extra <DIFF> wrapper, which would otherwise nest and
+	// double-fence the payload.
+	if in.Kind == "status" {
+		fmt.Fprintf(&b, "Respond in language: %s\n\n", lang)
+		b.WriteString(in.Diff)
+		return b.String()
+	}
 
 	switch in.Kind {
 	case "pr":

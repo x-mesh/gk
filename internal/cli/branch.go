@@ -349,6 +349,10 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		for _, c := range result.DryRun {
+			if c.Worktree != "" {
+				fmt.Fprintf(w, "skip: %s (checked out in worktree — gk wt remove %s first)\n", c.Name, c.Name)
+				continue
+			}
 			fmt.Fprintf(w, "would delete: %s\n", c.Name)
 		}
 		return nil
@@ -411,7 +415,11 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 				continue
 			}
 			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, strings.TrimSpace(string(stderr)))
+				msg := strings.TrimSpace(string(stderr))
+				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, msg)
+				if h := branchclean.WorktreeHint(name, msg); h != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), h)
+				}
 				continue
 			}
 			fmt.Fprintln(w, successLine("deleted", name))

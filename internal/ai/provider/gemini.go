@@ -97,7 +97,7 @@ func (g *Gemini) Compose(ctx context.Context, in ComposeInput) (ComposeResult, e
 
 // Summarize implements Summarizer.
 func (g *Gemini) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
-	prompt := summarizeSystemPrompt + "\n\n" + buildSummarizeUserPrompt(in)
+	prompt := summarizeSystem(in) + "\n\n" + buildSummarizeUserPrompt(in)
 	raw, err := g.invoke(ctx, prompt, nil)
 	if err != nil {
 		return SummarizeResult{}, err

@@ -21,6 +21,12 @@ type SummarizeInput struct {
 	Commits   []string // commit messages in the range
 	Lang      string   // BCP-47 output language (e.g. "en", "ko")
 	MaxTokens int      // advisory cap; 0 = no cap
+	// SystemPrompt overrides the default summarize system prompt. Empty
+	// keeps summarizeSystemPrompt. Used by callers (e.g. `gk status --ai`)
+	// that supply their own role/instructions instead of the generic
+	// "senior engineer summarize" framing — keeping the instructions out of
+	// the user payload so they are not treated as untrusted <DIFF> data.
+	SystemPrompt string
 }
 
 // SummarizeResult is the output of Summarize.

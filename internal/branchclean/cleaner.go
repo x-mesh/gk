@@ -103,18 +103,24 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 			}
 		}
 
+		// squash/ambiguous 브랜치는 CollectAll 밖에서 추가되므로
+		// worktree 점유 여부를 따로 채워준다 (CollectAll이 enrich한
+		// 나머지 entries와 동일 정보를 갖도록).
+		wt := worktreeBranches(ctx, c.Runner)
 		// squash-merged 브랜치를 entries에 추가
 		for _, name := range squashed {
 			entries = append(entries, BranchEntry{
-				Name:   name,
-				Status: StatusSquashMerged,
+				Name:     name,
+				Status:   StatusSquashMerged,
+				Worktree: wt[name],
 			})
 		}
 		// ambiguous 브랜치도 추가
 		for _, name := range ambiguous {
 			entries = append(entries, BranchEntry{
-				Name:   name,
-				Status: StatusAmbiguous,
+				Name:     name,
+				Status:   StatusAmbiguous,
+				Worktree: wt[name],
 			})
 		}
 		entries = DeduplicateEntries(entries)
@@ -179,9 +185,13 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 			_, stderr, err = c.Runner.Run(ctx, "branch", deleteFlag, name)
 		}
 		if err != nil {
-			result.Failed[name] = fmt.Errorf("gk branch clean: delete %s: %s: %w", name, strings.TrimSpace(string(stderr)), err)
+			msg := strings.TrimSpace(string(stderr))
+			result.Failed[name] = fmt.Errorf("gk branch clean: delete %s: %s: %w", name, msg, err)
 			if c.Stderr != nil {
-				fmt.Fprintf(c.Stderr, "error: failed to delete %s: %s\n", name, strings.TrimSpace(string(stderr)))
+				fmt.Fprintf(c.Stderr, "error: failed to delete %s: %s\n", name, msg)
+				if h := WorktreeHint(name, msg); h != "" {
+					fmt.Fprintln(c.Stderr, h)
+				}
 			}
 			continue
 		}
@@ -189,6 +199,17 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	}
 
 	return result, nil
+}
+
+// WorktreeHint returns a one-line remediation hint when a branch deletion
+// failed because a worktree has the branch checked out (git refuses
+// `git branch -d/-D` in that case), or "" for any other failure. The
+// caller prints it right after the error line.
+func WorktreeHint(name, stderr string) string {
+	if !strings.Contains(stderr, "used by worktree") {
+		return ""
+	}
+	return fmt.Sprintf("hint: %q is checked out in a worktree — run 'gk wt remove %s' first", name, name)
 }
 
 // runAIAnalysis는 BranchAnalyzer를 통해 AI 분석을 실행한다.
@@ -277,6 +298,11 @@ func BuildCandidates(
 
 		// Selected 결정
 		c.Selected = determineSelected(e.Status, c.AICategory, force)
+		// worktree가 점유한 브랜치는 git이 -d/-D 모두 거부하므로
+		// 기본 선택에서 제외한다 (라벨의 [worktree] 마커로 이유를 안내).
+		if e.Worktree != "" {
+			c.Selected = false
+		}
 		candidates = append(candidates, c)
 	}
 

@@ -80,7 +80,7 @@ func (k *Kiro) Compose(ctx context.Context, in ComposeInput) (ComposeResult, err
 
 // Summarize implements Summarizer.
 func (k *Kiro) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
-	prompt := summarizeSystemPrompt + "\n\n" + buildSummarizeUserPrompt(in)
+	prompt := summarizeSystem(in) + "\n\n" + buildSummarizeUserPrompt(in)
 	raw, err := k.invoke(ctx, prompt, nil)
 	if err != nil {
 		return SummarizeResult{}, err

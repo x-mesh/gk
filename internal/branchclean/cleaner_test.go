@@ -338,6 +338,47 @@ func TestBuildCandidates_AIInProgressNotSelected(t *testing.T) {
 	}
 }
 
+func TestBuildCandidates_WorktreeHeldNotSelected(t *testing.T) {
+	// merged 브랜치라도 worktree가 점유하면 git이 삭제를 거부하므로
+	// 기본 선택에서 제외되어야 한다.
+	entries := []BranchEntry{
+		{Name: "feat/held", Status: StatusMerged, Worktree: "/tmp/wt/held"},
+		{Name: "feat/free", Status: StatusMerged},
+	}
+	candidates := BuildCandidates(entries, nil, false)
+	got := map[string]bool{}
+	for _, c := range candidates {
+		got[c.Name] = c.Selected
+	}
+	if got["feat/held"] {
+		t.Error("worktree-held branch should not be selected by default")
+	}
+	if !got["feat/free"] {
+		t.Error("free merged branch should still be selected")
+	}
+
+	// force=true여도 worktree 점유 브랜치는 삭제 불가하므로 미선택 유지.
+	candidates = BuildCandidates(entries, nil, true)
+	for _, c := range candidates {
+		if c.Name == "feat/held" && c.Selected {
+			t.Error("worktree-held branch should stay deselected even with force")
+		}
+	}
+}
+
+func TestWorktreeHint(t *testing.T) {
+	got := WorktreeHint("fix-bug", "error: cannot delete branch 'fix-bug' used by worktree at '/x/fix-bug'")
+	if got == "" {
+		t.Fatal("expected a hint for a worktree-held deletion error")
+	}
+	if !strings.Contains(got, "gk wt remove fix-bug") {
+		t.Errorf("hint should suggest 'gk wt remove fix-bug', got: %q", got)
+	}
+	if WorktreeHint("x", "error: branch 'x' not fully merged") != "" {
+		t.Error("non-worktree errors should yield no hint")
+	}
+}
+
 func TestBuildCandidates_StaleNoAISelected(t *testing.T) {
 	entries := []BranchEntry{
 		{Name: "feat/old", Status: StatusStale},

@@ -96,7 +96,7 @@ func (a *Anthropic) Compose(ctx context.Context, in ComposeInput) (ComposeResult
 
 func (a *Anthropic) Summarize(ctx context.Context, in SummarizeInput) (SummarizeResult, error) {
 	userPrompt := buildSummarizeUserPrompt(in)
-	content, model, tokens, err := a.invoke(ctx, summarizeSystemPrompt, userPrompt, in.MaxTokens)
+	content, model, tokens, err := a.invoke(ctx, summarizeSystem(in), userPrompt, in.MaxTokens)
 	if err != nil {
 		return SummarizeResult{}, err
 	}

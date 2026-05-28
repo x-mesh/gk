@@ -52,6 +52,49 @@ type AIConfig struct {
 	OpenAI    AIOpenAIConfig    `mapstructure:"openai"    yaml:"openai"`
 	Nvidia    AINvidiaConfig    `mapstructure:"nvidia"    yaml:"nvidia"`
 	Groq      AIGroqConfig      `mapstructure:"groq"      yaml:"groq"`
+	// Providers registers custom, user-named providers keyed by the name
+	// used in `provider:`. A name absent from the built-in whitelist
+	// (anthropic/openai/nvidia/groq/gemini/qwen/kiro) is looked up here and
+	// built from the named entry's Format wire protocol. Lets a user point
+	// `provider: kiro-api` (or any name) at an OpenAI-compatible gateway
+	// without colliding with the real `openai` section.
+	Providers map[string]AICustomProviderConfig `mapstructure:"providers" yaml:"providers"`
+	// Extra captures any `ai.<name>` block that is not a known field above
+	// (",remain" collects the leftover keys). It lets a custom provider be
+	// written one level shallower — `ai.kiro-api:` instead of
+	// `ai.providers.kiro-api:` — which reads naturally next to the built-in
+	// `ai.openai:` / `ai.groq:` blocks. customProvider() consults Providers
+	// first, then Extra.
+	Extra map[string]AICustomProviderConfig `mapstructure:",remain" yaml:"-"`
+}
+
+// CustomProvider resolves a user-named provider by the name used in
+// `provider:`. It prefers an explicit `ai.providers.<name>` entry, then
+// falls back to a shallow `ai.<name>` block captured in Extra. The bool
+// reports whether a registration was found.
+func (a AIConfig) CustomProvider(name string) (AICustomProviderConfig, bool) {
+	if c, ok := a.Providers[name]; ok {
+		return c, true
+	}
+	if c, ok := a.Extra[name]; ok {
+		return c, true
+	}
+	return AICustomProviderConfig{}, false
+}
+
+// AICustomProviderConfig defines a user-named provider built on top of an
+// existing HTTP wire protocol. Format selects which built-in adapter speaks
+// the protocol ("openai" | "anthropic" | "nvidia" | "groq"); empty defaults
+// to "openai". The remaining fields override that adapter's defaults exactly
+// like the dedicated provider sections do. APIKey, when set, takes precedence
+// over the underlying adapter's env var (see AIAnthropicConfig for the leak
+// caveat).
+type AICustomProviderConfig struct {
+	Format   string `mapstructure:"format"   yaml:"format"`
+	Model    string `mapstructure:"model"    yaml:"model"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+	APIKey   string `mapstructure:"api_key"  yaml:"api_key"`
 }
 
 // AIAssistConfig controls AI help that is attached to existing commands.

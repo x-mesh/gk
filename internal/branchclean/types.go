@@ -34,6 +34,11 @@ type BranchEntry struct {
 	// --delete <name>` for these, never `git branch -d`.
 	IsRemote   bool
 	RemoteName string // populated when IsRemote (e.g. "origin")
+	// Worktree holds the path of the worktree that has this branch
+	// checked out, when any. Git refuses to delete such a branch (even
+	// with -D), so the cleaner deselects these by default, marks them in
+	// the picker, and points the user at `gk wt remove`.
+	Worktree string
 }
 
 // CleanCandidate는 삭제 후보 브랜치와 AI 분석 결과를 결합한 구조체이다.

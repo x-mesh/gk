@@ -116,3 +116,68 @@ func TestDefaultAutoOrderStartsWithNvidia(t *testing.T) {
 		}
 	}
 }
+
+// TestFactoryOptionsAPIKeyReachesAdapter verifies an explicit APIKey on
+// FactoryOptions is threaded into the HTTP adapters. For openai/groq the
+// key must also reach the inner Nvidia adapter that drives the HTTP call,
+// since that re-wire happens after the field is set.
+func TestFactoryOptionsAPIKeyReachesAdapter(t *testing.T) {
+	const key = "cfg-supplied-key"
+
+	t.Run("openai propagates to inner nvidia", func(t *testing.T) {
+		p, err := buildWithOpts("openai", FactoryOptions{APIKey: key})
+		if err != nil {
+			t.Fatalf("build openai: %v", err)
+		}
+		o := p.(*OpenAI)
+		if o.APIKey != key {
+			t.Errorf("openai APIKey = %q, want %q", o.APIKey, key)
+		}
+		if o.nv.APIKey != key {
+			t.Errorf("inner nvidia APIKey = %q, want %q (re-wire dropped the key)", o.nv.APIKey, key)
+		}
+	})
+
+	t.Run("groq propagates to inner nvidia", func(t *testing.T) {
+		p, err := buildWithOpts("groq", FactoryOptions{APIKey: key})
+		if err != nil {
+			t.Fatalf("build groq: %v", err)
+		}
+		g := p.(*Groq)
+		if g.nv.APIKey != key {
+			t.Errorf("inner nvidia APIKey = %q, want %q", g.nv.APIKey, key)
+		}
+	})
+
+	t.Run("nvidia and anthropic set field directly", func(t *testing.T) {
+		n, err := buildWithOpts("nvidia", FactoryOptions{APIKey: key})
+		if err != nil {
+			t.Fatalf("build nvidia: %v", err)
+		}
+		if n.(*Nvidia).APIKey != key {
+			t.Errorf("nvidia APIKey = %q, want %q", n.(*Nvidia).APIKey, key)
+		}
+		a, err := buildWithOpts("anthropic", FactoryOptions{APIKey: key})
+		if err != nil {
+			t.Fatalf("build anthropic: %v", err)
+		}
+		if a.(*Anthropic).APIKey != key {
+			t.Errorf("anthropic APIKey = %q, want %q", a.(*Anthropic).APIKey, key)
+		}
+	})
+
+	t.Run("empty APIKey leaves env fallback intact", func(t *testing.T) {
+		t.Setenv("OPENAI_API_KEY", "env-key")
+		p, err := buildWithOpts("openai", FactoryOptions{})
+		if err != nil {
+			t.Fatalf("build openai: %v", err)
+		}
+		o := p.(*OpenAI)
+		if o.APIKey != "" {
+			t.Errorf("APIKey should stay empty when opts omit it, got %q", o.APIKey)
+		}
+		if got := o.nv.APIKey; got != "env-key" {
+			t.Errorf("inner nvidia should fall back to env, got %q", got)
+		}
+	})
+}

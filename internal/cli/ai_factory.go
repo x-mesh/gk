@@ -40,18 +40,22 @@ func aiFactoryOptionsFromAI(ai config.AIConfig) provider.FactoryOptions {
 		opts.Model = ai.Anthropic.Model
 		opts.Endpoint = ai.Anthropic.Endpoint
 		opts.Timeout = timeoutFor(ai.Anthropic.Timeout)
+		opts.APIKey = ai.Anthropic.APIKey
 	case "openai":
 		opts.Model = ai.OpenAI.Model
 		opts.Endpoint = ai.OpenAI.Endpoint
 		opts.Timeout = timeoutFor(ai.OpenAI.Timeout)
+		opts.APIKey = ai.OpenAI.APIKey
 	case "groq":
 		opts.Model = ai.Groq.Model
 		opts.Endpoint = ai.Groq.Endpoint
 		opts.Timeout = timeoutFor(ai.Groq.Timeout)
+		opts.APIKey = ai.Groq.APIKey
 	case "nvidia":
 		opts.Model = ai.Nvidia.Model
 		opts.Endpoint = ai.Nvidia.Endpoint
 		opts.Timeout = timeoutFor(ai.Nvidia.Timeout)
+		opts.APIKey = ai.Nvidia.APIKey
 	}
 	return opts
 }

@@ -59,14 +59,16 @@ func aiDoctorChecks(cfg *config.Config) []doctorCheck {
 	for _, spec := range defaultAIAPISpecs {
 		endpoint := spec.endpoint
 		overridden := false
+		keyFromConfig := false
 		if cfg != nil {
 			if ep := configEndpointFor(cfg, spec.name); ep != "" {
 				endpoint = ep
 				overridden = true
 			}
+			keyFromConfig = configAPIKeyFor(cfg, spec.name) != ""
 		}
 		checks = append(checks, decorateDefaultProvider(
-			checkAIAPIProvider(spec.name, spec.envKey, endpoint, overridden),
+			checkAIAPIProvider(spec.name, spec.envKey, endpoint, overridden, keyFromConfig),
 			spec.name, defaultProvider))
 	}
 	for _, spec := range defaultAICLISpecs {
@@ -89,6 +91,24 @@ func configEndpointFor(cfg *config.Config, name string) string {
 		return strings.TrimSpace(cfg.AI.Nvidia.Endpoint)
 	case "groq":
 		return strings.TrimSpace(cfg.AI.Groq.Endpoint)
+	default:
+		return ""
+	}
+}
+
+// configAPIKeyFor returns the user-configured api_key for an HTTP-API
+// provider, or "" when none is set. Only the presence matters to the
+// caller — the value is never logged or returned to the report.
+func configAPIKeyFor(cfg *config.Config, name string) string {
+	switch name {
+	case "anthropic":
+		return strings.TrimSpace(cfg.AI.Anthropic.APIKey)
+	case "openai":
+		return strings.TrimSpace(cfg.AI.OpenAI.APIKey)
+	case "nvidia":
+		return strings.TrimSpace(cfg.AI.Nvidia.APIKey)
+	case "groq":
+		return strings.TrimSpace(cfg.AI.Groq.APIKey)
 	default:
 		return ""
 	}
@@ -172,27 +192,37 @@ func checkAIProvider(name string) doctorCheck {
 //	200 / 401 / 403 / 404 / 405 → endpoint reachable (any response is enough)
 //	5xx                         → endpoint is up but degraded
 //	dial / timeout / TLS errors → network blocked
-func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden bool) doctorCheck {
+func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden, keyFromConfig bool) doctorCheck {
 	endpointNote := "endpoint"
 	if endpointOverridden {
 		endpointNote = "custom endpoint"
 	}
 
-	if os.Getenv(envKey) == "" {
+	// The key may come from the env var or from ai.<name>.api_key in
+	// config; either satisfies auth. keyNote names whichever source is
+	// active so the report points at the right place. The value itself
+	// is never printed.
+	keyNote := envKey + " set"
+	switch {
+	case os.Getenv(envKey) != "":
+		// env var wins the note even if config also has one
+	case keyFromConfig:
+		keyNote = "ai." + name + ".api_key set"
+	default:
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusWarn,
 			Detail: envKey + " not set",
-			Fix:    "export " + envKey + "=...  # then `gk commit --provider " + name + "`",
+			Fix:    "export " + envKey + "=...  (or set ai." + name + ".api_key in config) # then `gk commit --provider " + name + "`",
 		}
 	}
 	if endpoint == "" {
-		// No probe configured for this provider — the env-var presence
-		// is the best we can do without a network round-trip.
+		// No probe configured for this provider — key presence is the
+		// best we can do without a network round-trip.
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusPass,
-			Detail: envKey + " set (validity not verified)",
+			Detail: keyNote + " (validity not verified)",
 		}
 	}
 
@@ -202,20 +232,20 @@ func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden bool) 
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusPass,
-			Detail: fmt.Sprintf("%s set (validity not verified) · %s reachable [HTTP %d]", envKey, endpointNote, status),
+			Detail: fmt.Sprintf("%s (validity not verified) · %s reachable [HTTP %d]", keyNote, endpointNote, status),
 		}
 	case err != nil:
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusWarn,
-			Detail: fmt.Sprintf("%s set (validity not verified) · %s probe failed: %v", envKey, endpointNote, err),
+			Detail: fmt.Sprintf("%s (validity not verified) · %s probe failed: %v", keyNote, endpointNote, err),
 			Fix:    "check network/proxy reachability to " + endpoint,
 		}
 	default:
 		return doctorCheck{
 			Name:   "ai api: " + name,
 			Status: statusWarn,
-			Detail: fmt.Sprintf("%s set (validity not verified) · %s returned HTTP %d", envKey, endpointNote, status),
+			Detail: fmt.Sprintf("%s (validity not verified) · %s returned HTTP %d", keyNote, endpointNote, status),
 			Fix:    "the provider returned a server error — try again later or check the provider's status page",
 		}
 	}

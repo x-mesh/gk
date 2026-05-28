@@ -467,6 +467,29 @@ ai:
 
 ---
 
+### `ai.<provider>.api_key`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `""` (read the env var instead) |
+| Applies to | `anthropic`, `openai`, `nvidia`, `groq` |
+
+Supplies the bearer token in config instead of an environment variable. When non-empty it **takes precedence** over the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`); when empty, gk falls back to the env var as before.
+
+```yaml
+ai:
+  provider: openai
+  openai:
+    endpoint: "https://api.openai.com/v1/chat/completions"
+    model: "gpt-4o-mini"
+    api_key: "sk-..."
+```
+
+> **Security:** a key written here lives in a plaintext YAML file that is easy to commit or share by accident. Prefer the environment variable for shared or version-controlled configs; reserve `api_key` for a private `~/.config/gk/config.yaml` or a custom OpenAI-compatible proxy that needs a non-standard token. `gk doctor --ai` reports the key as present (`ai.<provider>.api_key set`) without ever printing its value.
+
+---
+
 ### `NVIDIA_API_KEY` (environment variable)
 
 Required when using the nvidia provider. Set this to your NVIDIA API key:

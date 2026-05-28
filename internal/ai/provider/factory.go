@@ -31,6 +31,11 @@ type FactoryOptions struct {
 	// the adapter default (60s). CLI adapters ignore it — the command-level
 	// context deadline bounds those instead.
 	Timeout time.Duration
+	// APIKey optionally supplies the bearer token for the HTTP-based
+	// adapters (anthropic, openai, groq, nvidia). When non-empty it takes
+	// precedence over the adapter's per-provider env var. CLI adapters
+	// ignore it — they own their own auth.
+	APIKey string
 }
 
 // NewProvider returns a ready-to-use Provider. When Name is set, the
@@ -87,6 +92,9 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Endpoint != "" {
 			a.Endpoint = opts.Endpoint
 		}
+		if opts.APIKey != "" {
+			a.APIKey = opts.APIKey
+		}
 		if opts.Timeout > 0 {
 			a.Timeout = opts.Timeout
 			a.Client = NewDefaultHTTPClient(opts.Timeout)
@@ -100,7 +108,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Endpoint != "" {
 			o.Endpoint = opts.Endpoint
 		}
-		o.nv = o.toNvidia() // re-wire after override
+		if opts.APIKey != "" {
+			o.APIKey = opts.APIKey
+		}
+		o.nv = o.toNvidia() // re-wire after override (picks up APIKey)
 		if opts.Timeout > 0 {
 			o.nv.Timeout = opts.Timeout
 			o.nv.Client = NewDefaultHTTPClient(opts.Timeout)
@@ -113,6 +124,9 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		}
 		if opts.Endpoint != "" {
 			n.Endpoint = opts.Endpoint
+		}
+		if opts.APIKey != "" {
+			n.APIKey = opts.APIKey
 		}
 		if opts.Timeout > 0 {
 			n.Timeout = opts.Timeout
@@ -127,7 +141,10 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Endpoint != "" {
 			g.Endpoint = opts.Endpoint
 		}
-		g.nv = g.toNvidia()
+		if opts.APIKey != "" {
+			g.APIKey = opts.APIKey
+		}
+		g.nv = g.toNvidia() // re-wire after override (picks up APIKey)
 		if opts.Timeout > 0 {
 			g.nv.Timeout = opts.Timeout
 			g.nv.Client = NewDefaultHTTPClient(opts.Timeout)

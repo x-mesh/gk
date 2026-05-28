@@ -44,7 +44,7 @@ func findAICheck(checks []doctorCheck, prefix string) doctorCheck {
 // not verified, never bare "set".
 func TestCheckAIAPIKeySetNoProbeWording(t *testing.T) {
 	t.Setenv("FAKE_KEY", "secret-value-do-not-print")
-	c := checkAIAPIProvider("fake", "FAKE_KEY", "", false)
+	c := checkAIAPIProvider("fake", "FAKE_KEY", "", false, false)
 	if c.Status != statusPass {
 		t.Fatalf("want PASS for set key without probe, got %s", c.Status)
 	}
@@ -60,12 +60,47 @@ func TestCheckAIAPIKeySetNoProbeWording(t *testing.T) {
 // remediation hint and no key echo.
 func TestCheckAIAPIUnsetKeyIsWarn(t *testing.T) {
 	t.Setenv("FAKE_KEY", "")
-	c := checkAIAPIProvider("fake", "FAKE_KEY", "https://example.invalid", false)
+	c := checkAIAPIProvider("fake", "FAKE_KEY", "https://example.invalid", false, false)
 	if c.Status != statusWarn {
 		t.Fatalf("want WARN for unset key, got %s", c.Status)
 	}
 	if !strings.Contains(c.Detail, "not set") {
 		t.Errorf("detail should say not set, got %q", c.Detail)
+	}
+}
+
+// TestCheckAIAPIKeyFromConfigIsPass verifies that a key supplied only via
+// config (api_key) — with no env var — still counts as authenticated, and
+// the detail names the config source rather than the env var.
+func TestCheckAIAPIKeyFromConfigIsPass(t *testing.T) {
+	t.Setenv("FAKE_KEY", "")
+	c := checkAIAPIProvider("fake", "FAKE_KEY", "", false, true)
+	if c.Status != statusPass {
+		t.Fatalf("want PASS for config-supplied key, got %s", c.Status)
+	}
+	if !strings.Contains(c.Detail, "ai.fake.api_key set") {
+		t.Errorf("detail should name the config source, got %q", c.Detail)
+	}
+}
+
+// TestAIDoctorChecksHonorsConfigAPIKey verifies aiDoctorChecks reads
+// ai.<provider>.api_key so a key kept only in config is not falsely
+// reported as missing.
+func TestAIDoctorChecksHonorsConfigAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg := config.Defaults()
+	cfg.AI.OpenAI.APIKey = "config-key-do-not-print"
+
+	checks := aiDoctorChecks(&cfg)
+	c := findAICheck(checks, "ai api: openai")
+	if c.Name == "" {
+		t.Fatal("openai check missing")
+	}
+	if c.Status != statusPass {
+		t.Errorf("config api_key should make openai PASS, got %s (%q)", c.Status, c.Detail)
+	}
+	if strings.Contains(c.Detail, "config-key-do-not-print") {
+		t.Errorf("detail must never echo the key value: %q", c.Detail)
 	}
 }
 
@@ -76,7 +111,7 @@ func TestCheckAIAPIUnsetKeyIsWarn(t *testing.T) {
 // without a real network round-trip succeeding.
 func TestCheckAIAPICustomEndpointWording(t *testing.T) {
 	t.Setenv("FAKE_KEY", "x")
-	c := checkAIAPIProvider("fake", "FAKE_KEY", "http://127.0.0.1:1/unreachable", true)
+	c := checkAIAPIProvider("fake", "FAKE_KEY", "http://127.0.0.1:1/unreachable", true, false)
 	if !strings.Contains(c.Detail, "custom endpoint") {
 		t.Errorf("overridden endpoint should be labelled custom, got %q", c.Detail)
 	}

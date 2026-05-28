@@ -99,33 +99,45 @@ type AIChatConfig struct {
 
 // AIAnthropicConfig controls the Claude provider. Empty fields fall
 // back to the adapter defaults.
+//
+// APIKey, when set, takes precedence over the ANTHROPIC_API_KEY env var.
+// Prefer the env var for shared/committed configs — a key written here
+// lands in a plaintext yaml that is easy to leak.
 type AIAnthropicConfig struct {
 	Model    string `mapstructure:"model"    yaml:"model"`
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+	APIKey   string `mapstructure:"api_key"  yaml:"api_key"`
 }
 
-// AIOpenAIConfig controls the OpenAI provider.
+// AIOpenAIConfig controls the OpenAI provider. APIKey, when set, takes
+// precedence over the OPENAI_API_KEY env var (see AIAnthropicConfig for
+// the leak caveat).
 type AIOpenAIConfig struct {
 	Model    string `mapstructure:"model"    yaml:"model"`
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+	APIKey   string `mapstructure:"api_key"  yaml:"api_key"`
 }
 
 // AINvidiaConfig controls the NVIDIA AI provider. Model overrides the
 // default LLM model identifier; Endpoint overrides the default Chat
 // Completions API URL; Timeout is a Go duration string for HTTP requests.
+// APIKey, when set, takes precedence over the NVIDIA_API_KEY env var.
 type AINvidiaConfig struct {
 	Model    string `mapstructure:"model"    yaml:"model"`
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+	APIKey   string `mapstructure:"api_key"  yaml:"api_key"`
 }
 
-// AIGroqConfig controls the Groq AI provider.
+// AIGroqConfig controls the Groq AI provider. APIKey, when set, takes
+// precedence over the GROQ_API_KEY env var.
 type AIGroqConfig struct {
 	Model    string `mapstructure:"model"    yaml:"model"`
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 	Timeout  string `mapstructure:"timeout"  yaml:"timeout"`
+	APIKey   string `mapstructure:"api_key"  yaml:"api_key"`
 }
 
 // AICommitConfig controls `gk commit`. Mode is the default execution

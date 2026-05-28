@@ -156,10 +156,22 @@ ai:
 
   # NVIDIA provider settings. Uses the OpenAI-compatible Chat Completions API
   # directly over HTTP — no external binary required. Auth: NVIDIA_API_KEY env var.
-  # `timeout` (Go duration) is the per-HTTP-call timeout for this provider;
-  # anthropic/openai/groq accept the same key under their own block.
+  # `timeout` (Go duration) is the per-HTTP-call timeout for this provider.
+  #
+  # `model` / `endpoint` override the built-in defaults; `api_key`, when set,
+  # takes precedence over the env var. anthropic/openai/groq accept the same
+  # four keys under their own block. Prefer the env var for shared or committed
+  # configs — a key written here lives in a plaintext yaml that is easy to leak.
   nvidia:
     timeout: "60s"
+    # api_key: "nvapi-..."   # overrides NVIDIA_API_KEY when set
+
+  # OpenAI (or any OpenAI-compatible endpoint, e.g. a self-hosted proxy).
+  # Auth: OPENAI_API_KEY env var, or api_key below.
+  # openai:
+  #   endpoint: "https://api.openai.com/v1/chat/completions"
+  #   model: "gpt-4o-mini"
+  #   api_key: "sk-..."      # overrides OPENAI_API_KEY when set
 
   # Chat-style commands (gk do / ask / explain, and the response cap shared by
   # pr / review / changelog).

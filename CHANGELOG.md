@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-05-28
+
+### Added
+
+- **`gk resolve --ai` shortcut flag.** `--ai`는 `--strategy ai`의 설탕 문법으로,
+  모든 충돌을 AI 프로바이더로 한 번에 해소한다. 모순되는 조합은 조용히 한쪽을
+  고르지 않고 에러로 막는다 — `--ai --no-ai`와
+  `--ai --strategy ours|theirs`는 모두 거부된다.
+
+### Changed
+
+- **`gk update`의 brew 경로가 cask 설치를 인식한다.** 실행 중인 바이너리가
+  Caskroom 아래에 있으면 `brew upgrade x-mesh/tap/gk`에 `--cask`를 자동으로
+  덧붙인다 — tap이 v0.55에서 formula → cask로 이전된 것과 일치한다. 이 처리가
+  없으면 이전된 tap에 대해 `brew upgrade`가 낡은 v0.54 formula를 계속 잡았다.
+
 ## [0.57.1] - 2026-05-27
 
 ### Fixed
@@ -1984,7 +2000,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/x-mesh/gk/compare/v0.57.1...v0.58.0
 [0.53.0]: https://github.com/x-mesh/gk/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/x-mesh/gk/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/x-mesh/gk/compare/v0.50.1...v0.51.0

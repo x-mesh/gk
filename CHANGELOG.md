@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-05-28
+
+### Added
+
+- **HTTP AI provider의 키를 설정 파일에서 지정 가능.** `ai.anthropic`,
+  `ai.openai`, `ai.nvidia`, `ai.groq` 블록에 `api_key` 필드가 생겼다. 값이
+  있으면 해당 provider의 환경변수(`OPENAI_API_KEY` 등)보다 우선하고, 비어
+  있으면 기존처럼 환경변수로 폴백한다. 커스텀 OpenAI 호환 엔드포인트나 개인
+  설정(`~/.config/gk/config.yaml`)에서 토큰을 직접 넣을 때 쓴다 — 평문 yaml에
+  키가 남으므로 공유/커밋되는 설정에는 환경변수를 권장한다. `gk doctor --ai`는
+  설정 키를 인증 소스로 인식하되 값은 출력하지 않는다.
+- **`-d` 디버그 로그가 HTTP AI 호출을 계측한다.** nvidia/openai/groq/anthropic
+  provider로 나가는 매 요청마다 `[debug +…] ai <provider> model=<model>
+  (<소요시간>, <상태>)` 한 줄을 찍는다 — git subprocess 로그와 동일한 형식.
+  어떤 provider·model이 얼마나 걸렸는지(타임아웃·에러 포함) `--ai` 호출의
+  지연을 한눈에 볼 수 있다. 프롬프트·키·응답 본문은 출력하지 않는다.
+
 ## [0.58.0] - 2026-05-28
 
 ### Added
@@ -2000,7 +2017,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/x-mesh/gk/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/x-mesh/gk/compare/v0.57.1...v0.58.0
 [0.53.0]: https://github.com/x-mesh/gk/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/x-mesh/gk/compare/v0.51.0...v0.52.0

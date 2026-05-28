@@ -280,6 +280,12 @@ ai:
     # model: "llama-3.3-70b-versatile"  # 기본값
     # endpoint: "https://api.groq.com/openai/v1/chat/completions"
     # timeout: "60s"
+  providers:                 # 사용자 정의 provider (`provider:`에 임의 이름 지정)
+    my-gateway:              # 아래 `format` 어댑터로 빌드; 내장 이름은 여기 등록 불필요
+      format: openai         # wire 프로토콜: openai | anthropic | nvidia | groq (기본 openai)
+      endpoint: "https://your-gateway.example.com/v1/chat/completions"
+      model: "your-model"
+      # api_key: "..."
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI 플래그가 오버라이드)
     max_groups: 10

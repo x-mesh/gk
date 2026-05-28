@@ -490,6 +490,40 @@ ai:
 
 ---
 
+### `ai.providers.<name>`
+
+| | |
+|-|-|
+| Type | map of objects |
+| Default | `{}` |
+
+Registers **custom, user-named providers**. Use this to point `provider:` at any name (e.g. an in-house gateway) instead of the built-in set (`anthropic`, `openai`, `nvidia`, `groq`, `gemini`, `qwen`, `kiro`).
+
+When `provider:` names a value that is **not** in the built-in set, gk looks it up under `ai.providers.<name>` and builds it from the entry's `format` (the wire protocol it speaks). Built-in names keep working unchanged and do **not** need an `ai.providers` entry.
+
+| Field | Type | Default | Notes |
+|-|-|-|-|
+| `format` | string | `openai` | Wire protocol adapter: `openai`, `anthropic`, `nvidia`, or `groq` |
+| `endpoint` | string | adapter default | Chat Completions URL of your gateway |
+| `model` | string | adapter default | Model identifier sent in the request |
+| `timeout` | string (Go duration) | `60s` | Per-request HTTP timeout |
+| `api_key` | string | `""` (env var) | Bearer token; precedence and security caveat match `ai.<provider>.api_key` above |
+
+```yaml
+ai:
+  provider: my-gateway
+  providers:
+    my-gateway:
+      format: openai   # omit to default to openai
+      endpoint: "https://your-gateway.example.com/v1/chat/completions"
+      model: "your-model"
+      # api_key: "..."
+```
+
+> **Note:** gk builds the custom provider through the `format` adapter, so internal output that echoes the provider name (e.g. `gk doctor --ai`, `gk status --ai`) may show the `format` (`openai`) rather than the custom name (`my-gateway`). An unregistered custom name surfaces as an `unknown provider` error.
+
+---
+
 ### `NVIDIA_API_KEY` (environment variable)
 
 Required when using the nvidia provider. Set this to your NVIDIA API key:

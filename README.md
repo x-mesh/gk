@@ -282,6 +282,12 @@ ai:
     # model: "llama-3.3-70b-versatile"  # default
     # endpoint: "https://api.groq.com/openai/v1/chat/completions"
     # timeout: "60s"
+  providers:                 # custom, user-named providers (point `provider:` at any name)
+    my-gateway:              # built from `format` below; built-in names need no entry here
+      format: openai         # wire protocol: openai | anthropic | nvidia | groq (default openai)
+      endpoint: "https://your-gateway.example.com/v1/chat/completions"
+      model: "your-model"
+      # api_key: "..."
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI flags override)
     max_groups: 10

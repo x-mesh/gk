@@ -140,6 +140,35 @@ func TestLoadFlagPriority(t *testing.T) {
 	}
 }
 
+// TestLoadFlagNameCollidingWithSection guards the v0.58.0 regression where
+// `gk resolve --ai` (a bool flag named "ai") was bound over the `ai:`
+// config section, making Load fail with "'ai' expected a map or struct,
+// got bool". A flag whose name matches a top-level section must be
+// ignored for config binding, leaving the section intact.
+func TestLoadFlagNameCollidingWithSection(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	// Mirror resolve's flag set: a bool --ai that collides with `ai:`.
+	fs := pflag.NewFlagSet("resolve", pflag.ContinueOnError)
+	fs.Bool("ai", false, "shortcut for --strategy ai")
+	fs.Bool("no-ai", false, "disable AI analysis")
+	if err := fs.Set("ai", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(fs)
+	if err != nil {
+		t.Fatalf("Load with --ai flag must not clobber the ai section: %v", err)
+	}
+	// The ai section survives with its defaults rather than collapsing to
+	// the flag's bool value.
+	if !cfg.AI.Enabled {
+		t.Errorf("ai.enabled should keep its default (true), got %v", cfg.AI.Enabled)
+	}
+}
+
 func TestAIDefaults(t *testing.T) {
 	d := config.Defaults()
 	if !d.AI.Enabled {

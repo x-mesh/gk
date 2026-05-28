@@ -167,8 +167,12 @@ func TestLoadStatusConfigDoesNotBindAIFlag(t *testing.T) {
 	if err := fs.Parse([]string{"--ai"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(fs); err == nil {
-		t.Fatal("control config.Load with top-level ai bool unexpectedly succeeded")
+	// config.Load now skips binding a flag whose name collides with a
+	// top-level config section (see config.reservedConfigSections), so a
+	// bool --ai no longer clobbers the ai: struct. This used to fail with
+	// "'ai' expected a map or struct, got bool".
+	if _, err := config.Load(fs); err != nil {
+		t.Fatalf("config.Load with a top-level ai bool flag should succeed: %v", err)
 	}
 
 	cfg, err := loadStatusConfig()

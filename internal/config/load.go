@@ -12,6 +12,28 @@ import (
 	"github.com/spf13/viper"
 )
 
+// reservedConfigSections names the top-level Config keys that decode into
+// a struct/map. A CLI flag can never represent a whole section, so flags
+// whose name matches one of these are excluded from pflag→viper binding
+// (see step 6 in Load). The scalar top-level keys (base_branch, remote)
+// are intentionally absent — those remain bindable for genuine overrides.
+var reservedConfigSections = map[string]bool{
+	"log":       true,
+	"status":    true,
+	"ui":        true,
+	"branch":    true,
+	"commit":    true,
+	"push":      true,
+	"pull":      true,
+	"sync":      true,
+	"refresh":   true,
+	"preflight": true,
+	"clone":     true,
+	"worktree":  true,
+	"ai":        true,
+	"output":    true,
+}
+
 // Load resolves the full configuration using the layered priority:
 //
 //  1. Defaults (lowest)
@@ -123,9 +145,22 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	_ = v.BindEnv("output.hints", "GK_HINTS")
 
 	// --- 6. CLI flags ---
+	// BindPFlags maps each flag to a viper key by its bare name. A command
+	// flag whose name collides with a top-level config *section* (e.g.
+	// `gk resolve --ai` vs the `ai:` struct) would otherwise overwrite the
+	// whole section with the flag's scalar value, and Unmarshal would fail
+	// with "'ai' expected a map or struct, got bool". Such flags are local
+	// switches read via cmd.Flags(), never config overrides, so skip them.
 	if flags != nil {
-		if err := v.BindPFlags(flags); err != nil {
-			return nil, err
+		var bindErr error
+		flags.VisitAll(func(f *pflag.Flag) {
+			if bindErr != nil || reservedConfigSections[f.Name] {
+				return
+			}
+			bindErr = v.BindPFlag(f.Name, f)
+		})
+		if bindErr != nil {
+			return nil, bindErr
 		}
 	}
 

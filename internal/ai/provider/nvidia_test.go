@@ -545,3 +545,87 @@ func TestNvidiaEmptyResponseBody(t *testing.T) {
 		t.Errorf("empty body: got %v, want ErrProviderResponse", err)
 	}
 }
+
+// TestInvokeFiresHTTPHook verifies the debug HTTPHook is invoked once per
+// provider call with the brand, the *requested* model, and the final
+// error — the signal the `-d` debug log surfaces for `--ai` round-trips.
+func TestInvokeFiresHTTPHook(t *testing.T) {
+	prev := HTTPHook
+	t.Cleanup(func() { HTTPHook = prev })
+
+	summarizeReq := SummarizeInput{Kind: "status", Diff: "x", Lang: "en"}
+
+	t.Run("success reports brand and requested model", func(t *testing.T) {
+		var (
+			brand, model string
+			gotErr       error
+			calls        int
+		)
+		HTTPHook = func(b, m string, _ time.Duration, err error) {
+			brand, model, gotErr = b, m, err
+			calls++
+		}
+		client := &FakeHTTPClient{Responses: []*http.Response{okResponse(chatResponse{
+			Model:   "server-echoed-model",
+			Choices: []chatChoice{{Message: chatMessage{Role: "assistant", Content: "a summary"}}},
+			Usage:   &chatUsage{TotalTokens: 3},
+		})}}
+		nv := newTestNvidia(client, "test-key") // Model: "test-model"
+		if _, err := nv.Summarize(context.Background(), summarizeReq); err != nil {
+			t.Fatalf("Summarize: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("hook fired %d times, want 1", calls)
+		}
+		if brand != "nvidia" {
+			t.Errorf("brand = %q, want nvidia", brand)
+		}
+		if model != "test-model" {
+			t.Errorf("model = %q, want test-model (requested, not server echo)", model)
+		}
+		if gotErr != nil {
+			t.Errorf("err = %v, want nil", gotErr)
+		}
+	})
+
+	t.Run("brand override is reported", func(t *testing.T) {
+		var brand string
+		HTTPHook = func(b, _ string, _ time.Duration, _ error) { brand = b }
+		client := &FakeHTTPClient{Responses: []*http.Response{okResponse(chatResponse{
+			Model:   "m",
+			Choices: []chatChoice{{Message: chatMessage{Content: "ok"}}},
+			Usage:   &chatUsage{TotalTokens: 1},
+		})}}
+		nv := newTestNvidia(client, "test-key")
+		nv.Brand = "openai" // openai/groq delegate HTTP through Nvidia
+		if _, err := nv.Summarize(context.Background(), summarizeReq); err != nil {
+			t.Fatalf("Summarize: %v", err)
+		}
+		if brand != "openai" {
+			t.Errorf("brand = %q, want openai", brand)
+		}
+	})
+
+	t.Run("failure still fires with non-nil error", func(t *testing.T) {
+		var (
+			gotErr error
+			calls  int
+		)
+		HTTPHook = func(_, _ string, _ time.Duration, err error) {
+			gotErr = err
+			calls++
+		}
+		// Empty key short-circuits invoke before any HTTP call; the
+		// deferred hook must still fire with the error.
+		nv := newTestNvidia(&FakeHTTPClient{}, "")
+		if _, err := nv.Summarize(context.Background(), summarizeReq); err == nil {
+			t.Fatal("want error for missing key")
+		}
+		if calls != 1 {
+			t.Fatalf("hook fired %d times, want 1", calls)
+		}
+		if gotErr == nil {
+			t.Error("hook err should be non-nil on failure")
+		}
+	})
+}

@@ -174,6 +174,11 @@ type anthropicResponse struct {
 // every content block plus model/token bookkeeping. Retries on
 // 429/5xx using the same backoff strategy as Nvidia.invoke.
 func (a *Anthropic) invoke(ctx context.Context, sys, user string, maxTokens int) (content, model string, tokensUsed int, err error) {
+	if HTTPHook != nil {
+		mdl := a.modelOrDefault()
+		start := time.Now()
+		defer func() { HTTPHook(a.Name(), mdl, time.Since(start), err) }()
+	}
 	if a.apiKey() == "" {
 		return "", "", 0, fmt.Errorf("%w: ANTHROPIC_API_KEY not set", ErrUnauthenticated)
 	}

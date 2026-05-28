@@ -18,6 +18,15 @@ import (
 // logs by default.
 var ExecHook func(name string, args []string, dur time.Duration, err error)
 
+// HTTPHook is the HTTP-API analogue of ExecHook: it fires once per
+// completed request to a remote chat provider (nvidia / openai / groq /
+// anthropic) with the provider brand, the requested model id, the
+// wall-clock duration (including retries), and the final error (nil on
+// success). cli/root.go wires it to Dbg so `-d` surfaces how long the
+// AI round-trip took and which provider/model served it. Only the model
+// id is exposed — never the prompt, key, or response body.
+var HTTPHook func(brand, model string, dur time.Duration, err error)
+
 // CommandRunner executes an external program and returns its captured
 // stdout / stderr. Adapters use this instead of exec.CommandContext so
 // tests can inject canned responses without a real binary.

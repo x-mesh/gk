@@ -188,6 +188,11 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 	apiKey := n.apiKey()
 	mdl := n.model()
 
+	if HTTPHook != nil {
+		start := time.Now()
+		defer func() { HTTPHook(n.brand(), mdl, time.Since(start), err) }()
+	}
+
 	if apiKey == "" {
 		return "", "", 0, fmt.Errorf("%w: NVIDIA_API_KEY not set", ErrUnauthenticated)
 	}

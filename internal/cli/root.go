@@ -241,6 +241,17 @@ func installDebugHooks() {
 		}
 		Dbg("exec %s %s  (%s, %s)", name, strings.Join(debugProviderArgs(args), " "), dur.Round(time.Millisecond), status)
 	}
+	provider.HTTPHook = func(brand, model string, dur time.Duration, err error) {
+		status := "ok"
+		if err != nil {
+			msg := err.Error()
+			if len(msg) > 120 {
+				msg = msg[:120] + "…"
+			}
+			status = "err=" + msg
+		}
+		Dbg("ai %s model=%s  (%s, %s)", brand, model, dur.Round(time.Millisecond), status)
+	}
 }
 
 func debugProviderArgs(args []string) []string {

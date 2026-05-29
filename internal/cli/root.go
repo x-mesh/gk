@@ -122,7 +122,12 @@ func buildSuffix(branch, worktree string) string {
 }
 
 // Execute runs the root command. Returns the error so main.go can set exit code.
-func Execute() error { return rootCmd.Execute() }
+func Execute() error {
+	// Wire Easy-Mode help after every subcommand has registered, so the
+	// plain-Korean descriptions cover the whole command tree.
+	installEasyHelp(rootCmd)
+	return rootCmd.Execute()
+}
 
 // Persistent flag accessors for subcommand files.
 func RepoFlag() string  { return flagRepo }

@@ -5,7 +5,7 @@ description: Release workflow for gk — auto-infers version bump and CHANGELOG 
 
 # Release workflow for gk
 
-The goal is a green GitHub Release page **AND** an updated `x-mesh/homebrew-tap/Formula/gk.rb`. Anything short of that is incomplete.
+The goal is a green GitHub Release page **AND** an updated `x-mesh/homebrew-tap/Casks/gk.rb`. Anything short of that is incomplete. (The tap migrated from `brews:`/`Formula` to `homebrew_casks:`/`Casks`; a stale `Formula/gk.rb` may linger but is not what goreleaser writes.)
 
 ## Operating principle
 
@@ -163,18 +163,20 @@ Then verify via ssh + CDN — **no GitHub API calls**. The API quota is shared a
 # 1. tag landed
 git ls-remote --tags git@github.com:x-mesh/gk.git "vX.Y.Z"
 
-# 2. tap formula bumped (shallow clone, throwaway path)
+# 2. tap cask bumped (shallow clone, throwaway path)
+#    goreleaser publishes via `homebrew_casks:` → Casks/gk.rb, NOT Formula/gk.rb.
+#    (A stale Formula/gk.rb from the pre-cask era may still exist — ignore it.)
 TAP_TMP="/tmp/gk-tap-vX.Y.Z"
 rm -rf "$TAP_TMP"
 git clone --depth 1 git@github.com:x-mesh/homebrew-tap.git "$TAP_TMP" \
-  && grep -E '^\s*(version|url ")' "$TAP_TMP/Formula/gk.rb" \
+  && grep -E '^\s*(version |url ")' "$TAP_TMP/Casks/gk.rb" \
   && rm -rf "$TAP_TMP"
 
 # 3. release asset reachable on the CDN
 curl -sI "https://github.com/x-mesh/gk/releases/download/vX.Y.Z/checksums.txt" | head -1
 ```
 
-Expect: a `refs/tags/vX.Y.Z` line, `version "X.Y.Z"` plus 4 archive URLs in the formula, and an `HTTP/2 302` (or 200) on the checksums HEAD.
+Expect: a `refs/tags/vX.Y.Z` line, `version "X.Y.Z"` plus 4 archive URLs in `Casks/gk.rb`, and an `HTTP/2 302` (or 200) on the checksums HEAD.
 
 ## Phase 6 — Report
 
@@ -186,7 +188,7 @@ Expect: a `refs/tags/vX.Y.Z` line, `version "X.Y.Z"` plus 4 archive URLs in the 
   gk --version                   # expect: gk version vX.Y.Z
 
 Release: https://github.com/x-mesh/gk/releases/tag/vX.Y.Z
-Formula: https://github.com/x-mesh/homebrew-tap/blob/main/Formula/gk.rb
+Formula: https://github.com/x-mesh/homebrew-tap/blob/main/Casks/gk.rb
 ```
 
 ## Arguments
@@ -206,7 +208,7 @@ If a published release is bad:
 gh release delete "vX.Y.Z" -R x-mesh/gk --yes
 git tag -d "vX.Y.Z"
 git push origin ":refs/tags/vX.Y.Z"
-# manually edit Formula/gk.rb in x-mesh/homebrew-tap if it landed
+# manually edit Casks/gk.rb in x-mesh/homebrew-tap if it landed
 ```
 
 Then fix the underlying issue and re-run `/release` with the same version.
@@ -231,7 +233,9 @@ Then fix the underlying issue and re-run `/release` with the same version.
 
 ## Future-proofing
 
-`goreleaser` will eventually deprecate `brews:` for `homebrew_casks:`. When that happens:
+The tap **already migrated** from `brews:`/`Formula` to `homebrew_casks:`/`Casks` (done in `.goreleaser.yaml`; Phase 5 verifies `Casks/gk.rb`). The pre-cask `Formula/gk.rb` was deleted from the tap; if it reappears, it's noise — goreleaser only writes `Casks/gk.rb`.
+
+If goreleaser's cask shape changes again:
 1. Update `.goreleaser.yaml`
-2. Update Phase 5's failure-mode table if error shapes change
+2. Update Phase 5's verify path / failure-mode table if error shapes change
 3. Verify locally: `goreleaser release --snapshot --clean`

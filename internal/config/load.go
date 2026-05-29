@@ -32,6 +32,7 @@ var reservedConfigSections = map[string]bool{
 	"worktree":  true,
 	"ai":        true,
 	"output":    true,
+	"lang":      true,
 }
 
 // Load resolves the full configuration using the layered priority:
@@ -68,7 +69,10 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("worktree.base", defaults.Worktree.Base)
 	v.SetDefault("ai.enabled", defaults.AI.Enabled)
 	v.SetDefault("ai.provider", defaults.AI.Provider)
-	v.SetDefault("ai.lang", defaults.AI.Lang)
+	// ai.lang is intentionally NOT given a viper default: that would make
+	// viper.IsSet("ai.lang") always true and defeat the "follow output.lang
+	// when unset" fallback below. The struct default (Defaults().AI.Lang)
+	// still applies before that fallback runs.
 	v.SetDefault("ai.assist.mode", defaults.AI.Assist.Mode)
 	v.SetDefault("ai.assist.status", defaults.AI.Assist.Status)
 	v.SetDefault("ai.assist.include_diff", defaults.AI.Assist.IncludeDiff)
@@ -182,6 +186,15 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	cfg := Defaults()
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
+	}
+
+	// When ai.lang is not explicitly configured, follow output.lang so that
+	// AI responses match the rest of the CLI's language (e.g. Easy Mode with
+	// output.lang=ko gives Korean `gk ask`/`do`/`explain`/`status --ai`
+	// answers). An explicit ai.lang still wins; output.lang itself defaults
+	// to the catalogue language.
+	if cfg.AI.Lang == "" {
+		cfg.AI.Lang = cfg.Output.Lang
 	}
 
 	return &cfg, nil

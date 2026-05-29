@@ -108,6 +108,65 @@ func TestLoadLocalYAML(t *testing.T) {
 	}
 }
 
+// TestLoadAILangFollowsOutputLang: ai.lang unset → follows output.lang, so
+// Easy Mode / output.lang=ko yields Korean AI answers. Regression: ai.lang
+// had a fixed "en" default (struct + scaffolded config), overriding output.lang.
+func TestLoadAILangFollowsOutputLang(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+	// output.lang=ko, no ai.lang.
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte("output:\n  lang: ko\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AI.Lang != "ko" {
+		t.Errorf("ai.lang should follow output.lang: got %q, want %q", cfg.AI.Lang, "ko")
+	}
+}
+
+// TestLoadAILangExplicitWins: an explicit ai.lang overrides output.lang.
+func TestLoadAILangExplicitWins(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte("output:\n  lang: ko\nai:\n  lang: en\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AI.Lang != "en" {
+		t.Errorf("explicit ai.lang should win over output.lang: got %q, want %q", cfg.AI.Lang, "en")
+	}
+}
+
 // TestLoadRepoFlagFindsLocalYAML verifies that the --repo flag points
 // config discovery at that repo's .gk.yaml even when the cwd is elsewhere.
 // Regression: discovery used the cwd's `git rev-parse` and ignored --repo,
@@ -215,8 +274,11 @@ func TestAIDefaults(t *testing.T) {
 	if !d.AI.Enabled {
 		t.Error("AI.Enabled: want true")
 	}
-	if d.AI.Lang != "en" {
-		t.Errorf("AI.Lang: want %q, got %q", "en", d.AI.Lang)
+	// AI.Lang defaults to empty: Load() then follows output.lang (see
+	// TestLoadAILangFollowsOutputLang). fallbackLang() turns a still-empty
+	// value into "en" at the call site.
+	if d.AI.Lang != "" {
+		t.Errorf("AI.Lang: want %q (follows output.lang), got %q", "", d.AI.Lang)
 	}
 	if d.AI.Provider != "" {
 		t.Errorf("AI.Provider default: want empty (auto-detect), got %q", d.AI.Provider)

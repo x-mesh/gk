@@ -195,8 +195,11 @@ ai:
     # default). Applies to do/ask/explain and pr/review/changelog.
     max_tokens: 4096
 
-  # Commit-message language. BCP-47 short code. Override via `--lang`.
-  lang: en
+  # AI response language (BCP-47 short code). Left unset so it follows
+  # output.lang — Easy Mode or output.lang=ko then gives Korean answers for
+  # ask/do/explain and status --ai. Set it here only to force a specific AI
+  # language regardless of output.lang. One-shot override: `--lang`.
+  # lang: en
 
   # AI assistance that is attached to existing commands.
   #   off     -> never attach AI unless a CLI flag asks for it

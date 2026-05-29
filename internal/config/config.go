@@ -537,7 +537,10 @@ func Defaults() Config {
 		AI: AIConfig{
 			Enabled:  true,
 			Provider: "",
-			Lang:     "en",
+			// Lang empty means "follow output.lang" (resolved in Load). An
+			// explicit ai.lang in config/env still wins. fallbackLang() turns a
+			// still-empty value into "en" at the call site.
+			Lang: "",
 			Assist: AIAssistConfig{
 				Mode:        "off",
 				Status:      true,

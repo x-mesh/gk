@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // easyShortKO maps a command's full path (cobra CommandPath, e.g. "gk branch
@@ -143,6 +144,30 @@ const koUsageTemplate = `사용법:{{if .Runnable}}
 자세한 내용은 "{{.CommandPath}} [command] --help" 를 실행하세요.{{end}}
 `
 
+// globalFlagKO maps a persistent (global) flag name to its plain-Korean
+// description, shown under "공통 옵션" in every command's help.
+var globalFlagKO = map[string]string{
+	"debug":        "진단 로그 출력 (실행한 하위 명령·재시도 이유·소요 시간)",
+	"dry-run":      "실제로 바꾸지 않고 무엇을 할지만 출력",
+	"easy":         "이번 실행에 한해 쉬운 모드 켜기",
+	"no-easy":      "설정·환경이 켜놨어도 쉬운 모드 끄기",
+	"json":         "지원하는 경우 JSON으로 출력",
+	"no-color":     "색상 출력 끄기",
+	"repo":         "git 저장소 경로 (기본: 현재 폴더)",
+	"show-prompt":  "AI로 보내는 내용(가린 상태) 표시",
+	"skip-privacy": "민감정보 차단 기준 건너뛰기 (가림 처리는 유지)",
+	"verbose":      "자세히 출력",
+}
+
+// easyLongKO maps a command's full path to a plain-Korean long description.
+// Filled incrementally (parallel translation); empty entries keep English.
+var easyLongKO = map[string]string{}
+
+// easyFlagKO maps "<command path> --<flag>" to a plain-Korean flag
+// description for command-local flags. Filled incrementally; missing entries
+// keep the English flag usage.
+var easyFlagKO = map[string]string{}
+
 // installEasyHelp wires the Easy-Mode Korean help. When Easy Mode + Korean
 // is active it installs a Korean usage template (structural labels) and a
 // help-func wrapper that swaps each command's one-line description for its
@@ -168,24 +193,45 @@ func easyHelpActive() bool {
 	return e.IsEnabled() && strings.HasPrefix(strings.ToLower(e.Lang()), "ko")
 }
 
-// swapEasyShorts replaces Short on every command whose full path has an
-// easyShortKO entry, returning a function that restores the originals.
-// Keyed on CommandPath() so shared leaf names (push, list, init, …) under
-// different parents map to distinct text.
+// swapEasyShorts replaces the Korean-translatable help text — command Short
+// and Long, command-local flag usages, and global (persistent) flag usages —
+// with their plain-Korean versions, returning a function that restores the
+// originals. Keyed on CommandPath() (and "path --flag") so shared leaf names
+// under different parents map distinctly. Missing entries keep English.
 func swapEasyShorts(root *cobra.Command) func() {
 	var restore []func()
+	swapStr := func(get func() string, set func(string), val string) {
+		if val == "" || get() == "" {
+			return
+		}
+		orig := get()
+		set(val)
+		restore = append(restore, func() { set(orig) })
+	}
+
 	var walk func(*cobra.Command)
 	walk = func(c *cobra.Command) {
-		if s, ok := easyShortKO[c.CommandPath()]; ok && c.Short != "" {
-			orig := c.Short
-			c.Short = s
-			restore = append(restore, func() { c.Short = orig })
-		}
+		path := c.CommandPath()
+		swapStr(func() string { return c.Short }, func(s string) { c.Short = s }, easyShortKO[path])
+		swapStr(func() string { return c.Long }, func(s string) { c.Long = s }, easyLongKO[path])
+		// Command-local flags.
+		c.LocalFlags().VisitAll(func(f *pflag.Flag) {
+			ff := f
+			swapStr(func() string { return ff.Usage }, func(s string) { ff.Usage = s }, easyFlagKO[path+" --"+ff.Name])
+		})
 		for _, child := range c.Commands() {
 			walk(child)
 		}
 	}
 	walk(root)
+
+	// Global (persistent) flags live on the root and appear under "공통 옵션"
+	// in every command's help; swap them once by flag name.
+	root.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		ff := f
+		swapStr(func() string { return ff.Usage }, func(s string) { ff.Usage = s }, globalFlagKO[ff.Name])
+	})
+
 	return func() {
 		for _, r := range restore {
 			r()

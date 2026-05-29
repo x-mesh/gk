@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-05-29
+
+### Added
+
+- **`gk status --ai`의 AI 호출 디버그 로그.** `-d`로 실행하면 캐시 hit("no AI
+  call", 캐시 키와 비우는 명령 포함)·miss를 구분해 찍고, 실제 질의 직전
+  `querying provider=X model=Y`를 출력한다. 어떤 모델로 요청했는지, 혹은 캐시라서
+  호출이 없었는지 즉시 확인할 수 있다. commit 경로의 기존 `provider=… model=…`
+  로그와 짝을 이뤄, 명령마다 실제 사용 모델(`ai.commit.model` vs
+  `ai.<provider>.model`)을 추적할 수 있다.
+
+### Fixed
+
+- **`--repo` 플래그가 repo-local `.gk.yaml`을 찾도록 수정.** config 탐색이 현재
+  작업 디렉터리의 `git rev-parse`로 repo 루트를 구해 `--repo`를 무시했다. 그래서
+  `gk --repo /other <cmd>`가 `/other`의 `.gk.yaml`이 아니라 cwd의 설정(또는 없음)을
+  읽어, 그 repo의 로컬 오버라이드(`ai.commit.model` 등)가 조용히 누락됐다. 이제
+  `--repo`가 가리키는 worktree 루트를 기준으로 `.gk.yaml`을 찾고, `--repo`가 없을
+  때만 cwd 루트로 폴백한다.
+
 ## [0.60.0] - 2026-05-29
 
 ### Added
@@ -2071,7 +2091,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/x-mesh/gk/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/x-mesh/gk/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/x-mesh/gk/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/x-mesh/gk/compare/v0.58.0...v0.59.0

@@ -17,10 +17,10 @@ func TestSwapEasyShorts_SwapAndRestore(t *testing.T) {
 
 	restore := swapEasyShorts(root)
 
-	if status.Short != easyShortKO["status"] {
+	if status.Short != easyShortKO["gk status"] {
 		t.Errorf("status.Short not swapped: %q", status.Short)
 	}
-	if branch.Short != easyShortKO["branch"] {
+	if branch.Short != easyShortKO["gk branch"] {
 		t.Errorf("branch.Short not swapped: %q", branch.Short)
 	}
 	if other.Short != "Some unmapped command" {
@@ -37,17 +37,25 @@ func TestSwapEasyShorts_SwapAndRestore(t *testing.T) {
 	}
 }
 
-// Nested subcommands (e.g. branch clean) are walked too.
-func TestSwapEasyShorts_Nested(t *testing.T) {
+// Leaf names shared across parents are keyed on the full path, so
+// "gk stash push" and "gk push" get distinct text.
+func TestSwapEasyShorts_PathDisambiguates(t *testing.T) {
 	root := &cobra.Command{Use: "gk"}
-	branch := &cobra.Command{Use: "branch", Short: "Branch helpers"}
-	worktree := &cobra.Command{Use: "worktree", Short: "Worktree helpers"}
-	branch.AddCommand(worktree)
-	root.AddCommand(branch)
+	push := &cobra.Command{Use: "push", Short: "Guarded push"}
+	stash := &cobra.Command{Use: "stash", Short: "Manage stashes"}
+	stashPush := &cobra.Command{Use: "push", Short: "Stash the working tree"}
+	stash.AddCommand(stashPush)
+	root.AddCommand(push, stash)
 
 	defer swapEasyShorts(root)()
 
-	if worktree.Short != easyShortKO["worktree"] {
-		t.Errorf("nested worktree.Short not swapped: %q", worktree.Short)
+	if push.Short != easyShortKO["gk push"] {
+		t.Errorf("gk push not swapped: %q", push.Short)
+	}
+	if stashPush.Short != easyShortKO["gk stash push"] {
+		t.Errorf("gk stash push not swapped: %q", stashPush.Short)
+	}
+	if push.Short == stashPush.Short {
+		t.Error("gk push and gk stash push must differ")
 	}
 }

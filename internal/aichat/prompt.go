@@ -93,7 +93,9 @@ func langInstruction(lang string, easy bool) string {
 			" Avoid git/CLI jargon (rebase, HEAD, upstream, staged, index, detached, stash, …);" +
 			" if a technical term is unavoidable, add a one-clause plain-language explanation." +
 			" Do NOT translate or alter proper nouns — branch names, file names, and commands like `gk push`." +
-			" Focus on what to do next in concrete steps, not on internal mechanics."
+			" Focus on what to do next in concrete steps, not on internal mechanics." +
+			" Keep the tone concise and factual, not chatty; in Korean, avoid repetitive polite endings" +
+			" (~요/~어요) and prefer concise noun- or verb-stem endings."
 	}
 	return s
 }

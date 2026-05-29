@@ -735,27 +735,27 @@ func renderLocalStatusAssistKO(w io.Writer, facts statusAssistFacts) {
 	m := easy.NewTermMapper("ko")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "현재 상태")
-	fmt.Fprintf(w, "- 지금 %s 브랜치에서 작업하고 있어요.\n", facts.Branch)
+	fmt.Fprintf(w, "- 현재 %s 브랜치에서 작업 중.\n", facts.Branch)
 	if facts.Operation != "" && facts.Operation != "none" {
-		fmt.Fprintf(w, "- %s 작업이 진행 중이에요.\n", m.TranslateTerm(facts.Operation))
+		fmt.Fprintf(w, "- %s 작업 진행 중.\n", m.TranslateTerm(facts.Operation))
 	}
 	if facts.Clean {
-		fmt.Fprintln(w, "- 저장하지 않은 변경이 없어요. 깨끗합니다.")
+		fmt.Fprintln(w, "- 저장 안 한 변경 없음. 깨끗함.")
 	} else {
 		fmt.Fprintf(w, "- 바뀐 파일 %d개 — 커밋 준비됨 %d, 수정됨 %d, 새 파일 %d, 충돌 %d.\n",
 			facts.Counts.Committable, facts.Counts.Staged, facts.Counts.Modified,
 			facts.Counts.Untracked, facts.Counts.Conflicts)
 	}
 	if facts.Upstream != "" {
-		fmt.Fprintf(w, "- 원격(서버)의 %s와 비교하면 내 작업이 %d개 앞서고 %d개 뒤처져 있어요.\n", facts.Upstream, facts.Ahead, facts.Behind)
+		fmt.Fprintf(w, "- 원격(서버) %s 기준: %d개 앞, %d개 뒤.\n", facts.Upstream, facts.Ahead, facts.Behind)
 	} else if !facts.Detached {
-		fmt.Fprintln(w, "- 아직 원격(서버)에 연결된 위치가 없어요.")
+		fmt.Fprintln(w, "- 원격(서버)에 연결된 위치 없음.")
 	}
 	if facts.Base != "" {
-		fmt.Fprintf(w, "- 기준 브랜치 %s와 비교하면 %d개 앞, %d개 뒤예요.\n", facts.Base, facts.BaseAhead, facts.BaseBehind)
+		fmt.Fprintf(w, "- 기준 브랜치 %s 기준: %d개 앞, %d개 뒤.\n", facts.Base, facts.BaseAhead, facts.BaseBehind)
 	}
-	renderLocalActionsKO(w, "이렇게 해보세요", facts.Actions)
-	renderLocalWarnings(w, "주의할 점", statusAssistWarningsKO(facts))
+	renderLocalActionsKO(w, "다음 작업", facts.Actions)
+	renderLocalWarnings(w, "주의", statusAssistWarningsKO(facts))
 }
 
 func renderLocalStatusAssistEN(w io.Writer, facts statusAssistFacts) {
@@ -853,21 +853,21 @@ func statusAssistWarningsKO(f statusAssistFacts) []string {
 	m := easy.NewTermMapper("ko")
 	var warnings []string
 	if f.Operation != "" && f.Operation != "none" {
-		warnings = append(warnings, fmt.Sprintf("%s 작업이 진행 중이에요.", m.TranslateTerm(f.Operation)))
+		warnings = append(warnings, fmt.Sprintf("%s 작업 진행 중.", m.TranslateTerm(f.Operation)))
 	}
 	if f.Counts.Conflicts > 0 {
-		warnings = append(warnings, fmt.Sprintf("충돌 %d개를 먼저 해결해야 저장하고 서버에 올릴 수 있어요.", f.Counts.Conflicts))
+		warnings = append(warnings, fmt.Sprintf("충돌 %d개 해결 후에야 저장·서버 올리기 가능.", f.Counts.Conflicts))
 	}
 	if f.Ahead > 0 && f.Behind > 0 {
-		warnings = append(warnings, fmt.Sprintf("원격(서버)과 갈라졌어요 — 내가 %d개 앞서고 %d개 뒤처져 있어요.", f.Ahead, f.Behind))
+		warnings = append(warnings, fmt.Sprintf("원격(서버)과 갈라짐: %d개 앞, %d개 뒤.", f.Ahead, f.Behind))
 	} else if f.Behind > 0 {
-		warnings = append(warnings, fmt.Sprintf("원격(서버)보다 %d개 뒤처져 있어요. 먼저 가져오는 게 좋아요.", f.Behind))
+		warnings = append(warnings, fmt.Sprintf("원격(서버)보다 %d개 뒤처짐. 먼저 가져오기 권장.", f.Behind))
 	}
 	if f.Base != "" && f.BaseBehind > 0 {
-		warnings = append(warnings, fmt.Sprintf("기준 브랜치 %s보다 %d개 뒤처져 있어요.", f.Base, f.BaseBehind))
+		warnings = append(warnings, fmt.Sprintf("기준 브랜치 %s보다 %d개 뒤처짐.", f.Base, f.BaseBehind))
 	}
 	if f.Upstream == "" && !f.Detached {
-		warnings = append(warnings, "아직 원격(서버)에 연결된 위치가 없어요.")
+		warnings = append(warnings, "원격(서버)에 연결된 위치 없음.")
 	}
 	return warnings
 }

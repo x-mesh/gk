@@ -44,6 +44,7 @@ func init() {
 	cmd.Flags().Bool("dry-run", false, "플랜만 출력, 명령어 미실행")
 	cmd.Flags().Bool("json", false, "JSON 형식으로 출력")
 	cmd.Flags().String("provider", "", "AI 프로바이더 지정 (anthropic|openai|nvidia|gemini|groq|qwen|kiro)")
+	cmd.Flags().String("model", "", "이번 실행에만 모델 지정 (HTTP 프로바이더 한정)")
 	cmd.Flags().String("lang", "", "출력 언어 지정 (en|ko|...)")
 
 	rootCmd.AddCommand(cmd)
@@ -56,6 +57,7 @@ type doFlags struct {
 	dryRun   bool
 	json     bool
 	provider string
+	model    string
 	lang     string
 }
 
@@ -66,6 +68,7 @@ func readDoFlags(cmd *cobra.Command) doFlags {
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.json, _ = cmd.Flags().GetBool("json")
 	f.provider, _ = cmd.Flags().GetString("provider")
+	f.model, _ = cmd.Flags().GetString("model")
 	f.lang, _ = cmd.Flags().GetString("lang")
 	return f
 }
@@ -119,7 +122,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		}
 		prov = fc
 	} else {
-		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
+		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsWithModel(ai, flags.model))
 		if pErr != nil {
 			return fmt.Errorf("do: provider: %w", pErr)
 		}

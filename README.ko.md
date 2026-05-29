@@ -289,6 +289,7 @@ ai:
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI 플래그가 오버라이드)
     max_groups: 10
+    # model: "kiro/claude-haiku-4.5"  # 커밋 전용 저렴/빠른 모델; do/ask/explain/status는 ai.<provider>.model 유지. 일회성: gk commit --model <id>
     max_tokens: 24000
     timeout: "30s"
     allow_remote: true       # repo 전체: false면 commit뿐 아니라 모든 AI 명령에서 remote provider 차단

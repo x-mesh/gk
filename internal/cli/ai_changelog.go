@@ -31,6 +31,7 @@ for structured output.`,
 	cmd.Flags().String("format", "markdown", `output format: "markdown" (default) or "json"`)
 	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	cmd.Flags().String("provider", "", "override ai.provider")
+	cmd.Flags().String("model", "", "override the model for this run (HTTP providers only)")
 
 	rootCmd.AddCommand(cmd)
 }
@@ -42,6 +43,7 @@ type aiChangelogFlags struct {
 	format   string // "markdown" | "json"
 	dryRun   bool
 	provider string
+	model    string
 }
 
 func readAIChangelogFlags(cmd *cobra.Command) aiChangelogFlags {
@@ -51,6 +53,7 @@ func readAIChangelogFlags(cmd *cobra.Command) aiChangelogFlags {
 	f.format, _ = cmd.Flags().GetString("format")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.provider, _ = cmd.Flags().GetString("provider")
+	f.model, _ = cmd.Flags().GetString("model")
 	return f
 }
 
@@ -83,7 +86,7 @@ func runAIChangelog(cmd *cobra.Command, _ []string) error {
 		}
 		prov = fc
 	} else {
-		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
+		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsWithModel(ai, flags.model))
 		if pErr != nil {
 			return fmt.Errorf("changelog: provider: %w", pErr)
 		}

@@ -50,6 +50,7 @@ the most recent run.
 	cmd.Flags().BoolP("force", "f", false, "apply commits without interactive review")
 	cmd.Flags().Bool("dry-run", false, "preview groups + estimated token cost; no LLM calls")
 	cmd.Flags().String("provider", "", "override ai.provider (gemini|qwen|kiro)")
+	cmd.Flags().String("model", "", "override the model for this run (HTTP providers only)")
 	cmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 	cmd.Flags().Bool("staged-only", false, "only consider already-staged changes")
 	cmd.Flags().Bool("include-unstaged", false, "include unstaged + untracked changes (default true)")
@@ -97,6 +98,13 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		prov = fc
 	} else {
 		opts := aiFactoryOptionsFromAI(ai)
+		// ai.commit.model, when set, overrides ai.<provider>.model for
+		// commit only — a small/fast model handles message generation well
+		// while chat/advice commands keep the larger default. --model
+		// (folded onto Commit.Model by applyAICommitFlagsToConfig) wins.
+		if ai.Commit.Model != "" {
+			opts.Model = ai.Commit.Model
+		}
 		// ai.commit.timeout, when set, is the per-call HTTP timeout for the
 		// commit provider (overrides the per-provider default). Previously
 		// this config field was never read.
@@ -602,6 +610,7 @@ type aiCommitFlags struct {
 	force            bool
 	dryRun           bool
 	provider         string
+	model            string
 	lang             string
 	stagedOnly       bool
 	includeUnstaged  bool
@@ -618,6 +627,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.force, _ = cmd.Flags().GetBool("force")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.provider, _ = cmd.Flags().GetString("provider")
+	f.model, _ = cmd.Flags().GetString("model")
 	f.lang, _ = cmd.Flags().GetString("lang")
 	f.stagedOnly, _ = cmd.Flags().GetBool("staged-only")
 	f.includeUnstaged, _ = cmd.Flags().GetBool("include-unstaged")
@@ -639,6 +649,12 @@ func applyAICommitFlagsToConfig(ai config.AIConfig, f aiCommitFlags) config.AICo
 	out := ai
 	if f.provider != "" {
 		out.Provider = f.provider
+	}
+	if f.model != "" {
+		// --model is a one-shot override of ai.commit.model (which itself
+		// overrides ai.<provider>.model). Folding it onto Commit.Model here
+		// keeps a single resolution point downstream.
+		out.Commit.Model = f.model
 	}
 	if f.lang != "" {
 		out.Lang = f.lang
@@ -829,18 +845,33 @@ func filterKept(messages []aicommit.Message, decisions []aicommit.ReviewDecision
 	return out
 }
 
-// providerModel returns the model identifier for debug logging.
-// For nvidia it reads the Model field; for others returns "n/a".
+// providerModel returns the model identifier for debug logging across the
+// HTTP adapters (so `-d` shows the effective model, including a
+// commit.model / --model override). CLI providers return "n/a" — they own
+// their model selection. FallbackChain reports its first provider.
 func providerModel(p provider.Provider) string {
-	if nv, ok := p.(*provider.Nvidia); ok {
-		if nv.Model != "" {
-			return nv.Model
+	switch v := p.(type) {
+	case *provider.Nvidia:
+		if v.Model != "" {
+			return v.Model
 		}
 		return "meta/llama-3.1-8b-instruct"
-	}
-	// FallbackChain: check the first provider.
-	if fc, ok := p.(*provider.FallbackChain); ok && len(fc.Providers) > 0 {
-		return providerModel(fc.Providers[0])
+	case *provider.OpenAI:
+		if v.Model != "" {
+			return v.Model
+		}
+	case *provider.Groq:
+		if v.Model != "" {
+			return v.Model
+		}
+	case *provider.Anthropic:
+		if v.Model != "" {
+			return v.Model
+		}
+	case *provider.FallbackChain:
+		if len(v.Providers) > 0 {
+			return providerModel(v.Providers[0])
+		}
 	}
 	return "n/a"
 }

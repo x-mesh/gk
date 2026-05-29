@@ -36,6 +36,7 @@ func init() {
 	}
 	cmd.Flags().Bool("last", false, "마지막 명령어를 단계별로 설명")
 	cmd.Flags().String("provider", "", "AI 프로바이더 지정 (anthropic|openai|nvidia|gemini|groq|qwen|kiro)")
+	cmd.Flags().String("model", "", "이번 실행에만 모델 지정 (HTTP 프로바이더 한정)")
 	cmd.Flags().String("lang", "", "출력 언어 지정 (en|ko|...)")
 
 	rootCmd.AddCommand(cmd)
@@ -45,6 +46,7 @@ func init() {
 type explainFlags struct {
 	last     bool
 	provider string
+	model    string
 	lang     string
 }
 
@@ -52,6 +54,7 @@ func readExplainFlags(cmd *cobra.Command) explainFlags {
 	var f explainFlags
 	f.last, _ = cmd.Flags().GetBool("last")
 	f.provider, _ = cmd.Flags().GetString("provider")
+	f.model, _ = cmd.Flags().GetString("model")
 	f.lang, _ = cmd.Flags().GetString("lang")
 	return f
 }
@@ -104,7 +107,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		}
 		prov = fc
 	} else {
-		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
+		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsWithModel(ai, flags.model))
 		if pErr != nil {
 			return fmt.Errorf("explain: provider: %w", pErr)
 		}

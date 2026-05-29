@@ -237,6 +237,14 @@ ai:
     # Soft cap on how many commit groups the classifier may produce.
     max_groups: 10
 
+    # Model override for `gk commit` only. Commit-message generation is a
+    # mechanical task a small/fast model handles well — pin a cheaper model
+    # here while the chat/advice commands (do/ask/explain/status) keep the
+    # larger ai.<provider>.model. Empty = use the provider's default model.
+    # HTTP providers only; CLI providers (gemini/qwen/kiro) ignore it.
+    # One-shot override: `gk commit --model <id>`.
+    # model: "kiro/claude-haiku-4.5"
+
     # Hard cap on provider input tokens. Large diffs are truncated
     # (stat → hunk head → cluster summary) to stay under this limit.
     max_tokens: 24000

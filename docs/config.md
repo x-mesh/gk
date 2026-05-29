@@ -524,6 +524,42 @@ ai:
 
 ---
 
+### `ai.commit.model`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `""` (use `ai.<provider>.model`) |
+| CLI flag | `--model` (on `gk commit`) |
+
+Overrides the model for `gk commit` only. Commit-message generation is a mechanical task that a small, fast model handles well, so this lets a cheaper model run commits while the chat/advice commands (`gk do` / `ask` / `explain`, `gk status --ai`) keep the larger `ai.<provider>.model`. Empty falls back to the provider's configured model. Honoured by HTTP providers (`anthropic`, `openai`, `nvidia`, `groq`, and custom `providers`); CLI providers (`gemini`, `qwen`, `kiro`) own their own model selection and ignore it.
+
+Resolution order (highest first): `--model` flag → `ai.commit.model` → `ai.<provider>.model` → adapter default.
+
+```yaml
+ai:
+  provider: kiro-api
+  kiro-api:
+    format: openai
+    endpoint: "https://your-gateway.example.com/v1/chat/completions"
+    model: "kiro/auto"            # default for do/ask/explain/status --ai
+  commit:
+    model: "kiro/claude-haiku-4.5"  # cheaper/faster model for commits only
+```
+
+---
+
+### `--model` (CLI flag)
+
+A one-shot model override for a single run, available on `gk commit`, `gk do`, `gk ask`, `gk explain`, and `gk changelog`. Wins over both `ai.commit.model` and `ai.<provider>.model`. HTTP providers only. Use it to try a larger model for one tricky question without editing config:
+
+```bash
+gk ask "why does this rebase keep conflicting?" --model kiro/auto
+gk commit --model kiro/claude-haiku-4.5
+```
+
+---
+
 ### `NVIDIA_API_KEY` (environment variable)
 
 Required when using the nvidia provider. Set this to your NVIDIA API key:

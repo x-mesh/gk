@@ -192,9 +192,17 @@ type AIGroqConfig struct {
 // only local providers may run (the policy layer may enforce this too).
 // Trailer and Audit are opt-in telemetry knobs, both default off.
 type AICommitConfig struct {
-	Mode        string        `mapstructure:"mode"          yaml:"mode"`
-	MaxGroups   int           `mapstructure:"max_groups"    yaml:"max_groups"`
-	MaxTokens   int           `mapstructure:"max_tokens"    yaml:"max_tokens"`
+	Mode      string `mapstructure:"mode"          yaml:"mode"`
+	MaxGroups int    `mapstructure:"max_groups"    yaml:"max_groups"`
+	MaxTokens int    `mapstructure:"max_tokens"    yaml:"max_tokens"`
+	// Model overrides ai.<provider>.model for `gk commit` only. Commit
+	// message generation is a mechanical task that a small, fast model
+	// handles well, so this lets a cheaper model run commits while the
+	// chat/advice commands (do/ask/explain/status) keep the larger default
+	// model. Empty falls back to the provider's configured model. Honoured
+	// only by HTTP providers (anthropic/openai/nvidia/groq and custom);
+	// CLI providers (gemini/qwen/kiro) own their own model selection.
+	Model       string        `mapstructure:"model"         yaml:"model"`
 	Timeout     string        `mapstructure:"timeout"       yaml:"timeout"`
 	DenyPaths   []string      `mapstructure:"deny_paths"    yaml:"deny_paths"`
 	AllowRemote bool          `mapstructure:"allow_remote"  yaml:"allow_remote"`

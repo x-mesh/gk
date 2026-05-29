@@ -25,6 +25,18 @@ func aiFactoryOptions(cfg *config.Config) provider.FactoryOptions {
 	return aiFactoryOptionsFromAI(cfg.AI)
 }
 
+// aiFactoryOptionsWithModel builds the factory options and applies a
+// one-shot model override (e.g. a --model flag). An empty override leaves
+// the config/adapter model in place. Honoured by HTTP providers only; CLI
+// providers (gemini/qwen/kiro) own their model selection and ignore it.
+func aiFactoryOptionsWithModel(ai config.AIConfig, modelOverride string) provider.FactoryOptions {
+	opts := aiFactoryOptionsFromAI(ai)
+	if strings.TrimSpace(modelOverride) != "" {
+		opts.Model = modelOverride
+	}
+	return opts
+}
+
 // aiFactoryOptionsFromAI is the entry point for callers that already
 // hold an AIConfig (e.g. ai_commit.go which applies flag overrides
 // before constructing the provider).

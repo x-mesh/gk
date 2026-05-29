@@ -291,6 +291,7 @@ ai:
   commit:
     mode: "interactive"      # interactive | force | dry-run (CLI flags override)
     max_groups: 10
+    # model: "kiro/claude-haiku-4.5"  # cheaper/faster model for commits only; chat/advice keep ai.<provider>.model. One-shot: gk commit --model <id>
     max_tokens: 24000
     timeout: "30s"
     allow_remote: true       # repo-wide: set false to block remote providers for EVERY AI command, not just commit

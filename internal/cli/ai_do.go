@@ -160,6 +160,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		Context:    &aichat.RepoContextCollector{Runner: runner, TokenBudget: 2000, Dbg: Dbg},
 		Safety:     &aichat.SafetyClassifier{},
 		Lang:       fallbackLang(ai.Lang),
+		Easy:       EasyEngine().IsEnabled(),
 		Timeout:    timeout,
 		MaxTokens:  aiChatMaxTokens(ai),
 		Dbg:        Dbg,

@@ -25,22 +25,22 @@ func TestAllPromptBuildersIncludeLanguageCode(t *testing.T) {
 
 	for _, lang := range langs {
 		t.Run("lang="+lang, func(t *testing.T) {
-			doPrompt := buildDoUserPrompt("push changes", rc, lang)
+			doPrompt := buildDoUserPrompt("push changes", rc, lang, false)
 			if !strings.Contains(doPrompt, lang) {
 				t.Errorf("buildDoUserPrompt missing lang %q", lang)
 			}
 
-			explainPrompt := buildExplainUserPrompt("merge conflict", rc, lang)
+			explainPrompt := buildExplainUserPrompt("merge conflict", rc, lang, false)
 			if !strings.Contains(explainPrompt, lang) {
 				t.Errorf("buildExplainUserPrompt missing lang %q", lang)
 			}
 
-			explainLastPrompt := buildExplainLastUserPrompt(rc, lang)
+			explainLastPrompt := buildExplainLastUserPrompt(rc, lang, false)
 			if !strings.Contains(explainLastPrompt, lang) {
 				t.Errorf("buildExplainLastUserPrompt missing lang %q", lang)
 			}
 
-			askPrompt := buildAskUserPrompt("what is rebase?", rc, lang)
+			askPrompt := buildAskUserPrompt("what is rebase?", rc, lang, false)
 			if !strings.Contains(askPrompt, lang) {
 				t.Errorf("buildAskUserPrompt missing lang %q", lang)
 			}
@@ -48,11 +48,39 @@ func TestAllPromptBuildersIncludeLanguageCode(t *testing.T) {
 	}
 }
 
+func TestLangInstruction_EasyAddsPlainLanguageGuidance(t *testing.T) {
+	normal := langInstruction("ko", false)
+	if strings.Contains(normal, "NOT a developer") {
+		t.Errorf("non-easy must not add plain-language guidance: %q", normal)
+	}
+	easy := langInstruction("ko", true)
+	if !strings.Contains(easy, "NOT a developer") {
+		t.Errorf("easy must tell the model the reader is not a developer: %q", easy)
+	}
+	if !strings.Contains(easy, "proper nouns") {
+		t.Errorf("easy must keep proper nouns (branch/file names) intact: %q", easy)
+	}
+	// Both still carry the language code.
+	if !strings.Contains(easy, "ko") || !strings.Contains(normal, "ko") {
+		t.Error("langInstruction must always include the language code")
+	}
+}
+
+func TestBuildAskUserPrompt_EasyPropagates(t *testing.T) {
+	rc := testRepoContext()
+	if p := buildAskUserPrompt("rebase?", rc, "ko", true); !strings.Contains(p, "NOT a developer") {
+		t.Error("buildAskUserPrompt(easy=true) should carry plain-language guidance")
+	}
+	if p := buildAskUserPrompt("rebase?", rc, "ko", false); strings.Contains(p, "NOT a developer") {
+		t.Error("buildAskUserPrompt(easy=false) should not")
+	}
+}
+
 func TestPromptBuildersDefaultLanguage(t *testing.T) {
 	rc := testRepoContext()
 
 	// Empty lang should default to "en".
-	doPrompt := buildDoUserPrompt("push", rc, "")
+	doPrompt := buildDoUserPrompt("push", rc, "", false)
 	if !strings.Contains(doPrompt, "Respond in language: en") {
 		t.Error("buildDoUserPrompt should default to 'en' when lang is empty")
 	}
@@ -62,7 +90,7 @@ func TestPromptBuildersDefaultLanguage(t *testing.T) {
 
 func TestBuildDoUserPrompt_IncludesGkCommandReference(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildDoUserPrompt("push my changes", rc, "ko")
+	prompt := buildDoUserPrompt("push my changes", rc, "ko", false)
 
 	if !strings.Contains(prompt, "Available gk commands:") {
 		t.Error("buildDoUserPrompt missing gk command reference")
@@ -77,7 +105,7 @@ func TestBuildDoUserPrompt_IncludesGkCommandReference(t *testing.T) {
 
 func TestBuildDoUserPrompt_IncludesJSONSchema(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildDoUserPrompt("push my changes", rc, "en")
+	prompt := buildDoUserPrompt("push my changes", rc, "en", false)
 
 	if !strings.Contains(prompt, "JSON schema:") {
 		t.Error("buildDoUserPrompt missing JSON schema instructions")
@@ -92,7 +120,7 @@ func TestBuildDoUserPrompt_IncludesJSONSchema(t *testing.T) {
 
 func TestBuildDoUserPrompt_IncludesDangerousCommandInstructions(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildDoUserPrompt("force push", rc, "en")
+	prompt := buildDoUserPrompt("force push", rc, "en", false)
 
 	if !strings.Contains(prompt, "dangerous") {
 		t.Error("buildDoUserPrompt missing dangerous command flag instructions")
@@ -104,7 +132,7 @@ func TestBuildDoUserPrompt_IncludesDangerousCommandInstructions(t *testing.T) {
 
 func TestBuildDoUserPrompt_IncludesUserInput(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildDoUserPrompt("어제 커밋 취소", rc, "ko")
+	prompt := buildDoUserPrompt("어제 커밋 취소", rc, "ko", false)
 
 	if !strings.Contains(prompt, "어제 커밋 취소") {
 		t.Error("buildDoUserPrompt missing user input")
@@ -115,7 +143,7 @@ func TestBuildDoUserPrompt_IncludesUserInput(t *testing.T) {
 
 func TestContextWrappedInTags(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildDoUserPrompt("push", rc, "en")
+	prompt := buildDoUserPrompt("push", rc, "en", false)
 
 	if !strings.Contains(prompt, "<CONTEXT>") {
 		t.Error("prompt missing <CONTEXT> opening tag")
@@ -139,10 +167,10 @@ func TestContextWrappedInTags_AllBuilders(t *testing.T) {
 	rc := testRepoContext()
 
 	builders := map[string]string{
-		"do":           buildDoUserPrompt("push", rc, "en"),
-		"explain":      buildExplainUserPrompt("error", rc, "en"),
-		"explain-last": buildExplainLastUserPrompt(rc, "en"),
-		"ask":          buildAskUserPrompt("question", rc, "en"),
+		"do":           buildDoUserPrompt("push", rc, "en", false),
+		"explain":      buildExplainUserPrompt("error", rc, "en", false),
+		"explain-last": buildExplainLastUserPrompt(rc, "en", false),
+		"ask":          buildAskUserPrompt("question", rc, "en", false),
 	}
 
 	for name, prompt := range builders {
@@ -153,7 +181,7 @@ func TestContextWrappedInTags_AllBuilders(t *testing.T) {
 }
 
 func TestContextWrapping_NilRepoContext(t *testing.T) {
-	prompt := buildDoUserPrompt("push", nil, "en")
+	prompt := buildDoUserPrompt("push", nil, "en", false)
 
 	if strings.Contains(prompt, "<CONTEXT>") {
 		t.Error("nil RepoContext should not produce <CONTEXT> tags")
@@ -162,7 +190,7 @@ func TestContextWrapping_NilRepoContext(t *testing.T) {
 
 func TestContextWrapping_NonGitRepo(t *testing.T) {
 	rc := &RepoContext{IsRepo: false}
-	prompt := buildDoUserPrompt("push", rc, "en")
+	prompt := buildDoUserPrompt("push", rc, "en", false)
 
 	// Non-git repo produces "Not a git repository." without context tags.
 	if strings.Contains(prompt, "<CONTEXT>") {
@@ -174,7 +202,7 @@ func TestContextWrapping_NonGitRepo(t *testing.T) {
 
 func TestBuildExplainUserPrompt_IncludesThreeSectionStructure(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildExplainUserPrompt("fatal: not a git repository", rc, "ko")
+	prompt := buildExplainUserPrompt("fatal: not a git repository", rc, "ko", false)
 
 	if !strings.Contains(prompt, "Cause") {
 		t.Error("buildExplainUserPrompt missing Cause section instruction")
@@ -189,7 +217,7 @@ func TestBuildExplainUserPrompt_IncludesThreeSectionStructure(t *testing.T) {
 
 func TestBuildExplainUserPrompt_IncludesErrorMessage(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildExplainUserPrompt("fatal: merge conflict in file.go", rc, "en")
+	prompt := buildExplainUserPrompt("fatal: merge conflict in file.go", rc, "en", false)
 
 	if !strings.Contains(prompt, "fatal: merge conflict in file.go") {
 		t.Error("buildExplainUserPrompt missing error message")
@@ -200,7 +228,7 @@ func TestBuildExplainUserPrompt_IncludesErrorMessage(t *testing.T) {
 
 func TestBuildExplainLastUserPrompt_IncludesReflogInstructions(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildExplainLastUserPrompt(rc, "en")
+	prompt := buildExplainLastUserPrompt(rc, "en", false)
 
 	if !strings.Contains(prompt, "reflog") {
 		t.Error("buildExplainLastUserPrompt missing reflog reference")
@@ -212,7 +240,7 @@ func TestBuildExplainLastUserPrompt_IncludesReflogInstructions(t *testing.T) {
 
 func TestBuildExplainLastUserPrompt_IncludesHEADIndexWorkingTree(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildExplainLastUserPrompt(rc, "ko")
+	prompt := buildExplainLastUserPrompt(rc, "ko", false)
 
 	if !strings.Contains(prompt, "HEAD") {
 		t.Error("buildExplainLastUserPrompt missing HEAD reference")
@@ -229,7 +257,7 @@ func TestBuildExplainLastUserPrompt_IncludesHEADIndexWorkingTree(t *testing.T) {
 
 func TestBuildAskUserPrompt_IncludesGkCommandSuggestions(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildAskUserPrompt("rebase란 무엇인가요?", rc, "ko")
+	prompt := buildAskUserPrompt("rebase란 무엇인가요?", rc, "ko", false)
 
 	// The "suggest related commands" instruction now lives in askSystemPrompt
 	// (SystemPrompt slot); the body still carries the command reference list.
@@ -243,7 +271,7 @@ func TestBuildAskUserPrompt_IncludesGkCommandSuggestions(t *testing.T) {
 
 func TestBuildAskUserPrompt_IncludesQuestion(t *testing.T) {
 	rc := testRepoContext()
-	prompt := buildAskUserPrompt("how do I undo a commit?", rc, "en")
+	prompt := buildAskUserPrompt("how do I undo a commit?", rc, "en", false)
 
 	if !strings.Contains(prompt, "how do I undo a commit?") {
 		t.Error("buildAskUserPrompt missing user question")
@@ -307,15 +335,15 @@ func TestWrapContext_ValidRepo(t *testing.T) {
 // --- langInstruction tests ---
 
 func TestLangInstruction_EmptyDefaultsToEn(t *testing.T) {
-	result := langInstruction("")
-	if result != "Respond in language: en" {
-		t.Errorf("langInstruction('') = %q, want %q", result, "Respond in language: en")
+	result := langInstruction("", false)
+	if result != "Respond in language: en." {
+		t.Errorf("langInstruction('', false) = %q, want %q", result, "Respond in language: en.")
 	}
 }
 
 func TestLangInstruction_Korean(t *testing.T) {
-	result := langInstruction("ko")
-	if result != "Respond in language: ko" {
-		t.Errorf("langInstruction('ko') = %q, want %q", result, "Respond in language: ko")
+	result := langInstruction("ko", false)
+	if result != "Respond in language: ko." {
+		t.Errorf("langInstruction('ko', false) = %q, want %q", result, "Respond in language: ko.")
 	}
 }

@@ -450,7 +450,7 @@ func renderStatusAssist(
 	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s - explaining via %s", label, prov.Name()))
 	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 		Kind:         "status",
-		SystemPrompt: statusAssistSystemPrompt(diff != ""),
+		SystemPrompt: statusAssistSystemPrompt(diff != "", EasyEngine().IsEnabled()),
 		Diff:         redacted,
 		Lang:         lang,
 		MaxTokens:    statusAssistMaxTokens(cfg),
@@ -663,10 +663,14 @@ func statusAssistLang(cfg *config.Config, override string) string {
 // so the model reads it as instructions, not as untrusted <DIFF> data,
 // and so the generic "senior engineer summarize" framing never competes
 // with it. hasDiff adds the diff-handling rule only when a diff is sent.
-func statusAssistSystemPrompt(hasDiff bool) string {
+func statusAssistSystemPrompt(hasDiff, easy bool) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "You are the status advisor inside the gk CLI. Give a decision, not a menu.")
-	fmt.Fprintln(&b, "Read the current git state and tell the developer the ONE best next action now.")
+	if easy {
+		fmt.Fprintln(&b, "The reader is likely NOT a developer. Explain the situation and the next step in plain, everyday language; avoid git jargon (rebase/HEAD/upstream/staged/…) or add a one-clause plain explanation when unavoidable. Keep proper nouns (branch names, file names, commands like `gk push`) as-is.")
+	} else {
+		fmt.Fprintln(&b, "Read the current git state and tell the developer the ONE best next action now.")
+	}
 	fmt.Fprintln(&b, "Rules:")
 	fmt.Fprintln(&b, "- Use only the commands listed in recommended_commands.")
 	fmt.Fprintln(&b, "- Output exactly these lines (omit ALTERNATIVE if there is no good one):")
@@ -712,7 +716,7 @@ func buildStatusAssistData(facts statusAssistFacts, diff string) string {
 // separate system/user slots instead.
 func buildStatusAssistPrompt(facts statusAssistFacts, lang, diff string) string {
 	var b strings.Builder
-	b.WriteString(statusAssistSystemPrompt(diff != ""))
+	b.WriteString(statusAssistSystemPrompt(diff != "", false))
 	fmt.Fprintf(&b, "\n- Respond in language: %s\n\n", lang)
 	b.WriteString(buildStatusAssistData(facts, diff))
 	return b.String()

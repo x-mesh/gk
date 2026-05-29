@@ -79,18 +79,29 @@ func wrapContext(repoCtx *RepoContext) string {
 	return "<CONTEXT>\n" + sanitized + "</CONTEXT>"
 }
 
-// langInstruction returns a language instruction string for the given lang code.
-func langInstruction(lang string) string {
+// langInstruction returns a language instruction for the given lang code.
+// When easy is true (Easy Mode), it also tells the model to write for a
+// non-developer audience: plain words, no git jargon, proper nouns kept as-is.
+func langInstruction(lang string, easy bool) string {
 	if lang == "" {
 		lang = "en"
 	}
-	return fmt.Sprintf("Respond in language: %s", lang)
+	s := fmt.Sprintf("Respond in language: %s.", lang)
+	if easy {
+		s += " The reader is likely NOT a developer." +
+			" Use plain, everyday language and short sentences." +
+			" Avoid git/CLI jargon (rebase, HEAD, upstream, staged, index, detached, stash, …);" +
+			" if a technical term is unavoidable, add a one-clause plain-language explanation." +
+			" Do NOT translate or alter proper nouns — branch names, file names, and commands like `gk push`." +
+			" Focus on what to do next in concrete steps, not on internal mechanics."
+	}
+	return s
 }
 
 // buildDoUserPrompt constructs the user prompt for gk do.
 // It includes the gk command reference, JSON schema instructions,
 // dangerous command flag instructions, repository context, and language instruction.
-func buildDoUserPrompt(input string, repoCtx *RepoContext, lang string) string {
+func buildDoUserPrompt(input string, repoCtx *RepoContext, lang string, easy bool) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "User request: %s\n\n", input)
@@ -105,7 +116,7 @@ func buildDoUserPrompt(input string, repoCtx *RepoContext, lang string) string {
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, langInstruction(lang))
+	fmt.Fprintln(&b, langInstruction(lang, easy))
 
 	return b.String()
 }
@@ -113,7 +124,7 @@ func buildDoUserPrompt(input string, repoCtx *RepoContext, lang string) string {
 // buildExplainUserPrompt constructs the user prompt for gk explain <error>.
 // It includes the 3-section structure instructions (Cause, Solution, Prevention),
 // repository context, and language instruction.
-func buildExplainUserPrompt(errorMsg string, repoCtx *RepoContext, lang string) string {
+func buildExplainUserPrompt(errorMsg string, repoCtx *RepoContext, lang string, easy bool) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "Error message: %s\n\n", errorMsg)
@@ -126,7 +137,7 @@ func buildExplainUserPrompt(errorMsg string, repoCtx *RepoContext, lang string) 
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, langInstruction(lang))
+	fmt.Fprintln(&b, langInstruction(lang, easy))
 
 	return b.String()
 }
@@ -134,7 +145,7 @@ func buildExplainUserPrompt(errorMsg string, repoCtx *RepoContext, lang string) 
 // buildExplainLastUserPrompt constructs the user prompt for gk explain --last.
 // It includes reflog-based step-by-step explanation instructions,
 // repository context, and language instruction.
-func buildExplainLastUserPrompt(repoCtx *RepoContext, lang string) string {
+func buildExplainLastUserPrompt(repoCtx *RepoContext, lang string, easy bool) string {
 	var b strings.Builder
 
 	fmt.Fprintln(&b, "Explain the most recent git/gk command based on the reflog entries below.")
@@ -150,7 +161,7 @@ func buildExplainLastUserPrompt(repoCtx *RepoContext, lang string) string {
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, langInstruction(lang))
+	fmt.Fprintln(&b, langInstruction(lang, easy))
 
 	return b.String()
 }
@@ -158,7 +169,7 @@ func buildExplainLastUserPrompt(repoCtx *RepoContext, lang string) string {
 // buildAskUserPrompt constructs the user prompt for gk ask.
 // It includes related gk command suggestion instructions,
 // repository context, and language instruction.
-func buildAskUserPrompt(question string, repoCtx *RepoContext, lang string) string {
+func buildAskUserPrompt(question string, repoCtx *RepoContext, lang string, easy bool) string {
 	var b strings.Builder
 
 	// askSystemPrompt is supplied via SummarizeInput.SystemPrompt now, not
@@ -174,7 +185,7 @@ func buildAskUserPrompt(question string, repoCtx *RepoContext, lang string) stri
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, langInstruction(lang))
+	fmt.Fprintln(&b, langInstruction(lang, easy))
 
 	return b.String()
 }

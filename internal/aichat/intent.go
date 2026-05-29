@@ -15,6 +15,7 @@ type IntentParser struct {
 	Context    *RepoContextCollector
 	Safety     *SafetyClassifier
 	Lang       string
+	Easy       bool // Easy Mode: plain, non-developer language in the explanation
 	Timeout    time.Duration
 	MaxTokens  int // advisory response cap; 0 = provider default
 	Dbg        func(string, ...any)
@@ -56,7 +57,7 @@ func (p *IntentParser) Parse(ctx context.Context, input string) (*ExecutionPlan,
 	}
 
 	// 2. Build the user prompt.
-	userPrompt := buildDoUserPrompt(input, repoCtx, p.Lang)
+	userPrompt := buildDoUserPrompt(input, repoCtx, p.Lang, p.Easy)
 
 	// 2b. Redact the assembled prompt (input + repo context) before it
 	// leaves the process. The caller redacts the raw input separately, but

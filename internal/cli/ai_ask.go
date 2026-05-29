@@ -143,6 +143,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		Summarizer: sum,
 		Context:    &aichat.RepoContextCollector{Runner: runner, TokenBudget: 2000, Dbg: Dbg},
 		Lang:       fallbackLang(ai.Lang),
+		Easy:       EasyEngine().IsEnabled(),
 		Timeout:    timeout,
 		MaxTokens:  aiChatMaxTokens(ai),
 		Dbg:        Dbg,

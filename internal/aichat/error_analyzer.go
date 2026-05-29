@@ -16,6 +16,7 @@ type ErrorAnalyzer struct {
 	Summarizer provider.Summarizer
 	Context    *RepoContextCollector
 	Lang       string
+	Easy       bool // Easy Mode: plain, non-developer language in the explanation
 	Timeout    time.Duration
 	MaxTokens  int // advisory response cap; 0 = provider default
 	Dbg        func(string, ...any)
@@ -106,7 +107,7 @@ func (a *ErrorAnalyzer) DiagnoseError(ctx context.Context, errorMsg string) (str
 	}
 
 	// 2. Build the user prompt.
-	userPrompt := buildExplainUserPrompt(errorMsg, repoCtx, a.Lang)
+	userPrompt := buildExplainUserPrompt(errorMsg, repoCtx, a.Lang, a.Easy)
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := a.Summarizer.Summarize(ctx, provider.SummarizeInput{
@@ -147,7 +148,7 @@ func (a *ErrorAnalyzer) ExplainLast(ctx context.Context) (string, error) {
 	}
 
 	// 2. Build the user prompt for --last mode.
-	userPrompt := buildExplainLastUserPrompt(repoCtx, a.Lang)
+	userPrompt := buildExplainLastUserPrompt(repoCtx, a.Lang, a.Easy)
 
 	// 3. Call the AI provider via Summarizer.
 	result, err := a.Summarizer.Summarize(ctx, provider.SummarizeInput{

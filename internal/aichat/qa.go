@@ -16,9 +16,12 @@ type QAEngine struct {
 	Summarizer provider.Summarizer
 	Context    *RepoContextCollector
 	Lang       string
-	Timeout    time.Duration
-	MaxTokens  int // advisory response cap; 0 = provider default
-	Dbg        func(string, ...any)
+	// Easy, when true (Easy Mode), tells the model to answer in plain,
+	// non-developer language (no git jargon, proper nouns kept as-is).
+	Easy      bool
+	Timeout   time.Duration
+	MaxTokens int // advisory response cap; 0 = provider default
+	Dbg       func(string, ...any)
 }
 
 // isNonGitQuestion returns true when the question is clearly unrelated
@@ -135,7 +138,7 @@ func (q *QAEngine) Answer(ctx context.Context, question string) (string, error) 
 	}
 
 	// 2. Build the user prompt.
-	userPrompt := buildAskUserPrompt(question, repoCtx, q.Lang)
+	userPrompt := buildAskUserPrompt(question, repoCtx, q.Lang, q.Easy)
 
 	// 3. Call the AI provider via Summarizer. The role goes in SystemPrompt
 	// (not the user body) and the assembled question+context in Diff, so the

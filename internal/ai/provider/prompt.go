@@ -140,6 +140,16 @@ func buildSummarizeUserPrompt(in SummarizeInput) string {
 		return b.String()
 	}
 
+	// "ask" is a Q&A turn, not a diff review. The caller (QAEngine) puts the
+	// role in SystemPrompt and assembles the question + repo context + language
+	// directive into Diff. Emit it verbatim — no "summarize" header and no
+	// <DIFF> fence, which would make the model treat the question as a diff to
+	// review instead of a question to answer.
+	if in.Kind == "ask" {
+		b.WriteString(in.Diff)
+		return b.String()
+	}
+
 	switch in.Kind {
 	case "pr":
 		fmt.Fprintf(&b, "Task: write a Pull Request description in %s that helps a reviewer act.\n", lang)

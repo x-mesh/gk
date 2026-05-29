@@ -231,8 +231,10 @@ func TestBuildAskUserPrompt_IncludesGkCommandSuggestions(t *testing.T) {
 	rc := testRepoContext()
 	prompt := buildAskUserPrompt("rebase란 무엇인가요?", rc, "ko")
 
-	if !strings.Contains(prompt, "1-3 related gk commands") {
-		t.Error("buildAskUserPrompt missing gk command suggestion instructions")
+	// The "suggest related commands" instruction now lives in askSystemPrompt
+	// (SystemPrompt slot); the body still carries the command reference list.
+	if !strings.Contains(askSystemPrompt, "1-3 related gk commands") {
+		t.Error("askSystemPrompt missing gk command suggestion instructions")
 	}
 	if !strings.Contains(prompt, "Available gk commands:") {
 		t.Error("buildAskUserPrompt missing gk command reference")
@@ -248,12 +250,11 @@ func TestBuildAskUserPrompt_IncludesQuestion(t *testing.T) {
 	}
 }
 
-func TestBuildAskUserPrompt_IncludesRedirectInstruction(t *testing.T) {
-	rc := testRepoContext()
-	prompt := buildAskUserPrompt("what is the weather?", rc, "en")
-
-	if !strings.Contains(prompt, "politely redirect") {
-		t.Error("buildAskUserPrompt missing redirect instruction for non-git questions")
+func TestAskSystemPrompt_IncludesRedirectInstruction(t *testing.T) {
+	// The redirect instruction lives in askSystemPrompt (passed via
+	// SummarizeInput.SystemPrompt), not inlined into the user body.
+	if !strings.Contains(askSystemPrompt, "politely redirect") {
+		t.Error("askSystemPrompt missing redirect instruction for non-git questions")
 	}
 }
 

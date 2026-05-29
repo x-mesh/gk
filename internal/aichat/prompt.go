@@ -161,9 +161,10 @@ func buildExplainLastUserPrompt(repoCtx *RepoContext, lang string) string {
 func buildAskUserPrompt(question string, repoCtx *RepoContext, lang string) string {
 	var b strings.Builder
 
+	// askSystemPrompt is supplied via SummarizeInput.SystemPrompt now, not
+	// inlined here — the body carries only the question, command reference,
+	// repo context, and the language directive.
 	fmt.Fprintf(&b, "Question: %s\n\n", question)
-	fmt.Fprintln(&b, askSystemPrompt)
-	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, gkCommandReference)
 
 	ctx := wrapContext(repoCtx)

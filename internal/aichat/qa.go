@@ -137,12 +137,15 @@ func (q *QAEngine) Answer(ctx context.Context, question string) (string, error) 
 	// 2. Build the user prompt.
 	userPrompt := buildAskUserPrompt(question, repoCtx, q.Lang)
 
-	// 3. Call the AI provider via Summarizer.
+	// 3. Call the AI provider via Summarizer. The role goes in SystemPrompt
+	// (not the user body) and the assembled question+context in Diff, so the
+	// provider answers the question instead of "reviewing a diff".
 	result, err := q.Summarizer.Summarize(ctx, provider.SummarizeInput{
-		Kind:      "ask",
-		Diff:      userPrompt,
-		Lang:      q.Lang,
-		MaxTokens: q.MaxTokens,
+		Kind:         "ask",
+		SystemPrompt: askSystemPrompt,
+		Diff:         userPrompt,
+		Lang:         q.Lang,
+		MaxTokens:    q.MaxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("ask: AI provider error: %w", err)

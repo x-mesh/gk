@@ -110,7 +110,21 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// --- 3. Repo-local .gk.yaml ---
-	if repoRoot, err := cachedGitRepoRoot(); err == nil && repoRoot != "" {
+	// An explicit --repo flag points config discovery at that repo's
+	// working-tree root; without it we fall back to the cwd-derived root.
+	// Otherwise `gk --repo /other <cmd>` would read the cwd's .gk.yaml
+	// (or none) instead of /other's, so its repo-local overrides silently
+	// wouldn't apply.
+	repoRoot := ""
+	if flags != nil {
+		if rf, ferr := flags.GetString("repo"); ferr == nil && rf != "" {
+			repoRoot, _ = gitRepoRootIn(rf)
+		}
+	}
+	if repoRoot == "" {
+		repoRoot, _ = cachedGitRepoRoot()
+	}
+	if repoRoot != "" {
 		localCfg := filepath.Join(repoRoot, ".gk.yaml")
 		if _, statErr := os.Stat(localCfg); statErr == nil {
 			v2 := viper.New()
@@ -183,13 +197,24 @@ func xdgConfigDir() string {
 	return filepath.Join(base, "gk")
 }
 
-// gitRepoRoot returns the working-tree root of the current git repository.
-// Returns empty string (nil error) when not in a git repo.
-func gitRepoRoot() (string, error) {
+// gitRepoRoot returns the working-tree root of the current git repository
+// (cwd). Returns empty string (nil error) when not in a git repo.
+func gitRepoRoot() (string, error) { return gitRepoRootIn("") }
+
+// gitRepoRootIn returns the working-tree root of the git repository at dir
+// (via `git -C dir`), or of the cwd when dir is empty. Returns empty string
+// (nil error) when dir is not in a git repo — config discovery then skips
+// the repo-local layer rather than failing.
+func gitRepoRootIn(dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := cmdOutput(ctx, "git", "rev-parse", "--show-toplevel")
+	args := make([]string, 0, 4)
+	if dir != "" {
+		args = append(args, "-C", dir)
+	}
+	args = append(args, "rev-parse", "--show-toplevel")
+	out, err := cmdOutput(ctx, "git", args...)
 	if err != nil {
 		return "", nil
 	}

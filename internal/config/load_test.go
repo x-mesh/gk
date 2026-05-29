@@ -108,6 +108,47 @@ func TestLoadLocalYAML(t *testing.T) {
 	}
 }
 
+// TestLoadRepoFlagFindsLocalYAML verifies that the --repo flag points
+// config discovery at that repo's .gk.yaml even when the cwd is elsewhere.
+// Regression: discovery used the cwd's `git rev-parse` and ignored --repo,
+// so `gk --repo /other <cmd>` silently dropped /other's repo-local config.
+func TestLoadRepoFlagFindsLocalYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	// Target repo carries the .gk.yaml.
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte("remote: from-repo-flag\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// cwd is a different dir with no .gk.yaml — only --repo can reach it.
+	otherDir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("repo", "", "")
+	if err := fs.Set("repo", repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(fs)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.Remote != "from-repo-flag" {
+		t.Errorf("--repo should load %s/.gk.yaml: Remote = %q, want %q", repoDir, cfg.Remote, "from-repo-flag")
+	}
+}
+
 func TestLoadEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
 	t.Setenv("GK_BASE_BRANCH", "develop")

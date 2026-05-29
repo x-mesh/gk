@@ -419,9 +419,11 @@ func renderStatusAssist(
 	key := statusAssistCacheKey(facts, diff, lang, prov.Name())
 	if cacheOn {
 		if cached, hit := readStatusAssistCache(ctx, runner, key); hit {
+			Dbg("status --ai: cache hit (key=%s, provider=%s) — no AI call; clear with: rm $(git rev-parse --git-path gk-ai-cache)/status/%s", key, prov.Name(), key)
 			emitStatusAssist(out, cached)
 			return nil
 		}
+		Dbg("status --ai: cache miss (key=%s) — querying provider=%s", key, prov.Name())
 	}
 
 	payload := buildStatusAssistData(facts, diff)
@@ -444,6 +446,7 @@ func renderStatusAssist(
 		defer cancel()
 	}
 
+	Dbg("status --ai: querying provider=%s model=%s", prov.Name(), providerModel(prov))
 	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s - explaining via %s", label, prov.Name()))
 	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 		Kind:         "status",

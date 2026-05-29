@@ -48,6 +48,10 @@ type CleanCandidate struct {
 	AISummary  string // 최대 80자
 	SafeDelete bool   // AI 권장 삭제 여부
 	Selected   bool   // TUI에서 기본 선택 여부
+	// Protected가 true면 base/protected 목록의 브랜치다. --force일 때만
+	// 후보로 등장하며, 사고 방지를 위해 기본 미선택 + [protected] 마커로
+	// 표시한다(사용자가 TUI에서 직접 체크해야 삭제).
+	Protected bool
 }
 
 // CleanOptions는 Branch_Cleaner의 실행 옵션이다.
@@ -65,11 +69,16 @@ type CleanOptions struct {
 	// origin/X 등)도 후보에 포함된다. 확정 시 git push <remote> --delete로
 	// 삭제되므로 의도가 분명할 때만 사용한다.
 	IncludeRemote bool
-	BaseBranch    string // 빈 문자열이면 자동 감지
-	RemoteName    string // 빈 문자열이면 "origin"
-	Protected     []string
-	StaleDays     int // config에서 가져온 기본값
-	Lang          string
+	// Worktrees가 true면 worktree가 점유한 브랜치도 삭제 대상이 된다.
+	// 삭제 시 해당 worktree를 먼저 제거(git worktree remove)한 뒤 브랜치를
+	// 지운다. 단 worktree에 미커밋 변경(dirty)이 있으면 건너뛰고 경고한다.
+	// false면 worktree 점유 브랜치는 기본 미선택 + [worktree] 마커로 남는다.
+	Worktrees  bool
+	BaseBranch string // 빈 문자열이면 자동 감지
+	RemoteName string // 빈 문자열이면 "origin"
+	Protected  []string
+	StaleDays  int // config에서 가져온 기본값
+	Lang       string
 }
 
 // CleanResult는 정리 실행 결과이다.

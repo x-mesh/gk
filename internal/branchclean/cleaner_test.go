@@ -114,7 +114,7 @@ func TestProperty3_BuildCandidatesSelectionRules(t *testing.T) {
 
 		force := rapid.Bool().Draw(rt, "force")
 
-		candidates := BuildCandidates(entries, analyses, force)
+		candidates := BuildCandidates(entries, analyses, force, false, nil)
 
 		if len(candidates) != len(entries) {
 			rt.Fatalf("candidate count %d != entry count %d", len(candidates), len(entries))
@@ -311,7 +311,7 @@ func TestBuildCandidates_MergedAlwaysSelected(t *testing.T) {
 		{Name: "feat/gone", Status: StatusGone},
 		{Name: "feat/squash", Status: StatusSquashMerged},
 	}
-	candidates := BuildCandidates(entries, nil, false)
+	candidates := BuildCandidates(entries, nil, false, false, nil)
 	for _, c := range candidates {
 		if !c.Selected {
 			t.Fatalf("branch %s (status=%s) should be selected", c.Name, c.Status)
@@ -326,13 +326,13 @@ func TestBuildCandidates_AIInProgressNotSelected(t *testing.T) {
 	analyses := map[string]provider.BranchAnalysis{
 		"feat/wip": {Name: "feat/wip", Category: "in_progress", Summary: "work in progress"},
 	}
-	candidates := BuildCandidates(entries, analyses, false)
+	candidates := BuildCandidates(entries, analyses, false, false, nil)
 	if candidates[0].Selected {
 		t.Fatal("in_progress branch should not be selected without force")
 	}
 
 	// force=true → selected
-	candidates = BuildCandidates(entries, analyses, true)
+	candidates = BuildCandidates(entries, analyses, true, false, nil)
 	if !candidates[0].Selected {
 		t.Fatal("in_progress branch should be selected with force=true")
 	}
@@ -340,29 +340,69 @@ func TestBuildCandidates_AIInProgressNotSelected(t *testing.T) {
 
 func TestBuildCandidates_WorktreeHeldNotSelected(t *testing.T) {
 	// merged 브랜치라도 worktree가 점유하면 git이 삭제를 거부하므로
-	// 기본 선택에서 제외되어야 한다.
+	// --worktrees 없이는 기본 선택에서 제외되어야 한다.
 	entries := []BranchEntry{
 		{Name: "feat/held", Status: StatusMerged, Worktree: "/tmp/wt/held"},
 		{Name: "feat/free", Status: StatusMerged},
 	}
-	candidates := BuildCandidates(entries, nil, false)
+	candidates := BuildCandidates(entries, nil, false, false, nil)
 	got := map[string]bool{}
 	for _, c := range candidates {
 		got[c.Name] = c.Selected
 	}
 	if got["feat/held"] {
-		t.Error("worktree-held branch should not be selected by default")
+		t.Error("worktree-held branch should not be selected without --worktrees")
 	}
 	if !got["feat/free"] {
 		t.Error("free merged branch should still be selected")
 	}
 
-	// force=true여도 worktree 점유 브랜치는 삭제 불가하므로 미선택 유지.
-	candidates = BuildCandidates(entries, nil, true)
+	// force=true여도 --worktrees가 없으면 worktree 점유 브랜치는 미선택 유지.
+	candidates = BuildCandidates(entries, nil, true, false, nil)
 	for _, c := range candidates {
 		if c.Name == "feat/held" && c.Selected {
-			t.Error("worktree-held branch should stay deselected even with force")
+			t.Error("worktree-held branch should stay deselected without --worktrees")
 		}
+	}
+}
+
+func TestBuildCandidates_ProtectedMarkedNotSelected(t *testing.T) {
+	// protected 브랜치는 (--force로 후보에 와도) 기본 미선택 + Protected 마커.
+	entries := []BranchEntry{
+		{Name: "main", Status: StatusMerged},
+		{Name: "feat/x", Status: StatusMerged},
+	}
+	protected := map[string]bool{"main": true}
+	candidates := BuildCandidates(entries, nil, true, false, protected)
+	for _, c := range candidates {
+		switch c.Name {
+		case "main":
+			if c.Selected {
+				t.Error("protected main must not be auto-selected")
+			}
+			if !c.Protected {
+				t.Error("main should carry the Protected marker")
+			}
+		case "feat/x":
+			if !c.Selected {
+				t.Error("non-protected merged branch should stay selected")
+			}
+			if c.Protected {
+				t.Error("feat/x is not protected")
+			}
+		}
+	}
+}
+
+func TestBuildCandidates_WorktreeSelectedWithFlag(t *testing.T) {
+	// --worktrees(=worktrees true)면 worktree 점유 merged 브랜치도 선택된다
+	// (삭제 단계에서 worktree를 먼저 제거).
+	entries := []BranchEntry{
+		{Name: "feat/held", Status: StatusMerged, Worktree: "/tmp/wt/held"},
+	}
+	candidates := BuildCandidates(entries, nil, false, true, nil)
+	if !candidates[0].Selected {
+		t.Error("worktree-held merged branch should be selected with --worktrees")
 	}
 }
 
@@ -383,7 +423,7 @@ func TestBuildCandidates_StaleNoAISelected(t *testing.T) {
 	entries := []BranchEntry{
 		{Name: "feat/old", Status: StatusStale},
 	}
-	candidates := BuildCandidates(entries, nil, false)
+	candidates := BuildCandidates(entries, nil, false, false, nil)
 	if !candidates[0].Selected {
 		t.Fatal("stale branch without AI should be selected")
 	}
@@ -396,7 +436,7 @@ func TestBuildCandidates_AIFieldsPopulated(t *testing.T) {
 	analyses := map[string]provider.BranchAnalysis{
 		"feat/x": {Name: "feat/x", Category: "completed", Summary: "done", SafeDelete: true},
 	}
-	candidates := BuildCandidates(entries, analyses, false)
+	candidates := BuildCandidates(entries, analyses, false, false, nil)
 	c := candidates[0]
 	if c.AICategory != "completed" {
 		t.Fatalf("expected AICategory=completed, got %s", c.AICategory)
@@ -502,6 +542,66 @@ func TestCleanerRun_YesDeletesMerged(t *testing.T) {
 	}
 	if len(result.Deleted) != 1 || result.Deleted[0] != "feat/done" {
 		t.Fatalf("expected [feat/done] deleted, got %v", result.Deleted)
+	}
+}
+
+func TestCleanerRun_WorktreesFlag_DirtySkipped(t *testing.T) {
+	now := time.Now()
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/held\x001700000000\n"},
+			"worktree list --porcelain":                                                               {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
+			// git refuses to remove a dirty worktree without --force.
+			"worktree remove /wt/held": {Stderr: "fatal: '/wt/held' contains modified or untracked files, use --force to delete", ExitCode: 1},
+			"branch -d feat/held":      {Stdout: "Deleted branch feat/held\n"},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: fmt.Sprintf("feat/held\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),
+			},
+		},
+	}
+	cleaner := &Cleaner{Runner: runner, Client: git.NewClient(runner), Stderr: &bytes.Buffer{}}
+	result, err := cleaner.Run(ctx(), CleanOptions{Yes: true, Worktrees: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Deleted) != 0 {
+		t.Fatalf("dirty worktree branch must not be deleted, got %v", result.Deleted)
+	}
+	if result.Failed["feat/held"] == nil {
+		t.Fatal("expected feat/held in Failed (worktree not removed)")
+	}
+	// branch -d must NOT have run for the skipped branch.
+	for _, c := range runner.Calls {
+		if strings.Join(c.Args, " ") == "branch -d feat/held" {
+			t.Fatal("branch -d should be skipped when worktree removal fails")
+		}
+	}
+}
+
+func TestCleanerRun_WorktreesFlag_CleanRemovedThenDeleted(t *testing.T) {
+	now := time.Now()
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/held\x001700000000\n"},
+			"worktree list --porcelain":                                                               {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
+			"worktree remove /wt/held":                                                                {Stdout: ""},
+			"branch -d feat/held":                                                                     {Stdout: "Deleted branch feat/held\n"},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: fmt.Sprintf("feat/held\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),
+			},
+		},
+	}
+	cleaner := &Cleaner{Runner: runner, Client: git.NewClient(runner), Stderr: &bytes.Buffer{}}
+	result, err := cleaner.Run(ctx(), CleanOptions{Yes: true, Worktrees: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Deleted) != 1 || result.Deleted[0] != "feat/held" {
+		t.Fatalf("expected [feat/held] deleted after worktree removal, got %v", result.Deleted)
 	}
 }
 

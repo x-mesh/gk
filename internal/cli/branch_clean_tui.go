@@ -39,6 +39,11 @@ func FormatCandidateLabel(c branchclean.CleanCandidate) string {
 	if c.Worktree != "" {
 		b.WriteString("  [worktree — gk wt remove first]")
 	}
+	// protected 브랜치는 --force로만 후보에 뜬다. 사고 방지를 위해 기본
+	// 미선택이며 사용자가 직접 체크해야 삭제됨을 알린다.
+	if c.Protected {
+		b.WriteString("  [protected — check to force-delete]")
+	}
 
 	if c.AICategory != "" {
 		fmt.Fprintf(&b, "  %s: %s", c.AICategory, c.AISummary)

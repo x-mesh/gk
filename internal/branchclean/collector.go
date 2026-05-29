@@ -19,12 +19,18 @@ type Collector struct {
 // CollectAll은 옵션에 따라 삭제 후보 브랜치를 수집한다.
 // protected, current, base branch는 항상 제외된다.
 func (c *Collector) CollectAll(ctx context.Context, opts CleanOptions) ([]BranchEntry, error) {
+	// The current branch is always excluded (git refuses to delete it).
+	// base/protected branches are excluded by default, but with --force
+	// they stay in the candidate list so the user can force-delete them
+	// (BuildCandidates leaves them unselected + marked).
 	protected := make(map[string]bool)
-	for _, p := range opts.Protected {
-		protected[p] = true
-	}
 	if cur, err := c.Client.CurrentBranch(ctx); err == nil {
 		protected[cur] = true
+	}
+	if !opts.Force {
+		for _, p := range opts.Protected {
+			protected[p] = true
+		}
 	}
 
 	remote := opts.RemoteName
@@ -40,7 +46,10 @@ func (c *Collector) CollectAll(ctx context.Context, opts CleanOptions) ([]Branch
 		}
 		base = b
 	}
-	protected[base] = true
+	// base is protected unless --force (then it surfaces as a candidate).
+	if !opts.Force {
+		protected[base] = true
+	}
 
 	var all []BranchEntry
 

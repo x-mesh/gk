@@ -72,14 +72,25 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 		base = b
 	}
 
-	// protected set 구성
-	protected := make(map[string]bool)
+	// protectedNames: base + 설정 protected 목록. --force일 때 후보로
+	// 등장하는 이들을 [protected] 마커 + 기본 미선택으로 표시하는 데 쓴다.
+	protectedNames := make(map[string]bool)
 	for _, p := range opts.Protected {
-		protected[p] = true
+		protectedNames[p] = true
 	}
-	protected[base] = true
+	protectedNames[base] = true
+
+	// protected: 후보에서 완전히 제외하는 set. current는 항상 제외(git이
+	// 삭제를 거부). base/protected는 --force가 아닐 때만 제외하고, --force면
+	// 후보로 남겨 사용자가 직접 체크해 force-delete 할 수 있게 한다.
+	protected := make(map[string]bool)
 	if cur, err := c.Client.CurrentBranch(ctx); err == nil {
 		protected[cur] = true
+	}
+	if !opts.Force {
+		for k := range protectedNames {
+			protected[k] = true
+		}
 	}
 
 	// 브랜치 수집
@@ -143,7 +154,7 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	// AI 실패 시 analyses는 nil → rule-based fallback (BuildCandidates가 처리)
 
 	// BuildCandidates로 후보 생성
-	candidates := BuildCandidates(entries, analyses, opts.Force)
+	candidates := BuildCandidates(entries, analyses, opts.Force, opts.Worktrees, protectedNames)
 
 	// dry-run 시 결과 반환
 	if opts.DryRun {
@@ -173,6 +184,21 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	}
 	for _, name := range toDelete {
 		cand := cmap[name]
+		// worktree가 점유한 브랜치(--worktrees 모드에서만 여기 도달)는
+		// worktree를 먼저 제거해야 git branch -d가 통한다. dirty면 git이
+		// remove를 거부 → skip + 경고 (미커밋 작업 보존).
+		if cand.Worktree != "" {
+			if werr := RemoveWorktreeForBranchDelete(ctx, c.Runner, cand.Worktree); werr != nil {
+				result.Failed[name] = fmt.Errorf("gk branch clean: %w", werr)
+				if c.Stderr != nil {
+					fmt.Fprintf(c.Stderr, "skip %s: %v\n", name, werr)
+				}
+				continue
+			}
+			if c.Stderr != nil {
+				fmt.Fprintf(c.Stderr, "removed worktree %s\n", cand.Worktree)
+			}
+		}
 		var stderr []byte
 		var err error
 		if cand.IsRemote {
@@ -209,7 +235,20 @@ func WorktreeHint(name, stderr string) string {
 	if !strings.Contains(stderr, "used by worktree") {
 		return ""
 	}
-	return fmt.Sprintf("hint: %q is checked out in a worktree — run 'gk wt remove %s' first", name, name)
+	return fmt.Sprintf("hint: %q is checked out in a worktree — run 'gk wt remove %s' first (or 'gk branch clean --worktrees')", name, name)
+}
+
+// RemoveWorktreeForBranchDelete removes the worktree at path so the branch
+// it holds can subsequently be deleted. Git refuses to remove a worktree
+// with uncommitted or untracked changes unless --force is given, so a
+// dirty worktree surfaces here as an error and the caller skips the
+// branch — no uncommitted work is lost. Returns nil once the worktree is
+// gone (or was already absent).
+func RemoveWorktreeForBranchDelete(ctx context.Context, r git.Runner, path string) error {
+	if _, stderr, err := r.Run(ctx, "worktree", "remove", path); err != nil {
+		return fmt.Errorf("worktree %s not removed: %s", path, strings.TrimSpace(string(stderr)))
+	}
+	return nil
 }
 
 // runAIAnalysis는 BranchAnalyzer를 통해 AI 분석을 실행한다.
@@ -283,6 +322,8 @@ func BuildCandidates(
 	entries []BranchEntry,
 	analyses map[string]provider.BranchAnalysis,
 	force bool,
+	worktrees bool,
+	protectedNames map[string]bool,
 ) []CleanCandidate {
 	candidates := make([]CleanCandidate, 0, len(entries))
 
@@ -298,9 +339,18 @@ func BuildCandidates(
 
 		// Selected 결정
 		c.Selected = determineSelected(e.Status, c.AICategory, force)
-		// worktree가 점유한 브랜치는 git이 -d/-D 모두 거부하므로
-		// 기본 선택에서 제외한다 (라벨의 [worktree] 마커로 이유를 안내).
-		if e.Worktree != "" {
+		// worktree가 점유한 브랜치는 git이 -d/-D 모두 거부한다. --worktrees가
+		// 없으면 기본 선택에서 제외하고 [worktree] 마커로 이유를 안내한다.
+		// --worktrees가 있으면 삭제 단계에서 worktree를 먼저 제거하므로
+		// determineSelected 결과를 그대로 둔다.
+		if e.Worktree != "" && !worktrees {
+			c.Selected = false
+		}
+		// base/protected 브랜치는 --force일 때만 여기까지 온다(아니면 collector가
+		// 제외). 사고 방지를 위해 기본 미선택 + [protected] 마커로 표시하고,
+		// 사용자가 TUI에서 직접 체크해야 삭제되도록 한다.
+		if protectedNames[e.Name] {
+			c.Protected = true
 			c.Selected = false
 		}
 		candidates = append(candidates, c)

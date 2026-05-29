@@ -52,6 +52,7 @@ func init() {
 	cleanCmd.Flags().Bool("remote", false, "run git remote prune")
 	cleanCmd.Flags().Bool("include-remote", false, "include remote-only branches as candidates (deleted via git push --delete)")
 	cleanCmd.Flags().Bool("squash-merged", false, "include squash-merged branches")
+	cleanCmd.Flags().Bool("worktrees", false, "also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped)")
 	cleanCmd.Flags().BoolP("yes", "y", false, "skip TUI confirmation")
 
 	pickCmd := &cobra.Command{
@@ -283,6 +284,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	remote, _ := cmd.Flags().GetBool("remote")
 	includeRemote, _ := cmd.Flags().GetBool("include-remote")
 	squashMerged, _ := cmd.Flags().GetBool("squash-merged")
+	worktrees, _ := cmd.Flags().GetBool("worktrees")
 	yes, _ := cmd.Flags().GetBool("yes")
 
 	// --stale 유효성 검사
@@ -308,6 +310,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		SquashMerged:  squashMerged,
 		Remote:        remote,
 		IncludeRemote: includeRemote,
+		Worktrees:     worktrees,
 		RemoteName:    cfg.Remote,
 		Protected:     cfg.Branch.Protected,
 		StaleDays:     cfg.Branch.StaleDays,
@@ -350,7 +353,17 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		}
 		for _, c := range result.DryRun {
 			if c.Worktree != "" {
-				fmt.Fprintf(w, "skip: %s (checked out in worktree — gk wt remove %s first)\n", c.Name, c.Name)
+				if worktrees {
+					fmt.Fprintf(w, "would remove worktree %s and delete %s\n", c.Worktree, c.Name)
+				} else {
+					fmt.Fprintf(w, "skip: %s (checked out in worktree — use --worktrees, or gk wt remove %s)\n", c.Name, c.Name)
+				}
+				continue
+			}
+			// protected 브랜치는 --force일 때만 후보에 뜨고, 기본 미선택이라
+			// 자동 삭제되지 않는다(TUI에서 직접 체크해야 함).
+			if c.Protected {
+				fmt.Fprintf(w, "protected: %s (check in the picker to force-delete; not auto-deleted)\n", c.Name)
 				continue
 			}
 			fmt.Fprintf(w, "would delete: %s\n", c.Name)
@@ -392,6 +405,16 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		// name → worktree path 매핑 (--worktrees 모드에서 worktree를 먼저
+		// 제거하기 위해). worktree 점유 브랜치는 --worktrees 없이는 후보로
+		// 떠도 미선택이라 여기 도달하지 않는다.
+		wtByName := map[string]string{}
+		for _, c := range dryResult.DryRun {
+			if c.Worktree != "" {
+				wtByName[c.Name] = c.Worktree
+			}
+		}
+
 		// 선택된 브랜치 삭제 — local은 git branch -d/-D, remote-only는
 		// git push <remote> --delete <name>.
 		deleteFlag := "-d"
@@ -413,6 +436,15 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 				}
 				fmt.Fprintln(w, successLinef("deleted", "%s/%s", remoteName, name))
 				continue
+			}
+			// worktree 점유 브랜치: worktree를 먼저 제거(dirty면 git이 거부 →
+			// skip + 경고). 성공해야 아래 branch -d가 통한다.
+			if wp := wtByName[name]; wp != "" {
+				if werr := branchclean.RemoveWorktreeForBranchDelete(ctx, runner, wp); werr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "skip %s: %v\n", name, werr)
+					continue
+				}
+				fmt.Fprintln(w, successLinef("removed worktree", "%s", wp))
 			}
 			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
 				msg := strings.TrimSpace(string(stderr))

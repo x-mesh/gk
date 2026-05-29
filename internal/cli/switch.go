@@ -625,6 +625,15 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 	// the user keeps cleaning the same subset without re-typing.
 	var currentFilter string
 
+	// protected branches (main/master/develop + config) are blocked from
+	// d-delete; D (force) overrides. Loop-invariant, so built once here.
+	protected := map[string]bool{}
+	if cfg != nil {
+		for _, p := range cfg.Branch.Protected {
+			protected[p] = true
+		}
+	}
+
 	for {
 		local, err := listLocalBranches(ctx, runner)
 		if err != nil {
@@ -744,7 +753,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			continue
 		case "d", "D":
 			force := choice.ExtraAction == "D"
-			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, merged, force); err != nil {
+			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, protected, merged, force); err != nil {
 				if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, errSwitchActionRetry) {
 					continue
 				}
@@ -1155,7 +1164,13 @@ func decodeBranchTarget(choice ui.PickerItem) targetBranchInfo {
 
 // guardDelete returns nil if (target, force) is safe to delete,
 // otherwise an error explaining why. Pure function — no I/O.
-func guardDelete(target targetBranchInfo, current, defaultBr string, merged map[string]bool, force bool) error {
+//
+// Protection policy:
+//   - the current branch is never deletable (git refuses it anyway);
+//   - the default branch and any name in protected are blocked by default
+//     but may be force-deleted with D;
+//   - unmerged branches are blocked by default, force-deletable with D.
+func guardDelete(target targetBranchInfo, current, defaultBr string, protected, merged map[string]bool, force bool) error {
 	if target.Placeholder {
 		return errors.New("nothing to delete — list is empty")
 	}
@@ -1169,12 +1184,19 @@ func guardDelete(target targetBranchInfo, current, defaultBr string, merged map[
 	if target.Name == current {
 		return errors.New("cannot delete the current branch")
 	}
-	if defaultBr != "" && target.Name == defaultBr {
-		return errors.New("refusing to delete default branch")
-	}
-	if !force && !merged[target.Name] {
-		return WithHint(fmt.Errorf("branch %q has unmerged commits", target.Name),
-			"press D to force delete (unmerged work will be lost)")
+	if !force {
+		if defaultBr != "" && target.Name == defaultBr {
+			return WithHint(fmt.Errorf("refusing to delete default branch %q", target.Name),
+				"press D to force delete")
+		}
+		if protected[target.Name] {
+			return WithHint(fmt.Errorf("branch %q is protected", target.Name),
+				"press D to force delete")
+		}
+		if !merged[target.Name] {
+			return WithHint(fmt.Errorf("branch %q has unmerged commits", target.Name),
+				"press D to force delete (unmerged work will be lost)")
+		}
 	}
 	return nil
 }
@@ -1183,9 +1205,9 @@ func guardDelete(target targetBranchInfo, current, defaultBr string, merged map[
 // `git branch -d|-D`. Returns nil on success (caller re-lists),
 // errSwitchActionRetry when the user cancelled the confirm or the
 // guard rejected, and a real error only on git failure.
-func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, merged map[string]bool, force bool) error {
+func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, protected, merged map[string]bool, force bool) error {
 	target := decodeBranchTarget(choice)
-	if err := guardDelete(target, current, defaultBr, merged, force); err != nil {
+	if err := guardDelete(target, current, defaultBr, protected, merged, force); err != nil {
 		fmt.Fprintln(w, "✗ "+err.Error())
 		if h := HintFrom(err); h != "" {
 			fmt.Fprintln(w, "  hint: "+h)

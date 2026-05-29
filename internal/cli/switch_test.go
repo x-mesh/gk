@@ -436,7 +436,7 @@ func TestSwitch_DevelopMissingErrors(t *testing.T) {
 
 func TestGuardDelete_Placeholder(t *testing.T) {
 	t.Parallel()
-	err := guardDelete(targetBranchInfo{Placeholder: true}, "main", "main", nil, false)
+	err := guardDelete(targetBranchInfo{Placeholder: true}, "main", "main", nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Errorf("placeholder: want 'empty' error, got %v", err)
 	}
@@ -444,7 +444,7 @@ func TestGuardDelete_Placeholder(t *testing.T) {
 
 func TestGuardDelete_Remote_Blocked(t *testing.T) {
 	t.Parallel()
-	err := guardDelete(targetBranchInfo{Name: "foo", IsRemote: true}, "main", "main", nil, true)
+	err := guardDelete(targetBranchInfo{Name: "foo", IsRemote: true}, "main", "main", nil, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "remote") {
 		t.Errorf("remote: want 'remote' error, got %v", err)
 	}
@@ -453,27 +453,49 @@ func TestGuardDelete_Remote_Blocked(t *testing.T) {
 func TestGuardDelete_Current_Blocked(t *testing.T) {
 	t.Parallel()
 	for _, force := range []bool{false, true} {
-		err := guardDelete(targetBranchInfo{Name: "main"}, "main", "main", map[string]bool{"main": true}, force)
+		err := guardDelete(targetBranchInfo{Name: "main"}, "main", "main", nil, map[string]bool{"main": true}, force)
 		if err == nil || !strings.Contains(err.Error(), "current") {
 			t.Errorf("force=%v current: want 'current' error, got %v", force, err)
 		}
 	}
 }
 
-func TestGuardDelete_Default_Blocked(t *testing.T) {
+func TestGuardDelete_Default_BlockedThenForced(t *testing.T) {
 	t.Parallel()
-	for _, force := range []bool{false, true} {
-		err := guardDelete(targetBranchInfo{Name: "main"}, "feat/x", "main", map[string]bool{"main": true}, force)
-		if err == nil || !strings.Contains(err.Error(), "default") {
-			t.Errorf("force=%v default: want 'default' error, got %v", force, err)
-		}
+	merged := map[string]bool{"main": true}
+	// without force: default is protected
+	err := guardDelete(targetBranchInfo{Name: "main"}, "feat/x", "main", nil, merged, false)
+	if err == nil || !strings.Contains(err.Error(), "default") {
+		t.Errorf("default without force: want 'default' error, got %v", err)
+	}
+	// with force (D): default may be deleted
+	if err := guardDelete(targetBranchInfo{Name: "main"}, "feat/x", "main", nil, merged, true); err != nil {
+		t.Errorf("default with force: want pass, got %v", err)
+	}
+}
+
+func TestGuardDelete_Protected_BlockedThenForced(t *testing.T) {
+	t.Parallel()
+	protected := map[string]bool{"develop": true}
+	merged := map[string]bool{"develop": true}
+	// without force: protected branch is blocked even when merged
+	err := guardDelete(targetBranchInfo{Name: "develop"}, "feat/x", "main", protected, merged, false)
+	if err == nil || !strings.Contains(err.Error(), "protected") {
+		t.Errorf("protected without force: want 'protected' error, got %v", err)
+	}
+	if h := HintFrom(err); !strings.Contains(h, "D to force") {
+		t.Errorf("protected hint should mention D, got %q", h)
+	}
+	// with force (D): protected branch may be deleted
+	if err := guardDelete(targetBranchInfo{Name: "develop"}, "feat/x", "main", protected, merged, true); err != nil {
+		t.Errorf("protected with force: want pass, got %v", err)
 	}
 }
 
 func TestGuardDelete_Unmerged_BlockedOnSmallD(t *testing.T) {
 	t.Parallel()
 	merged := map[string]bool{} // feat/y NOT merged
-	err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", merged, false)
+	err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", nil, merged, false)
 	if err == nil || !strings.Contains(err.Error(), "unmerged") {
 		t.Errorf("unmerged + d: want 'unmerged' error, got %v", err)
 	}
@@ -485,7 +507,7 @@ func TestGuardDelete_Unmerged_BlockedOnSmallD(t *testing.T) {
 func TestGuardDelete_Unmerged_AllowedOnBigD(t *testing.T) {
 	t.Parallel()
 	merged := map[string]bool{}
-	if err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", merged, true); err != nil {
+	if err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", nil, merged, true); err != nil {
 		t.Errorf("unmerged + D: want pass, got %v", err)
 	}
 }
@@ -494,7 +516,7 @@ func TestGuardDelete_Merged_Allowed(t *testing.T) {
 	t.Parallel()
 	merged := map[string]bool{"feat/done": true}
 	for _, force := range []bool{false, true} {
-		if err := guardDelete(targetBranchInfo{Name: "feat/done"}, "main", "main", merged, force); err != nil {
+		if err := guardDelete(targetBranchInfo{Name: "feat/done"}, "main", "main", nil, merged, force); err != nil {
 			t.Errorf("force=%v merged: want pass, got %v", force, err)
 		}
 	}
@@ -542,7 +564,7 @@ func TestSwitchAction_DeleteMerged(t *testing.T) {
 	}
 
 	target := targetBranchInfo{Name: "feat/merged"}
-	if err := guardDelete(target, "main", "main", merged, false); err != nil {
+	if err := guardDelete(target, "main", "main", nil, merged, false); err != nil {
 		t.Fatalf("guardDelete: unexpected error: %v", err)
 	}
 	if _, _, err := runner.Run(ctx, "branch", "-d", "feat/merged"); err != nil {
@@ -1181,11 +1203,11 @@ func TestSwitchAction_DeleteUnmerged_Flow(t *testing.T) {
 
 	target := targetBranchInfo{Name: "feat/diverged"}
 	// `d` should be blocked.
-	if err := guardDelete(target, "main", "main", merged, false); err == nil {
+	if err := guardDelete(target, "main", "main", nil, merged, false); err == nil {
 		t.Errorf("guard d: expected unmerged error, got nil")
 	}
 	// `D` should pass the guard.
-	if err := guardDelete(target, "main", "main", merged, true); err != nil {
+	if err := guardDelete(target, "main", "main", nil, merged, true); err != nil {
 		t.Errorf("guard D: unexpected error: %v", err)
 	}
 	if _, _, err := runner.Run(ctx, "branch", "-D", "feat/diverged"); err != nil {

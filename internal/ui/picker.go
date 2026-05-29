@@ -25,12 +25,16 @@ var ErrPickerAborted = errors.New("picker aborted")
 // ExtraAction is set by TablePicker when an Extra hotkey with Exit=true
 // fires — it carries the key letter so callers can dispatch on it. The
 // rest of the PickerItem reflects the row under the cursor at exit.
+// FilterValue is set by TablePicker on every non-abort exit — it carries
+// the residual filter query so a caller that re-enters the picker (e.g.
+// after a delete action) can re-seed it via TablePicker.InitialFilter.
 type PickerItem struct {
 	Display     string
 	Preview     string
 	Key         string
 	Cells       []string
 	ExtraAction string
+	FilterValue string
 }
 
 // Picker selects one item from a list.

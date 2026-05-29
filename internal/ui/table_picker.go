@@ -61,6 +61,11 @@ type TablePicker struct {
 	Extras      []TablePickerExtraKey
 	Subtitle    string
 	FilterItems []PickerItem
+	// InitialFilter pre-seeds the filter query so the picker opens with
+	// the list already narrowed (in nav mode, not typing mode). Callers
+	// that re-enter the picker in a loop use it to restore the residual
+	// filter recovered from the previous PickerItem.FilterValue.
+	InitialFilter string
 }
 
 type tablePickerModel struct {
@@ -305,7 +310,7 @@ func (m tablePickerModel) View() string {
 	if m.filterActive {
 		// While typing, single-letter hotkeys feed the filter box, so the
 		// action keys are inert. Tell the user esc unlocks them.
-		helpLine = "↑/↓ navigate · enter select · esc act on results · ctrl+c cancel"
+		helpLine = "↑/↓ navigate · enter select · esc → then action keys on results · ctrl+c cancel"
 	} else {
 		if m.filterInput.Value() != "" {
 			helpLine = "↑/↓ navigate · enter select · / edit filter · esc clear filter · q cancel"
@@ -408,18 +413,27 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	filter.CharLimit = 64
 	filter.Width = 40
 
+	model := tablePickerModel{
+		t:           t,
+		items:       items,
+		all:         items,
+		filterOnly:  p.FilterItems,
+		chosen:      -1,
+		filterInput: filter,
+		extras:      p.Extras,
+		headers:     headers,
+		subtitle:    p.Subtitle,
+	}
+	// Pre-seed the filter so the picker opens already narrowed, in nav
+	// mode (filterActive stays false) — the user can act on the filtered
+	// rows immediately without pressing esc first.
+	if p.InitialFilter != "" {
+		model.filterInput.SetValue(p.InitialFilter)
+		model.applyFilter()
+	}
+
 	prog := tea.NewProgram(
-		tablePickerModel{
-			t:           t,
-			items:       items,
-			all:         items,
-			filterOnly:  p.FilterItems,
-			chosen:      -1,
-			filterInput: filter,
-			extras:      p.Extras,
-			headers:     headers,
-			subtitle:    p.Subtitle,
-		},
+		model,
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
 		tea.WithInputTTY(),
@@ -444,6 +458,8 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	if m.chosen < 0 && m.chosenItem.ExtraAction == "" {
 		return PickerItem{}, ErrPickerAborted
 	}
+	// Carry the residual filter out so a re-entering caller can re-seed it.
+	m.chosenItem.FilterValue = m.filterInput.Value()
 	return m.chosenItem, nil
 }
 

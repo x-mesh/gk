@@ -620,6 +620,11 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 	// reading a misleading freshness off FETCH_HEAD.
 	fetchFailed := false
 
+	// currentFilter carries the residual filter query across picker
+	// re-entries so a delete/bulk action doesn't reset the narrowed view —
+	// the user keeps cleaning the same subset without re-typing.
+	var currentFilter string
+
 	for {
 		local, err := listLocalBranches(ctx, runner)
 		if err != nil {
@@ -686,10 +691,11 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			filterItems = buildSwitchItems(nil, allRemotes, cur, wt, dirty)
 		}
 		picker := &ui.TablePicker{
-			Headers:     []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
-			Extras:      extras,
-			Subtitle:    subtitle,
-			FilterItems: filterItems,
+			Headers:       []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
+			Extras:        extras,
+			Subtitle:      subtitle,
+			FilterItems:   filterItems,
+			InitialFilter: currentFilter,
 		}
 		choice, err := picker.Pick(ctx, "switch", items)
 		if err != nil {
@@ -698,6 +704,9 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			}
 			return switchPick{}, err
 		}
+		// Preserve the residual filter for the next iteration (delete/bulk
+		// actions re-enter the loop and re-seed it).
+		currentFilter = choice.FilterValue
 
 		switch choice.ExtraAction {
 		case "":

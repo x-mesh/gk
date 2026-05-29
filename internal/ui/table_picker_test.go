@@ -144,6 +144,31 @@ func TestTablePicker_FilterKeepsMultipleKeylessHiddenItems(t *testing.T) {
 	}
 }
 
+func TestTablePicker_InitialFilterSeedsNarrowedNavMode(t *testing.T) {
+	p := &TablePicker{InitialFilter: "alp"}
+	// Drive only the seeding logic Pick() performs, without a TTY.
+	m := newTablePickerModelForTest([]PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	})
+	m.filterInput.SetValue(p.InitialFilter)
+	m.applyFilter()
+	if m.filterActive {
+		t.Fatal("seeded filter should land in nav mode (filterActive=false)")
+	}
+	if len(m.items) != 1 || m.items[0].Key != "a" {
+		t.Fatalf("expected narrowed to alpha, got %d items", len(m.items))
+	}
+	// An exit-action key in nav mode must still carry the residual filter
+	// out via chosenItem so the caller can re-seed.
+	m.extras = []TablePickerExtraKey{{Key: "x", Exit: true}}
+	got, _ := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	got.chosenItem.FilterValue = got.filterInput.Value() // mirrors Pick()'s return path
+	if got.chosenItem.FilterValue != "alp" {
+		t.Fatalf("expected residual filter 'alp', got %q", got.chosenItem.FilterValue)
+	}
+}
+
 func TestTablePicker_EscAborts(t *testing.T) {
 	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})

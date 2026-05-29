@@ -114,12 +114,44 @@ var easyShortKO = map[string]string{
 	"gk prompt-info":     "셸 프롬프트용 worktree 표시 출력",
 }
 
-// installEasyHelp wraps the root help function so that, when Easy Mode is on
-// and the language is Korean, each command's one-line description is swapped
-// for its plain-Korean version (easyShortKO) just for the duration of the
-// help render, then restored. This keeps the static cobra Short fields
-// intact for every other code path.
+// koUsageTemplate is cobra's default usage template with the structural
+// labels translated to Korean (Usage→사용법, Flags→옵션, …). The {{...}}
+// actions are left untouched. Installed on the root (and inherited by every
+// subcommand) only when Easy Mode + Korean is active.
+const koUsageTemplate = `사용법:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+다른 이름:
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+예시:
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}
+
+사용할 수 있는 명령:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+옵션:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+공통 옵션:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+추가 도움말:{{range .Commands}}{{if .IsAdditionalHelpTopic}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+자세한 내용은 "{{.CommandPath}} [command] --help" 를 실행하세요.{{end}}
+`
+
+// installEasyHelp wires the Easy-Mode Korean help. When Easy Mode + Korean
+// is active it installs a Korean usage template (structural labels) and a
+// help-func wrapper that swaps each command's one-line description for its
+// plain-Korean version (easyShortKO) just for the duration of the render,
+// then restores it — keeping the static cobra fields intact elsewhere.
 func installEasyHelp(root *cobra.Command) {
+	if easyHelpActive() {
+		root.SetUsageTemplate(koUsageTemplate)
+	}
 	base := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if easyHelpActive() {

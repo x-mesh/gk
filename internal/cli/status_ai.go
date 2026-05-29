@@ -18,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
@@ -731,29 +732,30 @@ func renderLocalStatusAssist(w io.Writer, facts statusAssistFacts, lang string) 
 }
 
 func renderLocalStatusAssistKO(w io.Writer, facts statusAssistFacts) {
+	m := easy.NewTermMapper("ko")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "현재 상태")
-	fmt.Fprintf(w, "- %s 브랜치에서 작업 중입니다.\n", facts.Branch)
+	fmt.Fprintf(w, "- 지금 %s 브랜치에서 작업하고 있어요.\n", facts.Branch)
 	if facts.Operation != "" && facts.Operation != "none" {
-		fmt.Fprintf(w, "- %s 작업이 진행 중입니다.\n", facts.Operation)
+		fmt.Fprintf(w, "- %s 작업이 진행 중이에요.\n", m.TranslateTerm(facts.Operation))
 	}
 	if facts.Clean {
-		fmt.Fprintln(w, "- 작업 트리는 깨끗합니다.")
+		fmt.Fprintln(w, "- 저장하지 않은 변경이 없어요. 깨끗합니다.")
 	} else {
-		fmt.Fprintf(w, "- 변경 파일 %d개: staged %d, modified %d, untracked %d, conflicts %d.\n",
+		fmt.Fprintf(w, "- 바뀐 파일 %d개 — 커밋 준비됨 %d, 수정됨 %d, 새 파일 %d, 충돌 %d.\n",
 			facts.Counts.Committable, facts.Counts.Staged, facts.Counts.Modified,
 			facts.Counts.Untracked, facts.Counts.Conflicts)
 	}
 	if facts.Upstream != "" {
-		fmt.Fprintf(w, "- upstream %s 기준으로 ↑%d ↓%d 입니다.\n", facts.Upstream, facts.Ahead, facts.Behind)
+		fmt.Fprintf(w, "- 원격(서버)의 %s와 비교하면 내 작업이 %d개 앞서고 %d개 뒤처져 있어요.\n", facts.Upstream, facts.Ahead, facts.Behind)
 	} else if !facts.Detached {
-		fmt.Fprintln(w, "- upstream 추적 브랜치가 없습니다.")
+		fmt.Fprintln(w, "- 아직 원격(서버)에 연결된 위치가 없어요.")
 	}
 	if facts.Base != "" {
-		fmt.Fprintf(w, "- base %s 기준으로 ↑%d ↓%d 입니다.\n", facts.Base, facts.BaseAhead, facts.BaseBehind)
+		fmt.Fprintf(w, "- 기준 브랜치 %s와 비교하면 %d개 앞, %d개 뒤예요.\n", facts.Base, facts.BaseAhead, facts.BaseBehind)
 	}
-	renderLocalActionsKO(w, "추천 순서", facts.Actions)
-	renderLocalWarnings(w, "주의", statusAssistWarningsKO(facts))
+	renderLocalActionsKO(w, "이렇게 해보세요", facts.Actions)
+	renderLocalWarnings(w, "주의할 점", statusAssistWarningsKO(facts))
 }
 
 func renderLocalStatusAssistEN(w io.Writer, facts statusAssistFacts) {
@@ -848,23 +850,24 @@ func renderLocalWarnings(w io.Writer, title string, warnings []string) {
 }
 
 func statusAssistWarningsKO(f statusAssistFacts) []string {
+	m := easy.NewTermMapper("ko")
 	var warnings []string
 	if f.Operation != "" && f.Operation != "none" {
-		warnings = append(warnings, f.Operation+" 작업이 진행 중입니다.")
+		warnings = append(warnings, fmt.Sprintf("%s 작업이 진행 중이에요.", m.TranslateTerm(f.Operation)))
 	}
 	if f.Counts.Conflicts > 0 {
-		warnings = append(warnings, fmt.Sprintf("충돌 %d개를 해결해야 commit/push 할 수 있습니다.", f.Counts.Conflicts))
+		warnings = append(warnings, fmt.Sprintf("충돌 %d개를 먼저 해결해야 저장하고 서버에 올릴 수 있어요.", f.Counts.Conflicts))
 	}
 	if f.Ahead > 0 && f.Behind > 0 {
-		warnings = append(warnings, fmt.Sprintf("upstream과 분기되었습니다: ↑%d ↓%d.", f.Ahead, f.Behind))
+		warnings = append(warnings, fmt.Sprintf("원격(서버)과 갈라졌어요 — 내가 %d개 앞서고 %d개 뒤처져 있어요.", f.Ahead, f.Behind))
 	} else if f.Behind > 0 {
-		warnings = append(warnings, fmt.Sprintf("upstream보다 %d개 커밋 뒤처져 있습니다.", f.Behind))
+		warnings = append(warnings, fmt.Sprintf("원격(서버)보다 %d개 뒤처져 있어요. 먼저 가져오는 게 좋아요.", f.Behind))
 	}
 	if f.Base != "" && f.BaseBehind > 0 {
-		warnings = append(warnings, fmt.Sprintf("base %s보다 %d개 커밋 뒤처져 있습니다.", f.Base, f.BaseBehind))
+		warnings = append(warnings, fmt.Sprintf("기준 브랜치 %s보다 %d개 뒤처져 있어요.", f.Base, f.BaseBehind))
 	}
 	if f.Upstream == "" && !f.Detached {
-		warnings = append(warnings, "upstream 추적 브랜치가 설정되어 있지 않습니다.")
+		warnings = append(warnings, "아직 원격(서버)에 연결된 위치가 없어요.")
 	}
 	return warnings
 }

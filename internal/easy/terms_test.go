@@ -343,7 +343,6 @@ func TestTranslateTerm_UnknownTerm(t *testing.T) {
 		"diff",
 		"log",
 		"blame",
-		"bisect",
 	}
 
 	for _, term := range unknowns {

@@ -25,6 +25,8 @@ var termsByLang = map[string]map[string]string{
 		"stash":        "임시 보관함",
 		"cherry-pick":  "커밋 골라 가져오기",
 		"fast-forward": "빨리 감기 (충돌 없이 앞으로 이동)",
+		"revert":       "변경 되돌리기",
+		"bisect":       "문제 생긴 커밋 찾기",
 	},
 }
 

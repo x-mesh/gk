@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-05-29
+
+### Added
+
+- **사용자 지정 AI provider 등록.** `ai.providers.<name>` 맵(또는 얕은
+  `ai.<name>` 블록)으로 임의 이름의 OpenAI 호환 게이트웨이를 등록할 수 있다.
+  `format` 필드가 wire 프로토콜(기본 `openai`)을 결정한다. 예: `provider:
+  kiro-api` + `kiro-api: { format: openai, endpoint: ..., model: kiro/auto }`.
+  내장 provider 이름에 묶이지 않고 사내 프록시나 멀티모델 게이트웨이를 그대로
+  붙일 수 있다.
+
+- **AI 명령별 모델 선택 — `--model` 플래그와 `ai.commit.model`.**
+  `gk commit`/`do`/`ask`/`explain`/`changelog`에 일회성 `--model` 플래그가,
+  설정에 `ai.commit.model`이 생겼다. 커밋 메시지 생성처럼 기계적인 작업엔
+  저렴하고 빠른 모델을 쓰면서 채팅·조언 명령(`do`/`ask`/`explain`,
+  `status --ai`)은 큰 `ai.<provider>.model`을 유지할 수 있다. 우선순위는
+  `--model` > `ai.commit.model` > `ai.<provider>.model` > 어댑터 기본값이며,
+  HTTP provider에만 적용된다(CLI provider는 자체 모델 선택을 따른다).
+
+- **`gk branch clean --worktrees`.** worktree가 점유한 브랜치를 해당 worktree를
+  먼저 제거한 뒤 삭제한다. 미커밋·미추적 변경이 있는(dirty) worktree는 git이
+  강제 없는 제거를 거부하므로 건너뛰고 경고만 남겨, 작업이 유실되지 않는다.
+
+### Changed
+
+- **`gk branch clean`·`gk switch`가 worktree 점유 브랜치를 인지.** git이 삭제를
+  거부하는(다른 worktree가 체크아웃 중인) 브랜치를 `[worktree]` 마커로 표시하고
+  기본 선택에서 제외하며, `gk wt remove`로 정리하라는 안내를 띄운다. 이전에는
+  후보에 올라가 삭제 시도 후 실패했다.
+
+- **`gk switch` picker가 필터를 유지한다.** 삭제 등 액션으로 picker가 재진입할
+  때마다 입력했던 필터가 풀려 전체 목록으로 돌아가던 동작을 고쳤다. 이제 필터로
+  좁힌 상태가 유지되어 같은 부분집합을 이어서 정리할 수 있다.
+
+- **브랜치 삭제 시 protected 브랜치 보호.** `gk switch`(`d`/`D`)와
+  `gk branch clean`이 `main`/`master`/`develop` 등 protected 브랜치를 기본
+  차단한다. 현재 체크아웃된 브랜치는 어떤 경우에도 삭제할 수 없고, protected
+  브랜치는 `--force`(switch picker에서는 `D`)로만 지울 수 있다. `gk branch
+  clean`에서는 `--force`를 줘도 protected가 자동 선택되지 않고 목록에서 직접
+  체크해야 하므로, 배치(`--yes`) 실행이 `main`을 실수로 지우는 사고를 막는다.
+
 ## [0.59.1] - 2026-05-28
 
 ### Fixed
@@ -2030,7 +2071,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.59.1...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/x-mesh/gk/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/x-mesh/gk/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/x-mesh/gk/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/x-mesh/gk/compare/v0.57.1...v0.58.0

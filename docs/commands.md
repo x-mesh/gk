@@ -1002,6 +1002,7 @@ gk branch clean [flags]
 | `--dry-run` | false | Show what would be deleted without deleting |
 | `--force` | false | Use `git branch -D` (force delete) instead of `-d` |
 | `--gone` | false | Target branches whose upstream is gone instead of merged ones |
+| `--worktrees` | false | Also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped) |
 
 #### Examples
 
@@ -1021,9 +1022,9 @@ gk branch clean --force
 
 #### Notes
 
-- Protected branches (`main`, `master`, `develop` by default) are never deleted.
-- Configure the protected list via `branch.protected` in your config file.
-- The currently checked-out branch is always skipped.
+- The currently checked-out branch is never deletable.
+- Protected branches (`main`, `master`, `develop` by default) are blocked by default. With `--force` they surface in the picker marked `[protected]` and left unchecked — you must tick them manually, so a batch `--yes` run never deletes `main` by accident. Configure the list via `branch.protected`.
+- Branches checked out in a worktree show a `[worktree]` marker and are skipped unless `--worktrees` is passed (which removes the holding worktree first, skipping dirty ones with a warning).
 - `--gone` uses the `%(upstream:track)` field of `git for-each-ref` to identify branches marked `[gone]` — typically the ones whose PR was merged and the remote branch deleted.
 
 ---

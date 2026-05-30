@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -43,6 +44,9 @@ func parseClassifyResponse(raw []byte) (ClassifyResult, error) {
 	trimmed := stripFences(strings.TrimSpace(string(raw)))
 	var parsed classifyJSON
 	if err := tryJSONDecode(trimmed, &parsed); err != nil {
+		if errors.Is(err, errTruncatedJSON) {
+			return ClassifyResult{}, fmt.Errorf("%w: the AI response was cut off mid-JSON — too many changed files for one classify, or ai.commit.max_tokens is too low. Split the change into smaller commits (git add a subset) or raise ai.commit.max_tokens", ErrProviderResponse)
+		}
 		return ClassifyResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
 	}
 	if len(parsed.Groups) == 0 {
@@ -93,16 +97,27 @@ func parseComposeResponse(raw []byte) (ComposeResult, error) {
 	return out, nil
 }
 
-// tryJSONDecode unmarshals s into v; if that fails, scans for the
-// first JSON object in the string and retries.
+// errTruncatedJSON marks a response that started a JSON object but never
+// closed it — almost always the model hit its output token limit. Callers
+// turn this into actionable guidance (fewer files / higher max_tokens)
+// instead of a cryptic "invalid character" message.
+var errTruncatedJSON = fmt.Errorf("incomplete JSON object (response likely truncated)")
+
+// tryJSONDecode unmarshals s into v; if that fails it scans for the first
+// balanced JSON object and retries. When the text opens a "{" but no
+// balanced object is found, it reports errTruncatedJSON so the caller can
+// explain the likely cause (truncated output) rather than echoing a raw
+// "invalid character '`'"-style parser error.
 func tryJSONDecode(s string, v any) error {
 	if err := json.Unmarshal([]byte(s), v); err == nil {
 		return nil
 	}
 	if block := firstJSONObject(s); block != "" {
-		if err := json.Unmarshal([]byte(block), v); err == nil {
-			return nil
-		}
+		return json.Unmarshal([]byte(block), v)
+	}
+	// A "{" with no balanced close means the object was cut off mid-stream.
+	if strings.IndexByte(s, '{') >= 0 {
+		return errTruncatedJSON
 	}
 	return json.Unmarshal([]byte(s), v)
 }

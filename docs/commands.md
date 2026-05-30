@@ -2184,6 +2184,7 @@ gk commit [flags]
 | `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |
 | `--staged-only` | false | Only consider already-staged changes |
 | `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
+| `--include-noise` | false | Include build output / dependency / cache files normally excluded (`node_modules`, `__pycache__`, `*.db`, …); skips the `.gitignore` guard |
 | `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable) |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
 | `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
@@ -2197,6 +2198,7 @@ gk commit [flags]
 |------|--------|-----------|
 | Secret scan | `internal/secrets` + `gitleaks` (when installed) | Abort on any finding; `--allow-secret-kind <kind>` opts a specific kind out |
 | Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
+| Noise guard | built-in path patterns | Build output / deps / caches / local DBs (`node_modules/`, `__pycache__/`, `.venv/`, `*.pyc`, `*.db`, `.DS_Store`, …) are excluded from the AI scope; on a TTY gk offers to add them to `.gitignore`. Opt out with `--include-noise` |
 | Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |
 | GPG sign | `commit.gpgsign` check | Abort if signing is on but no `user.signingkey` |
 | Backup ref | `refs/gk/ai-commit-backup/<branch>/<unix>` | Written before the first commit; `--abort` restores HEAD |

@@ -54,6 +54,7 @@ the most recent run.
 	cmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 	cmd.Flags().Bool("staged-only", false, "only consider already-staged changes")
 	cmd.Flags().Bool("include-unstaged", false, "include unstaged + untracked changes (default true)")
+	cmd.Flags().Bool("include-noise", false, "include build output / dependency / cache files normally excluded (node_modules, __pycache__, *.db, …); skips the .gitignore guard")
 	cmd.Flags().StringSlice("allow-secret-kind", nil, "suppress secret findings of the given kind (repeatable)")
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
@@ -171,11 +172,13 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// Drop well-known non-source artifacts (node_modules, __pycache__, *.db,
 	// …) before they reach the classifier — a missing .gitignore otherwise
 	// floods the scope and the AI response gets truncated. Offers to add
-	// them to .gitignore on a TTY.
-	files = guardNoiseFiles(ctx, cmd, runner, files)
-	if len(files) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after excluding non-source files")
-		return nil
+	// them to .gitignore on a TTY. --include-noise opts out (commit them as-is).
+	if !flags.includeNoise {
+		files = guardNoiseFiles(ctx, cmd, runner, files)
+		if len(files) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after excluding non-source files (use --include-noise to keep them)")
+			return nil
+		}
 	}
 	Dbg("commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
@@ -623,6 +626,7 @@ type aiCommitFlags struct {
 	lang             string
 	stagedOnly       bool
 	includeUnstaged  bool
+	includeNoise     bool
 	allowSecretKinds []string
 	abort            bool
 	ci               bool
@@ -640,6 +644,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.lang, _ = cmd.Flags().GetString("lang")
 	f.stagedOnly, _ = cmd.Flags().GetBool("staged-only")
 	f.includeUnstaged, _ = cmd.Flags().GetBool("include-unstaged")
+	f.includeNoise, _ = cmd.Flags().GetBool("include-noise")
 	f.allowSecretKinds, _ = cmd.Flags().GetStringSlice("allow-secret-kind")
 	f.abort, _ = cmd.Flags().GetBool("abort")
 	f.ci, _ = cmd.Flags().GetBool("ci")

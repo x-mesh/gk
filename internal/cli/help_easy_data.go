@@ -74,6 +74,7 @@ func init() {
 		"gk commit --force":                  "대화형 검토 없이 바로 커밋",
 		"gk commit --force-wip":              "일부 커밋이 이미 원격에 올라간 경우라도 WIP 묶음을 풀어 정리(이미 올라간 기록을 다시 쓰므로 이후 강제 푸시 필요)",
 		"gk commit --include-unstaged":       "준비 안 된 변경과 새 파일도 포함(기본 켜짐)",
+		"gk commit --include-noise":          "보통 제외하는 빌드·의존성·캐시 파일(node_modules, __pycache__, *.db 등)도 포함 — .gitignore 가드 건너뜀",
 		"gk commit --lang":                   "메시지 언어(ai.lang) 바꾸기(en|ko|...)",
 		"gk commit --model":                  "이번 실행에만 쓸 모델 바꾸기(HTTP 제공자만 해당)",
 		"gk commit --no-wip-unwrap":          "HEAD 줄기에서 WIP 성격 커밋 감지·정리 건너뛰기",

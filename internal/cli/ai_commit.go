@@ -168,6 +168,15 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(),
 			"⚠ commit: --force-wip set — chain may include already-pushed commits; rerun `git push --force-with-lease` after the rewrite")
 	}
+	// Drop well-known non-source artifacts (node_modules, __pycache__, *.db,
+	// …) before they reach the classifier — a missing .gitignore otherwise
+	// floods the scope and the AI response gets truncated. Offers to add
+	// them to .gitignore on a TTY.
+	files = guardNoiseFiles(ctx, cmd, runner, files)
+	if len(files) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after excluding non-source files")
+		return nil
+	}
 	Dbg("commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
 	// Secret gate. gitleaks + internal/secrets can take a noticeable

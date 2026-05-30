@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-05-30
+
+### Added
+
+- **Easy Mode 쉬운 한국어 도움말 전면 적용.** `output.lang`이 `ko`이고 Easy
+  Mode일 때 `gk <명령> --help`가 명령 한 줄 설명·`Long` 본문·플래그 설명은 물론
+  구조 라벨(사용법/옵션/다른 이름/사용할 수 있는 명령/공통 옵션)까지 비개발자가
+  읽을 수 있는 쉬운 한국어로 바뀐다. 전 명령을 덮으며, 브랜치명 같은 고유 명사는
+  그대로 두고 "~해요" 류의 친절체 없이 명사형 위주의 간결한 톤을 쓴다.
+- **Easy Mode AI 응답·로컬 상태 안내의 쉬운 한국어화.** `gk ask`/`do`/`explain`
+  등 AI 응답과 `gk status`의 로컬 상태 조언이 `upstream`·`staged` 같은 git 전문
+  용어를 "원격(서버)"·"커밋 준비됨"처럼 풀어 쓴 평이한 한국어로 출력된다. 고유
+  명사는 보존한다.
+- **commit AI 분류에서 빌드·의존성·캐시 노이즈 제외 + `.gitignore` 제안.**
+  `.gitignore`가 없어 `node_modules`·`__pycache__`·`.venv`·`*.db` 등 비소스
+  파일이 변경 집합에 대량 유입되면 AI 분류 대상(scope)에서 제외한다. TTY에서는
+  감지한 패턴을 `.gitignore`에 추가할지 제안해, 응답이 잘리던 근본 원인을 정리할
+  수 있게 한다. `build`/`dist`/`target`/`vendor`처럼 진짜 소스일 수 있는 경로는
+  건드리지 않는다.
+- **`gk commit --include-noise`.** 위 노이즈 가드를 건너뛰고 빌드 산출물·의존성·
+  캐시 파일까지 그대로 커밋에 포함한다. 가드 없이 작업하고 싶을 때 우회용.
+
+### Fixed
+
+- **`gk ask`가 diff 리뷰가 아닌 Q&A로 답하도록 수정.** 질문 의도와 무관하게 변경
+  사항을 코드 리뷰하듯 답하던 문제를 고쳐, 질문에 대한 답을 직접 돌려준다.
+- **`ai.lang` 미설정 시 `output.lang`을 따르도록 수정.** 기본값 `en`이 강제돼
+  한국어로 설정해도 AI가 영어로 답하던 문제. 이제 `ai.lang`이 비어 있으면
+  `output.lang`을 따르고, scaffold가 만드는 기본 설정에서도 `ai.lang`을 강제하지
+  않는다.
+- **classify 응답 잘림 시 명확한 안내.** 변경 파일이 너무 많아 AI의 JSON 응답이
+  중간에 끊기면 `invalid character` 같은 파서 원문 오류 대신, 응답이 잘렸음을
+  알리고 커밋을 나누거나 `ai.commit.max_tokens`를 올리라고 안내한다.
+
 ## [0.61.0] - 2026-05-29
 
 ### Added
@@ -2091,7 +2125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.61.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.62.0...HEAD
+[0.62.0]: https://github.com/x-mesh/gk/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/x-mesh/gk/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/x-mesh/gk/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/x-mesh/gk/compare/v0.59.0...v0.59.1

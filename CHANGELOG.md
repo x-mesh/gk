@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-06-02
+
+### Fixed
+
+- **detached HEAD에서 `gk status`의 다음 작업 힌트 수정.** 브랜치에서 분리된
+  상태(detached HEAD)일 때 NEXT 칸이 의미 없는
+  `git branch --set-upstream-to=origin/<branch>`를 제안하던 문제를 고쳐,
+  `gk switch <branch>` / `gk branch <new>`로 브랜치에 다시 붙도록 안내한다.
+
 ## [0.62.0] - 2026-05-30
 
 ### Added
@@ -2125,7 +2134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.62.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.62.1...HEAD
+[0.62.1]: https://github.com/x-mesh/gk/compare/v0.62.0...v0.62.1
 [0.62.0]: https://github.com/x-mesh/gk/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/x-mesh/gk/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/x-mesh/gk/compare/v0.59.1...v0.60.0

@@ -1991,10 +1991,13 @@ func suggestNextAction(g groupedEntries, st *git.Status) (next, why string) {
 	dirty := hasStaged || hasUnstaged || hasUntracked || hasConflict
 	ahead, behind := st.Ahead, st.Behind
 	hasUpstream := st.Upstream != ""
+	detached := st.Branch == "" || st.Branch == "(detached)"
 
 	switch {
 	case hasConflict:
 		return "gk continue   ·   gk abort", fmt.Sprintf("%d conflict(s) — resolve then continue", len(g.Unmerged))
+	case detached:
+		return "gk switch <branch>   ·   gk branch <new>", "detached HEAD — attach to a branch"
 	case dirty && ahead > 0 && behind > 0:
 		return "gk wip · gk sync · gk pop", fmt.Sprintf("dirty + diverged ↑%d ↓%d", ahead, behind)
 	case dirty && behind > 0:

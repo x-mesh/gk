@@ -47,6 +47,9 @@ func init() {
 	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes")
 	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().Bool("full", false, "do not truncate long subjects to terminal width")
+	cmd.Flags().Bool("behind", false, "show commits the upstream has that HEAD does not (=HEAD..@{u}; preview before `gk pull`)")
+	cmd.Flags().Bool("ahead", false, "show commits HEAD has that the upstream does not (=@{u}..HEAD; preview before `gk push`)")
+	cmd.Flags().Bool("fetch", false, "with --behind/--ahead, run `git fetch` first so the count reflects current origin state")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -91,6 +94,34 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+
+	// --behind / --ahead expand to a HEAD..@{u} / @{u}..HEAD range.
+	// Upstream is resolved up front so the error points at the real cause
+	// (no upstream configured) rather than a downstream git failure.
+	// --fetch is opt-in: gk log stays fast by default; users who want fresh
+	// counts can pass it (or run `gk pull --fetch-only` first).
+	behindFlag, _ := cmd.Flags().GetBool("behind")
+	aheadFlag, _ := cmd.Flags().GetBool("ahead")
+	if behindFlag && aheadFlag {
+		return fmt.Errorf("gk log: --behind and --ahead are mutually exclusive")
+	}
+	if behindFlag || aheadFlag {
+		upstream, fetchRemote, fetchBranch, ok := tryTrackingUpstream(cmd.Context(), runner)
+		if !ok {
+			return fmt.Errorf("gk log: current branch has no upstream configured; set one with `git branch --set-upstream-to=origin/<branch>`")
+		}
+		if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
+			if _, stderr, err := runner.Run(cmd.Context(), "fetch", fetchRemote, fetchBranch); err != nil {
+				return fmt.Errorf("gk log --fetch: %s: %w", strings.TrimSpace(string(stderr)), err)
+			}
+		}
+		rangeArg := "HEAD.." + upstream
+		if aheadFlag {
+			rangeArg = upstream + "..HEAD"
+		}
+		// Prepend so any user-supplied path filter after `--` still applies.
+		args = append([]string{rangeArg}, args...)
+	}
 
 	if containsVis(effectiveLogVis, "lanes") && !JSONOut() {
 		return renderLanes(cmd, runner, since, limit, args)

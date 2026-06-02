@@ -46,6 +46,18 @@ func TestSuggestNextAction(t *testing.T) {
 			wantNext:  "자유롭게 작업하세요",
 			wantWhyIn: "in sync",
 		},
+		{
+			name:      "behind only surfaces log --behind alongside pull",
+			st:        &git.Status{Branch: "feature", Upstream: "origin/feature", Behind: 3},
+			wantNext:  "gk log --behind   ·   gk pull",
+			wantWhyIn: "behind by 3",
+		},
+		{
+			name:      "ahead only suggests push",
+			st:        &git.Status{Branch: "feature", Upstream: "origin/feature", Ahead: 2},
+			wantNext:  "gk push",
+			wantWhyIn: "ahead by 2",
+		},
 	}
 
 	for _, tt := range tests {

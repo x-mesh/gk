@@ -2007,7 +2007,7 @@ func suggestNextAction(g groupedEntries, st *git.Status) (next, why string) {
 	case ahead > 0 && behind > 0:
 		return "gk sync", fmt.Sprintf("diverged ↑%d ↓%d", ahead, behind)
 	case behind > 0:
-		return "gk pull", fmt.Sprintf("behind by %d", behind)
+		return "gk log --behind   ·   gk pull", fmt.Sprintf("behind by %d", behind)
 	case ahead > 0:
 		return "gk push", fmt.Sprintf("ahead by %d", ahead)
 	case !hasUpstream:

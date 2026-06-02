@@ -624,6 +624,9 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
 | `--vis <list>` | `cc,safety,tags-rule` (from `log.vis`) | Visualization set (comma-list or repeated). Any explicit viz flag (`--vis` or an individual flag like `--cc`) overrides the configured default. Pass `--vis none` to disable all layers; setting `--format` alone also suppresses the default. |
 | `--legend` | false | Print a one-time glyph/color key for every active visualization layer and exit. Mirrors `gk status --legend`. |
+| `--behind` | false | Show commits the upstream has that HEAD does not (=`HEAD..@{u}`; preview before `gk pull`). Errors when the current branch has no upstream configured. Mutually exclusive with `--ahead`. |
+| `--ahead` | false | Show commits HEAD has that the upstream does not (=`@{u}..HEAD`; preview before `gk push`). Same upstream / mutual-exclusion rules as `--behind`. |
+| `--fetch` | false | With `--behind`/`--ahead`, run `git fetch <remote> <branch>` first so the range reflects current origin state. Off by default to keep `gk log` fast; pair with `--behind` when the count might be stale. |
 
 ### Default visualization layers
 

@@ -139,7 +139,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
 | `gk sync` | | Rebase the current branch onto local `<base>` (offline by default). `--fetch` for the explicit one-shot: fetch `<remote>/<base>`, fast-forward `refs/heads/<base>`, then integrate. Stale-base hint when local `<base>` differs from `<remote>/<base>` |
 | `gk status` | `gk st` | Concise working-tree status (staged / unstaged / untracked / conflicted + ahead/behind), submodule-aware with `next:` hints. Pass `--ai` for a plain-language explanation, `-f`/`--fetch` to refresh ↑N ↓N, `--watch` to refresh continuously, or `--exit-code` for scripts. Opt-in `--vis gauge,bar,progress,types,staleness,tree,conflict,churn,risk` overlays |
-| `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
+| `gk log` | `gk slog` | Short colored commit log; `--since 1w`, `--graph`, `--limit N`. `--behind` / `--ahead` (with optional `--fetch`) preview incoming/outgoing commits against `@{u}` before `gk pull` / `gk push`. Opt-in `--pulse`, `--calendar`, `--tags-rule`, `--impact`, `--cc`, `--safety`, `--hotspots`, `--trailers`, `--lanes` visualizations |
 
 ### Branches
 | Command | Alias | Description |

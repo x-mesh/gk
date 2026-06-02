@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-06-02
+
+### Added
+
+- **`gk push`·`gk ship` 비밀정보 스캔 결과에 파일 경로 표시.** 탐지 결과가
+  의미 없는 blob 줄 번호(`line 3170`) 대신 `[generic-secret]
+  internal/config/app.go:42`처럼 파일 경로와 줄 위치를 함께 보여줘 어떤 파일에서
+  걸렸는지 바로 찾을 수 있다. 줄 번호는 `git log -p` diff 블록 기준 상대값이라
+  실제 소스 줄과 다를 수 있으나 파일 경로는 정확하다.
+
+### Changed
+
+- **비밀정보 스캔 마스킹을 키워드가 아닌 값 기준으로 변경.** `secret = "..."`
+  같이 캡처 그룹이 있는 패턴에서 키워드 앞부분(`SECR****`) 대신 실제 값의
+  앞부분(`dev-****`)을 마스킹해 보여줘, 걸린 값이 진짜 비밀인지 오탐인지 한눈에
+  판단할 수 있다.
+
+### Fixed
+
+- **하이픈/언더스코어로 표기한 개발용 기본값 오탐 제거.** placeholder 필터가
+  구분자를 정규화해 `change-me`·`dev_secret`·`insecure` 같은 분리 표기를
+  인식하므로, `_FALLBACK_SECRET = "dev-insecure-secret-change-me"` 류의 개발용
+  기본값이 더 이상 `gk push`를 막지 않는다.
+
 ## [0.62.1] - 2026-06-02
 
 ### Fixed
@@ -2134,7 +2158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.62.1...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.63.0...HEAD
+[0.63.0]: https://github.com/x-mesh/gk/compare/v0.62.1...v0.63.0
 [0.62.1]: https://github.com/x-mesh/gk/compare/v0.62.0...v0.62.1
 [0.62.0]: https://github.com/x-mesh/gk/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/x-mesh/gk/compare/v0.60.0...v0.61.0

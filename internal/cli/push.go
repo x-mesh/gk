@@ -90,7 +90,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		if len(findings) > 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "potential secrets detected:")
 			for _, f := range findings {
-				fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] line %d: %s\n", f.Kind, f.Line, f.Sample)
+				fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
 			}
 			fmt.Fprintln(cmd.ErrOrStderr(), "  use --skip-scan to override (not recommended)")
 			return fmt.Errorf("aborting push")

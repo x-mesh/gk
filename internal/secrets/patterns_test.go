@@ -128,6 +128,87 @@ func TestScan_MultiLineMultiplefindings(t *testing.T) {
 	}
 }
 
+func TestScan_PayloadFileHeader_PopulatesFile(t *testing.T) {
+	blob := strings.Join([]string{
+		PayloadFileHeader("internal/config/app.go"),
+		"normal line",
+		"token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+	}, "\n")
+
+	findings := Scan(blob, nil)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.File != "internal/config/app.go" {
+		t.Errorf("File = %q, want internal/config/app.go", f.File)
+	}
+	// header at blob line 1, hit at blob line 3 → file line 2.
+	if f.FileLine != 2 {
+		t.Errorf("FileLine = %d, want 2", f.FileLine)
+	}
+	// Line stays the raw blob position so callers that remap it (aicommit,
+	// privacy_gate) are unaffected.
+	if f.Line != 3 {
+		t.Errorf("Line = %d, want 3 (blob position)", f.Line)
+	}
+	if f.Location() != "internal/config/app.go:2" {
+		t.Errorf("Location() = %q, want internal/config/app.go:2", f.Location())
+	}
+}
+
+func TestScan_NoHeader_LocationFallsBackToBlobLine(t *testing.T) {
+	findings := Scan("token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", nil)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if f := findings[0]; f.File != "" || f.Location() != "line 1" {
+		t.Errorf("got File=%q Location=%q, want File=\"\" Location=\"line 1\"", f.File, f.Location())
+	}
+}
+
+func TestScan_HeaderLineNotScanned(t *testing.T) {
+	// A path that itself contains a token-shaped substring must not be
+	// flagged: the boundary marker is metadata, not content.
+	blob := PayloadFileHeader("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij.txt") + "\nclean line\n"
+	if findings := Scan(blob, nil); len(findings) != 0 {
+		t.Errorf("expected header line to be skipped, got %v", findings)
+	}
+}
+
+func TestScan_SuppressesSeparatedPlaceholders(t *testing.T) {
+	// Real-world false positive: a dev fallback default written with
+	// hyphens. "change-me"/"insecure" must normalize to the joined
+	// keywords and suppress the finding.
+	cases := []string{
+		`_FALLBACK_SECRET = "dev-insecure-secret-change-me"`,
+		`secret = "please_change_me_before_deploying"`,
+		`api_key = "not-real-fake-key-placeholder-1234"`,
+	}
+	for _, in := range cases {
+		if f := Scan(in, nil); len(f) != 0 {
+			t.Errorf("expected %q suppressed as placeholder, got %v", in, f)
+		}
+	}
+}
+
+func TestScan_GenericSecretMasksValueNotKeyword(t *testing.T) {
+	// A real-looking value (no placeholder token) so the finding survives.
+	// The sample must reveal the value's prefix, not the "api_token" keyword,
+	// so a reader can judge whether it's a true hit.
+	findings := Scan(`api_token = "Ab12Cd34Ef56Gh78Ij90Kl12Mn34"`, nil)
+	if len(findings) == 0 {
+		t.Fatal("expected a generic-secret finding")
+	}
+	s := findings[0].Sample
+	if !strings.HasPrefix(s, "Ab12") {
+		t.Errorf("Sample = %q, want it to mask the value (prefix Ab12)", s)
+	}
+	if strings.Contains(s, "api") || strings.Contains(s, "token") {
+		t.Errorf("Sample = %q must not expose the keyword", s)
+	}
+}
+
 func TestScan_ExtraPatterns(t *testing.T) {
 	re := regexp.MustCompile(`MY_SECRET_[A-Z0-9]{16}`)
 	blob := "config: MY_SECRET_ABCD1234EFGH5678"

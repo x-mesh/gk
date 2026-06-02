@@ -631,7 +631,7 @@ func renderShipStatus(w io.Writer, plan shipPlan) {
 func renderShipFindings(w io.Writer, findings []secrets.Finding) {
 	fmt.Fprintln(w, "potential secrets detected:")
 	for _, f := range findings {
-		fmt.Fprintf(w, "  [%s] line %d: %s\n", f.Kind, f.Line, f.Sample)
+		fmt.Fprintf(w, "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
 	}
 }
 

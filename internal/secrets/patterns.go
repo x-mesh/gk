@@ -2,15 +2,30 @@
 package secrets
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
 
 // Finding is a single secret-pattern hit.
 type Finding struct {
-	Kind   string // short label: "aws-access-key", "github-token", "private-key", ...
-	Line   int    // 1-based line number within the input blob
-	Sample string // a masked sample suitable for display
+	Kind string // short label: "aws-access-key", "github-token", "private-key", ...
+	Line int    // 1-based line number within the input blob (kept verbatim for
+	// callers — e.g. aicommit — that remap blob lines themselves)
+	File     string // owning file path, recovered from PayloadFileHeader markers; "" when none present
+	FileLine int    // 1-based line within File; equals Line when no file header precedes the hit
+	Sample   string // a masked sample suitable for display
+}
+
+// Location renders the finding's position for display: "file:line" when the
+// owning file is known (the scan input carried PayloadFileHeader markers),
+// otherwise "line N" using the raw blob position. Keeps push/ship output in
+// sync from a single source.
+func (f Finding) Location() string {
+	if f.File != "" {
+		return fmt.Sprintf("%s:%d", f.File, f.FileLine)
+	}
+	return fmt.Sprintf("line %d", f.Line)
 }
 
 // Pattern is a named regex.
@@ -38,9 +53,19 @@ var BuiltinPatterns = []Pattern{
 func Scan(blob string, extra []*regexp.Regexp) []Finding {
 	var out []Finding
 	lines := strings.Split(blob, "\n")
+	// Track the most recent PayloadFileHeader so each hit can name its file
+	// and a file-relative line. header is the 1-based blob line of that
+	// marker (0 = none seen yet); curFile is its decoded path.
+	curFile := ""
+	header := 0
 	for i, line := range lines {
+		if m := PayloadFileHeaderRE.FindStringSubmatch(line); m != nil {
+			curFile = m[1]
+			header = i + 1
+			continue // boundary marker is metadata, never scanned
+		}
 		for _, p := range BuiltinPatterns {
-			if m := p.Regex.FindString(line); m != "" {
+			if sm := p.Regex.FindStringSubmatch(line); sm != nil {
 				// Placeholder filter — apply to high-volume false-positive
 				// kinds. generic-secret is regex-broad; aws-access-key is
 				// fixed-shape but AWS docs themselves use AKIAIOSFODNN7EXAMPLE
@@ -49,37 +74,74 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 				if (p.Kind == "generic-secret" || p.Kind == "aws-access-key") && isPlaceholder(line) {
 					continue
 				}
-				out = append(out, Finding{Kind: p.Kind, Line: i + 1, Sample: mask(m)})
+				out = append(out, newFinding(p.Kind, i+1, header, curFile, secretValue(sm)))
 			}
 		}
 		for _, re := range extra {
-			if m := re.FindString(line); m != "" {
+			if sm := re.FindStringSubmatch(line); sm != nil {
 				label := re.String()
 				if len(label) > 12 {
 					label = label[:12]
 				}
-				out = append(out, Finding{
-					Kind:   "custom-" + strings.TrimSpace(label),
-					Line:   i + 1,
-					Sample: mask(m),
-				})
+				out = append(out, newFinding("custom-"+strings.TrimSpace(label), i+1, header, curFile, secretValue(sm)))
 			}
 		}
 	}
 	return out
 }
 
-// isPlaceholder returns true for lines that contain example/placeholder values.
-// Only applied to generic-secret to reduce false positives.
+// newFinding builds a Finding from a blob hit. blobLine is the 1-based line
+// within the scanned blob; header is the blob line of the owning
+// PayloadFileHeader (0 when none). FileLine is blobLine-header — the file
+// content begins on the line *after* the marker, so the marker line itself
+// maps to 0 and the first content line to 1.
+func newFinding(kind string, blobLine, header int, file, match string) Finding {
+	fileLine := blobLine
+	if header > 0 {
+		fileLine = blobLine - header
+	}
+	return Finding{Kind: kind, Line: blobLine, File: file, FileLine: fileLine, Sample: mask(match)}
+}
+
+// secretValue returns the substring worth masking for display. Patterns
+// like generic-secret (group 1 = keyword, group 2 = value) or aws-secret-key
+// (group 1 = value) capture the credential separately from surrounding
+// boilerplate; we mask the last non-empty capture group so the sample shows
+// the value's prefix (e.g. "dev-****") instead of the keyword ("secr****"),
+// which is what a reader needs to judge a false positive. Patterns with no
+// capture groups fall back to the full match.
+func secretValue(sm []string) string {
+	for i := len(sm) - 1; i >= 1; i-- {
+		if sm[i] != "" {
+			return sm[i]
+		}
+	}
+	return sm[0]
+}
+
+// placeholderKeywords flag fixture/example values so they don't trip the
+// scan. Stored in normalized form (lowercase, hyphens/underscores removed)
+// and matched against a likewise-normalized line, so separator variants
+// collapse together: "change-me", "change_me", and "changeme" all match the
+// single "changeme" entry. This is what lets dev defaults like
+// `_FALLBACK_SECRET = "dev-insecure-secret-change-me"` pass.
+var placeholderKeywords = []string{
+	"example", "placeholder", "your", "xxx", "changeme", "replaceme",
+	"todo", "fixme", "insert", "dummy", "sample", "testkey", "testsecret",
+	"fakekey", "fakesecret", "insecure", "donotuse", "notreal", "fallback",
+}
+
+// placeholderSeps strips the separators that split multi-word placeholder
+// tokens before matching against placeholderKeywords.
+var placeholderSeps = strings.NewReplacer("-", "", "_", "")
+
+// isPlaceholder returns true when the line contains an example/placeholder
+// value. Only applied to high-false-positive kinds (generic-secret,
+// aws-access-key).
 func isPlaceholder(line string) bool {
-	lower := strings.ToLower(line)
-	for _, kw := range []string{
-		"example", "placeholder", "your_", "your-", "xxx", "changeme",
-		"replace_me", "todo", "fixme", "insert_", "dummy", "sample",
-		"test_key", "test_secret", "fake_key", "fake_secret",
-		"<your", "\"your", "'your",
-	} {
-		if strings.Contains(lower, kw) {
+	norm := placeholderSeps.Replace(strings.ToLower(line))
+	for _, kw := range placeholderKeywords {
+		if strings.Contains(norm, kw) {
 			return true
 		}
 	}

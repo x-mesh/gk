@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -274,6 +275,12 @@ diff --git a/config.go b/config.go
 	for _, f := range findings {
 		if f.Kind == "aws-access-key" {
 			found = true
+			if f.File != "config.go" {
+				t.Errorf("expected finding to name file config.go, got %q", f.File)
+			}
+			if f.Location() != "config.go:"+strconv.Itoa(f.FileLine) {
+				t.Errorf("Location() = %q, want config.go:<fileline>", f.Location())
+			}
 			break
 		}
 	}

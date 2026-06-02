@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-06-03
+
+### Added
+
+- **`gk log --behind` / `--ahead` upstream 미리보기.** 안 가져온 incoming 커밋은
+  `gk log --behind` (=`HEAD..@{u}`), 안 푸시한 outgoing 커밋은 `gk log --ahead`
+  (=`@{u}..HEAD`)로 한 명령으로 본다 — 기존 `--graph --cc --impact` 등 시각화와
+  그대로 조합된다. `--fetch`를 같이 주면 미리 `git fetch <remote> <branch>`를
+  돌려 카운트를 최신 origin 기준으로 맞춘다(기본은 페치 없이 빠른 경로). 두
+  플래그는 mutually exclusive이고 upstream이 설정 안 된 브랜치에서는 `git
+  branch --set-upstream-to=origin/<branch>` 힌트로 에러를 낸다.
+- **`gk status`의 NEXT 힌트가 behind-only 상태에서 `gk log --behind`를 함께
+  안내한다.** ↓N 상태에서는 통합 전에 무엇이 들어올지 미리 보는 게 자연스러운
+  단계라, `gk log --behind   ·   gk pull` 두 선택지를 같이 보여준다 — 발견
+  가능성을 높이면서 한 줄로 유지한다.
+
 ## [0.63.0] - 2026-06-02
 
 ### Added
@@ -2158,7 +2174,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.63.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.64.0...HEAD
+[0.64.0]: https://github.com/x-mesh/gk/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/x-mesh/gk/compare/v0.62.1...v0.63.0
 [0.62.1]: https://github.com/x-mesh/gk/compare/v0.62.0...v0.62.1
 [0.62.0]: https://github.com/x-mesh/gk/compare/v0.61.0...v0.62.0

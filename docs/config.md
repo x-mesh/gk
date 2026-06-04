@@ -387,6 +387,56 @@ branch:
     - develop
 ```
 
+### `worktree.base` / `worktree.project`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `base: ~/.gk/worktree`, `project: ""` (repo toplevel basename) |
+
+Controls where `gk worktree add <name>` places a relative name. The managed layout is `<base>/<project>/<name>` so worktrees live outside the main checkout. Set `project` explicitly when two clones share a basename. An absolute path passed to `add` always wins and bypasses this layout.
+
+```yaml
+worktree:
+  base: ~/.gk/worktree
+  project: ""        # defaults to the repo toplevel basename
+```
+
+### `worktree.init`
+
+| | |
+|-|-|
+| Type | block with `link`, `copy`, `run` lists |
+| Default | none (auto-detected from package manifests) |
+
+Declares how a freshly created worktree is bootstrapped, so the gitignored, per-checkout state a new worktree lacks — secrets (`.env`), dependency trees (`node_modules`), virtualenvs (`.venv`) — is reconstituted instead of left empty. Applied by `gk worktree init` and by `gk worktree add --init`.
+
+The three keys map to three different resource types — conflating them is the usual mistake:
+
+| Key | Action | Use for | Never use for |
+|-----|--------|---------|---------------|
+| `link` | symlink each path from the main worktree | secrets / shared config (`.env`) managed in one place, kept in sync | virtualenvs, `node_modules` |
+| `copy` | copy each path from the main worktree | per-worktree editable state (a `.env` whose port differs per checkout) | virtualenvs, `node_modules` |
+| `run` | run each shell command **in** the new worktree, in order | `npm ci`, `uv sync`, `python -m venv` — anything regenerated against this checkout's lockfile | — |
+
+A virtualenv bakes absolute paths into `pyvenv.cfg`/shebangs, and `node_modules` can carry a different branch's lockfile — both break when linked/copied, so put them in `run`. gk emits a warning if it sees `.venv`/`venv`/`node_modules` under `link`/`copy`.
+
+All three are idempotent: re-running `gk worktree init` fixes only what's missing (existing correct symlinks and present copy targets are left alone, install commands are safe to repeat), so it doubles as a "retry the failed setup step" command.
+
+When `worktree.init` is absent, `gk worktree init` detects the project's manifests (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `uv.lock`, `poetry.lock`, `requirements.txt`, `pyproject.toml`, `go.mod`, `Gemfile.lock`, `composer.lock`) and proposes a block you can persist with `--save`.
+
+```yaml
+worktree:
+  init:
+    link:
+      - .env
+    copy:
+      - .env.ports        # per-worktree editable copy
+    run:
+      - npm ci
+      - uv venv && uv pip install -r requirements.txt
+```
+
 ### `ai.assist`
 
 | | |

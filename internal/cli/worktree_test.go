@@ -64,11 +64,15 @@ func buildWorktreeCmd(repoDir string, sub string, extraArgs ...string) (*cobra.C
 	add.Flags().BoolP("new", "b", false, "")
 	add.Flags().String("from", "", "")
 	add.Flags().Bool("detach", false, "")
+	add.Flags().Bool("init", false, "")
+	add.Flags().Bool("no-init", false, "")
 	rm := &cobra.Command{Use: "remove", Args: cobra.ExactArgs(1), RunE: runWorktreeRemove}
 	rm.Flags().BoolP("force", "f", false, "")
 	prune := &cobra.Command{Use: "prune", RunE: runWorktreePrune}
+	initc := &cobra.Command{Use: "init", Args: cobra.RangeArgs(0, 1), RunE: runWorktreeInit}
+	initc.Flags().Bool("save", false, "")
 
-	wt.AddCommand(list, add, rm, prune)
+	wt.AddCommand(list, add, rm, prune, initc)
 	testRoot.AddCommand(wt)
 
 	buf := &bytes.Buffer{}

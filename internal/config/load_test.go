@@ -111,6 +111,50 @@ func TestLoadLocalYAML(t *testing.T) {
 // TestLoadAILangFollowsOutputLang: ai.lang unset → follows output.lang, so
 // Easy Mode / output.lang=ko yields Korean AI answers. Regression: ai.lang
 // had a fixed "en" default (struct + scaffolded config), overriding output.lang.
+// TestLoadWorktreeInit verifies the nested pointer struct WorktreeConfig.Init
+// is unmarshalled from .gk.yaml — the `gk wt init` policy source.
+func TestLoadWorktreeInit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+
+	yamlContent := "worktree:\n  init:\n    link:\n      - .env\n    run:\n      - npm ci\n      - uv sync\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.Worktree.Init == nil {
+		t.Fatal("Worktree.Init: want non-nil")
+	}
+	if len(cfg.Worktree.Init.Link) != 1 || cfg.Worktree.Init.Link[0] != ".env" {
+		t.Errorf("Worktree.Init.Link: want [.env], got %v", cfg.Worktree.Init.Link)
+	}
+	wantRun := []string{"npm ci", "uv sync"}
+	if len(cfg.Worktree.Init.Run) != len(wantRun) {
+		t.Fatalf("Worktree.Init.Run: want %v, got %v", wantRun, cfg.Worktree.Init.Run)
+	}
+	for i, v := range wantRun {
+		if cfg.Worktree.Init.Run[i] != v {
+			t.Errorf("Worktree.Init.Run[%d]: want %q, got %q", i, v, cfg.Worktree.Init.Run[i])
+		}
+	}
+}
+
 func TestLoadAILangFollowsOutputLang(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
 	t.Setenv("GK_BASE_BRANCH", "")

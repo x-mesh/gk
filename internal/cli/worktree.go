@@ -76,6 +76,8 @@ Examples:
 	add.Flags().BoolP("new", "b", false, "create a new branch named [branch] at --from")
 	add.Flags().String("from", "", "base ref for the new branch (default: HEAD)")
 	add.Flags().Bool("detach", false, "detach HEAD in the worktree instead of tracking a branch")
+	add.Flags().Bool("init", false, "run worktree init (link/copy/run from .gk.yaml) after creating; skips the interactive prompt")
+	add.Flags().Bool("no-init", false, "skip worktree init entirely, even when worktree.init is configured")
 
 	rm := &cobra.Command{
 		Use:   "remove <path>",
@@ -91,7 +93,39 @@ Examples:
 		RunE:  runWorktreePrune,
 	}
 
-	wt.AddCommand(list, add, rm, prune)
+	initc := &cobra.Command{
+		Use:   "init [path]",
+		Short: "Bootstrap a worktree's gitignored state (link/copy/run from .gk.yaml)",
+		Long: `Reconstitute the gitignored, per-checkout state a fresh worktree lacks:
+secrets (.env), dependency trees (node_modules), virtualenvs (.venv).
+
+Reads worktree.init from .gk.yaml and applies it to the target worktree
+(default: the current one):
+
+  link:  symlink each path from the main worktree   (secrets, shared config)
+  copy:  copy each path from the main worktree       (per-worktree editable)
+  run:   execute each shell command in the worktree  (npm ci, uv sync, …)
+
+The operation is idempotent — re-running fixes only what's missing, so it
+doubles as a "retry the failed setup step" command.
+
+When worktree.init is absent, gk detects the project's package manifests
+(package-lock.json, pnpm-lock.yaml, uv.lock, requirements.txt, go.mod, …)
+and proposes a worktree.init block you can save into .gk.yaml.
+
+Examples:
+  gk worktree init                 # bootstrap the current worktree
+  gk worktree init ~/.gk/worktree/gk/feat-x
+  gk worktree init --save          # also write the detected block to .gk.yaml
+`,
+		Args: cobra.RangeArgs(0, 1),
+		RunE: runWorktreeInit,
+	}
+	initc.Flags().Bool("save", false, "write the detected worktree.init block to .gk.yaml (only when none is configured)")
+	// --dry-run is the inherited persistent flag (root.go) — reused here to
+	// preview link/copy/run without performing them.
+
+	wt.AddCommand(list, add, rm, prune, initc)
 	rootCmd.AddCommand(wt)
 }
 
@@ -552,7 +586,17 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		_, _ = w.Write(stdout)
 	}
 	fmt.Fprintf(w, "added worktree at %s\n", resolvedPath)
-	return nil
+
+	doInit, _ := cmd.Flags().GetBool("init")
+	noInit, _ := cmd.Flags().GetBool("no-init")
+	if noInit {
+		return nil
+	}
+	return bootstrapWorktree(ctx, w, runner, cfg, resolvedPath, worktreeInitOpts{
+		explicitInit: doInit,
+		prompt:       !doInit,
+		fromAdd:      true,
+	})
 }
 
 // resolveWorktreePath expands a worktree path argument into a concrete

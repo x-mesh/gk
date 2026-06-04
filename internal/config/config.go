@@ -389,8 +389,37 @@ type HostAlias struct {
 // absolute path passed to `gk worktree add` always wins and is used
 // verbatim; the managed layout only applies to bare/relative names.
 type WorktreeConfig struct {
-	Base    string `mapstructure:"base"    yaml:"base"`
-	Project string `mapstructure:"project" yaml:"project"`
+	Base    string        `mapstructure:"base"    yaml:"base"`
+	Project string        `mapstructure:"project" yaml:"project"`
+	Init    *WorktreeInit `mapstructure:"init"    yaml:"init,omitempty"`
+}
+
+// WorktreeInit declares how a freshly created worktree is bootstrapped so
+// gitignored, per-checkout state (secrets, dependency trees, virtualenvs)
+// is reconstituted rather than left empty. The three keys map to three
+// fundamentally different resource types — conflating them is the usual
+// mistake:
+//
+//   - Link: symlink a file/dir from the main worktree. Right for secrets
+//     and shared config (.env) you want managed in ONE place and kept in
+//     sync across every worktree. NOT for virtualenvs (absolute paths
+//     baked into pyvenv.cfg/shebangs break) or node_modules (branches may
+//     pin different lockfiles → cross-contamination).
+//   - Copy: copy a file/dir from the main worktree. Use when each worktree
+//     needs an independently editable copy (e.g. a .env whose port differs
+//     per checkout). Same anti-patterns as Link for venv/node_modules.
+//   - Run: shell commands executed IN the new worktree, in order. The
+//     correct home for `npm ci`, `uv sync`, `python -m venv` — anything
+//     that must be regenerated against this checkout's lockfile for true
+//     isolation.
+//
+// All three are idempotent on re-run via `gk worktree init`: existing
+// correct symlinks are left alone, present copy targets are skipped, and
+// install commands (npm ci / uv sync) are safe to repeat.
+type WorktreeInit struct {
+	Link []string `mapstructure:"link" yaml:"link,omitempty"`
+	Copy []string `mapstructure:"copy" yaml:"copy,omitempty"`
+	Run  []string `mapstructure:"run"  yaml:"run,omitempty"`
 }
 
 // PreflightStep is one check in the preflight sequence.

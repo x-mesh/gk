@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-06-05
+
+### Added
+
+- **`gk worktree init`으로 worktree 환경을 부트스트랩한다.** 새 worktree에는
+  tracked 파일만 들어와 `.env`·`node_modules`·`.venv` 같은 gitignore된
+  per-checkout 상태가 빈 채로 남는데, 이를 `.gk.yaml`의 `worktree.init`에 선언한
+  세 가지로 복원한다 — `link`(main worktree에서 `.env` 등 시크릿을 symlink해 한
+  곳에서 관리), `copy`(worktree마다 따로 편집할 파일을 복사), `run`(`npm ci`·`uv
+  sync` 등 이 체크아웃의 lockfile 기준으로 의존성을 재설치하는 명령). virtualenv는
+  `pyvenv.cfg`·shebang에 절대경로가 박혀 있고 `node_modules`는 브랜치마다 lockfile이
+  달라 link/copy하면 깨지므로, 둘을 link/copy 대상에 넣으면 경고하고 `run` 사용을
+  권한다. 적용은 멱등이라 재실행 시 누락분만 고치므로 실패한 셋업 단계의 재시도로도
+  쓰인다.
+- **`gk worktree add --init` / `--no-init`.** worktree를 만든 직후 같은
+  부트스트랩을 수행한다. 대화형 환경에서는 적용 여부를 묻고, `--init`/`--no-init`로
+  프롬프트를 생략한다. 비대화형에서 플래그 없이 실행하면 아무것도 실행하지 않고
+  `gk wt init`을 안내한다.
+- **`worktree.init` 미설정 시 패키지 매니페스트 자동 감지.**
+  `package-lock.json`·`pnpm-lock.yaml`·`yarn.lock`·`uv.lock`·`requirements.txt`·`go.mod`
+  등을 생태계 우선순위(`uv.lock`이 `requirements.txt`를 억제하는 식)로 인식해
+  설치 명령과 `.env` link 후보를 제안하고, `--save`로 `.gk.yaml`에 기록한다.
+  `--dry-run`은 link/copy/run을 실행 없이 미리 보여준다.
+
 ## [0.64.0] - 2026-06-03
 
 ### Added
@@ -2174,7 +2198,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.64.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.65.0...HEAD
+[0.65.0]: https://github.com/x-mesh/gk/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/x-mesh/gk/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/x-mesh/gk/compare/v0.62.1...v0.63.0
 [0.62.1]: https://github.com/x-mesh/gk/compare/v0.62.0...v0.62.1

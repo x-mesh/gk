@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-06-05
+
+### Added
+
+- **`gk worktree init`이 중첩 모노레포 매니페스트를 감지한다.** 루트에 매니페스트가
+  없는 모노레포(예 `mesh-explorer-web/{frontend,backend}`)에서 설치 명령을 0개
+  제안하던 문제를 고쳤다. 루트에 매니페스트가 있으면 그대로 쓰고(workspace 가정),
+  없으면 서브디렉토리를 제한 깊이로 스캔(`node_modules`·`.venv`·빌드 디렉토리 제외)해
+  각 프로젝트의 설치 명령을 `cd <dir> && …`로 감싸 제안한다. 생태계 억제(uv.lock이
+  requirements.txt를 누르는 식)는 디렉토리별로 적용된다.
+- **protected 브랜치를 linked worktree로 가져갈 때 확인을 묻는다.** linked worktree
+  안에서 `gk sw main`을 하면 main이 그 worktree에 갇혀 다른 worktree에서 쓸 수 없게
+  되는데(거의 항상 실수), 이제 확인 프롬프트로 막는다. 비대화형 스트림에서는
+  `--detach`(보기만)/`--force`(강제) 힌트와 함께 거부한다. 메인 worktree·`-c`·
+  `--detach`·`--force`는 그대로 허용된다.
+
+### Changed
+
+- **`gk sw`가 worktree 점유를 별도 `WORKTREE` 칸으로 분리한다.** 다른 worktree에
+  체크아웃된 브랜치가 `wt: ↑ origin/main`처럼 UPSTREAM 칸에 합쳐져 "upstream이
+  worktree"인 것처럼 읽히던 표시를, 점유 worktree의 basename을 담는 전용 칸으로
+  옮겼다. 덕분에 UPSTREAM은 순수 출처 기술자만 남는다. 점유된 브랜치가 하나도 없으면
+  칸이 나타나지 않아 일반 repo는 기존 4칸 레이아웃을 유지한다.
+
 ## [0.65.0] - 2026-06-05
 
 ### Added
@@ -2198,7 +2222,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.65.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.66.0...HEAD
+[0.66.0]: https://github.com/x-mesh/gk/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/x-mesh/gk/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/x-mesh/gk/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/x-mesh/gk/compare/v0.62.1...v0.63.0

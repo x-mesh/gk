@@ -68,6 +68,7 @@ func buildWorktreeCmd(repoDir string, sub string, extraArgs ...string) (*cobra.C
 	add.Flags().Bool("no-init", false, "")
 	rm := &cobra.Command{Use: "remove", Args: cobra.ExactArgs(1), RunE: runWorktreeRemove}
 	rm.Flags().BoolP("force", "f", false, "")
+	rm.Flags().Bool("force-locked", false, "")
 	prune := &cobra.Command{Use: "prune", RunE: runWorktreePrune}
 	initc := &cobra.Command{Use: "init", Args: cobra.RangeArgs(0, 1), RunE: runWorktreeInit}
 	initc.Flags().Bool("save", false, "")

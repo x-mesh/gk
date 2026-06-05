@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,7 +86,8 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE:  runWorktreeRemove,
 	}
-	rm.Flags().BoolP("force", "f", false, "force remove even when the worktree is dirty or locked")
+	rm.Flags().BoolP("force", "f", false, "force remove a dirty worktree, and unlock+remove a worktree whose lock holder is no longer running")
+	rm.Flags().Bool("force-locked", false, "remove even when the lock holder is still running (dangerous: may be in active use)")
 
 	prune := &cobra.Command{
 		Use:   "prune",
@@ -657,18 +659,40 @@ func deriveWorktreeProjectSlug(ctx context.Context, runner git.Runner) (string, 
 
 func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+	ctx := cmd.Context()
+	w := cmd.OutOrStdout()
 	force, _ := cmd.Flags().GetBool("force")
+	forceLocked, _ := cmd.Flags().GetBool("force-locked")
+	path := args[0]
+
+	// A locked worktree needs special handling: a single `--force` does
+	// NOT clear a lock (git wants `-f -f`). Decide by whether the lock
+	// holder is still running — stale locks unlock under --force, live
+	// ones require the explicit --force-locked to avoid yanking a worktree
+	// out from under an active process (e.g. a running claude agent).
+	if lock := worktreeLockInfo(ctx, runner, path); lock.Locked {
+		switch {
+		case lock.Alive && !forceLocked:
+			return WithHint(
+				fmt.Errorf("worktree is locked and still in use: %s", lock.Reason),
+				"the lock holder is still running — stop it first, or pass --force-locked to override")
+		case !lock.Alive && !force && !forceLocked:
+			return WithHint(
+				fmt.Errorf("worktree is locked by a stale holder: %s", lock.Reason),
+				"the holder is no longer running — rerun with --force to unlock and remove")
+		}
+		return forceRemoveWorktree(ctx, runner, w, path)
+	}
 
 	gitArgs := []string{"worktree", "remove"}
 	if force {
 		gitArgs = append(gitArgs, "--force")
 	}
-	gitArgs = append(gitArgs, args[0])
-
-	if _, stderr, err := runner.Run(cmd.Context(), gitArgs...); err != nil {
+	gitArgs = append(gitArgs, path)
+	if _, stderr, err := runner.Run(ctx, gitArgs...); err != nil {
 		return fmt.Errorf("worktree remove: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "removed worktree %s\n", args[0])
+	fmt.Fprintf(w, "removed worktree %s\n", path)
 	return nil
 }
 
@@ -1152,6 +1176,28 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		return nil
 	}
 
+	// Check the lock state up front: git won't clear a lock with a single
+	// --force, and a live lock holder means the worktree is in active use.
+	if lock := worktreeLockInfo(ctx, runner, entry.Path); lock.Locked {
+		if lock.Alive {
+			fmt.Fprintf(stderr, "locked and still in use: %s\n", lock.Reason)
+			force, _ := ui.Confirm("the lock holder is still running — force-remove anyway?", false)
+			if !force {
+				return nil
+			}
+		} else {
+			fmt.Fprintf(stderr, "stale lock (holder no longer running): %s\n", lock.Reason)
+			ok, _ := ui.Confirm("unlock and remove?", true)
+			if !ok {
+				return nil
+			}
+		}
+		if err := forceRemoveWorktree(ctx, runner, stderr, entry.Path); err != nil {
+			return err
+		}
+		return maybeDeleteOrphanBranch(ctx, runner, stderr, entry)
+	}
+
 	// First try: plain remove.
 	_, rerr, err := runner.Run(ctx, "worktree", "remove", entry.Path)
 	if err != nil {
@@ -1159,10 +1205,9 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		switch {
 		case strings.Contains(msg, "dirty") ||
 			strings.Contains(msg, "contains modified") ||
-			strings.Contains(msg, "contains untracked") ||
-			strings.Contains(msg, "is locked"):
-			// Dirty or locked — surface the exact git message, then
-			// ask whether to force.
+			strings.Contains(msg, "contains untracked"):
+			// Dirty — surface the exact git message, then ask whether to
+			// force (a single --force is enough for dirty/untracked).
 			fmt.Fprintln(stderr, strings.TrimSpace(string(rerr)))
 			force, _ := ui.Confirm("force-remove anyway?", false)
 			if !force {
@@ -1185,10 +1230,13 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		}
 	}
 	fmt.Fprintf(stderr, "removed %s\n", entry.Path)
+	return maybeDeleteOrphanBranch(ctx, runner, stderr, entry)
+}
 
-	// Offer to delete the now-orphaned branch. Guardrails: only when
-	// we actually know the branch name and it is not checked out by
-	// another worktree.
+// maybeDeleteOrphanBranch offers to delete the branch a just-removed
+// worktree had checked out. Guardrails: only when the branch name is
+// known, it isn't detached, and no other worktree still owns it.
+func maybeDeleteOrphanBranch(ctx context.Context, runner *git.ExecRunner, stderr io.Writer, entry WorktreeEntry) error {
 	if entry.Branch == "" || entry.Detached {
 		return nil
 	}

@@ -423,7 +423,7 @@ A virtualenv bakes absolute paths into `pyvenv.cfg`/shebangs, and `node_modules`
 
 All three are idempotent: re-running `gk worktree init` fixes only what's missing (existing correct symlinks and present copy targets are left alone, install commands are safe to repeat), so it doubles as a "retry the failed setup step" command.
 
-When `worktree.init` is absent, `gk worktree init` detects the project's manifests (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `uv.lock`, `poetry.lock`, `requirements.txt`, `pyproject.toml`, `go.mod`, `Gemfile.lock`, `composer.lock`) and proposes a block you can persist with `--save`.
+When `worktree.init` is absent, `gk worktree init` detects the project's manifests (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `uv.lock`, `poetry.lock`, `requirements.txt`, `pyproject.toml`, `go.mod`, `Gemfile.lock`, `composer.lock`) and proposes a block you can persist with `--save`. A root manifest is authoritative (workspace assumption); when the root has none, gk scans subdirectories (bounded depth, skipping `node_modules`/`.venv`/build dirs) and wraps each nested project's command in `cd <dir> && …` — covering monorepos whose `frontend/`·`backend/` carry their own manifests.
 
 ```yaml
 worktree:

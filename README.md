@@ -150,14 +150,14 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk branch set-parent <parent>` | | Record `branch.<current>.gk-parent = <parent>` so `gk status` compares divergence against the actual parent (stacked workflows). Validates against self/cycle (depth ≤10), tags, and non-existent refs; suggests the closest local branch on typos. |
 | `gk branch unset-parent` | | Remove the `gk-parent` config entry. Idempotent. Status output reverts to base-relative divergence. |
 | `gk branch-check` | | Validate current branch name against configured patterns |
-| `gk switch [name]` | `gk sw` | Switch branches; `--fetch` refreshes remote branches first, `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev |
+| `gk switch [name]` | `gk sw` | Switch branches; `--fetch` refreshes remote branches first, `-m`/`--main` jumps to detected main, `-d`/`--develop` to develop/dev. Branches checked out elsewhere show a `WORKTREE` column; moving a protected branch into a linked worktree asks for confirmation (`--detach` to just view it) |
 
 ### Worktree
 | Command | Alias | Description |
 |---|---|---|
 | `gk worktree` (no sub) | `gk wt` | Interactive TUI — list, add, remove, and cd into worktrees. `cd` spawns a `$SHELL` in the target dir (`exit` returns). `--print-path` flips to the `gwt() { cd "$(gk wt --print-path)"; }` alias pattern. |
 | `gk worktree add <name>` | | Relative names resolve under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<repo>/<name>`); absolute paths passthrough. Orphan-branch collisions surface an inline reuse/delete/cancel prompt. After creating, offers to bootstrap the worktree (`--init`/`--no-init` skip the prompt). |
-| `gk worktree init [path]` | | Reconstitute a worktree's gitignored state from `worktree.init` in `.gk.yaml`: `link` (symlink secrets like `.env`), `copy` (per-worktree files), `run` (`npm ci`, `uv sync`). Idempotent, so it doubles as a setup-retry. With no config, detects package manifests and proposes a block (`--save` to persist, `--dry-run` to preview). |
+| `gk worktree init [path]` | | Reconstitute a worktree's gitignored state from `worktree.init` in `.gk.yaml`: `link` (symlink secrets like `.env`), `copy` (per-worktree files), `run` (`npm ci`, `uv sync`). Idempotent, so it doubles as a setup-retry. With no config, detects package manifests — at the root, or in nested monorepo projects (`frontend/`, `backend/`) when the root has none — and proposes a block (`--save` to persist, `--dry-run` to preview). |
 | `gk worktree list` | | Table or `--json` listing parsed from `git worktree list --porcelain` |
 | `gk worktree remove <path>` | | Removes worktree; dirty/locked get a force prompt, stale admin entries auto-prune |
 | `gk prompt-info` | | Emit a compact label for shell prompts. `plain` (default) prints `wt` (or `wt:<basename>` when the dir disagrees with the branch) inside a linked worktree, empty otherwise. `--format=segment` prints `<repo>/<branch>` for any repo — designed to replace starship's `$directory` + `$git_branch` with a single deduplicated label. `--format=json` returns `{linked, repo, name, path, branch}`. Detection via `git rev-parse --git-dir` vs `--git-common-dir` (~30ms). |

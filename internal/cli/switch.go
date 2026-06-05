@@ -683,11 +683,16 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		// once at enumeration above — no need to sort again here.
 
 		items := buildSwitchItems(local, remotes, cur, wt, dirty)
+		wtCol := switchHasWorktreeCol(wt)
 		if len(items) == 0 {
 			placeholder := "(no branches — press n to create)"
+			cells := []string{placeholder, "", "", ""}
+			if wtCol {
+				cells = []string{placeholder, "", "", "", ""}
+			}
 			items = append(items, ui.PickerItem{
 				Key:     "local:__placeholder__",
-				Cells:   []string{placeholder, "", "", ""},
+				Cells:   cells,
 				Display: placeholder,
 			})
 		}
@@ -699,8 +704,12 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		if !showRemotes && len(allRemotes) > 0 {
 			filterItems = buildSwitchItems(nil, allRemotes, cur, wt, dirty)
 		}
+		headers := []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}
+		if wtCol {
+			headers = []string{"BRANCH", "UPSTREAM", "WORKTREE", "HASH", "AGE"}
+		}
 		picker := &ui.TablePicker{
-			Headers:       []string{"BRANCH", "UPSTREAM", "HASH", "AGE"},
+			Headers:       headers,
 			Extras:        extras,
 			Subtitle:      subtitle,
 			FilterItems:   filterItems,
@@ -996,14 +1005,15 @@ func colorDirtyMarker(d git.DirtyFlags) string {
 // prompt; selecting the current branch is a no-op (handled by caller).
 func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string, wt switchWorktreeMap, dirty map[string]git.DirtyFlags) []ui.PickerItem {
 	items := make([]ui.PickerItem, 0, len(local)+len(remotes))
+	wtCol := switchHasWorktreeCol(wt)
 
 	for _, b := range local {
-		_, locked := wt.byBranch[b.Name]
+		entry, locked := wt.byBranch[b.Name]
 		isCurrent := b.Name == cur
 		// Resolve the underlying "what does this branch compare to"
-		// info first (upstream / inferred / fork / gone / nothing).
-		// Worktree-locked is then prefixed additively so users see
-		// both "this lives in another worktree" + "diff target".
+		// info: upstream / inferred / fork / gone / nothing. Worktree
+		// occupancy is NOT mixed in here — it gets its own WORKTREE
+		// column so UPSTREAM stays a pure source descriptor.
 		var coreSource, coreColored string
 		switch {
 		case b.Gone:
@@ -1025,9 +1035,12 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		}
 		source := coreSource
 		coloredSource := coreColored
+		// WORKTREE cell: the basename of the worktree holding this
+		// branch elsewhere (e.g. main checked out in the "improve-ui"
+		// worktree). Empty for branches not locked to another worktree.
+		wtLabel := ""
 		if locked {
-			source = "wt: " + coreSource
-			coloredSource = cellYellow("wt: ") + coreColored
+			wtLabel = filepath.Base(entry.Path)
 		}
 		// Display marker stays via fatih/color — it's only used by
 		// the FallbackPicker path which doesn't have row-level styles.
@@ -1050,12 +1063,16 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 			coloredDiffSuffix = " " + diffCell
 		}
 		age := shortAge(b.LastCommit)
+		branchCell := cellMarker + " " + b.Name + coloredDirtyTag + coloredDiffSuffix
+		cells := []string{branchCell, coloredSource}
+		if wtCol {
+			cells = append(cells, cellYellow(wtLabel))
+		}
+		cells = append(cells, b.Hash, age)
 		items = append(items, ui.PickerItem{
-			Key:   keyLocalPrefix + b.Name,
-			Cells: []string{cellMarker + " " + b.Name + coloredDirtyTag + coloredDiffSuffix, coloredSource, b.Hash, age},
-			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				displayMarker, b.Name+coloredDirtyTag+diffSuffix, source, b.Hash, age,
-			),
+			Key:     keyLocalPrefix + b.Name,
+			Cells:   cells,
+			Display: switchDisplayRow(displayMarker, b.Name+coloredDirtyTag+diffSuffix, source, wtLabel, b.Hash, age, wtCol),
 		})
 	}
 
@@ -1063,15 +1080,36 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		age := shortAge(r.LastCommit)
 		source := "remote: " + r.Remote
 		coloredSource := cellCyan("remote: ") + r.Remote
+		cells := []string{cellCyan("○") + " " + r.Name, coloredSource}
+		if wtCol {
+			cells = append(cells, "")
+		}
+		cells = append(cells, r.Hash, age)
 		items = append(items, ui.PickerItem{
-			Key:   keyRemotePrefix + r.TrackRef,
-			Cells: []string{cellCyan("○") + " " + r.Name, coloredSource, r.Hash, age},
-			Display: fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
-				color.CyanString("○"), r.Name, source, r.Hash, age,
-			),
+			Key:     keyRemotePrefix + r.TrackRef,
+			Cells:   cells,
+			Display: switchDisplayRow(color.CyanString("○"), r.Name, source, "", r.Hash, age, wtCol),
 		})
 	}
 	return items
+}
+
+// switchHasWorktreeCol reports whether any local branch is checked out in
+// another worktree, gating the optional WORKTREE column so a plain repo
+// with no extra worktrees keeps the original four-column layout.
+func switchHasWorktreeCol(wt switchWorktreeMap) bool {
+	return len(wt.byBranch) > 0
+}
+
+// switchDisplayRow formats the fallback (non-table) picker row, inserting
+// the WORKTREE column only when present.
+func switchDisplayRow(marker, branch, source, worktree, hash, age string, wtCol bool) string {
+	if wtCol {
+		return fmt.Sprintf("%s  %-36s  %-32s  %-14s  %-8s  %s",
+			marker, branch, source, worktree, hash, age)
+	}
+	return fmt.Sprintf("%s  %-36s  %-32s  %-8s  %s",
+		marker, branch, source, hash, age)
 }
 
 // buildSwitchExtras wires the n/d/D/r/f hotkeys. All of them exit the

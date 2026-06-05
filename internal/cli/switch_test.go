@@ -1051,7 +1051,9 @@ func TestBuildSwitchItems_ForkPointInSource(t *testing.T) {
 	}
 }
 
-func TestBuildSwitchItems_LockedPlusForkCombined(t *testing.T) {
+// A worktree-locked branch keeps UPSTREAM as a pure source descriptor and
+// surfaces the holding worktree's basename in the separate WORKTREE column.
+func TestBuildSwitchItems_LockedSeparatesWorktreeColumn(t *testing.T) {
 	t.Parallel()
 	local := []branchInfo{
 		{Name: "feat/wt", Hash: "bbb", LastCommit: now(),
@@ -1063,8 +1065,30 @@ func TestBuildSwitchItems_LockedPlusForkCombined(t *testing.T) {
 		},
 	}
 	items := buildSwitchItems(local, nil, "main", wt, nil)
-	if !strings.Contains(stripANSI(items[0].Cells[1]), "wt: from main@cbdce8b") {
-		t.Errorf("expected 'wt: from main@cbdce8b', got %q", items[0].Cells[1])
+	if got := stripANSI(items[0].Cells[1]); got != "from main@cbdce8b" {
+		t.Errorf("UPSTREAM should be pure (no wt: prefix), got %q", got)
+	}
+	if len(items[0].Cells) != 5 {
+		t.Fatalf("expected 5 cells (WORKTREE column present), got %d: %v", len(items[0].Cells), items[0].Cells)
+	}
+	if got := stripANSI(items[0].Cells[2]); got != "feat-wt" {
+		t.Errorf("WORKTREE cell should be the worktree basename, got %q", got)
+	}
+}
+
+// With no branch locked to another worktree, the WORKTREE column is absent
+// — a plain repo keeps the original four-column layout.
+func TestBuildSwitchItems_NoWorktreeColumnWhenNoneLocked(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "main", Hash: "aaa", LastCommit: now(), Upstream: "origin/main"},
+	}
+	items := buildSwitchItems(local, nil, "main", switchWorktreeMap{}, nil)
+	if len(items[0].Cells) != 4 {
+		t.Fatalf("expected 4 cells (no WORKTREE column), got %d: %v", len(items[0].Cells), items[0].Cells)
+	}
+	if got := stripANSI(items[0].Cells[1]); got != "↑ origin/main" {
+		t.Errorf("UPSTREAM: want '↑ origin/main', got %q", got)
 	}
 }
 
@@ -1124,31 +1148,38 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("expected all 3 local branches, got %d: %+v", len(items), items)
 	}
+	// One branch is locked → the WORKTREE column is present: 5 cells, with
+	// HASH/AGE shifted to indices 3/4.
 	for _, it := range items {
-		if len(it.Cells) != 4 {
-			t.Errorf("expected 4 cells, got %d: %+v", len(it.Cells), it.Cells)
+		if len(it.Cells) != 5 {
+			t.Errorf("expected 5 cells (WORKTREE column present), got %d: %+v", len(it.Cells), it.Cells)
 		}
 		c0 := stripANSI(it.Cells[0])
 		c1 := stripANSI(it.Cells[1])
+		c2 := stripANSI(it.Cells[2])
 		switch it.Key {
 		case "local:main":
 			if !strings.Contains(c0, "★") {
 				t.Errorf("current branch should have ★ marker, got %q", c0)
 			}
-			if it.Cells[2] != "abc1234" {
-				t.Errorf("expected hash abc1234 in cell 2, got %q", it.Cells[2])
+			if it.Cells[3] != "abc1234" {
+				t.Errorf("expected hash abc1234 in cell 3, got %q", it.Cells[3])
+			}
+			if c2 != "" {
+				t.Errorf("main is not worktree-locked → WORKTREE cell should be empty, got %q", c2)
 			}
 		case "local:feat/free":
 			if !strings.Contains(c0, "●") {
 				t.Errorf("normal branch should have ● marker, got %q", c0)
 			}
 		case "local:feat/locked":
-			// New design: wt: prefix is additive to the comparison
-			// source (upstream / fork / (local)). With no upstream
-			// or fork data in this fixture, source falls back to
-			// "(local)" → cell shows "wt: (local)".
-			if !strings.HasPrefix(c1, "wt: ") {
-				t.Errorf("expected 'wt: ' prefix on locked row, got %q", c1)
+			// UPSTREAM is now a pure source descriptor; worktree
+			// occupancy moved to the dedicated WORKTREE column.
+			if c1 != "(local)" {
+				t.Errorf("UPSTREAM should be pure '(local)', got %q", c1)
+			}
+			if c2 != "locked-tree" {
+				t.Errorf("WORKTREE cell should be the basename 'locked-tree', got %q", c2)
 			}
 		}
 	}

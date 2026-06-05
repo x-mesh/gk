@@ -1324,6 +1324,23 @@ func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) 
 }
 
 func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, create, force, detach bool) error {
+	// Guard: moving a protected branch (main/master/develop) INTO a linked
+	// worktree locks it there, making it unusable in every other worktree —
+	// almost always an accident (the user just wanted to look at main).
+	// Confirm first. Exempt: the primary worktree (where this is normal),
+	// -c (creating a branch can't trap an existing one), --detach (a
+	// detached checkout doesn't lock the branch), and --force (explicit
+	// override).
+	if !create && !detach && !force {
+		proceed, gerr := confirmProtectedWorktreeSwitch(ctx, r, branch)
+		if gerr != nil {
+			return gerr
+		}
+		if !proceed {
+			return nil
+		}
+	}
+
 	args := []string{"switch"}
 	if create {
 		args = append(args, "-c")
@@ -1356,6 +1373,63 @@ func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, cre
 	}
 	fmt.Fprintln(w, successLine("switched to", branch))
 	return nil
+}
+
+// confirmProtectedWorktreeSwitch gates moving a protected branch into a
+// linked worktree behind a y/N confirmation. It returns (true, nil) for
+// every non-risky case — the primary worktree, or a non-protected branch —
+// so the common path is a single `rev-parse`. On a non-interactive stream
+// it refuses (returns an error with a --detach/--force hint) rather than
+// silently trapping the branch.
+func confirmProtectedWorktreeSwitch(ctx context.Context, r git.Runner, branch string) (bool, error) {
+	if !isLinkedWorktree(ctx, r) {
+		return true, nil
+	}
+	cfg, _ := config.Load(nil)
+	if !isProtectedBranchName(branch, cfg.Branch.Protected) {
+		return true, nil
+	}
+	title := fmt.Sprintf("Move protected branch %q into this linked worktree?", branch)
+	desc := "It would be locked here and unusable in other worktrees. Use --detach to just view it."
+	ok, err := ui.ConfirmTUI(ctx, title, desc, false)
+	switch {
+	case errors.Is(err, ui.ErrNonInteractive):
+		return false, WithHint(
+			fmt.Errorf("refusing to move protected branch %q into a linked worktree", branch),
+			"use --detach to view it here, or --force to move it anyway")
+	case errors.Is(err, ui.ErrPickerAborted):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return ok, nil
+}
+
+// isLinkedWorktree reports whether the runner's cwd is a linked worktree
+// (not the primary one), via the --git-dir vs --git-common-dir mismatch —
+// the same signal gk's prompt-info uses. Any git error collapses to false
+// (treat as primary) so the guard never blocks on a non-repo edge case.
+func isLinkedWorktree(ctx context.Context, r git.Runner) bool {
+	out, _, err := r.Run(ctx, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) < 2 {
+		return false
+	}
+	return strings.TrimSpace(lines[0]) != strings.TrimSpace(lines[1])
+}
+
+// isProtectedBranchName reports whether branch is on the configured
+// protected list (default: main/master/develop).
+func isProtectedBranchName(branch string, protected []string) bool {
+	for _, p := range protected {
+		if p == branch {
+			return true
+		}
+	}
+	return false
 }
 
 // doSwitchTrack creates a local tracking branch from a remote ref and

@@ -1185,6 +1185,70 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 	}
 }
 
+func TestIsProtectedBranchName(t *testing.T) {
+	t.Parallel()
+	prot := []string{"main", "master", "develop"}
+	if !isProtectedBranchName("main", prot) {
+		t.Error("main should be protected")
+	}
+	if isProtectedBranchName("feat/x", prot) {
+		t.Error("feat/x should not be protected")
+	}
+}
+
+// Moving a protected branch into a linked worktree is refused on a
+// non-interactive stream (the worktree-trap guard).
+func TestDoSwitch_RefusesProtectedIntoLinkedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "none"))
+	repo := testutil.NewRepo(t) // default branch: main (protected)
+	repo.RunGit("branch", "feat")
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	repo.RunGit("worktree", "add", wtDir, "feat")
+
+	// From the linked worktree (on feat), try to pull main here.
+	r := &git.ExecRunner{Dir: wtDir}
+	var buf bytes.Buffer
+	err := doSwitch(context.Background(), r, &buf, "main", false, false, false)
+	if err == nil {
+		t.Fatal("expected refusal moving protected main into a linked worktree")
+	}
+	if !strings.Contains(err.Error(), "protected") {
+		t.Errorf("error should mention the protected branch, got: %v", err)
+	}
+}
+
+// --detach and --force both bypass the guard (view-only / explicit override),
+// and the primary worktree is exempt entirely.
+func TestDoSwitch_GuardBypassAndPrimaryExempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "none"))
+
+	// Primary worktree: switching to protected main is allowed.
+	repo := testutil.NewRepo(t)
+	repo.RunGit("branch", "feat")
+	repo.RunGit("checkout", "feat")
+	r := &git.ExecRunner{Dir: repo.Dir}
+	var buf bytes.Buffer
+	if err := doSwitch(context.Background(), r, &buf, "main", false, false, false); err != nil {
+		t.Fatalf("primary-worktree switch to protected main should be allowed: %v", err)
+	}
+
+	// Linked worktree but --detach: allowed (a detached checkout can't trap
+	// the branch).
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	repo.RunGit("worktree", "add", wtDir, "feat")
+	rl := &git.ExecRunner{Dir: wtDir}
+	var buf2 bytes.Buffer
+	if err := doSwitch(context.Background(), rl, &buf2, "main", false, false, true); err != nil {
+		t.Fatalf("--detach into linked worktree should be allowed: %v", err)
+	}
+}
+
 func TestLoadSwitchWorktrees_Topology(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

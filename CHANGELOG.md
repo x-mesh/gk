@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-06-05
+
+### Fixed
+
+- **`gk worktree remove`가 locked worktree를 제거하지 못하던 문제 수정.** `--force`는
+  git에 `--force`를 한 번만 넘겨 dirty/untracked만 강제하고 lock은 그대로 둔다(git은
+  `-f -f`를 요구). 그래서 잠긴 worktree를 gk의 어떤 경로로도 못 지웠고, TUI의 "locked
+  → --force" 안내도 실제로는 동작하지 않았다. 이제 lock 이유에 담긴 pid의 생존을
+  확인해, 이미 죽은(stale) 잠금은 `--force`로 unlock 후 제거하고, 아직 살아있는 잠금은
+  거부하며 새 `--force-locked` 플래그로만 강제한다 — 실행 중인 worktree(예: 동작 중인
+  claude agent)를 실수로 지우는 것을 막는다.
+
 ## [0.66.0] - 2026-06-05
 
 ### Added
@@ -2222,7 +2234,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.66.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.67.0...HEAD
+[0.67.0]: https://github.com/x-mesh/gk/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/x-mesh/gk/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/x-mesh/gk/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/x-mesh/gk/compare/v0.63.0...v0.64.0

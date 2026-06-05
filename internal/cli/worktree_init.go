@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -373,17 +374,59 @@ var ecosystemGroups = [][]string{
 	{"uv.lock", "poetry.lock", "requirements.txt", "pyproject.toml"},
 }
 
+// nestedScanMaxDepth bounds how deep detectWorktreeInit descends when the
+// repo root carries no manifest of its own — enough to reach a
+// two-level-nested project (e.g. mesh-explorer-web/frontend) without
+// turning into a full-tree walk.
+const nestedScanMaxDepth = 3
+
+// skipScanDirs are never descended into during the nested manifest scan:
+// dependency trees, build output, and VCS/tool state would only add noise
+// (and their own vendored manifests).
+var skipScanDirs = map[string]bool{
+	"node_modules": true, ".venv": true, "venv": true, "env": true,
+	".git": true, "dist": true, "build": true, ".next": true,
+	"target": true, "vendor": true, "__pycache__": true,
+	".cache": true, ".gradle": true, "coverage": true,
+}
+
 // detectWorktreeInit inspects dir for known package manifests and common
-// secret files, proposing a run command per ecosystem and link entries for
-// untracked .env files.
+// secret files, proposing an install command per ecosystem and link entries
+// for untracked .env files.
+//
+// Manifest discovery is two-tier: a manifest AT the repo root is treated as
+// authoritative (a single root lockfile usually drives a workspace), so its
+// command runs bare. Only when the root has NO manifest does it fall back to
+// scanning subdirectories — the monorepo shape where independent projects
+// live in nested dirs (frontend/, backend/, packages/*) with no root
+// manifest. Each nested project's command is wrapped in `cd <rel> && …`.
 func detectWorktreeInit(dir string) *config.WorktreeInit {
+	out := &config.WorktreeInit{}
+
+	for _, env := range []string{".env", ".env.local"} {
+		if fileExists(filepath.Join(dir, env)) {
+			out.Link = append(out.Link, env)
+		}
+	}
+
+	if rootCmds := detectManifestsIn(dir); len(rootCmds) > 0 {
+		out.Run = append(out.Run, rootCmds...)
+		return out
+	}
+	out.Run = append(out.Run, detectNestedManifests(dir)...)
+	return out
+}
+
+// detectManifestsIn returns the install commands for a SINGLE directory,
+// applying ecosystem suppression (uv.lock cancels requirements.txt, etc.)
+// so each ecosystem contributes at most one command.
+func detectManifestsIn(dir string) []string {
 	present := map[string]bool{}
 	for _, r := range detectionRules {
 		if fileExists(filepath.Join(dir, r.file)) {
 			present[r.file] = true
 		}
 	}
-	// Within each ecosystem keep only the first (most specific) manifest.
 	for _, group := range ecosystemGroups {
 		seen := false
 		for _, f := range group {
@@ -395,18 +438,50 @@ func detectWorktreeInit(dir string) *config.WorktreeInit {
 			}
 		}
 	}
-
-	out := &config.WorktreeInit{}
+	var cmds []string
 	for _, r := range detectionRules {
 		if present[r.file] {
-			out.Run = append(out.Run, r.cmd)
+			cmds = append(cmds, r.cmd)
 		}
 	}
-	for _, env := range []string{".env", ".env.local"} {
-		if fileExists(filepath.Join(dir, env)) {
-			out.Link = append(out.Link, env)
+	return cmds
+}
+
+// detectNestedManifests walks subdirectories of root (bounded depth,
+// skipping dependency/build dirs) and returns each discovered project's
+// install command wrapped in `cd <rel> && …`. Output is sorted for a
+// stable, reviewable proposal.
+func detectNestedManifests(root string) []string {
+	var out []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if depth > nestedScanMaxDepth {
+			return
+		}
+		if dir != root {
+			if cmds := detectManifestsIn(dir); len(cmds) > 0 {
+				rel, err := filepath.Rel(root, dir)
+				if err == nil {
+					for _, c := range cmds {
+						out = append(out, fmt.Sprintf("cd %s && %s", rel, c))
+					}
+				}
+			}
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if !e.IsDir() || skipScanDirs[name] || strings.HasPrefix(name, ".") {
+				continue
+			}
+			walk(filepath.Join(dir, name), depth+1)
 		}
 	}
+	walk(root, 0)
+	sort.Strings(out)
 	return out
 }
 

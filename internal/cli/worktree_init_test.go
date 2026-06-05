@@ -42,6 +42,51 @@ func TestDetectWorktreeInit_EcosystemPrecedence(t *testing.T) {
 	}
 }
 
+func TestDetectWorktreeInit_NestedMonorepo(t *testing.T) {
+	dir := t.TempDir()
+	// No manifest at the root — only nested projects (the lib-mesh shape:
+	// mesh-explorer-web/{frontend,backend}).
+	mustWrite(t, filepath.Join(dir, "app", "frontend", "pnpm-lock.yaml"), "{}")
+	mustWrite(t, filepath.Join(dir, "app", "frontend", "package.json"), "{}")
+	mustWrite(t, filepath.Join(dir, "app", "backend", "uv.lock"), "x")
+	mustWrite(t, filepath.Join(dir, "app", "backend", "pyproject.toml"), "x")
+	// Noise that must be skipped, not descended into.
+	mustWrite(t, filepath.Join(dir, "app", "frontend", "node_modules", "dep", "package.json"), "{}")
+
+	got := detectWorktreeInit(dir)
+	want := []string{
+		"cd app/backend && uv sync",
+		"cd app/frontend && pnpm install --frozen-lockfile",
+	}
+	if !equalStrings(got.Run, want) {
+		t.Errorf("Run: want %v, got %v", want, got.Run)
+	}
+}
+
+func TestDetectWorktreeInit_RootManifestSuppressesNestedScan(t *testing.T) {
+	dir := t.TempDir()
+	// A root manifest is authoritative (workspace assumption): the nested
+	// package must NOT also be proposed.
+	mustWrite(t, filepath.Join(dir, "package-lock.json"), "{}")
+	mustWrite(t, filepath.Join(dir, "package.json"), "{}")
+	mustWrite(t, filepath.Join(dir, "packages", "a", "package.json"), "{}")
+
+	got := detectWorktreeInit(dir)
+	if !equalStrings(got.Run, []string{"npm ci"}) {
+		t.Errorf("Run: want [npm ci], got %v", got.Run)
+	}
+}
+
+func TestDetectWorktreeInit_NestedRespectsMaxDepth(t *testing.T) {
+	dir := t.TempDir()
+	// 5 levels deep — beyond nestedScanMaxDepth (3), must be ignored.
+	mustWrite(t, filepath.Join(dir, "a", "b", "c", "d", "go.mod"), "module x")
+	got := detectWorktreeInit(dir)
+	if len(got.Run) != 0 {
+		t.Errorf("Run: want empty (too deep), got %v", got.Run)
+	}
+}
+
 func TestDetectWorktreeInit_EnvLink(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SECRET=1"), 0o644); err != nil {
@@ -298,6 +343,16 @@ func TestWorktreeInit_AnchorsToTargetRepo(t *testing.T) {
 	}
 	if fileExists(filepath.Join(wtB, "RAN_A")) {
 		t.Errorf("caller repo (A) policy leaked into the target:\n%s", buf.String())
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -247,9 +247,10 @@ func runForget(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintln(w, "history rewritten.")
 	if captured != nil && captured.URL != "" && branch != "" {
-		fmt.Fprintln(w, stylizeHintLabel("next:"))
-		fmt.Fprintln(w, stylizeHintCommand(fmt.Sprintf("  git push --force-with-lease %s %s", captured.Name, branch)))
-		fmt.Fprintln(w, stylizeHintCommand("  # collaborators must re-clone or run:"))
+		fmt.Fprintln(w, stylizeHintLabel("next: history was rewritten — the remote must be force-updated"))
+		fmt.Fprintln(w, stylizeHintCommand("  gk push --force                       # gk-native: --force-with-lease + secret scan"))
+		fmt.Fprintln(w, stylizeHintCommand(fmt.Sprintf("  # or: git push --force-with-lease %s %s", captured.Name, branch)))
+		fmt.Fprintln(w, stylizeHintCommand("  # ⚠ shared branch: every commit SHA changed. Collaborators must re-clone or run:"))
 		fmt.Fprintln(w, stylizeHintCommand(fmt.Sprintf("  #   git fetch %s && git reset --hard %s/%s", captured.Name, captured.Name, branch)))
 	}
 	fmt.Fprintln(w, stylizeHintLine(fmt.Sprintf("rollback: git update-ref --stdin < %s", backup.Manifest)))
@@ -354,7 +355,7 @@ func runAudit(cmd *cobra.Command, runner *git.ExecRunner, depth, top int, barStr
 	fmt.Fprintln(w, stylizeHintLabel("next:"))
 	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze <path>             # narrow to one path for an exact reclaim estimate"))
 	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze -i                 # multi-select picker → forget chosen paths"))
-	fmt.Fprintln(w, stylizeHintCommand("  echo <path>/ >> .gitignore && gk forget   # forget a path from history"))
+	fmt.Fprintln(w, stylizeHintCommand("  gk ignore <path>                       # stop tracking going forward (keeps the file)"))
 	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze --sort churn       # rank by rewrite count (lock files etc.)"))
 	fmt.Fprintln(w, stylizeHintCommand("  gk forget --analyze --depth 2          # finer-grained directory grouping"))
 	fmt.Fprintln(w, "  gk forget --analyze --json             # machine-readable for CI/dashboards")

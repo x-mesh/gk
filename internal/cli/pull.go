@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,7 @@ Fast-forward optimisation (D):
 	cmd.Flags().Bool("fetch-only", false, "fetch only, do not integrate")
 	cmd.Flags().Bool("no-rebase", false, "deprecated alias for --fetch-only")
 	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration and pop after")
+	cmd.Flags().Bool("ai", false, "on conflict, resolve with AI and continue the integration (drives `gk resolve --ai` + `gk continue`)")
 	cmd.Flags().CountVarP(&pullVerbose, "verbose", "v", "show upstream, strategy, and integration details; repeat for diagnostics")
 	rootCmd.AddCommand(cmd)
 }
@@ -76,9 +78,74 @@ func runPull(cmd *cobra.Command, args []string) error {
 	err := runPullCore(cmd)
 	var ce *ConflictError
 	if errors.As(err, &ce) {
+		// --ai: drive the existing AI resolver + continue flow to completion
+		// instead of leaving the user paused at the conflict.
+		if aiFlag, _ := cmd.Flags().GetBool("ai"); aiFlag {
+			if rerr := resolvePullConflictWithAI(cmd, ce); rerr != nil {
+				return rerr
+			}
+			return nil
+		}
 		os.Exit(ce.Code)
 	}
 	return err
+}
+
+// resolvePullConflictWithAI handles `gk pull --ai` once integration has
+// stopped on a conflict. It drives the existing, well-tested commands —
+// `gk resolve --ai` then `gk continue` — by re-executing the gk binary
+// (inheriting the terminal), looping until the rebase/merge finishes or it
+// can make no further progress. On any failure it returns guidance and leaves
+// the repo in the standard paused state the user can finish by hand.
+func resolvePullConflictWithAI(cmd *cobra.Command, ce *ConflictError) error {
+	ctx := cmd.Context()
+	repo := RepoFlag()
+	w := cmd.ErrOrStderr()
+
+	gkPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(w, stylizeHintLine("pull --ai: could not locate gk — resolve manually with `gk resolve --ai`, then `gk continue`"))
+		os.Exit(ce.Code)
+	}
+
+	runner := &git.ExecRunner{Dir: repo}
+	fmt.Fprintln(w, stylizeHintLine("pull --ai: resolving conflicts with AI…"))
+
+	const maxRounds = 20
+	for round := 0; round < maxRounds; round++ {
+		if st, derr := gitstate.Detect(ctx, repo); derr == nil && st.Kind == gitstate.StateNone {
+			fmt.Fprintln(w, stylizeHintLine("pull --ai: integration complete"))
+			return nil
+		}
+		if pullHasUnmergedPaths(ctx, runner) {
+			if err := runGkInherit(ctx, gkPath, repo, "resolve", "--ai"); err != nil {
+				return fmt.Errorf("pull --ai: `gk resolve --ai` failed: %w\n  finish the remaining conflicts, then run `gk continue`", err)
+			}
+		}
+		if err := runGkInherit(ctx, gkPath, repo, "continue", "--yes"); err != nil {
+			return fmt.Errorf("pull --ai: `gk continue` failed: %w\n  inspect with `gk status`, then run `gk continue`", err)
+		}
+	}
+	return fmt.Errorf("pull --ai: still unresolved after %d rounds — finish manually with `gk resolve --ai` + `gk continue`", maxRounds)
+}
+
+// pullHasUnmergedPaths reports whether the index has conflict (unmerged)
+// entries, so the loop only invokes the AI resolver when there is something
+// to resolve.
+func pullHasUnmergedPaths(ctx context.Context, runner git.Runner) bool {
+	out, _, _ := runner.Run(ctx, "diff", "--name-only", "--diff-filter=U")
+	return len(strings.TrimSpace(string(out))) > 0
+}
+
+// runGkInherit re-executes the gk binary with args, inheriting the terminal so
+// prompts and colored output keep working. Dir scopes it to the target repo.
+func runGkInherit(ctx context.Context, gkPath, repo string, args ...string) error {
+	c := exec.CommandContext(ctx, gkPath, args...)
+	if repo != "" {
+		c.Dir = repo
+	}
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
 }
 
 // runPullCore contains the full pull logic and is separated for testability.
@@ -95,6 +162,13 @@ func runPullCore(cmd *cobra.Command) error {
 	fetchOnly, _ := cmd.Flags().GetBool("fetch-only")
 	noRebase, _ := cmd.Flags().GetBool("no-rebase")
 	autostash, _ := cmd.Flags().GetBool("autostash")
+	aiFlag, _ := cmd.Flags().GetBool("ai")
+
+	// --ai resolves integration conflicts; fetch-only never integrates, so the
+	// combination has nothing to act on.
+	if aiFlag && (fetchOnly || noRebase) {
+		return errors.New("--ai has nothing to resolve: it conflicts with --fetch-only")
+	}
 
 	// Translate --rebase/--merge into --strategy and reject conflicting flags.
 	// These shorthands also act as explicit consent for diverged-history pulls.
@@ -164,7 +238,17 @@ func runPullCore(cmd *cobra.Command) error {
 			if base == "" {
 				detected, err := client.DefaultBranch(ctx, remote)
 				if err != nil {
-					return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+					cur := current
+					if cur == "" {
+						cur = "<branch>"
+					}
+					return fmt.Errorf(
+						"could not determine what to pull: '%s' has no upstream and no default branch could be detected.\n"+
+							"  fix: set tracking — git branch --set-upstream-to=%s/%s %s\n"+
+							"       or pass an explicit base — gk pull --base <branch>\n"+
+							"  note: if you just rewrote history (e.g. gk forget), your branch likely diverged from the remote;\n"+
+							"        publish it with `gk push --force` instead of pulling",
+						cur, remote, cur, cur)
 				}
 				base = detected
 				Dbg("pull: auto-detected base=%s via remote=%s", base, remote)

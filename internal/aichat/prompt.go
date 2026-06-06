@@ -20,6 +20,12 @@ Rules:
 - Each command must include a one-line description of what it does.
 - Flag dangerous commands (force push, hard reset, branch delete, etc.) with "dangerous": true.
 - Prefer gk commands over raw git commands when equivalent exists.
+- To stop including a file in git (add to .gitignore and/or untrack it), emit a
+  single "gk ignore <path>" command. It edits .gitignore AND runs
+  "git rm --cached" when the file is tracked. NEVER emit "git add .gitignore" —
+  you cannot write the ignore rule yourself, so that would be incomplete.
+- To erase a file from ALL git history, emit "gk forget <path>" with
+  "dangerous": true. Do not use it for "just stop tracking" — that is gk ignore.
 
 JSON schema:
 {"commands":[{"command":"gk push","description":"push to remote","dangerous":false}]}`
@@ -57,6 +63,8 @@ const gkCommandReference = `Available gk commands:
 - gk merge: precheck and merge a branch
 - gk clone: clone with short-form URL expansion
 - gk ship: release automation (tag, changelog, push)
+- gk ignore <path>: add a path to .gitignore and untrack it if tracked (keeps the file)
+- gk forget <path>: erase a path from ALL git history via filter-repo (dangerous)
 - gk do: natural language to git/gk commands
 - gk explain: diagnose errors or explain last command
 - gk ask: repository-context Q&A`

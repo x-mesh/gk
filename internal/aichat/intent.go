@@ -3,9 +3,11 @@ package aichat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/git"
 )
 
 // IntentParser converts natural-language input into an ExecutionPlan
@@ -56,8 +58,24 @@ func (p *IntentParser) Parse(ctx context.Context, input string) (*ExecutionPlan,
 		repoCtx = p.Context.Collect(ctx)
 	}
 
-	// 2. Build the user prompt.
+	// 1b. Deterministic fast path. Well-understood intents (ignore/untrack a
+	// file, erase from history, undo last commit) resolve to a canonical plan
+	// without an LLM round-trip — instant, reproducible, and free of
+	// hallucinated steps. No clear match falls through to the AI path below.
+	if plan := p.recognize(ctx, input, repoCtx); plan != nil {
+		if p.Safety != nil {
+			p.Safety.ClassifyPlan(plan)
+		}
+		return plan, nil
+	}
+
+	// 2. Build the user prompt. Append tracked-state facts for any paths named
+	// in the request so the model knows whether `git rm --cached` is needed
+	// and prefers `gk ignore`.
 	userPrompt := buildDoUserPrompt(input, repoCtx, p.Lang, p.Easy)
+	if hints := p.pathTrackingHints(ctx, input); hints != "" {
+		userPrompt += "\n\n" + hints
+	}
 
 	// 2b. Redact the assembled prompt (input + repo context) before it
 	// leaves the process. The caller redacts the raw input separately, but
@@ -95,4 +113,50 @@ func (p *IntentParser) Parse(ctx context.Context, input string) (*ExecutionPlan,
 	}
 
 	return plan, nil
+}
+
+// runner returns the git.Runner backing the context collector, or nil.
+func (p *IntentParser) runner() git.Runner {
+	if p.Context == nil {
+		return nil
+	}
+	return p.Context.Runner
+}
+
+// recognize runs the deterministic intent recognizers, returning a canonical
+// plan when one matches (and logging which). Returns nil to defer to the LLM.
+func (p *IntentParser) recognize(ctx context.Context, input string, rc *RepoContext) *ExecutionPlan {
+	plan, name := recognizeIntent(ctx, input, rc, p.runner(), p.Lang)
+	if plan != nil {
+		p.dbg("do: deterministic match — %s (LLM skipped)", name)
+	}
+	return plan
+}
+
+// pathTrackingHints reports the git tracked-state of paths named in the input
+// so the AI plan can choose `git rm --cached` / `gk ignore` correctly. Empty
+// when no paths are mentioned or no runner is available.
+func (p *IntentParser) pathTrackingHints(ctx context.Context, input string) string {
+	runner := p.runner()
+	if runner == nil {
+		return ""
+	}
+	paths := mentionedPaths(input)
+	if len(paths) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, path := range paths {
+		state := "untracked"
+		if _, _, err := runner.Run(ctx, "ls-files", "--error-unmatch", "--", path); err == nil {
+			state = "tracked"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", path, state))
+		if len(lines) >= 5 {
+			break
+		}
+	}
+	return "Tracked-state of mentioned paths (to stop tracking a file use " +
+		"`gk ignore <path>`; to erase it from history use `gk forget <path>`):\n" +
+		strings.Join(lines, "\n")
 }

@@ -326,6 +326,8 @@ var allowedGkSubcmds = map[string]string{
 	"ship":   "", // no direct git equivalent — skip execution
 	"st":     "status",
 	"slog":   "log",
+	"ignore": "", // gk-native: edit .gitignore + untrack (deterministic, safe)
+	"forget": "", // gk-native: erase from history via filter-repo (always dangerous)
 }
 
 // shellSplit splits a command string respecting single and double quotes.

@@ -111,6 +111,10 @@ var dangerousPatterns = []dangerousPattern{
 		re:     regexp.MustCompile(`(?i)^gk\s+reset\b`),
 		reason: "branch reset",
 	},
+	{
+		re:     regexp.MustCompile(`(?i)^gk\s+forget\b`),
+		reason: "erases files from all git history (filter-repo)",
+	},
 }
 
 // SafetyClassifier classifies commands by risk level.

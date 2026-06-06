@@ -135,6 +135,15 @@ func guardNoiseFiles(ctx context.Context, cmd *cobra.Command, runner git.Runner,
 // appendGitignore adds patterns not already present to repoRoot/.gitignore,
 // creating it if needed. Returns the patterns actually added.
 func appendGitignore(repoRoot string, patterns []string) ([]string, error) {
+	return appendGitignoreWithHeader(repoRoot,
+		"# Added by gk: build output / dependencies / caches", patterns)
+}
+
+// appendGitignoreWithHeader is appendGitignore with a caller-supplied comment
+// header written above the newly-added patterns (so e.g. `gk ignore` can
+// label its block differently from the commit noise-guard). An empty header
+// omits the comment line.
+func appendGitignoreWithHeader(repoRoot, header string, patterns []string) ([]string, error) {
 	path := filepath.Join(repoRoot, ".gitignore")
 	data, _ := os.ReadFile(path)
 	existing := map[string]bool{}
@@ -160,8 +169,10 @@ func appendGitignore(repoRoot string, patterns []string) ([]string, error) {
 			return nil, err
 		}
 	}
-	if _, err := f.WriteString("\n# Added by gk: build output / dependencies / caches\n"); err != nil {
-		return nil, err
+	if header != "" {
+		if _, err := f.WriteString("\n" + header + "\n"); err != nil {
+			return nil, err
+		}
 	}
 	for _, p := range toAdd {
 		if _, err := f.WriteString(p + "\n"); err != nil {

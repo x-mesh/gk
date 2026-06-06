@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -98,10 +100,10 @@ func runDo(cmd *cobra.Command, args []string) error {
 	if flags.provider != "" {
 		ai.Provider = flags.provider
 	}
-	// --lang flag overrides ai.lang.
-	if flags.lang != "" {
-		ai.Lang = flags.lang
-	}
+	// Conversational output (do plan descriptions) follows output.lang; ai.lang
+	// governs git artifacts (commit/pr). The --lang flag still wins. See
+	// resolveResponseLang.
+	lang := resolveResponseLang(flags.lang, cfg.AI.Lang, cfg.Output.Lang)
 
 	// ai.enabled=false check (6.5).
 	if !ai.Enabled {
@@ -128,7 +130,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		}
 		prov = p
 	}
-	Dbg("do: provider=%s model=%s lang=%s", prov.Name(), providerModel(prov), fallbackLang(ai.Lang))
+	Dbg("do: provider=%s model=%s lang=%s", prov.Name(), providerModel(prov), lang)
 
 	// Type-assert Summarizer.
 	sum, ok := prov.(provider.Summarizer)
@@ -159,7 +161,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		Summarizer: sum,
 		Context:    &aichat.RepoContextCollector{Runner: runner, TokenBudget: 2000, Dbg: Dbg},
 		Safety:     &aichat.SafetyClassifier{},
-		Lang:       fallbackLang(ai.Lang),
+		Lang:       lang,
 		Easy:       EasyEngine().IsEnabled(),
 		Timeout:    timeout,
 		MaxTokens:  aiChatMaxTokens(ai),
@@ -175,7 +177,17 @@ func runDo(cmd *cobra.Command, args []string) error {
 	Dbg("do: prompt size=%d bytes", len(redactedInput))
 	parseStart := time.Now()
 
+	// Show a spinner during the provider round-trip so the terminal isn't
+	// frozen for several seconds while the model thinks. Suppressed under
+	// --debug — the Dbg timeline already narrates progress and a bubbletea
+	// spinner would fight the debug writes for the same stderr line. No-op on
+	// non-TTY stderr (pipes/CI), so scripted output stays clean.
+	stopSpin := func() {}
+	if !flagDebug {
+		stopSpin = ui.StartBubbleSpinner(doSpinnerMessage(lang, prov.Name()))
+	}
 	plan, err := parser.Parse(ctx, redactedInput)
+	stopSpin()
 	if err != nil {
 		return err
 	}
@@ -224,6 +236,14 @@ func runDo(cmd *cobra.Command, args []string) error {
 		NonTTY: !isTTY,
 	}
 
+	// Frame the plan on stderr so it reads as a structured plan rather than a
+	// bare command dump, and surface which provider/lang produced it (only the
+	// --debug timeline showed this before). Kept off stdout so `--json` and
+	// piped plans stay machine-clean.
+	if !flags.json {
+		renderDoPlanHeader(cmd.ErrOrStderr(), prov.Name(), lang, flags.dryRun, len(plan.Commands))
+	}
+
 	result, err := executor.Execute(ctx, plan, opts)
 	if err != nil {
 		// NonTTYError has exit code 2.
@@ -248,7 +268,65 @@ func runDo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "do: backup ref created: %s\n", result.BackupRef)
 	}
 
+	// dry-run is a preview: tell the user nothing ran and how to execute.
+	if flags.dryRun && !flags.json {
+		renderDoDryRunFooter(cmd.ErrOrStderr(), lang)
+	}
+
 	return nil
+}
+
+// doSpinnerMessage is the inline spinner label shown while the provider
+// generates a plan. Localised to the resolved response language.
+func doSpinnerMessage(lang, providerName string) string {
+	if isKoLang(lang) {
+		return fmt.Sprintf("%s에게 계획 요청 중…", providerName)
+	}
+	return fmt.Sprintf("asking %s for a plan…", providerName)
+}
+
+// renderDoPlanHeader prints a compact, styled banner above the plan body:
+// a bold title (plus a "preview" badge in dry-run) and a faint meta line
+// naming the provider, language, and command count. fatih/color auto-strips
+// styling on non-TTY writers.
+func renderDoPlanHeader(w io.Writer, providerName, lang string, dryRun bool, n int) {
+	ko := isKoLang(lang)
+
+	title := "Execution plan"
+	count := fmt.Sprintf("%d command(s)", n)
+	badge := ""
+	if dryRun {
+		badge = "  (preview · nothing runs)"
+	}
+	if ko {
+		title = "실행 계획"
+		count = fmt.Sprintf("명령 %d개", n)
+		if dryRun {
+			badge = "  (미리보기 · 실행 안 함)"
+		}
+	}
+
+	bold := color.New(color.Bold, color.FgCyan).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+	fmt.Fprintf(w, "\n%s%s\n", bold(title), faint(badge))
+	fmt.Fprintln(w, faint(fmt.Sprintf("provider: %s · lang: %s · %s", providerName, lang, count)))
+	fmt.Fprintln(w)
+}
+
+// renderDoDryRunFooter tells the user the dry-run executed nothing and how
+// to actually run the plan.
+func renderDoDryRunFooter(w io.Writer, lang string) {
+	faint := color.New(color.Faint).SprintFunc()
+	msg := "to run: re-run with --yes, or drop --dry-run and answer y at the prompt"
+	if isKoLang(lang) {
+		msg = "실행하려면: --yes 로 다시 실행하거나, --dry-run 없이 실행해 확인 프롬프트에서 y 입력"
+	}
+	fmt.Fprintln(w, faint(msg))
+}
+
+// isKoLang reports whether a BCP-47 short code denotes Korean.
+func isKoLang(lang string) bool {
+	return strings.HasPrefix(strings.ToLower(lang), "ko")
 }
 
 // parseDurationOrDefault parses a Go duration string, returning the

@@ -83,10 +83,9 @@ func runExplain(cmd *cobra.Command, args []string) error {
 	if flags.provider != "" {
 		ai.Provider = flags.provider
 	}
-	// --lang flag overrides ai.lang.
-	if flags.lang != "" {
-		ai.Lang = flags.lang
-	}
+	// Conversational output (explain) follows output.lang; ai.lang governs git
+	// artifacts (commit/pr). The --lang flag still wins. See resolveResponseLang.
+	lang := resolveResponseLang(flags.lang, cfg.AI.Lang, cfg.Output.Lang)
 
 	// ai.enabled=false check (6.5).
 	if !ai.Enabled {
@@ -113,7 +112,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		}
 		prov = p
 	}
-	Dbg("explain: provider=%s model=%s lang=%s", prov.Name(), providerModel(prov), fallbackLang(ai.Lang))
+	Dbg("explain: provider=%s model=%s lang=%s", prov.Name(), providerModel(prov), lang)
 
 	// Type-assert Summarizer.
 	sum, ok := prov.(provider.Summarizer)
@@ -151,7 +150,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 	analyzer := &aichat.ErrorAnalyzer{
 		Summarizer: sum,
 		Context:    &aichat.RepoContextCollector{Runner: runner, TokenBudget: 2000, Dbg: Dbg},
-		Lang:       fallbackLang(ai.Lang),
+		Lang:       lang,
 		Easy:       EasyEngine().IsEnabled(),
 		Timeout:    timeout,
 		MaxTokens:  aiChatMaxTokens(ai),

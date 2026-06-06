@@ -642,21 +642,10 @@ func resolveStatusAssistProvider(ctx context.Context, cfg *config.Config, provid
 }
 
 func statusAssistLang(cfg *config.Config, override string) string {
-	if override != "" {
-		return override
+	if cfg == nil {
+		return resolveResponseLang(override, "", "")
 	}
-	if cfg != nil {
-		if cfg.AI.Lang != "" && cfg.AI.Lang != "en" {
-			return cfg.AI.Lang
-		}
-		if cfg.Output.Lang != "" {
-			return cfg.Output.Lang
-		}
-		if cfg.AI.Lang != "" {
-			return cfg.AI.Lang
-		}
-	}
-	return "en"
+	return resolveResponseLang(override, cfg.AI.Lang, cfg.Output.Lang)
 }
 
 // statusAssistSystemPrompt is the status advisor's role and output

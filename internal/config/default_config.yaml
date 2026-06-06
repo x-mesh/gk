@@ -195,10 +195,13 @@ ai:
     # default). Applies to do/ask/explain and pr/review/changelog.
     max_tokens: 4096
 
-  # AI response language (BCP-47 short code). Left unset so it follows
-  # output.lang — Easy Mode or output.lang=ko then gives Korean answers for
-  # ask/do/explain and status --ai. Set it here only to force a specific AI
-  # language regardless of output.lang. One-shot override: `--lang`.
+  # Language for git *artifacts* — commit messages, pr, changelog (BCP-47
+  # short code). Conversational commands (do / ask / explain, status --ai)
+  # do NOT follow this; they render user-facing prose and follow output.lang
+  # instead, so you can keep English commits while the CLI talks to you in
+  # Korean (lang: en + output.lang: ko). Left unset it follows output.lang.
+  # An explicit non-English value here is still honoured everywhere for users
+  # who want one language throughout. One-shot override: `--lang`.
   # lang: en
 
   # AI assistance that is attached to existing commands.

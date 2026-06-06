@@ -54,6 +54,38 @@ func ensureRemoteAllowed(prov provider.Provider, cfg config.AIConfig) error {
 	return nil
 }
 
+// resolveResponseLang picks the language for *conversational* AI output —
+// do / ask / explain / status --ai. These render user-facing prose, so they
+// follow output.lang rather than ai.lang. ai.lang governs git *artifacts*
+// (commit messages, pr/changelog) and is conventionally left at "en" even by
+// users who want a Korean CLI; treating that "en" as the unopinionated default
+// (rather than an explicit override) is what lets output.lang=ko still yield
+// Korean answers. Precedence:
+//
+//  1. override        — the --lang flag (always wins)
+//  2. aiLang != "en"  — a deliberately chosen non-English AI language
+//  3. outputLang      — the CLI's language (the common case)
+//  4. aiLang          — only reaches here as "en" when outputLang is unset
+//  5. "en"            — final fallback
+//
+// This mirrors the long-standing statusAssistLang behaviour so every
+// conversational command resolves language identically.
+func resolveResponseLang(override, aiLang, outputLang string) string {
+	if override != "" {
+		return override
+	}
+	if aiLang != "" && aiLang != "en" {
+		return aiLang
+	}
+	if outputLang != "" {
+		return outputLang
+	}
+	if aiLang != "" {
+		return aiLang
+	}
+	return "en"
+}
+
 // ── Privacy Gate helper ──────────────────────────────────────────────
 
 // applyPrivacyGate redacts the payload when the provider is remote.

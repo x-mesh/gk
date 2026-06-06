@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-06-06
+
+### Added
+
+- **`gk ignore <path>` 명령 신설.** "이 파일을 git에 포함하지 않기"를 AI 없이 결정론으로
+  처리한다. 지정한 경로를 `.gitignore`에 기록(디렉터리는 끝에 `/`)하고, 이미 추적 중이면
+  `git rm --cached`로 추적만 해제해 작업 트리의 파일은 그대로 남긴다. `--commit`으로 한
+  커밋에 마무리하고 `--dry-run`으로 미리본다. 이미 히스토리에 들어간 경로는 `gk forget`이
+  담당한다.
+- **`gk do` 결정론 패스트패스.** 흔하고 의도가 분명한 요청(파일 추적 제외, 히스토리에서
+  제거, 마지막 커밋 취소)은 LLM 왕복 없이 정답 플랜으로 즉시 직행하고, 어느 recognizer도
+  못 맞추면 기존 AI 경로로 폴백한다. 한국어 띄어쓰기 변형과 조사가 붙은 경로(`config.json를`)도
+  인식한다. "...하고 push" 같은 복합 요청은 부분 플랜을 막기 위해 LLM에 위임한다.
+- **`gk pull --ai`.** 통합 중 충돌이 나면 `gk resolve --ai`와 `gk continue`를 끝까지 구동해
+  rebase/merge를 자동으로 마친다. `--fetch-only`와는 함께 쓸 수 없다(해결할 충돌이 없음).
+
+### Changed
+
+- **대화형 AI 출력이 `output.lang`을 따른다.** `gk do`/`ask`/`explain`(및 `status --ai`)의
+  설명문은 이제 `output.lang`으로 출력되고, `ai.lang`은 git 아티팩트(커밋 메시지·pr·changelog)에만
+  적용된다. 두 설정의 목적이 다르므로, `ai.lang: en` + `output.lang: ko`면 커밋은 영어로
+  쓰면서 CLI 대화는 한국어로 받을 수 있다.
+- **`gk do`가 진행 상황과 플랜 헤더를 보여준다.** provider 응답을 기다리는 동안 spinner가
+  돌고(`--debug`에서는 디버그 로그와 겹치지 않도록 억제), 플랜 위에 provider·언어·dry-run
+  미리보기 배지를 stderr에 표시한다(stdout은 파이프·`--json`용으로 깨끗하게 유지).
+- **`gk forget` 후속 안내**가 `gk push --force`(gk-native, `--force-with-lease` + 시크릿
+  스캔)를 우선 제시하고, 모든 커밋 SHA가 바뀐 공유 브랜치는 협업자가 re-clone 또는
+  `git reset --hard` 해야 함을 경고한다.
+- **`gk pull`**이 base 브랜치를 정하지 못할 때(upstream 미설정 / rewrite 후 diverged) 막연한
+  "use --base" 대신 tracking 설정·`--base`·`gk push --force` 등 상황에 맞는 해결법을 안내한다.
+
 ## [0.67.0] - 2026-06-05
 
 ### Fixed
@@ -2234,7 +2265,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.67.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.68.0...HEAD
+[0.68.0]: https://github.com/x-mesh/gk/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/x-mesh/gk/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/x-mesh/gk/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/x-mesh/gk/compare/v0.64.0...v0.65.0

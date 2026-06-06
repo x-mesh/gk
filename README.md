@@ -94,6 +94,7 @@ unalias gk gke 2>/dev/null
 gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
 gk pull                      # fetch + integrate @{u}; refuses on diverged
 gk pull --rebase             # explicit consent: replay local on top of upstream
+gk pull --rebase --ai        # on conflict, resolve with AI then continue
 gk pull --fetch-only         # fetch without integrating
 gk merge main                # precheck + merge main into current branch
 gk sync                      # rebase onto local <base> (offline)
@@ -134,7 +135,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Alias | Description |
 |---|---|---|
 | `gk clone <owner/repo \| alias:owner/repo \| url>` | | Clone with short-form URL expansion. Bare `owner/repo` expands to `git@github.com:owner/repo.git` (ssh default, configurable). `--ssh`/`--https` override. `clone.hosts` maps aliases (`gl:`, `work:`). Optional `clone.root` + `clone.post_actions: [hooks-install, doctor]`. |
-| `gk pull` | | Fetch + integrate the current branch's upstream (`@{u}`). Refuses on diverged histories without explicit consent; `--rebase` / `--merge` / `--fetch-only` choose; `--strategy rebase\|merge\|ff-only\|auto` for direct override. Writes a backup ref before any history-rewriting integration. Conflict pauses surface inline previews + `gk resolve` shortcuts |
+| `gk pull` | | Fetch + integrate the current branch's upstream (`@{u}`). Refuses on diverged histories without explicit consent; `--rebase` / `--merge` / `--fetch-only` choose; `--strategy rebase\|merge\|ff-only\|auto` for direct override. Writes a backup ref before any history-rewriting integration. Conflict pauses surface inline previews + `gk resolve` shortcuts; `--ai` auto-resolves conflicts and continues (drives `gk resolve --ai` + `gk continue`) |
 | `gk diff` | | Terminal-friendly diff viewer with color, line numbers, and word-level highlights. `-i`/`--interactive` opens a file picker; `--staged`, `--stat`, `-U <n>`, `--no-pager`, `--no-word-diff`, `--json`. `<ref>`, `<ref>..<ref>`, `-- <path>` pass through to `git diff` |
 | `gk merge <target>` | | Precheck, AI-plan, and merge a target branch into the current branch. Supports `--plan-only`, `--no-ai`, `--ff-only`, `--no-ff`, `--no-commit`, `--squash`, `--autostash` |
 | `gk sync` | | Rebase the current branch onto local `<base>` (offline by default). `--fetch` for the explicit one-shot: fetch `<remote>/<base>`, fast-forward `refs/heads/<base>`, then integrate. Stale-base hint when local `<base>` differs from `<remote>/<base>` |
@@ -186,6 +187,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk timemachine show <sha\|ref>` | | Commit header + diff stat (or `--patch`) for any timeline entry |
 | `gk undo` | | Reflog-based HEAD restore; leaves backup ref at `refs/gk/undo-backup/...` |
 | `gk reset` | | Hard-reset current branch to its upstream; `--to-remote` uses `<remote>/<current>` |
+| `gk ignore <path>...` | | Deterministic (no AI) "stop including this file in git": appends each path to `.gitignore` (directories get a trailing `/`) and runs `git rm --cached` on any tracked path so it stops being tracked while the working-tree file stays. `--commit` finalizes it in one commit; `--dry-run` previews. For erasing a path that is already in history, use `gk forget`. Also reachable via natural language: `gk do "<file>을 git에 포함하고 싶지 않아"` routes here deterministically |
 | `gk forget [path...]` | | Remove paths from the entire git history via `git filter-repo`. With no args, auto-detects tracked-but-ignored paths from `.gitignore`. Writes a backup ref `refs/gk/forget-backup/<branch>/<unix>` (visible in `gk timemachine list`) plus a flat manifest under `.git/gk/` before the rewrite. `--analyze` reports unique blob count + total bytes per target without rewriting; with no targets it falls through to a repo-wide audit grouped by `--depth N` (default 1) capped at `--top N` (default 20). `--sort size\|churn\|name` switches ranking (churn surfaces rewrite-heavy paths). `--bar=auto\|filled\|block\|none` chooses bar style (htop / du-dust style on TTY). `--json` emits a stable machine-readable document for CI. `-i`/`--interactive` opens a multi-select picker over audit results and feeds the chosen paths back into the rewrite pipeline. `--keep <glob>` excludes paths from the forget set (`filepath.Match`, repeatable). Dirty entries inside forget targets are accepted; outside changes abort unless `--force-dirty`. Honours `--dry-run` and `--yes`. Requires `git-filter-repo` on PATH |
 | `gk wipe` | | `reset --hard` + `clean -fd`; backs up pre-wipe HEAD at `refs/gk/wipe-backup/...` |
 | `gk restore --lost` | | Surface dangling commits and blobs with cherry-pick hints |

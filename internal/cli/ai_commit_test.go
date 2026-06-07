@@ -37,11 +37,32 @@ func TestAICommitHelpListsFlags(t *testing.T) {
 	for _, want := range []string{
 		"--force", "--dry-run", "--provider", "--lang",
 		"--staged-only", "--include-unstaged", "--abort",
-		"--allow-secret-kind", "--ci", "--yes",
+		"--allow-secret-kind", "--no-verify", "--ci", "--yes",
 		"--no-wip-unwrap", "--force-wip",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing flag %q\n%s", want, out)
+		}
+	}
+}
+
+func TestSecretBypass(t *testing.T) {
+	cases := []struct {
+		name       string
+		noVerify   bool
+		allowKinds []string
+		want       bool
+	}{
+		{"default — gate enforced", false, nil, false},
+		{"named kind is suppressed upstream, not a bypass", false, []string{"github-token"}, false},
+		{"--no-verify bypasses", true, nil, true},
+		{"--allow-secret-kind all bypasses", false, []string{"all"}, true},
+		{"all mixed with a named kind still bypasses", false, []string{"github-token", "all"}, true},
+		{"--no-verify wins regardless of kinds", true, []string{"github-token"}, true},
+	}
+	for _, tc := range cases {
+		if got := secretBypass(tc.noVerify, tc.allowKinds); got != tc.want {
+			t.Errorf("%s: secretBypass(%v, %v) = %v, want %v", tc.name, tc.noVerify, tc.allowKinds, got, tc.want)
 		}
 	}
 }

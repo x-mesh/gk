@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,7 +56,8 @@ the most recent run.
 	cmd.Flags().Bool("staged-only", false, "only consider already-staged changes")
 	cmd.Flags().Bool("include-unstaged", false, "include unstaged + untracked changes (default true)")
 	cmd.Flags().Bool("include-noise", false, "include build output / dependency / cache files normally excluded (node_modules, __pycache__, *.db, …); skips the .gitignore guard")
-	cmd.Flags().StringSlice("allow-secret-kind", nil, "suppress secret findings of the given kind (repeatable)")
+	cmd.Flags().StringSliceP("allow-secret-kind", "S", nil, "suppress secret findings of the given kind (repeatable); the special value 'all' bypasses every finding")
+	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret commit guards (bypassed secrets are reported, then allowed into git history; the privacy gate for remote AI still applies)")
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
@@ -173,7 +175,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// …) before they reach the classifier — a missing .gitignore otherwise
 	// floods the scope and the AI response gets truncated. Offers to add
 	// them to .gitignore on a TTY. --include-noise opts out (commit them as-is).
-	if !flags.includeNoise {
+	if !flags.includeNoise && !flags.noVerify {
 		files = guardNoiseFiles(ctx, cmd, runner, files)
 		if len(files) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after excluding non-source files (use --include-noise to keep them)")
@@ -196,11 +198,30 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if len(findings) > 0 {
-		renderFindings(cmd.ErrOrStderr(), findings)
-		return fmt.Errorf("commit: aborted due to %d secret finding(s); fix or --allow-secret-kind <kind>",
-			len(findings))
+		// Two bypass paths converge here, both deliberately loud: --no-verify
+		// (turn off the commit guards wholesale) and --allow-secret-kind all
+		// (the secret-specific escape hatch). Either way we still PRINT every
+		// finding and shout that it's entering history — bypassing a real
+		// credential is a rotate-now event, not a silent one. Naming a kind
+		// explicitly (`--allow-secret-kind github-token`) is the quiet path:
+		// it's filtered out upstream in ScanPayload and never reaches here.
+		if secretBypass(flags.noVerify, flags.allowSecretKinds) {
+			via := "--allow-secret-kind all"
+			if flags.noVerify {
+				via = "--no-verify"
+			}
+			renderFindings(cmd.ErrOrStderr(), findings)
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"⚠️  commit: %d secret finding(s) BYPASSED via %s — these WILL be written into git history. Rotate any real credential.\n",
+				len(findings), via)
+		} else {
+			renderFindings(cmd.ErrOrStderr(), findings)
+			return fmt.Errorf("commit: aborted due to %d secret finding(s); fix, allow a kind with --allow-secret-kind <kind>, or bypass everything with --allow-secret-kind all / --no-verify",
+				len(findings))
+		}
+	} else {
+		Dbg("commit: secret-gate clean")
 	}
-	Dbg("commit: secret-gate clean")
 
 	// Privacy Gate: redact payload for remote providers.
 	redactedPayload, pgFindings, pgErr := applyPrivacyGate(cmd, prov, payload, ai)
@@ -628,11 +649,22 @@ type aiCommitFlags struct {
 	includeUnstaged  bool
 	includeNoise     bool
 	allowSecretKinds []string
+	noVerify         bool
 	abort            bool
 	ci               bool
 	yes              bool
 	noWIPUnwrap      bool
 	forceWIP         bool
+}
+
+// secretBypass reports whether secret findings should be waved through
+// (reported on stderr, then committed) instead of aborting the commit.
+// True for the two explicit, loud escape hatches: --no-verify and the
+// special --allow-secret-kind all. Naming a concrete kind is NOT a bypass
+// here — those are filtered inside aicommit.ScanPayload and never reach
+// this decision, so they stay silent.
+func secretBypass(noVerify bool, allowKinds []string) bool {
+	return noVerify || slices.Contains(allowKinds, "all")
 }
 
 func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
@@ -646,6 +678,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.includeUnstaged, _ = cmd.Flags().GetBool("include-unstaged")
 	f.includeNoise, _ = cmd.Flags().GetBool("include-noise")
 	f.allowSecretKinds, _ = cmd.Flags().GetStringSlice("allow-secret-kind")
+	f.noVerify, _ = cmd.Flags().GetBool("no-verify")
 	f.abort, _ = cmd.Flags().GetBool("abort")
 	f.ci, _ = cmd.Flags().GetBool("ci")
 	f.yes, _ = cmd.Flags().GetBool("yes")

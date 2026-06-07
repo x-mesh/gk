@@ -2239,7 +2239,8 @@ gk commit [flags]
 | `--staged-only` | false | Only consider already-staged changes |
 | `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
 | `--include-noise` | false | Include build output / dependency / cache files normally excluded (`node_modules`, `__pycache__`, `*.db`, …); skips the `.gitignore` guard |
-| `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable) |
+| `-S`, `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable); the special value `all` bypasses every finding |
+| `-n`, `--no-verify` | false | Bypass the noise + secret commit guards (findings are reported on stderr, then committed; the remote-AI privacy gate still applies) |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
 | `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
 | `--force-wip` | false | Unwrap the WIP chain even when some commits are already pushed (rewrites pushed history; rerun `git push --force-with-lease` afterward) |
@@ -2250,7 +2251,7 @@ gk commit [flags]
 
 | Gate | Source | Behaviour |
 |------|--------|-----------|
-| Secret scan | `internal/secrets` + `gitleaks` (when installed) | Abort on any finding; `--allow-secret-kind <kind>` opts a specific kind out |
+| Secret scan | `internal/secrets` + `gitleaks` (when installed) | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
 | Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
 | Noise guard | built-in path patterns | Build output / deps / caches / local DBs (`node_modules/`, `__pycache__/`, `.venv/`, `*.pyc`, `*.db`, `.DS_Store`, …) are excluded from the AI scope; on a TTY gk offers to add them to `.gitignore`. Opt out with `--include-noise` |
 | Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |
@@ -2270,6 +2271,9 @@ gk commit -f --provider gemini
 
 # Include a specific secret kind you've decided to allow.
 gk commit --allow-secret-kind generic-secret
+
+# Bypass every guard (findings are reported, then committed — rotate any real credential).
+gk commit --no-verify
 
 # Recover from a mid-apply failure.
 gk commit --abort

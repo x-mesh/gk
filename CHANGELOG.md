@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-06-07
+
 ### Added
 
 - **`gk local` 명령 신설 (별칭 `gk lo`).** "내 컴퓨터에만 있는 것"을 한 화면에 모은다 —
@@ -2285,7 +2287,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.68.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.69.0...HEAD
+[0.69.0]: https://github.com/x-mesh/gk/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/x-mesh/gk/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/x-mesh/gk/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/x-mesh/gk/compare/v0.65.0...v0.66.0

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-06-07
+
+### Added
+
+- **`gk push`와 `gk ship`에 `-n`/`--no-verify` 추가 — 시크릿 스캔 우회.** `gk commit -n`과 일관되게, push될 커밋
+  (`<remote>/<branch>..HEAD`)의 시크릿 패턴 스캔을 `-n` 한 글자로 건너뛴다. `gk push`에선 기존 `--skip-scan`과 동일
+  동작이고(둘 다 유지), `gk ship`은 그동안 push 직전 시크릿 스캔을 우회할 방법이 전혀 없었는데 이제 `-n`으로 가능하다.
+  참고로 `git push -n`은 `--dry-run`이지만 `gk push`엔 dry-run이 없어 충돌하지 않는다. AI 명령(`ask`·`explain`·`pr`
+  등)의 privacy gate는 성격이 다른 가드라 기존의 `--skip-privacy`를 그대로 쓴다.
+
 ## [0.72.0] - 2026-06-07
 
 ### Changed
@@ -2320,7 +2330,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.72.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.73.0...HEAD
+[0.73.0]: https://github.com/x-mesh/gk/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/x-mesh/gk/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/x-mesh/gk/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/x-mesh/gk/compare/v0.69.0...v0.70.0

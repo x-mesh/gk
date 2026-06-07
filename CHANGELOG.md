@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-06-07
+
+### Added
+
+- **`gk`를 `git-kit`·`git kit`으로도 호출.** 모든 설치 방식이 같은 바이너리를 두 이름으로
+  노출한다(Homebrew cask·`install.sh`는 자동, `go install`·수동 tar는 안내된 symlink 한 줄).
+  oh-my-zsh의 `git` 플러그인이 `gk`를 `gitk`로 가리는 흔한 충돌을 alias 제거 없이 우회할 수
+  있고, PATH의 `git-kit` 덕분에 `git kit …`이 git 네이티브 서브커맨드로 동작한다. help·usage·
+  `--version`은 호출한 이름을 그대로 따른다(`git-kit push --help` → `git-kit push …`). 단,
+  git이 인자 없는 `git kit --help`를 man 조회로 바꾸는 건 모든 커스텀 서브커맨드 공통이라,
+  최상위 도움말은 `git kit help` 또는 `git-kit --help`를 쓴다.
+
 ## [0.69.0] - 2026-06-07
 
 ### Added
@@ -2287,7 +2299,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.69.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.70.0...HEAD
+[0.70.0]: https://github.com/x-mesh/gk/compare/v0.69.0...v0.70.0
 [0.69.0]: https://github.com/x-mesh/gk/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/x-mesh/gk/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/x-mesh/gk/compare/v0.66.0...v0.67.0

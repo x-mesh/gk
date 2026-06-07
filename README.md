@@ -79,13 +79,32 @@ go install github.com/x-mesh/gk/cmd/gk@latest
 
 Requires **git ≥ 2.38** (for `merge-tree --write-tree`; ≥ 2.40 preferred so `gk precheck` can enumerate conflicted paths by name). Run `gk doctor` after install to verify.
 
-### oh-my-zsh users: alias conflict
+### Command name: `gk`, `git-kit`, or `git kit`
 
-oh-my-zsh's `git` plugin defines `gk` as a `gitk` launcher, which shadows the `gk` binary. Drop the conflicting aliases in your `~/.zshrc` after oh-my-zsh loads:
+**Homebrew and the `install.sh` one-liner install the binary under two names**, so you always have a way in even when `gk` is taken:
 
-```zsh
-unalias gk gke 2>/dev/null
+| invoke | notes |
+|--------|-------|
+| `gk …` | short, the default |
+| `git-kit …` | identical, never alias-shadowed |
+| `git kit …` | git execs the `git-kit` binary as a native subcommand |
+
+Installed with `go install` or a manual tarball instead? Those drop only `gk` — create the second name yourself once (point it at wherever the `gk` binary lives; for `go install` that's `$(go env GOPATH)/bin`):
+
+```bash
+ln -sf gk ~/.local/bin/git-kit
 ```
+
+This matters because oh-my-zsh's `git` plugin defines `gk` as a `gitk` launcher, which shadows the `gk` binary. You don't have to fight it — just reach for one of:
+
+- **Use `git kit` (or `git-kit`)** — works immediately, no config change.
+- **Or drop the alias** in your `~/.zshrc`, after oh-my-zsh loads:
+
+  ```zsh
+  unalias gk gke 2>/dev/null
+  ```
+
+Help and usage text follow whichever name you typed, so `git kit push --help` reads `git-kit push …`, not `gk push …`. (One git quirk: the bare `git kit --help` gets turned into a man-page lookup — as it does for every custom subcommand. For the top-level help use `git kit help` or `git-kit --help`.)
 
 ## Quickstart
 

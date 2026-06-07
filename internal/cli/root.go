@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -90,15 +91,37 @@ func init() {
 // via init() to attach themselves: cli.Root().AddCommand(...)
 func Root() *cobra.Command { return rootCmd }
 
+// versionFields captures the build-time version metadata SetVersionInfo
+// received, so Execute can re-render the root help header under the actual
+// invocation name (gk / git-kit) instead of the "gk" baked in at startup.
+type versionFields struct {
+	set                           bool
+	version, commit, date, suffix string
+}
+
+var verMeta versionFields
+
+// renderRootLong builds the root --help header: a version line under the
+// given invocation name, followed by the static description. Shared by
+// SetVersionInfo (default "gk") and Execute (real invocation name) so the
+// two never drift.
+func renderRootLong(name, version, commit, date, suffix string) string {
+	return fmt.Sprintf("%s %s (commit %s, built %s%s)\n\n%s", name, version, commit, date, suffix, rootLongDesc)
+}
+
 // SetVersionInfo wires build-time version metadata for `gk --version` output
 // and prepends the version line to the root help page. branch + worktree
 // are surfaced when known so users can tell which checkout produced the
 // binary they're running — invaluable when juggling multiple gk worktrees.
+//
+// The Long header is rendered under the canonical `gk` here; Execute rewrites
+// it to the real invocation name (e.g. `git-kit`) once argv[0] is known.
 func SetVersionInfo(v, c, d, b, w string) {
 	suffix := buildSuffix(b, w)
 	rawVersion = v
+	verMeta = versionFields{set: true, version: v, commit: c, date: d, suffix: suffix}
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s%s)", v, c, d, suffix)
-	rootCmd.Long = fmt.Sprintf("gk %s (commit %s, built %s%s)\n\n%s", v, c, d, suffix, rootLongDesc)
+	rootCmd.Long = renderRootLong("gk", v, c, d, suffix)
 }
 
 // CurrentVersion returns the raw build-time version string set by
@@ -123,10 +146,45 @@ func buildSuffix(branch, worktree string) string {
 
 // Execute runs the root command. Returns the error so main.go can set exit code.
 func Execute() error {
+	// Render help/usage under whichever name actually invoked us, so the
+	// command tree reads correctly whether the user typed `gk`, `git-kit`,
+	// or `git kit` (git execs the `git-kit` binary for the latter). Without
+	// this, someone calling `git kit push --help` would see `gk push` in the
+	// usage line — confusing, since `gk` may be the very alias they're avoiding.
+	name := invocationName()
+	rootCmd.Use = name
+	// The version header SetVersionInfo baked in at startup is "gk"-prefixed;
+	// re-render it under the real invocation name so `git-kit --help` reads
+	// "git-kit vX …", not "gk vX …". Only when we were reached by another
+	// name — keeping the canonical `gk` path identical to before.
+	if name != "gk" && verMeta.set {
+		rootCmd.Long = renderRootLong(name, verMeta.version, verMeta.commit, verMeta.date, verMeta.suffix)
+	}
 	// Wire Easy-Mode help after every subcommand has registered, so the
 	// plain-Korean descriptions cover the whole command tree.
 	installEasyHelp(rootCmd)
 	return rootCmd.Execute()
+}
+
+// invocationName derives the root command name shown in help/usage from
+// argv[0]; see resolveInvocationName for the policy.
+func invocationName() string { return resolveInvocationName(os.Args[0]) }
+
+// resolveInvocationName maps argv[0] to the name gk renders itself under.
+// Only the names we actually ship as are honoured — `git-kit` (the
+// git-subcommand-friendly alias, also reached via `git kit`), `gk-dev`
+// (the Makefile dev build), and the canonical `gk`. Anything else (most
+// importantly the `*.test` binary that drives the CLI under `go test`)
+// falls back to "gk" so help output stays stable and the cobra tests
+// don't have to special-case argv[0].
+func resolveInvocationName(arg0 string) string {
+	base := strings.TrimSuffix(filepath.Base(arg0), ".exe")
+	switch base {
+	case "gk", "git-kit", "gk-dev":
+		return base
+	default:
+		return "gk"
+	}
 }
 
 // Persistent flag accessors for subcommand files.

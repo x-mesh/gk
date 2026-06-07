@@ -12,6 +12,10 @@ set -eu
 
 REPO="x-mesh/gk"
 BIN="gk"
+# Second name installed alongside `gk`. The `gk` name is shadowed by a shell
+# alias on common setups (oh-my-zsh's git plugin sets `gk=gitk`), and a
+# `git-kit` on PATH also makes `git kit …` resolve as a native git subcommand.
+ALT="git-kit"
 
 err() { printf "gk-install: %s\n" "$*" >&2; exit 1; }
 info() { printf "gk-install: %s\n" "$*"; }
@@ -70,15 +74,29 @@ tar -xzf "$tmp/$asset" -C "$tmp" "$BIN" || err "extract failed"
 default_dir="$HOME/.local/bin"
 target_dir=${GK_INSTALL_DIR:-$default_dir}
 
+# link_alt creates the `git-kit` name next to the installed `gk`. A relative
+# symlink keeps it valid if the bin dir is later moved; a plain copy is the
+# fallback for filesystems without symlink support. Never fatal — the primary
+# `gk` install has already succeeded by the time we get here.
+link_alt() {
+  dir=$1
+  ln -sf "$BIN" "$dir/$ALT" 2>/dev/null \
+    || cp "$tmp/$BIN" "$dir/$ALT" 2>/dev/null \
+    || return 1
+}
+
 install_to() {
   dir=$1
   mkdir -p "$dir" 2>/dev/null || true
   if [ -w "$dir" ]; then
     install -m 0755 "$tmp/$BIN" "$dir/$BIN"
+    link_alt "$dir" || true
   elif command -v sudo >/dev/null 2>&1; then
     # Only reached when the user overrides GK_INSTALL_DIR to a system path.
     info "$dir not writable — using sudo"
     sudo install -m 0755 "$tmp/$BIN" "$dir/$BIN"
+    sudo ln -sf "$BIN" "$dir/$ALT" 2>/dev/null \
+      || sudo cp "$tmp/$BIN" "$dir/$ALT" 2>/dev/null || true
   else
     return 1
   fi
@@ -86,7 +104,7 @@ install_to() {
 
 install_to "$target_dir" || err "install failed (no writable target: $target_dir)"
 
-info "installed: $target_dir/$BIN ($version)"
+info "installed: $target_dir/$BIN (also as $ALT) ($version)"
 
 case ":$PATH:" in
   *":$target_dir:"*) ;;

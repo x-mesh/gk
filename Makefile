@@ -19,7 +19,16 @@ build:
 install: build
 	install -d $(BINDIR)
 	install -m 755 bin/$(BINARY) $(BINDIR)/$(INSTALL_NAME)
-	@echo "installed: $(BINDIR)/$(INSTALL_NAME)"
+	@# Mirror the release layout: when installing under the canonical `gk`
+	@# name, also expose it as `git-kit` (works where `gk` is alias-shadowed,
+	@# and lets `git kit …` resolve as a git subcommand). The default dev
+	@# install (gk-dev) deliberately skips this so it never claims the
+	@# `git-kit` name the Homebrew build owns.
+	@if [ "$(INSTALL_NAME)" = "gk" ]; then \
+		ln -sf gk $(BINDIR)/git-kit && echo "installed: $(BINDIR)/gk (also as git-kit)"; \
+	else \
+		echo "installed: $(BINDIR)/$(INSTALL_NAME)"; \
+	fi
 
 # install-gk forces the canonical `gk` name — convenient when the dev
 # build IS the gk you use day-to-day (i.e. you maintain gk itself).
@@ -31,6 +40,7 @@ install-gk:
 
 uninstall:
 	rm -f $(BINDIR)/$(INSTALL_NAME)
+	@if [ "$(INSTALL_NAME)" = "gk" ]; then rm -f $(BINDIR)/git-kit; fi
 	@echo "removed:   $(BINDIR)/$(INSTALL_NAME)"
 
 uninstall-gk:
@@ -97,7 +107,7 @@ help:
 	@echo "  test-e2e          end-to-end tests driving the built gk binary (-tags e2e)"
 	@echo ""
 	@echo "  install           writes $(BINDIR)/$(INSTALL_NAME)  (safe default: gk-dev)"
-	@echo "  install-gk        writes $(BINDIR)/gk               (use the dev build AS gk)"
+	@echo "  install-gk        writes $(BINDIR)/gk + git-kit    (use the dev build AS gk)"
 	@echo "  uninstall         remove $(BINDIR)/$(INSTALL_NAME)"
 	@echo "  uninstall-gk      remove $(BINDIR)/gk"
 	@echo ""

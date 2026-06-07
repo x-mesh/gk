@@ -78,13 +78,32 @@ go install github.com/x-mesh/gk/cmd/gk@latest
 
 **git ≥ 2.38** 이 필요합니다(`merge-tree --write-tree`용; `gk precheck`가 충돌 경로를 이름으로 열거하려면 ≥ 2.40 권장). 설치 후 `gk doctor`로 확인하세요.
 
-### oh-my-zsh 사용자: alias 충돌
+### 명령 이름: `gk`, `git-kit`, `git kit`
 
-oh-my-zsh의 `git` 플러그인이 `gk`를 `gitk` 런처로 정의하여 `gk` 바이너리를 가립니다. oh-my-zsh 로드 후 `~/.zshrc`에 충돌 alias를 제거하세요:
+**Homebrew와 `install.sh` 한 줄 설치는 바이너리를 두 가지 이름으로 깔아 줍니다.** 그래서 `gk`가 막혀도 진입 경로가 항상 하나는 열려 있습니다:
 
-```zsh
-unalias gk gke 2>/dev/null
+| 호출 | 설명 |
+|------|------|
+| `gk …` | 짧은 기본 이름 |
+| `git-kit …` | 동일한 바이너리, alias에 가려지지 않음 |
+| `git kit …` | git이 `git-kit` 바이너리를 네이티브 서브커맨드로 실행 |
+
+반면 `go install`이나 수동 tar로 설치하면 `gk` 하나만 깔립니다. 두 번째 이름은 직접 한 번 만들어 주세요 (`gk` 바이너리가 있는 경로로 조정; `go install`이면 `$(go env GOPATH)/bin`):
+
+```bash
+ln -sf gk ~/.local/bin/git-kit
 ```
+
+이게 중요한 이유는 oh-my-zsh의 `git` 플러그인이 `gk`를 `gitk` 런처로 정의해 `gk` 바이너리를 가리기 때문입니다. 굳이 싸울 필요 없이 둘 중 하나를 쓰면 됩니다:
+
+- **`git kit`(또는 `git-kit`) 사용** — 설정 변경 없이 즉시 동작.
+- **또는 alias 제거** — oh-my-zsh 로드 후 `~/.zshrc`에서:
+
+  ```zsh
+  unalias gk gke 2>/dev/null
+  ```
+
+help·usage 출력은 입력한 이름을 그대로 따라가므로, `git kit push --help`는 `gk push …`가 아니라 `git-kit push …`로 표시됩니다. (단, git은 인자 없는 `git kit --help`를 man 페이지 조회로 바꿉니다 — 모든 커스텀 서브커맨드 공통 동작입니다. 최상위 도움말은 `git kit help` 또는 `git-kit --help`를 쓰세요.)
 
 ## 빠른 시작
 

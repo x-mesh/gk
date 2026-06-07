@@ -52,6 +52,16 @@ homebrew_casks:
   - name: gk
     binaries:
       - gk
+    # Expose the same binary as `git-kit` as well. The `gk` name is shadowed
+    # by a shell alias on common setups (oh-my-zsh's git plugin sets
+    # `gk=gitk`), and a `git-kit` on PATH also lets `git kit …` resolve as a
+    # native git subcommand. goreleaser's `binaries:` list can't set a
+    # per-entry symlink target, so the second link is declared as raw cask
+    # DSL — `binary "gk", target: "git-kit"` links the staged `gk` under a
+    # second name in /opt/homebrew/bin. The quarantine xattr is stripped from
+    # the underlying file by the post-install hook below, so both names work.
+    custom_block: |
+      binary "gk", target: "git-kit"
     repository:
       owner: x-mesh
       name: homebrew-tap

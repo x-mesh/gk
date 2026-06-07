@@ -77,7 +77,7 @@ func init() {
 		"gk commit --include-noise":          "보통 제외하는 빌드·의존성·캐시 파일(node_modules, __pycache__, *.db 등)도 포함 — .gitignore 가드 건너뜀",
 		"gk commit --lang":                   "메시지 언어(ai.lang) 바꾸기(en|ko|...)",
 		"gk commit --model":                  "이번 실행에만 쓸 모델 바꾸기(HTTP 제공자만 해당)",
-		"gk commit --no-verify":              "노이즈·비밀정보 커밋 가드 건너뛰기(무시된 비밀정보는 보고 후 git 기록에 포함됨 — 실제 자격증명이면 즉시 폐기·재발급; 원격 AI용 프라이버시 가드는 유지)",
+		"gk commit --no-verify":              "노이즈·비밀정보 커밋 가드와 privacy gate 임계값을 함께 건너뛰기(무시된 비밀정보는 보고 후 git 기록에 포함됨 — 실제 자격증명이면 즉시 폐기·재발급; 원격 AI로 보내는 payload의 redaction은 유지)",
 		"gk commit --no-wip-unwrap":          "HEAD 줄기에서 WIP 성격 커밋 감지·정리 건너뛰기",
 		"gk commit --provider":               "AI 제공자(ai.provider) 바꾸기(gemini|qwen|kiro)",
 		"gk commit --staged-only":            "이미 준비된(staged) 변경만 대상으로 함",

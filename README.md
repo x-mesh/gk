@@ -275,7 +275,7 @@ gk commit [flags]
       --force-wip                  unwrap WIP chain even when some commits are already pushed (rewrites pushed history; requires force-push afterward)
       --include-unstaged           include unstaged + untracked changes (default true)
       --lang string                override ai.lang (en|ko|...)
-  -n, --no-verify                  bypass the noise + secret commit guards (secrets are reported, then allowed into history; the privacy gate for remote AI still applies)
+  -n, --no-verify                  bypass the noise + secret guards and the privacy-gate abort threshold (secrets are reported, then committed; payload redaction to remote AI still applies)
       --no-wip-unwrap              skip detection/unwrap of WIP-like commits in HEAD chain
       --provider string            override ai.provider (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                only consider already-staged changes
@@ -352,8 +352,8 @@ without calling a provider.
 
 ### Safety rails (every run)
 
-- **Secret gate.** `internal/secrets.Scan` plus `gitleaks` (if installed) scan the payload. Any finding aborts the commit, including under `--force`. Pass `--allow-secret-kind <kind>` to whitelist one kind for the current run. To bypass everything, use `--allow-secret-kind all` or `-n/--no-verify` — but each finding is reported on stderr and then written into history as-is, so rotate any real credential. The privacy gate still applies.
-- **Privacy gate.** For remote providers (`Locality=remote`), the outbound payload is scrubbed: secrets, paths matching `deny_paths`, and sensitive patterns are replaced with tokens like `[SECRET_1]` or `[PATH_1]`. The run aborts if more than ten secrets show up in a single payload. `--show-prompt` lets you inspect the redacted version. With `ai.commit.audit` on, the redactions are logged to `.gk/ai-audit.jsonl`.
+- **Secret gate.** `internal/secrets.Scan` plus `gitleaks` (if installed) scan the payload. Any finding aborts the commit, including under `--force`. Pass `--allow-secret-kind <kind>` to whitelist one kind for the current run. To bypass everything, use `--allow-secret-kind all` or `-n/--no-verify` — but each finding is reported on stderr and then written into history as-is, so rotate any real credential. Redaction to the remote AI always applies; `-n` additionally lifts the privacy gate's abort threshold (next item).
+- **Privacy gate.** For remote providers (`Locality=remote`), the outbound payload is scrubbed: secrets, paths matching `deny_paths`, and sensitive patterns are replaced with tokens like `[SECRET_1]` or `[PATH_1]`. The run aborts if more than ten secrets show up in a single payload — raise `ai.commit.privacy.max_secrets`, or skip that threshold with `--skip-privacy` (`-n`/`--no-verify` implies it; redaction is unaffected either way). `--show-prompt` lets you inspect the redacted version. With `ai.commit.audit` on, the redactions are logged to `.gk/ai-audit.jsonl`.
 - **Deny paths.** Files like `.env`, private keys, and tfstate are dropped before the payload leaves the process.
 - **Git-state guard.** `gk commit` refuses to run while a rebase, merge, or cherry-pick is in progress, so `MERGE_MSG` never gets overwritten.
 - **Backup ref.** Each run writes `refs/gk/ai-commit-backup/<branch>/<unix>` before committing. `gk commit --abort` restores HEAD to it.

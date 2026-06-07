@@ -57,7 +57,7 @@ the most recent run.
 	cmd.Flags().Bool("include-unstaged", false, "include unstaged + untracked changes (default true)")
 	cmd.Flags().Bool("include-noise", false, "include build output / dependency / cache files normally excluded (node_modules, __pycache__, *.db, …); skips the .gitignore guard")
 	cmd.Flags().StringSliceP("allow-secret-kind", "S", nil, "suppress secret findings of the given kind (repeatable); the special value 'all' bypasses every finding")
-	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret commit guards (bypassed secrets are reported, then allowed into git history; the privacy gate for remote AI still applies)")
+	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret guards and the privacy-gate abort threshold (bypassed secrets are reported, then committed; payload redaction to remote AI still applies)")
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
@@ -81,6 +81,16 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	flags, err := readAICommitFlags(cmd)
 	if err != nil {
 		return err
+	}
+	// --no-verify is the "bypass every commit guard" switch, so fold in the
+	// privacy gate's abort threshold too — a payload with more than
+	// max_secrets findings must not re-block a commit the user already chose
+	// to force through. Redaction is untouched: applyPrivacyGate still scrubs
+	// the payload, so the remote LLM never sees a raw secret. This is exactly
+	// what --skip-privacy does; we set it implicitly so `gk commit -n` is a
+	// single, complete escape hatch instead of needing `-n --skip-privacy`.
+	if flags.noVerify {
+		_ = cmd.Flags().Set("skip-privacy", "true")
 	}
 	ai := applyAICommitFlagsToConfig(cfg.AI, flags)
 

@@ -67,6 +67,26 @@ func TestSecretBypass(t *testing.T) {
 	}
 }
 
+// TestNoVerifyCanSetSkipPrivacy guards the premise of the --no-verify ⇒
+// --skip-privacy implication in runAICommit: the commit command must be able
+// to flip the root-level persistent `skip-privacy` flag, and applyPrivacyGate
+// must read the same value back. If cobra ever stops sharing that flag with
+// the subcommand, `gk commit -n` would silently re-block on the privacy gate.
+func TestNoVerifyCanSetSkipPrivacy(t *testing.T) {
+	found, _, err := rootCmd.Find([]string{"commit"})
+	if err != nil {
+		t.Fatalf("find commit: %v", err)
+	}
+	t.Cleanup(func() { _ = found.Flags().Set("skip-privacy", "false") })
+
+	if err := found.Flags().Set("skip-privacy", "true"); err != nil {
+		t.Fatalf("commit cannot set inherited skip-privacy flag: %v", err)
+	}
+	if v, _ := found.Flags().GetBool("skip-privacy"); !v {
+		t.Error("skip-privacy not readable as true from the commit command")
+	}
+}
+
 func TestReadAICommitFlagsMutualExclusion(t *testing.T) {
 	found, _, _ := rootCmd.Find([]string{"commit"})
 	_ = found.Flags().Set("staged-only", "true")

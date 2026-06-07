@@ -2240,7 +2240,7 @@ gk commit [flags]
 | `--include-unstaged` | true | Include unstaged + untracked changes (mutually exclusive with `--staged-only`) |
 | `--include-noise` | false | Include build output / dependency / cache files normally excluded (`node_modules`, `__pycache__`, `*.db`, …); skips the `.gitignore` guard |
 | `-S`, `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable); the special value `all` bypasses every finding |
-| `-n`, `--no-verify` | false | Bypass the noise + secret commit guards (findings are reported on stderr, then committed; the remote-AI privacy gate still applies) |
+| `-n`, `--no-verify` | false | Bypass the noise + secret guards **and** the privacy-gate abort threshold (implies `--skip-privacy`); findings are reported on stderr, then committed. Payload redaction to remote AI still applies |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
 | `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
 | `--force-wip` | false | Unwrap the WIP chain even when some commits are already pushed (rewrites pushed history; rerun `git push --force-with-lease` afterward) |

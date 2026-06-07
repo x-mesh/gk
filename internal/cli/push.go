@@ -25,6 +25,10 @@ func init() {
 	}
 	cmd.Flags().Bool("force", false, "allow non-fast-forward (uses --force-with-lease)")
 	cmd.Flags().Bool("skip-scan", false, "skip the secret-pattern scan")
+	// --no-verify is the alias-friendly spelling that matches `gk commit -n`;
+	// note `git push -n` means --dry-run, but gk push has no dry-run, so there
+	// is no clash. Both flags do the same thing: skip the secret scan.
+	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan (same as --skip-scan; matches 'gk commit -n')")
 	cmd.Flags().Bool("yes", false, "skip interactive confirmations (for automation)")
 	rootCmd.AddCommand(cmd)
 }
@@ -37,6 +41,9 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	skipScan, _ := cmd.Flags().GetBool("skip-scan")
+	if nv, _ := cmd.Flags().GetBool("no-verify"); nv {
+		skipScan = true
+	}
 	yes, _ := cmd.Flags().GetBool("yes")
 
 	remote := cfg.Remote
@@ -92,7 +99,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 			for _, f := range findings {
 				fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
 			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "  use --skip-scan to override (not recommended)")
+			fmt.Fprintln(cmd.ErrOrStderr(), "  use --no-verify (or --skip-scan) to override (not recommended)")
 			return fmt.Errorf("aborting push")
 		}
 	} else {

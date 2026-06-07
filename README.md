@@ -186,7 +186,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 ### Safety
 | Command | Description |
 |---|---|
-| `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease` |
+| `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease`; `-n`/`--skip-scan` skips the secret scan |
 | `gk ship` | Release ship gate: status/dry-run/squash modes, SemVer inference, version/CHANGELOG release commit, guarded branch/tag push. Tag push triggers the release workflow |
 | `gk precheck <target>` | Dry-run merge conflict scan via `git merge-tree`; exit 3 on conflicts; `--json` for CI |
 | `gk preflight` | Run configured check sequence (`commit-lint`, `branch-check`, `no-conflict`, or shell commands) |

@@ -49,6 +49,7 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `--no-release` | false | Push the branch without creating or pushing a release tag |
 | `--push` | true | Push the branch and release tag; pass `--push=false` to tag locally only |
 | `--skip-preflight` | false | Skip configured preflight checks |
+| `-n`, `--no-verify` | false | Skip the secret-pattern scan before pushing (matches `gk commit -n` / `gk push -n`) |
 | `--allow-dirty` | false | Allow shipping with a dirty working tree |
 | `--allow-non-base` | false | Allow release tags from a non-base branch |
 | `-y`, `--yes` | false | Skip the final confirmation prompt |

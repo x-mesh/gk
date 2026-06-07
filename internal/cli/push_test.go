@@ -25,6 +25,7 @@ func buildPushCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("force", false, "")
 	cmd.Flags().Bool("skip-scan", false, "")
+	cmd.Flags().BoolP("no-verify", "n", false, "")
 	cmd.Flags().Bool("yes", false, "")
 	// Persistent flags required by config.Load
 	cmd.Flags().String("repo", "", "")
@@ -35,6 +36,26 @@ func buildPushCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+// TestPushShipNoVerifyFlag guards that both push and ship expose --no-verify
+// under the -n shorthand, keeping the secret-scan bypass consistent with
+// `gk commit -n`.
+func TestPushShipNoVerifyFlag(t *testing.T) {
+	for _, name := range []string{"push", "ship"} {
+		cmd, _, err := rootCmd.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find %s: %v", name, err)
+		}
+		f := cmd.Flags().Lookup("no-verify")
+		if f == nil {
+			t.Errorf("%s: missing --no-verify flag", name)
+			continue
+		}
+		if f.Shorthand != "n" {
+			t.Errorf("%s: --no-verify shorthand = %q, want %q", name, f.Shorthand, "n")
+		}
+	}
+}
 
 func TestPushJSON_Schema_Ahead(t *testing.T) {
 	// Save and restore the global JSON flag — runPush reads JSONOut()

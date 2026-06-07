@@ -40,6 +40,7 @@ when the repository has tag-based release automation.`,
 	cmd.Flags().Bool("no-release", false, "push the branch without creating or pushing a release tag")
 	cmd.Flags().Bool("push", true, "push the branch and release tag")
 	cmd.Flags().Bool("skip-preflight", false, "skip configured preflight checks")
+	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan before pushing (matches 'gk commit -n' / 'gk push -n')")
 	cmd.Flags().Bool("allow-dirty", false, "allow shipping with a dirty working tree")
 	cmd.Flags().Bool("allow-non-base", false, "allow release tags from a non-base branch")
 	cmd.Flags().BoolP("yes", "y", false, "skip the final confirmation prompt")
@@ -55,6 +56,7 @@ type shipFlags struct {
 	noRelease     bool
 	push          bool
 	skipPreflight bool
+	noVerify      bool
 	allowDirty    bool
 	allowNonBase  bool
 	yes           bool
@@ -119,6 +121,7 @@ func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
 	f.noRelease, _ = cmd.Flags().GetBool("no-release")
 	f.push, _ = cmd.Flags().GetBool("push")
 	f.skipPreflight, _ = cmd.Flags().GetBool("skip-preflight")
+	f.noVerify, _ = cmd.Flags().GetBool("no-verify")
 	f.allowDirty, _ = cmd.Flags().GetBool("allow-dirty")
 	f.allowNonBase, _ = cmd.Flags().GetBool("allow-non-base")
 	f.yes, _ = cmd.Flags().GetBool("yes")
@@ -543,13 +546,15 @@ func confirmShip(deps shipDeps, plan shipPlan, flags shipFlags) error {
 }
 
 func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan shipPlan, flags shipFlags) error {
-	findings, err := scanCommitsToPush(ctx, r, plan.Remote, plan.Branch)
-	if err != nil {
-		return fmt.Errorf("ship: secret scan: %w", err)
-	}
-	if len(findings) > 0 {
-		renderShipFindings(errOut, findings)
-		return fmt.Errorf("ship: aborting push due to %d secret finding(s)", len(findings))
+	if !flags.noVerify {
+		findings, err := scanCommitsToPush(ctx, r, plan.Remote, plan.Branch)
+		if err != nil {
+			return fmt.Errorf("ship: secret scan: %w", err)
+		}
+		if len(findings) > 0 {
+			renderShipFindings(errOut, findings)
+			return fmt.Errorf("ship: aborting push due to %d secret finding(s); use --no-verify to override", len(findings))
+		}
 	}
 
 	stdout, stderr, err := r.Run(ctx, "push", plan.Remote, plan.Branch)

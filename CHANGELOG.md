@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-06-07
+
+### Changed
+
+- **`gk commit --no-verify`(`-n`)가 privacy gate 임계값까지 함께 우회.** v0.71.0에선 `-n`이 노이즈·secret 가드만 꺼서,
+  payload에 secret이 임계값(`ai.commit.privacy.max_secrets`, 기본 10)을 넘으면 privacy gate에서 다시 abort돼 "가드 일괄
+  우회"라는 의도가 깨졌다. 이제 `-n`이 `--skip-privacy`를 포함해 privacy gate의 abort 임계값까지 끄므로 `gk commit -n`
+  한 번으로 커밋 가드를 일괄 우회한다. 원격 provider로 나가는 payload의 redaction은 그대로 적용되어 LLM은 여전히 원본
+  secret을 보지 못한다.
+
 ## [0.71.0] - 2026-06-07
 
 ### Added
@@ -2310,7 +2320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.71.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.72.0...HEAD
+[0.72.0]: https://github.com/x-mesh/gk/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/x-mesh/gk/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/x-mesh/gk/compare/v0.69.0...v0.70.0
 [0.69.0]: https://github.com/x-mesh/gk/compare/v0.68.0...v0.69.0

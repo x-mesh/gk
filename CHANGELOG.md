@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-06-07
+
+### Added
+
+- **`gk commit`에 커밋 가드 일괄 우회 — `-n`/`--no-verify`와 `-S all`(`--allow-secret-kind all`).** 지금까진 secret을
+  종류별로 `--allow-secret-kind <kind>` 지정해야만 통과시킬 수 있었는데, 진짜 false positive가 여럿 모일 때를 위해
+  전체 우회 경로를 더했다. `--no-verify`는 노이즈·secret 가드를, `--allow-secret-kind all`은 secret 가드를 통째로
+  끈다. 두 경로 모두 우회된 secret을 stderr에 그대로 보고한 뒤 커밋에 포함하므로(실제 자격증명이면 즉시 폐기·재발급
+  대상), 가드 우회를 흔히 누르는 `-f`에 묶지 않고 의도가 분명한 별도 플래그로 분리했다. 개별 `--allow-secret-kind
+  <kind>`는 기존대로 조용히 무시한다. 원격 AI로 나가는 payload를 지키는 privacy gate는 우회 대상이 아니다.
+
 ## [0.70.0] - 2026-06-07
 
 ### Added
@@ -2299,7 +2310,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.70.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.71.0...HEAD
+[0.71.0]: https://github.com/x-mesh/gk/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/x-mesh/gk/compare/v0.69.0...v0.70.0
 [0.69.0]: https://github.com/x-mesh/gk/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/x-mesh/gk/compare/v0.67.0...v0.68.0

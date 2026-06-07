@@ -504,7 +504,13 @@ func Defaults() Config {
 			// to merge or sync. Cost is one local rev-list (~10ms); no
 			// network. Hidden automatically on detached HEAD or when the
 			// branch IS the base.
-			Vis:       []string{"gauge", "progress", "base", "tree", "staleness"},
+			// `local` (working-tree change badge) and `since-push` (unpushed
+			// age+count, with --remotes fallback for no-upstream branches) are
+			// on by default so the BRANCH line surfaces all local-change
+			// layers at a glance — uncommitted (local), staged, and unpushed —
+			// without the user knowing any flag. Both render nothing when there
+			// is nothing to show, so a clean synced repo stays quiet.
+			Vis:       []string{"gauge", "bar", "progress", "base", "tree", "staleness", "local", "since-push"},
 			AutoFetch: false,
 			XYStyle:   "labels",
 			Density:   "normal",

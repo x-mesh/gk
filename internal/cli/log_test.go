@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -632,6 +633,63 @@ func TestCollectPushedShas_WithUpstream(t *testing.T) {
 	}
 	if len(m) == 0 {
 		t.Error("expected at least one pushed SHA in map, got empty")
+	}
+}
+
+// TestCollectPushedShas_NoUpstreamButRemotes covers the --remotes fallback:
+// a branch with NO configured upstream, but whose repo has remote-tracking
+// refs, must still resolve a pushed set (ok=true) so `◇ unpushed` works on
+// never-pushed local branches. Commits on the remote count as pushed; the
+// local-only commit must not.
+func TestCollectPushedShas_NoUpstreamButRemotes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	r.RunGit("remote", "add", "origin", bareDir)
+	// Push WITHOUT -u: the remote ref exists, but no upstream is tracked.
+	r.RunGit("push", "-q", "origin", "main")
+	pushedSha := r.RunGit("rev-parse", "HEAD")
+
+	// A local-only branch with a commit that lives on no remote.
+	r.CreateBranch("feature")
+	r.WriteFile("f.txt", "local")
+	localSha := r.Commit("local only")
+
+	// Guard the premise: feature must have no upstream.
+	if _, err := r.TryGit("rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
+		t.Fatal("test setup: feature unexpectedly has an upstream")
+	}
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	m, ok := collectPushedShas(context.Background(), runner)
+	if !ok {
+		t.Fatal("remote refs present → expected ok=true via --remotes fallback")
+	}
+	if !m[pushedSha] {
+		t.Errorf("commit on remote %s should be in the pushed set", pushedSha)
+	}
+	if m[localSha] {
+		t.Errorf("local-only commit %s must NOT be in the pushed set", localSha)
+	}
+}
+
+func TestRenderPushBoundary(t *testing.T) {
+	prevNoColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prevNoColor })
+
+	got := renderPushBoundary(5, 60)
+	if !strings.Contains(got, "──┤ ↑ 5 unpushed ├") {
+		t.Errorf("missing boundary header in %q", got)
+	}
+	// Padded to terminal width with trailing dashes.
+	if w := utf8.RuneCountInString(got); w != 60 {
+		t.Errorf("boundary width = %d runes, want 60: %q", w, got)
 	}
 }
 

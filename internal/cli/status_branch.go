@@ -145,6 +145,17 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 		}
 	}
 
+	// Local-change badge: a one-glance roll-up of the working-tree layers
+	// (unstaged / staged / conflicts) on the most-scanned line. The unpushed
+	// layer is owned by the since-push chip below and by ↑A ↓B above, so the
+	// badge deliberately omits it — between the three, the BRANCH line shows
+	// every local-change layer exactly once. Renders nothing on a clean tree.
+	if statusVisEnabled("local") && !detached {
+		if badge := localChangeBadge(st); badge != "" {
+			head.WriteString("  " + faint(badge))
+		}
+	}
+
 	// Trailing informational suffixes — staleness + since-push. Re-use the
 	// same helpers the legacy renderer called so output stays in lock-step
 	// with `gk status` (compact mode), which still goes through the older

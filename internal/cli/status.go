@@ -65,7 +65,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,local,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVarP(&statusFetch, "fetch", "f", false, "fetch the current branch's upstream before reporting ↑N ↓N (opt-in; no network activity by default)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
@@ -562,12 +562,30 @@ func detachedShortSHA(ctx context.Context, runner *git.ExecRunner) string {
 //	ok=false              → unknown        → caller: "· since push ?"
 //	ok=true, suffix==""   → known up-to-date → caller: silent (no chip)
 //	ok=true, suffix!=""   → unpushed exists → caller: "· <suffix>"
+//
+// Push state resolves against `@{u}` first (precise "ahead of MY upstream"),
+// then falls back to "commits on HEAD that exist on no remote-tracking ref"
+// (`HEAD --not --remotes`) when no upstream is configured — so local-only
+// branches still report their unpushed count. The fallback label switches to
+// "unpushed" (the branch was never pushed, so "since push" would mislead),
+// matching `gk log --safety`'s vocabulary. With no remotes at all we stay
+// ok=false, since every commit would otherwise look local-only.
 func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) (string, bool) {
+	label := "since push"
 	out, _, err := runner.Run(ctx, "rev-list", "@{u}..HEAD", "--format=%ct")
 	if err != nil {
-		return "", false
+		// No upstream: fall back to "on HEAD but on no remote", guarded by the
+		// presence of at least one remote ref.
+		if !anyRemoteTrackingRef(ctx, runner) {
+			return "", false
+		}
+		out, _, err = runner.Run(ctx, "rev-list", "HEAD", "--not", "--remotes", "--format=%ct")
+		if err != nil {
+			return "", false
+		}
+		label = "unpushed"
 	}
-	// Empty output = `@{u}` resolved but no unpushed commits = known up-to-date.
+	// Empty output = resolved but no unpushed commits = known up-to-date.
 	if len(strings.TrimSpace(string(out))) == 0 {
 		return "", true
 	}
@@ -597,9 +615,9 @@ func sincePushSuffix(ctx context.Context, runner *git.ExecRunner) (string, bool)
 		age = "now"
 	}
 	if count == 1 {
-		return fmt.Sprintf("since push %s", age), true
+		return fmt.Sprintf("%s %s", label, age), true
 	}
-	return fmt.Sprintf("since push %s (%dc)", age, count), true
+	return fmt.Sprintf("%s %s (%dc)", label, age, count), true
 }
 
 // renderStashSummary returns a compact one-liner describing the stash
@@ -722,10 +740,13 @@ func renderStatusLegend(w io.Writer, vis []string) {
 		sec("--vis heatmap — 2-D density (rows=dir, cols=C/S/M/?)")
 		fmt.Fprintln(w, "  · (zero)  ░ ▒ ▓ █ (ascending density, scaled to the peak cell)")
 	}
-	if enabled("since-push") || enabled("stash") || enabled("base") || enabled("conflict") || enabled("churn") || enabled("risk") || enabled("types") {
+	if enabled("local") || enabled("since-push") || enabled("stash") || enabled("base") || enabled("conflict") || enabled("churn") || enabled("risk") || enabled("types") {
 		sec("other active layers")
+		if enabled("local") {
+			fmt.Fprintln(w, "  · N unstaged · N staged · N conflicts — working-tree change badge on the BRANCH line (hidden when clean)")
+		}
 		if enabled("since-push") {
-			fmt.Fprintln(w, "  · since push Xh — age of oldest unpushed commit (suppressed when no upstream)")
+			fmt.Fprintln(w, "  · since push Xh (Nc) / · unpushed Xh (Nc) — oldest unpushed commit age+count; falls back to --remotes when no upstream")
 		}
 		if enabled("stash") {
 			fmt.Fprintln(w, "  stash: N entries — summary line; ⚠ warns if top stash overlaps a dirty file")
@@ -1575,6 +1596,17 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		// this as an upper bound (pessimistic) is fine.
 		return visibleWidth(line)+visibleWidth(extra) > ttyW
 	}
+	// Local-change badge (working-tree layers). Mirrors renderBranchSection so
+	// the compact path surfaces the same glance. Unpushed is owned by the
+	// since-push chip + ↑A ↓B, so the badge omits it (no double count).
+	if statusVisEnabled("local") && !detached {
+		if badge := localChangeBadge(st); badge != "" {
+			extra := "  " + faint(badge)
+			if !wouldOverflow(extra) {
+				line += extra
+			}
+		}
+	}
 	if statusVisEnabled("staleness") {
 		if ago, sha := lastCommitAgo(cmd, runner); ago != "" {
 			text := "· last commit " + ago
@@ -2164,6 +2196,35 @@ func groupEntries(entries []git.StatusEntry) groupedEntries {
 		}
 	}
 	return g
+}
+
+// localChangeBadge rolls the working-tree layers into a single compact chip
+// for the BRANCH line: "· 5 unstaged · 1 staged · 2 conflicts". Zero layers
+// are omitted; a fully clean tree returns "" so the chip disappears entirely.
+// Submodule-only changes are intentionally excluded — they have their own
+// dedicated treatment and would inflate the "unstaged" count misleadingly.
+func localChangeBadge(st *git.Status) string {
+	if st == nil {
+		return ""
+	}
+	g := groupEntries(st.Entries)
+	unstaged := len(g.Modified) + len(g.Untracked)
+	staged := len(g.Staged)
+	conflicts := len(g.Unmerged)
+	var parts []string
+	if unstaged > 0 {
+		parts = append(parts, fmt.Sprintf("%d unstaged", unstaged))
+	}
+	if staged > 0 {
+		parts = append(parts, fmt.Sprintf("%d staged", staged))
+	}
+	if conflicts > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflicts", conflicts))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "· " + strings.Join(parts, " · ")
 }
 
 func committableEntries(entries []git.StatusEntry) []git.StatusEntry {

@@ -31,7 +31,7 @@ func TestDefaults(t *testing.T) {
 	if len(d.Branch.Protected) == 0 {
 		t.Error("Branch.Protected: want non-empty slice")
 	}
-	wantVis := []string{"gauge", "progress", "base", "tree", "staleness"}
+	wantVis := []string{"gauge", "bar", "progress", "base", "tree", "staleness", "local", "since-push"}
 	if len(d.Status.Vis) != len(wantVis) {
 		t.Fatalf("Status.Vis len: want %d, got %d (%v)", len(wantVis), len(d.Status.Vis), d.Status.Vis)
 	}

@@ -30,8 +30,14 @@ log:
 
 status:
   # Default visualization layers for `gk status`. Values: gauge, bar, progress,
-  # types, staleness, tree, conflict, churn, risk, base. Override per-invocation
-  # with `--vis ...` or disable all layers with `--vis none`.
+  # types, staleness, tree, conflict, churn, risk, base, local, since-push.
+  # Override per-invocation with `--vis ...` or disable all with `--vis none`.
+  #
+  # `local` adds a working-tree change badge to the BRANCH line
+  # (`· 5 unstaged · 1 staged · 2 conflicts`); `since-push` adds the unpushed
+  # commit age+count (`· unpushed 2h (3c)`), falling back to any remote-tracking
+  # ref when the branch has no upstream. Together with `↑A ↓B` they show every
+  # local-change layer at a glance; both stay silent when there is nothing to show.
   #
   # `base` adds a second "from <trunk> [gauge]" line on feature branches,
   # summarizing how far the current branch has diverged from the repo's
@@ -42,7 +48,7 @@ status:
   # automatically on detached HEAD and when the branch IS the base. The
   # line also carries a short action hint (`→ ready to merge into main`,
   # `→ behind main: gk sync`, etc.) when the gauge alone isn't decisive.
-  vis: [gauge, bar, progress, base, tree, staleness]
+  vis: [gauge, bar, progress, base, tree, staleness, local, since-push]
 
   # Opt-in upstream fetch. Default false: `gk status` does no network activity
   # unless the caller passes `-f` / `--fetch`. Set to true to always fetch

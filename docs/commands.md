@@ -618,7 +618,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--tags-rule` | false | Insert a `──┤ v0.4.0 (3d ago) ├──` rule before each tagged commit |
 | `--impact` | false | Append an eighths-bar scaled to per-commit `+adds -dels` |
 | `--cc` | false | Prepend a geometric type glyph (`▲` feat · `✕` fix · `↻` refactor · `¶` docs · `·` chore · `◎` test · `↑` perf · `⊙` ci · `▣` build · `←` revert · `✧` style) + inline-color the matching subject prefix + append a `types: feat=4 fix=1` tally |
-| `--safety` | false | Mark notable push-state: `◇` unpushed · `✎` recently amended · blank for the normal "already pushed" case so the column stays quiet until something deserves attention |
+| `--safety` | false | Mark notable push-state: `◇` unpushed · `✎` recently amended · blank for the normal "already pushed" case so the column stays quiet until something deserves attention. Push state resolves against `@{upstream}`, falling back to **any** remote-tracking ref (`--remotes`) when no upstream is set, so local-only branches still mark correctly. A `──┤ ↑ N unpushed ├──` divider is drawn just above the first already-pushed commit, so the local-only block reads at a glance. |
 | `--hotspots` | false | Mark commits that touch the repo's top-10 most-churned files |
 | `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |
 | `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
@@ -841,7 +841,8 @@ To always fetch without typing the flag, set `status.auto_fetch: true` in `.gk.y
 | `churn` | Appends an 8-cell sparkline to each modified entry (per-commit add+del totals over the file's last 8 commits). Suppressed when the dirty tree has more than 50 files. |
 | `risk` | Flags high-risk modified entries with `⚠` and re-sorts the section so the hottest files are on top. Score is `diff LOC + distinct-authors-over-30d × 10`, threshold 50. |
 | `base` | Appends a second `  from <trunk> [gauge]` line on feature branches showing how far the current branch has diverged from its base (or fork-parent, see below), plus a short action hint: `→ ready to merge into <base>` (ahead-only, clean tree), `→ behind <base>: gk sync` (behind-only), or `→ <base> moved: gk sync` (diverged). When `gk branch set-parent` has recorded a fork-parent for the current branch and the parent ref still exists, that parent replaces the trunk in this line — stacked workflows see `from feat/parent ↑2` instead of `from main ↑12`. Otherwise base resolves from `base_branch` config → `refs/remotes/<remote>/HEAD` → `main`/`master`/`develop`. If the recorded parent has been deleted, `gk status` writes a one-line `warning: parent <X> not found (deleted?); using <base>` to stderr and falls back to the trunk. Suppressed when the current branch *is* the base or HEAD is detached. Costs one `git rev-list --left-right --count` call (~5–15 ms). |
-| `since-push` | Appends `· since push Xh (Nc)` to the branch line when there are unpushed commits, showing the age of the oldest one and the total unpushed count. Suppressed on up-to-date branches and when no upstream is configured. Cost: one `git rev-list @{u}..HEAD --format=%ct` call (~5 ms). |
+| `local` | **On by default.** Appends a working-tree change badge to the branch line — `· 5 unstaged · 1 staged · 2 conflicts` (zero layers omitted; hidden entirely on a clean tree). The unpushed layer is owned by `since-push` and `↑A ↓B`, so the badge intentionally omits it — between the three, the branch line shows every local-change layer exactly once. Submodule entries are excluded. Cost: 0 (pure aggregation over porcelain output already parsed). |
+| `since-push` | **On by default.** Appends `· since push Xh (Nc)` to the branch line when there are unpushed commits, showing the age of the oldest one and the total unpushed count. When no upstream is configured it falls back to "commits on no remote-tracking ref" and switches the label to `· unpushed Xh (Nc)`, so local-only branches still report their count (matches `gk log --safety`). Suppressed on up-to-date branches and when the repo has no remotes at all. Cost: one `git rev-list @{u}..HEAD --format=%ct` call (~5 ms), or `git rev-list HEAD --not --remotes` on the no-upstream fallback. |
 | `stash` | Adds a `  stash: 3 entries · newest 2h · oldest 5d · ⚠ 2 overlap with dirty` line when the stash is non-empty. Overlap warning checks whether the top stash touches any currently-dirty file (the common `git stash pop` footgun). Cost: one `git stash list` call + one `git stash show --name-only stash@{0}` when overlap-check applies (~5–10 ms total). |
 | `heatmap` | Prints a 2-D density grid above the entry list: rows = top-level directory, columns = `C` conflicts / `S` staged / `M` modified / `?` untracked. Each cell glyph scales (` `/`░`/`▒`/`▓`/`█`) with the peak count for the current state. Designed for large-repo triage — at 100+ dirty files the flat tree scrolls off-screen but the heatmap stays a single block. Cost: 0 (pure aggregation over porcelain output). |
 | `glyphs` | Prepends a semantic file-kind column to every entry (flat + tree): `●` source · `◐` test · `◆` config · `¶` docs · `▣` binary/asset · `↻` generated/vendored · `⊙` lockfile · `·` unknown. Kind is derived from path (extension, basename, prefix) — zero I/O, zero git calls. Combines well with the XY porcelain column: kind tells you *what* the file is for, XY tells you *what git thinks of it*. |
@@ -895,6 +896,56 @@ When `--vis tree` is active, the flat sections are replaced by a single hierarch
 
 - Uses `git status --porcelain=v2 -z` internally for reliable, locale-independent parsing.
 - `LC_ALL=C` is enforced for all git calls.
+
+---
+
+## gk local
+
+Roll up everything that exists **only on this machine** into one screen: working-tree changes (unstaged / staged / conflicts), commits that are on no remote (unpushed), and stash entries. A focused companion to `gk status` for the single question "what have I got locally that isn't safe yet?".
+
+Alias: `gk lo`.
+
+### Synopsis
+
+```
+gk local [-n N] [--json]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-n`, `--limit` | `10` | Max commits/files to list per section (`0` = unlimited). |
+| `--json` | off | Emit a structured report instead of the text view. |
+
+### Unpushed resolution
+
+The unpushed list resolves against `@{upstream}` first, then falls back to "commits on no remote-tracking ref" (`git log HEAD --not --remotes`) when no upstream is configured — so branches that were never pushed still report their local-only commits. When the repo has no remotes at all, push state is undeterminable and the section prints `no remote to compare against` (and `--json` sets `unpushed_known: false`). This matches the fallback used by `gk log --safety` and `gk status`'s `since-push`/`local` layers.
+
+### Examples
+
+```bash
+# What exists only locally right now?
+gk local
+
+# Unlimited listing, machine-readable
+gk local -n 0 --json
+```
+
+### Output
+
+```
+feature  — local only
+  working tree  2 unstaged · 1 staged
+      ~ a.txt
+      + c.go
+  unpushed  2 commits
+      ◇ 71d47d4  local 2  (5 minutes ago)
+      ◇ c61b92b  local 1  (5 minutes ago)
+  stash  1 entry
+```
+
+A clean, fully-pushed repo prints `✓ nothing local-only — everything is committed and pushed`.
 
 ---
 

@@ -329,6 +329,51 @@ func TestSincePushSuffix_UnknownWhenNoUpstream(t *testing.T) {
 	}
 }
 
+// TestSincePushSuffix_NoUpstreamButRemotes covers the --remotes fallback: a
+// branch with NO configured upstream, but whose repo has remote-tracking refs,
+// must still report its unpushed count (ok=true) under the "unpushed" label
+// rather than "since push". Mirrors `gk log --safety`'s fallback.
+func TestSincePushSuffix_NoUpstreamButRemotes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := testutil.NewRepo(t)
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	r.RunGit("remote", "add", "origin", bareDir)
+	// Push WITHOUT -u: remote ref exists, but no upstream is tracked.
+	r.RunGit("push", "-q", "origin", "main")
+
+	// Local-only branch with two commits that live on no remote.
+	r.CreateBranch("feature")
+	r.WriteFile("a.txt", "a\n")
+	r.Commit("local 1")
+	r.WriteFile("b.txt", "b\n")
+	r.Commit("local 2")
+
+	// Guard the premise: feature must have no upstream.
+	if _, err := r.TryGit("rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
+		t.Fatal("test setup: feature unexpectedly has an upstream")
+	}
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	got, ok := sincePushSuffix(context.Background(), runner)
+	if !ok {
+		t.Fatal("remote refs present → expected ok=true via --remotes fallback")
+	}
+	if !strings.Contains(got, "unpushed") {
+		t.Errorf("expected 'unpushed' label (not 'since push') for no-upstream branch, got %q", got)
+	}
+	if strings.Contains(got, "since push") {
+		t.Errorf("no-upstream branch must not use 'since push' label, got %q", got)
+	}
+	if !strings.Contains(got, "(2c)") {
+		t.Errorf("expected '(2c)' count, got %q", got)
+	}
+}
+
 func TestRenderStashSummary(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

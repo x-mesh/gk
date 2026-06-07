@@ -1,6 +1,12 @@
 # gk repo-local config — overrides ~/.config/gk/config.yaml
 # See docs/config.md for all fields.
 
+status:
+  # Dogfood the shipped defaults: `local` (working-tree change badge) and
+  # `since-push` (unpushed age+count, --remotes fallback) so `gk status` in
+  # this repo surfaces every local-change layer at a glance.
+  vis: [gauge, bar, progress, base, tree, staleness, local, since-push]
+
 ai:
   commit:
     deny_paths:

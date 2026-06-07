@@ -563,9 +563,10 @@ func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule boo
 
 	if viz.safety {
 		sec("--vis safety — rebase-safety left margin")
-		fmt.Fprintln(w, "  ◇  unpushed    confirmed not yet at remote")
+		fmt.Fprintln(w, "  ◇  unpushed    not on any remote (upstream, else --remotes)")
 		fmt.Fprintln(w, "  ✎  amended     amended in the last hour (reflog)")
-		fmt.Fprintln(w, "  (blank)        pushed or upstream state unknown")
+		fmt.Fprintln(w, "  (blank)        pushed, or no remote to compare against")
+		fmt.Fprintln(w, "  ──┤ ↑ N unpushed ├──  boundary: everything above is local-only")
 	}
 
 	if viz.impact {
@@ -731,15 +732,47 @@ func rebaseSafety(ctx context.Context, runner *git.ExecRunner, sha string, pushe
 	return '◇'
 }
 
-// collectPushedShas enumerates SHAs reachable from @{upstream}. Returns
-// (shas, ok): ok=false means we could not determine the pushed set (no
-// upstream / rev-list error / offline without cached remote ref) — the
-// caller must then treat every commit's push state as unknown rather
-// than silently re-interpreting an empty map as "nothing pushed."
+// anyRemoteTrackingRef reports whether the repo has at least one
+// remote-tracking ref (refs/remotes/*). It is the guard for every "not on any
+// remote" computation: with no remotes at all, such a query would mark EVERY
+// commit as local-only, so callers fall back to "unknown" instead of claiming
+// nothing was pushed. Shared by `gk log --safety` (collectPushedShas) and
+// `gk status` (sincePushSuffix) so both degrade identically.
+func anyRemoteTrackingRef(ctx context.Context, runner *git.ExecRunner) bool {
+	out, _, err := runner.Run(ctx, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
+	if err != nil {
+		return false
+	}
+	return len(bytes.TrimSpace(out)) > 0
+}
+
+// collectPushedShas enumerates the SHAs that already exist on a remote.
+// Returns (shas, ok): ok=false means we could not determine the pushed set
+// (no upstream AND no remote-tracking refs at all) — the caller must then
+// treat every commit's push state as unknown rather than silently
+// re-interpreting an empty map as "nothing pushed."
+//
+// Resolution order:
+//  1. @{upstream} — the branch's configured upstream, the most precise
+//     "ahead of MY remote" signal. Unchanged behavior for tracked branches.
+//  2. --remotes  — when no upstream is configured, fall back to "reachable
+//     from ANY remote-tracking ref." This is what makes `◇ unpushed` work on
+//     branches that were never pushed or never had an upstream set (the
+//     common case for short-lived local branches): a commit is local-only
+//     iff it is on no remote. Only when the repo has no remote refs at all do
+//     we admit we genuinely cannot tell (ok=false).
 func collectPushedShas(ctx context.Context, runner *git.ExecRunner) (map[string]bool, bool) {
 	out, _, err := runner.Run(ctx, "rev-list", "@{upstream}")
 	if err != nil {
-		return nil, false
+		// No upstream configured: fall back to every remote-tracking ref.
+		// No upstream and no remotes — we truly cannot tell.
+		if !anyRemoteTrackingRef(ctx, runner) {
+			return nil, false
+		}
+		out, _, err = runner.Run(ctx, "rev-list", "--remotes")
+		if err != nil {
+			return nil, false
+		}
 	}
 	m := make(map[string]bool, 256)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -881,6 +914,23 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		pushed, pushedOK = collectPushedShas(ctx, runner)
 		amended, amendedOK = collectRecentlyAmended(ctx, runner)
 	}
+
+	// Push boundary: the first record (top-down) that already exists on a
+	// remote. Everything above it is local-only. We draw a single divider
+	// there so the user sees the "unpushed block" at a glance without reading
+	// every ◇ in the margin. Only when we actually know the pushed set, and
+	// only when there's a real boundary (≥1 unpushed commit above ≥1 pushed
+	// commit in view) — boundaryIdx==0 (nothing unpushed) or ==-1 (entire view
+	// is local) both render no line.
+	boundaryIdx := -1
+	if v.safety && pushedOK {
+		for i, r := range records {
+			if pushed[r.sha] {
+				boundaryIdx = i
+				break
+			}
+		}
+	}
 	if v.hotspots {
 		hotspots = collectHotspots(ctx, runner)
 	}
@@ -970,6 +1020,12 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			if t, ok := tags[r.short]; ok {
 				fmt.Fprintln(w, renderTagRule(t, width))
 			}
+		}
+
+		// Push boundary divider: printed just before the first commit that is
+		// already on a remote, so everything above reads as "local-only."
+		if i == boundaryIdx && boundaryIdx > 0 {
+			fmt.Fprintln(w, renderPushBoundary(boundaryIdx, width))
 		}
 
 		// Inside a WIP run, flag a visible time discontinuity between
@@ -1162,6 +1218,23 @@ func renderTagRule(t tagInfo, width int) string {
 		tail = 2
 	}
 	return color.CyanString(head) + color.New(color.Faint).Sprint(strings.Repeat("─", tail))
+}
+
+// renderPushBoundary produces the separator row marking the line between
+// local-only commits (above) and commits already on a remote (below). It
+// mirrors renderTagRule's shape but uses yellow — the same hue as the `◇`
+// unpushed marker — so the two read as one vocabulary. `count` is the number
+// of unpushed commits shown above the line.
+//
+//	──┤ ↑ 5 unpushed ├────────────────
+func renderPushBoundary(count, width int) string {
+	head := fmt.Sprintf("──┤ ↑ %d unpushed ├", count)
+	headRunes := utf8.RuneCountInString(head)
+	tail := width - headRunes
+	if tail < 2 {
+		tail = 2
+	}
+	return color.YellowString(head) + color.New(color.Faint).Sprint(strings.Repeat("─", tail))
 }
 
 // fetchCommitDates returns committer dates for the revision scope, matching

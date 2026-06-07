@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk local` 명령 신설 (별칭 `gk lo`).** "내 컴퓨터에만 있는 것"을 한 화면에 모은다 —
+  작업 트리 변경(미스테이지·스테이지·충돌), 원격 어디에도 없는 미푸시 커밋, 스태시. 미푸시
+  판정은 `@{upstream}` 우선, upstream이 없으면 모든 원격 추적 ref(`--remotes`)로 폴백하므로
+  한 번도 push하지 않은 브랜치도 로컬 전용 커밋을 보여준다. 원격이 전혀 없으면
+  `no remote to compare against`로 표시한다. `-n N`(섹션별 표시 개수), `--json` 지원.
+
+### Changed
+
+- **`gk status` 기본 출력에 로컬 변경 계층을 노출.** 기본 시각화 세트에 `local`(작업 트리
+  변경 뱃지 `· 5 unstaged · 1 staged · 2 conflicts`)과 `since-push`(미푸시 나이·개수
+  `· unpushed 2h (3c)`)를 추가했다. `↑A ↓B`와 합쳐 BRANCH 한 줄에서 로컬 변경 세 계층이
+  각각 한 번씩 보인다. 둘 다 보일 게 없으면 침묵한다.
+- **`gk log --safety`와 `gk status`의 미푸시 판정이 upstream 없이도 동작.** push 상태를
+  `@{upstream}` 우선, 없으면 모든 원격 추적 ref(`--remotes`) 기준으로 판정한다. `gk log --safety`는
+  이제 첫 pushed 커밋 위에 `──┤ ↑ N unpushed ├──` 경계선을 그려 로컬 전용 블록을 한눈에
+  보여주고, `gk status`의 `since-push`는 upstream 없는 브랜치에서 `· unpushed Xh (Nc)`로
+  표시한다. 원격이 전혀 없을 때만 판정 불가로 침묵한다.
+
 ## [0.68.0] - 2026-06-06
 
 ### Added

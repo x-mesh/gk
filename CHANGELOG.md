@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-06-08
+
+### Added
+
+- **`gk config setup`이 커스텀 provider(kiro-api 등)를 지원.** 빌트인이 아닌 provider 이름을 고르면 endpoint·모델·API 키를 차례로 묻고 `ai.providers.<name>.*`에 기록한다. wire format은 `openai`로 자동 설정되며, endpoint는 기본값을 강요하지 않는다. `kiro-api`는 provider 모델과 commit 모델 모두 `kiro/claude-haiku-4.5`를 기본값으로 채운 편집 가능한 프롬프트로 보여주고, API 키는 요약 출력에서 마스킹한다. `--endpoint`/`--provider-model`/`--api-key`로 비대화 설정도 가능하다.
+
+## [0.74.0] - 2026-06-08
+
+### Added
+
+- **`gk config`에 `set`·`unset`·`edit`·`path`·`setup`·`doctor` 추가 — 손편집 없이 설정 관리.** dot-key를 `yaml.Node` 기반으로 in-place 수정해 주석과 순서를 보존하며, 스키마에 없는 키는 거부한다. `setup`은 provider·모델·언어를 대화형으로 묻는 마법사이고, `doctor`는 알 수 없는 키와 누락된 provider API 키를 점검한다. 전역(`~/.config/gk/config.yaml`)과 저장소별(`.gk.yaml`)을 `--local`로 구분해 쓴다.
+- **`ai.commit.lang` 추가 — commit 메시지 언어를 따로 지정.** 채팅/조언 명령(`do`/`ask`/`explain`)은 `ai.lang`을 따르되 commit만 다른 언어로 둘 수 있다. 우선순위는 `gk commit --lang` > `ai.commit.lang` > `ai.lang` > `output.lang`.
+- **`gk ship`이 non-base 브랜치에서 base를 fast-forward 머지한 뒤 릴리스.** `develop` 등에서 ship하면 base(`main`)가 fast-forward 가능할 때 base를 그 브랜치 끝으로 전진시켜 base에서 태그한다. 히스토리가 분기되면 중단하고 통합을 안내하며, `--allow-non-base`로 기존처럼 현재 브랜치에 태그할 수도 있다.
+
+### Fixed
+
+- **git 저장소 밖에서 실행 시 오류 메시지 개선.** raw `fatal: not a git repository` 대신 "git 저장소가 아닙니다"라는 표준 안내와 힌트를 모든 명령에 일관 적용한다.
+
 ## [0.73.0] - 2026-06-07
 
 ### Added
@@ -2330,7 +2348,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.claude/skills/release/SKILL.md` — `/release` slash command automates: prerequisite checks → version bump prompt → local validation → CHANGELOG migration → tag + push → GitHub Actions monitoring → Homebrew tap verification. Diagnostic matrix for 401 / 403 / 422 failure modes with concrete recovery actions.
 
-[Unreleased]: https://github.com/x-mesh/gk/compare/v0.73.0...HEAD
+[Unreleased]: https://github.com/x-mesh/gk/compare/v0.75.0...HEAD
+[0.75.0]: https://github.com/x-mesh/gk/compare/v0.74.0...v0.75.0
+[0.74.0]: https://github.com/x-mesh/gk/compare/v0.73.0...v0.74.0
 [0.73.0]: https://github.com/x-mesh/gk/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/x-mesh/gk/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/x-mesh/gk/compare/v0.70.0...v0.71.0

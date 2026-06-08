@@ -147,7 +147,7 @@ func TestUnknownKeys(t *testing.T) {
 		"ai:\n" +
 		"  commit:\n" +
 		"    model: ok\n" +
-		"    modle: typo\n" + // typo → unknown
+		"    notakey: typo\n" + // not in schema → unknown
 		"  providers:\n" +
 		"    myhost:\n" +
 		"      model: x\n" + // dynamic map → allowed
@@ -161,7 +161,7 @@ func TestUnknownKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"ai.commit.modle": true, "stauts.density": true}
+	want := map[string]bool{"ai.commit.notakey": true, "stauts.density": true}
 	if len(got) != len(want) {
 		t.Fatalf("UnknownKeys = %v, want keys %v", got, want)
 	}

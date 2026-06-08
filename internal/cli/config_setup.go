@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -34,6 +35,9 @@ non-interactive shells, where the wizard applies only the flags given:
 		RunE: runConfigSetup,
 	}
 	cmd.Flags().String("provider", "", "AI provider (kiro-api, anthropic, openai, groq, ...)")
+	cmd.Flags().String("endpoint", "", "API endpoint URL (custom provider only)")
+	cmd.Flags().String("provider-model", "", "model ID for a custom provider")
+	cmd.Flags().String("api-key", "", "API key for a custom provider (stored in config)")
 	cmd.Flags().String("commit-model", "", "model used only for `gk commit`")
 	cmd.Flags().String("commit-lang", "", "language for `gk commit` messages only")
 	cmd.Flags().String("lang", "", "output language (ko, en)")
@@ -60,15 +64,39 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 	changes := map[string]string{}
 
 	// 1. provider
+	provider := cur.AI.Provider
 	if v, ok, err := wizardValue(cmd, ctx, "provider",
 		"AI provider", "kiro-api / anthropic / openai / groq", cur.AI.Provider); err != nil {
 		return err
 	} else if ok && v != "" {
 		changes["ai.provider"] = v
+		provider = v
 	}
 
-	// 2. commit-only model (optional — empty keeps the provider default)
-	if v, ok, err := wizardOptional(cmd, ctx, "commit-model",
+	// 1b. Custom provider (a name outside the built-in set, e.g. kiro-api) needs
+	// an endpoint and key. Built-in providers (anthropic/openai/...) skip this —
+	// they have known endpoints and read their key from a fixed env var.
+	if provider != "" && !isBuiltinProvider(provider) {
+		if err := wizardCustomProvider(cmd, ctx, provider, cur, changes); err != nil {
+			return err
+		}
+	}
+
+	// 2. commit-only model. kiro-api pairs with a fast haiku model by default,
+	// but we show it as an editable prompt (seeded with that default) rather
+	// than setting it silently — the user can accept or change it. Other
+	// providers keep the optional yes/no gate.
+	if provider == "kiro-api" {
+		initial := firstNonEmpty(cur.AI.Commit.Model, "kiro/claude-haiku-4.5")
+		if v, ok, err := wizardValue(cmd, ctx, "commit-model",
+			"commit 전용 모델", "예: kiro/claude-haiku-4.5", initial); err != nil {
+			return err
+		} else if ok && v != "" {
+			changes["ai.commit.model"] = v
+		} else if !ok {
+			changes["ai.commit.model"] = initial // non-interactive: apply the default
+		}
+	} else if v, ok, err := wizardOptional(cmd, ctx, "commit-model",
 		"commit 전용 빠른 모델을 지정할까요?",
 		"미지정 시 provider 기본 모델을 사용합니다",
 		"commit 모델", "예: kiro/claude-haiku-4.5", cur.AI.Commit.Model); err != nil {
@@ -117,7 +145,11 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(out, "\n다음 설정을 %s(%s)에 저장합니다:\n", scope, path)
 	for _, k := range sortedKeys(changes) {
-		fmt.Fprintf(out, "  %s = %s\n", k, changes[k])
+		val := changes[k]
+		if strings.HasSuffix(k, ".api_key") {
+			val = maskSecret(val)
+		}
+		fmt.Fprintf(out, "  %s = %s\n", k, val)
 	}
 
 	if yes, _ := cmd.Flags().GetBool("yes"); !yes && ui.IsTerminal() {
@@ -207,6 +239,73 @@ func wizardBool(cmd *cobra.Command, ctx context.Context, flag, title string, ini
 		return false, false, nil
 	}
 	return v, true, nil
+}
+
+// wizardCustomProvider collects the endpoint / model / api_key a custom
+// OpenAI-compatible gateway needs, writing them under ai.providers.<name>.*.
+// The wire format defaults to openai; the endpoint is asked without a baked-in
+// default (the gateway URL is the user's, not ours); the API key is pasted in
+// and stored in config (its summary line is masked).
+func wizardCustomProvider(cmd *cobra.Command, ctx context.Context, provider string, cur *config.Config, changes map[string]string) error {
+	custom, _ := cur.AI.CustomProvider(provider)
+	base := "ai.providers." + provider
+
+	// Wire format: default to openai so the OpenAI adapter handles the gateway.
+	if custom.Format == "" {
+		changes[base+".format"] = "openai"
+	}
+
+	// Endpoint — required, no default URL offered.
+	if v, ok, err := wizardValue(cmd, ctx, "endpoint",
+		provider+" API endpoint URL", "https://<gateway>/v1/chat/completions", custom.Endpoint); err != nil {
+		return err
+	} else if ok && v != "" {
+		changes[base+".endpoint"] = v
+	}
+
+	// Model — shown as an editable prompt seeded with a sensible default so the
+	// user sees and can change it. kiro-api defaults to the fast haiku model;
+	// other custom providers start blank (we can't guess their model id).
+	modelInitial := custom.Model
+	if modelInitial == "" && provider == "kiro-api" {
+		modelInitial = "kiro/claude-haiku-4.5"
+	}
+	if v, ok, err := wizardValue(cmd, ctx, "provider-model",
+		provider+" 모델 ID", "예: kiro/claude-haiku-4.5", modelInitial); err != nil {
+		return err
+	} else if ok && v != "" {
+		changes[base+".model"] = v
+	} else if !ok && modelInitial != "" {
+		changes[base+".model"] = modelInitial // non-interactive: apply the default
+	}
+
+	// API key — pasted in, stored in config (env var is the alternative).
+	if v, ok, err := wizardOptional(cmd, ctx, "api-key",
+		"API 키를 지금 붙여넣을까요?", "환경변수 대신 config 파일에 저장됩니다",
+		provider+" API 키", "sk-...", ""); err != nil {
+		return err
+	} else if ok && v != "" {
+		changes[base+".api_key"] = v
+	}
+	return nil
+}
+
+// isBuiltinProvider reports whether name is one of gk's built-in adapters,
+// which have known endpoints and read their key from a fixed env var.
+func isBuiltinProvider(name string) bool {
+	switch name {
+	case "anthropic", "claude", "openai", "nvidia", "groq", "gemini", "qwen", "kiro", "kiro-cli":
+		return true
+	}
+	return false
+}
+
+// maskSecret hides all but the first few characters of a secret for display.
+func maskSecret(s string) string {
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:4] + strings.Repeat("*", 6)
 }
 
 var errWizardAborted = errors.New("gk config setup: 취소되었습니다")

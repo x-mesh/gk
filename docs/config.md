@@ -599,6 +599,27 @@ ai:
 
 ---
 
+### `ai.commit.lang`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `""` (follow `ai.lang`) |
+| CLI flag | `--lang` (on `gk commit`) |
+
+Language for `gk commit` messages only. Set it to keep commits in one language while the chat/advice commands (`gk do` / `ask` / `explain`) keep `ai.lang`. Empty falls back to `ai.lang`, which itself follows `output.lang`.
+
+Resolution order (highest first): `gk commit --lang` → `ai.commit.lang` → `ai.lang` → `output.lang`.
+
+```yaml
+ai:
+  lang: "ko"          # do/ask/explain answer in Korean
+  commit:
+    lang: "en"        # but commit messages are written in English
+```
+
+---
+
 ### `--model` (CLI flag)
 
 A one-shot model override for a single run, available on `gk commit`, `gk do`, `gk ask`, `gk explain`, and `gk changelog`. Wins over both `ai.commit.model` and `ai.<provider>.model`. HTTP providers only. Use it to try a larger model for one tricky question without editing config:

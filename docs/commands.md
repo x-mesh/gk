@@ -1792,11 +1792,20 @@ Print the value of a single configuration key.
 gk config get <key> [flags]
 ```
 
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source` | false | Also print where the value comes from (`local` / `global` / `default`) |
+
 #### Examples
 
 ```bash
 # Get the remote name
 gk config get remote
+
+# Show the value and which file supplies it.
+gk config get ai.commit.model --source
 
 # Get the log limit
 gk config get log.limit
@@ -1847,6 +1856,157 @@ gk config init --out .gk.yaml
 
 # Disable the first-run auto-init entirely (CI, sandboxes).
 export GK_NO_AUTO_CONFIG=1
+```
+
+---
+
+### gk config set
+
+Set a single configuration value. The target file is edited in place — comments, key order, and blank lines are preserved — and created from the documented template (global) or a minimal header (`.gk.yaml`, with `--local`) when it does not exist yet. Keys absent from the schema are rejected; list/map keys (e.g. `ai.commit.deny_paths`) cannot take a scalar and must be edited with `gk config edit`.
+
+#### Synopsis
+
+```
+gk config set <key> <value> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--local` | false | Write to the repo-local `.gk.yaml` instead of the global config |
+
+#### Examples
+
+```bash
+# Set the commit-only model in the global config.
+gk config set ai.commit.model kiro/claude-haiku-4.5
+
+# Set a repo-local override.
+gk config set --local status.density compact
+
+# Booleans and ints are written unquoted.
+gk config set ai.commit.audit true
+```
+
+---
+
+### gk config unset
+
+Remove a key, reverting it to its built-in default. A section left empty by the removal is dropped too (no dangling `status: {}`). Unsetting an absent key is a no-op.
+
+#### Synopsis
+
+```
+gk config unset <key> [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--local` | false | Operate on the repo-local `.gk.yaml` instead of the global config |
+
+#### Examples
+
+```bash
+gk config unset ai.commit.model
+```
+
+---
+
+### gk config edit
+
+Open the config file in your editor (creates it first if missing). Uses `$VISUAL`, then `$EDITOR`, falling back to `vim` / `vi` / `nano`.
+
+#### Synopsis
+
+```
+gk config edit [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--local` | false | Edit the repo-local `.gk.yaml` instead of the global config |
+
+---
+
+### gk config path
+
+Show which config files apply (global, repo-local) and whether each exists, in precedence order (later wins).
+
+#### Synopsis
+
+```
+gk config path
+```
+
+---
+
+### gk config setup
+
+Interactive wizard for the most common settings — provider, commit model and language, output language, and easy mode — written after a single confirmation. Every answer can be pre-supplied as a flag, which both powers scripts/CI and lets non-interactive shells apply only the flags given. Choosing a provider name outside the built-in set (e.g. `kiro-api`) additionally prompts for an endpoint, model, and API key, stored under `ai.providers.<name>`.
+
+#### Synopsis
+
+```
+gk config setup [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--provider <name>` | — | AI provider (`kiro-api`, `anthropic`, `openai`, `groq`, …) |
+| `--endpoint <url>` | — | API endpoint URL (custom provider only) |
+| `--provider-model <id>` | — | Model ID for a custom provider |
+| `--api-key <key>` | — | API key for a custom provider (stored in config) |
+| `--commit-model <id>` | — | Model used only for `gk commit` |
+| `--commit-lang <code>` | — | Language for `gk commit` messages only |
+| `--lang <code>` | — | Output language (`ko`, `en`) |
+| `--easy` | false | Plain-language output for non-developers |
+| `--yes` | false | Skip the final confirmation |
+| `--local` | false | Write to the repo-local `.gk.yaml` instead of the global config |
+
+#### Examples
+
+```bash
+# Interactive — prompts for each setting.
+gk config setup
+
+# Non-interactive: apply only the flags given.
+gk config setup --provider anthropic --lang en --yes
+
+# Custom OpenAI-compatible gateway.
+gk config setup --provider kiro-api \
+  --endpoint https://<gateway>/v1/chat/completions \
+  --api-key sk-... --yes
+```
+
+#### Notes
+
+- Built-in providers (`anthropic`, `openai`, `groq`, `nvidia`, `gemini`, `qwen`, `kiro`) skip the endpoint/key prompts — they have known endpoints and read their key from a fixed env var.
+- `kiro-api` defaults both its provider model (`ai.providers.kiro-api.model`) and the commit model (`ai.commit.model`) to `kiro/claude-haiku-4.5`, shown as editable prompts rather than set silently.
+- The API key is stored in the config file (an env var is the alternative) and masked in the confirmation summary.
+
+---
+
+### gk config doctor
+
+Validate the config files rather than the git environment (that is `gk doctor`). Reports keys absent from the schema (typos a hand-edit can introduce — `set` blocks them, but direct editing does not) and a provider configured without its API-key environment variable.
+
+#### Synopsis
+
+```
+gk config doctor
+```
+
+#### Examples
+
+```bash
+gk config doctor
 ```
 
 ---

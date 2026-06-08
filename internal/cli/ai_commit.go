@@ -713,6 +713,13 @@ func applyAICommitFlagsToConfig(ai config.AIConfig, f aiCommitFlags) config.AICo
 		// keeps a single resolution point downstream.
 		out.Commit.Model = f.model
 	}
+	// Language resolution for commit, lowest-to-highest precedence:
+	//   output.lang → ai.lang (both folded into ai.Lang by config.Load) →
+	//   ai.commit.lang (commit-only) → --lang flag (one-shot). Folding the
+	//   winner onto out.Lang keeps a single resolution point downstream.
+	if out.Commit.Lang != "" {
+		out.Lang = out.Commit.Lang
+	}
 	if f.lang != "" {
 		out.Lang = f.lang
 	}

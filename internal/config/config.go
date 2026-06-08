@@ -202,7 +202,12 @@ type AICommitConfig struct {
 	// model. Empty falls back to the provider's configured model. Honoured
 	// only by HTTP providers (anthropic/openai/nvidia/groq and custom);
 	// CLI providers (gemini/qwen/kiro) own their own model selection.
-	Model       string        `mapstructure:"model"         yaml:"model"`
+	Model string `mapstructure:"model"         yaml:"model"`
+	// Lang overrides ai.lang for `gk commit` only — set it to write commit
+	// messages in one language (e.g. "en") while keeping chat/advice commands
+	// (do/ask/explain) in another. Empty falls back to ai.lang (which itself
+	// follows output.lang). A one-shot `gk commit --lang <code>` still wins.
+	Lang        string        `mapstructure:"lang"          yaml:"lang"`
 	Timeout     string        `mapstructure:"timeout"       yaml:"timeout"`
 	DenyPaths   []string      `mapstructure:"deny_paths"    yaml:"deny_paths"`
 	AllowRemote bool          `mapstructure:"allow_remote"  yaml:"allow_remote"`

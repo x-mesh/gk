@@ -257,6 +257,12 @@ ai:
     # One-shot override: `gk commit --model <id>`.
     # model: "kiro/claude-haiku-4.5"
 
+    # Language for `gk commit` messages only. Set this to keep commits in one
+    # language (e.g. "en") while chat/advice commands (do/ask/explain) follow
+    # ai.lang / output.lang. Empty = follow ai.lang (which follows output.lang).
+    # One-shot override: `gk commit --lang <code>`.
+    # lang: en
+
     # Hard cap on provider input tokens. Large diffs are truncated
     # (stat → hunk head → cluster summary) to stay under this limit.
     max_tokens: 24000

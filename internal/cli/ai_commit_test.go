@@ -368,3 +368,29 @@ func TestUnwrapWIPCommitProceedsWhenHEADUnchanged(t *testing.T) {
 		t.Errorf("expected reset HEAD~2, calls:\n%s", calls)
 	}
 }
+
+func TestApplyAICommitFlags_LangResolution(t *testing.T) {
+	cases := []struct {
+		name       string
+		aiLang     string // ai.lang (already folded from output.lang by Load)
+		commitLang string // ai.commit.lang
+		flagLang   string // --lang
+		want       string
+	}{
+		{"ai.lang only", "ko", "", "", "ko"},
+		{"commit.lang overrides ai.lang", "ko", "en", "", "en"},
+		{"flag overrides commit.lang", "ko", "en", "fr", "fr"},
+		{"flag overrides ai.lang", "ko", "", "fr", "fr"},
+		{"empty commit.lang keeps ai.lang", "en", "", "", "en"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ai := config.AIConfig{Lang: c.aiLang}
+			ai.Commit.Lang = c.commitLang
+			out := applyAICommitFlagsToConfig(ai, aiCommitFlags{lang: c.flagLang})
+			if out.Lang != c.want {
+				t.Errorf("Lang = %q, want %q", out.Lang, c.want)
+			}
+		})
+	}
+}

@@ -35,6 +35,7 @@ non-interactive shells, where the wizard applies only the flags given:
 	}
 	cmd.Flags().String("provider", "", "AI provider (kiro-api, anthropic, openai, groq, ...)")
 	cmd.Flags().String("commit-model", "", "model used only for `gk commit`")
+	cmd.Flags().String("commit-lang", "", "language for `gk commit` messages only")
 	cmd.Flags().String("lang", "", "output language (ko, en)")
 	cmd.Flags().Bool("easy", false, "plain-language output for non-developers")
 	cmd.Flags().Bool("yes", false, "skip the final confirmation")
@@ -76,7 +77,17 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		changes["ai.commit.model"] = v
 	}
 
-	// 3. output language
+	// 3. commit-only language (optional — empty follows ai.lang/output.lang)
+	if v, ok, err := wizardOptional(cmd, ctx, "commit-lang",
+		"commit 메시지 언어를 따로 지정할까요?",
+		"미지정 시 전체 출력 언어(아래 항목)를 따릅니다",
+		"commit 언어", "예: en", cur.AI.Commit.Lang); err != nil {
+		return err
+	} else if ok && v != "" {
+		changes["ai.commit.lang"] = v
+	}
+
+	// 4. output language
 	if v, ok, err := wizardValue(cmd, ctx, "lang",
 		"출력 언어", "ko / en", firstNonEmpty(cur.Output.Lang, "ko")); err != nil {
 		return err
@@ -84,7 +95,7 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		changes["output.lang"] = v
 	}
 
-	// 4. easy mode (bool)
+	// 5. easy mode (bool)
 	if v, ok, err := wizardBool(cmd, ctx, "easy",
 		"쉬운 모드(비개발자용 쉬운 말)를 켤까요?", cur.Output.Easy); err != nil {
 		return err

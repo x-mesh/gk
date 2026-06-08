@@ -13,6 +13,7 @@ import (
 	"github.com/x-mesh/gk/internal/aichat"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -160,6 +161,11 @@ func runExplain(cmd *cobra.Command, args []string) error {
 	Dbg("explain: prompt size=%d bytes", len(redactedInput))
 	start := time.Now()
 
+	// Spinner during the provider round-trip (see ai_ask.go for the rationale).
+	stopSpin := func() {}
+	if !flagDebug {
+		stopSpin = ui.StartBubbleSpinner(explainSpinnerMessage(lang, prov.Name()))
+	}
 	var result string
 	if flags.last {
 		// --last: explain the most recent command from reflog.
@@ -168,6 +174,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		// Diagnose the provided error message.
 		result, err = analyzer.DiagnoseError(ctx, redactedInput)
 	}
+	stopSpin()
 	if err != nil {
 		return err
 	}
@@ -187,4 +194,11 @@ func runExplain(cmd *cobra.Command, args []string) error {
 
 	emitAIAdvice(cmd.OutOrStdout(), "explain", result)
 	return nil
+}
+
+func explainSpinnerMessage(lang, providerName string) string {
+	if isKoLang(lang) {
+		return fmt.Sprintf("%s 분석 중…", providerName)
+	}
+	return fmt.Sprintf("%s analyzing…", providerName)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/x-mesh/gk/internal/aichat"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -151,7 +152,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	Dbg("ask: prompt size=%d bytes", len(redactedQuestion))
 	start := time.Now()
 
+	// Spinner during the provider round-trip so the terminal isn't frozen
+	// while the model thinks. Suppressed under --debug (the Dbg timeline
+	// narrates progress and would fight the spinner for stderr). No-op on
+	// non-TTY stderr, so piped/JSON output stays clean.
+	stopSpin := func() {}
+	if !flagDebug {
+		stopSpin = ui.StartBubbleSpinner(askSpinnerMessage(lang, prov.Name()))
+	}
 	result, err := engine.Answer(ctx, redactedQuestion)
+	stopSpin()
 	if err != nil {
 		return err
 	}
@@ -166,4 +176,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	emitAIAdvice(cmd.OutOrStdout(), "ask", result)
 	return nil
+}
+
+func askSpinnerMessage(lang, providerName string) string {
+	if isKoLang(lang) {
+		return fmt.Sprintf("%s에게 묻는 중…", providerName)
+	}
+	return fmt.Sprintf("asking %s…", providerName)
 }

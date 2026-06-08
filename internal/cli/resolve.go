@@ -13,6 +13,7 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/resolve"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -133,8 +134,15 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return runResolveInteractive(ctx, cmd, r, state, opts)
 	}
 
-	// Batch mode: --strategy provided.
+	// Batch mode: --strategy provided. Only the `ai` strategy makes provider
+	// calls (ours/theirs are local), so spin just for that — this is the path
+	// `gk resolve --ai` and `gk pull --ai` actually take.
+	stopSpin := func() {}
+	if strategy == "ai" && !flagDebug {
+		stopSpin = ui.StartBubbleSpinner(resolveSpinnerMessage(opts.Lang, prov.Name(), 0))
+	}
 	result, err := r.Run(ctx, state, opts)
+	stopSpin()
 	if err != nil {
 		return err
 	}
@@ -202,15 +210,23 @@ func runResolveInteractive(
 		return err
 	}
 
-	// AI resolution (best-effort).
+	// AI resolution (best-effort). One provider round-trip per conflicted
+	// file, so spin during the whole batch — otherwise the terminal sits
+	// frozen before the resolve TUI appears. Suppressed under --debug and a
+	// no-op on non-TTY stderr (see ai_ask.go).
 	aiResolutions := make(map[string][]resolve.HunkResolution)
 	if !opts.NoAI && r.Provider != nil {
+		stopSpin := func() {}
+		if !flagDebug {
+			stopSpin = ui.StartBubbleSpinner(resolveSpinnerMessage(opts.Lang, r.Provider.Name(), len(parsed)))
+		}
 		for _, cf := range parsed {
 			res, _ := r.ResolveWithAI(ctx, cf, opType, opts.Lang)
 			if res != nil {
 				aiResolutions[cf.Path] = res
 			}
 		}
+		stopSpin()
 	}
 
 	// Run TUI.
@@ -273,4 +289,17 @@ func printResolveResult(out interface{ Write(p []byte) (int, error) }, result *r
 		fmt.Fprintf(out, "%d/%d conflicts resolved, %d remaining\n",
 			len(result.Resolved), result.Total, result.Total-len(result.Resolved))
 	}
+}
+
+func resolveSpinnerMessage(lang, providerName string, n int) string {
+	if isKoLang(lang) {
+		if n > 0 {
+			return fmt.Sprintf("%s로 충돌 %d개 해결 중…", providerName, n)
+		}
+		return fmt.Sprintf("%s로 충돌 해결 중…", providerName)
+	}
+	if n > 0 {
+		return fmt.Sprintf("resolving %d conflict(s) with %s…", n, providerName)
+	}
+	return fmt.Sprintf("resolving conflicts with %s…", providerName)
 }

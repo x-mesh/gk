@@ -196,6 +196,15 @@ func runPullCore(cmd *cobra.Command) error {
 	runner := &git.ExecRunner{Dir: repo}
 	client := git.NewClient(runner)
 	ctx := cmd.Context()
+
+	// DefaultBranch collapses any git failure into ErrNoDefaultBranch, so a
+	// missing repo would otherwise surface as a misleading "no upstream / no
+	// base branch" message. Guard up front and let FormatError render the
+	// standard not-a-repo guidance.
+	if err := ensureGitRepo(ctx, runner); err != nil {
+		return err
+	}
+
 	remote := cfg.Remote
 	if remote == "" {
 		remote = "origin"

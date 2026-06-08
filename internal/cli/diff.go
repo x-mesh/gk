@@ -264,11 +264,12 @@ func buildDiffArgs(userArgs []string) []string {
 
 // classifyGitError는 git diff 실행 에러를 분류하여 적절한 힌트와 함께 반환한다.
 func classifyGitError(err error, stderr []byte, userArgs []string) error {
-	msg := err.Error()
 	stderrStr := string(stderr)
 
-	// git 저장소가 아닌 디렉토리
-	if strings.Contains(msg, "not a git repository") || strings.Contains(stderrStr, "not a git repository") {
+	// git 저장소가 아닌 디렉토리. 대소문자 무시: hard `fatal: not a git
+	// repository`와 `git diff --no-index`가 뱉는 `warning: Not a git
+	// repository`를 모두 같은 조건으로 본다.
+	if isNotAGitRepoError(err) || strings.Contains(strings.ToLower(stderrStr), "not a git repository") {
 		return WithHint(
 			fmt.Errorf("gk diff: git 저장소가 아닙니다"),
 			"git init 으로 저장소를 초기화하거나, 올바른 디렉토리로 이동하세요",

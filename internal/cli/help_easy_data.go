@@ -82,6 +82,7 @@ func init() {
 		"gk commit --provider":               "AI 제공자(ai.provider) 바꾸기(gemini|qwen|kiro)",
 		"gk commit --staged-only":            "이미 준비된(staged) 변경만 대상으로 함",
 		"gk commit --yes":                    "모든 확인에 자동 동의(터미널이 아닐 때 --force와 같음)",
+		"gk push --from":                     "현재 체크아웃과 무관하게 지정한 브랜치를 푸시(gk merge --into의 짝). 예: 다른 워크트리에서 main에 머지한 뒤 gk push --from main",
 		"gk push --force":                    "기록이 어긋나도 푸시 허용(--force-with-lease 사용, 안전 강제 푸시)",
 		"gk push --no-verify":                "비밀정보 패턴 검사 건너뛰기(--skip-scan과 동일; 'gk commit -n'과 일관)",
 		"gk push --skip-scan":                "비밀정보 패턴 검사 건너뛰기",

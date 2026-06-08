@@ -23,6 +23,11 @@ func init() {
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  runPush,
 	}
+	// --from names the branch to push regardless of the current checkout —
+	// the mirror image of `gk merge --into <branch>`. In a bare/worktree
+	// layout you merge into main from another worktree, then push that main
+	// without switching to it: `gk push --from main`.
+	cmd.Flags().String("from", "", "branch to push, regardless of the current checkout (defaults to the current branch)")
 	cmd.Flags().Bool("force", false, "allow non-fast-forward (uses --force-with-lease)")
 	cmd.Flags().Bool("skip-scan", false, "skip the secret-pattern scan")
 	// --no-verify is the alias-friendly spelling that matches `gk commit -n`;
@@ -57,6 +62,11 @@ func runPush(cmd *cobra.Command, args []string) error {
 	case 2:
 		remote = args[0]
 		branch = args[1]
+	}
+	from, _ := cmd.Flags().GetString("from")
+	branch, err := resolvePushBranch(branch, from)
+	if err != nil {
+		return err
 	}
 	if branch == "" {
 		b, err := client.CurrentBranch(ctx)
@@ -172,6 +182,22 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// resolvePushBranch decides which branch `gk push` targets, given the
+// positional [<branch>] argument and the --from flag. --from is the mirror
+// of `gk merge --into`: it names the branch to push regardless of the current
+// checkout (e.g. push main from another worktree without switching to it).
+// When both are set they must agree. An empty return means "fall back to the
+// current branch".
+func resolvePushBranch(posBranch, from string) (string, error) {
+	if from != "" {
+		if posBranch != "" && posBranch != from {
+			return "", fmt.Errorf("conflicting branch: positional %q vs --from %q", posBranch, from)
+		}
+		return from, nil
+	}
+	return posBranch, nil
 }
 
 // pushResult is the JSON shape emitted when --json is active on push.

@@ -57,6 +57,49 @@ func TestPushShipNoVerifyFlag(t *testing.T) {
 	}
 }
 
+func TestPush_FromFlagRegistered(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"push"})
+	if err != nil {
+		t.Fatalf("find push: %v", err)
+	}
+	if cmd.Flags().Lookup("from") == nil {
+		t.Error("push: missing --from flag")
+	}
+}
+
+func TestResolvePushBranch(t *testing.T) {
+	cases := []struct {
+		name      string
+		posBranch string
+		from      string
+		want      string
+		wantErr   bool
+	}{
+		{"both empty falls back", "", "", "", false},
+		{"from only", "", "main", "main", false},
+		{"positional only", "", "feature", "feature", false},
+		{"both agree", "main", "main", "main", false},
+		{"both conflict", "feature", "main", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolvePushBranch(tc.posBranch, tc.from)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got branch %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPushJSON_Schema_Ahead(t *testing.T) {
 	// Save and restore the global JSON flag — runPush reads JSONOut()
 	// directly. Tests run sequentially in this package so this is safe.

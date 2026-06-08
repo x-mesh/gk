@@ -75,6 +75,12 @@ func runReset(cmd *cobra.Command, args []string) error {
 
 	branch, err := client.CurrentBranch(ctx)
 	if err != nil {
+		// Outside a repo the failure is "not a git repository", not a detached
+		// HEAD — defer to FormatError's standard guidance rather than the
+		// misleading "check out a branch first" hint.
+		if isNotAGitRepoError(err) {
+			return err
+		}
 		return WithHint(fmt.Errorf("reset requires a branch: %w", err), resetNoBranchHint(ctx))
 	}
 

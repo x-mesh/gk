@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -56,6 +57,18 @@ func HintFrom(err error) string {
 func FormatError(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	// git 저장소 밖에서 실행된 명령은 git의 길고 불친절한 raw fatal
+	// ("fatal: not a git repository ...")을 던진다. 명령마다 진입부 가드를
+	// 다는 대신, 모든 에러가 지나는 이 단일 지점에서 표준 안내로 바꾼다.
+	// 명령이 이미 자체 hint를 달아 의도적으로 처리했다면(status/diff 등)
+	// 그 메시지를 존중해 건드리지 않는다.
+	if HintFrom(err) == "" && isNotAGitRepoError(err) {
+		err = WithHint(
+			fmt.Errorf("git 저장소가 아닙니다"),
+			"git init 으로 저장소를 초기화하거나, 올바른 디렉토리로 이동하세요",
+		)
 	}
 
 	// Easy Mode branch: use EasyFormatter for friendlier output.
@@ -136,17 +149,35 @@ func inProgressHint(state *gitstate.State) string {
 
 // isNotAGitRepoError reports whether err originates from running git outside a
 // repository. We check both the wrapped message and the ExitError's stderr so
-// the detection survives any chain wrapping done above the runner layer.
+// the detection survives any chain wrapping done above the runner layer. The
+// match is case-insensitive: a hard `fatal: not a git repository` and the
+// softer `warning: Not a git repository` that `git diff --no-index` emits are
+// both the same "you're not in a repo" condition.
 func isNotAGitRepoError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if strings.Contains(err.Error(), "not a git repository") {
+	if strings.Contains(strings.ToLower(err.Error()), "not a git repository") {
 		return true
 	}
 	var exitErr *git.ExitError
-	if errors.As(err, &exitErr) && strings.Contains(exitErr.Stderr, "not a git repository") {
+	if errors.As(err, &exitErr) && strings.Contains(strings.ToLower(exitErr.Stderr), "not a git repository") {
 		return true
 	}
 	return false
+}
+
+// ensureGitRepo returns a not-a-git-repo error (which FormatError renders as the
+// standard "git 저장소가 아닙니다" guidance) when the working directory is not
+// inside a repository. Most commands need no such guard — git's own stderr
+// flows up to FormatError untouched. This exists for the few whose first git
+// call swallows that stderr behind a sentinel (e.g. DefaultBranch ->
+// ErrNoDefaultBranch), which would otherwise surface a misleading "no upstream
+// / no base branch" message outside a repo. Call it up front in those commands.
+func ensureGitRepo(ctx context.Context, r git.Runner) error {
+	_, _, err := r.Run(ctx, "rev-parse", "--git-dir")
+	if isNotAGitRepoError(err) {
+		return err
+	}
+	return nil
 }

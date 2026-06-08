@@ -171,7 +171,11 @@ func resolveGitDirs(ctx context.Context, workDir string) (commonDir, gitDir stri
 		// Fallback: use --git-dir as both git dir and common dir
 		gd, gdErr := run("rev-parse", "--git-dir")
 		if gdErr != nil {
-			return "", "", fmt.Errorf("not a git repo: %w", gdErr)
+			// Use git's canonical phrasing so callers (cli.isNotAGitRepoError)
+			// can detect this and render the standard not-a-repo guidance —
+			// cmd.Output() stashes the real stderr in an *exec.ExitError the
+			// cli layer can't reach.
+			return "", "", fmt.Errorf("not a git repository: %w", gdErr)
 		}
 		abs, absErr := toAbs(workDir, gd)
 		if absErr != nil {

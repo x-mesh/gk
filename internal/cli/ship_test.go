@@ -323,3 +323,54 @@ func readTestFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestBuildShipPlan_FastForwardsBaseFromNonBaseBranch(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                    {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":           {Stdout: "develop\n"},
+		"merge-base --is-ancestor main develop": {}, // exit 0 → FF possible
+		"describe --tags --abbrev=0":            {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":      {Stdout: "feat: add x\n\x1e"},
+		"rev-parse --verify refs/tags/v1.3.0":   {ExitCode: 1, Stderr: "not found"},
+	}}
+	plan, err := buildShipPlan(context.Background(), runner, testShipConfig(), shipFlags{})
+	if err != nil {
+		t.Fatalf("buildShipPlan: %v", err)
+	}
+	if !plan.MergeToBase {
+		t.Error("MergeToBase = false, want true (FF possible from develop)")
+	}
+	if plan.Base != "main" {
+		t.Errorf("Base = %q, want main", plan.Base)
+	}
+}
+
+func TestBuildShipPlan_RejectsDivergedNonBaseBranch(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                    {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":           {Stdout: "develop\n"},
+		"merge-base --is-ancestor main develop": {ExitCode: 1}, // not an ancestor
+		"describe --tags --abbrev=0":            {Stdout: "v1.2.3\n"},
+	}}
+	_, err := buildShipPlan(context.Background(), runner, testShipConfig(), shipFlags{})
+	if err == nil {
+		t.Fatal("expected error for diverged non-base branch, got nil")
+	}
+}
+
+func TestBuildShipPlan_AllowNonBaseSkipsMerge(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                  {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":         {Stdout: "develop\n"},
+		"describe --tags --abbrev=0":          {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":    {Stdout: "feat: add x\n\x1e"},
+		"rev-parse --verify refs/tags/v1.3.0": {ExitCode: 1, Stderr: "not found"},
+	}}
+	plan, err := buildShipPlan(context.Background(), runner, testShipConfig(), shipFlags{allowNonBase: true})
+	if err != nil {
+		t.Fatalf("buildShipPlan: %v", err)
+	}
+	if plan.MergeToBase {
+		t.Error("MergeToBase = true, want false (--allow-non-base tags in place)")
+	}
+}

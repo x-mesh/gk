@@ -29,7 +29,13 @@ func init() {
 		Long: `Runs the final ship gate for a release: verify a clean release branch,
 infer or accept the next SemVer tag, run preflight checks, create an annotated
 tag, and push the branch plus tag. Pushing the tag triggers the release workflow
-when the repository has tag-based release automation.`,
+when the repository has tag-based release automation.
+
+Shipping from a non-base branch (e.g. develop while base is main) fast-forwards
+the base to your branch's tip and releases from base — so the tag lands on base,
+not the feature branch. This only happens when the base can fast-forward; if the
+histories have diverged, ship stops and asks you to integrate first (gk sync) or
+pass --allow-non-base to tag the current branch in place instead.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runShip,
 	}
@@ -42,7 +48,7 @@ when the repository has tag-based release automation.`,
 	cmd.Flags().Bool("skip-preflight", false, "skip configured preflight checks")
 	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan before pushing (matches 'gk commit -n' / 'gk push -n')")
 	cmd.Flags().Bool("allow-dirty", false, "allow shipping with a dirty working tree")
-	cmd.Flags().Bool("allow-non-base", false, "allow release tags from a non-base branch")
+	cmd.Flags().Bool("allow-non-base", false, "tag the current branch in place instead of fast-forwarding base (skip the base merge)")
 	cmd.Flags().BoolP("yes", "y", false, "skip the final confirmation prompt")
 	cmd.Flags().Bool("dry-run", false, "print the ship plan without tagging or pushing")
 	cmd.Flags().Bool("no-fetch", false, "skip the up-front `git fetch --tags` (use a stale local view)")
@@ -93,6 +99,11 @@ type shipPlan struct {
 	RepoRoot    string
 	VersionFile string
 	Changelog   string
+	// MergeToBase is set when shipping from a non-base branch that can
+	// fast-forward Base: ship advances Base to Branch's tip and releases from
+	// Base instead of tagging the feature branch in place. False when on the
+	// base branch already, or when --allow-non-base tags the branch directly.
+	MergeToBase bool
 }
 
 func runShip(cmd *cobra.Command, args []string) error {
@@ -247,6 +258,21 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		fmt.Fprintf(deps.Out, "%s committed release metadata: %s\n", ok("✓"), tag(plan.NextTag))
 	}
 
+	// Fast-forward the base branch to this branch's tip so the release lands on
+	// base. Done before tagging so the tag (created on HEAD) sits on a commit
+	// that base now points at too. `branch -f` only touches the ref; it refuses
+	// if base is checked out in another worktree, surfacing that as an error.
+	if plan.MergeToBase {
+		if _, stderr, err := deps.Runner.Run(ctx, "branch", "-f", plan.Base, plan.Branch); err != nil {
+			return WithHint(
+				fmt.Errorf("ship: fast-forward %s → %s: %s", plan.Base, plan.Branch, strings.TrimSpace(string(stderr))),
+				"base가 다른 worktree에 체크아웃되어 있으면 거기서 정리한 뒤 다시 시도하세요",
+			)
+		}
+		ok := color.New(color.FgGreen, color.Bold).SprintFunc()
+		fmt.Fprintf(deps.Out, "%s fast-forwarded %s → %s\n", ok("✓"), plan.Base, plan.Branch)
+	}
+
 	if !flags.noRelease {
 		if _, stderr, err := deps.Runner.Run(ctx, "tag", "-a", plan.NextTag, "-m", "Release "+plan.NextTag); err != nil {
 			return fmt.Errorf("ship: create tag: %s: %w", strings.TrimSpace(string(stderr)), err)
@@ -266,7 +292,11 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 	good := color.New(color.FgGreen, color.Bold).SprintFunc()
 	tag := color.New(color.FgMagenta, color.Bold).SprintFunc()
 	fmt.Fprintln(deps.Out, header("─── Ship complete ────────────────────────────"))
-	fmt.Fprintf(deps.Out, "  %s shipped %s on %s\n", good("✓"), tag(plan.NextTag), color.New(color.Bold).Sprint(plan.Branch))
+	shippedOn := plan.Branch
+	if plan.MergeToBase {
+		shippedOn = fmt.Sprintf("%s (fast-forwarded from %s)", plan.Base, plan.Branch)
+	}
+	fmt.Fprintf(deps.Out, "  %s shipped %s on %s\n", good("✓"), tag(plan.NextTag), color.New(color.Bold).Sprint(shippedOn))
 	if !flags.noRelease && flags.push {
 		fmt.Fprintf(deps.Out, "  %s release workflow triggered by tag push: %s\n", good("→"), tag(plan.NextTag))
 	}
@@ -318,8 +348,21 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 			base = detected
 		}
 	}
-	if base != "" && branch != base && !flags.allowNonBase {
-		return shipPlan{}, fmt.Errorf("ship: current branch %q is not base branch %q; pass --allow-non-base to override", branch, base)
+	mergeToBase := false
+	if base != "" && branch != base {
+		switch {
+		case flags.allowNonBase:
+			// Explicit opt-out: tag this branch in place, no merge.
+		case isAncestor(ctx, r, base, branch):
+			// Base can fast-forward to this branch — ship advances base and
+			// releases from it, so the tag lands on base, not the feature branch.
+			mergeToBase = true
+		default:
+			return shipPlan{}, WithHint(
+				fmt.Errorf("ship: %q는 base %q를 fast-forward할 수 없습니다 (히스토리 분기)", branch, base),
+				"먼저 base를 통합하세요: `gk sync` 후 다시 ship — 또는 그 자리에 태그하려면 --allow-non-base",
+			)
+		}
 	}
 
 	repoRoot := ""
@@ -392,7 +435,16 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 		RepoRoot:    repoRoot,
 		VersionFile: versionFile,
 		Changelog:   changelog,
+		MergeToBase: mergeToBase,
 	}, nil
+}
+
+// isAncestor reports whether ancestor is reachable from descendant — i.e. a
+// fast-forward from ancestor to descendant is possible. A non-zero git exit
+// (the "not an ancestor" case, or a missing ref) returns false.
+func isAncestor(ctx context.Context, r git.Runner, ancestor, descendant string) bool {
+	_, _, err := r.Run(ctx, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
 }
 
 // remoteHasTag returns true when the remote already advertises the
@@ -533,7 +585,11 @@ func confirmShip(deps shipDeps, plan shipPlan, flags shipFlags) error {
 	if !flags.noRelease {
 		target = plan.NextTag
 	}
-	fmt.Fprintf(deps.ErrOut, "ship %s from %s and push=%v? [y/N] ", target, plan.Branch, flags.push)
+	from := plan.Branch
+	if plan.MergeToBase {
+		from = fmt.Sprintf("%s (→ %s fast-forward)", plan.Branch, plan.Base)
+	}
+	fmt.Fprintf(deps.ErrOut, "ship %s from %s and push=%v? [y/N] ", target, from, flags.push)
 	sc := bufio.NewScanner(deps.In)
 	if !sc.Scan() {
 		return fmt.Errorf("ship: confirmation aborted")
@@ -565,6 +621,21 @@ func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan 
 	fmt.Fprint(out, string(stdout))
 	fmt.Fprint(errOut, string(stderr))
 
+	// When we fast-forwarded base, publish it too so the remote base reflects
+	// the release (the tag push below is what triggers the release workflow).
+	if plan.MergeToBase {
+		stdout, stderr, err = r.Run(ctx, "push", plan.Remote, plan.Base)
+		if err != nil {
+			fmt.Fprint(errOut, string(stderr))
+			return WithHint(
+				fmt.Errorf("ship: push base %s: %w", plan.Base, err),
+				"원격 "+plan.Base+"가 앞서 있으면 `gk sync` 후 다시 시도하세요 (force-push 안 함)",
+			)
+		}
+		fmt.Fprint(out, string(stdout))
+		fmt.Fprint(errOut, string(stderr))
+	}
+
 	if !flags.noRelease {
 		stdout, stderr, err = r.Run(ctx, "push", plan.Remote, plan.NextTag)
 		if err != nil {
@@ -587,7 +658,11 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 	fmt.Fprintln(w, header("─── Ship plan ────────────────────────────────"))
 	fmt.Fprintf(w, "  %s   %s\n", label("Branch:   "), value(plan.Branch))
 	if plan.Base != "" {
-		fmt.Fprintf(w, "  %s   %s\n", label("Base:     "), value(plan.Base))
+		baseVal := value(plan.Base)
+		if plan.MergeToBase {
+			baseVal = value(plan.Base) + skip(fmt.Sprintf("  (fast-forward %s → %s, release from %s)", plan.Base, plan.Branch, plan.Base))
+		}
+		fmt.Fprintf(w, "  %s   %s\n", label("Base:     "), baseVal)
 	}
 	fmt.Fprintf(w, "  %s   %s\n", label("Remote:   "), value(plan.Remote))
 	fmt.Fprintf(w, "  %s   %s\n", label("Commits:  "), value(fmt.Sprintf("%d since %s", plan.CommitCount, plan.LatestTag)))

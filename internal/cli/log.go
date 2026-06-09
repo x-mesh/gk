@@ -144,7 +144,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		return renderVizLog(cmd, runner, since, limit, args, viz, tagsRule)
+		return renderVizLog(cmd, runner, since, limit, args, viz, tagsRule, graph)
 	}
 
 	gitArgs := []string{"log"}
@@ -882,7 +882,7 @@ func parseTrailers(body string) string {
 // --impact/--cc/--safety/--hotspots/--trailers are active. It performs a
 // single `git log` with a fixed multi-field format + numstat, parses records,
 // and emits one augmented line per commit.
-func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limit int, pathArgs []string, v logVizFlags, tagsRule bool) error {
+func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limit int, pathArgs []string, v logVizFlags, tagsRule, graph bool) error {
 	ctx := cmd.Context()
 	args := []string{
 		"log",
@@ -1008,51 +1008,14 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		fmt.Fprintln(w, faint(fmt.Sprintf("scope: %d commits · %s", len(records), strings.Join(parts, " "))))
 	}
 
-	// Mark each commit's role in a consecutive-WIP run. Singletons stay
-	// unmarked — gutter only kicks in when a run is 2+ long, which is the
-	// situation that actually benefits from visual grouping.
-	wipRoles := computeWIPRoles(records, isWIP)
-	gutterFaint := color.New(color.Faint).SprintFunc()
-	const gapThreshold = 4 * time.Hour
-
-	for i, r := range records {
-		if tagsRule {
-			if t, ok := tags[r.short]; ok {
-				fmt.Fprintln(w, renderTagRule(t, width))
-			}
-		}
-
-		// Push boundary divider: printed just before the first commit that is
-		// already on a remote, so everything above reads as "local-only."
-		if i == boundaryIdx && boundaryIdx > 0 {
-			fmt.Fprintln(w, renderPushBoundary(boundaryIdx, width))
-		}
-
-		// Inside a WIP run, flag a visible time discontinuity between
-		// neighboring rows. Doesn't hide any commit — just inserts one
-		// faint marker line so the user can tell "next morning" from
-		// "same session".
-		if i > 0 && wipRoles[i] != "" && wipRoles[i-1] != "" && wipRoles[i] != "head" {
-			prev := records[i-1].authorTime
-			cur := r.authorTime
-			if !prev.IsZero() && !cur.IsZero() {
-				if d := prev.Sub(cur); d >= gapThreshold {
-					fmt.Fprintln(w, gutterFaint("┊ ~"+formatAge(d)+" gap"))
-				}
-			}
-		}
-
+	// renderRow assembles a commit's viz content WITHOUT the leading WIP
+	// gutter: the safety marker, the cc glyph, the `sha (age) <author>
+	// subject` core, and the hotspot/impact/trailer suffixes. The gutter
+	// (┌ │ └) is the caller's job because it only applies to the flat,
+	// records-ordered path — in --graph mode git's own topology column owns
+	// the left margin instead, and a second gutter would collide with it.
+	renderRow := func(r commitRecord) string {
 		var prefix, suffix strings.Builder
-		switch wipRoles[i] {
-		case "head":
-			prefix.WriteString(gutterFaint("┌ "))
-		case "mid":
-			prefix.WriteString(gutterFaint("│ "))
-		case "tail":
-			prefix.WriteString(gutterFaint("└ "))
-		default:
-			prefix.WriteString("  ")
-		}
 		if v.safety {
 			// Color by severity: `✎` amended is red-bold because force-pushing
 			// a rewritten commit can break collaborators; `◇` unpushed is
@@ -1103,14 +1066,164 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 				suffix.WriteString("  " + color.New(color.Faint).Sprint(t))
 			}
 		}
+		return prefix.String() + line + suffix.String()
+	}
 
-		out := prefix.String() + line + suffix.String()
+	// --graph mode: let git compute the topology and borrow only its art
+	// column, rendering gk's viz content to the right of each commit row.
+	// The flat-path structure lines (WIP gutter, push boundary, tag rules)
+	// are intentionally suppressed here — git's own │ ├ └ already convey
+	// structure, and interleaving full-width separators would break the
+	// graph's vertical continuity. The scope tally above still prints.
+	if graph {
+		recBySHA := make(map[string]commitRecord, len(records))
+		for _, r := range records {
+			recBySHA[r.sha] = r
+		}
+		for _, gl := range fetchGraphLines(ctx, runner, since, limit, pathArgs, logUseColor()) {
+			art := prettifyGraphArt(gl.art)
+			r, ok := recBySHA[gl.sha]
+			if gl.sha == "" || !ok {
+				// Connector line (|\, |/, | |): no commit to attach, art only.
+				fmt.Fprintln(w, art)
+				continue
+			}
+			out := art + renderRow(r)
+			if trimWidth > 0 {
+				out = trimToVisible(out, trimWidth)
+			}
+			fmt.Fprintln(w, out)
+		}
+		return nil
+	}
+
+	// Mark each commit's role in a consecutive-WIP run. Singletons stay
+	// unmarked — gutter only kicks in when a run is 2+ long, which is the
+	// situation that actually benefits from visual grouping.
+	wipRoles := computeWIPRoles(records, isWIP)
+	gutterFaint := color.New(color.Faint).SprintFunc()
+	const gapThreshold = 4 * time.Hour
+
+	for i, r := range records {
+		if tagsRule {
+			if t, ok := tags[r.short]; ok {
+				fmt.Fprintln(w, renderTagRule(t, width))
+			}
+		}
+
+		// Push boundary divider: printed just before the first commit that is
+		// already on a remote, so everything above reads as "local-only."
+		if i == boundaryIdx && boundaryIdx > 0 {
+			fmt.Fprintln(w, renderPushBoundary(boundaryIdx, width))
+		}
+
+		// Inside a WIP run, flag a visible time discontinuity between
+		// neighboring rows. Doesn't hide any commit — just inserts one
+		// faint marker line so the user can tell "next morning" from
+		// "same session".
+		if i > 0 && wipRoles[i] != "" && wipRoles[i-1] != "" && wipRoles[i] != "head" {
+			prev := records[i-1].authorTime
+			cur := r.authorTime
+			if !prev.IsZero() && !cur.IsZero() {
+				if d := prev.Sub(cur); d >= gapThreshold {
+					fmt.Fprintln(w, gutterFaint("┊ ~"+formatAge(d)+" gap"))
+				}
+			}
+		}
+
+		gutter := "  "
+		switch wipRoles[i] {
+		case "head":
+			gutter = gutterFaint("┌ ")
+		case "mid":
+			gutter = gutterFaint("│ ")
+		case "tail":
+			gutter = gutterFaint("└ ")
+		}
+
+		out := gutter + renderRow(r)
 		if trimWidth > 0 {
 			out = trimToVisible(out, trimWidth)
 		}
 		fmt.Fprintln(w, out)
 	}
 	return nil
+}
+
+// graphLine is one row of `git log --graph` output: the rendered topology art
+// plus the commit SHA it belongs to. Connector rows (|\, |/, | |) carry no
+// SHA — they exist only to draw branch merges/forks and are emitted verbatim.
+type graphLine struct {
+	art string
+	sha string
+}
+
+// fetchGraphLines runs `git log --graph --format=%x00%H` over the same
+// revision scope as the viz pass and returns the topology column line-by-line.
+// %x00 (a NUL) separates the graph art from the SHA, which is robust against
+// the art's own spacing — and against color: with useColor, git paints each
+// lane a rotating color (red/green/yellow/blue/magenta/cyan) so branches in a
+// busy merge history stay legible. Those ANSI codes land only in the art
+// (each token self-resets, so no color leaks into the viz row to its right),
+// and the SHA after the NUL is always raw hex, so parsing is unaffected.
+func fetchGraphLines(ctx context.Context, runner *git.ExecRunner, since string, limit int, pathArgs []string, useColor bool) []graphLine {
+	colorMode := "--color=never"
+	if useColor {
+		colorMode = "--color=always"
+	}
+	args := []string{"log", "--graph", colorMode, "--format=%x00%H"}
+	if limit > 0 {
+		args = append(args, "-n", strconv.Itoa(limit))
+	}
+	if since != "" {
+		args = append(args, "--since="+normalizeSince(since))
+	}
+	args = append(args, pathArgs...)
+	out, _, err := runner.Run(ctx, args...)
+	if err != nil {
+		return nil
+	}
+	return parseGraphLines(out)
+}
+
+// graphArtReplacer swaps git's ASCII topology characters for box-drawing
+// glyphs. ASCII `|` `/` `\` `-` render as short strokes that read as broken
+// dashes between rows; the box-drawing equivalents span the full cell so
+// vertical and diagonal lanes visually connect across rows. Every swap is a
+// 1:1, single-width rune, so git's column alignment is preserved exactly.
+// Color is applied by git as SGR escapes (ESC [ … m) — none of which contain
+// these characters — so a plain string replace can't corrupt them. `*` (the
+// commit node) is left as-is: it's the conventional marker and sits where the
+// viz row's own glyphs begin.
+var graphArtReplacer = strings.NewReplacer(
+	"|", "│",
+	"/", "╱",
+	"\\", "╲",
+	"-", "─",
+)
+
+// prettifyGraphArt applies graphArtReplacer to one row of git graph art.
+func prettifyGraphArt(art string) string {
+	return graphArtReplacer.Replace(art)
+}
+
+// parseGraphLines splits `git log --graph --format=%x00%H` output into graph
+// rows. Commit rows carry a NUL separating art from SHA; connector rows have
+// no NUL and are kept verbatim (minus trailing pad spaces) unless fully blank.
+func parseGraphLines(out []byte) []graphLine {
+	var lines []graphLine
+	for _, raw := range strings.Split(string(out), "\n") {
+		if i := strings.IndexByte(raw, 0); i >= 0 {
+			lines = append(lines, graphLine{art: raw[:i], sha: strings.TrimSpace(raw[i+1:])})
+			continue
+		}
+		// Connector row: keep it only if it carries visible art (git pads
+		// rows with trailing spaces; a fully blank line is dropped).
+		if art := strings.TrimRight(raw, " "); art != "" {
+			lines = append(lines, graphLine{art: art})
+		}
+	}
+	return lines
 }
 
 // vizRecordFormat asks git to emit author time as a raw unix timestamp

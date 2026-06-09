@@ -770,3 +770,53 @@ func TestTrimToVisible_CJKWideCells(t *testing.T) {
 		t.Errorf("expected ellipsis, got %q", got)
 	}
 }
+
+func TestParseGraphLines(t *testing.T) {
+	const sha1 = "8ad64ec0000000000000000000000000000000a1"
+	const sha2 = "c5a39570000000000000000000000000000000a2"
+	const sha3 = "49fef610000000000000000000000000000000a3"
+	const sha4 = "89991b60000000000000000000000000000000a4"
+	// Mirror of `git log --graph --format=%x00%H`: NUL precedes each SHA,
+	// connector rows (|\, |/) carry no NUL, and git pads with trailing spaces.
+	raw := "* \x00" + sha1 + "\n" +
+		"*   \x00" + sha2 + "\n" +
+		"|\\  \n" +
+		"| * \x00" + sha3 + "\n" +
+		"|/  \n" +
+		"* \x00" + sha4 + "\n" +
+		"   \n"
+
+	got := parseGraphLines([]byte(raw))
+	want := []graphLine{
+		{art: "* ", sha: sha1},
+		{art: "*   ", sha: sha2},
+		{art: "|\\"},
+		{art: "| * ", sha: sha3},
+		{art: "|/"},
+		{art: "* ", sha: sha4},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("line count: got %d, want %d (%#v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPrettifyGraphArt(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"* ", "* "},         // commit node kept as-is
+		{"|\\  ", "│╲  "},    // merge fork
+		{"|/  ", "│╱  "},     // branch join
+		{"| | | ", "│ │ │ "}, // parallel lanes
+		{"*---. ", "*───. "}, // octopus dashes
+		{"\x1b[31m|\x1b[m\x1b[32m\\\x1b[m  ", "\x1b[31m│\x1b[m\x1b[32m╲\x1b[m  "}, // ANSI preserved, only graph chars swapped
+	}
+	for _, c := range cases {
+		if got := prettifyGraphArt(c.in); got != c.want {
+			t.Errorf("prettifyGraphArt(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

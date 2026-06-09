@@ -120,9 +120,10 @@ func TestRenderImpactBar(t *testing.T) {
 }
 
 func TestParseCommitRecords(t *testing.T) {
-	// The 5th field is now author-time as a unix timestamp (%at), not %ar.
-	raw := "sha1fullA\x00sha1A\x00feat: x\x00Alice\x001700000000\x00body1\x1e\n" +
-		"sha2fullB\x00sha2B\x00fix: y\x00Bob\x001700003600\x00body2\x1e\n"
+	// Fields: %H %h %s %an %at %P %b. The 5th is author-time as a unix
+	// timestamp (%at); the 6th is the space-separated parent list (%P).
+	raw := "sha1fullA\x00sha1A\x00feat: x\x00Alice\x001700000000\x00pa1 pa2\x00body1\x1e\n" +
+		"sha2fullB\x00sha2B\x00fix: y\x00Bob\x001700003600\x00\x00body2\x1e\n"
 	recs := parseCommitRecords([]byte(raw))
 	if len(recs) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(recs))
@@ -138,6 +139,12 @@ func TestParseCommitRecords(t *testing.T) {
 	}
 	if recs[1].authorTime.Unix() != 1700003600 {
 		t.Errorf("rec1 authorTime = %d, want 1700003600", recs[1].authorTime.Unix())
+	}
+	if len(recs[0].parents) != 2 || recs[0].parents[0] != "pa1" || recs[0].parents[1] != "pa2" {
+		t.Errorf("rec0 parents = %v, want [pa1 pa2]", recs[0].parents)
+	}
+	if len(recs[1].parents) != 0 {
+		t.Errorf("rec1 parents = %v, want empty", recs[1].parents)
 	}
 }
 
@@ -771,52 +778,43 @@ func TestTrimToVisible_CJKWideCells(t *testing.T) {
 	}
 }
 
-func TestParseGraphLines(t *testing.T) {
-	const sha1 = "8ad64ec0000000000000000000000000000000a1"
-	const sha2 = "c5a39570000000000000000000000000000000a2"
-	const sha3 = "49fef610000000000000000000000000000000a3"
-	const sha4 = "89991b60000000000000000000000000000000a4"
-	// Mirror of `git log --graph --format=%x00%H`: NUL precedes each SHA,
-	// connector rows (|\, |/) carry no NUL, and git pads with trailing spaces.
-	raw := "* \x00" + sha1 + "\n" +
-		"*   \x00" + sha2 + "\n" +
-		"|\\  \n" +
-		"| * \x00" + sha3 + "\n" +
-		"|/  \n" +
-		"* \x00" + sha4 + "\n" +
-		"   \n"
-
-	got := parseGraphLines([]byte(raw))
-	want := []graphLine{
-		{art: "* ", sha: sha1},
-		{art: "*   ", sha: sha2},
-		{art: "|\\"},
-		{art: "| * ", sha: sha3},
-		{art: "|/"},
-		{art: "* ", sha: sha4},
+func TestBoxGlyph(t *testing.T) {
+	cases := []struct {
+		mask int
+		want string
+	}{
+		{dUp | dDown, gVert},
+		{dLeft | dRight, gHoriz},
+		{dUp | dDown | dRight, gTeeR},
+		{dUp | dDown | dLeft, gTeeL},
+		{dDown | dLeft, gCornDL},
+		{dDown | dRight, gCornDR},
+		{dUp | dLeft, gCornUL},
+		{dUp | dRight, gCornUR},
+		{dUp | dDown | dLeft | dRight, gCross},
+		{0, " "},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("line count: got %d, want %d (%#v)", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("line %d: got %+v, want %+v", i, got[i], want[i])
+	for _, c := range cases {
+		if got := boxGlyph(c.mask); got != c.want {
+			t.Errorf("boxGlyph(%d) = %q, want %q", c.mask, got, c.want)
 		}
 	}
 }
 
-func TestPrettifyGraphArt(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"* ", "* "},         // commit node kept as-is
-		{"|\\  ", "│╲  "},    // merge fork
-		{"|/  ", "│╱  "},     // branch join
-		{"| | | ", "│ │ │ "}, // parallel lanes
-		{"*---. ", "*───. "}, // octopus dashes
-		{"\x1b[31m|\x1b[m\x1b[32m\\\x1b[m  ", "\x1b[31m│\x1b[m\x1b[32m╲\x1b[m  "}, // ANSI preserved, only graph chars swapped
+func TestRenderSelfGraph(t *testing.T) {
+	// A single no-ff merge: M has two parents (mainline P, feature F); both
+	// reach back to base B. Expect a fork right after M and a join at B.
+	recs := []commitRecord{
+		{sha: "M", parents: []string{"P", "F"}},
+		{sha: "F", parents: []string{"B"}},
+		{sha: "P", parents: []string{"B"}},
+		{sha: "B"},
 	}
-	for _, c := range cases {
-		if got := prettifyGraphArt(c.in); got != c.want {
-			t.Errorf("prettifyGraphArt(%q) = %q, want %q", c.in, got, c.want)
-		}
+	var buf bytes.Buffer
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha })
+	got := buf.String()
+	want := "● M\n├─╮\n│ ● F\n● │ P\n● │ B\n╰─╯\n"
+	if got != want {
+		t.Errorf("renderSelfGraph:\n got: %q\nwant: %q", got, want)
 	}
 }

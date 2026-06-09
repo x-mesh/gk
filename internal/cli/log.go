@@ -423,16 +423,19 @@ func (v logVizFlags) any() bool {
 
 // commitRecord holds the per-commit fields we need for viz rendering.
 // authorTime is the raw author timestamp; callers format it with
-// shortAge() to produce the compact column (`6d`, `3m`, `2w`).
+// shortAge() to produce the compact column (`6d`, `3m`, `2w`). parents holds
+// the full parent SHAs (in git order, first parent first) so the self-drawn
+// graph renderer can place lanes; it is empty for the non-graph paths.
 type commitRecord struct {
 	sha, short, subject, author, body string
 	authorTime                        time.Time
+	parents                           []string
 }
 
-// parseCommitRecords splits a `%H%00%h%00%s%00%an%00%at%00%b%1e`-formatted
+// parseCommitRecords splits a `%H%00%h%00%s%00%an%00%at%00%P%00%b%1e`-formatted
 // stream into structured records. The date field is a unix timestamp
-// (author time). Bodies may contain embedded newlines so anything after
-// the trailing %b survives in record.body.
+// (author time); %P is a space-separated parent SHA list. Bodies may contain
+// embedded newlines so anything after the trailing %b survives in record.body.
 func parseCommitRecords(raw []byte) []commitRecord {
 	records := strings.Split(string(raw), "\x1e")
 	out := make([]commitRecord, 0, len(records))
@@ -441,8 +444,8 @@ func parseCommitRecords(raw []byte) []commitRecord {
 		if rec == "" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x00", 6)
-		if len(f) < 6 {
+		f := strings.SplitN(rec, "\x00", 7)
+		if len(f) < 7 {
 			continue
 		}
 		r := commitRecord{
@@ -450,10 +453,13 @@ func parseCommitRecords(raw []byte) []commitRecord {
 			short:   f[1],
 			subject: f[2],
 			author:  f[3],
-			body:    f[5],
+			body:    f[6],
 		}
 		if secs, err := strconv.ParseInt(f[4], 10, 64); err == nil {
 			r.authorTime = time.Unix(secs, 0)
+		}
+		if p := strings.Fields(f[5]); len(p) > 0 {
+			r.parents = p
 		}
 		out = append(out, r)
 	}
@@ -889,6 +895,14 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		"--date=iso-strict",
 		"--format=" + vizRecordFormat,
 	}
+	if graph {
+		// The self-drawn graph needs parents to appear strictly after their
+		// children, or lane assignment can't find the lane a commit is being
+		// awaited on (and leaks dead lanes). --topo-order guarantees that
+		// ordering; without it, equal commit dates can interleave parents
+		// ahead of children.
+		args = append(args, "--topo-order")
+	}
 	if limit > 0 {
 		args = append(args, "-n", strconv.Itoa(limit))
 	}
@@ -1076,24 +1090,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	// structure, and interleaving full-width separators would break the
 	// graph's vertical continuity. The scope tally above still prints.
 	if graph {
-		recBySHA := make(map[string]commitRecord, len(records))
-		for _, r := range records {
-			recBySHA[r.sha] = r
-		}
-		for _, gl := range fetchGraphLines(ctx, runner, since, limit, pathArgs, logUseColor()) {
-			art := prettifyGraphArt(gl.art)
-			r, ok := recBySHA[gl.sha]
-			if gl.sha == "" || !ok {
-				// Connector line (|\, |/, | |): no commit to attach, art only.
-				fmt.Fprintln(w, art)
-				continue
-			}
-			out := art + renderRow(r)
-			if trimWidth > 0 {
-				out = trimToVisible(out, trimWidth)
-			}
-			fmt.Fprintln(w, out)
-		}
+		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow)
 		return nil
 	}
 
@@ -1150,87 +1147,11 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	return nil
 }
 
-// graphLine is one row of `git log --graph` output: the rendered topology art
-// plus the commit SHA it belongs to. Connector rows (|\, |/, | |) carry no
-// SHA — they exist only to draw branch merges/forks and are emitted verbatim.
-type graphLine struct {
-	art string
-	sha string
-}
-
-// fetchGraphLines runs `git log --graph --format=%x00%H` over the same
-// revision scope as the viz pass and returns the topology column line-by-line.
-// %x00 (a NUL) separates the graph art from the SHA, which is robust against
-// the art's own spacing — and against color: with useColor, git paints each
-// lane a rotating color (red/green/yellow/blue/magenta/cyan) so branches in a
-// busy merge history stay legible. Those ANSI codes land only in the art
-// (each token self-resets, so no color leaks into the viz row to its right),
-// and the SHA after the NUL is always raw hex, so parsing is unaffected.
-func fetchGraphLines(ctx context.Context, runner *git.ExecRunner, since string, limit int, pathArgs []string, useColor bool) []graphLine {
-	colorMode := "--color=never"
-	if useColor {
-		colorMode = "--color=always"
-	}
-	args := []string{"log", "--graph", colorMode, "--format=%x00%H"}
-	if limit > 0 {
-		args = append(args, "-n", strconv.Itoa(limit))
-	}
-	if since != "" {
-		args = append(args, "--since="+normalizeSince(since))
-	}
-	args = append(args, pathArgs...)
-	out, _, err := runner.Run(ctx, args...)
-	if err != nil {
-		return nil
-	}
-	return parseGraphLines(out)
-}
-
-// graphArtReplacer swaps git's ASCII topology characters for box-drawing
-// glyphs. ASCII `|` `/` `\` `-` render as short strokes that read as broken
-// dashes between rows; the box-drawing equivalents span the full cell so
-// vertical and diagonal lanes visually connect across rows. Every swap is a
-// 1:1, single-width rune, so git's column alignment is preserved exactly.
-// Color is applied by git as SGR escapes (ESC [ … m) — none of which contain
-// these characters — so a plain string replace can't corrupt them. `*` (the
-// commit node) is left as-is: it's the conventional marker and sits where the
-// viz row's own glyphs begin.
-var graphArtReplacer = strings.NewReplacer(
-	"|", "│",
-	"/", "╱",
-	"\\", "╲",
-	"-", "─",
-)
-
-// prettifyGraphArt applies graphArtReplacer to one row of git graph art.
-func prettifyGraphArt(art string) string {
-	return graphArtReplacer.Replace(art)
-}
-
-// parseGraphLines splits `git log --graph --format=%x00%H` output into graph
-// rows. Commit rows carry a NUL separating art from SHA; connector rows have
-// no NUL and are kept verbatim (minus trailing pad spaces) unless fully blank.
-func parseGraphLines(out []byte) []graphLine {
-	var lines []graphLine
-	for _, raw := range strings.Split(string(out), "\n") {
-		if i := strings.IndexByte(raw, 0); i >= 0 {
-			lines = append(lines, graphLine{art: raw[:i], sha: strings.TrimSpace(raw[i+1:])})
-			continue
-		}
-		// Connector row: keep it only if it carries visible art (git pads
-		// rows with trailing spaces; a fully blank line is dropped).
-		if art := strings.TrimRight(raw, " "); art != "" {
-			lines = append(lines, graphLine{art: art})
-		}
-	}
-	return lines
-}
-
 // vizRecordFormat asks git to emit author time as a raw unix timestamp
 // (%at) rather than the verbose "X units ago" string (%ar). gk formats the
 // age itself via formatAge() so the column stays short (`6d` vs `6 days
 // ago`) in long logs.
-const vizRecordFormat = "%H%x00%h%x00%s%x00%an%x00%at%x00%b%x1e"
+const vizRecordFormat = "%H%x00%h%x00%s%x00%an%x00%at%x00%P%x00%b%x1e"
 
 func commitHitsHotspot(files []string, hotspots map[string]bool) bool {
 	for _, f := range files {

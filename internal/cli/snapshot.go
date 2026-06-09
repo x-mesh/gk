@@ -330,4 +330,3 @@ func snapshotSelector(sel string) string {
 	}
 	return sel
 }
-

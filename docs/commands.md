@@ -1411,6 +1411,53 @@ gk unwip
 
 ---
 
+## gk snapshot
+
+Save a non-destructive safety-net snapshot of the working tree to `refs/wip/<branch>` without touching your working tree, index, or branch history.
+
+### Synopsis
+
+```
+gk snapshot [-m <note>] [-q]
+gk snapshot list            # alias: gk snapshots
+gk snapshot restore [n] [-m <note>]
+```
+
+### Flags
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-m`, `--message <note>` | `""` | Note recorded with the snapshot (shown in `gk snapshots`) |
+| `-q`, `--quiet` | false | Suppress output (for hooks); still errors on failure |
+
+### What it does
+
+1. Stages the full working tree — tracked changes plus untracked files, respecting `.gitignore` — into a throwaway index, so the real index is never touched.
+2. Writes that as a commit and points `refs/wip/<branch>` at it via `git update-ref --create-reflog`. The ref's reflog is the snapshot history.
+
+Unlike `gk wip`, nothing is committed to your branch. The shadow ref never appears in `git branch`, is not pushed, and survives `git gc`. If the working tree is clean it reports `nothing to snapshot — working tree is clean` and exits 0. Detached HEAD is refused — there is no stable branch ref to anchor `refs/wip/` to.
+
+### Restore
+
+`gk snapshot restore [n]` restores snapshot `n` (default `0`, the latest) into the working tree and index. If the tree is dirty, the current state is first saved as a fresh snapshot so nothing is lost. Files present now but absent from the snapshot are left untouched.
+
+### Examples
+
+```bash
+gk snapshot                      # save the current working tree
+gk snapshot -m "before refactor" # save with a note
+gk snapshots                     # list snapshots for this branch
+gk snapshot restore              # restore the latest
+gk snapshot restore 2            # restore an older one
+```
+
+### Notes
+
+- Designed as an automatic safety net: wire `gk snapshot -q` into a Claude Code Stop hook or a periodic job so work is captured without manual effort.
+- The snapshot lives outside `refs/heads`, so it is purely local and never interferes with push, rebase, or `git branch`.
+
+---
+
 ## gk worktree
 
 Worktree management helpers. Wraps `git worktree` with an opinionated JSON output.

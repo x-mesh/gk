@@ -215,6 +215,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk continue` | | Continue interrupted rebase/merge/cherry-pick |
 | `gk abort` | | Abort interrupted rebase/merge/cherry-pick |
 | `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
+| `gk snapshot` / `gk snapshots` | | Non-destructive safety-net snapshot of the working tree to `refs/wip/<branch>` (untracked included, `.gitignore` respected); never touches HEAD/index, never pushes. `restore [n]` brings one back, auto-backing-up a dirty tree first. `-q` suits a Stop hook |
 
 ### AI
 | Command | Description |

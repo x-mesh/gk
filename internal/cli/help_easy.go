@@ -175,12 +175,22 @@ var easyFlagKO = map[string]string{}
 // plain-Korean version (easyShortKO) just for the duration of the render,
 // then restores it — keeping the static cobra fields intact elsewhere.
 func installEasyHelp(root *cobra.Command) {
-	if easyHelpActive() {
-		root.SetUsageTemplate(koUsageTemplate)
-	}
+	// Easy Mode must be probed lazily — at render time — never here:
+	// installEasyHelp runs from Execute() BEFORE cobra parses flags, so
+	// probing now would construct the once-cached engine with
+	// --easy/--no-easy/--debug still at their zero values and silently
+	// pin Easy Mode to the config value for the whole process.
+	baseUsage := root.UsageFunc()
+	root.SetUsageFunc(func(c *cobra.Command) error {
+		if easyHelpActive() {
+			root.SetUsageTemplate(koUsageTemplate)
+		}
+		return baseUsage(c)
+	})
 	base := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if easyHelpActive() {
+			root.SetUsageTemplate(koUsageTemplate)
 			defer swapEasyShorts(root)()
 		}
 		base(cmd, args)

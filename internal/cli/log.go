@@ -44,7 +44,8 @@ func init() {
 	cmd.Flags().Bool("hotspots", false, "mark commits that touch the repo's most-churned files")
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
-	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes")
+	cmd.Flags().Bool("body", false, "show each commit's message body, indented under its subject (release notes, details)")
+	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes,body")
 	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().Bool("full", false, "do not truncate long subjects to terminal width")
 	cmd.Flags().Bool("behind", false, "show commits the upstream has that HEAD does not (=HEAD..@{u}; preview before `gk pull`)")
@@ -73,6 +74,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 		safety:   containsVis(effectiveLogVis, "safety"),
 		hotspots: containsVis(effectiveLogVis, "hotspots"),
 		trailers: containsVis(effectiveLogVis, "trailers"),
+		body:     containsVis(effectiveLogVis, "body"),
 	}
 
 	if legend, _ := cmd.Flags().GetBool("legend"); legend {
@@ -108,6 +110,16 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if behindFlag || aheadFlag {
 		upstream, fetchRemote, fetchBranch, ok := tryTrackingUpstream(cmd.Context(), runner)
 		if !ok {
+			// @{u} also fails when tracking IS configured but the
+			// remote-tracking ref is missing locally (pruned, never
+			// fetched) — diagnose that precisely instead of telling the
+			// user to set an upstream they already have.
+			if cur, cErr := git.NewClient(runner).CurrentBranch(cmd.Context()); cErr == nil {
+				if cfgRemote, cfgBranch, hasCfg := trackingFromConfig(cmd.Context(), runner, cur); hasCfg {
+					return fmt.Errorf("gk log: '%s' tracks %s/%s but its remote-tracking ref is missing locally; restore it with `git fetch %s %s`",
+						cur, cfgRemote, cfgBranch, cfgRemote, cfgBranch)
+				}
+			}
 			return fmt.Errorf("gk log: current branch has no upstream configured; set one with `git branch --set-upstream-to=origin/<branch>`")
 		}
 		if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
@@ -330,7 +342,7 @@ func renderLanes(cmd *cobra.Command, runner *git.ExecRunner, since string, limit
 var logVizNames = []string{
 	"pulse", "calendar", "tags-rule",
 	"impact", "cc", "safety", "hotspots", "trailers",
-	"lanes",
+	"lanes", "body",
 }
 
 // resolveLogVis determines the effective viz set for this invocation in
@@ -411,14 +423,16 @@ func appendUnique(xs []string, x string) []string {
 	return append(xs, x)
 }
 
-// logVizFlags captures the five per-commit visualizations that require
-// gk to take over log rendering from git's pretty-format.
+// logVizFlags captures the per-commit visualizations that require gk to take
+// over log rendering from git's pretty-format. `body` differs from the others
+// in that it appends multi-line content under each commit rather than a single
+// inline column, but it shares the same "gk owns rendering" trigger.
 type logVizFlags struct {
-	impact, cc, safety, hotspots, trailers bool
+	impact, cc, safety, hotspots, trailers, body bool
 }
 
 func (v logVizFlags) any() bool {
-	return v.impact || v.cc || v.safety || v.hotspots || v.trailers
+	return v.impact || v.cc || v.safety || v.hotspots || v.trailers || v.body
 }
 
 // commitRecord holds the per-commit fields we need for viz rendering.
@@ -478,6 +492,26 @@ func shortAge(t time.Time) string {
 		return "now"
 	}
 	return formatAge(d)
+}
+
+// vizBodyLines returns the message-body lines for a commit, each indented and
+// rendered faint, ready to be placed after a gutter (flat path) or a lane
+// prefix (graph path). The leading two-space indent offsets the body from the
+// subject column above it. Empty or whitespace-only bodies return nil so
+// commits without a body add no rows. Trailing blank lines from `%b` are
+// dropped; interior blank lines (paragraph breaks in release notes) survive.
+func vizBodyLines(r commitRecord) []string {
+	body := strings.TrimRight(r.body, "\n")
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	lines := strings.Split(body, "\n")
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = "  " + faint(l)
+	}
+	return out
 }
 
 // fetchNumstats runs a separate `git log --format=%H --numstat` pass over the
@@ -588,6 +622,11 @@ func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule boo
 	if viz.trailers {
 		sec("--vis trailers — co-author / reviewer roll-up")
 		fmt.Fprintln(w, "  [+Alice review:Bob]  parsed from Co-authored-by / Reviewed-by trailers")
+	}
+
+	if viz.body {
+		sec("--body — commit message body")
+		fmt.Fprintln(w, "  faint, indented under each subject (release notes, details)")
 	}
 
 	if pulse {
@@ -1090,7 +1129,11 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	// structure, and interleaving full-width separators would break the
 	// graph's vertical continuity. The scope tally above still prints.
 	if graph {
-		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow)
+		var bodyOf func(commitRecord) []string
+		if v.body {
+			bodyOf = vizBodyLines
+		}
+		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow, bodyOf)
 		return nil
 	}
 
@@ -1143,6 +1186,23 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			out = trimToVisible(out, trimWidth)
 		}
 		fmt.Fprintln(w, out)
+
+		// Body lines follow the commit row, continuing the WIP gutter (│) when
+		// this commit is inside a run so the body stays visually attached to its
+		// subject; otherwise they align under the plain two-column gutter.
+		if v.body {
+			cont := "  "
+			if wipRoles[i] == "head" || wipRoles[i] == "mid" {
+				cont = gutterFaint(gVert + " ")
+			}
+			for _, bl := range vizBodyLines(r) {
+				bout := cont + bl
+				if trimWidth > 0 {
+					bout = trimToVisible(bout, trimWidth)
+				}
+				fmt.Fprintln(w, bout)
+			}
+		}
 	}
 	return nil
 }

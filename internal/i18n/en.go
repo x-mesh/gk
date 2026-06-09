@@ -271,6 +271,22 @@ var enMessages = map[string]map[Mode]string{
 		ModeEasy:   "↓ Downloaded from server: %s",
 	},
 
+	// ── Pull upstream-resolution note elaborations (Easy Mode adds one
+	//    plain-language line under the terse English NOTE body) ──────────
+
+	"pull.note.tracking_cache_missing": {
+		ModeNormal: "tracking is configured; only the local copy of %s was missing — gk is fetching it back, nothing for you to do",
+		ModeEasy:   "※ The link to the server branch is fine; only the local copy of %s was missing, so gk is downloading it again — nothing for you to do",
+	},
+	"pull.note.no_upstream_same_name": {
+		ModeNormal: "'%s' is not linked to a server branch yet; gk used %s because the name matches",
+		ModeEasy:   "※ Your branch '%s' is not linked to a server branch yet, so gk used %s because the name matches — run the command above once and this note goes away",
+	},
+	"pull.note.no_upstream_base_fallback": {
+		ModeNormal: "'%s' is not linked to any server branch; gk pulled the default branch %s instead",
+		ModeEasy:   "※ Your branch '%s' is not linked to any server branch, so gk downloaded the default branch %s instead — if the server has a branch with the same name, link it with the command above",
+	},
+
 	// ── Merge --into next-step hints ────────────────────────────────────
 
 	"hint.merge.into.next_push": {

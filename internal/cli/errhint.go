@@ -94,9 +94,10 @@ func FormatError(err error) string {
 	prefix := color.New(color.FgRed, color.Bold).Sprint("gk:")
 	out := prefix + " " + err.Error()
 	if h := HintFrom(err); h != "" {
-		hintLabel := color.New(color.FgMagenta, color.Bold).Sprint("hint:")
-		hintBody := color.New(color.Faint).Sprint(h)
-		out += "\n  " + hintLabel + " " + hintBody
+		// Render the remediation as a branded HINT block (same chrome as
+		// NOTE advisories) so gk's guidance is visually attributable to gk
+		// even when the error line above quotes raw git output.
+		out += "\n" + strings.TrimRight(renderAdvisory("hint", strings.Split(h, "\n")), "\n")
 	}
 	return out
 }

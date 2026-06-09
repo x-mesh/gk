@@ -2,7 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"strings"
+
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // successLine formats a "✓ <verb> <target>" success message with the
@@ -69,6 +72,78 @@ func stylizeHintLine(line string) string {
 		return out
 	}
 	return line
+}
+
+// renderAdvisory renders a gk-origin advisory block in the shared bar-section
+// chrome so users can attribute the message to gk at a glance — pull/push
+// interleave gk's guidance with raw git output on the same stderr stream,
+// and a bare "note:" line reads as either:
+//
+//	█  NOTE
+//	   'main' has no upstream configured — using origin/main
+//	   set tracking with: git branch --set-upstream-to=origin/main main
+//
+// kind selects the label and chrome colour: "note" (informational, steel
+// blue) or "hint" (actionable, orange). Body lines pass through
+// stylizeHintLine / stylizeHintCommand so labelled nudges ("try: gk …") and
+// bare commands keep the project-standard colouring. The trailing blank line
+// RenderSection emits for section stacking is trimmed — advisories sit
+// inline in command output, not in a section sequence.
+func renderAdvisory(kind string, lines []string) string {
+	chrome := ui.SectionInfo
+	if kind == "hint" {
+		chrome = ui.SectionAction
+	}
+	styled := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		s := stylizeHintLine(ln)
+		if s == ln {
+			s = stylizeHintCommand(ln)
+		}
+		styled = append(styled, s)
+	}
+	out := ui.RenderSection(kind, "", styled, ui.SectionOpts{Color: chrome})
+	return strings.TrimRight(out, "\n") + "\n"
+}
+
+// printNote writes a NOTE advisory block to w. Callers append an Easy-Mode
+// elaboration line via easyNoteLine/appendEasyLine before calling so the
+// block carries the beginner explanation when Easy Mode is active.
+func printNote(w io.Writer, lines ...string) {
+	fmt.Fprint(w, renderAdvisory("note", lines))
+}
+
+// easyNoteLine returns the Easy-Mode elaboration registered under key, or ""
+// when Easy Mode is off or the catalog has no entry. Advisory notes are terse
+// one-liners aimed at git-fluent users; Easy Mode appends one plain-language
+// line explaining what the situation means and whether the user must act.
+//
+// args is a plain slice (not variadic) on purpose: catalog keys carry no
+// formatting directives themselves — the directives live in the registered
+// message — so a variadic (string, ...any) shape gets classified as a printf
+// wrapper by go vet, which then flags every call site for "arguments but no
+// formatting directives" in the key literal.
+func easyNoteLine(key string, args []any) string {
+	eng := EasyEngine()
+	if eng == nil || !eng.IsEnabled() {
+		return ""
+	}
+	s := eng.Format(key, args...)
+	// Catalog miss echoes the raw key (plus fmt EXTRA noise when args are
+	// present) — suppress rather than leak internals to the user.
+	if s == "" || strings.HasPrefix(s, key) {
+		return ""
+	}
+	return s
+}
+
+// appendEasyLine appends easyNoteLine(key, args) to lines when it yields
+// content; no-op otherwise. Keeps note call sites to a single expression.
+func appendEasyLine(lines []string, key string, args ...any) []string {
+	if s := easyNoteLine(key, args); s != "" {
+		return append(lines, s)
+	}
+	return lines
 }
 
 // stylizeHintLabel dims a bare hint label (e.g. "next:" on its own line

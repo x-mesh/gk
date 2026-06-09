@@ -94,15 +94,29 @@ var graphLanePalette = []*color.Color{
 // calling renderRow to produce the per-commit viz content placed to the right
 // of each node row. trimWidth>0 truncates each composed line to that many
 // visible cells (graph art included). useColor tints lanes by column.
-func renderSelfGraph(w io.Writer, records []commitRecord, useColor bool, trimWidth int, renderRow func(commitRecord) string) {
+//
+// bodyOf is optional: when non-nil, its returned lines are printed under each
+// node row, each carrying the commit's lane-continuation prefix (so the body
+// slots beneath the node while surrounding lanes flow past). nil disables body
+// output entirely.
+func renderSelfGraph(w io.Writer, records []commitRecord, useColor bool, trimWidth int, renderRow func(commitRecord) string, bodyOf func(commitRecord) []string) {
 	g := &graphState{useColor: useColor}
 	for _, c := range records {
-		nodeArt, linkArt := g.step(c)
+		nodeArt, linkArt, bodyPrefix := g.step(c)
 		line := nodeArt + renderRow(c)
 		if trimWidth > 0 {
 			line = trimToVisible(line, trimWidth)
 		}
 		fmt.Fprintln(w, line)
+		if bodyOf != nil {
+			for _, bl := range bodyOf(c) {
+				bout := bodyPrefix + bl
+				if trimWidth > 0 {
+					bout = trimToVisible(bout, trimWidth)
+				}
+				fmt.Fprintln(w, bout)
+			}
+		}
 		if linkArt != "" {
 			if trimWidth > 0 {
 				linkArt = trimToVisible(linkArt, trimWidth)
@@ -126,10 +140,12 @@ func (g *graphState) tint(col int, s string) string {
 	return graphLanePalette[col%len(graphLanePalette)].Sprint(s)
 }
 
-// step advances the graph by one commit and returns its node row art and the
-// link row art (empty when no structural change needs drawing). The trailing
+// step advances the graph by one commit and returns its node row art, the link
+// row art (empty when no structural change needs drawing), and the body prefix
+// — the lane-continuation art (every active lane as a vertical bar, including
+// this node's own lane) used to indent body lines under the node. The trailing
 // gap after the last lane separates the art from the viz content.
-func (g *graphState) step(c commitRecord) (nodeArt, linkArt string) {
+func (g *graphState) step(c commitRecord) (nodeArt, linkArt, bodyPrefix string) {
 	// Locate the column waiting for this commit; allocate one if it has no
 	// child in view (HEAD or a branch tip).
 	myLane := indexOf(g.lanes, c.sha)
@@ -147,6 +163,20 @@ func (g *graphState) step(c commitRecord) (nodeArt, linkArt string) {
 
 	// Snapshot the "before" activity for the link row's up-direction test.
 	before := append([]string(nil), g.lanes...)
+
+	// Body prefix: every lane active at this commit drawn as a vertical bar, so
+	// body lines printed under the node continue the surrounding lanes. myLane
+	// still holds c.sha in `before`, so the node's own column is included.
+	var bp strings.Builder
+	for i := range before {
+		if before[i] != "" {
+			bp.WriteString(g.tint(i, gVert))
+		} else {
+			bp.WriteByte(' ')
+		}
+		bp.WriteByte(' ')
+	}
+	bodyPrefix = bp.String()
 
 	// --- node row ---
 	var nb strings.Builder
@@ -186,12 +216,12 @@ func (g *graphState) step(c commitRecord) (nodeArt, linkArt string) {
 	ended := len(c.parents) == 0
 	if len(joins) == 0 && len(forks) == 0 && !ended {
 		g.trimTrailing()
-		return nodeArt, ""
+		return nodeArt, "", bodyPrefix
 	}
 
 	linkArt = g.linkRow(before, myLane, joins, forks)
 	g.trimTrailing()
-	return nodeArt, linkArt
+	return nodeArt, linkArt, bodyPrefix
 }
 
 // linkRow draws the transition between the node row above (lane activity in

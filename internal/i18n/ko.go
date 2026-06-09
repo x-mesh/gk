@@ -271,6 +271,22 @@ var koMessages = map[string]map[Mode]string{
 		ModeEasy:   "↓ 서버에서 가져오기 완료: %s",
 	},
 
+	// ── Pull upstream-resolution note elaborations (Easy Mode adds one
+	//    plain-language line under the terse English NOTE body) ──────────
+
+	"pull.note.tracking_cache_missing": {
+		ModeNormal: "tracking is configured; only the local copy of %s was missing — gk is fetching it back, nothing for you to do",
+		ModeEasy:   "※ 서버 브랜치와의 연결(추적) 설정은 그대로예요. 서버 브랜치 %s의 로컬 사본만 없어서 지금 새로 받아왔어요 — 따로 할 일은 없어요",
+	},
+	"pull.note.no_upstream_same_name": {
+		ModeNormal: "'%s' is not linked to a server branch yet; gk used %s because the name matches",
+		ModeEasy:   "※ '%s' 브랜치가 아직 서버 브랜치와 연결(추적)되어 있지 않아요. 이름이 같은 %s를 대신 사용했어요 — 위 명령을 한 번 실행해두면 다음부터 이 안내가 사라져요",
+	},
+	"pull.note.no_upstream_base_fallback": {
+		ModeNormal: "'%s' is not linked to any server branch; gk pulled the default branch %s instead",
+		ModeEasy:   "※ '%s' 브랜치는 서버의 어떤 브랜치와도 연결되어 있지 않아서, 기본 브랜치 %s의 내용을 대신 가져왔어요 — 서버에 같은 이름의 브랜치가 있다면 위 명령으로 연결하세요",
+	},
+
 	// ── Merge --into next-step hints ────────────────────────────────────
 
 	"hint.merge.into.next_push": {

@@ -634,3 +634,146 @@ func TestRenderFetchOnlySummary_Diverged(t *testing.T) {
 		t.Errorf("expected diverged display, got %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// trackingFromConfig — tells "no tracking configured" apart from "tracking
+// configured but remote-tracking ref missing locally"
+// ---------------------------------------------------------------------------
+
+func TestTrackingFromConfig_Parses(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.develop.remote": {Stdout: "origin\n"},
+			"config --get branch.develop.merge":  {Stdout: "refs/heads/develop\n"},
+		},
+	}
+	remote, branch, ok := trackingFromConfig(context.Background(), fake, "develop")
+	if !ok || remote != "origin" || branch != "develop" {
+		t.Errorf("got (%q, %q, %v), want (origin, develop, true)", remote, branch, ok)
+	}
+}
+
+func TestTrackingFromConfig_Rejects(t *testing.T) {
+	cases := []struct {
+		name      string
+		branch    string
+		responses map[string]git.FakeResponse
+	}{
+		{
+			name:   "remote key unset",
+			branch: "feature",
+			responses: map[string]git.FakeResponse{
+				"config --get branch.feature.remote": {ExitCode: 1},
+			},
+		},
+		{
+			name:   "merge key unset",
+			branch: "feature",
+			responses: map[string]git.FakeResponse{
+				"config --get branch.feature.remote": {Stdout: "origin\n"},
+				"config --get branch.feature.merge":  {ExitCode: 1},
+			},
+		},
+		{
+			name:   "local tracking via dot remote",
+			branch: "feature",
+			responses: map[string]git.FakeResponse{
+				"config --get branch.feature.remote": {Stdout: ".\n"},
+				"config --get branch.feature.merge":  {Stdout: "refs/heads/main\n"},
+			},
+		},
+		{
+			name:   "URL remote has no remote-tracking ref",
+			branch: "feature",
+			responses: map[string]git.FakeResponse{
+				"config --get branch.feature.remote": {Stdout: "git@github.com:x/y.git\n"},
+				"config --get branch.feature.merge":  {Stdout: "refs/heads/main\n"},
+			},
+		},
+		{
+			name:   "merge ref outside refs/heads",
+			branch: "feature",
+			responses: map[string]git.FakeResponse{
+				"config --get branch.feature.remote": {Stdout: "origin\n"},
+				"config --get branch.feature.merge":  {Stdout: "refs/tags/v1\n"},
+			},
+		},
+		{
+			name:      "empty branch name",
+			branch:    "",
+			responses: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &git.FakeRunner{Responses: tc.responses}
+			if _, _, ok := trackingFromConfig(context.Background(), fake, tc.branch); ok {
+				t.Error("expected ok=false")
+			}
+		})
+	}
+}
+
+// TestIntegration_PullTrackingConfigCacheRefMissing covers the pruned-cache
+// state: branch.<name>.remote/merge intact, but refs/remotes/<remote>/<name>
+// deleted, so @{u} cannot resolve. gk pull must keep the configured upstream
+// (not fall back to base), explain the state precisely, and let the fetch
+// restore the missing remote-tracking ref.
+func TestIntegration_PullTrackingConfigCacheRefMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("seed.txt", "seed\n")
+	upstream.Commit("seed: initial")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	downstream.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	// Upstream moves ahead so there is something to pull.
+	upstream.WriteFile("up.txt", "up\n")
+	upstream.Commit("feat: upstream commit")
+
+	// Delete only the remote-tracking ref; tracking config stays intact.
+	downstream.RunGit("update-ref", "-d", "refs/remotes/origin/main")
+	if _, err := downstream.TryGit("rev-parse", "--abbrev-ref", "@{u}"); err == nil {
+		t.Fatal("premise broken: @{u} still resolves after deleting the remote-tracking ref")
+	}
+
+	cmd := pullCoreCmd(t, downstream.Dir)
+	stderr := &bytes.Buffer{}
+	cmd.SetErr(stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pull failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	out := stderr.String()
+	if !strings.Contains(out, "'main' tracks origin/main") ||
+		!strings.Contains(out, "remote-tracking ref is missing locally") {
+		t.Errorf("missing precise diagnosis note, stderr:\n%s", out)
+	}
+	if strings.Contains(out, "falling back to base branch") ||
+		strings.Contains(out, "no upstream configured") {
+		t.Errorf("legacy misdiagnosis still printed, stderr:\n%s", out)
+	}
+
+	// Integration happened against the configured upstream…
+	got := downstream.RunGit("rev-parse", "HEAD")
+	want := upstream.RunGit("rev-parse", "HEAD")
+	if got != want {
+		t.Errorf("HEAD = %s, want %s", got, want)
+	}
+	// …and the fetch restored the cache ref @{u} depends on.
+	if _, err := downstream.TryGit("rev-parse", "--verify", "refs/remotes/origin/main"); err != nil {
+		t.Error("remote-tracking ref was not restored by the fetch")
+	}
+	if _, err := downstream.TryGit("rev-parse", "--abbrev-ref", "@{u}"); err != nil {
+		t.Error("@{u} still unresolved after pull")
+	}
+}

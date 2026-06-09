@@ -228,20 +228,37 @@ func runPullCore(cmd *cobra.Command) error {
 	//    branch tracks something perfectly fine.
 	upstream, fetchRemote, fetchBranch, hasTracking := tryTrackingUpstream(ctx, runner)
 	if !hasTracking {
-		// No upstream configured for the current branch. Before falling back
-		// to the repo's base branch (which can confuse users — "I'm on
-		// develop, why is it pulling main?"), see if <remote>/<currentBranch>
-		// exists. If it does, that ref matches user intent far better than
-		// the base, and we surface a hint explaining why it isn't tracked.
+		// @{u} resolution fails in two distinct states: tracking genuinely
+		// unconfigured, or tracking configured but the remote-tracking ref
+		// (refs/remotes/<remote>/<branch>) missing locally — pruned, or a
+		// clone that never fetched this branch. Tell them apart first: when
+		// only the cached ref is gone, the configured upstream stays
+		// authoritative (the fetch below recreates the ref), so reporting
+		// "no upstream" and falling back to base would pull the wrong branch.
+		// Only when tracking is truly unconfigured do we fall back — first to
+		// <remote>/<currentBranch> when that ref exists (matches user intent
+		// far better than the base), then to the repo's base branch.
 		current, currErr := client.CurrentBranch(ctx)
-		if currErr == nil && current != "" && git.RefExists(ctx, runner, remote+"/"+current) {
+		if currErr != nil {
+			current = ""
+		}
+		if cfgRemote, cfgBranch, hasCfg := trackingFromConfig(ctx, runner, current); hasCfg {
+			upstream = cfgRemote + "/" + cfgBranch
+			fetchRemote = cfgRemote
+			fetchBranch = cfgBranch
+			printNote(cmd.ErrOrStderr(), appendEasyLine([]string{
+				fmt.Sprintf("'%s' tracks %s but its remote-tracking ref is missing locally — fetching %s %s to restore it",
+					current, upstream, cfgRemote, cfgBranch),
+			}, "pull.note.tracking_cache_missing", upstream)...)
+			Dbg("pull: @{u} unresolved but tracking config intact; using %s", upstream)
+		} else if current != "" && git.RefExists(ctx, runner, remote+"/"+current) {
 			upstream = remote + "/" + current
 			fetchRemote = remote
 			fetchBranch = current
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"note: '%s' has no upstream configured — using %s (set tracking with: git branch --set-upstream-to=%s %s)\n",
-				current, upstream, upstream, current,
-			)
+			printNote(cmd.ErrOrStderr(), appendEasyLine([]string{
+				fmt.Sprintf("'%s' has no upstream configured — using %s", current, upstream),
+				fmt.Sprintf("set tracking with: git branch --set-upstream-to=%s %s", upstream, current),
+			}, "pull.note.no_upstream_same_name", current, upstream)...)
 			Dbg("pull: no @{u}; using same-name remote ref %s", upstream)
 		} else {
 			if base == "" {
@@ -271,12 +288,12 @@ func runPullCore(cmd *cobra.Command) error {
 			fetchRemote = remote
 			fetchBranch = base
 			if current != "" && current != base {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"note: '%s' has no upstream and no cached '%s/%s' — falling back to base branch %s\n"+
-						"      if '%s/%s' exists on the remote, run: git fetch %s %s && git branch --set-upstream-to=%s/%s\n",
-					current, remote, current, upstream,
-					remote, current, remote, current, remote, current,
-				)
+				printNote(cmd.ErrOrStderr(), appendEasyLine([]string{
+					fmt.Sprintf("'%s' has no upstream and no cached '%s/%s' — falling back to base branch %s",
+						current, remote, current, upstream),
+					fmt.Sprintf("if '%s/%s' exists on the remote, run: git fetch %s %s && git branch --set-upstream-to=%s/%s",
+						remote, current, remote, current, remote, current),
+				}, "pull.note.no_upstream_base_fallback", current, upstream)...)
 			}
 		}
 	}
@@ -559,6 +576,38 @@ func tryTrackingUpstream(ctx context.Context, runner git.Runner) (upstream, fetc
 		return "", "", "", false
 	}
 	return tracking, remote, branch, true
+}
+
+// trackingFromConfig reads branch.<name>.remote / branch.<name>.merge straight
+// from git config. `@{u}` resolution (tryTrackingUpstream) fails both when no
+// tracking is configured and when it is configured but the remote-tracking ref
+// is missing locally; this tells those two states apart so callers can give a
+// precise diagnosis instead of "no upstream". ok is true only for a
+// named-remote + refs/heads/* pair — local tracking (remote ".") and URL
+// remotes have no remote-tracking ref a fetch could restore, so they fall
+// through to the legacy fallbacks.
+func trackingFromConfig(ctx context.Context, runner git.Runner, branch string) (cfgRemote, cfgBranch string, ok bool) {
+	if branch == "" {
+		return "", "", false
+	}
+	remoteOut, _, remoteErr := runner.Run(ctx, "config", "--get", "branch."+branch+".remote")
+	if remoteErr != nil {
+		return "", "", false
+	}
+	mergeOut, _, mergeErr := runner.Run(ctx, "config", "--get", "branch."+branch+".merge")
+	if mergeErr != nil {
+		return "", "", false
+	}
+	cfgRemote = strings.TrimSpace(string(remoteOut))
+	merge := strings.TrimSpace(string(mergeOut))
+	if cfgRemote == "" || cfgRemote == "." || strings.ContainsAny(cfgRemote, ":/") {
+		return "", "", false
+	}
+	cfgBranch = strings.TrimPrefix(merge, "refs/heads/")
+	if cfgBranch == merge || cfgBranch == "" {
+		return "", "", false
+	}
+	return cfgRemote, cfgBranch, true
 }
 
 // computeAheadBehind reports how many commits HEAD has that upstream lacks

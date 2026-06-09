@@ -46,7 +46,7 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if dirty {
-			fmt.Fprintf(os.Stderr, "note: working tree still has changes (they will be included).\n")
+			printNote(os.Stderr, "working tree still has changes (they will be included)")
 		}
 	}
 

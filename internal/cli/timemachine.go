@@ -479,7 +479,10 @@ func runTimemachineRestore(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s %s\n", cellFaint("backup saved at"), res.BackupRef)
 	fmt.Fprintln(w, stylizeHintLine(fmt.Sprintf("hint: gk timemachine restore %s --mode hard", res.BackupRef)))
 	if res.AutostashRef != "" {
-		fmt.Fprintf(w, "note: autostash pop had conflicts; resolve via: git stash pop %s\n", res.AutostashRef)
+		printNote(w,
+			"autostash pop had conflicts",
+			fmt.Sprintf("resolve via: git stash pop %s", res.AutostashRef),
+		)
 	}
 	return nil
 }

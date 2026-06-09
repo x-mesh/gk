@@ -141,11 +141,16 @@ func TestFormatError_WithHint(t *testing.T) {
 	if !strings.HasPrefix(got, "gk: boom") {
 		t.Errorf("first line should be 'gk: boom', got: %q", got)
 	}
-	if !strings.Contains(got, "hint: try: gk abort") {
-		t.Errorf("output should contain hint, got: %q", got)
+	// The remediation renders as a branded advisory block so gk's guidance
+	// is attributable to gk: "█  HINT" header, body indented below.
+	if !strings.Contains(got, "█  HINT") {
+		t.Errorf("output should contain the HINT block header, got: %q", got)
 	}
-	if strings.Count(got, "\n") != 1 {
-		t.Errorf("output should be exactly 2 lines, got %d newlines: %q", strings.Count(got, "\n"), got)
+	if !strings.Contains(got, "\n   try: gk abort") {
+		t.Errorf("output should contain the indented hint body, got: %q", got)
+	}
+	if strings.Count(got, "\n") != 2 {
+		t.Errorf("output should be exactly 3 lines, got %d newlines: %q", strings.Count(got, "\n"), got)
 	}
 }
 

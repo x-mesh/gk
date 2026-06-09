@@ -811,10 +811,96 @@ func TestRenderSelfGraph(t *testing.T) {
 		{sha: "B"},
 	}
 	var buf bytes.Buffer
-	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha })
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, nil)
 	got := buf.String()
 	want := "● M\n├─╮\n│ ● F\n● │ P\n● │ B\n╰─╯\n"
 	if got != want {
 		t.Errorf("renderSelfGraph:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVizBodyLines(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "\n  \n", nil},
+		{"single line", "hello", []string{"  hello"}},
+		{"trailing newlines dropped", "hello\n\n", []string{"  hello"}},
+		{"interior blank kept", "a\n\nb", []string{"  a", "  ", "  b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := vizBodyLines(commitRecord{body: tc.body})
+			if len(got) != len(tc.want) || strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("vizBodyLines(%q) = %#v, want %#v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderSelfGraph_Body checks that body lines carry the lane-continuation
+// prefix: a single lane (│) under a linear commit, and two lanes (│ │) for a
+// commit sitting beside an active sibling lane after a fork.
+func TestRenderSelfGraph_Body(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	recs := []commitRecord{
+		{sha: "M", parents: []string{"P", "F"}, body: "merge note"},
+		{sha: "F", parents: []string{"B"}, body: "feature"},
+		{sha: "P", parents: []string{"B"}},
+		{sha: "B"},
+	}
+	var buf bytes.Buffer
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, vizBodyLines)
+	got := buf.String()
+	// M body precedes the fork → single lane. F body sits beside lane P → two.
+	want := "● M\n│   merge note\n├─╮\n│ ● F\n│ │   feature\n● │ P\n● │ B\n╰─╯\n"
+	if got != want {
+		t.Errorf("renderSelfGraph fork+body:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestLogBehind_TrackingConfigCacheRefMissing: when branch.<name>.remote/merge
+// are configured but the remote-tracking ref is absent (pruned / never
+// fetched), `gk log --behind` must diagnose the missing cache ref precisely
+// instead of claiming no upstream is configured.
+func TestLogBehind_TrackingConfigCacheRefMissing(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	// Hand-write tracking config without ever fetching, so the config is
+	// intact but refs/remotes/origin/main does not exist.
+	repo.AddRemote("origin", repo.Dir)
+	repo.RunGit("config", "branch.main.remote", "origin")
+	repo.RunGit("config", "branch.main.merge", "refs/heads/main")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	cmd := &cobra.Command{Use: "log", RunE: runLog, SilenceUsage: true, SilenceErrors: true}
+	cmd.Flags().Bool("behind", true, "")
+	cmd.Flags().Bool("ahead", false, "")
+	cmd.Flags().Bool("fetch", false, "")
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when the remote-tracking ref is missing")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "'main' tracks origin/main") ||
+		!strings.Contains(msg, "git fetch origin main") {
+		t.Errorf("want precise missing-cache-ref hint, got: %v", err)
+	}
+	if strings.Contains(msg, "no upstream configured") {
+		t.Errorf("legacy misdiagnosis still present: %v", err)
 	}
 }

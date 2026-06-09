@@ -256,11 +256,26 @@ func runInitCommands(ctx context.Context, w io.Writer, cmds []string, dir string
 		ex.Stdout = w
 		ex.Stderr = os.Stderr
 		ex.Stdin = nil
+		// init runs non-interactively with no TTY. Signal CI so tools that
+		// otherwise prompt or refuse TTY-less actions (e.g. pnpm aborting a
+		// node_modules removal) proceed. Respect a CI the user already set.
+		ex.Env = withCIEnv(os.Environ())
 		if err := ex.Run(); err != nil {
 			return fmt.Errorf("run %q failed in %s: %w\n  fix the cause, then re-run `gk wt init %s` to resume", c, dir, err, dir)
 		}
 	}
 	return nil
+}
+
+// withCIEnv returns env with CI=true appended unless CI is already present,
+// leaving an explicit user value (even CI=false) untouched.
+func withCIEnv(env []string) []string {
+	for _, e := range env {
+		if strings.HasPrefix(e, "CI=") {
+			return env
+		}
+	}
+	return append(env, "CI=true")
 }
 
 // copyPath copies a file or directory tree from src to dst, preserving

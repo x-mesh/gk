@@ -356,6 +356,19 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
+func TestWithCIEnv(t *testing.T) {
+	// CI absent -> appended as true.
+	got := withCIEnv([]string{"PATH=/bin", "HOME=/h"})
+	if !equalStrings(got, []string{"PATH=/bin", "HOME=/h", "CI=true"}) {
+		t.Fatalf("appended CI: got %v", got)
+	}
+	// CI already set -> left untouched, even when false.
+	in := []string{"CI=false", "PATH=/bin"}
+	if got := withCIEnv(in); !equalStrings(got, in) {
+		t.Fatalf("respect existing CI: got %v", got)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

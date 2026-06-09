@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk snapshot` 추가 — 작업을 잃지 않는 비파괴 안전망.** 현재 작업트리(추적 변경 + untracked 새 파일, `.gitignore` 존중)를 `refs/wip/<branch>`에 스냅샷한다. `gk wip`과 달리 HEAD에 커밋하지 않아 작업트리·인덱스·브랜치 히스토리를 전혀 건드리지 않는다. shadow ref라 `git branch`에 안 보이고, push되지 않으며, `git gc`에도 살아남는다. 그 ref의 reflog가 곧 스냅샷 이력이다. `gk snapshots`(= `gk snapshot list`)로 시간순 목록을, `gk snapshot restore [n]`으로 복원한다(작업트리가 dirty하면 현재 상태를 먼저 스냅샷으로 백업한 뒤 복원하므로 아무것도 잃지 않는다). `gk snapshot -q`는 Stop hook 등 자동 트리거에서 쓰기 좋다.
+
 ## [0.75.0] - 2026-06-08
 
 ### Added

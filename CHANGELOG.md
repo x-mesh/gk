@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **agents 규약 v6 — 명령 표기를 `gk`에서 `git-kit`으로 통일.** 에이전트 셸에서는 `gk`가 별칭에 가려지는 일이 흔해(oh-my-zsh가 `gk`를 gitk로 매핑) 같은 바이너리의 별칭-안전 이름인 `git-kit`을 규약 전반에 명시했다. 규약 서두에 그 이유를 한 줄로 못 박아 에이전트가 `gk`로 되돌아가지 않게 한다. `gk agents install`로 재설치하면 갱신된다.
 - **hint·remedy·계약 필드의 명령 표기가 호출된 이름을 따라간다.** `git-kit pull`로 호출하면 에러 envelope의 `remedies[].command`·`hint`, 충돌 계약의 `resume`/`abort`, `gk context`의 `next_actions`, 사람용 HINT 블록과 충돌 안내까지 전부 `git-kit continue` 형태로 나온다 — 에이전트가 받은 remedy를 그대로 복사 실행해도 별칭 함정을 밟지 않는다. `gk`로 호출하면 기존과 동일(공백 비용), `gk-dev` 같은 개발 바이너리도 자기 이름을 따른다. 적용 범위는 **명령 제안 표면**뿐이다: `--help`·guide 같은 문서 표면은 정식 이름 `gk`를 유지하고, log/digest가 인용하는 저장소 데이터(커밋 제목 등)는 절대 재작성하지 않는다.
+- **`git-kit` 별칭이 모든 설치·업데이트 경로에서 보장된다.** 지금까지 별칭-안전 이름 `git-kit`은 `install.sh`(curl)와 Homebrew cask만 깔아줬다. 이제 `gk update`의 manual 경로도 바이너리를 제자리 교체한 뒤 옆에 `git-kit` 별칭을 (재)링크한다 — 별칭 도입 이전에 깔린 install.sh나 cp 폴백으로 만들어진 사본도 신선한 symlink로 갱신된다(쓰기 불가 디렉터리는 `sudo ln -sf`로 승격, 실패해도 업그레이드 자체는 성공으로 둠). `make install`도 기본 dev 빌드에서 `gk-dev`와 함께 `git-kit-dev`를 깐다 — 별칭 이름은 바이너리 이름에서 도출되어(`gk`→`git-kit`, `gk-dev`→`git-kit-dev`) 개발 빌드가 Homebrew 소유의 바른 `git-kit` 이름을 가로채지 않는다. `make uninstall`은 짝이 되는 별칭만 지운다.
 
 ## [0.79.0] - 2026-06-10
 

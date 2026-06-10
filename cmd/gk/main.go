@@ -34,7 +34,15 @@ func main() {
 	}
 
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, cli.FormatError(err))
+		// Agent mode (GK_AGENT=1): failures are a machine contract —
+		// {ok:false, error:{code, message, remedies}} on stderr — so agent
+		// tooling branches on error.code instead of parsing prose. The
+		// exit code is unchanged either way.
+		if cli.AgentOut() {
+			fmt.Fprintln(os.Stderr, cli.FormatErrorJSON(err))
+		} else {
+			fmt.Fprintln(os.Stderr, cli.FormatError(err))
+		}
 		os.Exit(1)
 	}
 }

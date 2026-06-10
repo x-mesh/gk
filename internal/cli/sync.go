@@ -436,7 +436,7 @@ func renderSyncSummary(
 		return
 	}
 	if pre == post {
-		fmt.Fprintf(out, "already up to date with %s at %s\n", upstream, bold(shortSHA(post)))
+		fmt.Fprintf(out, "Already up to date with %s  %s\n", upstream, tipSuffix(ctx, runner, post))
 		return
 	}
 
@@ -507,7 +507,7 @@ func renderSyncFetchOnly(cmd *cobra.Command, runner git.Runner, base, remote, cu
 	behind, _ := strconv.Atoi(fields[1])
 	switch {
 	case ahead == 0 && behind == 0:
-		fmt.Fprintf(out, "already up to date with %s\n", base)
+		fmt.Fprintf(out, "Already up to date with %s\n", base)
 	case behind > 0 && ahead == 0:
 		fmt.Fprintf(out, "fetched %s: %s %s waiting  %s\n",
 			base,

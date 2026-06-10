@@ -120,6 +120,7 @@ func pullCoreCmd(t *testing.T, dir string) *cobra.Command {
 
 	cmd := &cobra.Command{Use: "pull", RunE: runPull}
 	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("from", "", "")
 	cmd.Flags().String("strategy", "", "")
 	cmd.Flags().Bool("rebase", false, "")
 	cmd.Flags().Bool("merge", false, "")

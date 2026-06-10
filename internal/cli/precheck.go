@@ -78,56 +78,17 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
 		target = args[0]
 	} else {
-		resolved, err := precheckDefaultTarget(ctx, runner, cmd)
+		cfg, _ := config.Load(cmd.Flags())
+		resolved, err := precheckDefaultTarget(ctx, runner, cfg)
 		if err != nil {
 			return err
 		}
 		target = resolved
 	}
-	if err := guardRef(target); err != nil {
-		return fmt.Errorf("invalid target: %w", err)
-	}
 
-	// Resolve the target to a concrete commit so error messages are actionable.
-	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", target+"^{commit}"); err != nil {
-		return WithHint(
-			fmt.Errorf("unknown target %q: not a commit", target),
-			"run `git fetch` if the ref lives on a remote, or spell-check the branch name",
-		)
-	}
-
-	base := strings.TrimSpace(baseOverride)
-	if base == "" {
-		mb, _, mbErr := runner.Run(ctx, "merge-base", "HEAD", target)
-		if mbErr != nil {
-			return fmt.Errorf("cannot find merge-base between HEAD and %s", target)
-		}
-		base = strings.TrimSpace(string(mb))
-	} else {
-		if err := guardRef(base); err != nil {
-			return fmt.Errorf("invalid base: %w", err)
-		}
-		resolved, _, rerr := runner.Run(ctx, "rev-parse", "--verify", base+"^{commit}")
-		if rerr != nil {
-			return fmt.Errorf("unknown base %q: not a commit", base)
-		}
-		base = strings.TrimSpace(string(resolved))
-	}
-
-	conflicts, serr := scanMergeConflicts(ctx, runner, base, "HEAD", target)
-	if serr != nil {
-		return fmt.Errorf("merge-tree scan: %w", serr)
-	}
-	if conflicts == nil {
-		conflicts = []string{}
-	}
-
-	res := precheckResult{
-		Ours:      "HEAD",
-		Target:    target,
-		Base:      base,
-		Clean:     len(conflicts) == 0,
-		Conflicts: conflicts,
+	res, err := collectPrecheck(ctx, runner, target, baseOverride)
+	if err != nil {
+		return err
 	}
 
 	w := cmd.OutOrStdout()
@@ -145,6 +106,59 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// collectPrecheck runs the merge-tree forecast for a resolved target and
+// returns the result document. Factored out of the command path so other
+// one-call surfaces (gk context --include=precheck) can embed the same
+// forecast without re-implementing target/base resolution semantics.
+func collectPrecheck(ctx context.Context, runner *git.ExecRunner, target, baseOverride string) (precheckResult, error) {
+	var res precheckResult
+	if err := guardRef(target); err != nil {
+		return res, fmt.Errorf("invalid target: %w", err)
+	}
+
+	// Resolve the target to a concrete commit so error messages are actionable.
+	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", target+"^{commit}"); err != nil {
+		return res, WithHint(
+			fmt.Errorf("unknown target %q: not a commit", target),
+			"run `git fetch` if the ref lives on a remote, or spell-check the branch name",
+		)
+	}
+
+	base := strings.TrimSpace(baseOverride)
+	if base == "" {
+		mb, _, mbErr := runner.Run(ctx, "merge-base", "HEAD", target)
+		if mbErr != nil {
+			return res, fmt.Errorf("cannot find merge-base between HEAD and %s", target)
+		}
+		base = strings.TrimSpace(string(mb))
+	} else {
+		if err := guardRef(base); err != nil {
+			return res, fmt.Errorf("invalid base: %w", err)
+		}
+		resolved, _, rerr := runner.Run(ctx, "rev-parse", "--verify", base+"^{commit}")
+		if rerr != nil {
+			return res, fmt.Errorf("unknown base %q: not a commit", base)
+		}
+		base = strings.TrimSpace(string(resolved))
+	}
+
+	conflicts, serr := scanMergeConflicts(ctx, runner, base, "HEAD", target)
+	if serr != nil {
+		return res, fmt.Errorf("merge-tree scan: %w", serr)
+	}
+	if conflicts == nil {
+		conflicts = []string{}
+	}
+
+	return precheckResult{
+		Ours:      "HEAD",
+		Target:    target,
+		Base:      base,
+		Clean:     len(conflicts) == 0,
+		Conflicts: conflicts,
+	}, nil
+}
+
 // precheckDefaultTarget resolves what "the next integration" means when no
 // target is given, in the SAME order gk pull resolves its upstream — a
 // forecast that predicts a different ref than the pull would fetch is worse
@@ -152,11 +166,10 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 // locally (precheck is read-only, so a missing cache ref can't be fetched —
 // it errors with the fetch remedy instead of silently forecasting the
 // wrong branch); ③ the same-name remote ref; ④ the remote base branch.
-func precheckDefaultTarget(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command) (string, error) {
+func precheckDefaultTarget(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) (string, error) {
 	if upstream, _, _, ok := tryTrackingUpstream(ctx, runner); ok {
 		return upstream, nil
 	}
-	cfg, _ := config.Load(cmd.Flags())
 	remote := cfg.Remote
 	if remote == "" {
 		remote = "origin"

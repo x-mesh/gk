@@ -113,6 +113,7 @@ With-base sync:
 	cmd.Flags().String("strategy", "", "pull strategy: rebase|merge|ff-only|auto")
 	cmd.Flags().Bool("rebase", false, "shorthand for --strategy rebase (also acts as explicit consent on diverged history)")
 	cmd.Flags().Bool("merge", false, "shorthand for --strategy merge (also acts as explicit consent on diverged history)")
+	cmd.Flags().String("from", "", "pull from a specific remote instead of the upstream: <remote> (same-name branch) or <remote>/<branch>")
 	cmd.Flags().Bool("fetch-only", false, "fetch only, do not integrate")
 	cmd.Flags().Bool("no-rebase", false, "deprecated alias for --fetch-only")
 	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration and pop after")
@@ -324,7 +325,24 @@ func runPullCore(cmd *cobra.Command) error {
 		current = ""
 	}
 
-	upstream, fetchRemote, fetchBranch, hasTracking := tryTrackingUpstream(ctx, runner)
+	// --from short-circuits upstream resolution entirely: the user named
+	// the source (a mirror, an org fork, a second remote whose work the
+	// upstream chain would never fetch). Tracking config is left untouched
+	// — this is a one-shot integration source, not a new upstream.
+	var upstream, fetchRemote, fetchBranch string
+	var hasTracking bool
+	if fromFlag, _ := cmd.Flags().GetString("from"); fromFlag != "" {
+		var ferr error
+		upstream, fetchRemote, fetchBranch, ferr = resolvePullFrom(ctx, runner, fromFlag, current)
+		if ferr != nil {
+			return ferr
+		}
+		hasTracking = true
+		printNote(cmd.ErrOrStderr(),
+			fmt.Sprintf("pulling from %s (--from override; upstream tracking unchanged)", upstream))
+	} else {
+		upstream, fetchRemote, fetchBranch, hasTracking = tryTrackingUpstream(ctx, runner)
+	}
 	if !hasTracking {
 		// @{u} resolution fails in two distinct states: tracking genuinely
 		// unconfigured, or tracking configured but the remote-tracking ref
@@ -536,7 +554,7 @@ func runPullCore(cmd *cobra.Command) error {
 				return fmt.Errorf("stash pop failed: %w", err)
 			}
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "%salready up to date at %s\n", labeler(branchLabel), shortSHA(preHEAD))
+		fmt.Fprintf(cmd.ErrOrStderr(), "%sAlready up to date  %s\n", labeler(branchLabel), tipSuffix(ctx, runner, preHEAD))
 		emitPullJSON(cmd, pullResultJSON{Result: "up-to-date", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Base: baseOutcomes})
 		return nil
 	}
@@ -674,6 +692,94 @@ func headRev(ctx context.Context, runner git.Runner) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// tipSuffix renders the trailing "<sha>  <time>  <subject>" segment of an
+// "Already up to date" status line. The short SHA comes from ref as the
+// caller already resolved it; a single `git show -s` then appends the tip
+// commit's local time (faint; "MM/DD HH:MM", "YY/"-prefixed off-year so a
+// stale branch tip is not mistaken for a recent one) and its full subject
+// line. Cost is one cheap object read beyond naming the commit — no
+// history walk — and the suffix degrades to just the SHA on any error.
+func tipSuffix(ctx context.Context, r git.Runner, ref string) string {
+	s := color.New(color.Bold).Sprint(shortSHA(ref))
+	out, _, err := r.Run(ctx, "show", "-s", "--pretty=format:%ct\x1f%s", ref)
+	if err != nil {
+		return s
+	}
+	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\x1f", 2)
+	if len(parts) != 2 {
+		return s
+	}
+	if ts, perr := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64); perr == nil {
+		layout := "01/02 15:04"
+		t := time.Unix(ts, 0)
+		if t.Year() != time.Now().Year() {
+			layout = "06/01/02 15:04"
+		}
+		s += "  " + color.New(color.Faint).Sprint(t.Format(layout))
+	}
+	if subj := parts[1]; subj != "" {
+		s += "  " + subj
+	}
+	return s
+}
+
+// resolvePullFrom turns the --from argument into (upstream, fetchRemote,
+// fetchBranch). Accepts "<remote>" — integrating the branch named like the
+// current one — or "<remote>/<branch>". The remote must already be
+// registered: silently fetching an arbitrary URL would turn a typo into a
+// network probe.
+func resolvePullFrom(ctx context.Context, runner git.Runner, from, current string) (string, string, string, error) {
+	remotes := listRemotes(ctx, runner)
+	name, branch := from, ""
+	// Remote names cannot contain '/', so the first slash splits
+	// remote/branch unambiguously.
+	if i := strings.IndexByte(from, '/'); i > 0 {
+		name, branch = from[:i], from[i+1:]
+	}
+	known := false
+	for _, r := range remotes {
+		if r == name {
+			known = true
+			break
+		}
+	}
+	if !known {
+		hint := "register it first: git remote add " + name + " <url>"
+		if len(remotes) > 0 {
+			hint = "registered remotes: " + strings.Join(remotes, ", ") + " — or add one with `git remote add <name> <url>`"
+		}
+		return "", "", "", WithHint(fmt.Errorf("pull: unknown remote %q in --from", name), hint)
+	}
+	if branch == "" {
+		if current == "" {
+			return "", "", "", WithHint(
+				fmt.Errorf("pull: --from %s cannot infer a branch on a detached HEAD", name),
+				"name it explicitly: --from "+name+"/<branch>",
+			)
+		}
+		branch = current
+	}
+	if err := guardRef(branch); err != nil {
+		return "", "", "", fmt.Errorf("pull: invalid --from branch: %w", err)
+	}
+	return name + "/" + branch, name, branch, nil
+}
+
+// listRemotes returns the registered remote names, in git's order.
+func listRemotes(ctx context.Context, r git.Runner) []string {
+	out, _, err := r.Run(ctx, "remote")
+	if err != nil {
+		return nil
+	}
+	var remotes []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			remotes = append(remotes, l)
+		}
+	}
+	return remotes
 }
 
 // tryTrackingUpstream reads the current branch's @{u} and parses it into
@@ -1370,7 +1476,7 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 		return
 	}
 	if pre == post {
-		fmt.Fprintf(out, "%salready up to date at %s\n", label, bold(shortSHA(post)))
+		fmt.Fprintf(out, "%sAlready up to date  %s\n", label, tipSuffix(ctx, runner, post))
 		return
 	}
 
@@ -1449,7 +1555,7 @@ func renderFetchOnlySummary(cmd *cobra.Command, runner git.Runner, upstream stri
 
 	switch {
 	case ahead == 0 && behind == 0:
-		fmt.Fprintln(out, "already up to date")
+		fmt.Fprintln(out, "Already up to date")
 	case behind > 0 && ahead == 0:
 		fmt.Fprintf(out, "fetched %s: %s %s waiting  %s\n",
 			upstream,

@@ -524,7 +524,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only", "")
 
 	got := buf.String()
-	if !strings.Contains(got, "already up to date at abc1234") {
+	if !strings.Contains(got, "Already up to date  abc1234") {
 		t.Errorf("expected up-to-date line with sha, got:\n%s", got)
 	}
 }
@@ -612,7 +612,7 @@ func TestRenderFetchOnlySummary_UpToDate(t *testing.T) {
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
 	renderFetchOnlySummary(cmd, r, "origin/main")
-	if !strings.Contains(buf.String(), "already up to date") {
+	if !strings.Contains(buf.String(), "Already up to date") {
 		t.Errorf("expected up-to-date, got %q", buf.String())
 	}
 }

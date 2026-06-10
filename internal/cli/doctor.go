@@ -124,6 +124,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			checkStashBacklog(ctx, runner),
 			checkPrunableWorktrees(ctx, runner),
 			checkBranchTracking(ctx, runner, remote),
+			checkRemoteSymmetry(ctx, runner),
 		)
 	}
 
@@ -489,6 +490,55 @@ func checkGitleaks() doctorCheck {
 		version = version + " (" + path + ")"
 	}
 	return doctorCheck{Name: "gitleaks", Status: statusPass, Detail: version}
+}
+
+// checkRemoteSymmetry detects asymmetric remote configs: a remote whose
+// push URL set differs from its fetch URL (extra pushurl entries, or a
+// rewritten single pushurl). The shape is a footgun for any workflow that
+// merges PRs on the push-only side — that work never comes down on fetch,
+// and the next push half-fails non-fast-forward against the drifted URL.
+// gk pull/context cannot see the drift either, so doctor is the layer that
+// must name it.
+func checkRemoteSymmetry(ctx context.Context, r git.Runner) doctorCheck {
+	const name = "repo: remote symmetry"
+	remotes := listRemotes(ctx, r)
+	if len(remotes) == 0 {
+		return doctorCheck{Name: name, Status: statusPass, Detail: "no remotes configured"}
+	}
+	var issues []string
+	for _, rm := range remotes {
+		fetchOut, _, ferr := r.Run(ctx, "config", "--get", "remote."+rm+".url")
+		if ferr != nil {
+			continue
+		}
+		fetchURL := strings.TrimSpace(string(fetchOut))
+		pushOut, _, perr := r.Run(ctx, "config", "--get-all", "remote."+rm+".pushurl")
+		if perr != nil {
+			continue // no pushurl entries — push follows the fetch URL, symmetric
+		}
+		var extra []string
+		for _, u := range strings.Split(strings.TrimSpace(string(pushOut)), "\n") {
+			u = strings.TrimSpace(u)
+			if u != "" && u != fetchURL {
+				extra = append(extra, u)
+			}
+		}
+		if len(extra) > 0 {
+			issues = append(issues, fmt.Sprintf("%q fetches %s but also pushes to %s",
+				rm, fetchURL, strings.Join(extra, ", ")))
+		}
+	}
+	if len(issues) == 0 {
+		return doctorCheck{
+			Name: name, Status: statusPass,
+			Detail: fmt.Sprintf("%d remote(s), fetch/push symmetric", len(remotes)),
+		}
+	}
+	return doctorCheck{
+		Name: name, Status: statusWarn,
+		Detail: strings.Join(issues, "; ") + " — work merged on a push-only URL never comes down, and gk push half-fails non-fast-forward once it drifts",
+		Fix:    "register the push-only URL as its own remote: git remote add <name> <url>, then integrate with `gk pull --from <name>`",
+	}
 }
 
 // checkBackupRefs summarizes the gk-managed backup refs (refs/gk/*-backup/).

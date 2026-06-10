@@ -141,7 +141,7 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 	newSHA := strings.TrimSpace(string(newOut))
 
 	if oldSHA == newSHA {
-		fmt.Fprintln(w, label(branch)+cellFaint("already up to date at "+shortSHA(oldSHA)))
+		fmt.Fprintln(w, label(branch)+"Already up to date  "+tipSuffix(ctx, runner, oldSHA))
 		outcome.Result = "up-to-date"
 		outcome.Post = oldSHA
 		return outcome

@@ -158,7 +158,7 @@ func TestFFSyncBranch_AlreadyUpToDate(t *testing.T) {
 
 	ffSyncBranch(context.Background(), fake, buf, "origin", "main", true, branchLabeler("main"))
 
-	if !hasBranchLine(buf.String(), "main", "already up to date at") {
+	if !hasBranchLine(buf.String(), "main", "Already up to date") {
 		t.Errorf("expected labeled up-to-date line, got:\n%s", buf.String())
 	}
 	if got := ffCalls(fake, "update-ref"); len(got) != 0 {
@@ -332,10 +332,10 @@ func TestIntegration_PullWithBase_LabelsResultLines(t *testing.T) {
 		t.Fatalf("second pull: %v\nstderr:\n%s", err, stderr.String())
 	}
 	out := stderr.String()
-	if !hasBranchLine(out, "main", "already up to date at") {
+	if !hasBranchLine(out, "main", "Already up to date") {
 		t.Errorf("base line must carry the main label:\n%s", out)
 	}
-	if !hasBranchLine(out, "develop", "already up to date at") {
+	if !hasBranchLine(out, "develop", "Already up to date") {
 		t.Errorf("current-branch line must carry the develop label:\n%s", out)
 	}
 

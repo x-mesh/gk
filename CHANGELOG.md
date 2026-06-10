@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-06-10
+
 ### Added
 
 - **`gk diff --digest` — 패치 없이 "무엇이 어디서 바뀌었나".** 파일별 변경 종류·±라인·hunk 수·**변경된 심볼 목록**(git hunk header의 함수 컨텍스트 — `.gitattributes` 불필요)을 파일당 한 줄로 요약하고, test/docs/ci/build 파일은 종류 태그를 단다. `--json`/agent 모드에서는 `{files:[{path, status, hunks, added, deleted, symbols, kind}], stat}` 계약 — agent가 status→diff→파일 Read를 반복하던 최빈 다턴 패턴이 1턴이 된다. 일반 `gk diff`와 같은 ref/경로 인자를 그대로 받는다(`--staged`, `HEAD~3`, `main..feature`).

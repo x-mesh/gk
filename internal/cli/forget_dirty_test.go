@@ -110,3 +110,36 @@ func TestDirtyOutsideTargetsCleanRepo(t *testing.T) {
 		t.Errorf("clean repo returned %v, want empty", got)
 	}
 }
+
+// Engine resolution: explicit --engine wins, then forget.engine from
+// config, then the built-in "native" default. Bad values fail loudly
+// regardless of which source supplied them.
+func TestResolveForgetEngine(t *testing.T) {
+	cases := []struct {
+		name        string
+		flagChanged bool
+		flagVal     string
+		cfgVal      string
+		want        string
+		wantErr     bool
+	}{
+		{name: "default native", want: "native"},
+		{name: "config wins over default", cfgVal: "filter-repo", want: "filter-repo"},
+		{name: "flag wins over config", flagChanged: true, flagVal: "native", cfgVal: "filter-repo", want: "native"},
+		{name: "flag default ignored when not changed", flagChanged: false, flagVal: "native", cfgVal: "filter-repo", want: "filter-repo"},
+		{name: "bad config value", cfgVal: "bfg", wantErr: true},
+		{name: "bad flag value", flagChanged: true, flagVal: "rewrite9000", cfgVal: "native", wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := resolveForgetEngine(c.flagChanged, c.flagVal, c.cfgVal)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: want error, got %q", c.name, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s: got (%q, %v), want %q", c.name, got, err, c.want)
+		}
+	}
+}

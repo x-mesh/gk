@@ -72,6 +72,16 @@ ui:
   # Empty means always prompt interactively when TTY is available.
   prefer: ""
 
+forget:
+  # History-rewrite engine for `gk forget`.
+  #   native       (default) gk's built-in fast-export→filter→fast-import
+  #                pipeline — no external install; rewrites only branches
+  #                and tags, keeps old objects so the rollback is real.
+  #   filter-repo  delegate to git filter-repo (must be on PATH); use for
+  #                inputs native refuses (shallow clones, replace refs).
+  # Override per-invocation with `--engine <name>`.
+  engine: native
+
 sync:
   # Integration strategy when the current branch has diverged from its base.
   # Values: "rebase" (default), "merge", "ff-only" (refuse divergence).

@@ -11,6 +11,7 @@ type Config struct {
 	Commit     CommitConfig    `mapstructure:"commit"      yaml:"commit"`
 	Push       PushConfig      `mapstructure:"push"        yaml:"push"`
 	Pull       PullConfig      `mapstructure:"pull"        yaml:"pull"`
+	Forget     ForgetConfig    `mapstructure:"forget"      yaml:"forget"`
 	Sync       SyncConfig      `mapstructure:"sync"        yaml:"sync"`
 	Refresh    RefreshConfig   `mapstructure:"refresh"     yaml:"refresh"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
@@ -316,6 +317,15 @@ type PushConfig struct {
 	AllowForce     bool     `mapstructure:"allow_force"     yaml:"allow_force"`
 }
 
+// ForgetConfig controls gk forget behaviour.
+// Engine selects the history-rewrite implementation: "native" (default,
+// gk's built-in fast-export→filter→fast-import pipeline, no external
+// install) or "filter-repo" (delegate to git filter-repo). Equivalent to
+// passing --engine on each invocation; the flag wins when both are set.
+type ForgetConfig struct {
+	Engine string `mapstructure:"engine" yaml:"engine"`
+}
+
 // PullConfig controls gk pull behaviour.
 // Strategy accepts: "rebase" (default), "merge", "ff-only", "auto".
 // "auto" reads git config pull.rebase; if unset, falls back to "rebase".
@@ -577,6 +587,9 @@ func Defaults() Config {
 			// decide whether to refuse on diverged history. Pre-filling
 			// "rebase" here would mask that signal and silently auto-rebase.
 			Strategy: "",
+		},
+		Forget: ForgetConfig{
+			Engine: "native",
 		},
 		Sync: SyncConfig{
 			Strategy: "rebase",

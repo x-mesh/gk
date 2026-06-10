@@ -10,24 +10,46 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/forget"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
+// resolveForgetEngine picks the history-rewrite engine: an explicitly
+// passed --engine wins, then forget.engine from config (Load merges the
+// "native" default in), with validation applied to whichever source won —
+// a typo in .gk.yaml must fail as loudly as one on the command line.
+func resolveForgetEngine(flagChanged bool, flagVal, cfgVal string) (string, error) {
+	engine := cfgVal
+	if engine == "" {
+		engine = "native"
+	}
+	if flagChanged {
+		engine = flagVal
+	}
+	if engine != "filter-repo" && engine != "native" {
+		return "", WithHint(
+			fmt.Errorf("forget: unknown engine %q (native|filter-repo)", engine),
+			"check --engine / forget.engine in .gk.yaml",
+		)
+	}
+	return engine, nil
+}
+
 func init() {
 	cmd := &cobra.Command{
 		Use:   "forget [path...]",
 		Short: "Remove paths from the entire git history (rewrites SHAs)",
 		Long: `Remove one or more paths from every commit in the repository, including
-historical revisions. Two engines are available: the default delegates to
-git filter-repo; --engine native uses gk's built-in rewrite (experimental),
-which needs no external install, rewrites only branches and tags (backup
-refs and remote-tracking refs stay untouched), and keeps pre-rewrite
-objects reachable so the printed rollback is guaranteed to work. The
-native engine covers path removal only; it refuses shallow clones and
-repositories with replace refs — use the default engine there.
+historical revisions. Two engines are available: the default "native" is
+gk's built-in rewrite — no external install, rewrites only branches and
+tags (backup refs and remote-tracking refs stay untouched), and keeps
+pre-rewrite objects reachable so the printed rollback is guaranteed to
+work. "filter-repo" delegates to git filter-repo; use it for inputs the
+native engine refuses (shallow clones, replace refs). Select via
+--engine or forget.engine in .gk.yaml (flag wins).
 
 When called with no paths, gk forget auto-detects tracked files that are
 already covered by .gitignore — turning the common workflow
@@ -50,10 +72,9 @@ abort with a hint, since filter-repo's reset would silently drop them.
 Pass --force-dirty when you have reviewed those outside changes and
 accept losing them.
 
-The default engine requires git filter-repo
-(https://github.com/newren/git-filter-repo).
+The native engine has no external dependency. --engine filter-repo
+requires git filter-repo (https://github.com/newren/git-filter-repo).
 Install: brew install git-filter-repo  (or: pip install git-filter-repo)
---engine native has no external dependency.
 
 Examples:
   gk forget                              # auto-detect tracked-but-ignored paths
@@ -65,7 +86,7 @@ Examples:
   gk forget --analyze --depth 2          # repo-wide audit, two-segment buckets
   gk forget --analyze --depth 0 --top 50 # 50 heaviest individual files
   gk forget db/ --keep "db/keep/*"       # forget db/ but keep db/keep/ entries
-  gk forget db/ --engine native          # built-in engine, no filter-repo needed
+  gk forget db/ --engine filter-repo     # delegate to git filter-repo instead
 `,
 		RunE: runForget,
 	}
@@ -78,7 +99,7 @@ Examples:
 	cmd.Flags().String("bar", "auto", "with --analyze, bar style: auto|filled|block|none (auto = filled on TTY, none on pipes)")
 	cmd.Flags().String("sort", "size", "with --analyze, ranking: size|churn|name (churn = by unique blob count, surfaces rewrite-heavy paths)")
 	cmd.Flags().BoolP("interactive", "i", false, "with --analyze, open a multi-select picker over the audit results and forget the selected paths")
-	cmd.Flags().String("engine", "filter-repo", "history rewrite engine: filter-repo (delegated, default) or native (built-in, experimental — no filter-repo install needed; rewrites only branches and tags, keeps old objects so the backup rollback is guaranteed)")
+	cmd.Flags().String("engine", "native", "history rewrite engine: native (built-in, default — no install needed; rewrites only branches and tags, keeps old objects so the backup rollback is guaranteed) or filter-repo (delegate to git filter-repo). Config: forget.engine")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -94,9 +115,13 @@ func runForget(cmd *cobra.Command, args []string) error {
 	barStr, _ := cmd.Flags().GetString("bar")
 	sortStr, _ := cmd.Flags().GetString("sort")
 	interactive, _ := cmd.Flags().GetBool("interactive")
-	engine, _ := cmd.Flags().GetString("engine")
-	if engine != "filter-repo" && engine != "native" {
-		return fmt.Errorf("forget: unknown engine %q (filter-repo|native)", engine)
+	cfg, _ := config.Load(cmd.Flags())
+	engine, err := resolveForgetEngine(cmd.Flags().Changed("engine"), func() string {
+		v, _ := cmd.Flags().GetString("engine")
+		return v
+	}(), cfg.Forget.Engine)
+	if err != nil {
+		return err
 	}
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.

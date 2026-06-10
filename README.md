@@ -114,6 +114,12 @@ gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
 gk pull                      # fetch + integrate @{u}; refuses on diverged
 gk pull --rebase             # explicit consent: replay local on top of upstream
 gk pull --with-base          # also fast-forward local main from origin (FF-only, no checkout)
+gk context --json            # one-call orientation for agents: branch/sync/dirty/next_actions
+gk agents install            # keep the gk usage contract in CLAUDE.md / AGENTS.md
+gk precheck                  # forecast: will my next pull conflict? (read-only merge-tree)
+gk diff --digest             # what changed, where: files · hunks · changed symbols, no patch body
+gk land                      # wrap up: commit -f → pull --with-base → push, one transaction
+GK_AGENT=1 gk <cmd>          # agent mode: uniform {ok, result, error{code, remedies}} envelope
 gk pull --rebase --ai        # on conflict, resolve with AI then continue
 gk pull --fetch-only         # fetch without integrating
 gk merge main                # precheck + merge main into current branch

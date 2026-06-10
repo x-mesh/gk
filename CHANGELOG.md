@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk diff --digest` — 패치 없이 "무엇이 어디서 바뀌었나".** 파일별 변경 종류·±라인·hunk 수·**변경된 심볼 목록**(git hunk header의 함수 컨텍스트 — `.gitattributes` 불필요)을 파일당 한 줄로 요약하고, test/docs/ci/build 파일은 종류 태그를 단다. `--json`/agent 모드에서는 `{files:[{path, status, hunks, added, deleted, symbols, kind}], stat}` 계약 — agent가 status→diff→파일 Read를 반복하던 최빈 다턴 패턴이 1턴이 된다. 일반 `gk diff`와 같은 ref/경로 인자를 그대로 받는다(`--staged`, `HEAD~3`, `main..feature`).
+
+- **`gk precheck` 충돌 예보 확장 (별칭 `forecast`).** 대상을 생략하면 다음 pull(추적 upstream, 없으면 원격 기준 브랜치)을 기준으로 read-only merge-tree 시뮬레이션을 돌린다 — "지금 당기면 충돌나나?"가 한 호출이 되어 시도→중단→재시도 루프가 사라진다. agent 모드/전역 `--json`에서 envelope 계약(`{ours, target, base, clean, conflicts[]}`)을 따른다. rebase는 merge 시뮬의 근사임을 문서에 명시.
+
+- **`GK_AGENT=1` — agent 모드 전면 envelope.** env 하나로 모든 gk 호출이 통일 계약을 낸다: 성공은 `{schema, ok, result}`, 실패는 `{ok:false, error:{code, message, hint, remedies:[{command,safety}]}}`(stderr, exit code 유지). `error.code`는 추가-only 어휘(not-a-repo/dirty-tree/conflict/diverged/in-progress-op …)이고, 기존 `try:` 힌트는 remedies로 자동 승격된다. GK_AGENT 없이는 `--json` 출력이 이전과 바이트 단위로 동일하다. 충돌 일시정지(exit 3)는 에러가 아니라 resume 계약을 담은 결과다.
+- **`gk land` — 세션 마감 한 방.** 변경이 있으면 `commit -f`(AI 그룹 커밋) → `pull --with-base` → `push`를 한 트랜잭션으로, 단계별 ✓와 함께 실행한다. 첫 실패에서 멈추고 `failed_step`과 정확한 복귀 명령을 알려주며, 고치고 다시 `gk land`를 치면 끝난 단계는 no-op으로 통과한다. `--cleanup`은 push 후 완전 머지된 브랜치와 그 worktree까지 회수(merged-only, protected 제외).
+- **`gk doctor --fix` 확장.** 죽은 프로세스가 남긴 `index.lock`을 mtime 기반으로 stale/fresh 구분해 fresh면 절대 삭제를 제안하지 않고, 충돌 파일이 없는 고아 merge(MERGE_HEAD)는 "abort해도 잃을 것 없음"을 명시하며, 디렉터리가 사라진 worktree 등록을 감지해 prune을 제안한다 — 병렬 agent 환경에서 가장 흔한 stuck 3종.
+
+- **`gk context` — 저장소 오리엔테이션 한 방.** 현재 브랜치·upstream·ahead/behind·변경 개수(staged/unstaged/untracked/conflicts)·진행 중인 rebase/merge(재개·중단 명령 포함)·기준 브랜치 드리프트·worktree·다음 행동 제안을 한 호출로 반환한다. `--json`이면 스키마 버전이 붙은 기계용 문서(필드는 추가-only) — AI 에이전트가 status/branch/log/worktree를 차례로 찔러보던 3~6턴이 1턴이 된다. 별칭 `gk ctx`.
+- **`gk agents` — 에이전트 지침 파일에 gk 사용 규약 설치.** `print`(규약 블록 출력)/`install`(repo 루트 `CLAUDE.md`·`AGENTS.md`에 멱등 삽입·갱신)/`check`(버전 일치 점검, 어긋나면 비정상 종료+힌트). 규약 본문이 gk 바이너리에 내장돼 설치된 gk의 실제 표면과 항상 일치하고, 버전 마커 블록 바깥은 절대 수정하지 않는다. Claude·Codex 어느 쪽이든 같은 블록을 읽는다.
+- **`gk pull --json` — 결과의 기계 계약.** `result`(updated/up-to-date/ahead-only/fetch-only/conflict)와 움직인 SHA, `--with-base` base 동기화 결과, 충돌 시 파일 목록+재개/중단 명령을 stdout JSON으로 낸다. 사람용 진행 출력은 stderr에 그대로 유지된다.
+
 ## [0.77.0] - 2026-06-10
 
 ### Added

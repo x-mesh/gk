@@ -303,6 +303,53 @@ gk refresh --no-fetch      # use cached remote refs (offline)
 
 ---
 
+## gk precheck (alias: forecast)
+
+Conflict forecast before integrating: `git merge-tree` simulation between HEAD and the target — working tree, index, and refs untouched. Without a target it checks the upstream (`@{u}`), falling back to the remote base branch — "will my next pull conflict?" in one read-only call, replacing the try→abort→retry loop. The simulation is a merge; a rebase replays commits one by one so its conflicts can differ in detail, but the file set is the practical forecast either way.
+
+```
+gk precheck                  # forecast the next pull (@{u}, else remote base)
+gk forecast origin/main      # explicit target
+gk precheck develop --json   # {ours, target, base, clean, conflicts[]}
+```
+
+Exit codes: 0 clean · 2 invalid input · 3 conflicts predicted. With `--json`/`GK_AGENT=1` the result follows the agent envelope; exit 3 still signals "conflicts" (a forecast, not an error).
+
+## gk land
+
+The session-closing compound verb: commit what's dirty (AI-grouped via `gk commit -f`), `gk pull --with-base`, and `gk push` — one transaction with per-step ✓ output. The first failure stops the run and names the failed step plus the exact resume path; re-running `gk land` after the fix is safe (completed steps degrade to no-ops).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--with-base` | true | Fast-forward the local base branch during the pull step (`--with-base=false` to skip) |
+| `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
+| `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
+
+## GK_AGENT=1 — agent mode
+
+`export GK_AGENT=1` turns on agent mode for every gk invocation: `--json` is implied, JSON payloads are wrapped in a uniform envelope (`{schema, ok, result}` on success), and failures print `{ok:false, error:{code, message, hint, remedies:[{command,safety}]}}` to stderr while keeping the normal exit codes. `error.code` is a stable, append-only vocabulary (`not-a-repo`, `dirty-tree`, `conflict`, `diverged`, `in-progress-op`, ...). Without GK_AGENT, `--json` output is byte-identical to previous releases. A paused state with a resume contract (pull/merge conflict, exit 3) is a result, not an error.
+
+## gk context
+
+One-call repository orientation — current branch, upstream and ahead/behind, dirty counts (staged/unstaged/untracked/conflicts), any in-progress rebase/merge with its resume/abort commands, base-branch drift vs its remote, linked worktrees, and suggested `next_actions`.
+
+With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
+
+```bash
+gk context            # human one-screen summary (alias: gk ctx)
+gk context --json     # agent contract
+```
+
+## gk agents
+
+Manages the gk usage contract inside the repository's agent instruction files (`CLAUDE.md`, `AGENTS.md`). The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
+
+| Subcommand | Description |
+|------------|-------------|
+| `gk agents print` | Print the contract block to stdout (paste anywhere) |
+| `gk agents install [--file <path>]` | Insert or refresh the block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent) |
+| `gk agents check` | Verify installed blocks match this gk version; non-zero exit + hint when stale |
+
 ## gk pull
 
 Fetch and rebase the current branch onto the base branch.
@@ -325,6 +372,7 @@ gk pull [flags]
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
 | `--autostash` | false | Stash dirty changes before integration, pop after |
 | `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Skipped under `--fetch-only` |
+| `--json` (global) | false | Emit the machine-readable result on stdout (`result`: `updated`/`up-to-date`/`ahead-only`/`fetch-only`/`conflict`, moved SHAs, `base` outcomes, conflict files + resume/abort commands). The human progress stream stays on stderr |
 | `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
 
 ### Base branch auto-detection
@@ -458,6 +506,19 @@ gk diff -- internal/ui/       # restrict to a path
 `0` regardless of whether changes were found — `gk diff` is a *viewer*, not a status check. Use `gk status --exit-code` when you need an exit-code-driven dirty/clean signal.
 
 ---
+
+### --digest — semantic summary
+
+`gk diff --digest` answers "what changed, where" without the patch body: one line per file with the change kind, ±lines, hunk count, and the **symbols** (function contexts from git's hunk headers — no `.gitattributes` needed) the change touched. Non-source files are tagged `[test]` / `[docs]` / `[ci]` / `[build]`.
+
+```
+M  internal/cli/pull.go    +56 −12  ·3   func runPullCore(...), func emitPullJSON(...)
+A  internal/cli/land.go   +280 −0   ·1
+M  docs/commands.md         +9 −0   ·2   [docs]
+   3 files · 6 hunks · +345 −12
+```
+
+With `--json` / `GK_AGENT=1` it emits the agent contract `{schema, files:[{path, status, hunks, added, deleted, symbols[], kind}], stat}` — the most frequent multi-turn agent pattern (status → diff --stat → per-file reads) in one call. Accepts the same ref/path arguments as plain `gk diff` (`--staged`, `HEAD~3`, `main..feature`, `-- path`).
 
 ## gk merge
 

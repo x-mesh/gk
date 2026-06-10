@@ -80,6 +80,42 @@ func AtomicReplaceWithSudo(staged, target string) error {
 	return nil
 }
 
+// LinkAlias creates (or refreshes) a relative symlink `aliasName` → `binName`
+// inside dir, so the upgraded binary is reachable under its secondary name
+// (git-kit) too. Mirrors install.sh's link_alt: a relative link survives the
+// bin dir being moved, and an existing alias is replaced rather than left
+// pointing at a stale copy.
+//
+// Escalates with sudo when dir is not user-writable (the /usr/local/bin
+// case), matching AtomicReplaceWithSudo. Callers treat failures as
+// non-fatal — the primary binary is already in place by the time this runs.
+func LinkAlias(dir, binName, aliasName string) error {
+	aliasPath := filepath.Join(dir, aliasName)
+	if writable(dir) {
+		// os.Symlink refuses to clobber, so clear any prior alias first —
+		// it may be a stale symlink or install.sh's cp fallback.
+		_ = os.Remove(aliasPath)
+		return os.Symlink(binName, aliasPath)
+	}
+	if _, err := exec.LookPath("sudo"); err != nil {
+		return fmt.Errorf(
+			"%s is not writable and sudo is unavailable; cannot link %s alias",
+			dir, aliasName,
+		)
+	}
+	// `ln -sf` is the privileged equivalent of remove-then-symlink: -f
+	// replaces an existing alias, -s makes it symbolic, and the relative
+	// target keeps it valid if the dir is relocated.
+	cmd := exec.Command("sudo", "ln", "-sf", binName, aliasPath) //nolint:gosec // user-driven self-update
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sudo ln -sf %s %s: %w", binName, aliasPath, err)
+	}
+	return nil
+}
+
 // writable reports whether the current user can create files in `dir`. We
 // check by trying to create and immediately remove a probe file rather than
 // trusting Stat's permission bits, since ACLs and group membership make the

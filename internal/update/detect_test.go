@@ -101,3 +101,40 @@ func TestAssetName(t *testing.T) {
 		t.Errorf("empty Install.AssetName() = %q, want empty", empty.AssetName())
 	}
 }
+
+func TestAliasFor(t *testing.T) {
+	cases := []struct {
+		bin  string
+		want string
+	}{
+		// Canonical install.sh / cask name → the bare git-kit alias.
+		{"gk", "git-kit"},
+		// Dev builds keep their suffix so they never collide with the
+		// Homebrew-owned git-kit (mirrors `make install INSTALL_NAME=gk-dev`).
+		{"gk-dev", "git-kit-dev"},
+		{"gk-nightly", "git-kit-nightly"},
+		// Already an alias, an empty suffix, or an unrelated name → no alias,
+		// so callers skip linking rather than invent a target.
+		{"git-kit", ""},
+		{"gk-", ""},
+		{"mygk", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.bin, func(t *testing.T) {
+			if got := aliasFor(tc.bin); got != tc.want {
+				t.Errorf("aliasFor(%q) = %q, want %q", tc.bin, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstallAliasName(t *testing.T) {
+	// AliasName derives from the binary basename, not the full path.
+	if got := (&Install{BinaryPath: "/home/u/.local/bin/gk"}).AliasName(); got != "git-kit" {
+		t.Errorf("AliasName(gk) = %q, want git-kit", got)
+	}
+	if got := (&Install{BinaryPath: "/home/u/.local/bin/gk-dev"}).AliasName(); got != "git-kit-dev" {
+		t.Errorf("AliasName(gk-dev) = %q, want git-kit-dev", got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,8 +26,9 @@ func init() {
               under Caskroom; the tap moved from formula to cask at v0.55)
   manual    → downloads the matching archive from the latest release,
               verifies the published sha256, and atomically replaces the
-              running binary in place. Escalates with sudo when the
-              install dir is not user-writable (e.g. /usr/local/bin).
+              running binary in place, then (re)links the git-kit alias
+              beside it. Escalates with sudo when the install dir is not
+              user-writable (e.g. /usr/local/bin).
   go-install → prints the equivalent 'go install ...@latest' command.
 
 Use --check to compare versions without downloading or upgrading anything.`,
@@ -228,5 +230,20 @@ func runManualUpgrade(cmd *cobra.Command, gh *update.Client, install *update.Ins
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "updated to %s\n", tag)
+
+	// Ensure the git-kit alias exists next to the upgraded binary, matching
+	// install.sh and the Homebrew cask. AtomicReplace swaps the binary in
+	// place, so a pre-existing symlink already follows it — but a fresh
+	// install.sh predating the alias, or a cp-based fallback link, would
+	// otherwise be left behind. Best-effort: a failed alias never fails the
+	// upgrade itself, which has already succeeded.
+	binName := filepath.Base(install.BinaryPath)
+	if alias := install.AliasName(); alias != "" {
+		if err := update.LinkAlias(install.Dir, binName, alias); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "note: could not link %s alias: %v\n", alias, err)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "linked %s → %s\n", alias, binName)
+		}
+	}
 	return nil
 }

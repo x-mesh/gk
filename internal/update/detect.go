@@ -81,6 +81,33 @@ func (i *Install) AssetName() string {
 	return fmt.Sprintf("gk_%s_%s.tar.gz", i.OS, i.Arch)
 }
 
+// AliasName returns the secondary command name to expose alongside the
+// running binary, mirroring install.sh's `git-kit` link and the cask's
+// `binary "gk", target: "git-kit"`. The suffix is preserved so a dev build
+// keeps its own namespace:
+//
+//	gk      → git-kit
+//	gk-dev  → git-kit-dev
+//
+// Returns "" when the binary name doesn't match the `gk[-suffix]` shape (e.g.
+// a user renamed the binary), in which case callers skip alias creation
+// rather than guess at an unrelated name.
+func (i *Install) AliasName() string {
+	return aliasFor(filepath.Base(i.BinaryPath))
+}
+
+// aliasFor maps a gk binary name to its git-kit counterpart, preserving any
+// suffix. Package-private so tests can exercise it without a full Install.
+func aliasFor(binName string) string {
+	if binName == "gk" {
+		return "git-kit"
+	}
+	if suffix, ok := strings.CutPrefix(binName, "gk-"); ok && suffix != "" {
+		return "git-kit-" + suffix
+	}
+	return ""
+}
+
 // brewPrefixes lists path prefixes that, when a binary's resolved location
 // lies underneath, identify the install as Homebrew-managed. Covers the
 // three Homebrew layouts we expect to encounter:

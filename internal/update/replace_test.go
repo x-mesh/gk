@@ -88,6 +88,58 @@ func TestPickStagingDir(t *testing.T) {
 	}
 }
 
+func TestLinkAlias(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gk"), []byte("BIN"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LinkAlias(dir, "gk", "git-kit"); err != nil {
+		t.Fatalf("LinkAlias: %v", err)
+	}
+
+	alias := filepath.Join(dir, "git-kit")
+	// The link must be relative (target "gk", not an absolute path) so it
+	// survives the bin dir being relocated.
+	if target, err := os.Readlink(alias); err != nil {
+		t.Fatalf("alias is not a symlink: %v", err)
+	} else if target != "gk" {
+		t.Errorf("alias target = %q, want relative %q", target, "gk")
+	}
+	// And it must resolve to the real binary's bytes.
+	if got, err := os.ReadFile(alias); err != nil {
+		t.Fatalf("read through alias: %v", err)
+	} else if string(got) != "BIN" {
+		t.Errorf("alias resolves to %q, want BIN", got)
+	}
+}
+
+func TestLinkAliasReplacesStale(t *testing.T) {
+	// A pre-existing alias — here a plain copy, as install.sh's cp fallback
+	// would leave — must be replaced by a fresh symlink, not left stale.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gk"), []byte("NEW"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "git-kit"), []byte("OLD-COPY"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LinkAlias(dir, "gk", "git-kit"); err != nil {
+		t.Fatalf("LinkAlias: %v", err)
+	}
+
+	alias := filepath.Join(dir, "git-kit")
+	if target, err := os.Readlink(alias); err != nil {
+		t.Fatalf("stale copy was not replaced by a symlink: %v", err)
+	} else if target != "gk" {
+		t.Errorf("alias target = %q, want %q", target, "gk")
+	}
+	if got, _ := os.ReadFile(alias); string(got) != "NEW" {
+		t.Errorf("alias resolves to %q, want NEW", got)
+	}
+}
+
 func TestAtomicReplaceWithSudoFastPath(t *testing.T) {
 	// Confirms the writable-dir fast path bypasses sudo entirely; we set up
 	// a writable temp dir so sudo is never invoked and the test is hermetic.

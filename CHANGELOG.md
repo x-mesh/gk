@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **agents 규약 v6 — 명령 표기를 `gk`에서 `git-kit`으로 통일.** 에이전트 셸에서는 `gk`가 별칭에 가려지는 일이 흔해(oh-my-zsh가 `gk`를 gitk로 매핑) 같은 바이너리의 별칭-안전 이름인 `git-kit`을 규약 전반에 명시했다. 규약 서두에 그 이유를 한 줄로 못 박아 에이전트가 `gk`로 되돌아가지 않게 한다. `gk agents install`로 재설치하면 갱신된다.
+
 ## [0.79.0] - 2026-06-10
 
 ### Added

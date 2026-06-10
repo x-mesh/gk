@@ -4,6 +4,11 @@ BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
 # Override via `make install INSTALL_NAME=gk` to replace both.
 INSTALL_NAME ?= gk-dev
+# git-kit alias name, derived from INSTALL_NAME so the dev build keeps its own
+# namespace instead of claiming the bare `git-kit` the Homebrew build owns:
+#   gk → git-kit,  gk-dev → git-kit-dev
+# (verified on GNU make 3.81: the `%` stem matches the empty suffix too).
+ALT_NAME     := $(INSTALL_NAME:gk%=git-kit%)
 LDFLAGS := -s -w \
 	-X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) \
 	-X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo none) \
@@ -19,13 +24,14 @@ build:
 install: build
 	install -d $(BINDIR)
 	install -m 755 bin/$(BINARY) $(BINDIR)/$(INSTALL_NAME)
-	@# Mirror the release layout: when installing under the canonical `gk`
-	@# name, also expose it as `git-kit` (works where `gk` is alias-shadowed,
-	@# and lets `git kit …` resolve as a git subcommand). The default dev
-	@# install (gk-dev) deliberately skips this so it never claims the
-	@# `git-kit` name the Homebrew build owns.
-	@if [ "$(INSTALL_NAME)" = "gk" ]; then \
-		ln -sf gk $(BINDIR)/git-kit && echo "installed: $(BINDIR)/gk (also as git-kit)"; \
+	@# Mirror the release layout (install.sh + the Homebrew cask both ship a
+	@# git-kit alias): expose the binary under its alias too — git-kit for
+	@# `gk`, git-kit-dev for `gk-dev`. The suffix is preserved so the dev
+	@# install never claims the bare `git-kit` name the Homebrew build owns,
+	@# while still being reachable where `gk` is alias-shadowed (oh-my-zsh
+	@# maps gk→gitk). A relative symlink stays valid if BINDIR is moved.
+	@if [ "$(ALT_NAME)" != "$(INSTALL_NAME)" ]; then \
+		ln -sf $(INSTALL_NAME) $(BINDIR)/$(ALT_NAME) && echo "installed: $(BINDIR)/$(INSTALL_NAME) (also as $(ALT_NAME))"; \
 	else \
 		echo "installed: $(BINDIR)/$(INSTALL_NAME)"; \
 	fi
@@ -40,7 +46,7 @@ install-gk:
 
 uninstall:
 	rm -f $(BINDIR)/$(INSTALL_NAME)
-	@if [ "$(INSTALL_NAME)" = "gk" ]; then rm -f $(BINDIR)/git-kit; fi
+	@if [ "$(ALT_NAME)" != "$(INSTALL_NAME)" ]; then rm -f $(BINDIR)/$(ALT_NAME); fi
 	@echo "removed:   $(BINDIR)/$(INSTALL_NAME)"
 
 uninstall-gk:
@@ -106,10 +112,10 @@ help:
 	@echo "  test-integration  integration tests (privacy gate + fallback chain e2e)"
 	@echo "  test-e2e          end-to-end tests driving the built gk binary (-tags e2e)"
 	@echo ""
-	@echo "  install           writes $(BINDIR)/$(INSTALL_NAME)  (safe default: gk-dev)"
-	@echo "  install-gk        writes $(BINDIR)/gk + git-kit    (use the dev build AS gk)"
-	@echo "  uninstall         remove $(BINDIR)/$(INSTALL_NAME)"
-	@echo "  uninstall-gk      remove $(BINDIR)/gk"
+	@echo "  install           writes $(BINDIR)/$(INSTALL_NAME) + $(ALT_NAME)  (safe default: gk-dev/git-kit-dev)"
+	@echo "  install-gk        writes $(BINDIR)/gk + git-kit              (use the dev build AS gk)"
+	@echo "  uninstall         remove $(BINDIR)/$(INSTALL_NAME) + $(ALT_NAME)"
+	@echo "  uninstall-gk      remove $(BINDIR)/gk + git-kit"
 	@echo ""
 	@echo "  default install keeps the Homebrew 'gk' in /opt/homebrew/bin untouched."
 	@echo "  install-gk overrides it (assuming \$$PATH puts ~/.local/bin first)."

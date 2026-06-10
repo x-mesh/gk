@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-06-11
+
 ### Added
 
 - **`gk batch` — gk 명령 시퀀스를 JSON 계획 하나로 실행.** stdin(`--plan -`)이나 파일로 `{"steps":[{"args":["pull","--with-base"]},{"args":["push"]}]}` 계획을 받아 하위 명령을 자식 gk 프로세스로 순차 실행한다 — 에이전트의 N턴 워크플로우가 1콜이 된다. 스텝별 `on_failure: abort(기본)|continue`를 고를 수 있고, 게이팅 실패 시 잔여 스텝을 skipped로 채워 `failed_step`/`resume`과 함께 보고한다(land와 같은 계약, agent 모드에서 stdout은 결과 문서만). 충돌로 일시정지한 자식(exit 3)은 continue 정책이라도 계획을 멈춘다 — 미해결 pause 위에 다음 스텝을 쌓지 않는다. 검증은 실행 전 일괄로: 미지 하위 명령, 중첩 batch, flag로 시작하는 args, 20스텝 초과를 거부한다. `--plan-template`이 초안을, `--dry-run`이 실행 없는 미리보기를 낸다.

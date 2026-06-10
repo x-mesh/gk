@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-06-10
+
 ### Added
 
 - **`gk pull --with-base` — base 브랜치까지 한 번에 동기화.** develop에서 pull하면서 로컬 main 같은 base 브랜치를 checkout 없이 원격 끝으로 fast-forward한다(`pull.with_base: true`로 상시 활성, `--with-base=false`로 일회성 해제). 엄격히 FF만 수행: base가 분기됐거나, 다른 worktree에 체크아웃돼 있거나, 로컬에 없으면 자동 처리 대신 NOTE로 건너뛴다 — 로컬 커밋 유실이 구조적으로 불가능하다. 여러 머신을 오가는 아침 동기화가 `gk pull` 한 번으로 끝난다.

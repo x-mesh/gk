@@ -7,6 +7,16 @@ description: Release workflow for gk — thin layer over `gk ship`. Ship plans (
 
 The goal is a green GitHub Release page **AND** an updated `x-mesh/homebrew-tap/Casks/gk.rb`. The deterministic half of that — preflight checks, version inference, CHANGELOG promotion, release commit, tag, push, CI watch, artifact verification — is **all owned by `gk ship`** (configured in `.gk.yaml` under `preflight:` and `ship:`). This skill adds only what needs judgment: CHANGELOG prose, docs sync, the single confirm gate, and failure diagnosis.
 
+## Binary resolution (do this first)
+
+Never call bare `gk` or the installed `gk-dev` in this skill — PATH holds the *previous* release, which may lack the ship features this flow depends on, and a release must be driven by the code it releases. Build the workspace binary once and use it for **every** command below (`commit -f` included):
+
+```bash
+go build -o bin/gk ./cmd/gk
+```
+
+Every `gk ...` in this document means `./bin/gk ...`.
+
 ## Operating principle
 
 **Ship plans, you polish, one gate, ship executes.** Never reimplement what ship does — no manual tag/push/watch bash. If ship's plan looks wrong, fix the input (CHANGELOG, config, flags), not the pipeline.
@@ -16,10 +26,10 @@ Works from `develop` directly: ship fast-forwards `main` and releases from it (s
 ## Phase 1 — PLAN (one command)
 
 ```bash
-gk ship --dry-run --json        # add patch|minor|major / --version X.Y.Z if the user overrode
+./bin/gk ship --dry-run --json        # add patch|minor|major / --version X.Y.Z if the user overrode
 ```
 
-Uncommitted work? Commit it first (`gk commit -f` or ask the user) — ship requires a clean tree, and the release range must contain the work. Then re-run the plan.
+Uncommitted work? Commit it first (`./bin/gk commit -f` or ask the user) — ship requires a clean tree, and the release range must contain the work. Then re-run the plan.
 
 Parse the JSON: `branch`, `base`, `merge_to_base`, `latest_tag` → `next_tag` (`bump`, `bump_downgraded_0x`), `commit_count`, `changelog` + `changelog_draft`, `preflight`/`watch`/`verify` step lists. If the user passed `patch|minor|major|X.Y.Z`, forward it to both this dry-run and the final run.
 
@@ -38,7 +48,7 @@ Show in markdown: `latest_tag → next_tag` (+bump reason, 0.x downgrade note if
 ## Phase 4 — EXECUTE (one command)
 
 ```bash
-gk ship -y                      # forward any version override the user chose
+./bin/gk ship -y                      # forward any version override the user chose
 ```
 
 Ship runs everything: preflight (lint, race tests, goreleaser check) → release commit → base fast-forward → tag → push → `ship.watch` (blocks on the GitHub Actions run) → `ship.verify` (tag on remote, tap cask version, CDN checksums). "Ship complete" means the tap is verified — there is no separate verify phase.

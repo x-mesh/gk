@@ -681,7 +681,7 @@ func renderStashSummary(ctx context.Context, runner *git.ExecRunner) string {
 func renderStatusLegend(w io.Writer, vis []string) {
 	faint := color.New(color.Faint).SprintFunc()
 	bold := color.New(color.Bold).SprintFunc()
-	fmt.Fprintln(w, bold("gk status vocabulary"))
+	fmt.Fprintln(w, bold(selfRewrite("gk status vocabulary")))
 
 	enabled := func(name string) bool {
 		for _, v := range vis {

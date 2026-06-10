@@ -54,11 +54,18 @@ func FormatErrorJSON(err error) string {
 	if err == nil {
 		return ""
 	}
+	// Remedies and hints are command suggestions — rebrand them to the
+	// invoked name so the caller can execute them verbatim. The message
+	// is left alone: it may quote repository content.
+	remedies := RemediesFrom(err)
+	for i := range remedies {
+		remedies[i].Command = selfRewrite(remedies[i].Command)
+	}
 	env := agentEnvelope{Schema: 1, OK: false, Error: &agentError{
 		Code:     errorCodeFromError(err),
 		Message:  err.Error(),
-		Hint:     HintFrom(err),
-		Remedies: RemediesFrom(err),
+		Hint:     selfRewrite(HintFrom(err)),
+		Remedies: remedies,
 	}}
 	b, merr := json.MarshalIndent(env, "", "  ")
 	if merr != nil {

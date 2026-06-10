@@ -589,14 +589,14 @@ func renderNoConflicts(w io.Writer, target string) {
 
 	if target != "" {
 		fmt.Fprintf(w, "예상 충돌 없음  %s\n", faint("("+target+"을 깨끗하게 머지할 수 있음)"))
-		fmt.Fprintf(w, "  %s %s\n", faint("머지 실행:"), bold("gk merge "+target))
-		fmt.Fprintf(w, "  %s %s\n", faint("변경 보기:"), bold("gk diff "+target)+faint("  (--conflicts 없이)"))
+		fmt.Fprintf(w, "  %s %s\n", faint("머지 실행:"), bold(selfRewrite("gk merge "+target)))
+		fmt.Fprintf(w, "  %s %s\n", faint("변경 보기:"), bold(selfRewrite("gk diff "+target))+faint("  (--conflicts 없이)"))
 		return
 	}
 
 	fmt.Fprintf(w, "충돌 마커 없음  %s\n", faint("(working tree에 <<<<<<< / ======= / >>>>>>> 라인 없음)"))
-	fmt.Fprintf(w, "  %s %s\n", faint("상태 확인:"), bold("gk status"))
-	fmt.Fprintf(w, "  %s %s\n", faint("머지 중단:"), bold("gk merge --abort")+faint("  (머지 진행 중이라면)"))
+	fmt.Fprintf(w, "  %s %s\n", faint("상태 확인:"), bold(selfRewrite("gk status")))
+	fmt.Fprintf(w, "  %s %s\n", faint("머지 중단:"), bold(selfRewrite("gk merge --abort"))+faint("  (머지 진행 중이라면)"))
 }
 
 // renderDiffNoChanges prints a context-aware "no changes" banner when
@@ -631,14 +631,14 @@ func renderDiffNoChanges(w io.Writer, ctx context.Context, runner git.Runner, st
 			fmt.Fprintf(w, "  %s staged 변경 %s — %s\n",
 				faint("hint:"),
 				bold(fmt.Sprintf("%d 파일", n)),
-				bold("gk diff --staged"))
+				bold(selfRewrite("gk diff --staged")))
 		}
 	case "staged":
 		// User compared index ↔ HEAD. Are there unstaged changes?
 		if hasUnstagedChanges(ctx, runner) {
 			fmt.Fprintf(w, "  %s unstaged 변경 있음 — %s\n",
 				faint("hint:"),
-				bold("gk diff"))
+				bold(selfRewrite("gk diff")))
 		}
 	}
 
@@ -646,9 +646,9 @@ func renderDiffNoChanges(w io.Writer, ctx context.Context, runner git.Runner, st
 	// nothing, so first-time users learn the comparison vocabulary.
 	fmt.Fprintf(w, "  %s %s\n",
 		faint("또는:"),
-		bold("gk diff HEAD")+"     "+faint("(staged + unstaged 합쳐서)"))
+		bold(selfRewrite("gk diff HEAD"))+"     "+faint("(staged + unstaged 합쳐서)"))
 	fmt.Fprintf(w, "        %s\n",
-		bold("gk diff <ref>")+"   "+faint("(다른 commit/branch와 비교)"))
+		bold(selfRewrite("gk diff <ref>"))+"   "+faint("(다른 commit/branch와 비교)"))
 }
 
 // diffComparisonLabel returns (scopeKey, humanLabel) describing which

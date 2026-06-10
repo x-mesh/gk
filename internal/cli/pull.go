@@ -165,7 +165,7 @@ func emitPullConflictJSON(cmd *cobra.Command, dir string) {
 	}
 	res := pullResultJSON{
 		Result:   "conflict",
-		Conflict: &pullConflictJSON{Files: files, Resume: "gk continue", Abort: "gk abort"},
+		Conflict: &pullConflictJSON{Files: files, Resume: selfCmd("continue"), Abort: selfCmd("abort")},
 	}
 	if cur, err := git.NewClient(runner).CurrentBranch(ctx); err == nil {
 		res.Branch = cur
@@ -1075,20 +1075,20 @@ func printPullBlockedByState(w io.Writer, ctx context.Context, client *git.Clien
 	// because the body itself is the call to action.
 	resolveBody := []string{
 		"1. fix conflict markers — pick one:",
-		"     " + bold("gk resolve") + "             " + faint("AI-assisted (preview with --dry-run)"),
-		"     " + bold("gk resolve --strategy ours") + "   " + faint("take HEAD across all conflicts"),
-		"     " + bold("gk resolve --strategy theirs") + " " + faint("take incoming across all conflicts"),
+		"     " + bold(selfRewrite("gk resolve")) + "             " + faint("AI-assisted (preview with --dry-run)"),
+		"     " + bold(selfRewrite("gk resolve --strategy ours")) + "   " + faint("take HEAD across all conflicts"),
+		"     " + bold(selfRewrite("gk resolve --strategy theirs")) + " " + faint("take incoming across all conflicts"),
 		"     " + faint("manual:") + "            " + faint("edit each file, then "+bold("git add <file>")),
 	}
 	if kind == gitstate.StateRebaseMerge || kind == gitstate.StateRebaseApply {
 		resolveBody = append(resolveBody,
-			"2. "+bold("gk continue")+"         "+faint("(finish the paused rebase)"),
-			"   "+bold("gk abort")+"            "+faint("(discard the rebase, return to pre-pull state)"),
+			"2. "+bold(selfRewrite("gk continue"))+"         "+faint("(finish the paused rebase)"),
+			"   "+bold(selfRewrite("gk abort"))+"            "+faint("(discard the rebase, return to pre-pull state)"),
 		)
 	} else {
 		resolveBody = append(resolveBody,
-			"2. "+bold("gk continue")+"         "+faint("(complete the paused operation)"),
-			"   "+bold("gk abort")+"            "+faint("(discard it)"),
+			"2. "+bold(selfRewrite("gk continue"))+"         "+faint("(complete the paused operation)"),
+			"   "+bold(selfRewrite("gk abort"))+"            "+faint("(discard it)"),
 		)
 	}
 	resolveBody = append(resolveBody, "", faint("then re-run `gk pull`."))
@@ -1194,20 +1194,20 @@ func printIntegrationConflict(w io.Writer, ctx context.Context, client *git.Clie
 	// ANSI escapes).
 	resolveBody := []string{
 		"1. fix conflict markers — pick one:",
-		"     " + bold("gk resolve") + "             " + faint("AI-assisted (preview with --dry-run)"),
-		"     " + bold("gk resolve --strategy ours") + "   " + faint("take HEAD across all conflicts"),
-		"     " + bold("gk resolve --strategy theirs") + " " + faint("take incoming across all conflicts"),
+		"     " + bold(selfRewrite("gk resolve")) + "             " + faint("AI-assisted (preview with --dry-run)"),
+		"     " + bold(selfRewrite("gk resolve --strategy ours")) + "   " + faint("take HEAD across all conflicts"),
+		"     " + bold(selfRewrite("gk resolve --strategy theirs")) + " " + faint("take incoming across all conflicts"),
 		"     " + faint("manual:") + "            " + faint("edit each file, remove "+bold("<<<<<<<")+" / "+bold("=======")+" / "+bold(">>>>>>>")+" markers, then "+bold("git add <file>")),
 	}
 	if mode == "rebase" {
 		resolveBody = append(resolveBody,
-			"2. "+bold("gk continue")+"         "+faint("(finish this commit, proceed to next pick)"),
-			"   "+bold("gk abort")+"            "+faint("(give up rebase, return to pre-pull state)"),
+			"2. "+bold(selfRewrite("gk continue"))+"         "+faint("(finish this commit, proceed to next pick)"),
+			"   "+bold(selfRewrite("gk abort"))+"            "+faint("(give up rebase, return to pre-pull state)"),
 		)
 	} else {
 		resolveBody = append(resolveBody,
-			"2. "+bold("gk continue")+"         "+faint("(create the merge commit)"),
-			"   "+bold("gk abort")+"            "+faint("(discard the merge attempt)"),
+			"2. "+bold(selfRewrite("gk continue"))+"         "+faint("(create the merge commit)"),
+			"   "+bold(selfRewrite("gk abort"))+"            "+faint("(discard the merge attempt)"),
 		)
 	}
 	fmt.Fprint(w, ui.RenderSection("resolve", "", resolveBody, ui.SectionOpts{

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **agents 규약 v6 — 명령 표기를 `gk`에서 `git-kit`으로 통일.** 에이전트 셸에서는 `gk`가 별칭에 가려지는 일이 흔해(oh-my-zsh가 `gk`를 gitk로 매핑) 같은 바이너리의 별칭-안전 이름인 `git-kit`을 규약 전반에 명시했다. 규약 서두에 그 이유를 한 줄로 못 박아 에이전트가 `gk`로 되돌아가지 않게 한다. `gk agents install`로 재설치하면 갱신된다.
+- **hint·remedy·계약 필드의 명령 표기가 호출된 이름을 따라간다.** `git-kit pull`로 호출하면 에러 envelope의 `remedies[].command`·`hint`, 충돌 계약의 `resume`/`abort`, `gk context`의 `next_actions`, 사람용 HINT 블록과 충돌 안내까지 전부 `git-kit continue` 형태로 나온다 — 에이전트가 받은 remedy를 그대로 복사 실행해도 별칭 함정을 밟지 않는다. `gk`로 호출하면 기존과 동일(공백 비용), `gk-dev` 같은 개발 바이너리도 자기 이름을 따른다. 적용 범위는 **명령 제안 표면**뿐이다: `--help`·guide 같은 문서 표면은 정식 이름 `gk`를 유지하고, log/digest가 인용하는 저장소 데이터(커밋 제목 등)는 절대 재작성하지 않는다.
 
 ## [0.79.0] - 2026-06-10
 

@@ -50,6 +50,7 @@ func successLinef(verb, format string, args ...any) string {
 // All color routes through the cell_color helpers, so NoColor/CI
 // captures degrade cleanly to plain text.
 func stylizeHintLine(line string) string {
+	line = selfRewrite(line)
 	for _, prefix := range []string{"next: ", "also: ", "hint: ", "try: "} {
 		if !strings.HasPrefix(line, prefix) {
 			continue
@@ -163,6 +164,7 @@ func stylizeHintLabel(label string) string {
 // dimmed; runnable command lines are cyan. Leading whitespace is
 // preserved so column alignment with the label survives.
 func stylizeHintCommand(line string) string {
+	line = selfRewrite(line)
 	trimmed := strings.TrimLeft(line, " \t")
 	if trimmed == "" {
 		return line
@@ -181,7 +183,7 @@ func stylizeHintCommand(line string) string {
 // shell command — the heuristic is intentionally tight to avoid
 // repainting prose ("uncomment rules, then run …").
 func looksLikeCommand(body string) bool {
-	for _, prefix := range []string{"gk ", "git ", "brew ", "go ", "npm ", "echo ", "rm ", "cd "} {
+	for _, prefix := range []string{"gk ", invokedName() + " ", "git ", "git-kit ", "brew ", "go ", "npm ", "echo ", "rm ", "cd "} {
 		if strings.HasPrefix(body, prefix) {
 			return true
 		}

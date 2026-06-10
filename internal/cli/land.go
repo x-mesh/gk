@@ -175,7 +175,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 		if stepErr != nil {
 			res.Result = "failed"
 			res.FailedStep = s.name
-			res.Resume = s.resume
+			res.Resume = selfRewrite(s.resume)
 			res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: "failed", Detail: stepErr.Error()})
 			if jsonMode {
 				_ = emitAgentResult(cmd.OutOrStdout(), res)

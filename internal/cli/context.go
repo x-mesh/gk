@@ -122,7 +122,7 @@ func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 
 	if st, derr := gitstate.Detect(ctx, RepoFlag()); derr == nil && st.Kind != gitstate.StateNone {
 		if op := inProgressOp(st); op != "" {
-			out.InProgress = &contextOpJSON{Kind: op, Resume: "gk continue", Abort: "gk abort"}
+			out.InProgress = &contextOpJSON{Kind: op, Resume: selfCmd("continue"), Abort: selfCmd("abort")}
 		}
 	}
 
@@ -227,24 +227,24 @@ func contextNextActions(c contextJSON) []string {
 	switch {
 	case c.InProgress != nil:
 		if c.Dirty.Conflicts > 0 {
-			actions = append(actions, "gk resolve --ai")
+			actions = append(actions, selfCmd("resolve --ai"))
 		}
 		actions = append(actions, c.InProgress.Resume, c.InProgress.Abort)
 		return actions
 	case c.Dirty.Conflicts > 0:
-		return append(actions, "gk resolve --ai", "gk continue")
+		return append(actions, selfCmd("resolve --ai"), selfCmd("continue"))
 	}
 	if c.Dirty.Staged+c.Dirty.Unstaged+c.Dirty.Untracked > 0 {
-		actions = append(actions, "gk commit")
+		actions = append(actions, selfCmd("commit"))
 	}
 	if c.Behind > 0 {
-		actions = append(actions, "gk pull")
+		actions = append(actions, selfCmd("pull"))
 	}
 	if c.Ahead > 0 {
-		actions = append(actions, "gk push")
+		actions = append(actions, selfCmd("push"))
 	}
 	if c.Base != nil && c.Base.BehindRemote > 0 {
-		actions = append(actions, "gk pull --with-base")
+		actions = append(actions, selfCmd("pull --with-base"))
 	}
 	return actions
 }

@@ -124,13 +124,13 @@ func FormatError(err error) string {
 		// "→ gk 변경사항 저장 (commit)" because \bcommit\b matches the
 		// command token in the already-translated string).
 		translated := eng.TranslateTerms(err.Error())
-		hint := HintFrom(err)
+		hint := selfRewrite(HintFrom(err))
 		return fmtr.FormatError(fmt.Errorf("%s", translated), hint)
 	}
 
 	prefix := color.New(color.FgRed, color.Bold).Sprint("gk:")
 	out := prefix + " " + err.Error()
-	if h := HintFrom(err); h != "" {
+	if h := selfRewrite(HintFrom(err)); h != "" {
 		// Render the remediation as a branded HINT block (same chrome as
 		// NOTE advisories) so gk's guidance is visually attributable to gk
 		// even when the error line above quotes raw git output.

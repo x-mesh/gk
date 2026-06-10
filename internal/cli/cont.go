@@ -121,18 +121,18 @@ func printContinueUnresolved(w *os.File, sub string, files []string, client *git
 	fmt.Fprintln(w, "  resolve:")
 	fmt.Fprintf(w, "    1. fix conflict markers — pick one:\n")
 	fmt.Fprintf(w, "         %s             %s\n",
-		bold("gk resolve"), faint("AI-assisted (preview with --dry-run)"))
+		bold(selfRewrite("gk resolve")), faint("AI-assisted (preview with --dry-run)"))
 	fmt.Fprintf(w, "         %s   %s\n",
-		bold("gk resolve --strategy ours"), faint("take HEAD across all conflicts"))
+		bold(selfRewrite("gk resolve --strategy ours")), faint("take HEAD across all conflicts"))
 	fmt.Fprintf(w, "         %s %s\n",
-		bold("gk resolve --strategy theirs"), faint("take incoming across all conflicts"))
+		bold(selfRewrite("gk resolve --strategy theirs")), faint("take incoming across all conflicts"))
 	fmt.Fprintf(w, "         %s            %s\n",
 		faint("manual:"),
 		faint("edit each file, then "+bold("git add <file>")))
 	fmt.Fprintf(w, "    2. %s         %s\n",
-		bold("gk continue"), faint("(retry — this command)"))
+		bold(selfRewrite("gk continue")), faint("(retry — this command)"))
 	fmt.Fprintf(w, "       %s            %s\n",
-		bold("gk abort"), faint("(give up and return to pre-pull state)"))
+		bold(selfRewrite("gk abort")), faint("(give up and return to pre-pull state)"))
 
 	if branch, err := client.CurrentBranch(ctx); err == nil && branch != "" {
 		if ref := client.LatestBackupRef(ctx, branch); ref != "" {

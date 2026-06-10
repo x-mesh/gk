@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-06-10
+
 ### Added
 
 - **`gk forget` 내장 히스토리 재작성 엔진 — 이제 filter-repo 설치 없이 동작(기본값).** `git fast-export --no-data` 스트림을 gk가 직접 파싱·필터링해 `git fast-import`로 재구축한다 — 경로 제거 슬라이스 전용. 엔진 선택은 `--engine native|filter-repo` 또는 `.gk.yaml`의 `forget.engine`(플래그 우선, 기본 native; `gk config set forget.engine filter-repo`로 상시 전환). 빈 커밋 prune은 "필터된 delta가 비면 트리가 first parent와 같다"는 불변식 위에서만 일어나고(대체 커밋은 항상 first parent — `merge -s ours` 토폴로지에서 내용이 바뀌는 함정 차단), 전부 .xm류만 만지던 사이드 브랜치의 merge는 filter-repo와 동일한 규칙으로 붕괴·prune된다(내용 있는 merge는 redundant/중복 parent까지 그대로 유지). 검증은 differential testing으로: 12개 토폴로지(선형/루트 prune/merge 붕괴/evil merge/`-s ours`/동일 parent/태그 재지정/유니코드 경로/다중 브랜치)에서 filter-repo와 **브랜치·태그 SHA가 바이트 단위로 동일**함을 테스트로 고정했다. shallow clone과 refs/replace는 거부하고 명확한 에러로 위임 엔진을 안내한다. v1 미지원: 커밋 메시지 안의 SHA 참조 재작성.

@@ -100,17 +100,36 @@ func ClearAlreadyRanMarker(gitDir string) {
 // after the user already typed `yes`. gitDir is used to clear a stale
 // continuation marker first (see ClearAlreadyRanMarker).
 //
-// Stdout/stderr are streamed to the provided runner so the user sees
-// filter-repo's progress output verbatim.
+// The rewrite is limited to the enumerated branches and tags via --refs.
+// Without it, filter-repo exports --all: gk's own refs/gk/forget-backup/*
+// refs get rewritten to the NEW history and the post-run gc prunes the
+// old objects — which silently turns the printed rollback instruction
+// into a lie. The --refs form leaves refs/gk/* and refs/remotes/*
+// untouched and skips the aggressive gc, so pre-rewrite objects stay
+// reachable through the backup refs (verified SHA-identical to the full
+// rewrite for branch/tag results).
 func RunFilterRepo(ctx context.Context, repoDir, gitDir string, paths []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("no paths to forget")
 	}
 	ClearAlreadyRanMarker(gitDir)
+
+	runner := &git.ExecRunner{Dir: repoDir}
+	refsOut, _, err := runner.Run(ctx, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags")
+	if err != nil {
+		return fmt.Errorf("enumerate refs: %w", err)
+	}
+	refs := strings.Fields(strings.TrimSpace(string(refsOut)))
+	if len(refs) == 0 {
+		return fmt.Errorf("no branches or tags to rewrite")
+	}
+
 	args := []string{"filter-repo", "--invert-paths", "--force"}
 	for _, p := range paths {
 		args = append(args, "--path", p)
 	}
+	args = append(args, "--refs")
+	args = append(args, refs...)
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // user-driven history rewrite
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()

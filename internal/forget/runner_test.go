@@ -149,3 +149,44 @@ func TestRunFilterRepoClearsStaleMarker(t *testing.T) {
 		t.Errorf("keep.txt lost from history:\n%s", out)
 	}
 }
+
+// Locks in the rollback guarantee for the DELEGATED engine: filter-repo
+// must not rewrite gk's backup refs nor prune the pre-rewrite objects.
+// Without the --refs limiting in RunFilterRepo, both happen (observed in
+// the field: backup ref re-pointed at the new history, old objects gc'd,
+// manifest rollback dead).
+func TestRunFilterRepoPreservesBackupRefsAndOldObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	if _, err := exec.LookPath("git-filter-repo"); err != nil {
+		t.Skip("git-filter-repo not installed")
+	}
+	r := testutil.NewRepo(t)
+	r.WriteFile("secret/creds.txt", "oops\n")
+	r.Commit("add secret")
+	r.WriteFile("keep.txt", "fine\n")
+	r.Commit("add keep")
+
+	oldTip := r.RunGit("rev-parse", "HEAD")
+	r.RunGit("update-ref", "refs/gk/forget-backup/main/1", oldTip)
+
+	if err := RunFilterRepo(context.Background(), r.Dir, r.GitDir, []string{"secret/"}); err != nil {
+		t.Fatalf("RunFilterRepo: %v", err)
+	}
+	if got := r.RunGit("rev-parse", "refs/gk/forget-backup/main/1"); got != oldTip {
+		t.Errorf("backup ref rewritten: %s, want %s", got, oldTip)
+	}
+	r.RunGit("cat-file", "-e", oldTip) // old objects must survive (no gc)
+	if got := r.RunGit("rev-parse", "main"); got == oldTip {
+		t.Error("main was not rewritten")
+	}
+	if hist := r.RunGit("log", "--name-only", "--format=", "main"); strings.Contains(hist, "secret/") {
+		t.Errorf("secret/ still in main history:\n%s", hist)
+	}
+	// rollback round-trip: restore the manifest ref and read the old file
+	r.RunGit("update-ref", "refs/heads/main", oldTip)
+	if got := r.RunGit("show", "main:secret/creds.txt"); got != "oops" {
+		t.Errorf("rollback content = %q", got)
+	}
+}

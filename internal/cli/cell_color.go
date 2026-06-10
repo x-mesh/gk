@@ -73,6 +73,13 @@ func cellGreenBold(s string) string {
 	return ansiBold + ansiFgGreen + s + ansiResetFg + ansiResetBold
 }
 
+func cellCyanBold(s string) string {
+	if colorOff() {
+		return s
+	}
+	return ansiBold + ansiFgCyan + s + ansiResetFg + ansiResetBold
+}
+
 func cellFaint(s string) string {
 	if colorOff() {
 		return s

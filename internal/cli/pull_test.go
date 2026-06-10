@@ -521,7 +521,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only")
+	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only", "")
 
 	got := buf.String()
 	if !strings.Contains(got, "already up to date at abc1234") {
@@ -532,7 +532,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 func TestRenderPullSummary_EmptyRefsStaySilent(t *testing.T) {
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "ff-only")
+	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "ff-only", "")
 	if buf.Len() != 0 {
 		t.Errorf("expected silence when pre is empty, got %q", buf.String())
 	}
@@ -560,7 +560,7 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, r, "deadbee0", "facef00", "rebase")
+	renderPullSummary(cmd, r, "deadbee0", "facef00", "rebase", "")
 
 	got := buf.String()
 	for _, want := range []string{

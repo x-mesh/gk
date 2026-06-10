@@ -126,6 +126,7 @@ func pullCoreCmd(t *testing.T, dir string) *cobra.Command {
 	cmd.Flags().Bool("fetch-only", false, "")
 	cmd.Flags().Bool("no-rebase", false, "")
 	cmd.Flags().Bool("autostash", false, "")
+	cmd.Flags().Bool("with-base", false, "")
 	cmd.Flags().CountVarP(&pullVerbose, "verbose", "v", "")
 	cmd.SetContext(context.Background())
 	return cmd

@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,48 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
+
+// Broken-config warnings are deduped per file per process: Load runs several
+// times per invocation (command body, EasyEngine, …) and the user needs the
+// diagnosis once, not once per layer read.
+var (
+	configWarnMu     sync.Mutex
+	configWarnSeen             = map[string]bool{}
+	configWarnWriter io.Writer = os.Stderr
+)
+
+// warnBrokenConfig surfaces a config-layer failure to the user and lets Load
+// continue with the remaining layers. The old behavior — aborting Load with a
+// nil *Config — both hid the mistake (most call sites read `cfg, _ :=`) and
+// crashed the ones that dereferenced the nil. yaml's own error text already
+// names duplicate keys and line numbers, so it is passed through verbatim.
+func warnBrokenConfig(source string, err error) {
+	configWarnMu.Lock()
+	defer configWarnMu.Unlock()
+	if configWarnSeen[source] {
+		return
+	}
+	configWarnSeen[source] = true
+	fmt.Fprintf(configWarnWriter,
+		"gk: config error in %s: %v\n    this layer is ignored — fix it, then verify with `gk config doctor`\n",
+		source, err)
+}
+
+// SetConfigWarnWriter redirects broken-config warnings (default os.Stderr)
+// and clears the dedupe set; returns a restore func. Test hook.
+func SetConfigWarnWriter(w io.Writer) func() {
+	configWarnMu.Lock()
+	defer configWarnMu.Unlock()
+	prev := configWarnWriter
+	configWarnWriter = w
+	configWarnSeen = map[string]bool{}
+	return func() {
+		configWarnMu.Lock()
+		defer configWarnMu.Unlock()
+		configWarnWriter = prev
+		configWarnSeen = map[string]bool{}
+	}
+}
 
 // reservedConfigSections names the top-level Config keys that decode into
 // a struct/map. A CLI flag can never represent a whole section, so flags
@@ -25,6 +69,7 @@ var reservedConfigSections = map[string]bool{
 	"commit":    true,
 	"push":      true,
 	"pull":      true,
+	"ship":      true,
 	"sync":      true,
 	"refresh":   true,
 	"preflight": true,
@@ -104,11 +149,14 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetConfigType("yaml")
 	v.AddConfigPath(globalDir)
 	// ReadInConfig returns an error when the file does not exist; ignore that.
+	// A real parse error (duplicate keys, bad indentation, …) must not abort
+	// the whole Load: warn once and continue with the remaining layers, so
+	// every command keeps working on defaults instead of panicking on the
+	// nil Config the old early-return produced.
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			// A real parse error — surface it.
 			if !isNoSuchFile(err) {
-				return nil, err
+				warnBrokenConfig(filepath.Join(globalDir, "config.yaml"), err)
 			}
 		}
 	}
@@ -135,8 +183,13 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			v2.SetConfigFile(localCfg)
 			if err2 := v2.ReadInConfig(); err2 == nil {
 				if mergeErr := v.MergeConfigMap(v2.AllSettings()); mergeErr != nil {
-					return nil, mergeErr
+					warnBrokenConfig(localCfg, mergeErr)
 				}
+			} else {
+				// Previously a broken .gk.yaml was skipped in silence —
+				// the user had no way to learn their repo config wasn't
+				// applying. Same degrade-and-warn policy as the global file.
+				warnBrokenConfig(localCfg, err2)
 			}
 		}
 	}
@@ -145,7 +198,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	gkMap, err := cachedReadGK()
 	if err == nil && len(gkMap) > 0 {
 		if mergeErr := v.MergeConfigMap(gkMap); mergeErr != nil {
-			return nil, mergeErr
+			warnBrokenConfig("git config gk.*", mergeErr)
 		}
 	}
 
@@ -178,14 +231,22 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			bindErr = v.BindPFlag(f.Name, f)
 		})
 		if bindErr != nil {
-			return nil, bindErr
+			fallback := Defaults()
+			return &fallback, bindErr
 		}
 	}
 
-	// Unmarshal into Config struct.
+	// Unmarshal into Config struct. On failure (e.g. a scalar where a
+	// section is expected) degrade to defaults rather than returning nil —
+	// `cfg, _ := config.Load(...)` call sites dereference the result.
 	cfg := Defaults()
 	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, err
+		warnBrokenConfig("config", err)
+		fallback := Defaults()
+		if fallback.AI.Lang == "" {
+			fallback.AI.Lang = fallback.Output.Lang
+		}
+		return &fallback, err
 	}
 
 	// When ai.lang is not explicitly configured, follow output.lang so that

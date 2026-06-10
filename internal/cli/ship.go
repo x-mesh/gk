@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -35,7 +36,17 @@ Shipping from a non-base branch (e.g. develop while base is main) fast-forwards
 the base to your branch's tip and releases from base — so the tag lands on base,
 not the feature branch. This only happens when the base can fast-forward; if the
 histories have diverged, ship stops and asks you to integrate first (gk sync) or
-pass --allow-non-base to tag the current branch in place instead.`,
+pass --allow-non-base to tag the current branch in place instead.
+
+Release pipeline (config ship:):
+  ship.watch runs after the tag push (blocking CI tracking, e.g. gh run watch);
+  ship.verify runs after watch (artifact/tap checks); ship.version_files lists
+  explicit version files, replacing auto-detection. All reuse the preflight
+  step shape. "Ship complete" prints only after every hook passes.
+
+When CHANGELOG.md's [Unreleased] is empty, ship drafts the section from the
+conventional commits in the release range and shows it in the plan for review.
+The global --json flag with --dry-run emits the whole plan as JSON for tooling.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runShip,
 	}
@@ -68,6 +79,10 @@ type shipFlags struct {
 	yes           bool
 	dryRun        bool
 	noFetch       bool
+	// jsonOut mirrors the global --json flag: with --dry-run it emits the
+	// machine-readable plan (the contract agent tooling consumes) instead
+	// of the human rendering.
+	jsonOut bool
 }
 
 type shipMode string
@@ -97,13 +112,31 @@ type shipPlan struct {
 	Bump        string
 	CommitCount int
 	RepoRoot    string
-	VersionFile string
-	Changelog   string
+	// VersionFiles lists every version file the release bumps — the
+	// ship.version_files config when set, else the single auto-detected
+	// file (VERSION / package.json / marketplace.json). Empty = tag-only.
+	VersionFiles []string
+	Changelog    string
+	// Preflight/Watch/Verify carry the configured pipeline steps so the
+	// plan (human render and --json) shows the whole release pipeline,
+	// not just the git half.
+	Preflight []config.PreflightStep
+	Watch     []config.PreflightStep
+	Verify    []config.PreflightStep
 	// MergeToBase is set when shipping from a non-base branch that can
 	// fast-forward Base: ship advances Base to Branch's tip and releases from
 	// Base instead of tagging the feature branch in place. False when on the
 	// base branch already, or when --allow-non-base tags the branch directly.
 	MergeToBase bool
+	// BumpDowngraded marks an inferred breaking-change bump that was held at
+	// minor because the latest tag is still 0.x (SemVer 0.x convention);
+	// rendered as a note so the user knows --major is the way to v1.
+	BumpDowngraded bool
+	// ChangelogDraft holds the commit-derived changelog body used when
+	// [Unreleased] is empty — shown in the plan for review and written under
+	// the new version section on execution. Empty means the user-written
+	// [Unreleased] body (or nothing) is promoted as before.
+	ChangelogDraft string
 }
 
 func runShip(cmd *cobra.Command, args []string) error {
@@ -138,6 +171,7 @@ func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
 	f.yes, _ = cmd.Flags().GetBool("yes")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.noFetch, _ = cmd.Flags().GetBool("no-fetch")
+	f.jsonOut = JSONOut()
 	if DryRun() {
 		f.dryRun = true
 	}
@@ -207,6 +241,21 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		renderShipStatus(deps.Out, plan)
 		return nil
 	}
+
+	// --json is a plan-output contract: it pairs with --dry-run so agent
+	// tooling can read the full pipeline before driving the real run with
+	// -y. Allowing it on a live run would interleave progress output with
+	// the JSON document, so refuse rather than emit something unparseable.
+	if flags.jsonOut {
+		if !flags.dryRun && flags.mode != shipModeDryRun {
+			return WithHint(
+				fmt.Errorf("ship: --json emits the release plan and requires --dry-run"),
+				hintCommand("gk ship --dry-run --json"),
+			)
+		}
+		return renderShipPlanJSON(deps.Out, plan, flags)
+	}
+
 	renderShipPlan(deps.Out, plan, flags)
 
 	if flags.dryRun || flags.mode == shipModeDryRun {
@@ -284,6 +333,17 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 
 	if flags.push {
 		if err := runShipPush(ctx, deps.Runner, deps.Out, deps.ErrOut, plan, flags); err != nil {
+			return err
+		}
+	}
+
+	// Post-release pipeline: watch (blocking CI tracking) then verify
+	// (artifact checks), both configured under `ship:`. Runs before the
+	// completion banner so "Ship complete" means the whole pipeline — not
+	// just the git half — succeeded. Only meaningful when the release tag
+	// actually reached the remote.
+	if !flags.noRelease && flags.push {
+		if err := runShipPostHooks(ctx, deps, plan); err != nil {
 			return err
 		}
 	}
@@ -391,8 +451,17 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 	}
 
 	bump := flags.bump
+	bumpDowngraded := false
 	if bump == "" {
 		bump = inferShipBump(commits)
+		// SemVer 0.x convention: breaking changes bump the minor, not the
+		// major. Graduating to v1.0.0 is a deliberate decision the user
+		// makes with --major / --version — never an inference from a "!:"
+		// commit.
+		if bump == "major" && strings.HasPrefix(latestTag, "v0.") {
+			bump = "minor"
+			bumpDowngraded = true
+		}
 	}
 
 	nextTag := ""
@@ -424,18 +493,49 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 	}
 
 	versionFile, changelog := detectShipReleaseFiles(repoRoot)
+
+	// ship.version_files overrides the auto-detection: an explicit list is
+	// the user's statement of every file that carries the version, so a
+	// missing entry should fail loudly later rather than fall back.
+	var versionFiles []string
+	if len(cfg.Ship.VersionFiles) > 0 {
+		for _, vf := range cfg.Ship.VersionFiles {
+			p := vf
+			if !filepath.IsAbs(p) && repoRoot != "" {
+				p = filepath.Join(repoRoot, vf)
+			}
+			versionFiles = append(versionFiles, p)
+		}
+	} else if versionFile != "" {
+		versionFiles = []string{versionFile}
+	}
+
+	// When the changelog has an empty [Unreleased] section, draft one from
+	// the conventional commits in the release range so the version section
+	// never ships hollow. The draft is part of the plan — the user reviews
+	// it at the confirm gate (or in --dry-run/--json) before it is written.
+	changelogDraft := ""
+	if changelog != "" && !flags.noRelease && shipChangelogUnreleasedEmpty(changelog) {
+		changelogDraft = draftShipChangelog(commits)
+	}
+
 	return shipPlan{
-		Branch:      branch,
-		Base:        base,
-		Remote:      remote,
-		LatestTag:   latestTag,
-		NextTag:     nextTag,
-		Bump:        bump,
-		CommitCount: len(commits),
-		RepoRoot:    repoRoot,
-		VersionFile: versionFile,
-		Changelog:   changelog,
-		MergeToBase: mergeToBase,
+		Branch:         branch,
+		Base:           base,
+		Remote:         remote,
+		LatestTag:      latestTag,
+		NextTag:        nextTag,
+		Bump:           bump,
+		CommitCount:    len(commits),
+		RepoRoot:       repoRoot,
+		VersionFiles:   versionFiles,
+		Changelog:      changelog,
+		Preflight:      cfg.Preflight.Steps,
+		Watch:          cfg.Ship.Watch,
+		Verify:         cfg.Ship.Verify,
+		MergeToBase:    mergeToBase,
+		BumpDowngraded: bumpDowngraded,
+		ChangelogDraft: changelogDraft,
 	}, nil
 }
 
@@ -669,16 +769,24 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 	if flags.noRelease {
 		fmt.Fprintf(w, "  %s   %s\n", label("Release:  "), skip("no"))
 	} else {
-		fmt.Fprintf(w, "  %s   %s\n", label("Bump:     "), value(plan.Bump))
+		bumpVal := value(plan.Bump)
+		if plan.BumpDowngraded {
+			bumpVal += skip("  (breaking on 0.x stays minor — use --major for v1.0.0)")
+		}
+		fmt.Fprintf(w, "  %s   %s\n", label("Bump:     "), bumpVal)
 		fmt.Fprintf(w, "  %s   %s\n", label("Next tag: "), tag(plan.NextTag))
 	}
-	if plan.VersionFile != "" {
-		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), value(plan.VersionFile))
+	if len(plan.VersionFiles) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), value(strings.Join(plan.VersionFiles, ", ")))
 	} else {
 		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), label("tag-only"))
 	}
 	if plan.Changelog != "" {
-		fmt.Fprintf(w, "  %s   %s\n", label("Changelog:"), label(plan.Changelog))
+		clVal := label(plan.Changelog)
+		if plan.ChangelogDraft != "" {
+			clVal += skip("  ([Unreleased] empty — drafted from commits below)")
+		}
+		fmt.Fprintf(w, "  %s   %s\n", label("Changelog:"), clVal)
 	}
 	pushVal := value("true")
 	if !flags.push {
@@ -688,6 +796,155 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 	if flags.skipPreflight {
 		fmt.Fprintf(w, "  %s   %s\n", label("Preflight:"), skip("skipped"))
 	}
+	if len(plan.Watch) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Watch:    "), label(shipStepSummary(plan.Watch)))
+	}
+	if len(plan.Verify) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Verify:   "), label(shipStepSummary(plan.Verify)))
+	}
+	if plan.ChangelogDraft != "" {
+		fmt.Fprintln(w, header("─── Changelog draft ──────────────────────────"))
+		for _, ln := range strings.Split(strings.TrimRight(plan.ChangelogDraft, "\n"), "\n") {
+			fmt.Fprintln(w, "  "+ln)
+		}
+	}
+}
+
+// runShipPostHooks drives the post-release pipeline configured under
+// `ship:` — watch steps first (blocking CI tracking, e.g. `gh run watch`),
+// then verify steps (artifact/tap/CDN checks). The release tag is already
+// public when these run, so a watch failure aborts with a rerun hint
+// instead of suggesting a re-ship; verify failures name the failing step
+// and pass the command output through verbatim. ContinueOnFailure marks a
+// step advisory in both lists.
+func runShipPostHooks(ctx context.Context, deps shipDeps, plan shipPlan) error {
+	if len(plan.Watch) == 0 && len(plan.Verify) == 0 {
+		return nil
+	}
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	good := color.New(color.FgGreen, color.Bold).SprintFunc()
+	warn := color.New(color.FgYellow).SprintFunc()
+
+	runList := func(title string, steps []config.PreflightStep, failHint func(config.PreflightStep) string) error {
+		if len(steps) == 0 {
+			return nil
+		}
+		fmt.Fprintln(deps.Out, header("─── "+title+" ─────────────────────────────────"))
+		for _, step := range steps {
+			name := step.Name
+			if name == "" {
+				name = step.Command
+			}
+			if err := runStep(ctx, deps.Runner, deps.Config, step); err != nil {
+				if step.ContinueOnFailure {
+					fmt.Fprintf(deps.Out, "  %s %-22s %v\n", warn("·"), name, err)
+					continue
+				}
+				return WithHint(
+					fmt.Errorf("ship: %s step %q failed: %w", strings.ToLower(title), name, err),
+					failHint(step),
+				)
+			}
+			fmt.Fprintf(deps.Out, "  %s %-22s\n", good("✓"), name)
+		}
+		return nil
+	}
+
+	if err := runList("Watch", plan.Watch, func(s config.PreflightStep) string {
+		return "the release tag is already pushed — rerun the watcher when ready: " + s.Command
+	}); err != nil {
+		return err
+	}
+	return runList("Verify", plan.Verify, func(s config.PreflightStep) string {
+		return "inspect the release artifacts, then recheck with: " + s.Command
+	})
+}
+
+// shipStepSummary joins step display names for the one-line plan view.
+func shipStepSummary(steps []config.PreflightStep) string {
+	names := make([]string, 0, len(steps))
+	for _, s := range steps {
+		name := s.Name
+		if name == "" {
+			name = s.Command
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, " → ")
+}
+
+// shipStepJSON is the wire form of a pipeline step in `ship --dry-run --json`.
+type shipStepJSON struct {
+	Name              string `json:"name"`
+	Command           string `json:"command"`
+	ContinueOnFailure bool   `json:"continue_on_failure,omitempty"`
+}
+
+// shipPlanJSON is the machine-readable release plan emitted by
+// `gk ship --dry-run --json` — the contract agent tooling (e.g. a /release
+// skill) parses instead of scraping the human rendering.
+type shipPlanJSON struct {
+	Branch         string         `json:"branch"`
+	Base           string         `json:"base,omitempty"`
+	Remote         string         `json:"remote"`
+	LatestTag      string         `json:"latest_tag"`
+	NextTag        string         `json:"next_tag,omitempty"`
+	Bump           string         `json:"bump,omitempty"`
+	BumpDowngraded bool           `json:"bump_downgraded_0x,omitempty"`
+	CommitCount    int            `json:"commit_count"`
+	MergeToBase    bool           `json:"merge_to_base"`
+	VersionFiles   []string       `json:"version_files,omitempty"`
+	Changelog      string         `json:"changelog,omitempty"`
+	ChangelogDraft string         `json:"changelog_draft,omitempty"`
+	NoRelease      bool           `json:"no_release,omitempty"`
+	Push           bool           `json:"push"`
+	Preflight      []shipStepJSON `json:"preflight,omitempty"`
+	Watch          []shipStepJSON `json:"watch,omitempty"`
+	Verify         []shipStepJSON `json:"verify,omitempty"`
+}
+
+func shipStepsToJSON(steps []config.PreflightStep) []shipStepJSON {
+	out := make([]shipStepJSON, 0, len(steps))
+	for _, s := range steps {
+		name := s.Name
+		if name == "" {
+			name = s.Command
+		}
+		out = append(out, shipStepJSON{Name: name, Command: s.Command, ContinueOnFailure: s.ContinueOnFailure})
+	}
+	return out
+}
+
+// renderShipPlanJSON writes the plan as indented JSON to w (stdout). The
+// human plan rendering is suppressed entirely in this mode so the stream
+// stays parseable.
+func renderShipPlanJSON(w io.Writer, plan shipPlan, flags shipFlags) error {
+	out := shipPlanJSON{
+		Branch:         plan.Branch,
+		Base:           plan.Base,
+		Remote:         plan.Remote,
+		LatestTag:      plan.LatestTag,
+		NextTag:        plan.NextTag,
+		Bump:           plan.Bump,
+		BumpDowngraded: plan.BumpDowngraded,
+		CommitCount:    plan.CommitCount,
+		MergeToBase:    plan.MergeToBase,
+		VersionFiles:   plan.VersionFiles,
+		Changelog:      plan.Changelog,
+		ChangelogDraft: plan.ChangelogDraft,
+		NoRelease:      flags.noRelease,
+		Push:           flags.push,
+		Preflight:      shipStepsToJSON(plan.Preflight),
+		Watch:          shipStepsToJSON(plan.Watch),
+		Verify:         shipStepsToJSON(plan.Verify),
+	}
+	if flags.skipPreflight {
+		out.Preflight = nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func renderShipStatus(w io.Writer, plan shipPlan) {
@@ -698,8 +955,8 @@ func renderShipStatus(w io.Writer, plan shipPlan) {
 	if plan.NextTag != "" {
 		fmt.Fprintf(w, "  Next tag:  %s (%s)\n", plan.NextTag, plan.Bump)
 	}
-	if plan.VersionFile != "" {
-		fmt.Fprintf(w, "  Version:   %s\n", plan.VersionFile)
+	if len(plan.VersionFiles) > 0 {
+		fmt.Fprintf(w, "  Version:   %s\n", strings.Join(plan.VersionFiles, ", "))
 	} else {
 		fmt.Fprintln(w, "  Version:   tag-only")
 	}
@@ -783,15 +1040,23 @@ func applyShipReleaseFiles(plan shipPlan) (bool, error) {
 	}
 	changed := false
 	version := strings.TrimPrefix(plan.NextTag, "v")
-	if plan.VersionFile != "" {
-		ok, err := bumpShipVersionFile(plan.VersionFile, version)
+	for _, vf := range plan.VersionFiles {
+		ok, err := bumpShipVersionFile(vf, version)
 		if err != nil {
 			return false, err
 		}
 		changed = changed || ok
 	}
 	if plan.Changelog != "" {
-		ok, err := promoteShipChangelog(plan.Changelog, version)
+		var ok bool
+		var err error
+		if plan.ChangelogDraft != "" {
+			// [Unreleased] was empty — write the commit-derived draft the
+			// user just reviewed at the confirm gate.
+			ok, err = writeShipChangelogSection(plan.Changelog, version, plan.ChangelogDraft)
+		} else {
+			ok, err = promoteShipChangelog(plan.Changelog, version)
+		}
 		if err != nil {
 			return false, err
 		}
@@ -824,6 +1089,116 @@ func bumpShipVersionFile(path, version string) (bool, error) {
 	}
 	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
 		return false, fmt.Errorf("ship: write version file: %w", err)
+	}
+	return true, nil
+}
+
+// shipScopeRE captures the scope of a conventional-commit subject —
+// "feat(pull): x" → "pull". ccHeaderRE (log.go) only captures the type.
+var shipScopeRE = regexp.MustCompile(`^[a-z]+\(([^)]+)\)!?:`)
+
+// shipDraftSections maps conventional-commit types onto the Keep-a-Changelog
+// sections this changelog format uses, in render order. Types absent here
+// (docs, chore, ci, test, build, style, revert) are release-note noise and
+// stay out of the draft; when nothing maps the draft is empty and ship keeps
+// its old behavior (no changelog edit).
+var shipDraftSections = []struct {
+	title string
+	types []string
+}{
+	{"Added", []string{"feat"}},
+	{"Changed", []string{"refactor", "perf"}},
+	{"Fixed", []string{"fix"}},
+}
+
+// draftShipChangelog groups the release range's commit subjects into a
+// Keep-a-Changelog body. The commit scope becomes a bold lead-in and
+// breaking commits are marked explicitly so a reader can audit the bump.
+// Returns "" when no commit maps to a section.
+func draftShipChangelog(commits []string) string {
+	grouped := map[string][]string{}
+	for _, commit := range commits {
+		subject := strings.TrimSpace(strings.Split(commit, "\n")[0])
+		ccType, _ := ccClassify(subject)
+		if ccType == "" {
+			continue
+		}
+		item := strings.TrimSpace(ccHeaderRE.ReplaceAllString(subject, ""))
+		if item == "" {
+			continue
+		}
+		if m := shipScopeRE.FindStringSubmatch(subject); m != nil {
+			item = "**" + m[1] + ":** " + item
+		}
+		if head, _, ok := strings.Cut(subject, ":"); ok && strings.HasSuffix(head, "!") {
+			item += " (breaking)"
+		}
+		grouped[ccType] = append(grouped[ccType], item)
+	}
+	var b strings.Builder
+	for _, sec := range shipDraftSections {
+		var items []string
+		for _, t := range sec.types {
+			items = append(items, grouped[t]...)
+		}
+		if len(items) == 0 {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("### " + sec.title + "\n\n")
+		for _, item := range items {
+			b.WriteString("- " + item + "\n")
+		}
+	}
+	return b.String()
+}
+
+// shipChangelogUnreleasedEmpty reports whether path has an [Unreleased]
+// marker with nothing under it. Read errors and a missing marker count as
+// "not empty" so the draft path never papers over a malformed changelog.
+func shipChangelogUnreleasedEmpty(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	s := string(b)
+	idx := strings.Index(s, "## [Unreleased]")
+	if idx < 0 {
+		return false
+	}
+	rest := s[idx+len("## [Unreleased]"):]
+	if next := strings.Index(rest, "\n## ["); next >= 0 {
+		rest = rest[:next]
+	}
+	return strings.TrimSpace(rest) == ""
+}
+
+// writeShipChangelogSection inserts "## [version] - <today>" with the given
+// body right under the [Unreleased] marker — the commit-derived counterpart
+// of promoteShipChangelog, which moves a user-written [Unreleased] body.
+func writeShipChangelogSection(path, version, body string) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("ship: read changelog: %w", err)
+	}
+	before := string(b)
+	marker := "## [Unreleased]"
+	idx := strings.Index(before, marker)
+	if idx < 0 {
+		return false, nil
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false, nil
+	}
+	rest := strings.TrimLeft(before[idx+len(marker):], "\n")
+	date := time.Now().Format("2006-01-02")
+	section := marker + "\n\n## [" + version + "] - " + date + "\n\n" + body + "\n\n"
+	after := before[:idx] + section + rest
+	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
+		return false, fmt.Errorf("ship: write changelog: %w", err)
 	}
 	return true, nil
 }

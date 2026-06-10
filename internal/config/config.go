@@ -14,6 +14,7 @@ type Config struct {
 	Sync       SyncConfig      `mapstructure:"sync"        yaml:"sync"`
 	Refresh    RefreshConfig   `mapstructure:"refresh"     yaml:"refresh"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
+	Ship       ShipConfig      `mapstructure:"ship"        yaml:"ship"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
@@ -318,8 +319,36 @@ type PushConfig struct {
 // PullConfig controls gk pull behaviour.
 // Strategy accepts: "rebase" (default), "merge", "ff-only", "auto".
 // "auto" reads git config pull.rebase; if unset, falls back to "rebase".
+// WithBase makes every pull additionally fast-forward the local base
+// branch (e.g. main) from its remote — no checkout involved, strictly
+// FF-only, ambiguous states are skipped with a note. Equivalent to
+// passing --with-base on each invocation.
 type PullConfig struct {
 	Strategy string `mapstructure:"strategy" yaml:"strategy"`
+	WithBase bool   `mapstructure:"with_base" yaml:"with_base"`
+}
+
+// ShipConfig extends gk ship beyond the shared preflight steps with
+// post-tag hooks and an explicit version-file list, so the whole
+// release pipeline (checks → version → changelog → tag → push → CI
+// watch → post-release verification) runs from one command on any
+// project.
+//
+//   - Watch: commands run after the release tag is pushed — typically a
+//     blocking CI watcher (e.g. `gh run watch ...`). A failure aborts
+//     ship with a rerun hint; the tag is already published at that point.
+//   - Verify: post-release checks run after every Watch step succeeds
+//     (artifact reachable on the CDN, tap/registry bumped, ...).
+//   - VersionFiles: explicit version-file paths (relative to the repo
+//     root). When set it replaces the VERSION/package.json/
+//     marketplace.json auto-detection.
+//
+// Watch and Verify reuse PreflightStep so `name:`/`command:`/
+// `continue_on_failure:` read the same in all three lists.
+type ShipConfig struct {
+	Watch        []PreflightStep `mapstructure:"watch"         yaml:"watch"`
+	Verify       []PreflightStep `mapstructure:"verify"        yaml:"verify"`
+	VersionFiles []string        `mapstructure:"version_files" yaml:"version_files"`
 }
 
 // SyncConfig controls gk sync behaviour. Strategy is the integration

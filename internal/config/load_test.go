@@ -1,9 +1,11 @@
 package config_test
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
@@ -497,5 +499,97 @@ func TestLoadNvidiaFromLocalYAML(t *testing.T) {
 	}
 	if cfg.AI.Nvidia.Timeout != "120s" {
 		t.Errorf("AI.Nvidia.Timeout: want %q, got %q", "120s", cfg.AI.Nvidia.Timeout)
+	}
+}
+
+// TestLoad_BrokenGlobalConfigDegrades: a parse error in the global config —
+// the classic case is a duplicate top-level key like two `pull:` sections —
+// must not abort Load (whose nil result panicked every `cfg, _ :=` call
+// site). Expect: defaults survive, no error, and a one-time warning that
+// names the file and the yaml diagnosis.
+func TestLoad_BrokenGlobalConfigDegrades(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := "pull:\n  strategy: rebase\npull:\n  with_base: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "gk", "config.yaml"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnBuf bytes.Buffer
+	restore := config.SetConfigWarnWriter(&warnBuf)
+	defer restore()
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load must degrade, not fail: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("Load returned nil Config")
+	}
+	if cfg.Remote != "origin" {
+		t.Errorf("defaults should survive a broken layer, Remote = %q", cfg.Remote)
+	}
+
+	warn := warnBuf.String()
+	if !strings.Contains(warn, "config error") || !strings.Contains(warn, "config.yaml") {
+		t.Errorf("warning should name the broken file, got: %q", warn)
+	}
+	if !strings.Contains(warn, "already defined") {
+		t.Errorf("warning should pass through yaml's duplicate-key diagnosis, got: %q", warn)
+	}
+
+	// Dedupe: a second Load in the same process must not warn again.
+	warnBuf.Reset()
+	if _, err := config.Load(nil); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if warnBuf.Len() != 0 {
+		t.Errorf("warning must print once per process, got again: %q", warnBuf.String())
+	}
+}
+
+// TestLoad_ShipConfig: the ship section (watch/verify hooks + explicit
+// version files) must round-trip from yaml into the struct — it powers
+// `gk ship`'s post-tag pipeline.
+func TestLoad_ShipConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	// The gk repo's own .gk.yaml now carries a real ship: section — leave
+	// the repo so the repo-local layer cannot shadow the fixture.
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(dir, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `ship:
+  watch:
+    - name: ci
+      command: gh run watch --exit-status
+  verify:
+    - name: cdn
+      command: curl -fsI https://example.com/checksums.txt
+      continue_on_failure: true
+  version_files:
+    - VERSION
+    - extension/package.json
+`
+	if err := os.WriteFile(filepath.Join(dir, "gk", "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Ship.Watch) != 1 || cfg.Ship.Watch[0].Name != "ci" || cfg.Ship.Watch[0].Command != "gh run watch --exit-status" {
+		t.Errorf("Ship.Watch = %+v", cfg.Ship.Watch)
+	}
+	if len(cfg.Ship.Verify) != 1 || !cfg.Ship.Verify[0].ContinueOnFailure {
+		t.Errorf("Ship.Verify = %+v", cfg.Ship.Verify)
+	}
+	if len(cfg.Ship.VersionFiles) != 2 || cfg.Ship.VersionFiles[1] != "extension/package.json" {
+		t.Errorf("Ship.VersionFiles = %+v", cfg.Ship.VersionFiles)
 	}
 }

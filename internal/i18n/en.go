@@ -286,6 +286,10 @@ var enMessages = map[string]map[Mode]string{
 		ModeNormal: "'%s' is not linked to any server branch; gk pulled the default branch %s instead",
 		ModeEasy:   "※ Your branch '%s' is not linked to any server branch, so gk downloaded the default branch %s instead — if the server has a branch with the same name, link it with the command above",
 	},
+	"pull.note.with_base_diverged": {
+		ModeNormal: "'%s' has commits the server (%s) lacks, so gk left it untouched; switch to it and pull to combine them",
+		ModeEasy:   "※ Your branch '%s' has commits the server (%s) does not have, so gk left it alone — combine them with the command above; merging automatically could cause conflicts",
+	},
 
 	// ── Merge --into next-step hints ────────────────────────────────────
 

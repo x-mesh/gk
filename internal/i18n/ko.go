@@ -286,6 +286,10 @@ var koMessages = map[string]map[Mode]string{
 		ModeNormal: "'%s' is not linked to any server branch; gk pulled the default branch %s instead",
 		ModeEasy:   "※ '%s' 브랜치는 서버의 어떤 브랜치와도 연결되어 있지 않아서, 기본 브랜치 %s의 내용을 대신 가져왔어요 — 서버에 같은 이름의 브랜치가 있다면 위 명령으로 연결하세요",
 	},
+	"pull.note.with_base_diverged": {
+		ModeNormal: "'%s' has commits the server (%s) lacks, so gk left it untouched; switch to it and pull to combine them",
+		ModeEasy:   "※ '%s' 브랜치에 서버(%s)에 없는 커밋이 있어서 건드리지 않았어요 — 위 명령으로 직접 합쳐 주세요. 자동으로 합치면 충돌이 날 수 있거든요",
+	},
 
 	// ── Merge --into next-step hints ────────────────────────────────────
 

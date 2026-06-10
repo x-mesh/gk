@@ -99,9 +99,24 @@ var graphLanePalette = []*color.Color{
 // node row, each carrying the commit's lane-continuation prefix (so the body
 // slots beneath the node while surrounding lanes flow past). nil disables body
 // output entirely.
-func renderSelfGraph(w io.Writer, records []commitRecord, useColor bool, trimWidth int, renderRow func(commitRecord) string, bodyOf func(commitRecord) []string) {
+//
+// beforeRow is optional: when non-nil, its returned lines print verbatim
+// (full width, no lane prefix) ABOVE record i's node row — the flat path's
+// structure rules (push boundary, tag rules) reuse it so they survive in
+// graph mode. A full-width rule deliberately cuts across the lanes: it
+// annotates the whole view at that point ("everything above is local-only"),
+// not a single lane.
+func renderSelfGraph(w io.Writer, records []commitRecord, useColor bool, trimWidth int, renderRow func(commitRecord) string, bodyOf func(commitRecord) []string, beforeRow func(int, commitRecord) []string) {
 	g := &graphState{useColor: useColor}
-	for _, c := range records {
+	for i, c := range records {
+		if beforeRow != nil {
+			for _, sl := range beforeRow(i, c) {
+				if trimWidth > 0 {
+					sl = trimToVisible(sl, trimWidth)
+				}
+				fmt.Fprintln(w, sl)
+			}
+		}
 		nodeArt, linkArt, bodyPrefix := g.step(c)
 		line := nodeArt + renderRow(c)
 		if trimWidth > 0 {

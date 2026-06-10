@@ -59,10 +59,18 @@ Upstream resolution:
 
 Fast-forward optimisation (D):
   When the strategy is rebase and HEAD is already an ancestor of the upstream,
-  gk substitutes git merge --ff-only — identical result, no rebase overhead.`,
+  gk substitutes git merge --ff-only — identical result, no rebase overhead.
+
+With-base sync:
+  --with-base (or pull.with_base: true in .gk.yaml) additionally fast-forwards
+  the local base branch (e.g. main) to its remote tip after the fetch — no
+  checkout involved. Strictly FF-only: a diverged base, a base checked out in
+  another worktree, or a missing local base is skipped with a NOTE instead of
+  being resolved automatically. Skipped under --fetch-only.`,
 		RunE: runPull,
 	}
 	cmd.Flags().String("base", "", "base branch (auto-detect if empty)")
+	cmd.Flags().Bool("with-base", false, "also fast-forward the local base branch from its remote (FF-only; skips when unsafe)")
 	cmd.Flags().String("strategy", "", "pull strategy: rebase|merge|ff-only|auto")
 	cmd.Flags().Bool("rebase", false, "shorthand for --strategy rebase (also acts as explicit consent on diverged history)")
 	cmd.Flags().Bool("merge", false, "shorthand for --strategy merge (also acts as explicit consent on diverged history)")
@@ -164,6 +172,14 @@ func runPullCore(cmd *cobra.Command) error {
 	autostash, _ := cmd.Flags().GetBool("autostash")
 	aiFlag, _ := cmd.Flags().GetBool("ai")
 
+	// --with-base: config supplies the default, an explicit flag (either
+	// polarity — `--with-base=false` opts out of pull.with_base for one
+	// invocation) overrides it.
+	withBase := cfg.Pull.WithBase
+	if cmd.Flags().Changed("with-base") {
+		withBase, _ = cmd.Flags().GetBool("with-base")
+	}
+
 	// --ai resolves integration conflicts; fetch-only never integrates, so the
 	// combination has nothing to act on.
 	if aiFlag && (fetchOnly || noRebase) {
@@ -226,6 +242,14 @@ func runPullCore(cmd *cobra.Command) error {
 	//    `git pull` does and avoids spurious "could not determine default
 	//    branch" failures in repos where origin/HEAD is unset but the
 	//    branch tracks something perfectly fine.
+	// Current branch is used for upstream-resolution fallbacks, the with-base
+	// sync, and to label the result lines below — with-base prints status for
+	// two branches, so an unlabeled "already up to date" would be ambiguous.
+	current, currErr := client.CurrentBranch(ctx)
+	if currErr != nil {
+		current = ""
+	}
+
 	upstream, fetchRemote, fetchBranch, hasTracking := tryTrackingUpstream(ctx, runner)
 	if !hasTracking {
 		// @{u} resolution fails in two distinct states: tracking genuinely
@@ -238,10 +262,6 @@ func runPullCore(cmd *cobra.Command) error {
 		// Only when tracking is truly unconfigured do we fall back — first to
 		// <remote>/<currentBranch> when that ref exists (matches user intent
 		// far better than the base), then to the repo's base branch.
-		current, currErr := client.CurrentBranch(ctx)
-		if currErr != nil {
-			current = ""
-		}
 		if cfgRemote, cfgBranch, hasCfg := trackingFromConfig(ctx, runner, current); hasCfg {
 			upstream = cfgRemote + "/" + cfgBranch
 			fetchRemote = cfgRemote
@@ -382,6 +402,25 @@ func runPullCore(cmd *cobra.Command) error {
 		)
 	}
 
+	// Per-branch result lines below carry a branch-name column: with
+	// --with-base the output reports two branches, and an unlabeled
+	// "already up to date" reads as whichever one the user has in mind.
+	branchLabel := current
+	if branchLabel == "" {
+		branchLabel = "HEAD"
+	}
+	labeler := branchLabeler(branchLabel)
+
+	// 5b) --with-base: bring the base branch along (FF-only, no checkout)
+	//     right after the fetch — deliberately before integration so a
+	//     conflict on the current branch cannot strand the base update.
+	//     --fetch-only skips it: that mode promises no local ref moves.
+	//     The returned labeler is widened to cover the base name so both
+	//     branches' lines align on one column.
+	if withBase && !noRebase {
+		labeler = syncPullBase(ctx, client, runner, cmd.ErrOrStderr(), remote, base, current, fetchBranch)
+	}
+
 	if noRebase {
 		if stashed {
 			popStashBestEffort(ctx, runner)
@@ -421,7 +460,7 @@ func runPullCore(cmd *cobra.Command) error {
 				return fmt.Errorf("stash pop failed: %w", err)
 			}
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "already up to date at %s\n", shortSHA(preHEAD))
+		fmt.Fprintf(cmd.ErrOrStderr(), "%salready up to date at %s\n", labeler(branchLabel), shortSHA(preHEAD))
 		return nil
 	}
 
@@ -434,8 +473,8 @@ func runPullCore(cmd *cobra.Command) error {
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"no upstream changes; local is ahead by %d commit%s — nothing to pull\n",
-			ahead, plural(ahead))
+			"%sno upstream changes — ahead by %d commit%s, nothing to pull\n",
+			labeler(branchLabel), ahead, plural(ahead))
 		return nil
 	}
 
@@ -525,14 +564,14 @@ func runPullCore(cmd *cobra.Command) error {
 	}
 
 	// 8) integrate
-	fmt.Fprintf(os.Stderr, "integrating %s (%s)...\n", upstream, strategy)
+	fmt.Fprintf(os.Stderr, "%sintegrating %s (%s)...\n", labeler(branchLabel), upstream, strategy)
 	if err := executePullStrategy(ctx, client, runner, upstream, strategy, stashed); err != nil {
 		return err
 	}
 
 	// Summary block: what came in, diffstat, one-line commit list.
 	postHEAD := headRev(ctx, runner)
-	renderPullSummary(cmd, runner, preHEAD, postHEAD, strategy)
+	renderPullSummary(cmd, runner, preHEAD, postHEAD, strategy, labeler(branchLabel))
 
 	// 9) pop stash
 	if stashed {
@@ -1231,7 +1270,12 @@ func renderPullVerbosePlan(w io.Writer, plan pullPlan) {
 // single "already up to date at <sha>" line so the user still confirms
 // what HEAD resolved to. All output goes to stderr to match the rest
 // of gk pull's progress stream.
-func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strategy string) {
+//
+// label is the pre-rendered branch-column prefix for the headline lines
+// ("" for none) — with --with-base the output mixes two branches, so each
+// headline names whose status it is. Detail lines (commit list, diffstat)
+// stay unprefixed; they indent under their headline.
+func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strategy, label string) {
 	ctx := cmd.Context()
 	out := cmd.ErrOrStderr()
 	faint := color.New(color.Faint).SprintFunc()
@@ -1242,7 +1286,7 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 		return
 	}
 	if pre == post {
-		fmt.Fprintf(out, "already up to date at %s\n", bold(shortSHA(post)))
+		fmt.Fprintf(out, "%salready up to date at %s\n", label, bold(shortSHA(post)))
 		return
 	}
 
@@ -1254,7 +1298,7 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 
 	header := fmt.Sprintf("updated %s → %s", bold(shortSHA(pre)), bold(shortSHA(post)))
 	meta := fmt.Sprintf("(+%d commit%s · %s)", count, plural(count), strategy)
-	fmt.Fprintf(out, "%s  %s\n", header, faint(meta))
+	fmt.Fprintf(out, "%s%s  %s\n", label, header, faint(meta))
 
 	// One-line commit list. Format fields with unit-separator (\x1f) so
 	// subjects containing tabs/pipes do not split mid-row.

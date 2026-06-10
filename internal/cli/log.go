@@ -59,7 +59,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 
 	since, _ := cmd.Flags().GetString("since")
 	format, _ := cmd.Flags().GetString("format")
-	graph, _ := cmd.Flags().GetBool("graph")
+	graph := resolveGraphFlag(cmd, cfg)
 	limit, _ := cmd.Flags().GetInt("limit")
 
 	// Resolve the effective viz set: any explicit flag (individual boolean or
@@ -90,9 +90,6 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 	if limit == 0 {
 		limit = cfg.Log.Limit
-	}
-	if !graph {
-		graph = cfg.Log.Graph
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
@@ -440,6 +437,19 @@ func (v logVizFlags) any() bool {
 // shortAge() to produce the compact column (`6d`, `3m`, `2w`). parents holds
 // the full parent SHAs (in git order, first parent first) so the self-drawn
 // graph renderer can place lanes; it is empty for the non-graph paths.
+// resolveGraphFlag picks the effective graph mode: an explicit flag — either
+// polarity, so `--graph=false` opts out of a config default for one
+// invocation — wins; otherwise cfg.Log.Graph decides. The old `if !graph`
+// merge silently swallowed an explicit false whenever the config was true,
+// leaving no per-invocation escape back to the flat view.
+func resolveGraphFlag(cmd *cobra.Command, cfg *config.Config) bool {
+	if cmd.Flags().Changed("graph") {
+		g, _ := cmd.Flags().GetBool("graph")
+		return g
+	}
+	return cfg.Log.Graph
+}
+
 type commitRecord struct {
 	sha, short, subject, author, body string
 	authorTime                        time.Time
@@ -1122,18 +1132,31 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		return prefix.String() + line + suffix.String()
 	}
 
-	// --graph mode: let git compute the topology and borrow only its art
-	// column, rendering gk's viz content to the right of each commit row.
-	// The flat-path structure lines (WIP gutter, push boundary, tag rules)
-	// are intentionally suppressed here — git's own │ ├ └ already convey
-	// structure, and interleaving full-width separators would break the
-	// graph's vertical continuity. The scope tally above still prints.
+	// --graph mode: gk draws the topology itself (renderSelfGraph) with the
+	// viz content to the right of each node row. The flat path's structure
+	// rules — push boundary and tag rules — render here too via the
+	// beforeRow hook; cutting across the lanes is fine because they
+	// annotate the whole view at that point, not a single lane. Only the
+	// WIP gutter stays suppressed: it is a second left-margin column and
+	// would collide with the lane art.
 	if graph {
 		var bodyOf func(commitRecord) []string
 		if v.body {
 			bodyOf = vizBodyLines
 		}
-		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow, bodyOf)
+		beforeRow := func(i int, r commitRecord) []string {
+			var lines []string
+			if tagsRule {
+				if t, ok := tags[r.short]; ok {
+					lines = append(lines, renderTagRule(t, width))
+				}
+			}
+			if i == boundaryIdx && boundaryIdx > 0 {
+				lines = append(lines, renderPushBoundary(boundaryIdx, width))
+			}
+			return lines
+		}
+		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow, bodyOf, beforeRow)
 		return nil
 	}
 

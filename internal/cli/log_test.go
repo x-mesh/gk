@@ -811,7 +811,7 @@ func TestRenderSelfGraph(t *testing.T) {
 		{sha: "B"},
 	}
 	var buf bytes.Buffer
-	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, nil)
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, nil, nil)
 	got := buf.String()
 	want := "● M\n├─╮\n│ ● F\n● │ P\n● │ B\n╰─╯\n"
 	if got != want {
@@ -858,7 +858,7 @@ func TestRenderSelfGraph_Body(t *testing.T) {
 		{sha: "B"},
 	}
 	var buf bytes.Buffer
-	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, vizBodyLines)
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, vizBodyLines, nil)
 	got := buf.String()
 	// M body precedes the fork → single lane. F body sits beside lane P → two.
 	want := "● M\n│   merge note\n├─╮\n│ ● F\n│ │   feature\n● │ P\n● │ B\n╰─╯\n"
@@ -902,5 +902,62 @@ func TestLogBehind_TrackingConfigCacheRefMissing(t *testing.T) {
 	}
 	if strings.Contains(msg, "no upstream configured") {
 		t.Errorf("legacy misdiagnosis still present: %v", err)
+	}
+}
+
+// TestRenderSelfGraph_BeforeRow checks that beforeRow lines (push boundary,
+// tag rules) print verbatim above the matching node row, full width, with no
+// lane prefix — restoring the flat path's structure rules in graph mode.
+func TestRenderSelfGraph_BeforeRow(t *testing.T) {
+	recs := []commitRecord{
+		{sha: "C", parents: []string{"B"}},
+		{sha: "B", parents: []string{"A"}},
+		{sha: "A", parents: []string{"Z"}}, // parent out of view → no lane-end link row
+	}
+	beforeRow := func(i int, r commitRecord) []string {
+		if i == 1 {
+			return []string{"--[ boundary ]--"}
+		}
+		return nil
+	}
+	var buf bytes.Buffer
+	renderSelfGraph(&buf, recs, false, 0, func(c commitRecord) string { return c.sha }, nil, beforeRow)
+	got := buf.String()
+	want := "● C\n--[ boundary ]--\n● B\n● A\n"
+	if got != want {
+		t.Errorf("renderSelfGraph beforeRow:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestResolveGraphFlag: an explicit --graph / --graph=false must beat the
+// config default; an untouched flag falls through to config. The old
+// `if !graph { graph = cfg }` merge swallowed an explicit false whenever
+// config had graph: true, leaving no per-invocation way back to flat view.
+func TestResolveGraphFlag(t *testing.T) {
+	cases := []struct {
+		name    string
+		setFlag string // "" = not passed
+		cfg     bool
+		want    bool
+	}{
+		{"unset uses config true", "", true, true},
+		{"unset uses config false", "", false, false},
+		{"explicit true beats config false", "true", false, true},
+		{"explicit false beats config true", "false", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().Bool("graph", false, "")
+			if tc.setFlag != "" {
+				if err := cmd.Flags().Set("graph", tc.setFlag); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := &config.Config{Log: config.LogConfig{Graph: tc.cfg}}
+			if got := resolveGraphFlag(cmd, cfg); got != tc.want {
+				t.Errorf("resolveGraphFlag = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

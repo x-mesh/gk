@@ -175,6 +175,7 @@ func runTimemachineList(cmd *cobra.Command, _ []string) error {
 	}
 
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSON = asJSON || JSONOut()
 	kindsArg, _ := cmd.Flags().GetString("kinds")
 	limit, _ := cmd.Flags().GetInt("limit")
 	allBranches, _ := cmd.Flags().GetBool("all-branches")
@@ -237,6 +238,11 @@ func runTimemachineList(cmd *cobra.Command, _ []string) error {
 
 	w := cmd.OutOrStdout()
 	if asJSON {
+		// Agent mode wraps the timeline as one enveloped array; the bare
+		// --json NDJSON stream stays for line-oriented consumers.
+		if AgentOut() {
+			return emitAgentResult(w, eventsToJSON(events))
+		}
 		return printEventsNDJSON(w, events)
 	}
 	return printEventsHuman(w, events)
@@ -268,8 +274,8 @@ func wantKind(kinds []string, want string) bool {
 	return false
 }
 
-func printEventsNDJSON(w io.Writer, events []timemachine.Event) error {
-	enc := json.NewEncoder(w)
+func eventsToJSON(events []timemachine.Event) []eventJSON {
+	out := make([]eventJSON, 0, len(events))
 	for _, ev := range events {
 		j := eventJSON{
 			Kind:       ev.Kind.String(),
@@ -285,6 +291,14 @@ func printEventsNDJSON(w io.Writer, events []timemachine.Event) error {
 			j.When = ev.When.Unix()
 			j.ISO = ev.When.UTC().Format(time.RFC3339)
 		}
+		out = append(out, j)
+	}
+	return out
+}
+
+func printEventsNDJSON(w io.Writer, events []timemachine.Event) error {
+	enc := json.NewEncoder(w)
+	for _, j := range eventsToJSON(events) {
 		if err := enc.Encode(j); err != nil {
 			return err
 		}
@@ -334,6 +348,7 @@ func runTimemachineListBackups(cmd *cobra.Command, _ []string) error {
 
 	kindFilter, _ := cmd.Flags().GetString("kind")
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSON = asJSON || JSONOut()
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	refs, err := gitsafe.ListBackups(ctx, runner)
@@ -347,6 +362,9 @@ func runTimemachineListBackups(cmd *cobra.Command, _ []string) error {
 
 	w := cmd.OutOrStdout()
 	if asJSON {
+		if AgentOut() {
+			return emitAgentResult(w, backupsToJSON(refs))
+		}
 		return printBackupsNDJSON(w, refs)
 	}
 	return printBackupsHuman(w, refs)
@@ -362,9 +380,9 @@ func filterBackupsByKind(in []gitsafe.BackupRef, kind string) []gitsafe.BackupRe
 	return out
 }
 
-func printBackupsNDJSON(w io.Writer, refs []gitsafe.BackupRef) error {
-	enc := json.NewEncoder(w)
+func backupsToJSON(refs []gitsafe.BackupRef) []backupRefJSON {
 	now := time.Now()
+	out := make([]backupRefJSON, 0, len(refs))
 	for _, r := range refs {
 		j := backupRefJSON{
 			Ref:    r.Ref,
@@ -377,6 +395,14 @@ func printBackupsNDJSON(w io.Writer, refs []gitsafe.BackupRef) error {
 			j.ISO = r.When.UTC().Format(time.RFC3339)
 			j.AgeSeconds = int64(now.Sub(r.When).Seconds())
 		}
+		out = append(out, j)
+	}
+	return out
+}
+
+func printBackupsNDJSON(w io.Writer, refs []gitsafe.BackupRef) error {
+	enc := json.NewEncoder(w)
+	for _, j := range backupsToJSON(refs) {
 		if err := enc.Encode(j); err != nil {
 			return err
 		}

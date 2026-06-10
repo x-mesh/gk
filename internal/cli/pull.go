@@ -30,11 +30,50 @@ const (
 
 var pullVerbose int
 
+// pullResultJSON is the machine-readable outcome of `gk pull --json` — the
+// per-result fields let agent tooling branch on `result` instead of parsing
+// the human stderr stream (which stays intact; JSON goes to stdout only).
+// Fields are append-only; breaking changes bump `schema`.
+type pullResultJSON struct {
+	Schema   int    `json:"schema"`
+	Result   string `json:"result"` // updated | up-to-date | ahead-only | fetch-only | conflict
+	Branch   string `json:"branch,omitempty"`
+	Upstream string `json:"upstream,omitempty"`
+	Strategy string `json:"strategy,omitempty"`
+	Pre      string `json:"pre,omitempty"`
+	Post     string `json:"post,omitempty"`
+	Ahead    int    `json:"ahead,omitempty"`
+	Behind   int    `json:"behind,omitempty"`
+	// Base reports the --with-base outcomes (absent without the flag).
+	Base []ffSyncOutcome `json:"base,omitempty"`
+	// Conflict carries the exact files and the resume/abort commands when
+	// result == "conflict" — the agent contract for the paused state.
+	Conflict *pullConflictJSON `json:"conflict,omitempty"`
+}
+
+type pullConflictJSON struct {
+	Files  []string `json:"files"`
+	Resume string   `json:"resume"`
+	Abort  string   `json:"abort"`
+}
+
+func emitPullJSON(cmd *cobra.Command, res pullResultJSON) {
+	if !JSONOut() {
+		return
+	}
+	res.Schema = 1
+	_ = emitAgentResult(cmd.OutOrStdout(), res)
+}
+
 // ConflictError is returned by runPullCore when a rebase conflict is detected.
 // The caller (runPull) should exit with Code instead of printing an error.
+// Dir, when set, names the worktree the operation paused in (merge --into
+// runs in the receiver's worktree) so the conflict contract reads files from
+// where the conflict actually lives, not the invoking checkout.
 type ConflictError struct {
 	Code    int
 	Stashed bool
+	Dir     string
 }
 
 func (e *ConflictError) Error() string {
@@ -94,9 +133,44 @@ func runPull(cmd *cobra.Command, args []string) error {
 			}
 			return nil
 		}
+		// Paused-state contract for agents: which files conflict and the
+		// exact commands that resume or abort. Emitted before the non-zero
+		// exit so tooling reads structure, not stderr prose.
+		emitPullConflictJSON(cmd, ce.Dir)
 		os.Exit(ce.Code)
 	}
 	return err
+}
+
+// emitPullConflictJSON re-derives the paused state cheaply — the conflict
+// already happened, so one extra status probe is noise-free. dir overrides
+// where to probe (the receiver worktree for merge --into); empty means the
+// invoking checkout.
+func emitPullConflictJSON(cmd *cobra.Command, dir string) {
+	if !JSONOut() {
+		return
+	}
+	ctx := cmd.Context()
+	if dir == "" {
+		dir = RepoFlag()
+	}
+	runner := &git.ExecRunner{Dir: dir}
+	files := []string{}
+	if out, _, err := runner.Run(ctx, "diff", "--name-only", "--diff-filter=U"); err == nil {
+		for _, f := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if f != "" {
+				files = append(files, f)
+			}
+		}
+	}
+	res := pullResultJSON{
+		Result:   "conflict",
+		Conflict: &pullConflictJSON{Files: files, Resume: "gk continue", Abort: "gk abort"},
+	}
+	if cur, err := git.NewClient(runner).CurrentBranch(ctx); err == nil {
+		res.Branch = cur
+	}
+	emitPullJSON(cmd, res)
 }
 
 // resolvePullConflictWithAI handles `gk pull --ai` once integration has
@@ -417,8 +491,9 @@ func runPullCore(cmd *cobra.Command) error {
 	//     --fetch-only skips it: that mode promises no local ref moves.
 	//     The returned labeler is widened to cover the base name so both
 	//     branches' lines align on one column.
+	var baseOutcomes []ffSyncOutcome
 	if withBase && !noRebase {
-		labeler = syncPullBase(ctx, client, runner, cmd.ErrOrStderr(), remote, base, current, fetchBranch)
+		baseOutcomes, labeler = syncPullBase(ctx, client, runner, cmd.ErrOrStderr(), remote, base, current, fetchBranch)
 	}
 
 	if noRebase {
@@ -439,6 +514,7 @@ func runPullCore(cmd *cobra.Command) error {
 			})
 		}
 		renderFetchOnlySummary(cmd, runner, upstream)
+		emitPullJSON(cmd, pullResultJSON{Result: "fetch-only", Branch: current, Upstream: upstream, Base: baseOutcomes})
 		return nil
 	}
 
@@ -461,6 +537,7 @@ func runPullCore(cmd *cobra.Command) error {
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "%salready up to date at %s\n", labeler(branchLabel), shortSHA(preHEAD))
+		emitPullJSON(cmd, pullResultJSON{Result: "up-to-date", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Base: baseOutcomes})
 		return nil
 	}
 
@@ -475,6 +552,7 @@ func runPullCore(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"%sno upstream changes — ahead by %d commit%s, nothing to pull\n",
 			labeler(branchLabel), ahead, plural(ahead))
+		emitPullJSON(cmd, pullResultJSON{Result: "ahead-only", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Ahead: ahead, Base: baseOutcomes})
 		return nil
 	}
 
@@ -573,12 +651,18 @@ func runPullCore(cmd *cobra.Command) error {
 	postHEAD := headRev(ctx, runner)
 	renderPullSummary(cmd, runner, preHEAD, postHEAD, strategy, labeler(branchLabel))
 
-	// 9) pop stash
+	// 9) pop stash — BEFORE the success JSON: a pop conflict means the
+	// session is not cleanly updated, and a script that already read
+	// result:"updated" would never notice the non-zero exit that follows.
 	if stashed {
 		if err := popStash(ctx, runner); err != nil {
 			return fmt.Errorf("stash pop failed: %w", err)
 		}
 	}
+	emitPullJSON(cmd, pullResultJSON{
+		Result: "updated", Branch: current, Upstream: upstream, Strategy: strategy,
+		Pre: preHEAD, Post: postHEAD, Ahead: ahead, Behind: behind, Base: baseOutcomes,
+	})
 	return nil
 }
 

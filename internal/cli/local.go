@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -81,10 +80,7 @@ func runLocal(cmd *cobra.Command, args []string) error {
 			Commits:       commits,
 			Clean:         clean,
 		}
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+		return emitAgentResult(cmd.OutOrStdout(), rep)
 	}
 
 	w := cmd.OutOrStdout()

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -389,9 +388,7 @@ func emitAuditJSON(w io.Writer, entries []forget.AuditEntry, depth, top int, sor
 		TotalBytes:       visible,
 		HistoryOnlyBytes: historyOnly,
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(doc)
+	return emitAgentResult(w, doc)
 }
 
 // runAuditInteractive opens a multi-select picker over the audit

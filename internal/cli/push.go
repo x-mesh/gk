@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -161,9 +160,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 	if JSONOut() {
 		_ = stdout // git push writes nothing to stdout
 		_ = stderr
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(pushResult{
+		return emitAgentResult(cmd.OutOrStdout(), pushResult{
 			Remote: remote,
 			Branch: branch,
 			Ahead:  ahead,

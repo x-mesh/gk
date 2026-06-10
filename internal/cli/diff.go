@@ -22,6 +22,7 @@ import (
 var (
 	diffFlagStaged      bool
 	diffFlagStat        bool
+	diffFlagDigest      bool
 	diffFlagInteract    bool
 	diffFlagNoPager     bool
 	diffFlagNoWordDiff  bool
@@ -39,6 +40,7 @@ func init() {
 	}
 	diffCmd.Flags().BoolVar(&diffFlagStaged, "staged", false, "staged 변경사항 표시")
 	diffCmd.Flags().BoolVar(&diffFlagStat, "stat", false, "diff 통계 요약 표시")
+	diffCmd.Flags().BoolVar(&diffFlagDigest, "digest", false, "의미 요약만 출력: 파일별 변경 종류·hunk 수·±라인·변경된 심볼 (--json이면 기계 계약)")
 	diffCmd.Flags().BoolVarP(&diffFlagInteract, "interactive", "i", false, "인터랙티브 파일 탐색 모드")
 	diffCmd.Flags().BoolVar(&diffFlagNoPager, "no-pager", false, "페이저 비활성화")
 	diffCmd.Flags().BoolVar(&diffFlagNoWordDiff, "no-word-diff", false, "단어 단위 하이라이트 비활성화")
@@ -165,6 +167,13 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 2. git diff 실행 ────────────────────────────────────────
+	// digest는 패치 본문을 쓰지 않으므로 컨텍스트를 0으로 강제한다 —
+	// 부수 효과로 심볼 정확도가 올라간다: -U3에서는 함수 선언이 hunk
+	// 컨텍스트에 흡수되면 git이 그 위의 엉뚱한 줄(package 선언 등)을
+	// funcname으로 고르지만, -U0에서는 항상 선언까지 거슬러 올라간다.
+	if diffFlagDigest {
+		diffFlagContext = 0
+	}
 	gitArgs := buildDiffArgs(args)
 
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
@@ -175,6 +184,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	// ── 3. 변경사항 없음 처리 ───────────────────────────────────
 	raw := string(stdout)
 	if strings.TrimSpace(raw) == "" {
+		if diffFlagDigest && useJSON {
+			return emitAgentResult(cmd.OutOrStdout(), digestToJSON(diff.BuildDigest(&diff.DiffResult{})))
+		}
 		if useJSON {
 			return diff.WriteJSON(cmd.OutOrStdout(), &diff.DiffResult{})
 		}
@@ -211,6 +223,18 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 6. 출력 분기 ────────────────────────────────────────────
+
+	// 6a-0. digest — 패치 본문 없이 의미 요약만. JSON이면 agent 계약,
+	// 아니면 파일당 한 줄 표. 어느 쪽도 페이저를 타지 않는다(요약은
+	// 한 화면이 목적).
+	if diffFlagDigest {
+		dg := diff.BuildDigest(result)
+		if useJSON {
+			return emitAgentResult(cmd.OutOrStdout(), digestToJSON(dg))
+		}
+		renderDiffDigest(cmd.OutOrStdout(), dg, noColor)
+		return nil
+	}
 
 	// 6a. JSON 출력
 	if useJSON {

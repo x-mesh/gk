@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1638,10 +1637,7 @@ type LogEntry struct {
 }
 
 func writeJSONLog(w io.Writer, raw []byte) error {
-	entries := parseJSONLog(raw)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(entries)
+	return emitAgentResult(w, parseJSONLog(raw))
 }
 
 // parseJSONLog splits raw output on %x1e (record sep) and %x00 (field sep).

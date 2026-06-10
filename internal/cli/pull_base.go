@@ -21,11 +21,24 @@ import (
 // current is the branch being pulled; fetchBranch names the branch pull has
 // just fetched so the same round-trip is not repeated when it is the base.
 //
-// Returns the branch-column labeler sized to cover both branch names, so the
-// caller's own result lines (already-up-to-date, integrating, updated) align
-// with the base lines printed here. When the base does not participate, the
-// labeler covers just the current branch.
-func syncPullBase(ctx context.Context, client *git.Client, runner git.Runner, w io.Writer, remote, base, current, fetchBranch string) func(string) string {
+// ffSyncOutcome reports what ffSyncBranch did to one branch — consumed by
+// `gk pull --json` so agent tooling reads a field instead of scraping the
+// human lines.
+type ffSyncOutcome struct {
+	Branch string `json:"branch"`
+	// Result: fast-forwarded | up-to-date | skipped-diverged |
+	// skipped-worktree | skipped-no-local | skipped-no-remote | fetch-failed |
+	// error
+	Result string `json:"result"`
+	Pre    string `json:"pre,omitempty"`
+	Post   string `json:"post,omitempty"`
+}
+
+// Returns the base outcomes (nil when the base did not participate) and the
+// branch-column labeler sized to cover both branch names, so the caller's own
+// result lines (already-up-to-date, integrating, updated) align with the base
+// lines printed here.
+func syncPullBase(ctx context.Context, client *git.Client, runner git.Runner, w io.Writer, remote, base, current, fetchBranch string) ([]ffSyncOutcome, func(string) string) {
 	curLabel := current
 	if curLabel == "" {
 		curLabel = "HEAD"
@@ -35,17 +48,17 @@ func syncPullBase(ctx context.Context, client *git.Client, runner git.Runner, w 
 		detected, err := client.DefaultBranch(ctx, remote)
 		if err != nil {
 			printNote(w, "--with-base: could not detect the base branch — set it with --base or `base` in .gk.yaml")
-			return branchLabeler(curLabel)
+			return nil, branchLabeler(curLabel)
 		}
 		name = detected
 	}
 	if current != "" && current == name {
 		// Pulling the base itself — the regular pull already covers it.
-		return branchLabeler(curLabel)
+		return nil, branchLabeler(curLabel)
 	}
 	labeler := branchLabeler(curLabel, name)
-	ffSyncBranches(ctx, runner, w, remote, []string{name}, fetchBranch, labeler)
-	return labeler
+	outcomes := ffSyncBranches(ctx, runner, w, remote, []string{name}, fetchBranch, labeler)
+	return outcomes, labeler
 }
 
 // branchLabeler renders the branch-name column that prefixes every per-branch
@@ -81,14 +94,17 @@ func branchLabeler(names ...string) func(string) string {
 //
 // Kept list-shaped so a future `pull.sync_branches` config can reuse it
 // unchanged; today the only caller passes the single base branch.
-func ffSyncBranches(ctx context.Context, runner git.Runner, w io.Writer, remote string, branches []string, skipFetchFor string, label func(string) string) {
+func ffSyncBranches(ctx context.Context, runner git.Runner, w io.Writer, remote string, branches []string, skipFetchFor string, label func(string) string) []ffSyncOutcome {
+	outcomes := make([]ffSyncOutcome, 0, len(branches))
 	for _, b := range branches {
-		ffSyncBranch(ctx, runner, w, remote, b, b == skipFetchFor, label)
+		outcomes = append(outcomes, ffSyncBranch(ctx, runner, w, remote, b, b == skipFetchFor, label))
 	}
+	return outcomes
 }
 
-func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, branch string, alreadyFetched bool, label func(string) string) {
+func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, branch string, alreadyFetched bool, label func(string) string) ffSyncOutcome {
 	remoteRef := remote + "/" + branch
+	outcome := ffSyncOutcome{Branch: branch}
 
 	if !alreadyFetched {
 		stop := ui.StartBubbleSpinner(fmt.Sprintf("fetching %s (base)", remoteRef))
@@ -97,7 +113,8 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 		if err != nil {
 			printNote(w, fmt.Sprintf("base '%s' not synced — fetch failed: %s",
 				branch, strings.TrimSpace(string(stderr))))
-			return
+			outcome.Result = "fetch-failed"
+			return outcome
 		}
 	}
 
@@ -109,20 +126,25 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 			fmt.Sprintf("base '%s' not synced — no local branch", branch),
 			fmt.Sprintf("create it with: gk sw %s", branch),
 		)
-		return
+		outcome.Result = "skipped-no-local"
+		return outcome
 	}
 	oldSHA := strings.TrimSpace(string(oldOut))
+	outcome.Pre = oldSHA
 
 	newOut, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", remoteRef)
 	if err != nil {
 		printNote(w, fmt.Sprintf("base '%s' not synced — '%s' does not exist after fetch", branch, remoteRef))
-		return
+		outcome.Result = "skipped-no-remote"
+		return outcome
 	}
 	newSHA := strings.TrimSpace(string(newOut))
 
 	if oldSHA == newSHA {
 		fmt.Fprintln(w, label(branch)+cellFaint("already up to date at "+shortSHA(oldSHA)))
-		return
+		outcome.Result = "up-to-date"
+		outcome.Post = oldSHA
+		return outcome
 	}
 
 	// A branch checked out anywhere must not have its ref moved under the
@@ -133,7 +155,8 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 			fmt.Sprintf("base '%s' not synced — checked out in %s", branch, entry.Path),
 			"run gk pull there to update it",
 		)
-		return
+		outcome.Result = "skipped-worktree"
+		return outcome
 	}
 
 	// FF-only gate: the local tip must be a strict ancestor of the remote
@@ -143,7 +166,8 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 			fmt.Sprintf("base '%s' not synced — it has local commits not on %s", branch, remoteRef),
 			fmt.Sprintf("integrate them with: gk sw %s && gk pull", branch),
 		}, "pull.note.with_base_diverged", branch, remoteRef)...)
-		return
+		outcome.Result = "skipped-diverged"
+		return outcome
 	}
 
 	// Compare-and-swap on the old SHA so a concurrent ref update (another
@@ -152,7 +176,11 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 	if _, stderr, err := runner.Run(ctx, "update-ref", "-m", reason, "refs/heads/"+branch, newSHA, oldSHA); err != nil {
 		printNote(w, fmt.Sprintf("base '%s' not synced — update-ref failed: %s",
 			branch, strings.TrimSpace(string(stderr))))
-		return
+		outcome.Result = "error"
+		return outcome
 	}
 	fmt.Fprintln(w, label(branch)+successLinef("fast-forwarded", "%s → %s", shortSHA(oldSHA), shortSHA(newSHA)))
+	outcome.Result = "fast-forwarded"
+	outcome.Post = newSHA
+	return outcome
 }

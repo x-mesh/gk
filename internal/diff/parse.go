@@ -125,6 +125,7 @@ func ParseUnifiedDiff(r io.Reader) (*DiffResult, error) {
 				NewStart: newStart,
 				NewCount: newCount,
 				Header:   line,
+				FuncName: cleanFuncName(m[5]),
 			}
 			oldNum = oldStart
 			newNum = newStart
@@ -283,4 +284,14 @@ func stripABPrefix(path string) string {
 		return path[2:]
 	}
 	return path
+}
+
+// cleanFuncName normalizes the function context git appends to a hunk
+// header: trims whitespace and drops a trailing opening brace so
+// "func runPull(cmd *cobra.Command) error {" reads as a signature, not a
+// code fragment. Empty when git had no context to offer.
+func cleanFuncName(raw string) string {
+	name := strings.TrimSpace(raw)
+	name = strings.TrimSuffix(name, "{")
+	return strings.TrimSpace(name)
 }

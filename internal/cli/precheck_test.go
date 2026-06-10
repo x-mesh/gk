@@ -349,3 +349,180 @@ func TestPrecheckCmd_ExplicitBase(t *testing.T) {
 		t.Errorf("expected 'clean merge', got: %s", buf.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Conflict forecast — default target + agent envelope
+// ---------------------------------------------------------------------------
+
+func precheckForecastCmd(t *testing.T, dir string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+	prev := flagRepo
+	flagRepo = dir
+	t.Cleanup(func() { flagRepo = prev })
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cmd := &cobra.Command{Use: "precheck", Args: cobra.MaximumNArgs(1), RunE: runPrecheckCore, SilenceUsage: true, SilenceErrors: true}
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().Bool("json", false, "")
+	cmd.SetContext(context.Background())
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(&bytes.Buffer{})
+	return cmd, out
+}
+
+// makeForecastClone: downstream tracks origin/main; both sides edit the same
+// line so the next pull would conflict.
+func makeForecastClone(t *testing.T, conflicting bool) *testutil.Repo {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("shared.txt", "base line\n")
+	upstream.Commit("seed: shared")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	downstream.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	upstream.WriteFile("shared.txt", "upstream line\n")
+	upstream.Commit("feat: upstream edit")
+	downstream.RunGit("fetch", "origin") // upstream tip visible locally
+
+	if conflicting {
+		downstream.WriteFile("shared.txt", "local line\n")
+	} else {
+		downstream.WriteFile("other.txt", "independent\n")
+	}
+	downstream.Commit("feat: local edit")
+	return downstream
+}
+
+func TestIntegration_PrecheckDefaultTargetUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	down := makeForecastClone(t, true)
+
+	cmd, out := precheckForecastCmd(t, down.Dir)
+	err := cmd.Execute() // no target → @{u}
+	var ce *ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want ConflictError(3) forecast, got %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "origin/main") || !strings.Contains(out.String(), "shared.txt") {
+		t.Errorf("forecast output:\n%s", out.String())
+	}
+}
+
+func TestIntegration_PrecheckDefaultTargetClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	down := makeForecastClone(t, false)
+
+	cmd, out := precheckForecastCmd(t, down.Dir)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("clean forecast must exit 0: %v", err)
+	}
+	if !strings.Contains(out.String(), "clean merge") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+func TestIntegration_PrecheckAgentEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	down := makeForecastClone(t, true)
+
+	prevA, prevJ := flagAgent, flagJSON
+	flagAgent, flagJSON = true, true
+	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
+
+	cmd, out := precheckForecastCmd(t, down.Dir)
+	_ = cmd.Execute() // conflict → exit-3 path, JSON already on stdout
+
+	var env struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Ours      string   `json:"ours"`
+			Target    string   `json:"target"`
+			Clean     bool     `json:"clean"`
+			Conflicts []string `json:"conflicts"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not valid envelope JSON: %v\n%s", err, out.String())
+	}
+	if !env.OK || env.Result.Clean || env.Result.Ours != "HEAD" || env.Result.Target != "origin/main" {
+		t.Errorf("envelope: %+v", env)
+	}
+	if len(env.Result.Conflicts) != 1 || env.Result.Conflicts[0] != "shared.txt" {
+		t.Errorf("conflicts: %v", env.Result.Conflicts)
+	}
+}
+
+// TestIntegration_PrecheckDefaultTargetSameName: with no upstream but a
+// same-name remote ref, the forecast must follow pull's resolution (Codex
+// P2) — origin/<current>, not the base branch.
+func TestIntegration_PrecheckDefaultTargetSameName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("seed.txt", "seed\n")
+	upstream.Commit("seed: initial")
+	upstream.RunGit("branch", "feature")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	// On feature WITHOUT upstream config; origin/feature exists.
+	down.RunGit("switch", "-q", "-c", "feature", "origin/feature")
+	down.RunGit("branch", "--unset-upstream", "feature")
+
+	cmd, out := precheckForecastCmd(t, down.Dir)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("forecast: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "origin/feature") {
+		t.Errorf("must forecast origin/feature (pull's target), got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "origin/main") {
+		t.Errorf("must not fall back to base when same-name ref exists:\n%s", out.String())
+	}
+}
+
+// TestIntegration_PrecheckTrackingCacheMissing: tracking config intact but
+// the remote-tracking ref absent — precheck is read-only, so it must refuse
+// with the fetch remedy instead of silently forecasting the wrong branch.
+func TestIntegration_PrecheckTrackingCacheMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("seed.txt", "seed\n")
+	upstream.Commit("seed: initial")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	down.RunGit("branch", "--set-upstream-to=origin/main", "main")
+	down.RunGit("update-ref", "-d", "refs/remotes/origin/main") // cache gone
+
+	cmd, _ := precheckForecastCmd(t, down.Dir)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "remote-tracking ref is missing") {
+		t.Fatalf("want missing-cache refusal, got %v", err)
+	}
+	r := RemediesFrom(err)
+	if len(r) != 1 || !strings.Contains(r[0].Command, "git fetch origin main") {
+		t.Errorf("remedies: %+v", r)
+	}
+}

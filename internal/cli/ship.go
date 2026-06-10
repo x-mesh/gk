@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -941,10 +940,7 @@ func renderShipPlanJSON(w io.Writer, plan shipPlan, flags shipFlags) error {
 	if flags.skipPreflight {
 		out.Preflight = nil
 	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return emitAgentResult(w, out)
 }
 
 func renderShipStatus(w io.Writer, plan shipPlan) {

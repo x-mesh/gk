@@ -39,6 +39,7 @@ var (
 	flagDebug   bool
 	flagEasy    bool
 	flagNoEasy  bool
+	flagAgent   bool
 
 	// debugStart is captured the first time Dbg() fires so every
 	// subsequent log line carries an elapsed-since-start offset, which
@@ -73,6 +74,17 @@ func init() {
 	// subcommand needing to pass -d by hand.
 	if v := os.Getenv("GK_DEBUG"); v == "1" || v == "true" {
 		flagDebug = true
+	}
+	// GK_AGENT=1 turns on agent mode for the whole process: every command
+	// that supports JSON emits the {ok, result, error} envelope, and
+	// failures carry machine-readable code+remedies. One `export GK_AGENT=1`
+	// in an agent's instructions replaces per-call --json flags — flag
+	// omission can't silently fall back to prose. Implies --json; an
+	// explicit --json=false still wins because cobra parses flags after
+	// this init runs.
+	if v := os.Getenv("GK_AGENT"); v == "1" || v == "true" {
+		flagAgent = true
+		flagJSON = true
 	}
 	// Install subprocess hooks once per process invocation before the
 	// selected subcommand runs. Flag parsing happens before PreRun, so
@@ -195,6 +207,7 @@ func JSONOut() bool     { return flagJSON }
 func NoColorFlag() bool { return flagNoColor }
 func Debug() bool       { return flagDebug }
 func EasyFlag() bool    { return flagEasy }
+func AgentOut() bool    { return flagAgent }
 func NoEasyFlag() bool  { return flagNoEasy }
 
 // debugWriter is the sink for Dbg lines. Production uses os.Stderr;

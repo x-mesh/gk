@@ -69,6 +69,7 @@ func readDoFlags(cmd *cobra.Command) doFlags {
 	f.force, _ = cmd.Flags().GetBool("force")
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.json, _ = cmd.Flags().GetBool("json")
+	f.json = f.json || JSONOut()
 	f.provider, _ = cmd.Flags().GetString("provider")
 	f.model, _ = cmd.Flags().GetString("model")
 	f.lang, _ = cmd.Flags().GetString("lang")

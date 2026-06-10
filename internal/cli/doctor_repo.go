@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -41,23 +42,113 @@ func resolveGitDir(ctx context.Context, runner git.Runner) string {
 	return filepath.Join(repoDir, dir)
 }
 
+// indexLockFreshWindow is the age under which an index.lock is presumed to
+// belong to a live git process. git does not write a pid into index.lock,
+// so mtime is the only portable staleness signal — a parallel agent that
+// died mid-commit leaves a lock that only ages, while a real in-flight git
+// operation holds it for seconds.
+const indexLockFreshWindow = 2 * time.Minute
+
+// indexLockAge returns whether .git/index.lock exists and how old it is.
+func indexLockAge(gitDir string) (exists bool, age time.Duration) {
+	info, err := os.Stat(filepath.Join(gitDir, "index.lock"))
+	if err != nil {
+		return false, 0
+	}
+	return true, time.Since(info.ModTime())
+}
+
 // checkRepoLockFile flags a stale .git/index.lock — the most common
 // reason "git could not write the index" surfaces during everyday use.
+// A fresh lock (younger than indexLockFreshWindow) is only a WARN: a git
+// process may legitimately be holding it, and deleting it under a live
+// writer corrupts the index.
 func checkRepoLockFile(gitDir string) doctorCheck {
-	lock := filepath.Join(gitDir, "index.lock")
-	if info, err := os.Stat(lock); err == nil {
+	exists, age := indexLockAge(gitDir)
+	if !exists {
 		return doctorCheck{
 			Name:   "repo: index.lock",
-			Status: statusFail,
-			Detail: fmt.Sprintf("present (%d bytes, modified %s)", info.Size(), info.ModTime().Format("15:04:05")),
-			Fix:    "remove if no git process is running: rm .git/index.lock  (or run `gk doctor --fix`)",
+			Status: statusPass,
+			Detail: "no stale lock",
+		}
+	}
+	if age < indexLockFreshWindow {
+		return doctorCheck{
+			Name:   "repo: index.lock",
+			Status: statusWarn,
+			Detail: fmt.Sprintf("present but recent (%s old) — a git process may still be running", age.Round(time.Second)),
+			Fix:    "wait for the running git operation; if it crashed, rerun `gk doctor --fix` in a couple of minutes",
 		}
 	}
 	return doctorCheck{
 		Name:   "repo: index.lock",
-		Status: statusPass,
-		Detail: "no stale lock",
+		Status: statusFail,
+		Detail: fmt.Sprintf("stale (%s old)", age.Round(time.Second)),
+		Fix:    "remove if no git process is running: rm .git/index.lock  (or run `gk doctor --fix`)",
 	}
+}
+
+// mergeHeadOrphan reports a MERGE_HEAD with zero unmerged paths — a merge
+// that was interrupted after conflicts were resolved (or never had any).
+// Aborting such a merge cannot lose conflict work, so the fix prompt can
+// say so explicitly.
+func mergeHeadOrphan(ctx context.Context, runner git.Runner, gitDir string) bool {
+	if _, err := os.Stat(filepath.Join(gitDir, "MERGE_HEAD")); err != nil {
+		return false
+	}
+	out, _, err := runner.Run(ctx, "diff", "--name-only", "--diff-filter=U")
+	return err == nil && strings.TrimSpace(string(out)) == ""
+}
+
+// checkPrunableWorktrees flags worktree registrations whose directories are
+// gone — agents that delete a worktree directory without `gk wt remove`
+// leave these behind, and they block re-adding a worktree at the same path.
+func checkPrunableWorktrees(ctx context.Context, runner git.Runner) doctorCheck {
+	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return doctorCheck{Name: "repo: prunable worktrees", Status: statusWarn, Detail: "could not query: " + err.Error()}
+	}
+	count := 0
+	for _, e := range parseWorktreePorcelain(string(out)) {
+		if e.Prunable {
+			count++
+		}
+	}
+	if count == 0 {
+		return doctorCheck{Name: "repo: prunable worktrees", Status: statusPass, Detail: "none"}
+	}
+	return doctorCheck{
+		Name:   "repo: prunable worktrees",
+		Status: statusWarn,
+		Detail: fmt.Sprintf("%d stale registration(s)", count),
+		Fix:    "clean with `git worktree prune` (or run `gk doctor --fix`)",
+	}
+}
+
+// promptFixPrunable prunes stale worktree registrations after confirmation.
+// Prune only drops bookkeeping for directories that no longer exist — it
+// never touches a live worktree — so the prompt is a courtesy, not a guard.
+func promptFixPrunable(ctx context.Context, cmd *cobra.Command, runner git.Runner) error {
+	choice, err := ui.ScrollSelectTUI(ctx, "fix: prunable worktrees",
+		"Stale worktree registrations point at directories that no longer exist.\nPruning removes only the bookkeeping under .git/worktrees.",
+		[]ui.ScrollSelectOption{
+			{Key: "p", Value: "prune", Display: "prune — git worktree prune -v", IsDefault: true},
+			{Key: "s", Value: "skip", Display: "skip — keep registrations"},
+		})
+	if err != nil || choice == "skip" || choice == "" {
+		return errSkipFix
+	}
+	out, errOut, runErr := runner.Run(ctx, "worktree", "prune", "-v")
+	if runErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "worktree prune: %s: %v\n", strings.TrimSpace(string(errOut)), runErr)
+		return nil
+	}
+	pruned := strings.TrimSpace(string(out))
+	if pruned == "" {
+		pruned = "nothing to prune"
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), pruned)
+	return nil
 }
 
 // checkInProgressOp surfaces an interrupted rebase / merge / cherry-pick
@@ -168,6 +259,7 @@ func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gi
 			checkInProgressOp(gitDir),
 			checkUnmergedPaths(ctx, runner),
 			checkDirtyTree(ctx, runner),
+			checkPrunableWorktrees(ctx, runner),
 			checkBranchTracking(ctx, runner, remote),
 		}
 		acted := false
@@ -179,9 +271,25 @@ func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gi
 			var err error
 			switch c.Name {
 			case "repo: index.lock":
-				err = promptFixLock(ctx, cmd, gitDir)
+				// A fresh lock may belong to a live git process — git puts
+				// no pid in index.lock, so age is the only safe signal.
+				// Never offer deletion inside the fresh window.
+				if exists, age := indexLockAge(gitDir); exists && age < indexLockFreshWindow {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"index.lock is only %s old — a git process may be running; not touching it\n",
+						age.Round(time.Second))
+					err = errSkipFix
+				} else {
+					err = promptFixLock(ctx, cmd, gitDir)
+				}
 			case "repo: in-progress op":
-				err = promptFixInProgress(ctx, cmd, runner, c.Detail)
+				detail := c.Detail
+				if mergeHeadOrphan(ctx, runner, gitDir) {
+					detail += " (no conflicted files — aborting cannot lose conflict work)"
+				}
+				err = promptFixInProgress(ctx, cmd, runner, detail)
+			case "repo: prunable worktrees":
+				err = promptFixPrunable(ctx, cmd, runner)
 			case "repo: unmerged paths":
 				err = promptFixUnmerged(ctx, cmd, runner)
 			case "repo: working tree":

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1382,10 +1381,7 @@ func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []g
 			Action: stripControlChars(submoduleStatusAction(e.Path)),
 		})
 	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return emitAgentResult(w, out)
 }
 
 func statusEntryState(e git.StatusEntry) string {

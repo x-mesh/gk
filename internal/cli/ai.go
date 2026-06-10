@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -315,9 +314,7 @@ func emitAIAdvice(out io.Writer, title, text string) {
 // writeAIJSON marshals v as indented JSON to w. Backs the `--format json`
 // outputs so they emit real structured data instead of raw provider prose.
 func writeAIJSON(w io.Writer, v any) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	return emitAgentResult(w, v)
 }
 
 // aiChatMaxTokens is the advisory response cap for the chat-style AI

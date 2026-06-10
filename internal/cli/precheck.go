@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,15 +10,24 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "precheck <target>",
-		Short: "Simulate a merge into <target> and report conflicts without touching the working tree",
-		Long: `Runs git merge-tree between HEAD and <target> and prints any files that
+		Use:     "precheck [target]",
+		Aliases: []string{"forecast"},
+		Short:   "Forecast conflicts before integrating — merge-tree simulation, nothing touched",
+		Long: `Runs git merge-tree between HEAD and the target and prints any files that
 would conflict. Working tree, index, and refs are not modified.
+
+Without a target the upstream (@{u}) is checked — "will my next pull
+conflict?" — falling back to the remote base branch when no upstream is
+configured. The simulation is a merge; a rebase replays commits one by one,
+so its conflicts can differ in detail, but the file set is the practical
+forecast either way: a clean report means start the integration, a conflict
+list means pick a strategy first instead of the try→abort loop.
 
 Exit codes:
   0  merge would be clean
@@ -27,7 +35,7 @@ Exit codes:
   3  conflicts detected
 
 Requires git >= 2.40 (for --name-only). Falls back to marker parsing on older git.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: runPrecheck,
 	}
 	cmd.Flags().String("base", "", "explicit merge-base (overrides git merge-base HEAD <target>)")
@@ -35,8 +43,10 @@ Requires git >= 2.40 (for --name-only). Falls back to marker parsing on older gi
 	rootCmd.AddCommand(cmd)
 }
 
-// precheckResult is the JSON shape emitted by --json.
+// precheckResult is the JSON shape emitted by --json / agent mode.
+// Fields are append-only.
 type precheckResult struct {
+	Ours      string   `json:"ours"`
 	Target    string   `json:"target"`
 	Base      string   `json:"base"`
 	Clean     bool     `json:"clean"`
@@ -47,22 +57,36 @@ func runPrecheck(cmd *cobra.Command, args []string) error {
 	err := runPrecheckCore(cmd, args)
 	var ce *ConflictError
 	if errors.As(err, &ce) {
+		// Precheck's own JSON (clean/conflicts) was already emitted by the
+		// core; the non-zero exit alone signals "conflicts predicted".
 		os.Exit(ce.Code)
 	}
 	return err
 }
 
 func runPrecheckCore(cmd *cobra.Command, args []string) error {
-	target := args[0]
-	if err := guardRef(target); err != nil {
-		return fmt.Errorf("invalid target: %w", err)
-	}
-
 	baseOverride, _ := cmd.Flags().GetString("base")
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSON = asJSON || JSONOut()
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	ctx := cmd.Context()
+
+	// No target → forecast the next integration: upstream first, base as
+	// the fallback — the question an agent asks before every pull.
+	target := ""
+	if len(args) == 1 {
+		target = args[0]
+	} else {
+		resolved, err := precheckDefaultTarget(ctx, runner, cmd)
+		if err != nil {
+			return err
+		}
+		target = resolved
+	}
+	if err := guardRef(target); err != nil {
+		return fmt.Errorf("invalid target: %w", err)
+	}
 
 	// Resolve the target to a concrete commit so error messages are actionable.
 	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", target+"^{commit}"); err != nil {
@@ -99,6 +123,7 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 	}
 
 	res := precheckResult{
+		Ours:      "HEAD",
 		Target:    target,
 		Base:      base,
 		Clean:     len(conflicts) == 0,
@@ -107,9 +132,7 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 
 	w := cmd.OutOrStdout()
 	if asJSON {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+		if err := emitAgentResult(w, res); err != nil {
 			return err
 		}
 	} else {
@@ -120,6 +143,58 @@ func runPrecheckCore(cmd *cobra.Command, args []string) error {
 		return &ConflictError{Code: 3}
 	}
 	return nil
+}
+
+// precheckDefaultTarget resolves what "the next integration" means when no
+// target is given, in the SAME order gk pull resolves its upstream — a
+// forecast that predicts a different ref than the pull would fetch is worse
+// than none: ① @{u}; ② tracking config whose remote-tracking ref exists
+// locally (precheck is read-only, so a missing cache ref can't be fetched —
+// it errors with the fetch remedy instead of silently forecasting the
+// wrong branch); ③ the same-name remote ref; ④ the remote base branch.
+func precheckDefaultTarget(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command) (string, error) {
+	if upstream, _, _, ok := tryTrackingUpstream(ctx, runner); ok {
+		return upstream, nil
+	}
+	cfg, _ := config.Load(cmd.Flags())
+	remote := cfg.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	client := git.NewClient(runner)
+	current, _ := client.CurrentBranch(ctx)
+
+	if cfgRemote, cfgBranch, ok := trackingFromConfig(ctx, runner, current); ok {
+		candidate := cfgRemote + "/" + cfgBranch
+		if git.RefExists(ctx, runner, candidate) {
+			return candidate, nil
+		}
+		return "", WithRemedy(
+			fmt.Errorf("precheck: %q tracks %s but its remote-tracking ref is missing locally", current, candidate),
+			"fetch it first, then forecast again",
+			errRemedy{Command: fmt.Sprintf("git fetch %s %s", cfgRemote, cfgBranch), Safety: "safe"},
+		)
+	}
+	if current != "" && git.RefExists(ctx, runner, remote+"/"+current) {
+		return remote + "/" + current, nil
+	}
+
+	base := cfg.BaseBranch
+	if base == "" {
+		detected, err := client.DefaultBranch(ctx, remote)
+		if err != nil {
+			return "", WithHint(
+				fmt.Errorf("precheck: no upstream and no base branch to forecast against"),
+				"name the target explicitly: gk precheck <branch>",
+			)
+		}
+		base = detected
+	}
+	candidate := remote + "/" + base
+	if git.RefExists(ctx, runner, candidate) {
+		return candidate, nil
+	}
+	return base, nil
 }
 
 // writePrecheckHuman emits the human-readable report. The explicit

@@ -114,6 +114,10 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		if h := HintFrom(err); h != "" {
 			fmt.Fprintln(os.Stderr, "  hint: "+h)
 		}
+		// Agent contract for the paused state — same shape as pull's:
+		// conflicted files plus the exact resume/abort commands, read from
+		// the worktree the merge actually paused in.
+		emitPullConflictJSON(cmd, ce.Dir)
 		os.Exit(ce.Code)
 	}
 	return err
@@ -334,6 +338,12 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 	targetFlags := flags
 	targetFlags.into = ""
 	if err := runMergeCore(ctx, targetDeps, source, targetFlags); err != nil {
+		// Stamp the receiver path so the conflict contract probes the
+		// worktree the merge paused in, not the invoking checkout.
+		var ce *ConflictError
+		if errors.As(err, &ce) && ce.Dir == "" {
+			ce.Dir = entry.Path
+		}
 		return WithHint(err, "receiver worktree: cd "+entry.Path+" or pass `--repo "+entry.Path+"` to inspect/continue")
 	}
 	if deps.ErrOut != nil {

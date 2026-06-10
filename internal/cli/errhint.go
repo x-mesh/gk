@@ -17,8 +17,18 @@ import (
 // primary error line. The hint is advisory and does not affect errors.Is /
 // errors.As chains — the wrapped error is always reachable via Unwrap.
 type hintError struct {
-	err  error
-	hint string
+	err      error
+	hint     string
+	remedies []errRemedy
+}
+
+// errRemedy is one machine-executable fix attached to an error — the agent
+// envelope exposes these as `error.remedies` so tooling runs a command
+// instead of interpreting hint prose. Safety marks whether running it can
+// lose work ("safe" | "destructive").
+type errRemedy struct {
+	Command string `json:"command"`
+	Safety  string `json:"safety"`
 }
 
 func (e *hintError) Error() string { return e.err.Error() }
@@ -34,6 +44,33 @@ func WithHint(err error, hint string) error {
 		return err
 	}
 	return &hintError{err: err, hint: hint}
+}
+
+// WithRemedy decorates err with a hint plus explicit machine-executable
+// remedies. Call sites that know the exact fix command(s) use this instead
+// of WithHint so agents get structure, not prose to parse.
+func WithRemedy(err error, hint string, remedies ...errRemedy) error {
+	if err == nil {
+		return nil
+	}
+	return &hintError{err: err, hint: strings.TrimSpace(hint), remedies: remedies}
+}
+
+// RemediesFrom extracts machine-executable remedies from the error chain.
+// Explicit WithRemedy entries win; otherwise a "try: <command>" hint (the
+// dominant hintCommand convention, ~16 call sites) is promoted into a single
+// safe remedy so existing hints feed the agent contract without rewriting
+// their call sites.
+func RemediesFrom(err error) []errRemedy {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if he, ok := e.(*hintError); ok && len(he.remedies) > 0 {
+			return he.remedies
+		}
+	}
+	if h := HintFrom(err); strings.HasPrefix(h, "try: ") {
+		return []errRemedy{{Command: strings.TrimPrefix(h, "try: "), Safety: "safe"}}
+	}
+	return nil
 }
 
 // HintFrom walks the error chain and returns the first hint found, or "".

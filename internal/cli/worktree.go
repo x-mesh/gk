@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -151,9 +150,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	entries := parseWorktreePorcelain(string(stdout))
 
 	if JSONOut() {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(entries)
+		return emitAgentResult(cmd.OutOrStdout(), entries)
 	}
 
 	w := cmd.OutOrStdout()

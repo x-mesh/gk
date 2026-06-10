@@ -94,9 +94,17 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	violations, errs := reg.Evaluate(ctx, in)
 
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSON = asJSON || JSONOut()
 	w := cmd.OutOrStdout()
 	if asJSON {
-		if err := printViolationsNDJSON(w, violations); err != nil {
+		// Agent mode wraps the violations as one enveloped array; the bare
+		// --json NDJSON stream (one violation per line) stays for existing
+		// line-oriented consumers.
+		if AgentOut() {
+			if err := emitAgentResult(w, violationsJSON(violations)); err != nil {
+				return err
+			}
+		} else if err := printViolationsNDJSON(w, violations); err != nil {
 			return err
 		}
 	} else {
@@ -119,17 +127,25 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	}
 }
 
-func printViolationsNDJSON(w io.Writer, vs []policy.Violation) error {
-	enc := json.NewEncoder(w)
+func violationsJSON(vs []policy.Violation) []violationJSON {
+	out := make([]violationJSON, 0, len(vs))
 	for _, v := range vs {
-		if err := enc.Encode(violationJSON{
+		out = append(out, violationJSON{
 			RuleID:   v.RuleID,
 			Severity: v.Severity.String(),
 			File:     v.File,
 			Line:     v.Line,
 			Message:  v.Message,
 			Hint:     v.Hint,
-		}); err != nil {
+		})
+	}
+	return out
+}
+
+func printViolationsNDJSON(w io.Writer, vs []policy.Violation) error {
+	enc := json.NewEncoder(w)
+	for _, v := range violationsJSON(vs) {
+		if err := enc.Encode(v); err != nil {
 			return err
 		}
 	}

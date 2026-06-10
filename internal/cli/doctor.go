@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -77,6 +76,7 @@ Exit codes:
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSON = asJSON || JSONOut()
 	fix, _ := cmd.Flags().GetBool("fix")
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
@@ -122,15 +122,14 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			checkStagedSize(ctx, runner),
 			checkUntrackedNoise(ctx, runner),
 			checkStashBacklog(ctx, runner),
+			checkPrunableWorktrees(ctx, runner),
 			checkBranchTracking(ctx, runner, remote),
 		)
 	}
 
 	w := cmd.OutOrStdout()
 	if asJSON {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(checks); err != nil {
+		if err := emitAgentResult(w, checks); err != nil {
 			return err
 		}
 	} else {

@@ -158,6 +158,10 @@ func runPromptInfo(cmd *cobra.Command, args []string) error {
 func formatPromptInfo(w io.Writer, info promptInfo, format string) error {
 	switch format {
 	case "json":
+		// Deliberately NOT routed through the agent envelope: prompt-info's
+		// JSON consumer is a shell prompt (starship etc.) that runs with the
+		// user's exported environment — wrapping under GK_AGENT=1 would break
+		// every prompt render. Its --format flag is its own contract.
 		return json.NewEncoder(w).Encode(info)
 	case "plain", "":
 		tokens := plainTokens(info)

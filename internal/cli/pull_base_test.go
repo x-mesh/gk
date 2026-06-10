@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,5 +385,138 @@ func TestIntegration_PullSurvivesBrokenConfig(t *testing.T) {
 	warn := warnBuf.String()
 	if !strings.Contains(warn, "config error") || !strings.Contains(warn, "already defined") {
 		t.Errorf("expected duplicate-key config warning, got: %q", warn)
+	}
+}
+
+// TestIntegration_PullJSONResult: --json emits the machine-readable result on
+// stdout (stderr keeps the human stream) — here the up-to-date + base
+// outcome shape agents branch on.
+func TestIntegration_PullJSONResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	_, downstream := makeWithBaseClone(t)
+
+	// First pull integrates everything so the second is deterministic.
+	cmd := pullCoreCmd(t, downstream.Dir)
+	if err := cmd.Flags().Set("with-base", "true"); err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first pull: %v", err)
+	}
+
+	prevJSON := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJSON })
+
+	cmd2 := pullCoreCmd(t, downstream.Dir)
+	if err := cmd2.Flags().Set("with-base", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd2.SetOut(stdout)
+	cmd2.SetErr(stderr)
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("json pull: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	var res pullResultJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if res.Schema != 1 || res.Result != "up-to-date" || res.Branch != "develop" || res.Upstream != "origin/develop" {
+		t.Errorf("result fields: %+v", res)
+	}
+	if len(res.Base) != 1 || res.Base[0].Branch != "main" || res.Base[0].Result != "up-to-date" {
+		t.Errorf("base outcomes: %+v", res.Base)
+	}
+	if res.Pre == "" || res.Pre != res.Post {
+		t.Errorf("pre/post: %q/%q", res.Pre, res.Post)
+	}
+}
+
+// TestIntegration_PullJSONUpdated: the integrate path reports moved SHAs and
+// the base fast-forward outcome.
+func TestIntegration_PullJSONUpdated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream, downstream := makeWithBaseClone(t)
+
+	prevJSON := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJSON })
+
+	cmd := pullCoreCmd(t, downstream.Dir)
+	if err := cmd.Flags().Set("with-base", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+
+	var res pullResultJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if res.Result != "updated" || res.Pre == res.Post || res.Post == "" {
+		t.Errorf("updated result: %+v", res)
+	}
+	if res.Post != upstream.RunGit("rev-parse", "develop") {
+		t.Errorf("post = %s, want upstream develop tip", res.Post)
+	}
+	if len(res.Base) != 1 || res.Base[0].Result != "fast-forwarded" {
+		t.Errorf("base outcomes: %+v", res.Base)
+	}
+}
+
+// TestIntegration_PullJSONAutostashPopConflict: when the integration
+// succeeds but the autostash pop conflicts, the success JSON must NOT have
+// been emitted (Codex P2) — the command exits non-zero and a script that
+// already read result:"updated" would never notice.
+func TestIntegration_PullJSONAutostashPopConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("shared.txt", "base\n")
+	upstream.Commit("seed: shared")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	down.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	// Upstream rewrites the line; local edits the same line uncommitted —
+	// the pull fast-forwards, then the stash pop conflicts.
+	upstream.WriteFile("shared.txt", "upstream\n")
+	upstream.Commit("feat: upstream edit")
+	down.WriteFile("shared.txt", "local uncommitted\n")
+
+	prevJSON := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJSON })
+
+	cmd := pullCoreCmd(t, down.Dir)
+	if err := cmd.Flags().Set("autostash", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "stash pop failed") {
+		t.Fatalf("want stash pop failure, got %v\nstderr:\n%s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), `"updated"`) {
+		t.Errorf("success JSON must not precede a pop failure:\n%s", stdout.String())
 	}
 }

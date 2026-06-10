@@ -608,9 +608,7 @@ func renderStatusAssistJSON(
 ) error {
 	baseRes := resolveBaseForStatus(ctx, runner, client, cfg)
 	facts := collectStatusAssistFacts(ctx, runner, cfg, st, g, baseRes)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(facts)
+	return emitAgentResult(w, facts)
 }
 
 func statusAssistLabel(cmd *cobra.Command) string {

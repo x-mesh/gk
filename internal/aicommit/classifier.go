@@ -108,6 +108,17 @@ func topLevelDir(p string) string {
 	return "."
 }
 
+// FileKind classifies a path into the coarse change category used by
+// surfaces like `gk diff --digest` (test / docs / ci / build); empty when
+// the path is regular source. Exported wrapper over the commit
+// classifier's path heuristics so the vocabulary stays in one place.
+func FileKind(path string) string {
+	if t := heuristicType(path); t == "test" || t == "docs" || t == "ci" || t == "build" {
+		return t
+	}
+	return ""
+}
+
 // heuristicType picks a Conventional Commit type from a path alone.
 //
 // The rules are intentionally narrow: they exist to override obviously

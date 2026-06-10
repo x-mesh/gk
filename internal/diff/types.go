@@ -60,6 +60,10 @@ type Hunk struct {
 	NewStart int    // 새 파일 시작 라인
 	NewCount int    // 새 파일 라인 수
 	Header   string // @@ 헤더 전체 텍스트
+	// FuncName은 git이 hunk header 뒤에 붙이는 함수 컨텍스트
+	// ("@@ ... @@ func runPull(...) error {" → "func runPull(...) error").
+	// git의 기본 휴리스틱만으로 채워지며(.gitattributes 불필요), 없으면 빈 값.
+	FuncName string
 	Lines    []DiffLine
 }
 

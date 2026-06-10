@@ -21,7 +21,13 @@ func init() {
 		Use:   "forget [path...]",
 		Short: "Remove paths from the entire git history (rewrites SHAs)",
 		Long: `Remove one or more paths from every commit in the repository, including
-historical revisions, by delegating to git filter-repo.
+historical revisions. Two engines are available: the default delegates to
+git filter-repo; --engine native uses gk's built-in rewrite (experimental),
+which needs no external install, rewrites only branches and tags (backup
+refs and remote-tracking refs stay untouched), and keeps pre-rewrite
+objects reachable so the printed rollback is guaranteed to work. The
+native engine covers path removal only; it refuses shallow clones and
+repositories with replace refs — use the default engine there.
 
 When called with no paths, gk forget auto-detects tracked files that are
 already covered by .gitignore — turning the common workflow
@@ -44,8 +50,10 @@ abort with a hint, since filter-repo's reset would silently drop them.
 Pass --force-dirty when you have reviewed those outside changes and
 accept losing them.
 
-Requires git filter-repo (https://github.com/newren/git-filter-repo).
+The default engine requires git filter-repo
+(https://github.com/newren/git-filter-repo).
 Install: brew install git-filter-repo  (or: pip install git-filter-repo)
+--engine native has no external dependency.
 
 Examples:
   gk forget                              # auto-detect tracked-but-ignored paths
@@ -57,6 +65,7 @@ Examples:
   gk forget --analyze --depth 2          # repo-wide audit, two-segment buckets
   gk forget --analyze --depth 0 --top 50 # 50 heaviest individual files
   gk forget db/ --keep "db/keep/*"       # forget db/ but keep db/keep/ entries
+  gk forget db/ --engine native          # built-in engine, no filter-repo needed
 `,
 		RunE: runForget,
 	}
@@ -69,6 +78,7 @@ Examples:
 	cmd.Flags().String("bar", "auto", "with --analyze, bar style: auto|filled|block|none (auto = filled on TTY, none on pipes)")
 	cmd.Flags().String("sort", "size", "with --analyze, ranking: size|churn|name (churn = by unique blob count, surfaces rewrite-heavy paths)")
 	cmd.Flags().BoolP("interactive", "i", false, "with --analyze, open a multi-select picker over the audit results and forget the selected paths")
+	cmd.Flags().String("engine", "filter-repo", "history rewrite engine: filter-repo (delegated, default) or native (built-in, experimental — no filter-repo install needed; rewrites only branches and tags, keeps old objects so the backup rollback is guaranteed)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -84,6 +94,10 @@ func runForget(cmd *cobra.Command, args []string) error {
 	barStr, _ := cmd.Flags().GetString("bar")
 	sortStr, _ := cmd.Flags().GetString("sort")
 	interactive, _ := cmd.Flags().GetBool("interactive")
+	engine, _ := cmd.Flags().GetString("engine")
+	if engine != "filter-repo" && engine != "native" {
+		return fmt.Errorf("forget: unknown engine %q (filter-repo|native)", engine)
+	}
 	// --analyze is read-only by definition; treat it as a dry-run so the
 	// preview-only path runs without a separate code branch.
 	dryRun := DryRun() || analyze
@@ -91,13 +105,13 @@ func runForget(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
 
-	// Preflight: filter-repo must be installed before we go any further,
-	// except for --analyze which is read-only and just walks objects.
-	// Done first so a missing binary is the first error a user sees, not
-	// a cryptic mid-run failure.
-	if !analyze {
+	// Preflight: the delegated engine needs filter-repo installed before
+	// we go any further — done first so a missing binary is the first
+	// error a user sees, not a cryptic mid-run failure. The native engine
+	// has no external dependency; --analyze is read-only either way.
+	if !analyze && engine == "filter-repo" {
 		if err := forget.EnsureFilterRepo(); err != nil {
-			return WithHint(err, "run `gk doctor` to see the full preflight result")
+			return WithHint(err, "run `gk doctor` to see the full preflight result — or use --engine native (no install needed)")
 		}
 	}
 
@@ -234,17 +248,43 @@ func runForget(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := forget.RunFilterRepo(ctx, RepoFlag(), gitDir, paths); err != nil {
-		return fmt.Errorf("filter-repo: %w (backup at %s)", err, backup.Manifest)
-	}
+	if engine == "native" {
+		res, nerr := forget.RunNative(ctx, RepoFlag(), gitDir, paths)
+		if nerr != nil {
+			return fmt.Errorf("native rewrite: %w (backup at %s)", nerr, backup.Manifest)
+		}
+		mapPath := strings.TrimSuffix(backup.Manifest, ".txt") + "-commit-map.txt"
+		if werr := forget.WriteCommitMap(mapPath, res.CommitMap); werr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warn: could not write commit map: %v\n", werr)
+		} else {
+			fmt.Fprintf(w, "commit map written: %s\n", mapPath)
+		}
+		fmt.Fprintf(w, "history rewritten: %d commits processed, %d pruned, %d refs updated\n",
+			res.CommitsSeen, res.CommitsPruned, res.RefsUpdated)
+		if len(res.RefsDeleted) > 0 {
+			fmt.Fprintf(w, "refs deleted (history fully removed): %s\n", strings.Join(res.RefsDeleted, ", "))
+		}
+	} else {
+		if err := forget.RunFilterRepo(ctx, RepoFlag(), gitDir, paths); err != nil {
+			return fmt.Errorf("filter-repo: %w (backup at %s)", err, backup.Manifest)
+		}
 
-	if err := forget.RestoreOrigin(ctx, runner, captured); err != nil {
-		// Non-fatal — the rewrite succeeded; surface as a warning so the
-		// user can re-add origin themselves rather than rolling back.
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: could not restore origin remote: %v\n", err)
+		if err := forget.RestoreOrigin(ctx, runner, captured); err != nil {
+			// Non-fatal — the rewrite succeeded; surface as a warning so the
+			// user can re-add origin themselves rather than rolling back.
+			fmt.Fprintf(cmd.ErrOrStderr(), "warn: could not restore origin remote: %v\n", err)
+		}
+		// filter-repo's --refs (partial) mode skips its own post-run
+		// checkout in some versions — refresh deterministically.
+		if _, _, rerr := runner.Run(ctx, "reset", "--hard"); rerr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warn: could not reset working tree: %v\n", rerr)
+		}
+		fmt.Fprintln(w, "history rewritten.")
 	}
-
-	fmt.Fprintln(w, "history rewritten.")
+	// Both engines deliberately keep pre-rewrite objects reachable through
+	// the backup refs — that is what makes the rollback line below real.
+	// Reclaiming disk is a later, conscious step.
+	fmt.Fprintln(w, stylizeHintLine("old objects kept for rollback — reclaim disk later with `git gc --prune=now` once you trust the result"))
 	if captured != nil && captured.URL != "" && branch != "" {
 		fmt.Fprintln(w, stylizeHintLabel("next: history was rewritten — the remote must be force-updated"))
 		fmt.Fprintln(w, stylizeHintCommand("  gk push --force                       # gk-native: --force-with-lease + secret scan"))

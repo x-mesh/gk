@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`gk forget`이 이전 filter-repo 실행 흔적에 막히던 문제.** 하루 이상 지난 `.git/filter-repo/already_ran` 마커가 남아 있으면 filter-repo가 "이전 실행의 연속이냐"는 대화형 Y/N 프롬프트를 띄우는데, gk는 터미널 없이(stdin=/dev/null) 실행하므로 EOFError로 죽었다. gk forget의 매 실행은 독립적인 새 rewrite이므로 실행 전 마커만 제거해 fresh-run 의미론을 복원한다(commit-map 등 나머지 메타데이터는 보존).
+- **`gk forget`의 롤백 안내가 실제로는 불가능했던 문제.** filter-repo가 `--all`로 모든 ref를 재작성하면서 gk의 백업 ref(`refs/gk/forget-backup/*`)까지 새 히스토리로 옮기고, 사후 gc가 옛 객체를 지워버려 manifest의 SHA가 dangling이 됐다 — 출력되던 "rollback:" 명령이 거짓이었다. 이제 위임 엔진은 브랜치·태그를 열거한 `--refs`로 실행해 refs/gk/*와 refs/remotes/*를 건드리지 않고 gc도 생략한다(결과 SHA는 전체 재작성과 동일함을 검증). 옛 객체는 백업 ref로 도달 가능하게 남으며, 디스크 회수는 확신이 선 뒤 `git gc --prune=now`로 직접 한다.
 
 ### Added
+
+- **`gk forget --engine native` — filter-repo 없이 동작하는 내장 히스토리 재작성 엔진(실험).** `git fast-export --no-data` 스트림을 gk가 직접 파싱·필터링해 `git fast-import`로 재구축한다 — 경로 제거 슬라이스 전용. 빈 커밋 prune은 "필터된 delta가 비면 트리가 first parent와 같다"는 불변식 위에서만 일어나고(대체 커밋은 항상 first parent — `merge -s ours` 토폴로지에서 내용이 바뀌는 함정 차단), 전부 .xm류만 만지던 사이드 브랜치의 merge는 filter-repo와 동일한 규칙으로 붕괴·prune된다(내용 있는 merge는 redundant/중복 parent까지 그대로 유지). 검증은 differential testing으로: 12개 토폴로지(선형/루트 prune/merge 붕괴/evil merge/`-s ours`/동일 parent/태그 재지정/유니코드 경로/다중 브랜치)에서 filter-repo와 **브랜치·태그 SHA가 바이트 단위로 동일**함을 테스트로 고정했다. shallow clone과 refs/replace는 거부하고 명확한 에러로 위임 엔진을 안내한다. v1 미지원: 커밋 메시지 안의 SHA 참조 재작성.
 
 - **`gk rebase --plan` — 에디터 없는 선언적 히스토리 편집.** `git rebase -i`의 에디터 세션을 JSON 계약으로 대체한다: `--plan-template`이 현재 범위(`--onto`, 기본 `@{u}`→원격 base)를 커밋별 `{action, commit, subject, pushed}` 초안으로 내보내고, 호출자가 pick/squash/fixup/reword/drop을 정한 plan을 `--plan -`(stdin)이나 파일로 되먹이면 gk가 검증 후 git 자체 rebase 머신을 미리 만든 todo로 구동한다(`GIT_SEQUENCE_EDITOR` 자기 지정, reword는 `commit --amend -F`로 quoting-safe, squash도 에디터를 열지 않음). 검증이 거부하는 것: 범위 내 커밋 누락(암묵적 pick 없음 — drop은 명시), 모호하거나 범위 밖 SHA, merge 커밋, 선두 squash/fixup, 메시지 없는 reword, 그리고 원격에 이미 있는 커밋의 재작성(첫 변경 지점 이후 전체에 적용, `--allow-pushed`로만 해제). 실행 전 `refs/gk/backup/<branch>/<ts>` 백업 ref를 쓰고, 충돌은 표준 일시정지 계약(exit 3, `gk continue`/`gk abort`)을 따른다. `--dry-run`은 todo 미리보기만, `--json`은 `{result, onto, pre, post, backup_ref}` 계약. agents 규약 v5에 "History editing" 항목 추가 — agent가 구조적으로 쓸 수 없던 마지막 git 표면이 기계 계약이 됐다.
 

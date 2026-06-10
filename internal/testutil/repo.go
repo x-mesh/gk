@@ -69,6 +69,17 @@ func NewRepo(t testing.TB) *Repo {
 	return r
 }
 
+// Attach wraps an existing on-disk repository (e.g. a copy made by a
+// test) in a Repo handle, without initializing anything.
+func Attach(t testing.TB, dir string) *Repo {
+	t.Helper()
+	return &Repo{
+		Dir:    dir,
+		GitDir: filepath.Join(dir, ".git"),
+		t:      t,
+	}
+}
+
 // buildCmd constructs an exec.Cmd for `git <args...>` in the repo dir.
 func (r *Repo) buildCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)

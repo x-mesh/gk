@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk batch` — gk 명령 시퀀스를 JSON 계획 하나로 실행.** stdin(`--plan -`)이나 파일로 `{"steps":[{"args":["pull","--with-base"]},{"args":["push"]}]}` 계획을 받아 하위 명령을 자식 gk 프로세스로 순차 실행한다 — 에이전트의 N턴 워크플로우가 1콜이 된다. 스텝별 `on_failure: abort(기본)|continue`를 고를 수 있고, 게이팅 실패 시 잔여 스텝을 skipped로 채워 `failed_step`/`resume`과 함께 보고한다(land와 같은 계약, agent 모드에서 stdout은 결과 문서만). 충돌로 일시정지한 자식(exit 3)은 continue 정책이라도 계획을 멈춘다 — 미해결 pause 위에 다음 스텝을 쌓지 않는다. 검증은 실행 전 일괄로: 미지 하위 명령, 중첩 batch, flag로 시작하는 args, 20스텝 초과를 거부한다. `--plan-template`이 초안을, `--dry-run`이 실행 없는 미리보기를 낸다.
+- **`gk context --include=diff,log,precheck,remotes` — 오리엔테이션에 후속 probe 융합.** context 한 호출에 섹션을 골라 붙인다(`--include=all`로 전부): `diff`는 미커밋 변경의 digest(파일별 ±라인·심볼, **untracked 포함**, 첫 커밋 전 unborn HEAD에서는 empty tree 기준), `log`는 최근 5커밋(sha/제목/작성자/시각), `precheck`는 다음 pull의 충돌 예보, `remotes`는 등록된 리모트별 현재 브랜치 드리프트(마지막 fetch 기준)와 비대칭 push URL. 세션 시작의 context→diff→log→precheck 4~5콜이 1콜이 된다. 수집할 수 없는 섹션은 에러 대신 `notes`로 강등된다 — 오리엔테이션 호출은 실패하지 않는다.
+- **`gk pull --from <remote>[/<branch>]` — upstream 체인 밖 보조 리모트에서 통합.** 미러나 조직 fork처럼 추적 체인이 영원히 fetch하지 않는 리모트의 작업을, 기존 pull 레일(autostash·전략 해석·diverged 가드·충돌 계약) 그대로 가져온다. 브랜치를 생략하면 현재 브랜치와 같은 이름을 쓰고, tracking 설정은 건드리지 않는다 — 일회성 통합 소스다. 미등록 리모트는 오타가 네트워크 probe가 되지 않도록 등록 목록과 함께 거부한다.
+- **`gk doctor` — 비대칭 push-only 리모트 감지.** 리모트의 pushurl이 fetch URL과 다르면 WARN을 낸다: push-only URL에서 PR로 머지된 작업은 fetch로 절대 내려오지 않고, 드리프트가 생기면 push가 non-fast-forward로 반쯤 실패하는 구성 footgun이다. 처방으로 `git remote add <name> <url>` 후 `gk pull --from <name>`을 안내한다. agents 규약 v8이 위 표면들(`--include`, `batch`, `--from`, doctor 항목)을 반영한다.
+
+### Changed
+
+- **up-to-date 결과줄이 커밋 시각과 제목까지 보여준다.** `gk pull`/`gk sync`의 `already up to date at <sha>`가 `Already up to date  ffdbbce1  06/10 17:13  release: v0.80.0` 형태가 됐다 — tip 커밋의 시각(올해가 아니면 `YY/` 접두)과 제목 전체를 한 줄에 싣는다. SHA만 보고 "이게 언제 적 커밋이지?"를 git log로 되묻던 후속 호출이 사라진다. 추가 비용은 이미 가리키고 있는 커밋 객체를 한 번 더 읽는 것뿐이다.
+
 ## [0.80.0] - 2026-06-10
 
 ### Changed

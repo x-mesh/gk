@@ -325,6 +325,29 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 
+## gk batch
+
+Executes gk sub-commands in the order a JSON plan lists them — the generalized sibling of `gk land`: land is the fixed session-closing sequence, batch is whatever sequence the caller declares. A multi-step agent workflow (commit → pull → push → tag) becomes one call.
+
+```bash
+gk batch --plan-template               # starter plan (JSON) to edit
+gk batch --plan - < plan.json          # validate + execute
+echo '{"steps":[{"args":["pull"]},{"args":["push"]}]}' | gk batch --plan -
+```
+
+Plan schema: `{"steps":[{"args":["pull","--with-base"], "name?", "on_failure?"}]}` — `args` is the full gk argv for the step (sub-command first); `on_failure` is `"abort"` (default, stops the plan) or `"continue"` (records the failure and moves on).
+
+Validation happens before any step executes: an unknown sub-command, a nested `batch`, args starting with a flag, or more than 20 steps reject the whole plan. A gating failure skip-marks the remaining steps and reports `failed_step`/`resume`. A child that pauses for conflict resolution (exit 3) stops the plan even under `on_failure: continue` — the next step must not stack on an unresolved pause.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--plan <path\|->` | — | JSON plan: a file path, or `-` for stdin |
+| `--plan-template` | false | Emit a starter plan (JSON) and exit |
+| `--dry-run` (global) | false | Print the step list without executing |
+| `--json` (global) | false | Emit `{result, steps:[{name,command,result,exit_code}], failed_step?, resume?}` on stdout; child output moves to stderr |
+
+`result` is `completed` (all ok), `partial` (failures were marked `continue` and the plan ran to the end), or `failed`.
+
 ## GK_AGENT=1 — agent mode
 
 `export GK_AGENT=1` turns on agent mode for every gk invocation: `--json` is implied, JSON payloads are wrapped in a uniform envelope (`{schema, ok, result}` on success), and failures print `{ok:false, error:{code, message, hint, remedies:[{command,safety}]}}` to stderr while keeping the normal exit codes. `error.code` is a stable, append-only vocabulary (`not-a-repo`, `dirty-tree`, `conflict`, `diverged`, `in-progress-op`, ...). Without GK_AGENT, `--json` output is byte-identical to previous releases. A paused state with a resume contract (pull/merge conflict, exit 3) is a result, not an error.
@@ -335,9 +358,13 @@ One-call repository orientation — current branch, upstream and ahead/behind, d
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
+`--include` fuses the usual follow-up probes into the same document — one call instead of five: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+
 ```bash
-gk context            # human one-screen summary (alias: gk ctx)
-gk context --json     # agent contract
+gk context                                  # human one-screen summary (alias: gk ctx)
+gk context --json                           # agent contract
+gk context --include=diff,log,precheck      # fuse follow-up probes (or --include=all)
+gk context --include=remotes --json         # per-remote drift + asymmetric push URLs
 ```
 
 ## gk agents
@@ -368,6 +395,7 @@ gk pull [flags]
 | `--strategy <mode>` | `rebase` | `rebase`, `merge`, `ff-only`, or `auto` |
 | `--rebase` | false | Shorthand for `--strategy rebase`; also acts as explicit consent on diverged history |
 | `--merge` | false | Shorthand for `--strategy merge`; also acts as explicit consent on diverged history |
+| `--from <remote>[/<branch>]` | — | Pull from a specific remote instead of the upstream — a mirror or org fork the tracking chain never fetches. Branch defaults to the current branch's name; tracking config stays untouched. Unregistered remotes are rejected with the registered list |
 | `--fetch-only` | false | Fetch only, do not integrate |
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
 | `--autostash` | false | Stash dirty changes before integration, pop after |

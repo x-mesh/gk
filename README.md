@@ -115,6 +115,9 @@ gk pull                      # fetch + integrate @{u}; refuses on diverged
 gk pull --rebase             # explicit consent: replay local on top of upstream
 gk pull --with-base          # also fast-forward local main from origin (FF-only, no checkout)
 gk context --json            # one-call orientation for agents: branch/sync/dirty/next_actions
+gk context --include=all     # + diff digest, recent log, pull forecast, per-remote drift fused in
+gk pull --from tape42        # integrate from a secondary remote (mirror/org fork); tracking untouched
+gk batch --plan - <plan.json # run several gk commands as one transaction from a JSON plan
 gk agents install            # keep the gk usage contract in CLAUDE.md / AGENTS.md
 gk precheck                  # forecast: will my next pull conflict? (read-only merge-tree)
 gk diff --digest             # what changed, where: files · hunks · changed symbols, no patch body

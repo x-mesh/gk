@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Fixed
+
+- **`gk forget`이 이전 filter-repo 실행 흔적에 막히던 문제.** 하루 이상 지난 `.git/filter-repo/already_ran` 마커가 남아 있으면 filter-repo가 "이전 실행의 연속이냐"는 대화형 Y/N 프롬프트를 띄우는데, gk는 터미널 없이(stdin=/dev/null) 실행하므로 EOFError로 죽었다. gk forget의 매 실행은 독립적인 새 rewrite이므로 실행 전 마커만 제거해 fresh-run 의미론을 복원한다(commit-map 등 나머지 메타데이터는 보존).
+
+### Added
+
 - **`gk rebase --plan` — 에디터 없는 선언적 히스토리 편집.** `git rebase -i`의 에디터 세션을 JSON 계약으로 대체한다: `--plan-template`이 현재 범위(`--onto`, 기본 `@{u}`→원격 base)를 커밋별 `{action, commit, subject, pushed}` 초안으로 내보내고, 호출자가 pick/squash/fixup/reword/drop을 정한 plan을 `--plan -`(stdin)이나 파일로 되먹이면 gk가 검증 후 git 자체 rebase 머신을 미리 만든 todo로 구동한다(`GIT_SEQUENCE_EDITOR` 자기 지정, reword는 `commit --amend -F`로 quoting-safe, squash도 에디터를 열지 않음). 검증이 거부하는 것: 범위 내 커밋 누락(암묵적 pick 없음 — drop은 명시), 모호하거나 범위 밖 SHA, merge 커밋, 선두 squash/fixup, 메시지 없는 reword, 그리고 원격에 이미 있는 커밋의 재작성(첫 변경 지점 이후 전체에 적용, `--allow-pushed`로만 해제). 실행 전 `refs/gk/backup/<branch>/<ts>` 백업 ref를 쓰고, 충돌은 표준 일시정지 계약(exit 3, `gk continue`/`gk abort`)을 따른다. `--dry-run`은 todo 미리보기만, `--json`은 `{result, onto, pre, post, backup_ref}` 계약. agents 규약 v5에 "History editing" 항목 추가 — agent가 구조적으로 쓸 수 없던 마지막 git 표면이 기계 계약이 됐다.
 
 ## [0.78.0] - 2026-06-10

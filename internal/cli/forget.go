@@ -234,7 +234,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := forget.RunFilterRepo(ctx, RepoFlag(), paths); err != nil {
+	if err := forget.RunFilterRepo(ctx, RepoFlag(), gitDir, paths); err != nil {
 		return fmt.Errorf("filter-repo: %w (backup at %s)", err, backup.Manifest)
 	}
 

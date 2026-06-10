@@ -3,7 +3,9 @@ package forget
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -75,18 +77,36 @@ func RestoreOrigin(ctx context.Context, r git.Runner, remote *CapturedRemote) er
 	return nil
 }
 
+// ClearAlreadyRanMarker removes filter-repo's continuation marker. Every
+// gk forget run is an independent fresh rewrite, but filter-repo treats a
+// leftover <gitdir>/filter-repo/already_ran from a previous run as a rewrite
+// to *continue*: within a day it silently switches to continuation semantics,
+// and past a day it blocks on an interactive Y/N prompt — which crashes with
+// EOFError here because filter-repo runs without a terminal (stdin is
+// /dev/null). Removing just the marker restores fresh-run semantics while
+// keeping the rest of the metadata directory (commit-map, ref-map) around
+// for forensics. Missing marker is the normal case and a no-op.
+func ClearAlreadyRanMarker(gitDir string) {
+	if gitDir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(gitDir, "filter-repo", "already_ran"))
+}
+
 // RunFilterRepo invokes `git filter-repo --invert-paths --path X --path Y
 // --force` against the working repo. We always pass --force because gk
 // has already gated the flow with its own confirmation; filter-repo's
 // internal "fresh clone" check would just produce a confusing error
-// after the user already typed `yes`.
+// after the user already typed `yes`. gitDir is used to clear a stale
+// continuation marker first (see ClearAlreadyRanMarker).
 //
 // Stdout/stderr are streamed to the provided runner so the user sees
 // filter-repo's progress output verbatim.
-func RunFilterRepo(ctx context.Context, repoDir string, paths []string) error {
+func RunFilterRepo(ctx context.Context, repoDir, gitDir string, paths []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("no paths to forget")
 	}
+	ClearAlreadyRanMarker(gitDir)
 	args := []string{"filter-repo", "--invert-paths", "--force"}
 	for _, p := range paths {
 		args = append(args, "--path", p)

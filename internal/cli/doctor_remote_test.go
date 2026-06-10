@@ -23,7 +23,7 @@ func TestCheckRemoteSymmetry(t *testing.T) {
 
 	t.Run("symmetric remote is PASS", func(t *testing.T) {
 		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-			"remote": {Stdout: "origin\n"},
+			"remote":                         {Stdout: "origin\n"},
 			"config --get remote.origin.url": {Stdout: "git@github.com:a/b.git\n"},
 			// no pushurl entries → git config --get-all errors
 			"config --get-all remote.origin.pushurl": {Err: context.DeadlineExceeded},
@@ -36,8 +36,8 @@ func TestCheckRemoteSymmetry(t *testing.T) {
 
 	t.Run("extra pushurl is WARN with remedy", func(t *testing.T) {
 		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-			"remote": {Stdout: "origin\n"},
-			"config --get remote.origin.url": {Stdout: "git@github.com:JINWOO-J/deployer-bot.git\n"},
+			"remote":                                 {Stdout: "origin\n"},
+			"config --get remote.origin.url":         {Stdout: "git@github.com:JINWOO-J/deployer-bot.git\n"},
 			"config --get-all remote.origin.pushurl": {Stdout: "git@github.com:JINWOO-J/deployer-bot.git\ngit@github.com-nobody-j:42tape/deploy-bot\n"},
 		}}
 		c := checkRemoteSymmetry(ctx, fake)
@@ -54,8 +54,8 @@ func TestCheckRemoteSymmetry(t *testing.T) {
 
 	t.Run("pushurl identical to fetch is PASS", func(t *testing.T) {
 		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-			"remote": {Stdout: "origin\n"},
-			"config --get remote.origin.url": {Stdout: "git@github.com:a/b.git\n"},
+			"remote":                                 {Stdout: "origin\n"},
+			"config --get remote.origin.url":         {Stdout: "git@github.com:a/b.git\n"},
 			"config --get-all remote.origin.pushurl": {Stdout: "git@github.com:a/b.git\n"},
 		}}
 		c := checkRemoteSymmetry(ctx, fake)

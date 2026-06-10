@@ -89,8 +89,8 @@ type contextLogJSON struct {
 // remote has no local tracking ref for this branch, so drift is unknown
 // (run `git fetch <name>` or `gk pull --from <name>` to learn it).
 type contextRemoteJSON struct {
-	Name     string   `json:"name"`
-	FetchURL string   `json:"fetch_url,omitempty"`
+	Name     string `json:"name"`
+	FetchURL string `json:"fetch_url,omitempty"`
 	// PushURLs lists push destinations that differ from the fetch URL —
 	// non-empty means asymmetric config: work merged there never comes
 	// down on fetch (see `gk doctor`).
@@ -387,9 +387,9 @@ func parseContextIncludes(cmd *cobra.Command) (map[string]bool, error) {
 	includes := map[string]bool{}
 	for _, v := range raw {
 		v = strings.ToLower(strings.TrimSpace(v))
-		switch {
-		case v == "":
-		case v == "all":
+		switch v {
+		case "":
+		case "all":
 			for _, k := range contextIncludeValues {
 				includes[k] = true
 			}

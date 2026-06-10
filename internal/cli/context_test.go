@@ -127,7 +127,7 @@ func TestIntegration_ContextIncludes(t *testing.T) {
 	repo.WriteFile("a.go", "package a\n\nfunc A() int { return 1 }\n")
 	repo.Commit("feat: seed")
 	repo.WriteFile("a.go", "package a\n\nfunc A() int { return 2 }\n") // unstaged change
-	repo.WriteFile("new.txt", "one\ntwo\n")                              // untracked
+	repo.WriteFile("new.txt", "one\ntwo\n")                            // untracked
 
 	prev := flagRepo
 	flagRepo = repo.Dir

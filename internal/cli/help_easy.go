@@ -56,6 +56,7 @@ var easyShortKO = map[string]string{
 	"gk resolve":       "충돌(같은 부분을 다르게 고침) 해결 (AI)",
 	"gk precheck":      "합치기 전에 충돌 여부만 미리 확인",
 	"gk edit-conflict": "충돌 난 파일을 편집기로 열기 (첫 충돌 위치로)",
+	"gk rebase":        "커밋 기록 정리를 편집기 없이 계획서(JSON)로",
 
 	// 가져오기·되돌리기
 	"gk reset":   "현재 브랜치를 서버(원격) 상태로 되돌리기",

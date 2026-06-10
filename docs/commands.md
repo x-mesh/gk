@@ -624,6 +624,52 @@ Automatic conflict correction is intentionally not part of the default path. A f
 
 ---
 
+## gk rebase
+
+Declarative history editing — `git rebase -i` with the editor session replaced by a JSON contract. The caller (a human script or an AI agent) states each commit's fate; gk validates the plan against the real history and drives git's own rebase machinery with a pre-built todo. Nothing ever opens an editor: reword messages travel in files (`git commit --amend -F`), squash accepts git's combined message.
+
+### Workflow
+
+```bash
+gk rebase --plan-template               # 1. current range as a JSON draft (all "pick")
+# 2. edit actions / messages / order — the judgment step
+gk rebase --plan - < plan.json          # 3. validate + execute
+gk rebase --plan plan.json --dry-run    #    preview the todo, touch nothing
+```
+
+The template emits `{schema, onto, commits:[{action, commit, subject, pushed}]}` oldest-first; feed back either the same object or a bare array. Actions: `pick` · `squash` · `fixup` · `reword` (requires `message`) · `drop`. Commits may be addressed by any unambiguous SHA prefix.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--plan <file\|->` | — | JSON plan to execute (`-` = stdin) |
+| `--plan-template` | false | Emit the current range as a plan draft and exit |
+| `--onto <ref>` | `@{u}`, else remote base | Base of the rebase range (`<onto>..HEAD`) |
+| `--allow-pushed` | false | Permit rewriting commits that already exist on a remote (force-push required afterwards) |
+
+### Validation — what gets refused
+
+Every rule exists to stop silent history mangling:
+
+- every commit in the range must be addressed **exactly once** — a forgotten commit is an error, not an implicit pick; dropping must be explicit
+- unknown, ambiguous, or out-of-range SHAs
+- merge commits in the range (cannot be replayed by this engine)
+- `squash`/`fixup` as the first entry (nothing to meld into)
+- `reword` without a `message`; a `message` on any other action
+- rewriting commits that exist on a remote, unless `--allow-pushed` — the guard starts at the first deviation from the original order, since everything after it is rewritten even under `pick`
+
+### Safety & failure
+
+A backup ref (`refs/gk/backup/<branch>/<ts>`) is written before anything moves. On conflict the standard paused contract applies: resolve (or `gk resolve --ai`), then `gk continue` / `gk abort` — exit 3, listed as a result under `--json`, not an error. A rebase/merge already in progress is refused up front.
+
+```bash
+gk rebase --plan plan.json --json
+# → {result: completed|conflict|dry-run, onto, pre, post, backup_ref, todo?, conflict?}
+```
+
+---
+
 ## gk clone
 
 Clone a repository with short-form URL expansion.

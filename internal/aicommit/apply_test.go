@@ -483,3 +483,44 @@ func TestFormatCommitMessage_StripsDuplicatedPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestMessageHeader pins the shared header renderer used by both the commit
+// preview (printSummary / the interactive picker) and the committed message.
+// The regression: the LLM tucked the full Conventional-Commits prefix onto
+// Subject, so the preview doubled up to "feat(internal): feat(internal): ..."
+// while the committed message (which already stripped it) read correctly —
+// preview and reality disagreed. Header() must emit the prefix exactly once.
+func TestMessageHeader(t *testing.T) {
+	cases := []struct {
+		name    string
+		group   provider.Group
+		subject string
+		want    string
+	}{
+		{
+			name:    "duplicated type+scope prefix on subject",
+			group:   provider.Group{Type: "feat", Scope: "internal"},
+			subject: "feat(internal): link git-kit alias after binary upgrade",
+			want:    "feat(internal): link git-kit alias after binary upgrade",
+		},
+		{
+			name:    "duplicated bare type prefix on subject",
+			group:   provider.Group{Type: "build"},
+			subject: "build: add ALT_NAME variable",
+			want:    "build: add ALT_NAME variable",
+		},
+		{
+			name:    "clean subject gets the prefix prepended",
+			group:   provider.Group{Type: "docs"},
+			subject: "document git-kit alias guarantee",
+			want:    "docs: document git-kit alias guarantee",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Message{Group: tc.group, Subject: tc.subject}).Header(); got != tc.want {
+				t.Errorf("Header() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

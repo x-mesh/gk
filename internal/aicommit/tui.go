@@ -154,12 +154,7 @@ func printSummary(out io.Writer, messages []Message) error {
 	}
 	_, _ = fmt.Fprintf(out, "Proposed %d commit(s):\n\n", len(messages))
 	for i, m := range messages {
-		header := m.Group.Type
-		if m.Group.Scope != "" {
-			header += "(" + m.Group.Scope + ")"
-		}
-		header += ": " + m.Subject
-		_, _ = fmt.Fprintf(out, "  [%d/%d] %s\n", i+1, len(messages), header)
+		_, _ = fmt.Fprintf(out, "  [%d/%d] %s\n", i+1, len(messages), m.Header())
 		for _, f := range m.Group.Files {
 			_, _ = fmt.Fprintf(out, "         • %s\n", f)
 		}

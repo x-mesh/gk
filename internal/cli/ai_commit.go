@@ -971,7 +971,7 @@ func printApplySummary(out interface{ Write(p []byte) (int, error) }, kept []aic
 		if i < len(res.CommitShas) {
 			sha = res.CommitShas[i]
 		}
-		fmt.Fprintf(out, "  %s  %s: %s\n", sha, m.Group.Type, m.Subject)
+		fmt.Fprintf(out, "  %s  %s\n", sha, m.Header())
 	}
 }
 

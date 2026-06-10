@@ -190,19 +190,28 @@ func currentBranch(ctx context.Context, runner git.Runner) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// formatCommitMessage joins subject/body/footers/trailer in Conventional
-// Commits order: "<type>(<scope>): <subject>\n\n<body>\n\n<footers>\n\n<trailer>".
-func formatCommitMessage(m Message, trailer string) string {
+// Header returns the Conventional-Commits header line, "<type>(<scope>):
+// <subject>". Any leading prefix the LLM duplicated onto Subject is stripped
+// so the line never doubles up to "build: build: ...". This is the single
+// source of truth for rendering a message's header — formatCommitMessage (the
+// committed message), the plan summary, and the interactive picker all route
+// through it, so the preview always matches what actually gets committed.
+func (m Message) Header() string {
 	var b strings.Builder
-	// Header. Strip any leading Conventional-Commits prefix the LLM
-	// tucked onto Subject so we don't double up to "build: build: ...".
-	subject := stripConventionalPrefix(m.Subject, m.Group.Type, m.Group.Scope)
 	b.WriteString(m.Group.Type)
 	if m.Group.Scope != "" {
 		b.WriteString("(" + m.Group.Scope + ")")
 	}
 	b.WriteString(": ")
-	b.WriteString(subject)
+	b.WriteString(stripConventionalPrefix(m.Subject, m.Group.Type, m.Group.Scope))
+	return b.String()
+}
+
+// formatCommitMessage joins subject/body/footers/trailer in Conventional
+// Commits order: "<type>(<scope>): <subject>\n\n<body>\n\n<footers>\n\n<trailer>".
+func formatCommitMessage(m Message, trailer string) string {
+	var b strings.Builder
+	b.WriteString(m.Header())
 
 	if m.Body != "" {
 		b.WriteString("\n\n")

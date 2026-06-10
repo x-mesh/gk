@@ -54,16 +54,17 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `--allow-non-base` | false | Allow release tags from a non-base branch |
 | `-y`, `--yes` | false | Skip the final confirmation prompt |
 | `--dry-run` | false | Print the ship plan without tagging or pushing |
+| `--json` (global) | false | With `--dry-run`, emit the release plan as JSON (branch, bump + 0.x downgrade marker, next tag, version files, changelog draft, preflight/watch/verify steps). Refused without `--dry-run` |
 
 ### Metadata updates
 
-`gk ship` bumps the first version file it finds in this order:
+`gk ship` bumps every file listed in `ship.version_files` (paths relative to the repo root). When the list is unset it falls back to the first auto-detected file:
 
 1. `VERSION`
 2. `package.json`
 3. `marketplace.json`
 
-If no version file exists, the release is tag-only. When `CHANGELOG.md` contains a non-empty `## [Unreleased]` section, `gk ship` promotes that section into `## [X.Y.Z] - YYYY-MM-DD` and commits the metadata before tagging.
+If no version file exists, the release is tag-only. When `CHANGELOG.md` contains a non-empty `## [Unreleased]` section, `gk ship` promotes that section into `## [X.Y.Z] - YYYY-MM-DD` and commits the metadata before tagging. When `[Unreleased]` is **empty**, ship drafts the section from the conventional commits in the release range (`feat` → Added, `refactor`/`perf` → Changed, `fix` → Fixed, breaking commits marked `(breaking)`); the draft is shown in the plan and at the confirm gate before anything is written. Commits with other types (`docs`, `chore`, `ci`, …) stay out of the draft — if nothing maps, the changelog is left untouched as before.
 
 ### Version inference
 
@@ -71,9 +72,30 @@ When no explicit version or bump flag is provided, `gk ship` reads commits since
 
 | Commit shape | Bump |
 |--------------|------|
-| `feat!:` or `BREAKING CHANGE:` | major |
+| `feat!:` or `BREAKING CHANGE:` | major (minor while on 0.x) |
 | `feat:` / `feat(scope):` | minor |
 | everything else | patch |
+
+While the latest tag is still `v0.*`, an inferred breaking change bumps the **minor** version (SemVer 0.x convention) and the plan notes the downgrade — graduating to v1.0.0 is always an explicit `--major` / `--version` decision.
+
+### Release pipeline (config)
+
+The `ship:` config section extends the release beyond the git half. All three lists reuse the preflight step shape (`name`, `command`, `continue_on_failure`):
+
+```yaml
+ship:
+  watch:                      # after the tag push — blocking CI tracking
+    - name: ci
+      command: gh run watch $(gh run list --workflow release --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
+  verify:                     # after watch — post-release checks
+    - name: cdn
+      command: curl -fsI https://github.com/you/repo/releases/download/$(git describe --tags --abbrev=0)/checksums.txt
+  version_files:              # explicit version files (replaces auto-detection)
+    - VERSION
+    - extension/package.json
+```
+
+Watch steps run only when a release tag was actually pushed; a failure aborts with a rerun hint (the tag is already public — re-shipping is not the fix). Verify failures name the failing step and pass its output through. `continue_on_failure: true` marks a step advisory in either list. The whole pipeline appears in `gk ship --dry-run` and the `--json` plan, and "Ship complete" only prints after every hook has passed.
 
 ### Examples
 
@@ -92,6 +114,9 @@ gk ship patch --yes
 
 # Use an exact version
 gk ship --version 0.15.0 --yes
+
+# Machine-readable plan for agent tooling (pairs with -y for the real run)
+gk ship --dry-run --json
 
 # Squash local-only commits since the latest tag
 gk ship squash --yes
@@ -299,6 +324,7 @@ gk pull [flags]
 | `--fetch-only` | false | Fetch only, do not integrate |
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
 | `--autostash` | false | Stash dirty changes before integration, pop after |
+| `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Skipped under `--fetch-only` |
 | `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
 
 ### Base branch auto-detection
@@ -324,6 +350,9 @@ gk pull --no-rebase
 
 # Stash uncommitted changes, rebase, then restore
 gk pull --autostash
+
+# Morning multi-machine sync: pull develop AND fast-forward local main
+gk pull --with-base
 
 # Preview what would happen without executing
 gk pull --dry-run

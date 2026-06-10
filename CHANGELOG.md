@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk pull --with-base` — base 브랜치까지 한 번에 동기화.** develop에서 pull하면서 로컬 main 같은 base 브랜치를 checkout 없이 원격 끝으로 fast-forward한다(`pull.with_base: true`로 상시 활성, `--with-base=false`로 일회성 해제). 엄격히 FF만 수행: base가 분기됐거나, 다른 worktree에 체크아웃돼 있거나, 로컬에 없으면 자동 처리 대신 NOTE로 건너뛴다 — 로컬 커밋 유실이 구조적으로 불가능하다. 여러 머신을 오가는 아침 동기화가 `gk pull` 한 번으로 끝난다.
+- **`gk ship` 릴리스 파이프라인 확장 — 검증부터 사후 확인까지 한 명령.** `ship.watch`(태그 push 후 차단형 CI 추적, 예: `gh run watch`)와 `ship.verify`(태그·tap·CDN 등 산출물 점검) 훅을 config로 등록하면 "Ship complete"가 전체 파이프라인 통과를 의미하게 된다. `ship.version_files`로 버전 파일 목록을 직접 지정할 수 있고(자동 감지 대체), `--dry-run --json`은 계획 전체(버전 추론 근거·changelog 초안·단계 목록)를 도구가 읽을 JSON으로 내보낸다. CHANGELOG의 `[Unreleased]`가 비어 있으면 conventional commit에서 섹션 초안을 만들어 확인 화면에 먼저 보여주고, 0.x에서는 breaking 추론이 관례대로 minor에 머문다(`--major`로만 v1 승급).
+
+### Changed
+
+- **gk 발신 안내를 `█ NOTE` / `█ HINT` 블록으로 통일.** pull/push처럼 git 원문과 gk 안내가 한 스트림에 섞이는 곳에서 발신자가 모호하던 `note:`/`hint:` 한 줄짜리를 섹션 블록으로 바꿨다. Easy Mode에서는 블록 아래에 쉬운 설명 한 줄이 붙는다(예: upstream 미연결 시 "위 명령을 한 번 실행해두면 다음부터 이 안내가 사라져요").
+- **pull 결과줄에 브랜치 컬럼.** `--with-base`로 두 브랜치 상태가 한 출력에 나오므로 모든 결과줄이 `main`/`develop` 정렬 컬럼을 달고 나온다 — "already up to date"가 어느 브랜치 얘기인지 더 이상 헷갈리지 않는다.
+
+### Fixed
+
+- **tracking 설정은 있는데 캐시 ref만 없는 브랜치의 오진.** `branch.<name>.remote/merge`가 멀쩡해도 `refs/remotes/origin/<branch>`가 없으면(prune, 미fetch clone) pull이 "no upstream"으로 오진하고 base로 fallback했다. 이제 설정을 직접 읽어 구분하고, 설정된 upstream을 그대로 사용해 fetch가 캐시 ref를 복구한다. `gk log --behind/--ahead`도 같은 상태를 정확히 안내한다.
+- **`--easy`/`--no-easy` 플래그가 무시되던 버그.** help 설치 경로가 cobra 플래그 파싱 전에 Easy Mode 엔진을 초기화해 플래그가 전부 zero인 상태로 캐시됐다 — config가 켜둔 Easy Mode를 `--no-easy`로 끌 방법이 없었다. 템플릿 설치를 렌더 시점으로 늦춰 해결.
+- **`gk log --graph`에서 사라졌던 push boundary(`↑ N unpushed`)와 태그 룰 복원.** git `--graph` 출력을 빌리던 시절의 억제 결정이 self-drawn renderer 전환 후에도 남아 있었다. 같은 결로 `--graph=false`가 config `log.graph: true`를 못 이기던 것도 수정 — 이제 일회성으로 flat 뷰로 돌아갈 수 있다.
+- **깨진 config에서 panic.** `pull:` 섹션이 중복되는 등 yaml 파싱이 실패하면 일부 명령이 nil 참조로 죽고 나머지는 조용히 기본값으로 돌았다. 이제 깨진 레이어만 건너뛰고 계속 동작하며, 어떤 파일의 몇 번째 줄이 왜 무시됐는지 프로세스당 한 번 경고한다(`gk config doctor` 안내 포함). repo 로컬 `.gk.yaml`의 파싱 실패도 더 이상 무음이 아니다.
+
 ## [0.76.0] - 2026-06-09
 
 ### Added

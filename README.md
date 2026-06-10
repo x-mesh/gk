@@ -113,6 +113,7 @@ Help and usage text follow whichever name you typed, so `git kit push --help` re
 gk clone JINWOO-J/playground # expand to git@github.com:JINWOO-J/playground.git
 gk pull                      # fetch + integrate @{u}; refuses on diverged
 gk pull --rebase             # explicit consent: replay local on top of upstream
+gk pull --with-base          # also fast-forward local main from origin (FF-only, no checkout)
 gk pull --rebase --ai        # on conflict, resolve with AI then continue
 gk pull --fetch-only         # fetch without integrating
 gk merge main                # precheck + merge main into current branch
@@ -187,7 +188,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | Command | Description |
 |---|---|
 | `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease`; `-n`/`--skip-scan` skips the secret scan |
-| `gk ship` | Release ship gate: status/dry-run/squash modes, SemVer inference, version/CHANGELOG release commit, guarded branch/tag push. Tag push triggers the release workflow |
+| `gk ship` | Release pipeline: status/dry-run/squash modes, SemVer inference (0.x keeps breaking at minor), version/CHANGELOG release commit (drafts the section from commits when [Unreleased] is empty), guarded branch/tag push, then config-driven `ship.watch` (CI tracking) and `ship.verify` (artifact checks). `--dry-run --json` emits the machine-readable plan |
 | `gk precheck <target>` | Dry-run merge conflict scan via `git merge-tree`; exit 3 on conflicts; `--json` for CI |
 | `gk preflight` | Run configured check sequence (`commit-lint`, `branch-check`, `no-conflict`, or shell commands) |
 | `gk lint-commit` | Validate commit message against Conventional Commits; `--staged`, `--file PATH`, `<rev-range>` |

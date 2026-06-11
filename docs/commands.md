@@ -322,6 +322,7 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--with-base` | true | Fast-forward the local base branch during the pull step (`--with-base=false` to skip) |
+| `--promote` | (off) | After pushing, forward-merge the current branch into the base and push it (`gk merge --into <base>` + `gk push --from <base>`). Bare `--promote` targets the configured base; `--promote=<branch>` overrides. A conflict pauses with the normal resolve/continue contract and the step is reported failed with a resume path; skipped when already on the base. |
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 
@@ -784,6 +785,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--impact` | false | Append an eighths-bar scaled to per-commit `+adds -dels` |
 | `--cc` | false | Prepend a geometric type glyph (`▲` feat · `✕` fix · `↻` refactor · `¶` docs · `·` chore · `◎` test · `↑` perf · `⊙` ci · `▣` build · `←` revert · `✧` style) + inline-color the matching subject prefix + append a `types: feat=4 fix=1` tally |
 | `--safety` | false | Mark notable push-state: `◇` unpushed · `✎` recently amended · blank for the normal "already pushed" case so the column stays quiet until something deserves attention. Push state resolves against `@{upstream}`, falling back to **any** remote-tracking ref (`--remotes`) when no upstream is set, so local-only branches still mark correctly. A `──┤ ↑ N unpushed ├──` divider is drawn just above the first already-pushed commit, so the local-only block reads at a glance. |
+| `--merged` | false | Prefix each commit with a base-integration marker: `○` for commits **not yet on the base branch**, blank for those already merged. Resolves the base the same way `gk status` does, so it marks exactly the commits `gk log --ahead --base` would list; skipped when the current branch *is* the base. SHA-identity based like `--safety` — a squash/rebase-merged commit reads as unmerged. |
 | `--hotspots` | false | Mark commits that touch the repo's top-10 most-churned files |
 | `--trailers` | false | Append a `[+Alice review:Bob]` roll-up from commit trailers |
 | `--lanes` | false | Replace the commit list with per-author swim-lanes on a time axis |
@@ -792,6 +794,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--behind` | false | Show commits the upstream has that HEAD does not (=`HEAD..@{u}`; preview before `gk pull`). Errors when the current branch has no upstream configured. Mutually exclusive with `--ahead`. |
 | `--ahead` | false | Show commits HEAD has that the upstream does not (=`@{u}..HEAD`; preview before `gk push`). Same upstream / mutual-exclusion rules as `--behind`. |
 | `--fetch` | false | With `--behind`/`--ahead`, run `git fetch <remote> <branch>` first so the range reflects current origin state. Off by default to keep `gk log` fast; pair with `--behind` when the count might be stale. |
+| `--base` | false | With `--ahead`/`--behind`, compare against the **base branch** (resolved like `gk status`) instead of the upstream. `gk log --ahead --base` lists exactly the commits behind status's "ready to merge into &lt;base&gt;" line; `--behind --base` shows the reverse. Must be combined with `--ahead` or `--behind`; alone it errors. |
 
 ### Default visualization layers
 
@@ -2073,12 +2076,12 @@ export GK_NO_AUTO_CONFIG=1
 
 ### gk config set
 
-Set a single configuration value. The target file is edited in place — comments, key order, and blank lines are preserved — and created from the documented template (global) or a minimal header (`.gk.yaml`, with `--local`) when it does not exist yet. Keys absent from the schema are rejected; list/map keys (e.g. `ai.commit.deny_paths`) cannot take a scalar and must be edited with `gk config edit`.
+Set a single configuration value. The target file is edited in place — comments, key order, and blank lines are preserved — and created from the documented template (global) or a minimal header (`.gk.yaml`, with `--local`) when it does not exist yet. Keys absent from the schema are rejected. List keys (e.g. `log.vis`, `ai.commit.deny_paths`) cannot take a scalar via a plain `set`; use the `+=` / `-=` **key operators** to add or remove a single item in place (`gk config set log.vis+= merged`), or `gk config edit` for bulk changes. `+=` is idempotent (a duplicate is a no-op); `-=` on an absent item does nothing. The operator is a key suffix, not a value prefix, so the value never starts with `-`.
 
 #### Synopsis
 
 ```
-gk config set <key> <value> [flags]
+gk config set <key>[+=|-=] <value> [flags]
 ```
 
 #### Flags
@@ -2098,6 +2101,10 @@ gk config set --local status.density compact
 
 # Booleans and ints are written unquoted.
 gk config set ai.commit.audit true
+
+# Add or remove a single list item (comments + flow style preserved).
+gk config set log.vis+= merged
+gk config set log.vis-= base
 ```
 
 ---

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk log --ahead/--behind --base`·`gk log --merged` — base 기준으로 "무엇이 아직 안 들어갔나".** `--ahead`/`--behind`는 지금까지 upstream(`@{u}`)만 봐서, `gk status`가 "ready to merge into main"이라 말하는 ↑N과 숫자가 어긋났다 — develop이 `origin/develop`과 동기화됐어도 main보다 앞서 있으면 `--ahead`는 0을 보고했다. `--base`를 더하면 status와 같은 base 해석기(`resolveBaseForStatus`)로 `<base>..HEAD` 범위를 펼쳐, 그 ↑N과 커밋 수가 정확히 일치한다. `--merged`는 같은 정보를 커밋별 마커로 — 아직 base에 없는 커밋 앞에 `○`를 찍는다(push 마커 `◇`와 같은 "행동이 필요할 때만 강조" 방식, `git rev-list <base>` 한 번의 집합 비교). status의 ready-to-merge 줄도 이제 `gk log --ahead --base`를 가리킨다. 마커는 push 집합과 마찬가지로 SHA 동일성 기반이라 squash/rebase로 머지된 커밋은 미머지로 보인다(legend에 명시).
+- **`gk config set <key>+= <값>` / `<key>-= <값>` — 리스트 키 항목 추가·제거.** `log.vis`·`ai.commit.deny_paths` 같은 리스트 키는 scalar `set`을 거부해 지금까지 `gk config edit`로 손편집해야 했다. 이제 키 끝에 `+=`/`-=`를 붙여 한 항목만 제자리에서 넣거나 뺀다(`gk config set log.vis+= merged`) — 주석과 flow 스타일은 보존되고, `+=`는 멱등(이미 있으면 무시), 없는 항목 `-=`는 무동작이다. 연산자를 값이 아니라 키에 붙인 건 값이 `-`로 시작하면 cobra가 플래그로 오해하기 때문이다.
+- **`gk land --promote` — 마감 트랜잭션 끝에 base 승격까지.** push 다음 단계로 현재 브랜치를 base에 forward-merge하고(`gk merge --into <base>`) 밀어 올린다 — develop에서 마감한 뒤 `gk merge --into main` + `gk push --from main`을 손으로 치던 흐름이 한 플래그가 됐다. 그냥 `--promote`는 설정된 base를, `--promote=<branch>`는 명시한 대상을 노린다. 충돌은 평소의 resolve/continue 계약으로 일시정지하고 그 단계를 실패로(복귀 경로와 함께) 보고하며, 이미 base 위라면 단계를 건너뛴다.
+
+### Fixed
+
+- **Easy Mode가 config 키·경로 안의 git 용어까지 번역하던 문제.** 한국어 Easy Mode의 용어 치환이 `\bcommit\b` 식 단어 경계 매칭을 써서, `ai.commit.model`처럼 점으로 이어진 식별자 안의 `commit`까지 잡아 `ai.변경사항 저장 (commit).model`로 깨뜨렸다(`gk config set`의 에러 메시지에서 드러났다). 매칭 앞뒤가 `.`/`/`로 다른 식별자 문자와 이어지면 코드로 보고 치환을 건너뛴다 — 문장을 끝내는 마침표(`commit.`)는 그대로 번역한다.
+
 ## [0.81.0] - 2026-06-11
 
 ### Added

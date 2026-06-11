@@ -39,9 +39,9 @@ func TestIsBreakingCommit(t *testing.T) {
 		}
 	}
 	normal := []struct{ subject, body string }{
-		{"feat: add login!", ""},          // bang not in header position
+		{"feat: add login!", ""}, // bang not in header position
 		{"feat(api): normal", "details"},
-		{"breaking: not a marker", ""},    // type named breaking ≠ ! suffix
+		{"breaking: not a marker", ""}, // type named breaking ≠ ! suffix
 	}
 	for _, c := range normal {
 		if isBreakingCommit(c.subject, c.body) {

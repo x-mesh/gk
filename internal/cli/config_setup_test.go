@@ -69,12 +69,12 @@ func TestPruneNoopChanges(t *testing.T) {
 	}
 
 	changes := map[string]string{
-		"ai.provider":                   "kiro-api",                // same → drop
-		"output.lang":                   "en",                      // differs → keep
-		"output.easy":                   "false",                   // same as default → drop
-		"ai.providers.kiro-api.api_key": "sk-old",                  // same → drop
-		"ai.providers.kiro-api.model":   "kiro/claude-haiku-4.5",   // empty now → keep
-		"log.graph":                     "false",                   // same as default → drop
+		"ai.provider":                   "kiro-api",              // same → drop
+		"output.lang":                   "en",                    // differs → keep
+		"output.easy":                   "false",                 // same as default → drop
+		"ai.providers.kiro-api.api_key": "sk-old",                // same → drop
+		"ai.providers.kiro-api.model":   "kiro/claude-haiku-4.5", // empty now → keep
+		"log.graph":                     "false",                 // same as default → drop
 	}
 	lists := map[string][]string{
 		"log.vis":    {"safety", "cc", "tags-rule"}, // same set, reordered → drop

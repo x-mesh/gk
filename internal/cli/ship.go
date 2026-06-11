@@ -931,26 +931,26 @@ type shipStepJSON struct {
 // `gk ship --dry-run --json` — the contract agent tooling (e.g. a /release
 // skill) parses instead of scraping the human rendering.
 type shipPlanJSON struct {
-	Branch         string         `json:"branch"`
-	Base           string         `json:"base,omitempty"`
-	Remote         string         `json:"remote"`
-	LatestTag      string         `json:"latest_tag"`
-	NextTag        string         `json:"next_tag,omitempty"`
-	Bump           string         `json:"bump,omitempty"`
-	BumpDowngraded bool           `json:"bump_downgraded_0x,omitempty"`
-	CommitCount    int            `json:"commit_count"`
-	MergeToBase    bool           `json:"merge_to_base"`
-	VersionFiles   []string       `json:"version_files,omitempty"`
-	Changelog      string         `json:"changelog,omitempty"`
-	ChangelogDraft string         `json:"changelog_draft,omitempty"`
-	NoRelease      bool           `json:"no_release,omitempty"`
-	Push           bool           `json:"push"`
+	Branch         string   `json:"branch"`
+	Base           string   `json:"base,omitempty"`
+	Remote         string   `json:"remote"`
+	LatestTag      string   `json:"latest_tag"`
+	NextTag        string   `json:"next_tag,omitempty"`
+	Bump           string   `json:"bump,omitempty"`
+	BumpDowngraded bool     `json:"bump_downgraded_0x,omitempty"`
+	CommitCount    int      `json:"commit_count"`
+	MergeToBase    bool     `json:"merge_to_base"`
+	VersionFiles   []string `json:"version_files,omitempty"`
+	Changelog      string   `json:"changelog,omitempty"`
+	ChangelogDraft string   `json:"changelog_draft,omitempty"`
+	NoRelease      bool     `json:"no_release,omitempty"`
+	Push           bool     `json:"push"`
 	// Wait mirrors the resolved --wait / ship.wait value: false means the
 	// live run returns right after the push without running watch/verify.
 	Wait      bool           `json:"wait"`
 	Preflight []shipStepJSON `json:"preflight,omitempty"`
-	Watch          []shipStepJSON `json:"watch,omitempty"`
-	Verify         []shipStepJSON `json:"verify,omitempty"`
+	Watch     []shipStepJSON `json:"watch,omitempty"`
+	Verify    []shipStepJSON `json:"verify,omitempty"`
 }
 
 func shipStepsToJSON(steps []config.PreflightStep) []shipStepJSON {

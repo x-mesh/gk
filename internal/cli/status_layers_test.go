@@ -35,16 +35,16 @@ func TestCountSquashDebt(t *testing.T) {
 
 func TestPorcelainPathOverlap(t *testing.T) {
 	dirty := map[string]bool{
-		"app.go":     true,
-		"lib.go":     true,
+		"app.go":      true,
+		"lib.go":      true,
 		"new-name.go": true,
-		"a b.txt":    true,
+		"a b.txt":     true,
 	}
 	porcelain := strings.Join([]string{
-		" M app.go",            // overlaps
-		"?? other.go",          // not in dirty set
+		" M app.go",                // overlaps
+		"?? other.go",              // not in dirty set
 		"R  old.go -> new-name.go", // rename: new side overlaps
-		` M "a b.txt"`,         // quoted path
+		` M "a b.txt"`,             // quoted path
 		"M  lib.go",
 		"",
 	}, "\n")

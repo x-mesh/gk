@@ -25,9 +25,19 @@ import (
 //
 // The signature takes only a files slice (no cobra.Command) so the same
 // gate can run from the --plan flow, which assembles its own scope.
+//
+// File paths from GatherWIP are repo-root-relative (git porcelain), NOT
+// cwd-relative: resolving them against the process cwd silently disabled
+// the gate whenever gk ran from a subdirectory or via --repo (every stat
+// missed, every target dropped). repoRoot is therefore resolved to the
+// actual worktree top first, and every path is joined against it.
 func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aicommit.FileChange) {
+	root := resolveWorktreeRoot(ctx, repoRoot)
+	if root == "" {
+		return
+	}
 	// Go-module gate: no go.mod → not our concern, stay silent.
-	if _, err := os.Stat(filepath.Join(repoRoot, "go.mod")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return
 	}
 	// gofmt absent (rare outside CI) → skip rather than error.
@@ -40,11 +50,17 @@ func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aic
 		if !isGofmtTarget(f) {
 			continue
 		}
+		// GatherWIP emits repo-root-relative paths; tolerate absolute
+		// ones from callers that already resolved them.
+		abs := f.Path
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, abs)
+		}
 		// Deleted paths are not on disk — gofmt would error on them.
-		if _, err := os.Stat(f.Path); err != nil {
+		if _, err := os.Stat(abs); err != nil {
 			continue
 		}
-		targets = append(targets, f.Path)
+		targets = append(targets, abs)
 	}
 	if len(targets) == 0 {
 		return
@@ -77,6 +93,23 @@ func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aic
 	}
 	lines = append(lines, "fix with: gofmt -w "+strings.Join(unformatted, " "))
 	printNote(out, lines...)
+}
+
+// resolveWorktreeRoot returns the absolute worktree top for path resolution:
+// `git rev-parse --show-toplevel` run inside repoRoot (the --repo flag) or,
+// when repoRoot is empty, the process cwd. When rev-parse fails (no git, not
+// a repo) it falls back to the explicit repoRoot — the caller said where the
+// root is — and to "" otherwise, which the gate treats as "stay silent".
+func resolveWorktreeRoot(ctx context.Context, repoRoot string) string {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	if repoRoot != "" {
+		cmd.Dir = repoRoot
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return repoRoot
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // isGofmtTarget reports whether a FileChange should be checked by gofmt:

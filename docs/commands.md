@@ -2672,9 +2672,9 @@ EOF
 
 - **File-level granularity**: each file appears in exactly one commit; splitting one file across commits (hunk-level) is not supported.
 - **Validation up front**: duplicate files, files without a working-tree change, empty/malformed messages (Conventional Commit rules from `commit.*` config) are rejected before anything is committed — fix the plan, nothing happened. Files the plan does not cover stay dirty.
-- **Same safety rails**: the secret scan runs on the plan's files; `--no-verify` / `--allow-secret-kind` behave as in the AI flow. A backup ref is written first, and the result contract (`{result, commits:[{message,files,result,sha}], failed_at?, backup_ref}`) reports per-commit outcomes — `partial` when a mid-plan commit fails.
+- **Same safety rails**: the secret scan runs on the plan's files; `--no-verify` / `--allow-secret-kind` behave as in the AI flow. A backup ref is written first (live runs only — `--dry-run` writes nothing, so it never retargets `--abort`), and the result contract (`{result, commits:[{message,files,result,sha}], failed_at?, backup_ref}`) reports per-commit outcomes — `partial` when a mid-plan commit fails.
 - **`--abort` caveat**: abort restores HEAD to the backup ref with `git reset --hard` (the shared ai-commit abort contract) — the plan's commits leave the branch, and their files do **not** reappear as dirty working-tree changes (the commits remain recoverable via the backup ref / reflog).
-- `allow_empty: true` on an entry creates an empty commit (`--allow-empty`) instead of failing on a no-change group.
+- `allow_empty: true` on an entry creates an empty commit (`--allow-empty`) instead of failing on a no-change group — refused when the index has staged changes outside the plan, since a pathspec-less commit would swallow them.
 
 #### Safety rails (every run)
 

@@ -107,7 +107,12 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 		// WIP chain unwrap). Don't overwrite — the pre-rewrite ref is
 		// the one --abort needs to roll back to.
 		result.BackupRef = opts.PrecapturedBackupRef
-	} else {
+	} else if !opts.DryRun {
+		// No backup ref on dry-run: a preview must not mutate refs, and
+		// the written ref would become the LATEST backup — after a
+		// partial apply, a follow-up dry-run would silently retarget
+		// `gk commit --abort` from the real restore point to the
+		// partially-applied HEAD.
 		backup, err := EnsureBackupRef(ctx, runner)
 		if err != nil {
 			return result, err
@@ -129,7 +134,21 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 		// An empty group with AllowEmpty produces a `--allow-empty`
 		// commit and touches no pathspec — skip staging entirely so we
 		// never stage the whole repo via a zero-pathspec `git add`.
+		// But a pathspec-less commit consumes the INDEX, not nothing:
+		// anything the user staged outside the plan would ride into this
+		// "empty" commit unscanned and unreviewed. Refuse unless the
+		// index is clean — the uncovered-files-stay-dirty guarantee and
+		// the plan-scoped secret scan both depend on it.
 		if len(m.Group.Files) == 0 && m.AllowEmpty {
+			staged, _, serr := runner.Run(ctx, "diff", "--cached", "--name-only")
+			if serr != nil {
+				return result, fmt.Errorf("aicommit: inspect index before --allow-empty: %w", serr)
+			}
+			if s := strings.TrimSpace(string(staged)); s != "" {
+				return result, fmt.Errorf(
+					"aicommit: refusing allow_empty commit %q: the index has staged changes outside the plan (%s) — an empty commit would swallow them; commit or unstage them first",
+					m.Subject, strings.Join(strings.Split(s, "\n"), ", "))
+			}
 			msg := formatCommitMessage(m, opts.Trailer)
 			stdout, stderr, err := runner.Run(ctx, "commit", "--allow-empty", "-m", msg)
 			if err != nil {

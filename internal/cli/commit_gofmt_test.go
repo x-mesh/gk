@@ -46,7 +46,7 @@ func TestGuardGofmt_ReportsUnformatted(t *testing.T) {
 	}
 	root := writeGoModRepo(t, map[string]string{"bad.go": unformattedGo})
 	var out bytes.Buffer
-	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc(filepath.Join(root, "bad.go"))})
+	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc("bad.go")})
 
 	got := out.String()
 	if !strings.Contains(got, "NOTE") {
@@ -68,7 +68,7 @@ func TestGuardGofmt_CleanIsSilent(t *testing.T) {
 	clean := "package main\n\nfunc main() {\n\tx := 1\n\t_ = x\n}\n"
 	root := writeGoModRepo(t, map[string]string{"good.go": clean})
 	var out bytes.Buffer
-	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc(filepath.Join(root, "good.go"))})
+	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc("good.go")})
 
 	if out.Len() != 0 {
 		t.Errorf("expected no output for formatted file, got:\n%s", out.String())
@@ -94,7 +94,7 @@ func TestGuardGofmt_NoGofmtBinarySkips(t *testing.T) {
 	// Empty PATH → exec.LookPath("gofmt") fails → guard self-skips.
 	t.Setenv("PATH", "")
 	var out bytes.Buffer
-	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc(filepath.Join(root, "bad.go"))})
+	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{fc("bad.go")})
 
 	if out.Len() != 0 {
 		t.Errorf("expected no output when gofmt is unavailable, got:\n%s", out.String())
@@ -113,9 +113,9 @@ func TestGuardGofmt_ExcludesGenerated(t *testing.T) {
 	})
 	var out bytes.Buffer
 	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{
-		fc(filepath.Join(root, "api_gen.go")),
-		fc(filepath.Join(root, "msg.pb.go")),
-		fc(filepath.Join(root, "zz_generated.deep.go")),
+		fc("api_gen.go"),
+		fc("msg.pb.go"),
+		fc("zz_generated.deep.go"),
 	})
 
 	if out.Len() != 0 {
@@ -130,7 +130,7 @@ func TestGuardGofmt_ExcludesDeleted(t *testing.T) {
 	root := writeGoModRepo(t, nil) // go.mod only; gone.go never written
 	var out bytes.Buffer
 	guardGofmt(context.Background(), &out, root, []aicommit.FileChange{
-		{Path: filepath.Join(root, "gone.go"), Status: "deleted"},
+		{Path: "gone.go", Status: "deleted"},
 	})
 
 	if out.Len() != 0 {
@@ -150,5 +150,38 @@ func TestIsGeneratedGoFile(t *testing.T) {
 		if isGeneratedGoFile(p) {
 			t.Errorf("expected NOT generated: %q", p)
 		}
+	}
+}
+
+// TestGuardGofmt_SubdirCwdStillResolves — Codex review P3: GatherWIP paths
+// are repo-root-relative, but the gate used to stat them against the
+// process cwd, silently disabling itself whenever gk ran from a repo
+// subdirectory (or via --repo from outside). With the worktree root
+// resolved via rev-parse, a subdir cwd must still produce the NOTE.
+func TestGuardGofmt_SubdirCwdStillResolves(t *testing.T) {
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		t.Skip("gofmt not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := writeGoModRepo(t, map[string]string{
+		"bad.go":       unformattedGo,
+		"sub/keep.txt": "x\n",
+	})
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Chdir(filepath.Join(root, "sub"))
+
+	var out bytes.Buffer
+	// Empty repoRoot = the common no---repo invocation; cwd is the subdir.
+	guardGofmt(context.Background(), &out, "", []aicommit.FileChange{fc("bad.go")})
+	if !strings.Contains(out.String(), "bad.go") {
+		t.Errorf("gate must resolve repo-relative paths from a subdir cwd, got:\n%s", out.String())
 	}
 }

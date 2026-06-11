@@ -164,6 +164,8 @@ func TestApplyMessagesAllowEmptyCommitsWithFlag(t *testing.T) {
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
 			"rev-parse HEAD":                    {Stdout: "abc\n"},
 			"write-tree":                        {Stdout: "t\n"},
+			// Clean index — the allow_empty guard must see no staged paths.
+			"diff --cached --name-only": {Stdout: ""},
 		},
 		DefaultResp: git.FakeResponse{Stdout: "[main 9999999] chore: empty\n"},
 	}
@@ -187,6 +189,33 @@ func TestApplyMessagesAllowEmptyCommitsWithFlag(t *testing.T) {
 	}
 	if sawAdd {
 		t.Errorf("AllowEmpty must not invoke git add, calls=%+v", fake.Calls)
+	}
+}
+
+// TestApplyMessagesAllowEmptyRefusesStagedIndex — Codex review P1: a
+// pathspec-less `git commit --allow-empty` consumes the INDEX, so staged
+// files outside the plan would ride into the "empty" commit unscanned.
+// The guard must refuse instead of committing.
+func TestApplyMessagesAllowEmptyRefusesStagedIndex(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --name-only":         {Stdout: "secret.txt\n"},
+		},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore"}, Subject: "trigger ci", AllowEmpty: true},
+	}
+	_, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "refusing allow_empty") {
+		t.Fatalf("want refusing allow_empty error, got %v", err)
+	}
+	for _, c := range fake.Calls {
+		if len(c.Args) > 0 && c.Args[0] == "commit" {
+			t.Errorf("must not commit over a dirty index, calls=%+v", fake.Calls)
+		}
 	}
 }
 
@@ -250,6 +279,14 @@ func TestApplyMessagesDryRunMakesNoCommits(t *testing.T) {
 		if len(c.Args) > 0 && c.Args[0] == "commit" {
 			t.Error("DryRun must not invoke git commit")
 		}
+		// Codex review P2: a preview must not write refs — a dry-run
+		// backup would become the LATEST ref and retarget --abort.
+		if len(c.Args) > 0 && c.Args[0] == "update-ref" {
+			t.Error("DryRun must not write a backup ref")
+		}
+	}
+	if res.BackupRef != "" {
+		t.Errorf("BackupRef in dry-run must be empty, got %q", res.BackupRef)
 	}
 	if len(res.CommitShas) != 1 || res.CommitShas[0] != "" {
 		t.Errorf("CommitShas in dry-run: %+v", res.CommitShas)

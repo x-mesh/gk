@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-06-11
+
 ### Added
 
 - **`gk log --ahead/--behind --base`·`gk log --merged` — base 기준으로 "무엇이 아직 안 들어갔나".** `--ahead`/`--behind`는 지금까지 upstream(`@{u}`)만 봐서, `gk status`가 "ready to merge into main"이라 말하는 ↑N과 숫자가 어긋났다 — develop이 `origin/develop`과 동기화됐어도 main보다 앞서 있으면 `--ahead`는 0을 보고했다. `--base`를 더하면 status와 같은 base 해석기(`resolveBaseForStatus`)로 `<base>..HEAD` 범위를 펼쳐, 그 ↑N과 커밋 수가 정확히 일치한다. `--merged`는 같은 정보를 커밋별 마커로 — 아직 base에 없는 커밋 앞에 `○`를 찍는다(push 마커 `◇`와 같은 "행동이 필요할 때만 강조" 방식, `git rev-list <base>` 한 번의 집합 비교). status의 ready-to-merge 줄도 이제 `gk log --ahead --base`를 가리킨다. 마커는 push 집합과 마찬가지로 SHA 동일성 기반이라 squash/rebase로 머지된 커밋은 미머지로 보인다(legend에 명시).

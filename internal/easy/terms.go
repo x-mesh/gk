@@ -155,6 +155,22 @@ func (m *TermMapper) Translate(s string) string {
 				result[start-1] == '(' && result[end] == ')' {
 				continue
 			}
+			// Don't translate a term spliced into a dotted/slashed
+			// identifier — config keys (`ai.commit.model`) and paths
+			// (`feature/merge`) are code, not prose, and `gk config set`
+			// surfaced `ai.변경사항 저장 (commit).model`. `.` and `/` are the
+			// only word-boundary chars that cut through an identifier; `_`/`-`
+			// never break \b mid-token (a hyphen belongs to the term itself,
+			// e.g. cherry-pick). Leading `.`/`/` ⇒ embedded; trailing `.`/`/`
+			// only counts when another identifier char follows, so a sentence
+			// "commit." (period then space/EOL) still translates.
+			if start > 0 && (result[start-1] == '.' || result[start-1] == '/') {
+				continue
+			}
+			if end < len(result) && (result[end] == '.' || result[end] == '/') &&
+				end+1 < len(result) && isIdentByte(result[end+1]) {
+				continue
+			}
 			b.WriteString(result[last:start])
 			b.WriteString(translated)
 			b.WriteString(" (")
@@ -167,4 +183,15 @@ func (m *TermMapper) Translate(s string) string {
 	}
 
 	return result
+}
+
+// isIdentByte reports whether c can appear inside a code identifier or path
+// segment (alphanumeric or underscore). Used to tell a dotted/slashed
+// identifier ("commit.model") from a term followed by sentence punctuation
+// ("commit. ").
+func isIdentByte(c byte) bool {
+	return c >= 'a' && c <= 'z' ||
+		c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' ||
+		c == '_'
 }

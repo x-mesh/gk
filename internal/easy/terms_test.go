@@ -280,6 +280,30 @@ func TestTermMapper_SpecificTranslations(t *testing.T) {
 			input:    "fast-forward merge",
 			expected: "빨리 감기 (충돌 없이 앞으로 이동) (fast-forward) 브랜치 합치기 (merge)",
 		},
+		// Dotted/slashed identifiers (config keys, paths) are code, not prose:
+		// the embedded term must NOT be translated.
+		{
+			input:    "key ai.commit.model is invalid",
+			expected: "key ai.commit.model is invalid",
+		},
+		{
+			input:    "git config branch.merge setting",
+			expected: "git config branch.merge setting",
+		},
+		{
+			input:    "see feature/merge for details",
+			expected: "see feature/merge for details",
+		},
+		// A term at a path tail still reads as code (trailing identifier char).
+		{
+			input:    "edit refs/heads/branch now",
+			expected: "edit refs/heads/branch now",
+		},
+		// But a term ending a sentence (period then space/EOL) is prose.
+		{
+			input:    "please commit.",
+			expected: "please 변경사항 저장 (commit).",
+		},
 	}
 
 	for _, tt := range tests {

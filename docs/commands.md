@@ -52,7 +52,8 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `-n`, `--no-verify` | false | Skip the secret-pattern scan before pushing (matches `gk commit -n` / `gk push -n`) |
 | `--allow-dirty` | false | Allow shipping with a dirty working tree |
 | `--allow-non-base` | false | Allow release tags from a non-base branch |
-| `-y`, `--yes` | false | Skip the final confirmation prompt |
+| `-y`, `--yes` | false | Skip the final confirmation prompt. `ship.auto_confirm: true` makes this the default; `--yes=false` restores the prompt for one run |
+| `--wait` | true | Run the post-tag watch/verify pipeline. `--wait=false` returns right after the push and prints the skipped commands; `ship.wait: false` makes that the default, `--wait` re-enables it for one run |
 | `--dry-run` | false | Print the ship plan without tagging or pushing |
 | `--json` (global) | false | With `--dry-run`, emit the release plan as JSON (branch, bump + 0.x downgrade marker, next tag, version files, changelog draft, preflight/watch/verify steps). Refused without `--dry-run` |
 
@@ -93,9 +94,13 @@ ship:
   version_files:              # explicit version files (replaces auto-detection)
     - VERSION
     - extension/package.json
+  auto_confirm: true          # default false — skip the confirm prompt (as if -y); --yes=false escapes once
+  wait: false                 # default true — false returns right after the push, skipping watch/verify
 ```
 
-Watch steps run only when a release tag was actually pushed; a failure aborts with a rerun hint (the tag is already public — re-shipping is not the fix). Verify failures name the failing step and pass its output through. `continue_on_failure: true` marks a step advisory in either list. The whole pipeline appears in `gk ship --dry-run` and the `--json` plan, and "Ship complete" only prints after every hook has passed.
+Watch steps run only when a release tag was actually pushed; a failure aborts with a rerun hint (the tag is already public — re-shipping is not the fix). Verify failures name the failing step and pass its output through. `continue_on_failure: true` marks a step advisory in either list. The whole pipeline appears in `gk ship --dry-run` and the `--json` plan (which also carries the resolved `wait` value), and "Ship complete" only prints after every hook has passed.
+
+With `wait: false` (or `--wait=false`) ship ends at the push: the release is published but untracked, and the skipped watch/verify commands are printed as a NOTE to run manually once CI has had time to run. An explicit `--wait` re-enables the pipeline for one run when the config turns it off.
 
 ### Examples
 

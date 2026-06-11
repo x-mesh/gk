@@ -574,6 +574,8 @@ func TestLoad_ShipConfig(t *testing.T) {
   version_files:
     - VERSION
     - extension/package.json
+  auto_confirm: true
+  wait: false
 `
 	if err := os.WriteFile(filepath.Join(dir, "gk", "config.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -591,5 +593,42 @@ func TestLoad_ShipConfig(t *testing.T) {
 	}
 	if len(cfg.Ship.VersionFiles) != 2 || cfg.Ship.VersionFiles[1] != "extension/package.json" {
 		t.Errorf("Ship.VersionFiles = %+v", cfg.Ship.VersionFiles)
+	}
+	if !cfg.Ship.AutoConfirm {
+		t.Error("Ship.AutoConfirm = false, want true")
+	}
+	if cfg.Ship.Wait {
+		t.Error("Ship.Wait = true, want false")
+	}
+}
+
+// TestLoad_ShipWaitDefault: ship.wait must default to true — including when
+// a ship: section exists but omits the key. A zero-value default here would
+// silently skip every configured watch/verify pipeline.
+func TestLoad_ShipWaitDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(dir, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `ship:
+  watch:
+    - name: ci
+      command: gh run watch --exit-status
+`
+	if err := os.WriteFile(filepath.Join(dir, "gk", "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Ship.Wait {
+		t.Error("Ship.Wait = false, want default true")
+	}
+	if cfg.Ship.AutoConfirm {
+		t.Error("Ship.AutoConfirm = true, want default false")
 	}
 }

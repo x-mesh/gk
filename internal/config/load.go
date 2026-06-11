@@ -142,6 +142,8 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("output.lang", defaults.Output.Lang)
 	v.SetDefault("output.emoji", defaults.Output.Emoji)
 	v.SetDefault("output.hints", defaults.Output.Hints)
+	v.SetDefault("ship.auto_confirm", defaults.Ship.AutoConfirm)
+	v.SetDefault("ship.wait", defaults.Ship.Wait)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -581,6 +583,80 @@ func TestRunShipPostHooksContinueOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "must") {
 		t.Errorf("later steps must still run:\n%s", out.String())
+	}
+}
+
+// TestResolveShipBool: an explicit flag — either polarity — must beat the
+// config default; an untouched flag falls through to config. This is what
+// lets ship.auto_confirm/ship.wait act as defaults while --yes=false /
+// --wait=false still escape them for one run.
+func TestResolveShipBool(t *testing.T) {
+	cases := []struct {
+		name    string
+		setFlag string // "" = not passed
+		cfg     bool
+		want    bool
+	}{
+		{"unset uses config true", "", true, true},
+		{"unset uses config false", "", false, false},
+		{"explicit true beats config false", "true", false, true},
+		{"explicit false beats config true", "false", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().Bool("wait", true, "")
+			if tc.setFlag != "" {
+				if err := cmd.Flags().Set("wait", tc.setFlag); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := resolveShipBool(cmd, "wait", tc.cfg); got != tc.want {
+				t.Errorf("resolveShipBool = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunShipCoreNoWaitSkipsPostHooks: with wait=false a live run must end
+// right after the push — the configured watch step (which would fail loudly)
+// never executes, and the skipped commands surface in a NOTE instead.
+func TestRunShipCoreNoWaitSkipsPostHooks(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir+"/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Patch bug.\n\n## [1.2.3] - 2026-04-01\n")
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                      {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":             {Stdout: "main\n"},
+		"rev-parse --show-toplevel":               {Stdout: dir + "\n"},
+		"describe --tags --abbrev=0":              {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":        {Stdout: "fix: patch bug\n\x1e"},
+		"rev-parse --verify refs/tags/v1.2.4":     {ExitCode: 1, Stderr: "not found"},
+		"add -A":                                  {Stdout: ""},
+		"commit -m release: v1.2.4":               {Stdout: "[main abc123] release\n"},
+		"tag -a v1.2.4 -m Release v1.2.4":         {Stdout: ""},
+		"rev-parse --verify origin/main^{commit}": {Stdout: "abc123\n"},
+		"log -p --no-color origin/main..HEAD":     {Stdout: ""},
+		"push origin main":                        {Stdout: "branch pushed\n"},
+		"push origin v1.2.4":                      {Stdout: "tag pushed\n"},
+	}}
+	cfg := testShipConfig()
+	cfg.Ship.Watch = []config.PreflightStep{{Name: "ci", Command: "false"}}
+
+	var out bytes.Buffer
+	err := runShipCore(context.Background(),
+		shipDeps{Runner: runner, Config: cfg, Out: &out, ErrOut: &out},
+		shipFlags{yes: true, skipPreflight: true, push: true, noWait: true})
+	if err != nil {
+		t.Fatalf("ship with noWait must skip post hooks: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "─── Watch") {
+		t.Errorf("watch step must not run with noWait:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "wait=false") {
+		t.Errorf("skipped pipeline must be announced:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Ship complete") {
+		t.Errorf("ship must still complete:\n%s", out.String())
 	}
 }
 

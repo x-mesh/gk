@@ -42,6 +42,10 @@ Release pipeline (config ship:):
   ship.verify runs after watch (artifact/tap checks); ship.version_files lists
   explicit version files, replacing auto-detection. All reuse the preflight
   step shape. "Ship complete" prints only after every hook passes.
+  ship.wait: false (or --wait=false) returns right after the push instead,
+  printing the skipped watch/verify commands to run manually.
+  ship.auto_confirm: true makes -y the default; --yes=false restores the
+  prompt for one run.
 
 When CHANGELOG.md's [Unreleased] is empty, ship drafts the section from the
 conventional commits in the release range and shows it in the plan for review.
@@ -59,7 +63,8 @@ The global --json flag with --dry-run emits the whole plan as JSON for tooling.`
 	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan before pushing (matches 'gk commit -n' / 'gk push -n')")
 	cmd.Flags().Bool("allow-dirty", false, "allow shipping with a dirty working tree")
 	cmd.Flags().Bool("allow-non-base", false, "tag the current branch in place instead of fast-forwarding base (skip the base merge)")
-	cmd.Flags().BoolP("yes", "y", false, "skip the final confirmation prompt")
+	cmd.Flags().BoolP("yes", "y", false, "skip the final confirmation prompt (config: ship.auto_confirm)")
+	cmd.Flags().Bool("wait", true, "run the post-tag watch/verify pipeline; --wait=false returns right after the push (config: ship.wait)")
 	cmd.Flags().Bool("dry-run", false, "print the ship plan without tagging or pushing")
 	cmd.Flags().Bool("no-fetch", false, "skip the up-front `git fetch --tags` (use a stale local view)")
 	rootCmd.AddCommand(cmd)
@@ -76,8 +81,13 @@ type shipFlags struct {
 	allowDirty    bool
 	allowNonBase  bool
 	yes           bool
-	dryRun        bool
-	noFetch       bool
+	// noWait skips the post-tag watch/verify pipeline. Inverted from the
+	// --wait flag / ship.wait config on purpose: the zero value keeps the
+	// pipeline running, so direct shipFlags{...} constructions (tests)
+	// don't silently opt out of post hooks.
+	noWait  bool
+	dryRun  bool
+	noFetch bool
 	// jsonOut mirrors the global --json flag: with --dry-run it emits the
 	// machine-readable plan (the contract agent tooling consumes) instead
 	// of the human rendering.
@@ -145,7 +155,7 @@ func runShip(cmd *cobra.Command, args []string) error {
 		cfg = &d
 	}
 
-	flags, err := readShipFlags(cmd, args)
+	flags, err := readShipFlags(cmd, args, cfg)
 	if err != nil {
 		return err
 	}
@@ -158,7 +168,7 @@ func runShip(cmd *cobra.Command, args []string) error {
 	}, flags)
 }
 
-func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
+func readShipFlags(cmd *cobra.Command, args []string, cfg *config.Config) (shipFlags, error) {
 	f := shipFlags{mode: shipModeInteractive}
 	f.version, _ = cmd.Flags().GetString("version")
 	f.noRelease, _ = cmd.Flags().GetBool("no-release")
@@ -167,7 +177,8 @@ func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
 	f.noVerify, _ = cmd.Flags().GetBool("no-verify")
 	f.allowDirty, _ = cmd.Flags().GetBool("allow-dirty")
 	f.allowNonBase, _ = cmd.Flags().GetBool("allow-non-base")
-	f.yes, _ = cmd.Flags().GetBool("yes")
+	f.yes = resolveShipBool(cmd, "yes", cfg.Ship.AutoConfirm)
+	f.noWait = !resolveShipBool(cmd, "wait", cfg.Ship.Wait)
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.noFetch, _ = cmd.Flags().GetBool("no-fetch")
 	f.jsonOut = JSONOut()
@@ -215,6 +226,18 @@ func readShipFlags(cmd *cobra.Command, args []string) (shipFlags, error) {
 		return f, fmt.Errorf("ship: --version cannot be combined with --%s", f.bump)
 	}
 	return f, nil
+}
+
+// resolveShipBool picks the effective value of a config-backed bool flag:
+// an explicit flag — either polarity, so --wait=false / --yes=false opt out
+// of a config default for one invocation — wins; otherwise the config value
+// decides. Same contract as resolveGraphFlag (log.go).
+func resolveShipBool(cmd *cobra.Command, name string, fromConfig bool) bool {
+	if cmd.Flags().Changed(name) {
+		v, _ := cmd.Flags().GetBool(name)
+		return v
+	}
+	return fromConfig
 }
 
 func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
@@ -340,9 +363,13 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 	// (artifact checks), both configured under `ship:`. Runs before the
 	// completion banner so "Ship complete" means the whole pipeline — not
 	// just the git half — succeeded. Only meaningful when the release tag
-	// actually reached the remote.
+	// actually reached the remote. wait=false (--wait=false / ship.wait)
+	// returns right after the push; the skipped commands are printed so
+	// the user can fire them once CI has had time to run.
 	if !flags.noRelease && flags.push {
-		if err := runShipPostHooks(ctx, deps, plan); err != nil {
+		if flags.noWait {
+			printShipSkippedPipeline(deps.Out, plan)
+		} else if err := runShipPostHooks(ctx, deps, plan); err != nil {
 			return err
 		}
 	}
@@ -795,11 +822,18 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 	if flags.skipPreflight {
 		fmt.Fprintf(w, "  %s   %s\n", label("Preflight:"), skip("skipped"))
 	}
+	postVal := func(steps []config.PreflightStep) string {
+		v := label(shipStepSummary(steps))
+		if flags.noWait {
+			v += skip("  (skipped: wait=false)")
+		}
+		return v
+	}
 	if len(plan.Watch) > 0 {
-		fmt.Fprintf(w, "  %s   %s\n", label("Watch:    "), label(shipStepSummary(plan.Watch)))
+		fmt.Fprintf(w, "  %s   %s\n", label("Watch:    "), postVal(plan.Watch))
 	}
 	if len(plan.Verify) > 0 {
-		fmt.Fprintf(w, "  %s   %s\n", label("Verify:   "), label(shipStepSummary(plan.Verify)))
+		fmt.Fprintf(w, "  %s   %s\n", label("Verify:   "), postVal(plan.Verify))
 	}
 	if plan.ChangelogDraft != "" {
 		fmt.Fprintln(w, header("─── Changelog draft ──────────────────────────"))
@@ -859,6 +893,20 @@ func runShipPostHooks(ctx context.Context, deps shipDeps, plan shipPlan) error {
 	})
 }
 
+// printShipSkippedPipeline notes the watch/verify steps a wait=false run
+// leaves behind. The tag is already public at this point, so the commands
+// stay valid — listed verbatim for the user to fire once CI has run.
+func printShipSkippedPipeline(w io.Writer, plan shipPlan) {
+	if len(plan.Watch) == 0 && len(plan.Verify) == 0 {
+		return
+	}
+	lines := []string{"watch/verify skipped (wait=false) — run manually once CI has run:"}
+	for _, s := range append(append([]config.PreflightStep{}, plan.Watch...), plan.Verify...) {
+		lines = append(lines, "  "+s.Command)
+	}
+	printNote(w, lines...)
+}
+
 // shipStepSummary joins step display names for the one-line plan view.
 func shipStepSummary(steps []config.PreflightStep) string {
 	names := make([]string, 0, len(steps))
@@ -897,7 +945,10 @@ type shipPlanJSON struct {
 	ChangelogDraft string         `json:"changelog_draft,omitempty"`
 	NoRelease      bool           `json:"no_release,omitempty"`
 	Push           bool           `json:"push"`
-	Preflight      []shipStepJSON `json:"preflight,omitempty"`
+	// Wait mirrors the resolved --wait / ship.wait value: false means the
+	// live run returns right after the push without running watch/verify.
+	Wait      bool           `json:"wait"`
+	Preflight []shipStepJSON `json:"preflight,omitempty"`
 	Watch          []shipStepJSON `json:"watch,omitempty"`
 	Verify         []shipStepJSON `json:"verify,omitempty"`
 }
@@ -933,6 +984,7 @@ func renderShipPlanJSON(w io.Writer, plan shipPlan, flags shipFlags) error {
 		ChangelogDraft: plan.ChangelogDraft,
 		NoRelease:      flags.noRelease,
 		Push:           flags.push,
+		Wait:           !flags.noWait,
 		Preflight:      shipStepsToJSON(plan.Preflight),
 		Watch:          shipStepsToJSON(plan.Watch),
 		Verify:         shipStepsToJSON(plan.Verify),

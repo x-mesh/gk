@@ -352,6 +352,13 @@ type PullConfig struct {
 //   - VersionFiles: explicit version-file paths (relative to the repo
 //     root). When set it replaces the VERSION/package.json/
 //     marketplace.json auto-detection.
+//   - AutoConfirm: skip the final confirmation prompt by default, as if
+//     every run passed -y. An explicit --yes=false still forces the
+//     prompt for one invocation.
+//   - Wait: run the post-tag Watch/Verify pipeline (default true).
+//     false returns right after the push — the release is published but
+//     untracked, and ship prints the skipped commands as a note.
+//     --wait / --wait=false overrides per invocation.
 //
 // Watch and Verify reuse PreflightStep so `name:`/`command:`/
 // `continue_on_failure:` read the same in all three lists.
@@ -359,6 +366,8 @@ type ShipConfig struct {
 	Watch        []PreflightStep `mapstructure:"watch"         yaml:"watch"`
 	Verify       []PreflightStep `mapstructure:"verify"        yaml:"verify"`
 	VersionFiles []string        `mapstructure:"version_files" yaml:"version_files"`
+	AutoConfirm  bool            `mapstructure:"auto_confirm"  yaml:"auto_confirm"`
+	Wait         bool            `mapstructure:"wait"          yaml:"wait"`
 }
 
 // SyncConfig controls gk sync behaviour. Strategy is the integration
@@ -604,6 +613,13 @@ func Defaults() Config {
 				{Name: "branch-check", Command: "branch-check"},
 				{Name: "no-conflict", Command: "no-conflict"},
 			},
+		},
+		Ship: ShipConfig{
+			// Wait defaults to true: shipping means seeing the release
+			// through CI watch + verify. Load pre-seeds the struct with
+			// these defaults, so a `ship:` section that omits the key
+			// keeps it on.
+			Wait: true,
 		},
 		Clone: CloneConfig{
 			DefaultProtocol: "ssh",

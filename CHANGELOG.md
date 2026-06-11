@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ship.auto_confirm` / `ship.wait` — ship의 확인 프롬프트와 CI 대기를 config 기본값으로.** 매 릴리스마다 `-y`를 치는 사용자라면 `ship.auto_confirm: true`로 프롬프트 스킵이 기본이 된다 — 한 번만 다시 확인하고 싶을 때는 `--yes=false`. tag push 뒤의 watch/verify 파이프라인도 `--wait=false`(또는 `ship.wait: false`)로 건너뛸 수 있다 — ship은 push에서 끝나고, 건너뛴 단계의 명령은 NOTE로 출력해 CI가 돈 뒤 손으로 실행하게 한다(태그는 이미 공개돼 있으므로 명령은 그대로 유효하다). 두 키 모두 명시 플래그가 어느 극성이든 config를 이기는 `--graph` 해상도 규칙을 따르고, `ship --dry-run --json` 계약에는 해상된 `wait` 값이 실린다.
+
 ## [0.83.0] - 2026-06-11
 
 ### Added

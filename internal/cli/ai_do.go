@@ -256,13 +256,14 @@ func runDo(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Easy Mode: TranslateTerms post-processing on output.
-	if easyEngine != nil && easyEngine.IsEnabled() && result != nil {
-		for i, cr := range result.Executed {
-			result.Executed[i].Stdout = easyEngine.TranslateTerms(cr.Stdout)
-			result.Executed[i].Stderr = easyEngine.TranslateTerms(cr.Stderr)
-		}
-	}
+	// Easy Mode previously ran TranslateTerms over each command's
+	// stdout/stderr here. Removed: cr.Stdout/cr.Stderr is the *raw* output of
+	// the child git process (executor.go runCommand → e.Runner.Run), not gk's
+	// own already-Easy-processed text. Translating git terms inside it is the
+	// same corruption translateErrorBody guards against — it rewrites source
+	// code and identifiers the user must read verbatim (e.g. a struct tag
+	// `Branch string `json:"branch"`` in lint output). Child output stays
+	// literal; gk's own framing prose is what Easy Mode translates elsewhere.
 
 	// Print backup ref hint if created.
 	if result != nil && result.BackupRef != "" {

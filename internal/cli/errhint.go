@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
 
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
@@ -123,7 +126,15 @@ func FormatError(err error) string {
 		// they exist to suggest (e.g. "→ gk commit" becomes
 		// "→ gk 변경사항 저장 (commit)" because \bcommit\b matches the
 		// command token in the already-translated string).
-		translated := eng.TranslateTerms(err.Error())
+		//
+		// Error bodies also splice in raw child-process output (git
+		// stderr/stdout, lint output). That output is verbatim text the
+		// user must read literally — translating git terms inside it
+		// corrupts source code and identifiers (the lint incident: a Go
+		// struct tag's "branch" json key got replaced with the Korean
+		// term). translateErrorBody masks those quoted spans before
+		// translation and restores them after.
+		translated := translateErrorBody(eng, err.Error())
 		hint := selfRewrite(HintFrom(err))
 		return fmtr.FormatError(fmt.Errorf("%s", translated), hint)
 	}
@@ -135,6 +146,170 @@ func FormatError(err error) string {
 		// NOTE advisories) so gk's guidance is visually attributable to gk
 		// even when the error line above quotes raw git output.
 		out += "\n" + strings.TrimRight(renderAdvisory("hint", strings.Split(h, "\n")), "\n")
+	}
+	return out
+}
+
+// translateErrorBody runs eng.TranslateTerms over s but shields spans that
+// quote raw child-process output (git stderr/stdout, lint output) from
+// translation. Those spans are verbatim text — translating git terms inside
+// them rewrites source code and identifiers the user must read literally (the
+// lint incident: a Go struct tag  Branch string json:"branch"  rendered with
+// every git term replaced:  작업 갈래 (Branch) ... json:"작업 갈래 (branch)" ).
+// Surrounding prose ("not a commit", "failed to push") still translates.
+//
+// Strategy: find each protected span, replace it with a non-colliding sentinel
+// (\x00<idx>\x00 — NUL never appears in error prose), translate the masked
+// string, then splice the originals back. Sentinels survive translation
+// because no term pattern matches NUL or digits-between-NULs.
+func translateErrorBody(eng *easy.Engine, s string) string {
+	spans := protectedSpans(s)
+	if len(spans) == 0 {
+		return eng.TranslateTerms(s)
+	}
+
+	var (
+		b       strings.Builder
+		restore []string
+		last    int
+	)
+	for _, sp := range spans {
+		b.WriteString(s[last:sp[0]])
+		// \x00<n>\x00 — the index into restore, fenced by NUL on both
+		// sides so a translation pass can't fuse it with adjacent text.
+		b.WriteString("\x00")
+		b.WriteString(strconv.Itoa(len(restore)))
+		b.WriteString("\x00")
+		restore = append(restore, s[sp[0]:sp[1]])
+		last = sp[1]
+	}
+	b.WriteString(s[last:])
+
+	translated := eng.TranslateTerms(b.String())
+
+	// Restore each masked span. The sentinel text is fixed, so a literal
+	// Replace is exact — translation cannot have altered NUL-fenced digits.
+	for i, orig := range restore {
+		translated = strings.Replace(translated, "\x00"+strconv.Itoa(i)+"\x00", orig, 1)
+	}
+	return translated
+}
+
+// protectedSpans returns the [start,end) byte ranges in s that quote raw
+// child-process output and must not be translated. Ranges are returned in
+// ascending, non-overlapping order. The recognised quote formats (all
+// confirmed against the actual fmt.Errorf call sites):
+//
+//   - " (stderr=" and " (stdout=" — aicommit wraps git output as
+//     "...%w (stderr=%s stdout=%s)" / "(stderr=%s)" (apply.go). The child
+//     stderr can itself contain ')' (multi-line git diagnostics), so a
+//     balanced-paren match is unsafe; once a "(stderr=" opens, everything to
+//     the end of the string is child output (the wrappers append nothing after
+//     it). Protect from the marker to EOS.
+//   - "exit code N: " — git.ExitError.Error() is
+//     "git <args>: exit code %d: <stderr>"; the stderr tail runs to the next
+//     " (stderr=" marker (when ExitError is itself wrapped that way) or EOS.
+//   - "exit status N: " — exec.ExitError.Error() is "exit status N"; runShellStep
+//     appends ": <CombinedOutput>" via "%w: %s", later wrapped by preflight as
+//     'preflight failed at step "name": %w'. Everything after that colon is the
+//     command's combined output. Protect to EOS.
+//
+// When several markers appear, the earliest-opening "to EOS" span subsumes the
+// rest, so the function returns at most one open-ended span plus any bounded
+// "exit code" spans that precede it.
+func protectedSpans(s string) [][2]int {
+	// Earliest position where an open-ended (to-EOS) protected region starts.
+	eos := -1
+	if i := indexOfMarker(s, " (stderr="); i >= 0 {
+		eos = i
+	}
+	if i := indexOfMarker(s, " (stdout="); i >= 0 && (eos < 0 || i < eos) {
+		eos = i
+	}
+	if i := matchExitStatus(s); i >= 0 && (eos < 0 || i < eos) {
+		eos = i
+	}
+
+	var spans [][2]int
+	// "exit code N: <stderr>" — bounded by the open-ended span (if any) or EOS.
+	if i := matchExitCode(s); i >= 0 {
+		end := len(s)
+		if eos >= 0 && eos > i {
+			end = eos
+		}
+		// Only keep it if it isn't entirely swallowed by an earlier EOS span.
+		if eos < 0 || i < eos {
+			spans = append(spans, [2]int{i, end})
+		}
+	}
+	if eos >= 0 {
+		spans = append(spans, [2]int{eos, len(s)})
+	}
+
+	// Merge / drop overlaps so the spans are clean and ascending.
+	return mergeSpans(spans)
+}
+
+// indexOfMarker returns the byte index of the first occurrence of marker in s,
+// or -1. Used for the literal " (stderr=" / " (stdout=" sentinels.
+func indexOfMarker(s, marker string) int { return strings.Index(s, marker) }
+
+// matchExitCode returns the byte index of the start of the stderr tail in a
+// git.ExitError string ("...: exit code N: <stderr>") — i.e. the index just
+// after "exit code N: " — or -1 if the pattern is absent. The index points at
+// the first byte of the child stderr so the protected span excludes the
+// "exit code N:" label (still prose-translatable, though it has no git terms).
+func matchExitCode(s string) int { return afterColonDigits(s, "exit code ") }
+
+// matchExitStatus is the exec.ExitError analogue ("exit status N: <output>").
+func matchExitStatus(s string) int { return afterColonDigits(s, "exit status ") }
+
+// afterColonDigits finds label immediately followed by one or more digits and a
+// ": " separator, returning the index just past that separator (start of the
+// child output), or -1. Example: afterColonDigits("x: exit code 12: boom",
+// "exit code ") == index of "boom".
+func afterColonDigits(s, label string) int {
+	from := 0
+	for {
+		i := strings.Index(s[from:], label)
+		if i < 0 {
+			return -1
+		}
+		i += from
+		j := i + len(label)
+		k := j
+		for k < len(s) && s[k] >= '0' && s[k] <= '9' {
+			k++
+		}
+		if k > j && strings.HasPrefix(s[k:], ": ") {
+			return k + len(": ")
+		}
+		from = i + len(label)
+	}
+}
+
+// mergeSpans sorts the input ranges and merges any that overlap or abut,
+// yielding a clean ascending, non-overlapping slice.
+func mergeSpans(spans [][2]int) [][2]int {
+	if len(spans) <= 1 {
+		return spans
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	out := spans[:1]
+	for _, sp := range spans[1:] {
+		last := &out[len(out)-1]
+		// Merge only on a strict overlap (start strictly inside the previous
+		// span). Abutting spans (sp[0] == last[1]) are kept separate — they
+		// are distinct quoted regions (e.g. an "exit code" tail immediately
+		// followed by a "(stderr=…)" quote) and masking them independently is
+		// correct; fusing them would just be cosmetic.
+		if sp[0] < last[1] {
+			if sp[1] > last[1] {
+				last[1] = sp[1]
+			}
+			continue
+		}
+		out = append(out, sp)
 	}
 	return out
 }

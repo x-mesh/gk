@@ -8,6 +8,8 @@ import (
 
 	"github.com/fatih/color"
 
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/gitstate"
 )
 
@@ -179,3 +181,137 @@ func (f *fmtWrap) Error() string { return f.msg + ": " + f.err.Error() }
 func (f *fmtWrap) Unwrap() error { return f.err }
 
 func wrapError(msg string, err error) error { return &fmtWrap{msg: msg, err: err} }
+
+// newKoEasyEngine builds an enabled ko Easy Mode engine for translation
+// tests, independent of the developer's ~/.config/gk/config.yaml.
+func newKoEasyEngine(t *testing.T) *easy.Engine {
+	t.Helper()
+	eng := easy.NewEngine(config.OutputConfig{Easy: true, Lang: "ko"}, false, false)
+	if !eng.IsEnabled() {
+		t.Skip("ko Easy catalog unavailable in this environment")
+	}
+	return eng
+}
+
+// TestTranslateErrorBody verifies that translateErrorBody translates the
+// prose part of an error while leaving quoted child-process output (git
+// stderr/stdout, lint output, exit-code tails) verbatim — the t3 invariant.
+func TestTranslateErrorBody(t *testing.T) {
+	eng := newKoEasyEngine(t)
+
+	cases := []struct {
+		name string
+		in   string
+		// wantContains: substrings that must appear in the output.
+		wantContains []string
+		// wantNotContains: substrings that must NOT appear (i.e. terms that
+		// would only show up if a protected span had been translated).
+		wantNotContains []string
+	}{
+		{
+			// (stderr=...) quote: prose before it translates, the quoted
+			// git output (including a `branch` token) stays raw.
+			name:         "stderr-quote",
+			in:           "aicommit: git commit: failed (stderr=fatal: branch foo not found)",
+			wantContains: []string{"(stderr=fatal: branch foo not found)"},
+			// "branch" inside the quote must not become "작업 갈래 (branch)".
+			wantNotContains: []string{"작업 갈래 (branch) foo"},
+		},
+		{
+			// (stderr=... stdout=...) — both in one paren group, protected to EOS.
+			name:            "stderr-stdout-quote",
+			in:              "aicommit: git commit: boom (stderr=err branch line stdout=out push line)",
+			wantContains:    []string{"(stderr=err branch line stdout=out push line)"},
+			wantNotContains: []string{"작업 갈래 (branch) line stdout", "서버에 올리기 (push) line)"},
+		},
+		{
+			// exit code N: <stderr> — the git.ExitError tail is raw.
+			name:            "exit-code-tail",
+			in:              "git push origin: exit code 1: branch is behind upstream",
+			wantContains:    []string{"exit code 1: branch is behind upstream"},
+			wantNotContains: []string{"작업 갈래 (branch) is behind", "원격 기준점 (upstream)"},
+		},
+		{
+			// preflight step output: exit status N: <combined output> is raw.
+			name: "preflight-step-output",
+			in:   `preflight failed at step "lint": exit status 1: Branch string ` + "`json:\"branch\"`",
+			wantContains: []string{
+				`exit status 1: Branch string ` + "`json:\"branch\"`",
+			},
+			wantNotContains: []string{"작업 갈래 (Branch) string", `작업 갈래 (branch)\"`},
+		},
+		{
+			// Pure prose with no quote: a git term still translates normally.
+			name:            "plain-prose-translates",
+			in:              "cannot rebase: you have unstaged changes",
+			wantContains:    []string{"커밋 재정렬 (rebase)", "아직 준비 안 됨 (unstaged)"},
+			wantNotContains: nil,
+		},
+		{
+			// Prose precedes a stderr quote: prose half translates, quote half raw.
+			name:            "prose-plus-quote",
+			in:              "rebase failed (stderr=could not apply commit abc123)",
+			wantContains:    []string{"커밋 재정렬 (rebase) failed", "(stderr=could not apply commit abc123)"},
+			wantNotContains: []string{"apply 변경사항 저장 (commit) abc123"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := translateErrorBody(eng, tc.in)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("translateErrorBody(%q)\n  = %q\n  must contain %q", tc.in, got, want)
+				}
+			}
+			for _, bad := range tc.wantNotContains {
+				if strings.Contains(got, bad) {
+					t.Errorf("translateErrorBody(%q)\n  = %q\n  must NOT contain %q", tc.in, got, bad)
+				}
+			}
+			// The sentinel must never leak into user-facing output.
+			if strings.Contains(got, "\x00") {
+				t.Errorf("translateErrorBody(%q) leaked a NUL sentinel: %q", tc.in, got)
+			}
+		})
+	}
+}
+
+// TestProtectedSpans pins the span-detection boundaries directly so a future
+// format change that breaks them fails here with a precise location.
+func TestProtectedSpans(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		// want is the concatenation of the protected substrings, in order.
+		// Empty means no protected spans.
+		want []string
+	}{
+		{"none", "not a commit on this branch", nil},
+		{"stderr", "x failed (stderr=oops)", []string{" (stderr=oops)"}},
+		{"stdout", "x failed (stdout=hi)", []string{" (stdout=hi)"}},
+		{"both-one-paren", "x (stderr=a stdout=b)", []string{" (stderr=a stdout=b)"}},
+		{"exit-code", "git x: exit code 2: bad", []string{"bad"}},
+		{"exit-status", `step "s": exit status 1: out`, []string{"out"}},
+		{
+			// exit code tail bounded by a trailing stderr quote.
+			"exit-code-then-stderr",
+			"git x: exit code 1: tail (stderr=more)",
+			[]string{"tail", " (stderr=more)"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spans := protectedSpans(tc.in)
+			if len(spans) != len(tc.want) {
+				t.Fatalf("protectedSpans(%q) = %d spans %v, want %d", tc.in, len(spans), spans, len(tc.want))
+			}
+			for i, sp := range spans {
+				got := tc.in[sp[0]:sp[1]]
+				if got != tc.want[i] {
+					t.Errorf("span %d = %q, want %q", i, got, tc.want[i])
+				}
+			}
+		})
+	}
+}

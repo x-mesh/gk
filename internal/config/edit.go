@@ -26,6 +26,10 @@ var ErrUnknownKey = errors.New("unknown config key")
 // cannot write a single scalar into (e.g. ai.commit.deny_paths).
 var ErrNotScalar = errors.New("key holds a list or map, not a scalar")
 
+// ErrNotList is returned when the `+=` / `-=` list operators are applied to a
+// key that isn't a list-valued field.
+var ErrNotList = errors.New("key is not a list; += / -= require a list-valued key")
+
 // dynamicMapPrefixes are dot-key prefixes under which arbitrary user-chosen
 // keys are valid even though they don't appear in Defaults() — they decode
 // into Go maps, not structs. Anything at or below these is accepted.
@@ -248,6 +252,110 @@ func SetValue(path, dotKey, rawValue string) (string, error) {
 		return "", err
 	}
 	return valNode.Value, nil
+}
+
+// ListModify adds or removes a single item from the list-valued key at dotKey,
+// preserving comments, ordering, and the file's other entries. add=true appends
+// item idempotently (a duplicate is a no-op); add=false removes every matching
+// entry. Returns the resulting list rendered as "[a, b, c]" for the success line.
+//
+// Mirrors SetValue's node-tree editing but targets a SequenceNode, so `set`'s
+// scalar-only restriction no longer blocks list maintenance. Rejects scalar keys
+// up front (ErrNotList) so `foo+=bar` on a non-list fails clearly. Removing from
+// an absent key is a no-op (no error), matching UnsetValue's tolerance.
+func ListModify(path, dotKey, item string, add bool) (string, error) {
+	if !ValidKey(dotKey) {
+		return "", fmt.Errorf("%w: %s", ErrUnknownKey, dotKey)
+	}
+	if def, ok := schemaLeaf(dotKey); ok {
+		if _, isSlice := def.([]any); !isSlice {
+			return "", fmt.Errorf("%w: %s", ErrNotList, dotKey)
+		}
+	}
+
+	root, err := loadRootMapping(path)
+	if err != nil {
+		return "", err
+	}
+
+	segs := strings.Split(dotKey, ".")
+	seq, err := sequenceFor(root, segs, add)
+	if err != nil {
+		return "", err
+	}
+	if seq == nil {
+		// -= on a key that the file never set: nothing to remove.
+		return "[]", nil
+	}
+
+	if add {
+		for _, n := range seq.Content {
+			if n.Value == item {
+				return joinSeq(seq), nil // already present — idempotent
+			}
+		}
+		seq.Content = append(seq.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: item})
+	} else {
+		kept := seq.Content[:0]
+		for _, n := range seq.Content {
+			if n.Value != item {
+				kept = append(kept, n)
+			}
+		}
+		seq.Content = kept
+	}
+
+	if err := writeDoc(path, root); err != nil {
+		return "", err
+	}
+	return joinSeq(seq), nil
+}
+
+// sequenceFor descends m along segs to the SequenceNode at the final key.
+// On a missing key: create=true builds an empty flow sequence (plus any
+// intermediate mappings) and returns it; create=false returns (nil, nil) so a
+// remove on an absent key is a no-op. Errors when a node along the path is the
+// wrong kind (a scalar where a list/section is required).
+func sequenceFor(m *yaml.Node, segs []string, create bool) (*yaml.Node, error) {
+	key := segs[0]
+	if len(segs) == 1 {
+		if existing := mappingValue(m, key); existing != nil {
+			if existing.Kind != yaml.SequenceNode {
+				return nil, fmt.Errorf("%w: %s", ErrNotList, key)
+			}
+			return existing, nil
+		}
+		if !create {
+			return nil, nil
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		appendKV(m, key, seq)
+		return seq, nil
+	}
+
+	child := mappingValue(m, key)
+	if child == nil {
+		if !create {
+			return nil, nil
+		}
+		child = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		appendKV(m, key, child)
+	}
+	if child.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("gk config: %q is not a section", key)
+	}
+	return sequenceFor(child, segs[1:], create)
+}
+
+// joinSeq renders a sequence node's scalar values as "[a, b, c]" for the
+// `gk config set` success line.
+func joinSeq(seq *yaml.Node) string {
+	parts := make([]string, 0, len(seq.Content))
+	for _, n := range seq.Content {
+		parts = append(parts, n.Value)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 // UnsetValue removes dotKey from the YAML file at path, reverting it to its

@@ -44,17 +44,24 @@ func init() {
 	getCmd.Flags().Bool("source", false, "also print where the value comes from (local/global/default)")
 	configCmd.AddCommand(getCmd)
 	setCmd := &cobra.Command{
-		Use:   "set <key> <value>",
-		Short: "Set a config value (comments preserved)",
+		Use:   "set <key>[+=|-=] <value>",
+		Short: "Set a config value, or add/remove a list item (comments preserved)",
 		Long: `Writes one dot-notation key into the global config (or repo-local
 .gk.yaml with --local), leaving every other line — comments, ordering,
 blank lines — untouched. The target file is created from the documented
 template if it does not exist yet.
 
+For list-valued keys (e.g. log.vis, status.vis, ai.commit.deny_paths) a plain
+set is rejected — use the += / -= operators on the key to add or remove a single
+item without rewriting the whole list. += is idempotent; -= on an absent item is
+a no-op.
+
 Examples:
   gk config set ai.commit.model kiro/claude-haiku-4.5
   gk config set --local status.density compact
-  gk config set ai.commit.audit true`,
+  gk config set ai.commit.audit true
+  gk config set log.vis+= merged       # add a layer to the gk log default set
+  gk config set log.vis-= base         # remove a layer from it`,
 		Args: cobra.ExactArgs(2),
 		RunE: runConfigSet,
 	}
@@ -215,6 +222,39 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// `key+=` / `key-=` route to list maintenance — list keys reject the scalar
+	// SetValue below, so they'd otherwise be uneditable without `config edit`.
+	if base, add, isOp := parseListOp(key); isOp {
+		written, err := config.ListModify(path, base, val, add)
+		if err != nil {
+			switch {
+			case errors.Is(err, config.ErrUnknownKey):
+				return WithHint(
+					fmt.Errorf("gk config set: 알 수 없는 키 %q", base),
+					"gk config show 로 설정 가능한 키 목록을 확인하세요",
+				)
+			case errors.Is(err, config.ErrNotList):
+				return WithHint(
+					fmt.Errorf("gk config set: %q는 리스트가 아니라 += / -= 를 쓸 수 없습니다", base),
+					"단일 값은 gk config set <키> <값> 으로 설정하세요",
+				)
+			default:
+				return err
+			}
+		}
+		if created && local {
+			if e := prependLocalHeader(path); e != nil {
+				return e
+			}
+		}
+		op := "+="
+		if !add {
+			op = "-="
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), successLinef("set", "%s%s%s → %s  (%s: %s)", base, op, val, written, scope, path))
+		return nil
+	}
+
 	written, err := config.SetValue(path, key, val)
 	if err != nil {
 		switch {
@@ -243,6 +283,21 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("set", "%s = %s  (%s: %s)", key, written, scope, path))
 	return nil
+}
+
+// parseListOp splits a `key+=` / `key-=` list operator off the key. Returns
+// (baseKey, add, true) when an operator was present (add=false means `-=`),
+// else (key, false, false). The operator is a key suffix rather than a value
+// prefix so the value never starts with `-`, which cobra would treat as a flag.
+func parseListOp(key string) (base string, add bool, isOp bool) {
+	switch {
+	case strings.HasSuffix(key, "+="):
+		return strings.TrimSuffix(key, "+="), true, true
+	case strings.HasSuffix(key, "-="):
+		return strings.TrimSuffix(key, "-="), false, true
+	default:
+		return key, false, false
+	}
 }
 
 // prependLocalHeader inserts the repo-local header comment at the top of path

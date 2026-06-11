@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,50 @@ func TestSetValue_UnknownAndNotScalar(t *testing.T) {
 	}
 	if _, err := SetValue(path, "ai.commit.deny_paths", "foo"); err == nil {
 		t.Error("expected ErrNotScalar for a slice key")
+	}
+}
+
+func TestListModify(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	add := func(item, want string) {
+		t.Helper()
+		got, err := ListModify(path, "log.vis", item, true)
+		if err != nil {
+			t.Fatalf("ListModify add %q: %v", item, err)
+		}
+		if got != want {
+			t.Errorf("add %q = %q, want %q", item, got, want)
+		}
+	}
+	remove := func(item, want string) {
+		t.Helper()
+		got, err := ListModify(path, "log.vis", item, false)
+		if err != nil {
+			t.Fatalf("ListModify remove %q: %v", item, err)
+		}
+		if got != want {
+			t.Errorf("remove %q = %q, want %q", item, got, want)
+		}
+	}
+
+	add("safety", "[safety]")         // creates the key
+	add("merged", "[safety, merged]") // appends
+	add("merged", "[safety, merged]") // idempotent: dup is a no-op
+	remove("safety", "[merged]")      // removes
+	remove("nope", "[merged]")        // absent item → no-op
+
+	if _, err := ListModify(path, "ai.commit.model", "x", true); !errors.Is(err, ErrNotList) {
+		t.Errorf("scalar key: want ErrNotList, got %v", err)
+	}
+	if _, err := ListModify(path, "bogus.key", "x", true); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("unknown key: want ErrUnknownKey, got %v", err)
+	}
+
+	// Flow style and the local header survive the node-tree edits.
+	if got := readFile(t, path); !strings.Contains(got, "vis: [merged]") {
+		t.Errorf("flow-style list not preserved:\n%s", got)
 	}
 }
 

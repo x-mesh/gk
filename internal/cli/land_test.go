@@ -45,6 +45,8 @@ func setupLandTest(t *testing.T, dir string) (*cobra.Command, *landRecorder, *by
 	cmd := &cobra.Command{Use: "land", RunE: runLand, SilenceUsage: true, SilenceErrors: true}
 	cmd.Flags().Bool("with-base", true, "")
 	cmd.Flags().Bool("cleanup", false, "")
+	cmd.Flags().String("promote", "", "")
+	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.SetContext(context.Background())
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	cmd.SetOut(stdout)
@@ -158,6 +160,57 @@ func TestLand_DryRunExecutesNothing(t *testing.T) {
 	}
 	if len(rec.calls) != 0 {
 		t.Errorf("dry-run must not exec children: %v", rec.calls)
+	}
+}
+
+func TestLand_PromoteForwardMergesAndPushesBase(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "feature")
+	repo.WriteFile("wip.txt", "x\n") // dirty
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	if err := cmd.Flags().Set("promote", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote=main: %v", err)
+	}
+	want := "commit -f | pull --with-base=true | push | merge --into main --no-ai | push --from main"
+	if got := landCallNames(rec); got != want {
+		t.Errorf("steps = %q, want %q", got, want)
+	}
+}
+
+func TestLand_PromoteDefaultsToBaseBranch(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "feature")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main") // no remote in the fixture — pin the base
+	// A bare --promote resolves to the configured base branch.
+	if err := cmd.Flags().Set("promote", landPromoteUseBase); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote: %v", err)
+	}
+	if got := landCallNames(rec); !strings.Contains(got, "merge --into main --no-ai | push --from main") {
+		t.Errorf("bare --promote must target base main: %q", got)
+	}
+}
+
+func TestLand_PromoteSkippedOnBaseBranch(t *testing.T) {
+	repo := testutil.NewRepo(t) // already on the base branch (main)
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	if err := cmd.Flags().Set("promote", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote=main on main: %v", err)
+	}
+	if got := landCallNames(rec); strings.Contains(got, "merge") {
+		t.Errorf("promote must skip when land already runs on the base: %q", got)
 	}
 }
 

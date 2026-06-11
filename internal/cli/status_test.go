@@ -1574,12 +1574,12 @@ func TestBaseDivergenceHint(t *testing.T) {
 	}{
 		{"in sync", 0, 0, false, "main", ""},
 		{"in sync dirty", 0, 0, true, "main", ""},
-		{"ahead clean", 3, 0, false, "main", "→ ready to merge into main"},
+		{"ahead clean", 3, 0, false, "main", "→ ready to merge into main  ·  gk log --ahead --base"},
 		{"ahead dirty", 3, 0, true, "main", ""},
 		{"behind only", 0, 2, false, "main", "→ behind main: gk sync"},
 		{"diverged", 2, 1, false, "main", "→ main moved: gk sync"},
 		{"diverged dirty", 2, 1, true, "main", "→ main moved: gk sync"},
-		{"non-default base", 4, 0, false, "develop", "→ ready to merge into develop"},
+		{"non-default base", 4, 0, false, "develop", "→ ready to merge into develop  ·  gk log --ahead --base"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

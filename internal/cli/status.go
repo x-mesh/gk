@@ -1179,15 +1179,17 @@ func localBaseStaleHint(ahead, behind int, base string) string {
 // enough. Logic:
 //
 //   - in sync               → ""              (gauge already says "in sync")
-//   - ahead-only, clean     → "→ ready to merge into <base>"
+//   - ahead-only, clean     → "→ ready to merge into <base>  ·  gk log --ahead --base"
 //   - ahead-only, dirty     → ""              (WIP — entries list shows it)
 //   - behind-only           → "→ behind <base>: gk sync"
 //   - diverged              → "→ <base> moved: gk sync"
 //
-// The merge case is intentionally advisory (no command), since the actual
-// mechanism is workflow-specific (PR, ship, local merge). The sync cases
-// are prescriptive because `gk sync` is unambiguous: catch the current
-// branch up to its base.
+// The merge case stays advisory about *how* to merge (PR, ship, local merge
+// are all workflow-specific) but appends `gk log --ahead --base` so the user
+// can list exactly which commits would merge — the same range, against the
+// same base, so the count matches the ↑N gauge on this line. The sync cases
+// are prescriptive because `gk sync` is unambiguous: catch the current branch
+// up to its base.
 func baseDivergenceHint(ahead, behind int, dirty bool, base string) string {
 	switch {
 	case ahead == 0 && behind == 0:
@@ -1196,7 +1198,7 @@ func baseDivergenceHint(ahead, behind int, dirty bool, base string) string {
 		if dirty {
 			return ""
 		}
-		return "→ ready to merge into " + base
+		return fmt.Sprintf("→ ready to merge into %s  ·  gk log --ahead --base", base)
 	case ahead == 0 && behind > 0:
 		return "→ behind " + base + ": gk sync"
 	default:

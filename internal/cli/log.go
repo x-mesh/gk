@@ -40,15 +40,17 @@ func init() {
 	cmd.Flags().Bool("impact", false, "append an eighths-bar scaled to |+add -del| per commit")
 	cmd.Flags().Bool("cc", false, "prepend a Conventional-Commits glyph + append type tally")
 	cmd.Flags().Bool("safety", false, "prefix each commit with a rebase-safety marker (◆/◇/✎/!)")
+	cmd.Flags().Bool("merged", false, "prefix each commit with a base-integration marker (○ = not yet on the base branch)")
 	cmd.Flags().Bool("hotspots", false, "mark commits that touch the repo's most-churned files")
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
 	cmd.Flags().Bool("body", false, "show each commit's message body, indented under its subject (release notes, details)")
-	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,hotspots,trailers,lanes,body")
+	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,merged,hotspots,trailers,lanes,body")
 	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().Bool("full", false, "do not truncate long subjects to terminal width")
 	cmd.Flags().Bool("behind", false, "show commits the upstream has that HEAD does not (=HEAD..@{u}; preview before `gk pull`)")
 	cmd.Flags().Bool("ahead", false, "show commits HEAD has that the upstream does not (=@{u}..HEAD; preview before `gk push`)")
+	cmd.Flags().Bool("base", false, "with --ahead/--behind, compare against the base branch instead of the upstream — lists the commits behind `gk status`'s \"ready to merge into <base>\" line")
 	cmd.Flags().Bool("fetch", false, "with --behind/--ahead, run `git fetch` first so the count reflects current origin state")
 	rootCmd.AddCommand(cmd)
 }
@@ -71,6 +73,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 		impact:   containsVis(effectiveLogVis, "impact"),
 		cc:       containsVis(effectiveLogVis, "cc"),
 		safety:   containsVis(effectiveLogVis, "safety"),
+		merged:   containsVis(effectiveLogVis, "merged"),
 		hotspots: containsVis(effectiveLogVis, "hotspots"),
 		trailers: containsVis(effectiveLogVis, "trailers"),
 		body:     containsVis(effectiveLogVis, "body"),
@@ -100,32 +103,56 @@ func runLog(cmd *cobra.Command, args []string) error {
 	// counts can pass it (or run `gk pull --fetch-only` first).
 	behindFlag, _ := cmd.Flags().GetBool("behind")
 	aheadFlag, _ := cmd.Flags().GetBool("ahead")
+	baseFlag, _ := cmd.Flags().GetBool("base")
 	if behindFlag && aheadFlag {
 		return fmt.Errorf("gk log: --behind and --ahead are mutually exclusive")
 	}
+	if baseFlag && !behindFlag && !aheadFlag {
+		return fmt.Errorf("gk log: --base must be combined with --ahead or --behind")
+	}
 	if behindFlag || aheadFlag {
-		upstream, fetchRemote, fetchBranch, ok := tryTrackingUpstream(cmd.Context(), runner)
-		if !ok {
-			// @{u} also fails when tracking IS configured but the
-			// remote-tracking ref is missing locally (pruned, never
-			// fetched) — diagnose that precisely instead of telling the
-			// user to set an upstream they already have.
-			if cur, cErr := git.NewClient(runner).CurrentBranch(cmd.Context()); cErr == nil {
-				if cfgRemote, cfgBranch, hasCfg := trackingFromConfig(cmd.Context(), runner, cur); hasCfg {
-					return fmt.Errorf("gk log: '%s' tracks %s/%s but its remote-tracking ref is missing locally; restore it with `git fetch %s %s`",
-						cur, cfgRemote, cfgBranch, cfgRemote, cfgBranch)
+		var rangeArg string
+		if baseFlag {
+			// Compare against the base branch (main/develop/…) rather than
+			// the upstream, so the range matches `gk status`'s "ready to
+			// merge into <base>" line. The same resolver feeds both, so the
+			// commit count here equals the ↑N gauge shown there.
+			client := git.NewClient(runner)
+			res := resolveBaseForStatus(cmd.Context(), runner, client, cfg)
+			if res.Resolved == "" {
+				return fmt.Errorf("gk log --base: could not resolve a base branch; set one with `gk config set base_branch <name>` or `git config gk.base-branch <name>`")
+			}
+			if cur, cErr := client.CurrentBranch(cmd.Context()); cErr == nil && cur == res.Resolved {
+				return fmt.Errorf("gk log --base: the current branch is the base (%s) — nothing is ahead of or behind it", res.Resolved)
+			}
+			rangeArg = "HEAD.." + res.Resolved
+			if aheadFlag {
+				rangeArg = res.Resolved + "..HEAD"
+			}
+		} else {
+			upstream, fetchRemote, fetchBranch, ok := tryTrackingUpstream(cmd.Context(), runner)
+			if !ok {
+				// @{u} also fails when tracking IS configured but the
+				// remote-tracking ref is missing locally (pruned, never
+				// fetched) — diagnose that precisely instead of telling the
+				// user to set an upstream they already have.
+				if cur, cErr := git.NewClient(runner).CurrentBranch(cmd.Context()); cErr == nil {
+					if cfgRemote, cfgBranch, hasCfg := trackingFromConfig(cmd.Context(), runner, cur); hasCfg {
+						return fmt.Errorf("gk log: '%s' tracks %s/%s but its remote-tracking ref is missing locally; restore it with `git fetch %s %s`",
+							cur, cfgRemote, cfgBranch, cfgRemote, cfgBranch)
+					}
+				}
+				return fmt.Errorf("gk log: current branch has no upstream configured; set one with `git branch --set-upstream-to=origin/<branch>`")
+			}
+			if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
+				if _, stderr, err := runner.Run(cmd.Context(), "fetch", fetchRemote, fetchBranch); err != nil {
+					return fmt.Errorf("gk log --fetch: %s: %w", strings.TrimSpace(string(stderr)), err)
 				}
 			}
-			return fmt.Errorf("gk log: current branch has no upstream configured; set one with `git branch --set-upstream-to=origin/<branch>`")
-		}
-		if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
-			if _, stderr, err := runner.Run(cmd.Context(), "fetch", fetchRemote, fetchBranch); err != nil {
-				return fmt.Errorf("gk log --fetch: %s: %w", strings.TrimSpace(string(stderr)), err)
+			rangeArg = "HEAD.." + upstream
+			if aheadFlag {
+				rangeArg = upstream + "..HEAD"
 			}
-		}
-		rangeArg := "HEAD.." + upstream
-		if aheadFlag {
-			rangeArg = upstream + "..HEAD"
 		}
 		// Prepend so any user-supplied path filter after `--` still applies.
 		args = append([]string{rangeArg}, args...)
@@ -337,7 +364,7 @@ func renderLanes(cmd *cobra.Command, runner *git.ExecRunner, since string, limit
 // resolveLogVis can map between them.
 var logVizNames = []string{
 	"pulse", "calendar", "tags-rule",
-	"impact", "cc", "safety", "hotspots", "trailers",
+	"impact", "cc", "safety", "merged", "hotspots", "trailers",
 	"lanes", "body",
 }
 
@@ -424,11 +451,11 @@ func appendUnique(xs []string, x string) []string {
 // in that it appends multi-line content under each commit rather than a single
 // inline column, but it shares the same "gk owns rendering" trigger.
 type logVizFlags struct {
-	impact, cc, safety, hotspots, trailers, body bool
+	impact, cc, safety, merged, hotspots, trailers, body bool
 }
 
 func (v logVizFlags) any() bool {
-	return v.impact || v.cc || v.safety || v.hotspots || v.trailers || v.body
+	return v.impact || v.cc || v.safety || v.merged || v.hotspots || v.trailers || v.body
 }
 
 // commitRecord holds the per-commit fields we need for viz rendering.
@@ -616,6 +643,13 @@ func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule boo
 		fmt.Fprintln(w, "  ✎  amended     amended in the last hour (reflog)")
 		fmt.Fprintln(w, "  (blank)        pushed, or no remote to compare against")
 		fmt.Fprintln(w, "  ──┤ ↑ N unpushed ├──  boundary: everything above is local-only")
+	}
+
+	if viz.merged {
+		sec("--vis merged — base-integration left margin")
+		fmt.Fprintln(w, "  ○  unmerged    not yet reachable from the base branch (= gk log --ahead --base)")
+		fmt.Fprintln(w, "  (blank)        already on the base branch, or base = current branch")
+		fmt.Fprintln(w, "  note: SHA-identity based — a squash/rebase-merged commit reads as unmerged")
 	}
 
 	if viz.impact {
@@ -837,6 +871,32 @@ func collectPushedShas(ctx context.Context, runner *git.ExecRunner) (map[string]
 	return m, true
 }
 
+// collectMergedShas enumerates the SHAs reachable from the base branch —
+// i.e. the commits that have already landed on <base>. Returns (shas, ok):
+// ok=false when the base ref can't be listed (empty, missing, ambiguous) so
+// the caller suppresses the `○` marker rather than flagging every commit as
+// unmerged. Mirrors collectPushedShas: one `rev-list` + O(1) set membership.
+//
+// Like the pushed set, this is SHA-identity based: a commit squash- or
+// rebase-merged onto <base> gets a new SHA and reads as unmerged. The legend
+// states this so the marker isn't mistaken for a patch-equivalence check.
+func collectMergedShas(ctx context.Context, runner *git.ExecRunner, base string) (map[string]bool, bool) {
+	if base == "" {
+		return nil, false
+	}
+	out, _, err := runner.Run(ctx, "rev-list", base)
+	if err != nil {
+		return nil, false
+	}
+	m := make(map[string]bool, 256)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			m[line] = true
+		}
+	}
+	return m, true
+}
+
 // collectRecentlyAmended returns (shas, ok). Reflog read failures are
 // genuinely unknown state (not "nothing was amended"). Callers suppress
 // the `✎` marker when ok=false.
@@ -977,6 +1037,22 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		amended, amendedOK = collectRecentlyAmended(ctx, runner)
 	}
 
+	// Base-integration set: which of the shown commits already live on the
+	// base branch. Resolved through the same resolveBaseForStatus the status
+	// line uses, so `○` here marks exactly the commits `gk log --ahead --base`
+	// would list. Skipped (mergedOK=false) when the base is unresolved or the
+	// current branch *is* the base — both make every commit trivially merged.
+	var merged map[string]bool
+	var mergedOK bool
+	if v.merged {
+		cfg, _ := config.Load(cmd.Flags())
+		client := git.NewClient(runner)
+		res := resolveBaseForStatus(ctx, runner, client, cfg)
+		if cur, _ := client.CurrentBranch(ctx); res.Resolved != "" && res.Resolved != cur {
+			merged, mergedOK = collectMergedShas(ctx, runner, res.Resolved)
+		}
+	}
+
 	// Push boundary: the first record (top-down) that already exists on a
 	// remote. Everything above it is local-only. We draw a single divider
 	// there so the user sees the "unpushed block" at a glance without reading
@@ -1095,6 +1171,12 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 				}
 				prefix.WriteByte(' ')
 			}
+		}
+		// Base-integration marker: draw `○` only for commits NOT yet on the
+		// base (the ones needing action), leaving merged commits blank — same
+		// "draw the eye only when it matters" rule as the safety column.
+		if v.merged && mergedOK && !merged[r.sha] {
+			prefix.WriteString(color.CyanString("○") + " ")
 		}
 		subject := r.subject
 		if v.cc {

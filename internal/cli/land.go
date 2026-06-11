@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/branchclean"
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -60,11 +61,14 @@ func init() {
   4. promote  merge --into <base> + push --from <base>  (only with --promote)
   5. cleanup  merged-branch + worktree reclaim          (only with --cleanup)
 
---promote forward-merges the current branch into the base branch and pushes
-it (the manual gk merge --into <base> + gk push --from <base> pair) as a
-final step. Bare --promote targets the configured base; --promote=<branch>
-overrides. A merge conflict pauses with gk's normal resolve/continue contract
-and land reports the promote step as failed with the resume path.
+--promote forward-merges the current branch into its base and pushes it
+(the manual gk merge --into <base> + gk push --from <base> pair) as a final
+step. Bare --promote climbs ONE hop: the branch's parent when one is set
+(branch.<name>.gk-parent — the same resolution gk status uses for its
+"ready to merge into" line), else the configured base. --promote=<branch>
+overrides the target explicitly. A merge conflict pauses with gk's normal
+resolve/continue contract and land reports the promote step as failed with
+the resume path.
 
 Each step prints a ✓ on success; the first failure stops the run and names
 the failed step with the exact resume path. Re-running gk land after fixing
@@ -79,7 +83,7 @@ moves to stderr so stdout stays parseable.`,
 	}
 	cmd.Flags().Bool("with-base", true, "fast-forward the local base branch during the pull step (--with-base=false to skip)")
 	cmd.Flags().Bool("cleanup", false, "after pushing, delete fully-merged branches and reclaim their worktrees")
-	cmd.Flags().String("promote", "", "after pushing, merge the current branch into the base branch and push it (e.g. --promote or --promote=main)")
+	cmd.Flags().String("promote", "", "after pushing, merge the current branch into its parent/base branch and push it (bare --promote = gk-parent, else base; --promote=<branch> overrides)")
 	// A bare `--promote` (no value) resolves to the configured base branch.
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	rootCmd.AddCommand(cmd)
@@ -105,28 +109,40 @@ func runLand(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve the promote target: a bare --promote (sentinel) means the
-	// configured base branch; --promote=<branch> overrides; empty means the
-	// step is off. We look up the current branch only when promoting so the
-	// step can skip cleanly when land already runs on the base.
+	// branch's parent/base; --promote=<branch> overrides; empty means the
+	// step is off. The current branch is resolved first because the bare
+	// path needs it for parent lookup (and the skip check below uses it).
 	promoteTarget := ""
 	currentBranch := ""
 	if promote != "" {
 		client := git.NewClient(runner)
+		cb, err := client.CurrentBranch(ctx)
+		if err != nil {
+			return fmt.Errorf("land: resolve current branch for promote: %w", err)
+		}
+		currentBranch = strings.TrimSpace(cb)
 		if promote == landPromoteUseBase {
-			// Reuse status's base resolver: explicit config → origin/HEAD →
-			// local fallback, so a bare --promote works without base_branch set.
-			promoteTarget = resolveBaseForStatus(ctx, runner, client, cfg).Resolved
+			// Parent-aware, one hop: a bare --promote lands on the branch's
+			// direct parent when gk-parent metadata resolves — the same
+			// resolution gk status uses for its "ready to merge into <base>"
+			// line, so both surfaces always name the same target. Without
+			// parent metadata this degrades to the trunk resolver (explicit
+			// config → origin/HEAD → local fallback), the pre-parent
+			// behavior. In a main→develop→feat stack, landing feat promotes
+			// to develop, not main — climbing further is a deliberate second
+			// land (chain promotion is the planned Phase 2).
+			cfgBase := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
+			base, _, issues := branchparent.NewResolver(client).ResolveBaseWithIssues(ctx, currentBranch, cfgBase)
+			for _, iss := range issues {
+				fmt.Fprintln(cmd.ErrOrStderr(), iss.Message)
+			}
+			promoteTarget = base
 		} else {
 			promoteTarget = promote
 		}
 		if promoteTarget == "" {
 			return fmt.Errorf("land: --promote could not resolve a base branch — pass --promote=<branch> or set base_branch")
 		}
-		cb, err := client.CurrentBranch(ctx)
-		if err != nil {
-			return fmt.Errorf("land: resolve current branch for promote: %w", err)
-		}
-		currentBranch = strings.TrimSpace(cb)
 	}
 
 	type landStep struct {

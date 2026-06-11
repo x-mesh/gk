@@ -199,6 +199,56 @@ func TestLand_PromoteDefaultsToBaseBranch(t *testing.T) {
 	}
 }
 
+// TestLand_PromoteBareTargetsParent: in a main→develop→feat stack with
+// branch.feat.gk-parent=develop, a bare --promote climbs ONE hop to the
+// parent — the same target gk status names — not straight to the trunk.
+func TestLand_PromoteBareTargetsParent(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main") // trunk pinned — the parent must still win
+	if err := cmd.Flags().Set("promote", landPromoteUseBase); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote: %v", err)
+	}
+	got := landCallNames(rec)
+	if !strings.Contains(got, "merge --into develop --no-ai | push --from develop") {
+		t.Errorf("bare --promote must target parent develop: %q", got)
+	}
+	if strings.Contains(got, "--into main") {
+		t.Errorf("must not skip the parent and jump to trunk: %q", got)
+	}
+}
+
+// TestLand_PromoteBareParentMissingFallsBack: a gk-parent pointing at a
+// deleted branch falls back to the trunk with a stderr warning — same
+// degrade-and-warn contract as status.
+func TestLand_PromoteBareParentMissingFallsBack(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "gone")
+
+	cmd, rec, _, stderr := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("promote", landPromoteUseBase); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote: %v", err)
+	}
+	if got := landCallNames(rec); !strings.Contains(got, "merge --into main --no-ai") {
+		t.Errorf("missing parent must fall back to trunk main: %q", got)
+	}
+	if !strings.Contains(stderr.String(), "parent gone not found") {
+		t.Errorf("fallback must warn on stderr: %q", stderr.String())
+	}
+}
+
 func TestLand_PromoteSkippedOnBaseBranch(t *testing.T) {
 	repo := testutil.NewRepo(t) // already on the base branch (main)
 

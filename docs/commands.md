@@ -322,7 +322,7 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--with-base` | true | Fast-forward the local base branch during the pull step (`--with-base=false` to skip) |
-| `--promote` | (off) | After pushing, forward-merge the current branch into the base and push it (`gk merge --into <base>` + `gk push --from <base>`). Bare `--promote` targets the configured base; `--promote=<branch>` overrides. A conflict pauses with the normal resolve/continue contract and the step is reported failed with a resume path; skipped when already on the base. |
+| `--promote` | (off) | After pushing, forward-merge the current branch into its base and push it (`gk merge --into <base>` + `gk push --from <base>`). Bare `--promote` climbs **one hop**: the branch's parent when `branch.<name>.gk-parent` is set (the same resolution `gk status` uses for its ready-to-merge line), else the configured base — in a `main→develop→feat` stack, landing `feat` promotes to `develop`, not `main`. `--promote=<branch>` overrides the target explicitly. A conflict pauses with the normal resolve/continue contract and the step is reported failed with a resume path; skipped when already on the target. |
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 

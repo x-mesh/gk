@@ -46,6 +46,12 @@ func TestSelfRewrite(t *testing.T) {
 		{"gk 명령", "gk 명령"},
 		{"mgk continue", "mgk continue"},
 		{"", ""},
+		// paths whose basename is gk are NOT commands — a \b would fire
+		// after "/" and rewrite the directory into a nonexistent one
+		// (real case: merge --into's "receiver worktree: cd <path>" hint).
+		{"receiver worktree: cd /work/agentic/gk or pass `--repo /work/agentic/gk`",
+			"receiver worktree: cd /work/agentic/gk or pass `--repo /work/agentic/gk`"},
+		{"cd ~/repos/gk first", "cd ~/repos/gk first"},
 	}
 	for _, c := range cases {
 		if got := selfRewrite(c.in); got != c.want {

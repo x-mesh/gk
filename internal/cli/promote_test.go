@@ -162,6 +162,43 @@ func TestPromote_TargetNotInChain(t *testing.T) {
 	}
 }
 
+// The resume must match the failure kind: a conflict pause (child exit 3)
+// points at resolve/continue, but a guard refusal (exit 1 — dirty
+// receiver, precheck conflicts) must NOT — there is no merge to resolve.
+func TestPromote_ResumeMatchesFailureKind(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "feature")
+	t.Setenv("GK_BASE_BRANCH", "main")
+
+	// Plain refusal: exit 1.
+	cmd, rec, _, _ := setupPromoteTest(t, repo.Dir)
+	rec.failOn = "merge"
+	rec.failErr = &childExitError{Code: 1}
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("want step failure")
+	}
+	hint := HintFrom(err)
+	if strings.Contains(hint, "resolve --ai") {
+		t.Errorf("guard refusal must not suggest conflict resolution: %q", hint)
+	}
+	if !strings.Contains(hint, "rerun: gk promote") {
+		t.Errorf("resume must name the rerun: %q", hint)
+	}
+
+	// Conflict pause: exit 3.
+	cmd2, rec2, _, _ := setupPromoteTest(t, repo.Dir)
+	rec2.failOn = "merge"
+	rec2.failErr = &childExitError{Code: 3}
+	err2 := cmd2.Execute()
+	if err2 == nil {
+		t.Fatal("want step failure")
+	}
+	if hint2 := HintFrom(err2); !strings.Contains(hint2, "gk resolve --ai && gk continue") {
+		t.Errorf("conflict pause must point at resolve/continue: %q", hint2)
+	}
+}
+
 // A failed merge names the step with a promote rerun remedy and the JSON
 // contract carries failed_step/resume — same shape as land.
 func TestPromote_FailureJSONContract(t *testing.T) {

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-06-11
+
 ### Added
 
 - **`gk commit --plan` / `--plan-template` — 큐레이션 멀티커밋을 JSON 계약으로.** 그루핑을 AI가 아니라 호출자(주로 에이전트)가 정할 때, `--plan-template`이 dirty 파일 목록을 초안 JSON으로 내고, `{"commits":[{"message","files":[...]}]}`를 `--plan -`에 주면 N개 커밋이 한 번의 결정론적 호출로 만들어진다 — `rebase --plan` 철학의 커밋 생성판. 중복/미존재 파일·형식 불량 메시지는 커밋 전에 전부 거부되고(아무 일도 안 일어남), plan이 다루지 않은 파일은 dirty로 남는다. secret scan·backup ref·`--abort`는 AI 플로우와 동일 계약이고, 결과는 `{result, commits:[{...,sha}], failed_at?, backup_ref}`로 보고된다(중간 실패는 `partial`). hunk 분할(한 파일을 두 커밋에)은 미지원. 부수 개선: ApplyMessages가 staged 삭제/리네임 상태를 그룹마다 재계산해 "첫 커밋이 지운 파일이 다음 그룹을 깨뜨리는" 잠재 버그가 사라졌고, breaking(`!`) 마커와 `allow_empty`(빈 커밋)도 plan에서 보존된다.

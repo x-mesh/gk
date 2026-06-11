@@ -175,7 +175,7 @@ func TestLand_PromoteForwardMergesAndPushesBase(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("land --promote=main: %v", err)
 	}
-	want := "commit -f | pull --with-base=true | push | merge --into main --no-ai | push --from main"
+	want := "commit -f | pull --with-base=true | push | merge feature --into main --no-ai | push --from main"
 	if got := landCallNames(rec); got != want {
 		t.Errorf("steps = %q, want %q", got, want)
 	}
@@ -194,7 +194,7 @@ func TestLand_PromoteDefaultsToBaseBranch(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("land --promote: %v", err)
 	}
-	if got := landCallNames(rec); !strings.Contains(got, "merge --into main --no-ai | push --from main") {
+	if got := landCallNames(rec); !strings.Contains(got, "merge feature --into main --no-ai | push --from main") {
 		t.Errorf("bare --promote must target base main: %q", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestLand_PromoteBareTargetsParent(t *testing.T) {
 		t.Fatalf("land --promote: %v", err)
 	}
 	got := landCallNames(rec)
-	if !strings.Contains(got, "merge --into develop --no-ai | push --from develop") {
+	if !strings.Contains(got, "merge feat --into develop --no-ai | push --from develop") {
 		t.Errorf("bare --promote must target parent develop: %q", got)
 	}
 	if strings.Contains(got, "--into main") {
@@ -241,11 +241,123 @@ func TestLand_PromoteBareParentMissingFallsBack(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("land --promote: %v", err)
 	}
-	if got := landCallNames(rec); !strings.Contains(got, "merge --into main --no-ai") {
+	if got := landCallNames(rec); !strings.Contains(got, "merge feat --into main --no-ai") {
 		t.Errorf("missing parent must fall back to trunk main: %q", got)
 	}
 	if !strings.Contains(stderr.String(), "parent gone not found") {
 		t.Errorf("fallback must warn on stderr: %q", stderr.String())
+	}
+}
+
+// TestLand_PromoteChainWalksParents: --promote=main from feat in a
+// main→develop→feat stack runs one merge+push per boundary, in order, with
+// the source passed explicitly (hop 2's source is develop, not the
+// checked-out feat).
+func TestLand_PromoteChainWalksParents(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("promote", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote=main: %v", err)
+	}
+	want := "pull --with-base=true | push" +
+		" | merge feat --into develop --no-ai | push --from develop" +
+		" | merge develop --into main --no-ai | push --from main"
+	if got := landCallNames(rec); got != want {
+		t.Errorf("steps = %q, want %q", got, want)
+	}
+}
+
+// TestLand_PromoteChainTargetNotInChain: a target the parent chain never
+// reaches aborts before ANY step runs — land must not silently degrade to a
+// direct merge that skips intermediates.
+func TestLand_PromoteChainTargetNotInChain(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "staging")
+	repo.RunGit("checkout", "main")
+	repo.RunGit("checkout", "-b", "feat")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("promote", "staging"); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not in the parent chain") {
+		t.Fatalf("want not-in-chain error, got %v", err)
+	}
+	if !strings.Contains(HintFrom(err), "gk merge feat --into staging") {
+		t.Errorf("hint must offer the direct-merge escape: %q", HintFrom(err))
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("no step may run after a chain resolution failure: %v", rec.calls)
+	}
+}
+
+// TestLand_PromoteChainCycleErrors: a gk-parent loop (only producible via
+// raw git config — set-parent validates writes) errors instead of walking
+// forever.
+func TestLand_PromoteChainCycleErrors(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+	repo.RunGit("config", "branch.develop.gk-parent", "feat")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("promote", "main"); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "loops") {
+		t.Fatalf("want chain-loop error, got %v", err)
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("no step may run after a chain resolution failure: %v", rec.calls)
+	}
+}
+
+// TestLand_PromoteChainFailedHopNamesBoundary: a failure at the first
+// boundary reports failed_step as promote:<target> of THAT hop and stops —
+// the second hop never runs.
+func TestLand_PromoteChainFailedHopNamesBoundary(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	prevJ := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJ })
+
+	cmd, rec, stdout, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	rec.failOn = "merge" // first merge child (feat→develop) fails
+	if err := cmd.Flags().Set("promote", "main"); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Execute() // fails at the first hop
+
+	var res landResultJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if res.FailedStep != "promote:develop" {
+		t.Errorf("failed_step = %q, want promote:develop", res.FailedStep)
+	}
+	if !strings.Contains(res.Resume, "--promote=main") {
+		t.Errorf("resume must name the full chain rerun: %q", res.Resume)
+	}
+	if got := landCallNames(rec); strings.Contains(got, "--into main") {
+		t.Errorf("second hop must not run after the first fails: %q", got)
 	}
 }
 

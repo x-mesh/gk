@@ -122,6 +122,7 @@ gk agents install            # keep the gk usage contract in CLAUDE.md / AGENTS.
 gk precheck                  # forecast: will my next pull conflict? (read-only merge-tree)
 gk diff --digest             # what changed, where: files · hunks · changed symbols, no patch body
 gk rebase --plan-template    # history editing as a JSON contract: squash/reword/drop, no editor
+gk commit --plan-template    # curated multi-commit as a JSON contract: you group, gk commits
 gk land                      # wrap up: commit -f → pull --with-base → push, one transaction
 gk promote                   # local wrap-up: commit → forward-merge into the parent, no push
 GK_AGENT=1 gk <cmd>          # agent mode: uniform {ok, result, error{code, remedies}} envelope

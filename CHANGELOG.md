@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk commit --plan` / `--plan-template` — 큐레이션 멀티커밋을 JSON 계약으로.** 그루핑을 AI가 아니라 호출자(주로 에이전트)가 정할 때, `--plan-template`이 dirty 파일 목록을 초안 JSON으로 내고, `{"commits":[{"message","files":[...]}]}`를 `--plan -`에 주면 N개 커밋이 한 번의 결정론적 호출로 만들어진다 — `rebase --plan` 철학의 커밋 생성판. 중복/미존재 파일·형식 불량 메시지는 커밋 전에 전부 거부되고(아무 일도 안 일어남), plan이 다루지 않은 파일은 dirty로 남는다. secret scan·backup ref·`--abort`는 AI 플로우와 동일 계약이고, 결과는 `{result, commits:[{...,sha}], failed_at?, backup_ref}`로 보고된다(중간 실패는 `partial`). hunk 분할(한 파일을 두 커밋에)은 미지원. 부수 개선: ApplyMessages가 staged 삭제/리네임 상태를 그룹마다 재계산해 "첫 커밋이 지운 파일이 다음 그룹을 깨뜨리는" 잠재 버그가 사라졌고, breaking(`!`) 마커와 `allow_empty`(빈 커밋)도 plan에서 보존된다.
+
+- **`gk commit`의 gofmt advisory 게이트.** go.mod가 있는 repo에서 커밋 대상 `.go` 파일에 gofmt 위반이 있으면 커밋 전에 █ NOTE로 파일 목록과 `gofmt -w` 명령을 알려준다 — 위반이 ship preflight(golangci-lint)까지 살아남아 릴리스 도중 수정 커밋을 강요하던 5턴 손해의 예방선. 차단이 아니라 advisory이며(`--no-verify`로 게이트 자체 skip), gofmt 바이너리가 없거나 Go repo가 아니면 조용히 비활성, 생성 코드(`*.pb.go`, `*_gen.go`, `zz_generated*`)는 제외한다.
+
+- **`gk context --include=release` — "뭐가 아직 안 나갔지?"를 context 한 호출로.** 최신 tag 이후(`tag..HEAD`)의 커밋 수와 요약(최대 20개, 총수는 `commit_count`)을 context 문서에 융합한다. 릴리스 오리엔테이션이 `describe`+`rev-list`+`log` 프로브 체인 대신 `--include=all` 한 번이 된다. tag가 없는 repo는 섹션 계약대로 `notes`로 강등될 뿐 호출은 실패하지 않고, 네트워크는 건드리지 않는다.
+
+- **agents 규약 블록 v10.** Curated multi-commit(`commit --plan`) 항목과 `--include=release`를 반영하고, "상태 질문은 raw git 프로브 체인 대신 context 한 호출" 문구를 명시로 강화했다. `gk agents install`로 CLAUDE.md/AGENTS.md 블록이 갱신된다.
+
+### Fixed
+
+- **Easy Mode가 에러 본문에 인용된 자식 프로세스 출력까지 번역하던 문제.** v0.84.0의 커맨드 위치 가드는 `git commit` 같은 호출 토큰만 보호했고, lint 출력·git stderr 같은 인용 블록 자체는 여전히 용어 치환을 통과했다(릴리스 중 실측: golangci-lint가 인용한 Go 소스가 `작업 갈래 (Branch) string`으로 깨짐). 이제 `(stderr=`/`(stdout=` 괄호 블록과 `exit code N:`/`exit status N:` 이후의 자식 출력 구간을 placeholder로 마스킹한 뒤 번역하고 원형 복원한다 — 주변 prose는 계속 번역된다. `gk do`가 자식 git 출력을 무조건 번역하던 경로도 제거했다(원시 출력은 증거이지 산문이 아니다).
+
 ## [0.84.0] - 2026-06-11
 
 ### Added

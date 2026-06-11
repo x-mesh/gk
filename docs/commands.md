@@ -382,7 +382,7 @@ One-call repository orientation — current branch, upstream and ahead/behind, d
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
-`--include` fuses the usual follow-up probes into the same document — one call instead of five: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (commit count + summaries since the latest tag — what is still unreleased; degrades to a note when the repo has no tags). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
 
 ```bash
 gk context                                  # human one-screen summary (alias: gk ctx)
@@ -2648,10 +2648,33 @@ gk commit [flags]
 | `-S`, `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable); the special value `all` bypasses every finding |
 | `-n`, `--no-verify` | false | Bypass the noise + secret guards **and** the privacy-gate abort threshold (implies `--skip-privacy`); findings are reported on stderr, then committed. Payload redaction to remote AI still applies |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
+| `--plan <file\|->` | — | Create commits from a JSON plan instead of the AI: `{"commits":[{"message","files":[...]}]}` — deterministic, no LLM call. See "Curated plan mode" below |
+| `--plan-template` | false | Emit the current working-tree changes as a commit-plan draft (JSON) and exit |
 | `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
 | `--force-wip` | false | Unwrap the WIP chain even when some commits are already pushed (rewrites pushed history; rerun `git push --force-with-lease` afterward) |
 | `--ci` | false | CI mode — require `--force` or `--dry-run`, never prompt |
 | `-y`, `--yes` | false | Accept every prompt (alias for `--force` when non-TTY) |
+
+#### Curated plan mode (`--plan` / `--plan-template`)
+
+When the caller — typically an agent — decides the grouping instead of the AI, the plan contract creates N commits in one deterministic call (the `gk rebase --plan` philosophy applied to commit creation):
+
+```bash
+gk commit --plan-template            # emit dirty files as a JSON draft
+# split the draft into groups, then:
+gk commit --plan - <<'EOF'
+{"schema":1,"commits":[
+  {"message":"feat(auth): add OAuth flow","files":["internal/auth/oauth.go","internal/auth/oauth_test.go"]},
+  {"message":"docs: oauth setup notes","files":["docs/oauth.md"]}
+]}
+EOF
+```
+
+- **File-level granularity**: each file appears in exactly one commit; splitting one file across commits (hunk-level) is not supported.
+- **Validation up front**: duplicate files, files without a working-tree change, empty/malformed messages (Conventional Commit rules from `commit.*` config) are rejected before anything is committed — fix the plan, nothing happened. Files the plan does not cover stay dirty.
+- **Same safety rails**: the secret scan runs on the plan's files; `--no-verify` / `--allow-secret-kind` behave as in the AI flow. A backup ref is written first, and the result contract (`{result, commits:[{message,files,result,sha}], failed_at?, backup_ref}`) reports per-commit outcomes — `partial` when a mid-plan commit fails.
+- **`--abort` caveat**: abort restores HEAD to the backup ref with `git reset --hard` (the shared ai-commit abort contract) — the plan's commits leave the branch, and their files do **not** reappear as dirty working-tree changes (the commits remain recoverable via the backup ref / reflog).
+- `allow_empty: true` on an entry creates an empty commit (`--allow-empty`) instead of failing on a no-change group.
 
 #### Safety rails (every run)
 

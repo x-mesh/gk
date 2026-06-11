@@ -43,10 +43,15 @@ func setupLandTest(t *testing.T, dir string) (*cobra.Command, *landRecorder, *by
 	t.Cleanup(func() { landRunChild = prevChild })
 
 	cmd := &cobra.Command{Use: "land", RunE: runLand, SilenceUsage: true, SilenceErrors: true}
+	// Production land inherits the persistent --repo flag; config.Load reads
+	// it to point repo-local .gk.yaml discovery at the fixture instead of
+	// the cwd (this package's own repo).
+	cmd.Flags().String("repo", dir, "")
 	cmd.Flags().Bool("with-base", true, "")
 	cmd.Flags().Bool("cleanup", false, "")
 	cmd.Flags().String("promote", "", "")
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
+	cmd.Flags().Bool("no-promote", false, "")
 	cmd.SetContext(context.Background())
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	cmd.SetOut(stdout)
@@ -373,6 +378,96 @@ func TestLand_PromoteSkippedOnBaseBranch(t *testing.T) {
 	}
 	if got := landCallNames(rec); strings.Contains(got, "merge") {
 		t.Errorf("promote must skip when land already runs on the base: %q", got)
+	}
+}
+
+// TestLand_PromoteConfigParent: land.promote: parent in config turns the
+// promote step on by default with bare-promote semantics — same target
+// resolution as a bare --promote flag (gk-parent first, trunk fallback).
+func TestLand_PromoteConfigParent(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "land:\n  promote: parent\n")
+	repo.Commit("chore: config")
+	repo.RunGit("checkout", "-b", "feature")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land with land.promote=parent: %v", err)
+	}
+	if got := landCallNames(rec); !strings.Contains(got, "merge feature --into main --no-ai | push --from main") {
+		t.Errorf("config parent must behave like a bare --promote: %q", got)
+	}
+}
+
+// TestLand_PromoteConfigBranchTarget: a branch name in land.promote is the
+// config twin of --promote=<branch> — the chain walk applies, so the YAML
+// boolean tolerances must not swallow real branch names.
+func TestLand_PromoteConfigBranchTarget(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "land:\n  promote: main\n")
+	repo.Commit("chore: config")
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land with land.promote=main: %v", err)
+	}
+	got := landCallNames(rec)
+	if !strings.Contains(got, "merge feat --into develop --no-ai | push --from develop | merge develop --into main --no-ai | push --from main") {
+		t.Errorf("config target must walk the chain like --promote=main: %q", got)
+	}
+}
+
+// TestLand_NoPromoteOverridesConfig: --no-promote must beat land.promote
+// for one run — the per-invocation escape from the config default.
+func TestLand_NoPromoteOverridesConfig(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "land:\n  promote: parent\n")
+	repo.Commit("chore: config")
+	repo.RunGit("checkout", "-b", "feature")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("no-promote", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --no-promote: %v", err)
+	}
+	if got := landCallNames(rec); strings.Contains(got, "merge") {
+		t.Errorf("--no-promote must skip the promote step: %q", got)
+	}
+}
+
+// TestLand_PromoteFlagBeatsConfig: an explicit --promote=<branch> wins over
+// the config default — the flag is the per-invocation override, not an
+// addition on top of config.
+func TestLand_PromoteFlagBeatsConfig(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "land:\n  promote: main\n")
+	repo.Commit("chore: config")
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("promote", "develop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --promote=develop: %v", err)
+	}
+	got := landCallNames(rec)
+	if !strings.Contains(got, "merge feat --into develop --no-ai | push --from develop") {
+		t.Errorf("flag target develop must run: %q", got)
+	}
+	if strings.Contains(got, "--into main") {
+		t.Errorf("config target main must not run when the flag overrides: %q", got)
 	}
 }
 

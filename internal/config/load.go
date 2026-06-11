@@ -70,6 +70,7 @@ var reservedConfigSections = map[string]bool{
 	"push":      true,
 	"pull":      true,
 	"ship":      true,
+	"land":      true,
 	"sync":      true,
 	"refresh":   true,
 	"preflight": true,

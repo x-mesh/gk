@@ -16,6 +16,7 @@ type Config struct {
 	Refresh    RefreshConfig   `mapstructure:"refresh"     yaml:"refresh"`
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 	Ship       ShipConfig      `mapstructure:"ship"        yaml:"ship"`
+	Land       LandConfig      `mapstructure:"land"        yaml:"land"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
@@ -368,6 +369,23 @@ type ShipConfig struct {
 	VersionFiles []string        `mapstructure:"version_files" yaml:"version_files"`
 	AutoConfirm  bool            `mapstructure:"auto_confirm"  yaml:"auto_confirm"`
 	Wait         bool            `mapstructure:"wait"          yaml:"wait"`
+}
+
+// LandConfig controls gk land. Promote turns the promote step on by
+// default, as if every invocation passed the flag:
+//
+//   - "" (default): promote only when --promote is passed.
+//   - "parent": bare --promote semantics — one hop to the branch's
+//     gk-parent, falling back to the configured base. YAML booleans are
+//     tolerated ("true"/"1" read as "parent", "false"/"0"/"none"/"off"
+//     as off) so `promote: true` does the intuitive thing.
+//   - any branch name: same as --promote=<branch> — walk the parent
+//     chain hop by hop until that branch.
+//
+// An explicit --promote flag always wins over config; --no-promote skips
+// the step for one invocation.
+type LandConfig struct {
+	Promote string `mapstructure:"promote" yaml:"promote"`
 }
 
 // SyncConfig controls gk sync behaviour. Strategy is the integration

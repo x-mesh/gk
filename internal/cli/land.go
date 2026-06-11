@@ -73,6 +73,10 @@ intermediate branches advance too. A target outside the chain is an error
 with gk's normal resolve/continue contract and land reports the failed hop
 with the resume path; re-running skips already-merged hops.
 
+land.promote in config makes the step a default: "parent" (or true) for
+bare-promote semantics, a branch name for the chain walk. An explicit
+--promote flag wins over config; --no-promote skips the step for one run.
+
 Each step prints a ✓ on success; the first failure stops the run and names
 the failed step with the exact resume path. Re-running gk land after fixing
 the failure is safe — completed steps degrade to no-ops (clean tree skips
@@ -86,9 +90,10 @@ moves to stderr so stdout stays parseable.`,
 	}
 	cmd.Flags().Bool("with-base", true, "fast-forward the local base branch during the pull step (--with-base=false to skip)")
 	cmd.Flags().Bool("cleanup", false, "after pushing, delete fully-merged branches and reclaim their worktrees")
-	cmd.Flags().String("promote", "", "after pushing, promote the current branch: bare = one hop to its parent/base; --promote=<branch> = walk the parent chain hop by hop until <branch>")
+	cmd.Flags().String("promote", "", "after pushing, promote the current branch: bare = one hop to its parent/base; --promote=<branch> = walk the parent chain hop by hop until <branch> (config: land.promote)")
 	// A bare `--promote` (no value) resolves to the configured base branch.
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
+	cmd.Flags().Bool("no-promote", false, "skip the promote step for this run (overrides land.promote in config)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -103,7 +108,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 
 	withBase, _ := cmd.Flags().GetBool("with-base")
 	cleanup, _ := cmd.Flags().GetBool("cleanup")
-	promote, _ := cmd.Flags().GetString("promote")
+	promote := resolveLandPromote(cmd, cfg)
 	jsonMode := JSONOut()
 
 	dirty, err := landTreeDirty(ctx, runner)
@@ -316,6 +321,34 @@ func runLand(cmd *cobra.Command, args []string) error {
 		return emitAgentResult(cmd.OutOrStdout(), res)
 	}
 	return nil
+}
+
+// resolveLandPromote picks the effective promote request: --no-promote
+// forces the step off for one run, an explicit --promote flag (bare →
+// sentinel, =<branch> → target) wins next, otherwise land.promote in
+// config decides. Config accepts a branch name or "parent" for bare
+// one-hop semantics; weakly-typed YAML booleans ("true"/"1" → parent,
+// "false"/"0"/"none"/"off" → off) are tolerated so `promote: true` does
+// the intuitive thing instead of targeting a branch literally named so.
+func resolveLandPromote(cmd *cobra.Command, cfg *config.Config) string {
+	if off, _ := cmd.Flags().GetBool("no-promote"); off {
+		return ""
+	}
+	if cmd.Flags().Changed("promote") {
+		v, _ := cmd.Flags().GetString("promote")
+		return v
+	}
+	if cfg == nil {
+		return ""
+	}
+	v := strings.TrimSpace(cfg.Land.Promote)
+	switch strings.ToLower(v) {
+	case "", "false", "0", "none", "off":
+		return ""
+	case "parent", "true", "1":
+		return landPromoteUseBase
+	}
+	return v
 }
 
 func landHeader(s string) string {

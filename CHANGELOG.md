@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gk promote` — 네트워크 없는 로컬 승격 명령.** `gk land --promote`에서 push를 뺀 짝: 변경이 있으면 먼저 AI 커밋하고, 현재 브랜치를 부모(gk-parent 메타데이터, 없으면 base)로 forward-merge한다. `gk promote <branch>`는 parent 체인을 한 홉씩 걸어 중간 브랜치도 함께 전진시키고, `--push`를 붙일 때만 홉마다 전진한 브랜치를 발행한다(`push --from <target>` — land --promote와 동일 동작). 받는 브랜치는 worktree가 없어도 된다: FF는 ref 갱신, 깨끗한 non-FF는 merge-tree 커밋, 진짜 충돌만 체크아웃을 요구한다. 통합이 로컬에서 끝나야 할 때(land는 너무 일찍 push) 쓰며, land와 같은 per-step 결과 계약을 따른다.
+
+- **`gk config setup` — log/status 표시 레이어 picker와 AI 연결 보존.** 위자드가 라이브 프리뷰를 보여주며 log/status 시각화 레이어를 고르게 해 `log.vis`/`status.vis`/`log.graph`/`status.xy_style`을 처음부터 설정할 수 있다. 신규 레이어도 함께 들어왔다: log에 `wip`(스택 깊이 ≡N)·`squash`(⊟ 마커)·`breaking`(‼ 마커), status에 `wip`·`squash`(◈ debt)·`ancestry`(스택 깊이)·`collision`(⊠ worktree 겹침). setup을 다시 실행해도 기존 AI provider/endpoint/API key는 플래그나 명시적 확인 없이는 덮어쓰지 않고, 바뀌지 않은 값은 아예 쓰지 않아 멱등이다.
+
 - **`land.promote` — land의 promote 단계를 config 기본값으로.** develop에서 마감할 때마다 `--promote`를 붙이는 워크플로라면 `land.promote: parent`(또는 `true` — YAML bool도 bare 의미로 허용)로 한 홉 승격이, `land.promote: main`처럼 브랜치명을 주면 parent 체인 워크가 기본이 된다. 명시 `--promote` 플래그는 언제나 config를 이기고, 새 `--no-promote`는 그 1회만 단계를 끈다(`false`/`none`/`off`도 config 쪽 해제값). dry-run 플랜과 JSON step 계약에는 기존 promote 단계 그대로 나타난다.
 
 - **`ship.auto_confirm` / `ship.wait` — ship의 확인 프롬프트와 CI 대기를 config 기본값으로.** 매 릴리스마다 `-y`를 치는 사용자라면 `ship.auto_confirm: true`로 프롬프트 스킵이 기본이 된다 — 한 번만 다시 확인하고 싶을 때는 `--yes=false`. tag push 뒤의 watch/verify 파이프라인도 `--wait=false`(또는 `ship.wait: false`)로 건너뛸 수 있다 — ship은 push에서 끝나고, 건너뛴 단계의 명령은 NOTE로 출력해 CI가 돈 뒤 손으로 실행하게 한다(태그는 이미 공개돼 있으므로 명령은 그대로 유효하다). 두 키 모두 명시 플래그가 어느 극성이든 config를 이기는 `--graph` 해상도 규칙을 따르고, `ship --dry-run --json` 계약에는 해상된 `wait` 값이 실린다.

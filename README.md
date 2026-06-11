@@ -123,6 +123,7 @@ gk precheck                  # forecast: will my next pull conflict? (read-only 
 gk diff --digest             # what changed, where: files · hunks · changed symbols, no patch body
 gk rebase --plan-template    # history editing as a JSON contract: squash/reword/drop, no editor
 gk land                      # wrap up: commit -f → pull --with-base → push, one transaction
+gk promote                   # local wrap-up: commit → forward-merge into the parent, no push
 GK_AGENT=1 gk <cmd>          # agent mode: uniform {ok, result, error{code, remedies}} envelope
 gk pull --rebase --ai        # on conflict, resolve with AI then continue
 gk pull --fetch-only         # fetch without integrating

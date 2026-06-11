@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Easy Mode가 에러 본문 속 인용된 커맨드까지 번역하던 문제.** 에러 본문은 실패한 명령을 그대로 인용하는데(`aicommit: git commit -m … -- ghostty: exit code 1`), 용어 치환이 커맨드 토큰을 구분하지 못해 `git 변경사항 저장 (commit) -m …`처럼 복붙 불가능한 형태로 깨졌다. 이제 `git `/`gk `/`git-kit ` 호출 토큰 바로 뒤의 용어는 커맨드 위치로 보고 치환을 건너뛴다 — hint 줄의 번역 전면 우회와 같은 보호를 에러 prose 안의 커맨드로 확장한 것. 산문은 그대로 번역된다("Git commit 컨벤션" 같은 대문자 표기 포함 — 커맨드 라인은 소문자뿐이므로 소문자 호출 토큰만 가드).
+
 - **net-zero WIP 체인에서 `gk commit`이 unwrap 후 "nothing to commit"으로 죽던 버그.** 나중 WIP가 앞선 WIP의 변경을 되돌린 체인(예: 설정 파일을 고쳤다가 원복)에서, 체인 파일 목록이 커밋별 합집합(`MergeChainFiles`)이라 내용 상쇄를 못 봤다 — AI가 그 경로로 커밋을 계획하고, unwrap(reset)하면 트리가 깨끗한데 `git commit -- <path>`가 exit 1로 죽었다(HEAD는 이미 풀린 채로). 이제 체인 파일 목록을 실제 `HEAD~N→HEAD` net diff(`ChainNetFiles`)로 구해 상쇄가 자연히 사라지고, 트리가 깨끗한 net-zero 체인은 AI 호출 없이 백업 ref 뒤에서 체인만 풀고 정상 종료한다("WIP chain nets to zero — unwrapped; nothing to commit" + `--abort` 복원 힌트). dirty 변경이 함께 있으면 그 변경만으로 평소처럼 진행한다.
 
 ## [0.83.0] - 2026-06-11

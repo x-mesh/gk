@@ -171,6 +171,17 @@ func (m *TermMapper) Translate(s string) string {
 				end+1 < len(result) && isIdentByte(result[end+1]) {
 				continue
 			}
+			// Don't translate a term in command position — immediately
+			// after a `git ` / `gk ` / `git-kit ` invocation token. Error
+			// bodies quote the exact command that failed ("aicommit: git
+			// commit -m msg -- path: exit code 1"); rendering it as
+			// `git 변경사항 저장 (commit) -m …` destroys the one thing the
+			// quote is for: pasting it back. Hint lines already bypass
+			// translation entirely; this extends the same protection to
+			// commands embedded in error prose.
+			if commandPosition(result, start) {
+				continue
+			}
 			b.WriteString(result[last:start])
 			b.WriteString(translated)
 			b.WriteString(" (")
@@ -183,6 +194,25 @@ func (m *TermMapper) Translate(s string) string {
 	}
 
 	return result
+}
+
+// commandPosition reports whether the match starting at start sits right
+// after a git/gk/git-kit invocation token — i.e. the term is a subcommand
+// in a quoted command line, not prose. The invocation word itself must
+// start at a token boundary so "logit commit" or "ai.gk commit" don't
+// count. Lowercase only: command lines are lowercase, while prose like
+// "Git commit conventions" keeps translating.
+func commandPosition(s string, start int) bool {
+	for _, inv := range []string{"git ", "gk ", "git-kit "} {
+		p := start - len(inv)
+		if p < 0 || s[p:start] != inv {
+			continue
+		}
+		if p == 0 || !isIdentByte(s[p-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // isIdentByte reports whether c can appear inside a code identifier or path

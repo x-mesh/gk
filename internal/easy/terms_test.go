@@ -304,6 +304,38 @@ func TestTermMapper_SpecificTranslations(t *testing.T) {
 			input:    "please commit.",
 			expected: "please 변경사항 저장 (commit).",
 		},
+		// Command position: a term right after a git/gk/git-kit invocation
+		// token is a quoted command, not prose — it must survive verbatim
+		// so the user can paste it back (the ghostty incident: an error
+		// body rendered `git 변경사항 저장 (commit) -m …`).
+		{
+			input:    "git commit -m chore: update deps -- ghostty: exit code 1",
+			expected: "git commit -m chore: update deps -- ghostty: exit code 1",
+		},
+		{
+			input:    "apply: aicommit: git commit: failed",
+			expected: "apply: aicommit: git commit: failed",
+		},
+		{
+			input:    "run gk commit --abort to restore",
+			expected: "run gk commit --abort to restore",
+		},
+		{
+			input:    "git-kit merge --into main paused",
+			expected: "git-kit merge --into main paused",
+		},
+		// The invocation word must sit at a token boundary — "logit" is
+		// not git, so the term after it is still prose.
+		{
+			input:    "logit commit records",
+			expected: "logit 변경사항 저장 (commit) records",
+		},
+		// Prose around a quoted command keeps translating: only the
+		// subcommand token itself is protected.
+		{
+			input:    "commit failed: git push rejected the branch",
+			expected: "변경사항 저장 (commit) failed: git push rejected the 작업 갈래 (branch)",
+		},
 	}
 
 	for _, tt := range tests {

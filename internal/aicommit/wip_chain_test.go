@@ -409,67 +409,60 @@ func TestDetectWIPChainRespectsMaxChain(t *testing.T) {
 	}
 }
 
-func TestMergeChainFilesAddThenModify(t *testing.T) {
-	// HEAD~1 added a.go, HEAD modified it. Net effect: file is new
-	// with current content → "added".
-	chain := []WIPCommit{
-		{SHA: "newer", Files: []FileChange{{Path: "a.go", Status: "modified", Staged: true}}},
-		{SHA: "older", Files: []FileChange{{Path: "a.go", Status: "added", Staged: true}}},
+// TestChainNetFilesNetZero — a chain whose commits cancel each other
+// (WIP2 reverted WIP1's edit) has an empty HEAD~N→HEAD diff. The old
+// per-commit union (MergeChainFiles) still listed the path here, which
+// made the AI plan a commit that apply could never create ("nothing to
+// commit, working tree clean" after the unwrap reset).
+func TestChainNetFilesNetZero(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff -z --name-status HEAD~2 HEAD": {Stdout: ""},
+	}}
+	out, err := ChainNetFiles(context.Background(), r, 2)
+	if err != nil {
+		t.Fatalf("ChainNetFiles: %v", err)
 	}
-	out := MergeChainFiles(chain)
-	if len(out) != 1 {
-		t.Fatalf("want 1 file, got %+v", out)
-	}
-	if out[0].Status != "added" {
-		t.Errorf("Status: want %q, got %q", "added", out[0].Status)
-	}
-}
-
-// TestMergeChainFilesAddThenDeleteCancels — the M2 fix from x-review.
-// Adding a file in HEAD~1 and deleting it in HEAD produces no net
-// change; the merged list must omit the path entirely (avoid phantom
-// entries that confuse the AI plan).
-func TestMergeChainFilesAddThenDeleteCancels(t *testing.T) {
-	chain := []WIPCommit{
-		{SHA: "newer", Files: []FileChange{{Path: "tmp.txt", Status: "deleted", Staged: true}}},
-		{SHA: "older", Files: []FileChange{{Path: "tmp.txt", Status: "added", Staged: true}}},
-	}
-	out := MergeChainFiles(chain)
 	if len(out) != 0 {
-		t.Errorf("add+delete must cancel; got %+v", out)
+		t.Errorf("net-zero chain must yield no files; got %+v", out)
 	}
 }
 
-func TestMergeChainFilesModifyThenDelete(t *testing.T) {
-	// File existed pre-chain (modified in HEAD~1), then deleted in HEAD
-	// → net effect is "deleted".
-	chain := []WIPCommit{
-		{SHA: "newer", Files: []FileChange{{Path: "a.go", Status: "deleted", Staged: true}}},
-		{SHA: "older", Files: []FileChange{{Path: "a.go", Status: "modified", Staged: true}}},
+// TestChainNetFilesStatuses — the net diff parses through the same
+// -z name-status reader as the per-commit path: statuses map A/D/R to
+// added/deleted/renamed and a rename keeps the destination as Path.
+func TestChainNetFilesStatuses(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff -z --name-status HEAD~3 HEAD": {
+			Stdout: "M\x00a.go\x00A\x00b.go\x00R100\x00old.go\x00new.go\x00",
+		},
+	}}
+	out, err := ChainNetFiles(context.Background(), r, 3)
+	if err != nil {
+		t.Fatalf("ChainNetFiles: %v", err)
 	}
-	out := MergeChainFiles(chain)
-	if len(out) != 1 || out[0].Status != "deleted" {
-		t.Errorf("modify+delete: want deleted; got %+v", out)
+	want := []FileChange{
+		{Path: "a.go", Status: "modified"},
+		{Path: "b.go", Status: "added"},
+		{Path: "new.go", Status: "renamed"},
+	}
+	if len(out) != len(want) {
+		t.Fatalf("want %d files, got %+v", len(want), out)
+	}
+	for i, w := range want {
+		if out[i].Path != w.Path || out[i].Status != w.Status {
+			t.Errorf("[%d] = %+v, want %+v", i, out[i], w)
+		}
 	}
 }
 
-func TestMergeChainFilesDeleteThenAdd(t *testing.T) {
-	// File existed pre-chain (deleted in HEAD~1), then re-added in
-	// HEAD → net effect is "modified" (existed before, exists now).
-	chain := []WIPCommit{
-		{SHA: "newer", Files: []FileChange{{Path: "a.go", Status: "added", Staged: true}}},
-		{SHA: "older", Files: []FileChange{{Path: "a.go", Status: "deleted", Staged: true}}},
-	}
-	out := MergeChainFiles(chain)
-	if len(out) != 1 || out[0].Status != "modified" {
-		t.Errorf("delete+add: want modified; got %+v", out)
-	}
-}
-
-func TestMergeChainFilesEmpty(t *testing.T) {
-	out := MergeChainFiles(nil)
-	if len(out) != 0 {
-		t.Errorf("nil chain → empty result; got %+v", out)
+// TestChainNetFilesDiffError — a failing diff (e.g. HEAD~N does not
+// exist) surfaces as an error instead of an empty plan.
+func TestChainNetFilesDiffError(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff -z --name-status HEAD~2 HEAD": {ExitCode: 128, Stderr: "bad revision"},
+	}}
+	if _, err := ChainNetFiles(context.Background(), r, 2); err == nil {
+		t.Fatal("want error from failing diff, got nil")
 	}
 }
 

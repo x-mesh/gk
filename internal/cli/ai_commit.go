@@ -171,6 +171,14 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	files = appendWIPCommitFiles(files, wipCommit.Files)
 	if len(files) == 0 {
+		// A detected chain with zero net files means the WIP commits
+		// cancel each other out (a later WIP reverted an earlier one).
+		// There is nothing to classify, but the chain itself is the
+		// noise the user asked gk commit to fold — unwrap it behind
+		// the usual backup ref and finish OK.
+		if wipCommit.Present {
+			return unwrapNetZeroWIPChain(ctx, cmd, runner, wipCommit, flags)
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no working-tree changes to commit")
 		if hint := wipChainSkipHint(wipDisabled, wipCommit); hint != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(hint))
@@ -537,11 +545,18 @@ func inspectWIPCommitForAICommit(ctx context.Context, runner git.Runner, cfg con
 		return wipCommitForAICommit{StopReason: reason}, nil
 	}
 	headOut, _, _ := runner.Run(ctx, "rev-parse", "HEAD")
+	// The chain's file list is the real HEAD~N→HEAD diff, not a
+	// per-commit union: a WIP that reverts an earlier WIP must vanish
+	// from the plan, or apply later commits against a clean tree.
+	netFiles, err := aicommit.ChainNetFiles(ctx, runner, len(chain))
+	if err != nil {
+		return wipCommitForAICommit{}, fmt.Errorf("commit: %w", err)
+	}
 	return wipCommitForAICommit{
 		Present:         true,
 		ChainLen:        len(chain),
 		HeadSHA:         strings.TrimSpace(string(headOut)),
-		Files:           aicommit.MergeChainFiles(chain),
+		Files:           netFiles,
 		StopReason:      reason,
 		ForcePushBypass: forceWIP,
 	}, nil
@@ -628,6 +643,31 @@ func unwrapWIPCommitBeforeApply(ctx context.Context, runner git.Runner, wipCommi
 			fmt.Fprintf(out, "commit: unwrapped %d WIP commits after AI plan; rewriting as regular commit(s)\n", depth)
 		}
 	}
+	return nil
+}
+
+// unwrapNetZeroWIPChain handles a WIP chain whose net diff is empty:
+// the chain is "rewritten as regular commits" in the degenerate sense —
+// zero of them. The chain is unwrapped behind the standard backup ref
+// (restorable with `gk commit --abort`) and the run ends successfully.
+// Before this path existed, the per-commit file union planned a commit
+// for the cancelled path, the unwrap reset HEAD, and apply died on
+// `git commit` finding a clean tree.
+func unwrapNetZeroWIPChain(ctx context.Context, cmd *cobra.Command, runner git.Runner, wipCommit wipCommitForAICommit, flags aiCommitFlags) error {
+	out := cmd.OutOrStdout()
+	if flags.dryRun {
+		fmt.Fprintf(out, "commit: WIP chain (%d commit(s)) nets to zero — dry-run; a real run unwraps the chain and commits nothing\n", wipCommit.ChainLen)
+		return nil
+	}
+	backup, err := aicommit.EnsureBackupRef(ctx, runner)
+	if err != nil {
+		return fmt.Errorf("commit: backup ref: %w", err)
+	}
+	if err := unwrapWIPCommitBeforeApply(ctx, runner, wipCommit, flags, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "commit: WIP chain (%d commit(s)) nets to zero — unwrapped; nothing to commit\n", wipCommit.ChainLen)
+	printBackupHint(cmd.ErrOrStderr(), backup)
 	return nil
 }
 

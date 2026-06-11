@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -324,70 +323,22 @@ func parseWIPDiffNameStatus(out string) []FileChange {
 	return files
 }
 
-// MergeChainFiles collapses N WIP commits' file lists into the net
-// effect from pre-chain state to HEAD state. Computes per-path:
+// ChainNetFiles returns the files that actually differ between the
+// chain's base (HEAD~chainLen) and HEAD — the net diff the unwrap
+// (`git reset HEAD~N`, mixed) will leave in the working tree.
 //
-//   - !originallyExisted && existsAfter → "added"
-//   - originallyExisted && !existsAfter → "deleted"
-//   - originallyExisted && existsAfter → "modified"
-//   - !originallyExisted && !existsAfter → omit (add+delete cancels)
-//
-// Original existence is inferred from the FIRST status seen for a path
-// when walking oldest → newest: "modified"/"deleted"/"renamed"/"copied"
-// imply the file existed pre-chain; "added" implies it did not.
-//
-// Why this matters: simple "oldest-wins" emits phantom "added" entries
-// for files added in HEAD~k and deleted by HEAD, which the AI plan
-// would then narrate as if the file were new — wasted tokens and
-// confused output. Tracking running existence avoids the lie.
-func MergeChainFiles(chain []WIPCommit) []FileChange {
-	type fileState struct {
-		originallyExisted bool
-		existsNow         bool
+// This replaced MergeChainFiles, a pure per-commit-status simulation:
+// the simulation tracked add→delete cancellation but could not see
+// CONTENT cancellation — a later WIP reverting an earlier WIP's edit
+// still listed the path, the AI planned a commit for it, and apply
+// died on `git commit -- <path>` finding a clean tree after the reset
+// ("nothing to commit, working tree clean"). Asking git for the real
+// HEAD~N→HEAD diff makes both cancellation kinds fall out for free,
+// renames included.
+func ChainNetFiles(ctx context.Context, runner git.Runner, chainLen int) ([]FileChange, error) {
+	out, stderr, err := runner.Run(ctx, "diff", "-z", "--name-status", fmt.Sprintf("HEAD~%d", chainLen), "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("aicommit: chain net diff: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	states := map[string]*fileState{}
-
-	for i := len(chain) - 1; i >= 0; i-- {
-		for _, f := range chain[i].Files {
-			s := states[f.Path]
-			if s == nil {
-				originally := f.Status == "modified" || f.Status == "deleted" || f.Status == "renamed" || f.Status == "copied"
-				s = &fileState{originallyExisted: originally, existsNow: originally}
-				states[f.Path] = s
-			}
-			switch f.Status {
-			case "added":
-				s.existsNow = true
-			case "deleted":
-				s.existsNow = false
-			case "modified", "renamed", "copied":
-				s.existsNow = true
-			}
-		}
-	}
-
-	paths := make([]string, 0, len(states))
-	for p := range states {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-
-	out := make([]FileChange, 0, len(paths))
-	for _, p := range paths {
-		s := states[p]
-		var status string
-		switch {
-		case !s.originallyExisted && s.existsNow:
-			status = "added"
-		case s.originallyExisted && !s.existsNow:
-			status = "deleted"
-		case s.originallyExisted && s.existsNow:
-			status = "modified"
-		default:
-			// add+delete (or never existed) → omit
-			continue
-		}
-		out = append(out, FileChange{Path: p, Status: status, Staged: false})
-	}
-	return out
+	return parseWIPDiffNameStatus(string(out)), nil
 }

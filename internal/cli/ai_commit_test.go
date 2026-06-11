@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
@@ -128,8 +130,11 @@ func TestInspectWIPCommitForAICommitIncludesFiles(t *testing.T) {
 		"log -1 --format=%P HEAD~0":                       {Stdout: wipSHA + "-parent\n"},
 		"branch -r --contains " + wipSHA:                  {Stdout: ""},
 		"diff -z --name-status " + wipSHA + "^ " + wipSHA: {Stdout: "M\x00internal/cli/merge.go\x00A\x00new.go\x00"},
-		"log -1 --format=%s HEAD~1":                       {Stdout: "feat: real commit\n"},
-		"rev-parse HEAD":                                  {Stdout: wipSHA + "\n"},
+		// The plan-facing file list is the chain's NET diff (HEAD~N→HEAD),
+		// fetched separately from the per-commit lists above.
+		"diff -z --name-status HEAD~1 HEAD": {Stdout: "M\x00internal/cli/merge.go\x00A\x00new.go\x00"},
+		"log -1 --format=%s HEAD~1":         {Stdout: "feat: real commit\n"},
+		"rev-parse HEAD":                    {Stdout: wipSHA + "\n"},
 	}}
 
 	cfg := config.AICommitConfig{WIPMaxChain: 5, WIPEnabled: true}
@@ -366,6 +371,60 @@ func TestUnwrapWIPCommitProceedsWhenHEADUnchanged(t *testing.T) {
 	calls := joinedShipCalls(runner.Calls)
 	if !strings.Contains(calls, "reset HEAD~2") {
 		t.Errorf("expected reset HEAD~2, calls:\n%s", calls)
+	}
+}
+
+// TestUnwrapNetZeroWIPChain — a WIP chain whose net diff is empty
+// (WIP2 reverted WIP1) must unwrap behind a backup ref and finish OK,
+// instead of the pre-fix flow that planned a commit from the per-commit
+// file union and died on `git commit` finding a clean tree.
+func TestUnwrapNetZeroWIPChain(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+		"rev-parse HEAD":                    {Stdout: "abc11111aaaa\n"},
+		"reset HEAD~2":                      {Stdout: ""},
+	}}
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	wip := wipCommitForAICommit{Present: true, ChainLen: 2, HeadSHA: "abc11111aaaa"}
+
+	if err := unwrapNetZeroWIPChain(context.Background(), cmd, runner, wip, aiCommitFlags{}); err != nil {
+		t.Fatalf("unwrapNetZeroWIPChain: %v", err)
+	}
+	calls := joinedShipCalls(runner.Calls)
+	backupIdx := strings.Index(calls, "update-ref refs/gk/ai-commit-backup/main/")
+	resetIdx := strings.Index(calls, "reset HEAD~2")
+	if backupIdx < 0 || resetIdx < 0 || backupIdx > resetIdx {
+		t.Errorf("backup ref must be created before the reset; calls:\n%s", calls)
+	}
+	if !strings.Contains(out.String(), "nets to zero") {
+		t.Errorf("stdout must explain the net-zero unwrap:\n%s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "gk commit --abort") {
+		t.Errorf("abort hint must be printed:\n%s", errOut.String())
+	}
+}
+
+// TestUnwrapNetZeroWIPChain_DryRun — dry-run must describe the outcome
+// without touching git at all.
+func TestUnwrapNetZeroWIPChain_DryRun(t *testing.T) {
+	runner := &git.FakeRunner{}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	wip := wipCommitForAICommit{Present: true, ChainLen: 2, HeadSHA: "abc11111aaaa"}
+
+	if err := unwrapNetZeroWIPChain(context.Background(), cmd, runner, wip, aiCommitFlags{dryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.Calls) != 0 {
+		t.Errorf("dry-run must not touch git; calls: %+v", runner.Calls)
+	}
+	if !strings.Contains(out.String(), "nets to zero") {
+		t.Errorf("dry-run must explain the plan:\n%s", out.String())
 	}
 }
 

@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ship.auto_confirm` / `ship.wait` — ship의 확인 프롬프트와 CI 대기를 config 기본값으로.** 매 릴리스마다 `-y`를 치는 사용자라면 `ship.auto_confirm: true`로 프롬프트 스킵이 기본이 된다 — 한 번만 다시 확인하고 싶을 때는 `--yes=false`. tag push 뒤의 watch/verify 파이프라인도 `--wait=false`(또는 `ship.wait: false`)로 건너뛸 수 있다 — ship은 push에서 끝나고, 건너뛴 단계의 명령은 NOTE로 출력해 CI가 돈 뒤 손으로 실행하게 한다(태그는 이미 공개돼 있으므로 명령은 그대로 유효하다). 두 키 모두 명시 플래그가 어느 극성이든 config를 이기는 `--graph` 해상도 규칙을 따르고, `ship --dry-run --json` 계약에는 해상된 `wait` 값이 실린다.
 
+### Fixed
+
+- **net-zero WIP 체인에서 `gk commit`이 unwrap 후 "nothing to commit"으로 죽던 버그.** 나중 WIP가 앞선 WIP의 변경을 되돌린 체인(예: 설정 파일을 고쳤다가 원복)에서, 체인 파일 목록이 커밋별 합집합(`MergeChainFiles`)이라 내용 상쇄를 못 봤다 — AI가 그 경로로 커밋을 계획하고, unwrap(reset)하면 트리가 깨끗한데 `git commit -- <path>`가 exit 1로 죽었다(HEAD는 이미 풀린 채로). 이제 체인 파일 목록을 실제 `HEAD~N→HEAD` net diff(`ChainNetFiles`)로 구해 상쇄가 자연히 사라지고, 트리가 깨끗한 net-zero 체인은 AI 호출 없이 백업 ref 뒤에서 체인만 풀고 정상 종료한다("WIP chain nets to zero — unwrapped; nothing to commit" + `--abort` 복원 힌트). dirty 변경이 함께 있으면 그 변경만으로 평소처럼 진행한다.
+
 ## [0.83.0] - 2026-06-11
 
 ### Added

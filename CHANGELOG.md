@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-06-11
+
+### Added
+
+- **land:** --promote=<branch> walks the parent chain hop by hop
+
+### Fixed
+
+- **land:** bare --promote climbs one hop to the branch's parent
+
 ## [0.82.0] - 2026-06-11
 
 ### Added

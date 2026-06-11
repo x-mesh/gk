@@ -45,7 +45,10 @@ func init() {
 	cmd.Flags().Bool("trailers", false, "append Co-authored-by/Reviewed-by trailer roll-up")
 	cmd.Flags().Bool("lanes", false, "render author swim-lanes (replaces the commit list)")
 	cmd.Flags().Bool("body", false, "show each commit's message body, indented under its subject (release notes, details)")
-	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,merged,hotspots,trailers,lanes,body")
+	cmd.Flags().Bool("wip", false, "annotate the newest commit of each WIP run with its stack depth (≡N)")
+	cmd.Flags().Bool("squash", false, "mark squash candidates (fixup!/squash!/WIP subjects) with ⊟")
+	cmd.Flags().Bool("breaking", false, "mark breaking changes (CC `!` suffix or BREAKING CHANGE trailer) with ‼")
+	cmd.Flags().StringSlice("vis", nil, "visualization set (overrides config default; pass 'none' to disable): pulse,calendar,tags-rule,impact,cc,safety,merged,hotspots,trailers,lanes,body,wip,squash,breaking")
 	cmd.Flags().Bool("legend", false, "print a one-time key for every glyph and color in the current output and exit")
 	cmd.Flags().Bool("full", false, "do not truncate long subjects to terminal width")
 	cmd.Flags().Bool("behind", false, "show commits the upstream has that HEAD does not (=HEAD..@{u}; preview before `gk pull`)")
@@ -77,6 +80,9 @@ func runLog(cmd *cobra.Command, args []string) error {
 		hotspots: containsVis(effectiveLogVis, "hotspots"),
 		trailers: containsVis(effectiveLogVis, "trailers"),
 		body:     containsVis(effectiveLogVis, "body"),
+		wip:      containsVis(effectiveLogVis, "wip"),
+		squash:   containsVis(effectiveLogVis, "squash"),
+		breaking: containsVis(effectiveLogVis, "breaking"),
 	}
 
 	if legend, _ := cmd.Flags().GetBool("legend"); legend {
@@ -365,7 +371,7 @@ func renderLanes(cmd *cobra.Command, runner *git.ExecRunner, since string, limit
 var logVizNames = []string{
 	"pulse", "calendar", "tags-rule",
 	"impact", "cc", "safety", "merged", "hotspots", "trailers",
-	"lanes", "body",
+	"lanes", "body", "wip", "squash", "breaking",
 }
 
 // resolveLogVis determines the effective viz set for this invocation in
@@ -452,10 +458,12 @@ func appendUnique(xs []string, x string) []string {
 // inline column, but it shares the same "gk owns rendering" trigger.
 type logVizFlags struct {
 	impact, cc, safety, merged, hotspots, trailers, body bool
+	wip, squash, breaking                                bool
 }
 
 func (v logVizFlags) any() bool {
-	return v.impact || v.cc || v.safety || v.merged || v.hotspots || v.trailers || v.body
+	return v.impact || v.cc || v.safety || v.merged || v.hotspots || v.trailers || v.body ||
+		v.wip || v.squash || v.breaking
 }
 
 // commitRecord holds the per-commit fields we need for viz rendering.
@@ -670,6 +678,21 @@ func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule boo
 	if viz.body {
 		sec("--body — commit message body")
 		fmt.Fprintln(w, "  faint, indented under each subject (release notes, details)")
+	}
+
+	if viz.breaking {
+		sec("--vis breaking — breaking-change marker")
+		fmt.Fprintln(w, "  ‼  subject has the CC `!` suffix (feat!:) or body carries BREAKING CHANGE")
+	}
+
+	if viz.squash {
+		sec("--vis squash — squash-candidate marker")
+		fmt.Fprintln(w, "  ⊟  fixup! / squash! / WIP-style subject — folds away before landing")
+	}
+
+	if viz.wip {
+		sec("--vis wip — WIP stack depth")
+		fmt.Fprintln(w, "  ≡N  appended to the newest commit of a 2+ WIP run (N = run length)")
 	}
 
 	if pulse {
@@ -1112,6 +1135,14 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 	wipPatterns, _ := aicommit.CompileWIPPatterns(nil)
 	isWIP := func(s string) bool { return aicommit.IsWIPSubject(s, wipPatterns) }
 
+	// Stack-depth map for the `wip` layer: the newest commit of each 2+ WIP
+	// run carries the run length so the user reads "3 deep" without counting
+	// gutter rows. Keyed by SHA so the flat and graph paths share it.
+	var wipDepth map[string]int
+	if v.wip {
+		wipDepth = computeWIPDepths(records, isWIP)
+	}
+
 	// Pre-scan: compute the scope tally BEFORE rendering commits so it
 	// can anchor the top of the output as a context header. Printing it
 	// at the bottom visually parented it to the last commit row (via the
@@ -1178,6 +1209,15 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		if v.merged && mergedOK && !merged[r.sha] {
 			prefix.WriteString(color.CyanString("○") + " ")
 		}
+		// Breaking-change and squash-candidate markers follow the sparse
+		// convention of safety/merged: drawn only when they apply, no
+		// padding column for ordinary rows.
+		if v.breaking && isBreakingCommit(r.subject, r.body) {
+			prefix.WriteString(color.New(color.FgRed, color.Bold).Sprint("‼") + " ")
+		}
+		if v.squash && isSquashSubject(r.subject, isWIP) {
+			prefix.WriteString(color.New(color.Faint).Sprint("⊟") + " ")
+		}
 		subject := r.subject
 		if v.cc {
 			if ccType, glyph := ccClassify(r.subject); ccType != "" {
@@ -1208,6 +1248,11 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		if v.trailers {
 			if t := parseTrailers(r.body); t != "" {
 				suffix.WriteString("  " + color.New(color.Faint).Sprint(t))
+			}
+		}
+		if v.wip {
+			if d := wipDepth[r.sha]; d >= 2 {
+				suffix.WriteString("  " + color.YellowString("≡%d", d))
 			}
 		}
 		return prefix.String() + line + suffix.String()
@@ -1809,6 +1854,52 @@ func computeWIPRoles(records []commitRecord, isWIP func(string) bool) []string {
 		i = j
 	}
 	return roles
+}
+
+// computeWIPDepths maps the newest commit of each 2+ WIP run to the run's
+// length, for the `wip` layer's ≡N depth chip. Same run-detection walk as
+// computeWIPRoles; singletons stay unmapped for the same noise reason.
+func computeWIPDepths(records []commitRecord, isWIP func(string) bool) map[string]int {
+	depths := map[string]int{}
+	i := 0
+	for i < len(records) {
+		if !isWIP(records[i].subject) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(records) && isWIP(records[j].subject) {
+			j++
+		}
+		if j-i >= 2 {
+			depths[records[i].sha] = j - i
+		}
+		i = j
+	}
+	return depths
+}
+
+// ccBreakingBangRE matches a Conventional-Commits header whose type carries
+// the breaking-change `!` (e.g. `feat(api)!: drop v1`).
+var ccBreakingBangRE = regexp.MustCompile(`^[a-zA-Z]+(\([^)]*\))?!:`)
+
+// isBreakingCommit reports whether a commit declares a breaking change —
+// via the CC `!` suffix in the subject or a BREAKING CHANGE footer in the
+// body. Both spellings of the footer are accepted (the CC spec allows
+// `BREAKING-CHANGE` as a synonym).
+func isBreakingCommit(subject, body string) bool {
+	return ccBreakingBangRE.MatchString(subject) ||
+		strings.Contains(body, "BREAKING CHANGE") ||
+		strings.Contains(body, "BREAKING-CHANGE")
+}
+
+// isSquashSubject reports whether a commit is a squash candidate: an
+// autosquash marker (fixup!/squash!) or a WIP-style subject. These are the
+// commits `gk rebase --plan` / WIP unwrap would fold before landing.
+func isSquashSubject(subject string, isWIP func(string) bool) bool {
+	return strings.HasPrefix(subject, "fixup!") ||
+		strings.HasPrefix(subject, "squash!") ||
+		isWIP(subject)
 }
 
 // trimToVisible truncates s to at most max visible terminal cells while

@@ -36,6 +36,23 @@ type multiSelectModel struct {
 	cancelled bool
 	extras    []MultiSelectExtraKey
 	errMsg    string
+
+	// preview, when set, is re-rendered under the list on every toggle
+	// with the currently-selected keys (in item order). It lets the user
+	// SEE what a combination produces before committing — the wizard's
+	// log/status layer pickers feed it sample command output.
+	preview func(selected []string) string
+}
+
+// selectedKeys returns the checked keys in item order.
+func (m multiSelectModel) selectedKeys() []string {
+	out := make([]string, 0, len(m.selected))
+	for i, it := range m.items {
+		if m.selected[i] {
+			out = append(out, it.Key)
+		}
+	}
+	return out
 }
 
 func (m multiSelectModel) Init() tea.Cmd { return nil }
@@ -136,6 +153,18 @@ func (m multiSelectModel) View() string {
 		}
 		b.WriteString("\n")
 	}
+	if m.preview != nil {
+		previewTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+		body := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
+		b.WriteString("\n")
+		b.WriteString(previewTitle.Render("미리보기"))
+		b.WriteString("\n")
+		b.WriteString(body.Render(m.preview(m.selectedKeys())))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
 	helpLine := "↑/↓ navigate · space toggle · a toggle all · enter confirm · esc cancel"
 	for _, ex := range m.extras {
@@ -159,6 +188,18 @@ func (m multiSelectModel) View() string {
 // preselect can pre-check items by Key. extras attach custom keys that
 // can replace the items list on the fly (see MultiSelectExtraKey).
 func MultiSelectTUI(ctx context.Context, title string, items []MultiSelectItem, preselect map[string]bool, extras ...MultiSelectExtraKey) ([]string, error) {
+	return runMultiSelect(ctx, title, items, preselect, nil, extras...)
+}
+
+// MultiSelectPreviewTUI is MultiSelectTUI with a live preview pane: preview
+// is called with the currently-selected keys after every toggle and its
+// output is drawn under the list. Used by `gk config setup` to show what a
+// log/status layer combination will actually look like.
+func MultiSelectPreviewTUI(ctx context.Context, title string, items []MultiSelectItem, preselect map[string]bool, preview func(selected []string) string) ([]string, error) {
+	return runMultiSelect(ctx, title, items, preselect, preview)
+}
+
+func runMultiSelect(ctx context.Context, title string, items []MultiSelectItem, preselect map[string]bool, preview func(selected []string) string, extras ...MultiSelectExtraKey) ([]string, error) {
 	if !IsTerminal() {
 		return nil, ErrNonInteractive
 	}
@@ -172,7 +213,7 @@ func MultiSelectTUI(ctx context.Context, title string, items []MultiSelectItem, 
 		}
 	}
 	prog := tea.NewProgram(
-		multiSelectModel{title: title, items: items, selected: pre, extras: extras},
+		multiSelectModel{title: title, items: items, selected: pre, extras: extras, preview: preview},
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
 		tea.WithInputTTY(),
@@ -188,11 +229,5 @@ func MultiSelectTUI(ctx context.Context, title string, items []MultiSelectItem, 
 	if m.cancelled {
 		return nil, ErrPickerAborted
 	}
-	out := make([]string, 0, len(m.selected))
-	for i, it := range m.items {
-		if m.selected[i] {
-			out = append(out, it.Key)
-		}
-	}
-	return out, nil
+	return m.selectedKeys(), nil
 }

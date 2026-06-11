@@ -24,13 +24,19 @@ func init() {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Interactive wizard for the most common settings",
-		Long: `Walks through provider, commit model, output language, and easy mode,
-then writes them to the global config (or repo-local .gk.yaml with --local).
+		Long: `Walks through provider, commit model, output language, easy mode, and the
+log/status display layers (picked from a live preview), then writes them to
+the global config (or repo-local .gk.yaml with --local).
+
+An AI connection already present in the config (provider/endpoint/API key)
+is shown and kept by default — re-running the wizard never overwrites it
+unless you answer "no" to keeping it or pass a provider flag explicitly.
 
 Each answer can be pre-supplied as a flag — handy for scripts and
 non-interactive shells, where the wizard applies only the flags given:
 
-  gk config setup --provider anthropic --lang en --yes`,
+  gk config setup --provider anthropic --lang en --yes
+  gk config setup --status-vis gauge,tree,local --log-vis cc,safety --yes`,
 		Args: cobra.NoArgs,
 		RunE: runConfigSetup,
 	}
@@ -42,6 +48,10 @@ non-interactive shells, where the wizard applies only the flags given:
 	cmd.Flags().String("commit-lang", "", "language for `gk commit` messages only")
 	cmd.Flags().String("lang", "", "output language (ko, en)")
 	cmd.Flags().Bool("easy", false, "plain-language output for non-developers")
+	cmd.Flags().StringSlice("log-vis", nil, "default `gk log` layers (comma-list: cc,safety,tags-rule,impact,pulse,calendar,hotspots,trailers,lanes)")
+	cmd.Flags().Bool("log-graph", false, "draw the topology graph in `gk log` by default")
+	cmd.Flags().StringSlice("status-vis", nil, "default `gk status` layers (comma-list: gauge,bar,progress,base,tree,types,staleness,local,since-push,conflict,churn,risk,stash,heatmap)")
+	cmd.Flags().String("xy-style", "", "per-entry state column in `gk status`: labels, glyphs, or raw")
 	cmd.Flags().Bool("yes", false, "skip the final confirmation")
 	cmd.Flags().Bool("local", false, "write to repo-local .gk.yaml instead of the global config")
 
@@ -62,23 +72,52 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 	}
 
 	changes := map[string]string{}
+	lists := map[string][]string{} // list-valued keys (log.vis / status.vis)
 
-	// 1. provider
+	// 1. provider. A config that already names a provider is a working API
+	// setup the user invested in (endpoint, pasted key) — re-running the
+	// wizard must never overwrite it by default. Show what's there and gate
+	// the provider questions behind an explicit "no, change it". Provider
+	// flags state that intent directly and bypass the gate; non-TTY runs
+	// without flags always keep.
 	provider := cur.AI.Provider
-	if v, ok, err := wizardValue(cmd, ctx, "provider",
-		"AI provider", "kiro-api / anthropic / openai / groq", cur.AI.Provider); err != nil {
-		return err
-	} else if ok && v != "" {
-		changes["ai.provider"] = v
-		provider = v
+	keepAPI := false
+	if summary := existingAPISummary(cur); len(summary) > 0 && !apiFlagsGiven(cmd) {
+		keepAPI = true
+		if ui.IsTerminal() {
+			fmt.Fprintln(out, "현재 AI 설정:")
+			for _, line := range summary {
+				fmt.Fprintln(out, "  "+line)
+			}
+			keep, cerr := ui.ConfirmTUI(ctx, "기존 AI 설정을 유지할까요?",
+				"아니오를 선택하면 provider / endpoint / API 키를 다시 묻습니다", true)
+			if cerr != nil {
+				if errors.Is(cerr, ui.ErrPickerAborted) {
+					return errWizardAborted
+				}
+			} else {
+				keepAPI = keep
+			}
+		}
 	}
 
-	// 1b. Custom provider (a name outside the built-in set, e.g. kiro-api) needs
-	// an endpoint and key. Built-in providers (anthropic/openai/...) skip this —
-	// they have known endpoints and read their key from a fixed env var.
-	if provider != "" && !isBuiltinProvider(provider) {
-		if err := wizardCustomProvider(cmd, ctx, provider, cur, changes); err != nil {
+	if !keepAPI {
+		if v, ok, err := wizardValue(cmd, ctx, "provider",
+			"AI provider", "kiro-api / anthropic / openai / groq", cur.AI.Provider); err != nil {
 			return err
+		} else if ok && v != "" {
+			changes["ai.provider"] = v
+			provider = v
+		}
+
+		// 1b. Custom provider (a name outside the built-in set, e.g. kiro-api)
+		// needs an endpoint and key. Built-in providers (anthropic/openai/...)
+		// skip this — they have known endpoints and read their key from a
+		// fixed env var.
+		if provider != "" && !isBuiltinProvider(provider) {
+			if err := wizardCustomProvider(cmd, ctx, provider, cur, changes); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -131,7 +170,16 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		changes["output.easy"] = strconv.FormatBool(v)
 	}
 
-	if len(changes) == 0 {
+	// 6. log/status display layers — picked from a live preview.
+	if err := wizardDisplay(cmd, ctx, cur, changes, lists); err != nil {
+		return err
+	}
+
+	// An answer that matches what the config already says is not a change —
+	// drop it so accepting every prompt as-is leaves the file untouched.
+	pruneNoopChanges(cur, changes, lists)
+
+	if len(changes) == 0 && len(lists) == 0 {
 		fmt.Fprintln(out, "변경할 항목이 없습니다.")
 		return nil
 	}
@@ -143,13 +191,21 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Fprintf(out, "\n다음 설정을 %s(%s)에 저장합니다:\n", scope, path)
-	for _, k := range sortedKeys(changes) {
-		val := changes[k]
+	// One display map for the summary: scalars as-is, lists as "[a, b]".
+	display := make(map[string]string, len(changes)+len(lists))
+	for k, v := range changes {
 		if strings.HasSuffix(k, ".api_key") {
-			val = maskSecret(val)
+			v = maskSecret(v)
 		}
-		fmt.Fprintf(out, "  %s = %s\n", k, val)
+		display[k] = v
+	}
+	for k, v := range lists {
+		display[k] = "[" + strings.Join(v, ", ") + "]"
+	}
+
+	fmt.Fprintf(out, "\n다음 설정을 %s(%s)에 저장합니다:\n", scope, path)
+	for _, k := range sortedKeys(display) {
+		fmt.Fprintf(out, "  %s = %s\n", k, display[k])
 	}
 
 	if yes, _ := cmd.Flags().GetBool("yes"); !yes && ui.IsTerminal() {
@@ -162,6 +218,11 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 
 	for _, k := range sortedKeys(changes) {
 		if _, serr := config.SetValue(path, k, changes[k]); serr != nil {
+			return fmt.Errorf("gk config setup: %s: %w", k, serr)
+		}
+	}
+	for _, k := range sortedKeys(lists) {
+		if _, serr := config.SetList(path, k, lists[k]); serr != nil {
 			return fmt.Errorf("gk config setup: %s: %w", k, serr)
 		}
 	}
@@ -310,11 +371,129 @@ func maskSecret(s string) string {
 
 var errWizardAborted = errors.New("gk config setup: 취소되었습니다")
 
-func sortedKeys(m map[string]string) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)
 	}
 	sort.Strings(ks)
 	return ks
+}
+
+// existingAPISummary describes the AI connection already present in the
+// loaded config — the lines shown above the "keep it?" gate. Empty when no
+// provider is configured (nothing to preserve). The API key is masked.
+func existingAPISummary(cur *config.Config) []string {
+	p := cur.AI.Provider
+	if p == "" {
+		return nil
+	}
+	lines := []string{"provider: " + p}
+	if custom, ok := cur.AI.CustomProvider(p); ok {
+		if custom.Endpoint != "" {
+			lines = append(lines, "endpoint: "+custom.Endpoint)
+		}
+		if custom.Model != "" {
+			lines = append(lines, "model:    "+custom.Model)
+		}
+		if custom.APIKey != "" {
+			lines = append(lines, "api_key:  "+maskSecret(custom.APIKey)+" (설정됨)")
+		}
+	}
+	return lines
+}
+
+// apiFlagsGiven reports whether any provider-connection flag was passed —
+// an explicit ask to change the API settings, which bypasses the keep gate.
+func apiFlagsGiven(cmd *cobra.Command) bool {
+	for _, f := range []string{"provider", "endpoint", "provider-model", "api-key"} {
+		if cmd.Flags().Changed(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// pruneNoopChanges drops every pending change whose value matches what the
+// loaded config already resolves to. Accepting each prompt as-is must leave
+// the file byte-for-byte untouched — that, plus the keep gate, is the
+// "re-running setup never rewrites your config" guarantee.
+func pruneNoopChanges(cur *config.Config, changes map[string]string, lists map[string][]string) {
+	for k, v := range changes {
+		if curV, known := setupCurrentValue(cur, k); known && curV == v {
+			delete(changes, k)
+		}
+	}
+	for k, v := range lists {
+		var curList []string
+		switch k {
+		case "log.vis":
+			curList = cur.Log.Vis
+		case "status.vis":
+			curList = cur.Status.Vis
+		default:
+			continue
+		}
+		if sameStringSet(curList, v) {
+			delete(lists, k)
+		}
+	}
+}
+
+// setupCurrentValue resolves the current effective value of a wizard-managed
+// scalar key. known=false for keys the wizard doesn't track (those are kept).
+func setupCurrentValue(cur *config.Config, key string) (string, bool) {
+	switch key {
+	case "ai.provider":
+		return cur.AI.Provider, true
+	case "ai.commit.model":
+		return cur.AI.Commit.Model, true
+	case "ai.commit.lang":
+		return cur.AI.Commit.Lang, true
+	case "output.lang":
+		return cur.Output.Lang, true
+	case "output.easy":
+		return strconv.FormatBool(cur.Output.Easy), true
+	case "log.graph":
+		return strconv.FormatBool(cur.Log.Graph), true
+	case "status.xy_style":
+		return cur.Status.XYStyle, true
+	}
+	// ai.providers.<name>.<field> — compare against the named entry.
+	if rest, ok := strings.CutPrefix(key, "ai.providers."); ok {
+		name, field, ok := strings.Cut(rest, ".")
+		if !ok {
+			return "", false
+		}
+		custom, _ := cur.AI.CustomProvider(name)
+		switch field {
+		case "format":
+			return custom.Format, true
+		case "endpoint":
+			return custom.Endpoint, true
+		case "model":
+			return custom.Model, true
+		case "api_key":
+			return custom.APIKey, true
+		}
+	}
+	return "", false
+}
+
+// sameStringSet reports whether a and b hold the same elements, order-blind —
+// reordering layers the user didn't change is not a change worth writing.
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, x := range a {
+		set[x] = true
+	}
+	for _, x := range b {
+		if !set[x] {
+			return false
+		}
+	}
+	return true
 }

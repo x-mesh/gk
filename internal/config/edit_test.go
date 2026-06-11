@@ -135,6 +135,57 @@ func TestListModify(t *testing.T) {
 	}
 }
 
+func TestSetList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// Creates the key on a missing file.
+	got, err := SetList(path, "log.vis", []string{"cc", "safety"})
+	if err != nil {
+		t.Fatalf("SetList create: %v", err)
+	}
+	if got != "[cc, safety]" {
+		t.Errorf("create = %q, want [cc, safety]", got)
+	}
+
+	// Replaces the whole list, dropping items not in the new set.
+	got, err = SetList(path, "log.vis", []string{"impact"})
+	if err != nil {
+		t.Fatalf("SetList replace: %v", err)
+	}
+	if got != "[impact]" {
+		t.Errorf("replace = %q, want [impact]", got)
+	}
+	if body := readFile(t, path); strings.Contains(body, "safety") {
+		t.Errorf("old items must be gone:\n%s", body)
+	}
+
+	// Empty set is a valid choice (vis: []).
+	if got, err = SetList(path, "log.vis", nil); err != nil || got != "[]" {
+		t.Errorf("empty = (%q, %v), want ([], nil)", got, err)
+	}
+
+	// Comments elsewhere survive the rewrite.
+	pre := "# keep me\nremote: upstream\n"
+	if err := os.WriteFile(path, []byte(pre), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetList(path, "status.vis", []string{"gauge", "tree"}); err != nil {
+		t.Fatalf("SetList alongside comments: %v", err)
+	}
+	body := readFile(t, path)
+	if !strings.Contains(body, "# keep me") || !strings.Contains(body, "remote: upstream") {
+		t.Errorf("comments/keys not preserved:\n%s", body)
+	}
+
+	if _, err := SetList(path, "ai.commit.model", []string{"x"}); !errors.Is(err, ErrNotList) {
+		t.Errorf("scalar key: want ErrNotList, got %v", err)
+	}
+	if _, err := SetList(path, "bogus.key", []string{"x"}); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("unknown key: want ErrUnknownKey, got %v", err)
+	}
+}
+
 func TestSetValue_QuotesAmbiguousStrings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

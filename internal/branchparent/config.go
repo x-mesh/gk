@@ -52,6 +52,16 @@ func (cfg *Config) SetParent(ctx context.Context, branch, parent string) error {
 	return cfg.c.SetBranchConfig(ctx, branch, parentConfigKey, parent)
 }
 
+// AllParents reads every `branch.<name>.gk-parent` in a single git call
+// and returns a branch→parent map. List consumers (switch picker,
+// worktree table) use this instead of GetParent-per-branch so the
+// subprocess count stays flat on branch-heavy repos. Values are returned
+// verbatim — the parent ref may no longer exist; callers that care must
+// check (Resolver re-checks on read for exactly this reason).
+func (cfg *Config) AllParents(ctx context.Context) (map[string]string, error) {
+	return cfg.c.AllBranchConfig(ctx, parentConfigKey)
+}
+
 // UnsetParent removes the key. Idempotent: returns nil when the key was
 // already absent, so callers don't need to check first.
 func (cfg *Config) UnsetParent(ctx context.Context, branch string) error {

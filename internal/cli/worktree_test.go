@@ -433,6 +433,131 @@ func TestWorktreeSourceLabel(t *testing.T) {
 	}
 }
 
+// Creating a branch via worktree add must record its fork parent so
+// SOURCE / gk status / gk land --promote resolve against the real base.
+func TestWorktreeAdd_RecordsParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop commit")
+	// develop stays checked out → blank base records the current branch.
+
+	// -b without --from → parent = current branch (develop).
+	wiz := filepath.Join(t.TempDir(), "wiz")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "-b", wiz, "feat/wiz")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add failed: %v\nout: %s", err, buf.String())
+	}
+	if got := strings.TrimSpace(repo.RunGit("config", "branch.feat/wiz.gk-parent")); got != "develop" {
+		t.Errorf("gk-parent = %q, want develop", got)
+	}
+
+	// --from main → parent = main.
+	fromMain := filepath.Join(t.TempDir(), "from-main")
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "add", "-b", "--from", "main", fromMain, "feat/from-main")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree add --from failed: %v\nout: %s", err, buf2.String())
+	}
+	if got := strings.TrimSpace(repo.RunGit("config", "branch.feat/from-main.gk-parent")); got != "main" {
+		t.Errorf("gk-parent = %q, want main", got)
+	}
+
+	// Auto-created branch (no -b, basename) → parent = current branch.
+	auto := filepath.Join(t.TempDir(), "auto-br")
+	root3, buf3 := buildWorktreeCmd(repo.Dir, "add", auto)
+	if err := root3.Execute(); err != nil {
+		t.Fatalf("worktree add auto failed: %v\nout: %s", err, buf3.String())
+	}
+	if got := strings.TrimSpace(repo.RunGit("config", "branch.auto-br.gk-parent")); got != "develop" {
+		t.Errorf("gk-parent = %q, want develop", got)
+	}
+
+	// Checking out an existing branch creates nothing → records nothing.
+	existing := filepath.Join(t.TempDir(), "existing")
+	root4, buf4 := buildWorktreeCmd(repo.Dir, "add", existing, "main")
+	if err := root4.Execute(); err != nil {
+		t.Fatalf("worktree add existing failed: %v\nout: %s", err, buf4.String())
+	}
+	if out, err := repo.TryGit("config", "branch.main.gk-parent"); err == nil {
+		t.Errorf("existing-branch checkout must not record a parent, got %q", out)
+	}
+}
+
+// recordWorktreeParent only records local-branch bases; everything else
+// (remote refs, SHAs, detached HEAD) must silently record nothing.
+func TestRecordWorktreeParent_SkipsNonLocalBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/x")
+	repo.Checkout("main")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	noRecord := func(label, from string) {
+		t.Helper()
+		recordWorktreeParent(ctx, runner, "feat/x", from)
+		if out, err := repo.TryGit("config", "branch.feat/x.gk-parent"); err == nil {
+			t.Fatalf("%s must not record, got %q", label, out)
+		}
+	}
+	noRecord("remote-like base", "origin/main")
+	noRecord("raw SHA base", strings.TrimSpace(repo.RunGit("rev-parse", "HEAD")))
+
+	repo.RunGit("checkout", "--detach")
+	noRecord("detached HEAD with blank base", "")
+	repo.Checkout("main")
+
+	// Local branch base records; refs/heads/ prefix is normalized.
+	recordWorktreeParent(ctx, runner, "feat/x", "refs/heads/main")
+	if got := strings.TrimSpace(repo.RunGit("config", "branch.feat/x.gk-parent")); got != "main" {
+		t.Errorf("gk-parent = %q, want main", got)
+	}
+}
+
+// worktreeAddDetail decorates the success line with branch + base; every
+// git failure must degrade to "" rather than block the message.
+func TestWorktreeAddDetail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	head := strings.TrimSpace(repo.RunGit("rev-parse", "--short", "HEAD"))
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	cases := []struct {
+		name      string
+		newBranch bool
+		branch    string
+		from      string
+		detach    bool
+		want      string
+	}{
+		{"new branch from HEAD", true, "feat/x", "", false,
+			" (new branch feat/x from main@" + head + ")"},
+		{"new branch from explicit ref", true, "feat/y", "main", false,
+			" (new branch feat/y from main@" + head + ")"},
+		{"existing branch", false, "main", "", false,
+			" (main@" + head + ")"},
+		{"detached", false, "", "", true,
+			" (detached @" + head + ")"},
+		{"unresolvable ref degrades to empty", false, "nope", "", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := worktreeAddDetail(ctx, runner, tc.newBranch, tc.branch, tc.from, tc.detach)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompactPathPreservesBasename(t *testing.T) {
 	long := "/Users/jinwoo/very/deeply/nested/path/that/exceeds/the/cap/feature-branch-with-long-name"
 	got := compactPath(long, 60)

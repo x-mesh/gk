@@ -17,6 +17,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
@@ -838,17 +839,24 @@ func handleWorktreeRedirect(ctx context.Context, cmd *cobra.Command, entry Workt
 }
 
 // computeForkPoints attaches ForkBranch/ForkPoint to local branches
-// that have no upstream (real or inferred). The fork point is
-// `merge-base <branch> <defaultBr>`. Skipped when defaultBr is empty
+// that have no upstream (real or inferred). The fork anchor is the
+// recorded gk-parent when one is set (so stacked branches show their
+// real parent instead of the trunk), else defaultBr; the fork point is
+// `merge-base <branch> <anchor>`. Skipped when defaultBr is empty
 // (bare/fresh repos). Runs in parallel; failures are silently
 // ignored — fork info is informational, not load-bearing.
 func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string, local []branchInfo) {
 	if defaultBr == "" {
 		return
 	}
+	// One batch read (not GetParent per branch) keeps the subprocess
+	// count flat on branch-heavy repos; a read failure degrades every
+	// anchor to defaultBr rather than dropping the column.
+	parents, _ := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
 	type result struct {
-		idx  int
-		hash string
+		idx    int
+		anchor string
+		hash   string
 	}
 	out := make(chan result, len(local))
 	// Bound concurrency at NumCPU so a repo with hundreds of stale
@@ -860,14 +868,24 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		if b.Upstream != "" || b.Name == defaultBr {
 			continue
 		}
+		anchor := defaultBr
+		if p := parents[b.Name]; p != "" && p != b.Name {
+			anchor = p
+		}
 		wg.Add(1)
-		go func(idx int, branch string) {
+		go func(idx int, branch, anchor string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 			defer cancel()
-			stdout, _, err := runner.Run(callCtx, "merge-base", branch, defaultBr)
+			stdout, _, err := runner.Run(callCtx, "merge-base", branch, anchor)
+			if err != nil && anchor != defaultBr {
+				// Recorded parent unusable (ref deleted?) — fall back
+				// to the trunk anchor, same policy as Resolver.
+				anchor = defaultBr
+				stdout, _, err = runner.Run(callCtx, "merge-base", branch, anchor)
+			}
 			if err != nil {
 				return
 			}
@@ -878,13 +896,13 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 			if h == "" {
 				return
 			}
-			out <- result{idx, h}
-		}(i, b.Name)
+			out <- result{idx, anchor, h}
+		}(i, b.Name, anchor)
 	}
 	wg.Wait()
 	close(out)
 	for r := range out {
-		local[r.idx].ForkBranch = defaultBr
+		local[r.idx].ForkBranch = r.anchor
 		local[r.idx].ForkPoint = r.hash
 	}
 }

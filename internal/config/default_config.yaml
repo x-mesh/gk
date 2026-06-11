@@ -22,7 +22,9 @@ log:
   limit: 20
 
   # Default visualization layers for `gk log`. Values: pulse, calendar,
-  # tags-rule, impact, cc, safety, hotspots, trailers, lanes. Individual
+  # tags-rule, impact, cc, safety, merged, hotspots, trailers, lanes, body,
+  # wip (≡N stack depth on WIP runs), squash (⊟ fixup!/squash!/WIP marker),
+  # breaking (‼ on CC `!` / BREAKING CHANGE commits). Individual
   # --cc / --impact / ... flags or --vis <list> override this for a single
   # invocation; --vis none disables every layer; explicit --format also
   # suppresses the default so the raw pretty-format wins.
@@ -30,7 +32,10 @@ log:
 
 status:
   # Default visualization layers for `gk status`. Values: gauge, bar, progress,
-  # types, staleness, tree, conflict, churn, risk, base, local, since-push.
+  # types, staleness, tree, conflict, churn, risk, base, local, since-push,
+  # stash, heatmap, glyphs, wip (WIP chain at HEAD), squash (◈ unlanded
+  # fixup!/WIP count), ancestry (parent-chain stack depth), collision
+  # (⊠ files also dirty in another worktree).
   # Override per-invocation with `--vis ...` or disable all with `--vis none`.
   #
   # `local` adds a working-tree change badge to the BRANCH line

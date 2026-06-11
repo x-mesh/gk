@@ -312,6 +312,42 @@ func ListModify(path, dotKey, item string, add bool) (string, error) {
 	return joinSeq(seq), nil
 }
 
+// SetList replaces the whole list at dotKey with items, preserving comments
+// and ordering elsewhere in the file. ListModify edits one element at a time;
+// this writes a chosen set wholesale — the setup wizard's vis pickers land
+// here. Rejects scalar keys (ErrNotList); an absent key is created flow-style.
+func SetList(path, dotKey string, items []string) (string, error) {
+	if !ValidKey(dotKey) {
+		return "", fmt.Errorf("%w: %s", ErrUnknownKey, dotKey)
+	}
+	if def, ok := schemaLeaf(dotKey); ok {
+		if _, isSlice := def.([]any); !isSlice {
+			return "", fmt.Errorf("%w: %s", ErrNotList, dotKey)
+		}
+	}
+
+	root, err := loadRootMapping(path)
+	if err != nil {
+		return "", err
+	}
+	seq, err := sequenceFor(root, strings.Split(dotKey, "."), true)
+	if err != nil {
+		return "", err
+	}
+
+	content := make([]*yaml.Node, 0, len(items))
+	for _, it := range items {
+		content = append(content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it})
+	}
+	seq.Content = content
+
+	if err := writeDoc(path, root); err != nil {
+		return "", err
+	}
+	return joinSeq(seq), nil
+}
+
 // sequenceFor descends m along segs to the SequenceNode at the final key.
 // On a missing key: create=true builds an empty flow sequence (plus any
 // intermediate mappings) and returns it; create=false returns (nil, nil) so a

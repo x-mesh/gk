@@ -64,7 +64,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,local,since-push,stash,heatmap,glyphs; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,local,since-push,stash,heatmap,glyphs,wip,squash,ancestry,collision; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVarP(&statusFetch, "fetch", "f", false, "fetch the current branch's upstream before reporting ↑N ↓N (opt-in; no network activity by default)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
@@ -729,6 +729,22 @@ func renderStatusLegend(w io.Writer, vis []string) {
 			color.BlueString("¶"), color.New(color.Faint).Sprint("▣"),
 			color.New(color.Faint).Sprint("↻"), color.New(color.Faint).Sprint("⊙"),
 			color.New(color.Faint).Sprint("·"))
+	}
+	if enabled("wip") {
+		sec("--vis wip — WIP chain at HEAD")
+		fmt.Fprintln(w, "  wip: ×N at HEAD (\"subject\")  — same chain `gk commit` unwraps; silent when HEAD isn't WIP")
+	}
+	if enabled("squash") {
+		sec("--vis squash — squash debt in the unlanded range")
+		fmt.Fprintf(w, "  %s  fixup!/squash!/WIP commits above the upstream (or base); folds via gk rebase --plan\n", color.YellowString("◈ N"))
+	}
+	if enabled("ancestry") {
+		sec("--vis ancestry — branch stack position")
+		fmt.Fprintln(w, "  depth: a → b → main (N hops · +Nc)  — follows branch.<name>.gk-parent; silent without parent metadata")
+	}
+	if enabled("collision") {
+		sec("--vis collision — cross-worktree dirty overlap")
+		fmt.Fprintf(w, "  %s N files also dirty in <worktree>  — the same paths modified in two checkouts merge-conflict later\n", color.New(color.FgYellow, color.Bold).Sprint("⊠"))
 	}
 	if enabled("staleness") {
 		sec("--vis staleness")
@@ -1712,6 +1728,18 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		}
 	}
 
+	if statusVisEnabled("wip") && !detached {
+		if line := renderWIPDebtLine(cmd.Context(), runner, cfg); line != "" {
+			fmt.Fprintln(w, line)
+		}
+	}
+
+	if statusVisEnabled("squash") && !detached {
+		if line := renderSquashDebtLine(cmd.Context(), runner, cfg, st.Upstream, baseRes.Resolved, st.Branch); line != "" {
+			fmt.Fprintln(w, line)
+		}
+	}
+
 	if statusVisEnabled("base") && !detached {
 		dirty := committableCount(allGrouped) > 0
 		if baseLine := renderBaseDivergence(cmd, runner, client, cfg, st.Branch, dirty, baseRes); baseLine != "" {
@@ -1722,6 +1750,18 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 			if subline := renderLocalBaseStaleSubline(cmd.Context(), runner, cfg, baseRes.Resolved); subline != "" {
 				fmt.Fprintln(w, subline)
 			}
+		}
+	}
+
+	if statusVisEnabled("ancestry") && !detached && st.Branch != "" {
+		if line := renderAncestryLine(cmd.Context(), runner, client, st.Branch); line != "" {
+			fmt.Fprintln(w, line)
+		}
+	}
+
+	if statusVisEnabled("collision") && len(listEntries) > 0 {
+		for _, line := range renderWorktreeCollisions(cmd.Context(), runner, listEntries) {
+			fmt.Fprintln(w, line)
 		}
 	}
 

@@ -332,6 +332,23 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 
+## gk promote
+
+The local half of `gk land --promote`: commit what's dirty (AI-grouped via `gk commit -f`), then forward-merge the current branch into its parent/base — **no pull, no push**. Built for worktree-centric flows where integration happens locally (merge into `develop` now, publish later from `develop`) and `land`'s mandatory network steps are exactly what you don't want.
+
+```bash
+gk promote          # commit → merge into the parent (gk-parent metadata, else the configured base)
+gk promote main     # walk the parent chain hop by hop: feat→develop→main, each boundary merged
+gk promote --push   # also publish each advanced branch (push --from <target>) — land --promote's behavior
+```
+
+Bare `gk promote` climbs **one hop** — the same target resolution as `gk status`'s ready-to-merge line and bare `land --promote`. `gk promote <branch>` walks the parent chain until `<branch>`; a target outside the chain is an error (use `gk merge --into` for a one-off direct merge). The receiving branch does not need a worktree: a fast-forward updates the ref directly, a clean non-FF merge commits via merge-tree, and only a real conflict requires a checkout. Conflicts pause with the normal resolve/continue contract; re-running is safe (a clean tree skips commit, merged hops merge nothing). Already on the target → a quiet no-op that leaves the dirty tree alone.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--push` | false | After each hop's merge, also publish the advanced branch (`push --from <target>`) |
+| `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout (same contract as `gk land`); step progress moves to stderr |
+
 ## gk batch
 
 Executes gk sub-commands in the order a JSON plan lists them — the generalized sibling of `gk land`: land is the fixed session-closing sequence, batch is whatever sequence the caller declares. A multi-step agent workflow (commit → pull → push → tag) becomes one call.
@@ -1659,7 +1676,7 @@ Running `gk wt` or `gk worktree` without a subcommand opens an interactive picke
 
 - **cd** — spawns a new `$SHELL` inside the selected worktree so you can work in it immediately. Type `exit` to return to your original shell at its original cwd. Inside the subshell, `$GK_WT` holds the worktree path and `$GK_WT_PARENT_PWD` holds where you came from. (See `--print-path` below for scripting workflows.)
 - **remove** — confirm prompt → `git worktree remove <path>`. Dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune. After a clean remove you're also offered to delete the branch if no other worktree holds it.
-- **add new** — form: name, create-new-branch?, branch name, base ref. The name is resolved through the same managed-base rules as `gk worktree add` (see below). Name collisions with an orphan branch surface an inline three-way choice (reuse / delete & recreate / cancel) instead of a dead-end error.
+- **add new** — form: name, create-new-branch?, branch name, base ref. The base-ref field names the current branch as its default (`blank = <branch>`) — leaving it blank cuts the new branch from where you stand, not from main. A newly created branch records its fork parent (`gk-parent`), same as `gk worktree add`. The name is resolved through the same managed-base rules as `gk worktree add` (see below). Name collisions with an orphan branch surface an inline three-way choice (reuse / delete & recreate / cancel) instead of a dead-end error.
 
 Flags:
 
@@ -1685,6 +1702,10 @@ Flags:
 | `-b, --new` | false | Create a new branch named `[branch]` at `--from` |
 | `--from <ref>` | HEAD | Base ref for the new branch |
 | `--detach` | false | Detach HEAD in the worktree instead of tracking a branch |
+
+The success line names what landed where, so the base of a new branch is never a guess: `added worktree at <path> (new branch feat/x from main@8bd48c9)` — new branches are cut from **HEAD (the branch you run the command on)** unless `--from` says otherwise, never implicitly from main.
+
+A newly created branch also records its fork parent (`branch.<name>.gk-parent = <base>`), the same metadata `gk branch set-parent` writes — creation is the only moment the parent is known for certain (git's own reflog only says "Created from HEAD"). `gk status`, the `SOURCE` column, and `gk land --promote` then resolve against the real parent instead of the trunk. Recording is skipped when the base is not a local branch (detached HEAD, remote ref, raw SHA) and is undone with `gk branch unset-parent`.
 
 #### Managed base directory
 
@@ -1747,7 +1768,7 @@ Project layout on disk:
 |---|---|
 | `★` | The worktree this invocation runs from. |
 | `BRANCH` | Local branch checked out in the worktree (or `(detached HEAD)` / `(bare)`). |
-| `SOURCE` | `⇄ <upstream>` when an upstream is tracked, otherwise `from <parent>@<sha>` for the resolved fork point, otherwise blank for purely local branches. |
+| `SOURCE` | `⇄ <upstream>` when an upstream is tracked, otherwise `from <parent>@<sha>` for the resolved fork point, otherwise blank for purely local branches. The fork anchor is the recorded `gk-parent` when one is set (`gk branch set-parent`), falling back to the default branch — stacked branches show their real parent instead of `from main@…`. |
 | `DIFF` | Ahead/behind versus the upstream (`↑3 ↓1`). Empty when in sync or when no upstream is tracked. |
 | `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
 | `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |

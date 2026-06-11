@@ -14,6 +14,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
@@ -64,6 +65,11 @@ Branch logic:
   - Without --new, [branch] must already exist (local or remote-tracking).
   - With --new (-b), a new branch named [branch] is created from
     --from (default HEAD).
+  - A newly created branch records its fork parent
+    (branch.<name>.gk-parent = the base branch) so gk status, the
+    SOURCE column, and gk land --promote know where it came from.
+    Skipped when the base is not a local branch (detached HEAD, remote
+    ref, raw SHA). Undo with: gk branch unset-parent.
 
 Examples:
   gk worktree add ai-commit           # ~/.gk/worktree/<project>/ai-commit
@@ -577,14 +583,28 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		gitArgs = append(gitArgs, branch)
 	}
 
+	// Decide the summary shape before git runs: once `worktree add`
+	// creates the auto-named branch, existence no longer distinguishes
+	// "created new" from "checked out existing".
+	sumBranch := branch
+	sumNew := newBranch
+	if !detach && branch == "" {
+		sumBranch = filepath.Base(resolvedPath)
+		sumNew = !branchExists(ctx, runner, sumBranch)
+	}
+
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	if err != nil {
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
+	if sumNew {
+		recordWorktreeParent(ctx, runner, sumBranch, from)
+	}
 	if len(stdout) > 0 {
 		_, _ = w.Write(stdout)
 	}
-	fmt.Fprintf(w, "added worktree at %s\n", resolvedPath)
+	fmt.Fprintf(w, "added worktree at %s%s\n", resolvedPath,
+		worktreeAddDetail(ctx, runner, sumNew, sumBranch, from, detach))
 
 	doInit, _ := cmd.Flags().GetBool("init")
 	noInit, _ := cmd.Flags().GetBool("no-init")
@@ -596,6 +616,73 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		prompt:       !doInit,
 		fromAdd:      true,
 	})
+}
+
+// recordWorktreeParent best-effort writes `branch.<branch>.gk-parent`
+// after `worktree add` created <branch> — creation is the only moment
+// the fork parent is known for certain (git itself records only
+// "Created from HEAD" in the reflog), so this is where parent-aware
+// surfaces (SOURCE column, gk status, gk land --promote) get their
+// anchor without a manual `gk branch set-parent`.
+//
+// The parent is the explicit --from when it names a local branch,
+// otherwise the invoking worktree's current branch. Detached HEAD,
+// remote-tracking refs, raw SHAs, and anything else ValidateSet rejects
+// record nothing. Failures are silent: metadata is decoration, never a
+// reason to fail the add. Undo with `gk branch unset-parent`.
+func recordWorktreeParent(ctx context.Context, runner git.Runner, branch, from string) {
+	client := git.NewClient(runner)
+	parent := strings.TrimPrefix(from, "refs/heads/")
+	if parent == "" {
+		cur, err := client.CurrentBranch(ctx)
+		if err != nil {
+			return
+		}
+		parent = cur
+	}
+	if branchparent.ValidateSet(ctx, client, branch, parent) != nil {
+		return
+	}
+	_ = branchparent.NewConfig(client).SetParent(ctx, branch, parent)
+}
+
+// worktreeAddDetail names the branch that landed in the new worktree
+// and, for a newly created branch, the ref it was cut from — `git
+// worktree add` bases new branches on HEAD, which is invisible in the
+// bare success line and routinely misread as "from main". Best-effort:
+// any rev-parse failure returns "" so the success message never blocks
+// on decoration.
+func worktreeAddDetail(ctx context.Context, runner git.Runner, newBranch bool, branch, from string, detach bool) string {
+	short := func(ref string) string {
+		out, _, err := runner.Run(ctx, "rev-parse", "--short", ref)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	switch {
+	case detach:
+		if sha := short("HEAD"); sha != "" {
+			return fmt.Sprintf(" (detached @%s)", sha)
+		}
+	case newBranch:
+		base := from
+		if base == "" {
+			out, _, err := runner.Run(ctx, "rev-parse", "--abbrev-ref", "HEAD")
+			if err != nil {
+				return ""
+			}
+			base = strings.TrimSpace(string(out))
+		}
+		if sha := short(base); sha != "" {
+			return fmt.Sprintf(" (new branch %s from %s@%s)", branch, base, sha)
+		}
+	default:
+		if sha := short(branch); sha != "" {
+			return fmt.Sprintf(" (%s@%s)", branch, sha)
+		}
+	}
+	return ""
 }
 
 // resolveWorktreePath expands a worktree path argument into a concrete
@@ -1257,7 +1344,14 @@ func maybeDeleteOrphanBranch(ctx context.Context, runner *git.ExecRunner, stderr
 // addModel renders on stderr so stdout stays reserved for the `cd`
 // action in the outer loop.
 func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) error {
-	inputs, err := runWorktreeAddTUI(ctx)
+	// Resolve the current branch so the form can label its default base
+	// ("blank = <branch>") instead of an opaque HEAD. Detached or failed
+	// lookup → "" → the form falls back to the literal "HEAD".
+	head := ""
+	if br, berr := git.NewClient(runner).CurrentBranch(ctx); berr == nil {
+		head = br
+	}
+	inputs, err := runWorktreeAddTUI(ctx, head)
 	if err != nil {
 		if errors.Is(err, errAddCancelled) {
 			return nil
@@ -1339,9 +1433,13 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		}
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(gitErr)), err)
 	}
+	if createBranch {
+		recordWorktreeParent(ctx, runner, branchName, fromRef)
+	}
 	// Surface the resolved path on stderr so the user sees where it
 	// landed without polluting stdout.
-	fmt.Fprintln(os.Stderr, "added worktree at", resolved)
+	fmt.Fprintf(os.Stderr, "added worktree at %s%s\n", resolved,
+		worktreeAddDetail(ctx, runner, createBranch, branchName, fromRef, false))
 	return nil
 }
 

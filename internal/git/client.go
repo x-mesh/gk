@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -396,6 +397,40 @@ func (c *Client) GetBranchConfig(ctx context.Context, branch, key string) (strin
 			branch, key, err, strings.TrimSpace(string(stderr)))
 	}
 	return strings.TrimSpace(string(stdout)), nil
+}
+
+// AllBranchConfig reads `branch.<name>.<key>` for every branch in one
+// `git config --get-regexp` call and returns a name→value map. List
+// renderers (switch picker, worktree table) use this instead of N
+// GetBranchConfig calls so the subprocess count stays flat on repos
+// with hundreds of branches. Returns an empty map when no branch has
+// the key (git exits 1 on no match — same contract as GetBranchConfig).
+func (c *Client) AllBranchConfig(ctx context.Context, key string) (map[string]string, error) {
+	pattern := `^branch\..*\.` + regexp.QuoteMeta(key) + `$`
+	stdout, stderr, err := c.R.Run(ctx, "config", "--get-regexp", pattern)
+	if err != nil {
+		if isExitCode(err, 1) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("git config --get-regexp %s: %w: %s",
+			pattern, err, strings.TrimSpace(string(stderr)))
+	}
+	values := make(map[string]string)
+	suffix := "." + key
+	for line := range strings.SplitSeq(string(stdout), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || v == "" || !strings.HasPrefix(k, "branch.") || !strings.HasSuffix(k, suffix) {
+			continue
+		}
+		// Branch names may themselves contain dots — strip the fixed
+		// prefix/suffix instead of splitting on ".".
+		name := strings.TrimSuffix(strings.TrimPrefix(k, "branch."), suffix)
+		if name == "" {
+			continue
+		}
+		values[name] = v
+	}
+	return values, nil
 }
 
 // SetBranchConfig writes `git config branch.<branch>.<key> <value>` to the

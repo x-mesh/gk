@@ -21,7 +21,7 @@ func typeRunes(m addModel, s string) addModel {
 }
 
 func TestAddModel_NameRequiredBlocksAdvance(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	// Press enter on an empty name → must NOT advance.
 	m = sendKey(m, tea.KeyEnter)
 	if m.step != stepName {
@@ -30,7 +30,7 @@ func TestAddModel_NameRequiredBlocksAdvance(t *testing.T) {
 }
 
 func TestAddModel_HappyPathCreateBranch(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	m = typeRunes(m, "feat/api")
 	m = sendKey(m, tea.KeyEnter) // name → toggle
 	if m.step != stepCreateBranchToggle {
@@ -54,7 +54,7 @@ func TestAddModel_HappyPathCreateBranch(t *testing.T) {
 }
 
 func TestAddModel_ExistingBranchSkipsFromRef(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	m = typeRunes(m, "wt-x")
 	m = sendKey(m, tea.KeyEnter) // → toggle
 	// Flip to existing-branch mode
@@ -75,7 +75,7 @@ func TestAddModel_ExistingBranchSkipsFromRef(t *testing.T) {
 }
 
 func TestAddModel_EscCancels(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	m = typeRunes(m, "abc")
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = got.(addModel)
@@ -88,7 +88,7 @@ func TestAddModel_EscCancels(t *testing.T) {
 }
 
 func TestAddModel_CtrlCCancels(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	m = got.(addModel)
 	if !m.cancelled {
@@ -97,7 +97,7 @@ func TestAddModel_CtrlCCancels(t *testing.T) {
 }
 
 func TestAddModel_BranchEmptyBlocks(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	m = typeRunes(m, "abc")
 	m = sendKey(m, tea.KeyEnter) // → toggle
 	// Flip to existing-branch (so we don't get the seeded default).
@@ -114,8 +114,30 @@ func TestAddModel_BranchEmptyBlocks(t *testing.T) {
 	}
 }
 
+func TestAddModel_HeadLabelsFromPlaceholder(t *testing.T) {
+	m := newAddModel("bug-fix")
+	if !strings.Contains(m.fromRef.Placeholder, "blank = bug-fix") {
+		t.Fatalf("placeholder should name the current branch, got %q", m.fromRef.Placeholder)
+	}
+	// Walk to the fromRef step and check the hint line names it too.
+	m = typeRunes(m, "x")
+	m = sendKey(m, tea.KeyEnter) // → toggle
+	m = sendKey(m, tea.KeyEnter) // → branch (default seeded)
+	m = sendKey(m, tea.KeyEnter) // → fromRef
+	if !strings.Contains(m.View(), "blank = bug-fix (current)") {
+		t.Fatalf("fromRef hint should name the current branch, view:\n%s", m.View())
+	}
+}
+
+func TestAddModel_EmptyHeadFallsBackToHEAD(t *testing.T) {
+	m := newAddModel("")
+	if !strings.Contains(m.fromRef.Placeholder, "blank = HEAD") {
+		t.Fatalf("empty head should fall back to HEAD, got %q", m.fromRef.Placeholder)
+	}
+}
+
 func TestAddModel_FromRefAcceptsBlank(t *testing.T) {
-	m := newAddModel()
+	m := newAddModel("")
 	m = typeRunes(m, "x")
 	m = sendKey(m, tea.KeyEnter) // → toggle
 	m = sendKey(m, tea.KeyEnter) // → branch (default seeded)

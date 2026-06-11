@@ -40,12 +40,18 @@ type addModel struct {
 	name      textinput.Model
 	branch    textinput.Model
 	fromRef   textinput.Model
-	create    bool // create new branch?
+	head      string // resolved current branch, "HEAD" when detached/unknown
+	create    bool   // create new branch?
 	cancelled bool
 	width     int
 }
 
-func newAddModel() addModel {
+// newAddModel builds the form. head is the invoking worktree's current
+// branch; it is rendered into the from-field placeholder so the default
+// base is visible instead of an opaque "blank = HEAD" — git bases new
+// branches on HEAD and users routinely assume main. Empty head
+// (detached, lookup failure) falls back to the literal "HEAD".
+func newAddModel(head string) addModel {
 	name := textinput.New()
 	name.Placeholder = "feat/api"
 	name.Prompt = "name › "
@@ -71,8 +77,11 @@ func newAddModel() addModel {
 		return nil
 	}
 
+	if strings.TrimSpace(head) == "" {
+		head = "HEAD"
+	}
 	fromRef := textinput.New()
-	fromRef.Placeholder = "(blank = HEAD)  e.g. origin/main"
+	fromRef.Placeholder = fmt.Sprintf("(blank = %s)  e.g. origin/main", head)
 	fromRef.Prompt = "from  › "
 	fromRef.CharLimit = 256
 	fromRef.Width = 40
@@ -83,6 +92,7 @@ func newAddModel() addModel {
 		name:    name,
 		branch:  branch,
 		fromRef: fromRef,
+		head:    head,
 		create:  true,
 	}
 }
@@ -237,7 +247,7 @@ func (m addModel) View() string {
 	if m.step >= stepFromRef && m.create {
 		b.WriteString(m.fromRef.View())
 		b.WriteString("\n  ")
-		b.WriteString(hint.Render("blank = HEAD; e.g. origin/main"))
+		b.WriteString(hint.Render(fmt.Sprintf("blank = %s (current); e.g. origin/main", m.head)))
 		b.WriteString("\n")
 	}
 
@@ -247,10 +257,11 @@ func (m addModel) View() string {
 }
 
 // runWorktreeAddTUI launches the addModel and returns the collected
-// inputs. Returns ErrAddCancelled when the user aborts.
-func runWorktreeAddTUI(ctx context.Context) (worktreeAddInputs, error) {
+// inputs. head labels the default base ref in the form (see
+// newAddModel). Returns ErrAddCancelled when the user aborts.
+func runWorktreeAddTUI(ctx context.Context, head string) (worktreeAddInputs, error) {
 	prog := tea.NewProgram(
-		newAddModel(),
+		newAddModel(head),
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
 		tea.WithInputTTY(),

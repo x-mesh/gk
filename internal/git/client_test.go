@@ -601,6 +601,51 @@ func TestGetBranchConfig_RealError(t *testing.T) {
 	}
 }
 
+func TestAllBranchConfig_ParsesMap(t *testing.T) {
+	// Branch names may contain dots and slashes — the parser must strip
+	// the fixed prefix/suffix, not split on ".".
+	r := fakeWithResponse(
+		`config --get-regexp ^branch\..*\.gk-parent$`,
+		FakeResponse{Stdout: "branch.feat/x.gk-parent main\nbranch.rel.1.2.gk-parent develop\n"},
+	)
+	c := NewClient(r)
+	got, err := c.AllBranchConfig(context.Background(), "gk-parent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got["feat/x"] != "main" || got["rel.1.2"] != "develop" {
+		t.Errorf("unexpected map: %#v", got)
+	}
+}
+
+func TestAllBranchConfig_NoMatchesIsEmpty(t *testing.T) {
+	// git config --get-regexp exits 1 when nothing matches — that is the
+	// normal "no parents recorded" state, not an error.
+	r := fakeWithResponse(
+		`config --get-regexp ^branch\..*\.gk-parent$`,
+		FakeResponse{ExitCode: 1},
+	)
+	c := NewClient(r)
+	got, err := c.AllBranchConfig(context.Background(), "gk-parent")
+	if err != nil {
+		t.Fatalf("no matches should not error, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want empty map, got %#v", got)
+	}
+}
+
+func TestAllBranchConfig_RealError(t *testing.T) {
+	r := fakeWithResponse(
+		`config --get-regexp ^branch\..*\.gk-parent$`,
+		FakeResponse{ExitCode: 128, Stderr: "fatal: bad config"},
+	)
+	c := NewClient(r)
+	if _, err := c.AllBranchConfig(context.Background(), "gk-parent"); err == nil {
+		t.Fatal("want error for exit 128, got nil")
+	}
+}
+
 func TestSetBranchConfig_Roundtrip(t *testing.T) {
 	r := &FakeRunner{}
 	c := NewClient(r)

@@ -22,7 +22,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 8
+const agentsContractVersion = 9
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -37,6 +37,7 @@ This repository is driven with git-kit, an agent-native git CLI. Always invoke i
 
 - **Orient first**: ` + "`git-kit context`" + ` — one call returns branch, upstream, ahead/behind, dirty counts, any in-progress rebase/merge (with resume/abort commands), base-branch drift, worktrees, and ` + "`next_actions`" + `. Use it instead of probing with git status/branch/log. Add ` + "`--include=diff,log,precheck,remotes`" + ` (or ` + "`--include=all`" + `) to fuse the uncommitted-change digest (untracked included), the last 5 commits, the next-pull conflict forecast, and per-remote drift into the same document — one call instead of five; a section that cannot be collected degrades to a ` + "`notes`" + ` entry, never an error.
 - **Wrap up**: ` + "`git-kit land`" + ` — commit (AI-grouped), pull --with-base, push as one transaction with per-step results; on failure the result names ` + "`failed_step`" + ` and the resume command. ` + "`--cleanup`" + ` also reclaims fully-merged branches and their worktrees.
+- **Local wrap-up (no network)**: ` + "`git-kit promote`" + ` — commit, then forward-merge the current branch into its parent/base (gk-parent metadata, trunk fallback); ` + "`git-kit promote <branch>`" + ` walks the parent chain hop by hop. Nothing is pushed without ` + "`--push`" + ` — use it when integration is local and land would push too early. Same per-step result contract as land.
 - **Batch any sequence**: ` + "`git-kit batch --plan -`" + ` — run several git-kit commands as one transaction from a JSON plan on stdin: ` + "`{\"steps\":[{\"args\":[\"pull\",\"--with-base\"]},{\"args\":[\"push\"]}]}`" + `, optional per-step ` + "`on_failure: \"abort\"|\"continue\"`" + `. The result reports per-step outcomes plus ` + "`failed_step`" + `/` + "`resume`" + `; a gating failure skip-marks the remaining steps. Draft a plan with ` + "`--plan-template`" + `, preview with ` + "`--dry-run`" + `. N calls → 1.
 - **Sync**: ` + "`git-kit pull`" + ` (add ` + "`--with-base`" + ` to also fast-forward the local base branch, FF-only). On conflict the result lists the files plus the exact resume/abort commands. ` + "`--from <remote>[/<branch>]`" + ` integrates from a secondary remote (mirror, org fork) that the upstream chain never fetches — tracking config stays untouched.
 - **Forecast before integrating**: ` + "`git-kit precheck [target]`" + ` — read-only merge-tree simulation (no target = the next pull). Clean → integrate; conflicts listed → pick a strategy first instead of try→abort.

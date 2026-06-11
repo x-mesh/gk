@@ -44,6 +44,40 @@ func TestConfig_GetParent_Unset(t *testing.T) {
 	}
 }
 
+func TestConfig_AllParents(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			`config --get-regexp ^branch\..*\.gk-parent$`: {
+				Stdout: "branch.feat/sub.gk-parent feat/base\nbranch.feat/base.gk-parent main\n",
+			},
+		},
+	}
+	cfg := newConfigWithRunner(r)
+	got, err := cfg.AllParents(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got["feat/sub"] != "feat/base" || got["feat/base"] != "main" {
+		t.Errorf("unexpected map: %#v", got)
+	}
+}
+
+func TestConfig_AllParents_NoneRecorded(t *testing.T) {
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			`config --get-regexp ^branch\..*\.gk-parent$`: {ExitCode: 1},
+		},
+	}
+	cfg := newConfigWithRunner(r)
+	got, err := cfg.AllParents(context.Background())
+	if err != nil {
+		t.Fatalf("no parents must not error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want empty map, got %#v", got)
+	}
+}
+
 func TestConfig_SetParent(t *testing.T) {
 	r := &git.FakeRunner{}
 	cfg := newConfigWithRunner(r)

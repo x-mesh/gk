@@ -866,6 +866,50 @@ func TestComputeForkPoints_Integration(t *testing.T) {
 	}
 }
 
+// A recorded gk-parent overrides the trunk anchor; a recorded parent
+// whose ref is gone falls back to the trunk (same policy as Resolver).
+func TestComputeForkPoints_ParentAnchor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	seedHead := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+	// Stack: main → feat/base (+1 commit) → feat/sub (+1 commit).
+	repo.CreateBranch("feat/base")
+	repo.WriteFile("b.txt", "b")
+	repo.Commit("base commit")
+	baseHead := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+	repo.CreateBranch("feat/sub")
+	repo.WriteFile("s.txt", "s")
+	repo.Commit("sub commit")
+	repo.RunGit("config", "branch.feat/sub.gk-parent", "feat/base")
+	// Write a dangling parent directly (bypasses set-parent validation).
+	repo.RunGit("config", "branch.feat/base.gk-parent", "ghost")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	local := []branchInfo{
+		{Name: "feat/base"},
+		{Name: "feat/sub"},
+	}
+	computeForkPoints(context.Background(), runner, "main", local)
+
+	if local[1].ForkBranch != "feat/base" {
+		t.Errorf("ForkBranch = %q, want feat/base", local[1].ForkBranch)
+	}
+	if local[1].ForkPoint == "" || !strings.HasPrefix(baseHead, local[1].ForkPoint) {
+		t.Errorf("fork point %q should be prefix of feat/base head %q",
+			local[1].ForkPoint, baseHead)
+	}
+	if local[0].ForkBranch != "main" {
+		t.Errorf("dangling parent should fall back to main, got %+v", local[0])
+	}
+	if local[0].ForkPoint == "" || !strings.HasPrefix(seedHead, local[0].ForkPoint) {
+		t.Errorf("fallback fork point %q should be prefix of main head %q",
+			local[0].ForkPoint, seedHead)
+	}
+}
+
 func TestComputeForkPoints_EmptyDefaultIsNoOp(t *testing.T) {
 	t.Parallel()
 	local := []branchInfo{{Name: "feat"}}

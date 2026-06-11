@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -118,65 +119,17 @@ func runLand(cmd *cobra.Command, args []string) error {
 
 	// Resolve the promote target: a bare --promote (sentinel) means the
 	// branch's parent/base; --promote=<branch> overrides; empty means the
-	// step is off. The current branch is resolved first because the bare
-	// path needs it for parent lookup (and the skip check below uses it).
+	// step is off.
 	promoteTarget := ""
 	currentBranch := ""
 	var promoteHops []landPromoteHop
 	if promote != "" {
-		client := git.NewClient(runner)
-		cb, err := client.CurrentBranch(ctx)
-		if err != nil {
-			return fmt.Errorf("land: resolve current branch for promote: %w", err)
+		var perr error
+		currentBranch, promoteTarget, promoteHops, perr = resolvePromoteHops(
+			ctx, cmd.ErrOrStderr(), runner, cfg, promote, promoteFlavorLand)
+		if perr != nil {
+			return perr
 		}
-		currentBranch = strings.TrimSpace(cb)
-		resolver := branchparent.NewResolver(client)
-		trunk := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
-		if promote == landPromoteUseBase {
-			// Parent-aware, one hop: a bare --promote lands on the branch's
-			// direct parent when gk-parent metadata resolves — the same
-			// resolution gk status uses for its "ready to merge into <base>"
-			// line, so both surfaces always name the same target. Without
-			// parent metadata this degrades to the trunk resolver (explicit
-			// config → origin/HEAD → local fallback), the pre-parent
-			// behavior. In a main→develop→feat stack, landing feat promotes
-			// to develop, not main.
-			base, src, issues := resolver.ResolveBaseWithIssues(ctx, currentBranch, trunk)
-			for _, iss := range issues {
-				fmt.Fprintln(cmd.ErrOrStderr(), iss.Message)
-			}
-			promoteTarget = base
-			if promoteTarget == "" {
-				return fmt.Errorf("land: --promote could not resolve a base branch — pass --promote=<branch> or set base_branch")
-			}
-			via := "trunk"
-			if src != "" {
-				via = "gk-parent"
-			}
-			promoteHops = []landPromoteHop{{source: currentBranch, target: promoteTarget, via: via}}
-		} else {
-			// Explicit target: walk the parent chain hop by hop until the
-			// target — feat→develop→main, each boundary its own merge+push,
-			// so intermediate branches advance too instead of going stale.
-			// The walk errors (before any step runs) on loops or when the
-			// target is not an ancestor in the chain.
-			promoteTarget = promote
-			if currentBranch != promoteTarget {
-				promoteHops, err = landPromoteChain(ctx, resolver, currentBranch, promoteTarget, trunk)
-				if err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	type landStep struct {
-		name   string
-		skip   string // non-empty → skipped with this reason
-		args   []string
-		run    func(context.Context) error
-		plan   string // dry-run description (defaults to "gk <args>")
-		resume string // shown when the step fails
 	}
 
 	// Pass the flag in BOTH polarities: the child pull reads pull.with_base
@@ -206,31 +159,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 			if promote != landPromoteUseBase {
 				rerun = "gk land --promote=" + promoteTarget
 			}
-			// One step per hop. A single hop keeps the plain "promote" name
-			// (the existing JSON contract); a chain qualifies each step as
-			// promote:<target> so failed_step names the exact boundary.
-			// Re-running after a mid-chain conflict is naturally idempotent:
-			// merge --into is a no-op for an already-merged source and push
-			// is a no-op when the remote is current.
-			multi := len(promoteHops) > 1
-			for _, hop := range promoteHops {
-				name := "promote"
-				if multi {
-					name = "promote:" + hop.target
-				}
-				steps = append(steps, landStep{
-					name: name,
-					run: func(c context.Context) error {
-						gkPath, err := os.Executable()
-						if err != nil {
-							return fmt.Errorf("locate gk binary: %w", err)
-						}
-						return landPromote(c, gkPath, repo, jsonMode, hop.source, hop.target)
-					},
-					plan:   fmt.Sprintf("merge %s --into %s + push --from %s  (%s)", hop.source, hop.target, hop.target, hop.via),
-					resume: "resolve the promote conflict (gk resolve --ai && gk continue), then rerun: " + rerun,
-				})
-			}
+			steps = append(steps, promoteHopSteps(repo, jsonMode, promoteHops, true, rerun)...)
 		}
 	}
 	if cleanup {
@@ -241,6 +170,48 @@ func runLand(cmd *cobra.Command, args []string) error {
 			resume: "retry the reclaim: gk branch clean --worktrees",
 		})
 	}
+
+	return runLandPipeline(cmd, repo, jsonMode, steps, landPipelineOpts{
+		planHeader:     "─── Land plan ────────────────────────────────",
+		stepHeaderFmt:  "─── land: %s ─────────────────────────────",
+		completeHeader: "─── Land complete ────────────────────────────",
+		doneLine:       "session landed",
+		okResult:       "landed",
+		errPrefix:      "land",
+		rerun:          "gk land",
+	})
+}
+
+// landStep is one unit of the land/promote transaction: either a child gk
+// invocation (args) or an in-process func (run).
+type landStep struct {
+	name   string
+	skip   string // non-empty → skipped with this reason
+	args   []string
+	run    func(context.Context) error
+	plan   string // dry-run description (defaults to "gk <args>")
+	resume string // shown when the step fails
+}
+
+// landPipelineOpts carries the per-command vocabulary so land and promote
+// share one transaction runner: banner strings, the JSON success word, the
+// error prefix, and the remedy command.
+type landPipelineOpts struct {
+	planHeader     string // dry-run banner
+	stepHeaderFmt  string // per-step banner; %s = step name
+	completeHeader string // success banner
+	doneLine       string // human success line under the banner
+	okResult       string // JSON Result on success ("landed", "promoted")
+	errPrefix      string // error prefix ("land", "promote")
+	rerun          string // remedy command ("gk land", "gk promote")
+}
+
+// runLandPipeline executes steps as one stop-on-failure transaction with
+// land's progress/dry-run/JSON contract: each step prints a ✓, the first
+// failure names the step plus its resume path, and in JSON mode stdout
+// carries only the result document ({steps, failed_step?, resume?}).
+func runLandPipeline(cmd *cobra.Command, repo string, jsonMode bool, steps []landStep, opts landPipelineOpts) error {
+	ctx := cmd.Context()
 
 	// Progress goes to stderr in JSON mode so stdout carries only the
 	// result document; in human mode everything shares stdout like ship.
@@ -258,7 +229,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 
 	if DryRun() {
 		res := landResultJSON{Schema: 1, Result: "dry-run"}
-		fmt.Fprintln(progress, landHeader("─── Land plan ────────────────────────────────"))
+		fmt.Fprintln(progress, landHeader(opts.planHeader))
 		for _, s := range steps {
 			detail := s.plan
 			if detail == "" {
@@ -279,18 +250,18 @@ func runLand(cmd *cobra.Command, args []string) error {
 
 	gkPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("land: locate gk binary: %w", err)
+		return fmt.Errorf("%s: locate gk binary: %w", opts.errPrefix, err)
 	}
 
 	good := color.New(color.FgGreen, color.Bold).SprintFunc()
-	res := landResultJSON{Schema: 1, Result: "landed"}
+	res := landResultJSON{Schema: 1, Result: opts.okResult}
 	for _, s := range steps {
 		if s.skip != "" {
 			fmt.Fprintf(progress, "  %s %-*s %s\n", cellFaint("·"), nameW, s.name, cellFaint("skipped — "+s.skip))
 			res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: "skipped", Detail: s.skip})
 			continue
 		}
-		fmt.Fprintln(progress, landHeader("─── land: "+s.name+" ─────────────────────────────"))
+		fmt.Fprintln(progress, landHeader(fmt.Sprintf(opts.stepHeaderFmt, s.name)))
 		var stepErr error
 		if s.run != nil {
 			stepErr = s.run(ctx)
@@ -306,17 +277,17 @@ func runLand(cmd *cobra.Command, args []string) error {
 				_ = emitAgentResult(cmd.OutOrStdout(), res)
 			}
 			return WithRemedy(
-				fmt.Errorf("land: step %q failed: %w", s.name, stepErr),
+				fmt.Errorf("%s: step %q failed: %w", opts.errPrefix, s.name, stepErr),
 				s.resume,
-				errRemedy{Command: "gk land", Safety: "safe"},
+				errRemedy{Command: opts.rerun, Safety: "safe"},
 			)
 		}
 		fmt.Fprintf(progress, "  %s %-8s\n", good("✓"), s.name)
 		res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: "ok"})
 	}
 
-	fmt.Fprintln(progress, landHeader("─── Land complete ────────────────────────────"))
-	fmt.Fprintf(progress, "  %s session landed\n", good("✓"))
+	fmt.Fprintln(progress, landHeader(opts.completeHeader))
+	fmt.Fprintf(progress, "  %s %s\n", good("✓"), opts.doneLine)
 	if jsonMode {
 		return emitAgentResult(cmd.OutOrStdout(), res)
 	}
@@ -411,13 +382,14 @@ func runLandChild(ctx context.Context, gkPath, repo string, jsonMode bool, args 
 	return nil
 }
 
-// landPromote forward-merges the current branch into the base branch and
-// publishes it — the manual `gk merge --into <base>` + `gk push --from <base>`
-// pair run as one land step. Both execute as child gk processes so a merge
-// conflict pauses with gk's normal resolve/continue contract; land then
-// reports the promote step as failed with the resume path. --no-ai keeps the
-// merge non-interactive (no plan summary) to match land's transaction flow.
-func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source, base string) error {
+// landPromote forward-merges source into base and, when push is set,
+// publishes it — the manual `gk merge --into <base>` (+ `gk push --from
+// <base>`) pair run as one step. Both execute as child gk processes so a
+// merge conflict pauses with gk's normal resolve/continue contract; the
+// caller then reports the step as failed with the resume path. --no-ai
+// keeps the merge non-interactive (no plan summary) to match the
+// transaction flow. land always pushes; gk promote pushes only on --push.
+func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source, base string, push bool) error {
 	// The source is always passed explicitly: in a chain the second hop's
 	// source is the previous target (develop), not the checked-out branch
 	// (feat) — relying on `merge --into`'s current-branch default would
@@ -426,10 +398,116 @@ func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source
 	if err := landRunChild(ctx, gkPath, repo, jsonMode, "merge", source, "--into", base, "--no-ai"); err != nil {
 		return fmt.Errorf("merge %s --into %s: %w", source, base, err)
 	}
+	if !push {
+		return nil
+	}
 	if err := landRunChild(ctx, gkPath, repo, jsonMode, "push", "--from", base); err != nil {
 		return fmt.Errorf("push --from %s: %w", base, err)
 	}
 	return nil
+}
+
+// promoteHopSteps renders resolved hops as pipeline steps — one per hop.
+// A single hop keeps the plain "promote" name (the existing JSON
+// contract); a chain qualifies each step as promote:<target> so
+// failed_step names the exact boundary. Re-running after a mid-chain
+// conflict is naturally idempotent: merge --into is a no-op for an
+// already-merged source and push is a no-op when the remote is current.
+func promoteHopSteps(repo string, jsonMode bool, hops []landPromoteHop, push bool, rerun string) []landStep {
+	steps := make([]landStep, 0, len(hops))
+	multi := len(hops) > 1
+	for _, hop := range hops {
+		name := "promote"
+		if multi {
+			name = "promote:" + hop.target
+		}
+		plan := fmt.Sprintf("merge %s --into %s  (%s)", hop.source, hop.target, hop.via)
+		if push {
+			plan = fmt.Sprintf("merge %s --into %s + push --from %s  (%s)", hop.source, hop.target, hop.target, hop.via)
+		}
+		steps = append(steps, landStep{
+			name: name,
+			run: func(c context.Context) error {
+				gkPath, err := os.Executable()
+				if err != nil {
+					return fmt.Errorf("locate gk binary: %w", err)
+				}
+				return landPromote(c, gkPath, repo, jsonMode, hop.source, hop.target, push)
+			},
+			plan:   plan,
+			resume: "resolve the promote conflict (gk resolve --ai && gk continue), then rerun: " + rerun,
+		})
+	}
+	return steps
+}
+
+// promoteFlavor selects the error vocabulary of resolvePromoteHops: the
+// same resolution backs `gk land --promote` and `gk promote`, but each
+// command must name itself (and its own escape hatches) in failures.
+type promoteFlavor int
+
+const (
+	promoteFlavorLand promoteFlavor = iota
+	promoteFlavorPromote
+)
+
+// resolvePromoteHops turns a promote spec into its hop list. spec is
+// landPromoteUseBase (bare: ONE hop to the branch's parent when gk-parent
+// metadata resolves — the same resolution gk status uses for its "ready
+// to merge into <base>" line — else the configured trunk) or an explicit
+// target branch (parent-chain walk, one hop per boundary, so
+// intermediate branches advance too instead of going stale). hops is
+// empty when the current branch already is the target. Chain loops and
+// unreachable targets error before any step runs.
+func resolvePromoteHops(ctx context.Context, errW io.Writer, runner *git.ExecRunner, cfg *config.Config, spec string, flavor promoteFlavor) (current, target string, hops []landPromoteHop, err error) {
+	client := git.NewClient(runner)
+	cb, err := client.CurrentBranch(ctx)
+	if err != nil {
+		if flavor == promoteFlavorLand {
+			return "", "", nil, fmt.Errorf("land: resolve current branch for promote: %w", err)
+		}
+		return "", "", nil, fmt.Errorf("promote: resolve current branch: %w", err)
+	}
+	current = strings.TrimSpace(cb)
+	resolver := branchparent.NewResolver(client)
+	trunk := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
+
+	if spec == landPromoteUseBase {
+		base, src, issues := resolver.ResolveBaseWithIssues(ctx, current, trunk)
+		for _, iss := range issues {
+			fmt.Fprintln(errW, iss.Message)
+		}
+		target = base
+		if target == "" {
+			if flavor == promoteFlavorLand {
+				return current, "", nil, fmt.Errorf("land: --promote could not resolve a base branch — pass --promote=<branch> or set base_branch")
+			}
+			return current, "", nil, fmt.Errorf("promote: could not resolve a base branch — pass an explicit target or set base_branch")
+		}
+		via := "trunk"
+		if src != "" {
+			via = "gk-parent"
+		}
+		if current != target {
+			hops = []landPromoteHop{{source: current, target: target, via: via}}
+		}
+		return current, target, hops, nil
+	}
+
+	target = spec
+	if current != target {
+		specRef := fmt.Sprintf("land: --promote=%s", target)
+		oneOff := fmt.Sprintf("gk merge %s --into %s && gk push --from %s", current, target, target)
+		if flavor == promoteFlavorPromote {
+			specRef = fmt.Sprintf("promote %s", target)
+			oneOff = fmt.Sprintf("gk merge %s --into %s", current, target)
+		}
+		hops, err = landPromoteChain(ctx, resolver, current, target, trunk, specRef, oneOff)
+		if err != nil {
+			return current, target, nil, err
+		}
+	}
+	return current, target, hops, nil
 }
 
 // landPromoteHop is one boundary of a promote: source forward-merged into
@@ -445,9 +523,11 @@ type landPromoteHop struct {
 // walk is read-side defensive even though `gk branch set-parent` validates
 // writes: raw `git config` edits can still produce loops, so revisiting a
 // branch is an error rather than an infinite walk. A target that the chain
-// never reaches is an error too — land never silently degrades to a direct
+// never reaches is an error too — never silently degrade to a direct
 // merge that would skip intermediate branches and leave them stale.
-func landPromoteChain(ctx context.Context, resolver *branchparent.Resolver, current, target, trunk string) ([]landPromoteHop, error) {
+// specRef names the invocation in errors ("land: --promote=main",
+// "promote main"); oneOff is the caller's direct-merge escape hatch.
+func landPromoteChain(ctx context.Context, resolver *branchparent.Resolver, current, target, trunk, specRef, oneOff string) ([]landPromoteHop, error) {
 	const maxDepth = 10
 	visited := map[string]bool{current: true}
 	var hops []landPromoteHop
@@ -465,7 +545,7 @@ func landPromoteChain(ctx context.Context, resolver *branchparent.Resolver, curr
 			// Command tokens live in the hint, not the message body — hint
 			// lines bypass Easy Mode's term translation, message bodies don't.
 			return nil, WithHint(
-				fmt.Errorf("land: --promote=%s: parent chain loops at %q", target, next),
+				fmt.Errorf("%s: parent chain loops at %q", specRef, next),
 				"fix the loop with `gk branch set-parent` (or git config branch.<name>.gk-parent)",
 			)
 		}
@@ -477,8 +557,8 @@ func landPromoteChain(ctx context.Context, resolver *branchparent.Resolver, curr
 		cur = next
 	}
 	return nil, WithHint(
-		fmt.Errorf("land: --promote=%s: %q is not in the parent chain of %q", target, target, current),
-		fmt.Sprintf("for a one-off direct merge: gk merge %s --into %s && gk push --from %s — or declare the chain with gk branch set-parent", current, target, target),
+		fmt.Errorf("%s: %q is not in the parent chain of %q", specRef, target, current),
+		"for a one-off direct merge: "+oneOff+" — or declare the chain with gk branch set-parent",
 	)
 }
 

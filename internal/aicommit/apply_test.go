@@ -63,6 +63,172 @@ func TestApplyMessagesCreatesCommitPerGroup(t *testing.T) {
 	}
 }
 
+// TestApplyMessagesRecomputesStagedStatePerGroup guards the fix for
+// pitfall 1-A: stagedDeletedPaths / stagedRenamePairs must be recomputed
+// inside the loop, once per group. If they were captured once before the
+// loop, a deletion committed by group 1 would feed stale data into group
+// 2's `git add -A` / commit pathspec. We assert the status probes fire
+// twice (once per group) and that group 2's `git add -A` still runs.
+func TestApplyMessagesRecomputesStagedStatePerGroup(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			// No staged deletions / renames at any point — the key check
+			// is that these probes are re-run per group, not the content.
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 7777777] chore: x\n"},
+	}
+	msgs := []Message{
+		// Group 1 deletes a file; group 2 adds a new one. Realistically
+		// the deletion shifts the staged set, so group 2 must observe the
+		// post-commit state — only possible if the probes re-run.
+		{Group: provider.Group{Type: "chore", Files: []string{"old.go"}}, Subject: "drop old"},
+		{Group: provider.Group{Type: "feat", Files: []string{"new.go"}}, Subject: "add new"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+
+	delProbes, renameProbes, group2Add := 0, 0, false
+	for _, c := range fake.Calls {
+		key := strings.Join(c.Args, " ")
+		switch key {
+		case "diff --cached --no-renames --diff-filter=D --name-only -z":
+			delProbes++
+		case "diff --cached --name-status -z -M":
+			renameProbes++
+		case "add -A -- new.go":
+			group2Add = true
+		}
+	}
+	if delProbes != 2 {
+		t.Errorf("staged-deletion probe ran %d times, want 2 (once per group)", delProbes)
+	}
+	if renameProbes != 2 {
+		t.Errorf("staged-rename probe ran %d times, want 2 (once per group)", renameProbes)
+	}
+	if !group2Add {
+		t.Errorf("group 2 `git add -A -- new.go` never ran, calls=%+v", fake.Calls)
+	}
+}
+
+// TestApplyMessagesStaleDeleteNoLongerBreaksLaterGroup exercises the
+// concrete failure the per-group recompute prevents: a path that is a
+// fully-staged deletion only at entry (so the pre-loop capture would skip
+// it forever) but is a normal modification by the time group 2 runs. With
+// per-group recompute group 2 sees an empty deletion set and stages its
+// file normally.
+func TestApplyMessagesStaleDeleteNoLongerBreaksLaterGroup(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 8888888] x\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore", Files: []string{"a.go"}}, Subject: "first"},
+		{Group: provider.Group{Type: "feat", Files: []string{"b.go"}}, Subject: "second"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	// Both groups must stage their own file.
+	var sawA, sawB bool
+	for _, c := range fake.Calls {
+		switch strings.Join(c.Args, " ") {
+		case "add -A -- a.go":
+			sawA = true
+		case "add -A -- b.go":
+			sawB = true
+		}
+	}
+	if !sawA || !sawB {
+		t.Errorf("both groups must run their own add: sawA=%v sawB=%v calls=%+v", sawA, sawB, fake.Calls)
+	}
+}
+
+// TestApplyMessagesAllowEmptyCommitsWithFlag verifies that an empty-file
+// group with AllowEmpty commits via `git commit --allow-empty` and never
+// invokes `git add` (a zero-pathspec add would stage the whole repo).
+func TestApplyMessagesAllowEmptyCommitsWithFlag(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 9999999] chore: empty\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore"}, Subject: "trigger ci", AllowEmpty: true},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages: %v", err)
+	}
+	var sawAllowEmpty, sawAdd bool
+	for _, c := range fake.Calls {
+		if len(c.Args) >= 2 && c.Args[0] == "commit" && contains(c.Args, "--allow-empty") {
+			sawAllowEmpty = true
+		}
+		if len(c.Args) >= 1 && c.Args[0] == "add" {
+			sawAdd = true
+		}
+	}
+	if !sawAllowEmpty {
+		t.Errorf("expected `git commit --allow-empty`, calls=%+v", fake.Calls)
+	}
+	if sawAdd {
+		t.Errorf("AllowEmpty must not invoke git add, calls=%+v", fake.Calls)
+	}
+}
+
+// TestMessageHeaderBreakingMarker pins that Breaking renders the "!" in
+// the header so a plan's "feat(x)!: ..." round-trips without losing the
+// breaking marker.
+func TestMessageHeaderBreakingMarker(t *testing.T) {
+	cases := []struct {
+		name string
+		m    Message
+		want string
+	}{
+		{
+			name: "type+scope+breaking",
+			m:    Message{Group: provider.Group{Type: "feat", Scope: "api"}, Subject: "drop v1", Breaking: true},
+			want: "feat(api)!: drop v1",
+		},
+		{
+			name: "bare type+breaking",
+			m:    Message{Group: provider.Group{Type: "feat"}, Subject: "rip out legacy", Breaking: true},
+			want: "feat!: rip out legacy",
+		},
+		{
+			name: "not breaking — no marker",
+			m:    Message{Group: provider.Group{Type: "feat"}, Subject: "add thing"},
+			want: "feat: add thing",
+		},
+		{
+			name: "duplicated breaking prefix on subject collapses",
+			m:    Message{Group: provider.Group{Type: "feat"}, Subject: "feat!: rip out legacy", Breaking: true},
+			want: "feat!: rip out legacy",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.m.Header(); got != tc.want {
+				t.Errorf("Header() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestApplyMessagesDryRunMakesNoCommits(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

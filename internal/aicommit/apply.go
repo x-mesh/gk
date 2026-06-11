@@ -81,10 +81,14 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 // <files>` picks the deletion up via the staged HEAD diff.
 //
 // Rename pair expansion in commit pathspec: staged rename pairs
-// (new→orig) are collected once before the loop. For each group the
-// commit pathspec is expanded via expandRenamePairs so that the orig
-// (deletion) side is included alongside the new path — preventing
-// dangling staged deletions when the grouper only emits the new path.
+// (new→orig) are recomputed for each group (a prior group's commit can
+// change what is staged). For each group the commit pathspec is expanded
+// via expandRenamePairs so that the orig (deletion) side is included
+// alongside the new path — preventing dangling staged deletions when the
+// grouper only emits the new path. Fully-staged deletions are likewise
+// recomputed per group so a deletion committed by group i doesn't make
+// group i+1's `git add -A` fail the pathspec check on a path that is no
+// longer in the index.
 //
 // Tree-OID guard: ApplyMessages records `git write-tree` before any
 // commit and again after all commits. A mismatch between TreeBefore
@@ -116,20 +120,39 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 		result.TreeBefore = strings.TrimSpace(string(before))
 	}
 
-	stagedDeletes, err := stagedDeletedPaths(ctx, runner)
-	if err != nil {
-		return result, err
-	}
-
-	renamePairs, err := stagedRenamePairs(ctx, runner)
-	if err != nil {
-		return result, err
-	}
-
 	for _, m := range messages {
 		if opts.DryRun {
 			result.CommitShas = append(result.CommitShas, "")
 			continue
+		}
+
+		// An empty group with AllowEmpty produces a `--allow-empty`
+		// commit and touches no pathspec — skip staging entirely so we
+		// never stage the whole repo via a zero-pathspec `git add`.
+		if len(m.Group.Files) == 0 && m.AllowEmpty {
+			msg := formatCommitMessage(m, opts.Trailer)
+			stdout, stderr, err := runner.Run(ctx, "commit", "--allow-empty", "-m", msg)
+			if err != nil {
+				return result, fmt.Errorf("aicommit: git commit --allow-empty: %w (stderr=%s stdout=%s)",
+					err, string(stderr), string(stdout))
+			}
+			result.CommitShas = append(result.CommitShas, parseCommitSha(string(stdout)))
+			continue
+		}
+
+		// Recompute staged deletions and rename pairs PER GROUP: a
+		// previous group's commit can delete or rename files, which
+		// shifts what `git add -A` and the commit pathspec must do for
+		// later groups. Capturing once before the loop would feed stale
+		// data into groups 2..N. Group counts are small (≤10 typically)
+		// so two extra status calls per group is negligible.
+		stagedDeletes, err := stagedDeletedPaths(ctx, runner)
+		if err != nil {
+			return result, err
+		}
+		renamePairs, err := stagedRenamePairs(ctx, runner)
+		if err != nil {
+			return result, err
 		}
 
 		toAdd := filterStaged(m.Group.Files, stagedDeletes)
@@ -201,6 +224,13 @@ func (m Message) Header() string {
 	b.WriteString(m.Group.Type)
 	if m.Group.Scope != "" {
 		b.WriteString("(" + m.Group.Scope + ")")
+	}
+	if m.Breaking {
+		// "!" sits after the optional scope and before the colon —
+		// "feat(x)!: ..." — per Conventional Commits. stripConventionalPrefix
+		// already tolerates a "!" on the subject, so a duplicated prefix is
+		// still collapsed correctly.
+		b.WriteString("!")
 	}
 	b.WriteString(": ")
 	b.WriteString(stripConventionalPrefix(m.Subject, m.Group.Type, m.Group.Scope))

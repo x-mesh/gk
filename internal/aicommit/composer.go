@@ -16,6 +16,16 @@ type Message struct {
 	Subject string
 	Body    string
 	Footers []provider.Footer
+	// Breaking, when true, appends the Conventional Commits "!" marker to
+	// the header (e.g. "feat(x)!: ..."). Set by plan-driven commits whose
+	// message carried a "!" or a "BREAKING CHANGE" footer; the AI path
+	// leaves it false (the model encodes breaking changes in the footer
+	// instead).
+	Breaking bool
+	// AllowEmpty permits a commit with no files via `git commit
+	// --allow-empty`. Only honoured when Group.Files is empty; ApplyMessages
+	// otherwise stages and commits the listed pathspecs as usual.
+	AllowEmpty bool
 	// Attempts is the number of Provider.Compose calls it took to
 	// produce a commitlint-clean message. 1 is the happy path;
 	// values >1 indicate the retry loop fired.

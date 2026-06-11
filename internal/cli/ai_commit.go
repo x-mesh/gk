@@ -45,6 +45,23 @@ review.
 
 Use --abort to restore HEAD to the backup ref created at the start of
 the most recent run.
+
+  --plan applies a deterministic, AI-free commit plan instead of
+  classifying with a provider. The plan is JSON that groups working-tree
+  files into commits with pre-written Conventional Commit messages:
+
+    1. gk commit --plan-template            # current changes as a draft
+    2. edit the message(s) / split into commits   # the judgment step
+    3. gk commit --plan - < plan.json       # validate + apply
+
+  gk validates the plan against the real working tree and commitlint
+  rules (every named file must have a change, no file in two commits,
+  every message must lint), runs the same commit-time guards as the AI
+  path (gofmt advisory, secret scan), then applies behind a backup ref.
+  Uncovered dirty files are left in the tree on purpose. --dry-run
+  validates without committing; with --json (or GK_AGENT=1) the result
+  is a machine contract: {result, commits:[{message,result,sha}],
+  failed_at?, backup_ref?}.
 `,
 		RunE: runAICommit,
 	}
@@ -59,6 +76,8 @@ the most recent run.
 	cmd.Flags().StringSliceP("allow-secret-kind", "S", nil, "suppress secret findings of the given kind (repeatable); the special value 'all' bypasses every finding")
 	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret guards and the privacy-gate abort threshold (bypassed secrets are reported, then committed; payload redaction to remote AI still applies)")
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
+	cmd.Flags().String("plan", "", "JSON commit plan: a file path, or '-' for stdin (deterministic, no AI)")
+	cmd.Flags().Bool("plan-template", false, "emit current working-tree changes as a commit-plan draft (JSON) and exit")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
 	cmd.Flags().Bool("no-wip-unwrap", false, "skip detection/unwrap of WIP-like commits in HEAD chain")
@@ -98,6 +117,17 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	if flags.abort {
 		return runAICommitAbort(ctx, cmd, runner)
+	}
+
+	// Declarative (AI-free) paths branch BEFORE any provider is constructed —
+	// a plan needs no LLM, so spinning one up (and failing when none is
+	// configured) would be wrong. --plan-template wins over --plan when both
+	// are set, matching batch/rebase (template is a pure read-and-exit).
+	if flags.planTemplate {
+		return runAICommitPlanTemplate(cmd, ctx, runner, ai)
+	}
+	if flags.plan != "" {
+		return runAICommitPlan(cmd, ctx, runner, cfg, ai, flags)
 	}
 
 	// Resolve provider first so Preflight can query Locality / Available.
@@ -199,6 +229,14 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after excluding non-source files (use --include-noise to keep them)")
 			return nil
 		}
+	}
+	// gofmt advisory gate — same guard chain as the noise filter. Warns
+	// (never blocks) when a .go file in scope is unformatted, so the
+	// violation is caught here instead of in the release preflight. Skips
+	// silently in non-Go repos / when gofmt is absent, and is bypassed by
+	// --no-verify alongside the noise + secret guards.
+	if !flags.noVerify {
+		guardGofmt(ctx, cmd.ErrOrStderr(), RepoFlag(), files)
 	}
 	Dbg("commit: gather ok — %d file(s) in scope=%v", len(files), scope)
 
@@ -705,6 +743,8 @@ type aiCommitFlags struct {
 	yes              bool
 	noWIPUnwrap      bool
 	forceWIP         bool
+	plan             string
+	planTemplate     bool
 }
 
 // secretBypass reports whether secret findings should be waved through
@@ -734,6 +774,8 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.yes, _ = cmd.Flags().GetBool("yes")
 	f.noWIPUnwrap, _ = cmd.Flags().GetBool("no-wip-unwrap")
 	f.forceWIP, _ = cmd.Flags().GetBool("force-wip")
+	f.plan, _ = cmd.Flags().GetString("plan")
+	f.planTemplate, _ = cmd.Flags().GetBool("plan-template")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
 	}

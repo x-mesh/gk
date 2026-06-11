@@ -70,6 +70,7 @@ type contextJSON struct {
 	Log      []contextLogJSON    `json:"log,omitempty"`
 	Precheck *precheckResult     `json:"precheck,omitempty"`
 	Remotes  []contextRemoteJSON `json:"remotes,omitempty"`
+	Release  *contextReleaseJSON `json:"release,omitempty"`
 	// Notes records sections that were requested but degraded (e.g.
 	// precheck with no upstream) — absence of a section plus its note is
 	// the contract for "asked, not available".
@@ -81,6 +82,16 @@ type contextLogJSON struct {
 	Subject string `json:"subject"`
 	Author  string `json:"author"`
 	Date    string `json:"date"`
+}
+
+// contextReleaseJSON answers "what hasn't shipped?" — the commits between the
+// latest tag and HEAD. CommitCount is the true total (tag..HEAD); Commits is
+// capped at 20 so the section stays orientation-sized, with CommitCount
+// revealing any overflow.
+type contextReleaseJSON struct {
+	SinceTag    string           `json:"since_tag"`
+	CommitCount int              `json:"commit_count"`
+	Commits     []contextLogJSON `json:"commits,omitempty"`
 }
 
 // contextRemoteJSON describes one registered remote and the current
@@ -103,7 +114,7 @@ type contextRemoteJSON struct {
 
 // contextIncludeValues are the sections --include accepts; "all" expands to
 // every entry.
-var contextIncludeValues = []string{"diff", "log", "precheck", "remotes"}
+var contextIncludeValues = []string{"diff", "log", "precheck", "remotes", "release"}
 
 func init() {
 	cmd := &cobra.Command{
@@ -121,7 +132,7 @@ replaces the usual status/branch/log/worktree probe sequence.
 
 --include fuses the usual follow-up probes into the same document:
 
-  gk context --include=diff,log,precheck,remotes   (or --include=all)
+  gk context --include=diff,log,precheck,remotes,release   (or --include=all)
 
   diff      uncommitted changes as a digest (per-file ±lines, symbols),
             untracked files included
@@ -129,13 +140,14 @@ replaces the usual status/branch/log/worktree probe sequence.
   precheck  merge-tree forecast for the next pull
   remotes   every registered remote with the current branch's drift as of
             the last fetch, plus asymmetric push URLs (see gk doctor)
+  release   commits since the latest tag (tag..HEAD) — "what hasn't shipped?"
 
 A requested section that cannot be collected (e.g. precheck with no
 upstream) degrades to a note instead of failing the whole call.`,
 		RunE: runContext,
 	}
 	cmd.Flags().StringSlice("include", nil,
-		"extra sections to fuse into the result: diff, log, precheck, remotes, or all")
+		"extra sections to fuse into the result: diff, log, precheck, remotes, release, or all")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -343,6 +355,12 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 	if c.LatestTag != "" {
 		fmt.Fprintf(w, "latest tag: %s\n", c.LatestTag)
 	}
+	if c.Release != nil {
+		fmt.Fprintf(w, "release: %d commit(s) since %s\n", c.Release.CommitCount, c.Release.SinceTag)
+		for _, l := range c.Release.Commits {
+			fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
+		}
+	}
 	if c.Diff != nil {
 		fmt.Fprintf(w, "diff: %d files · %d hunks · +%d −%d\n",
 			c.Diff.Stat.Files, c.Diff.Stat.Hunks, c.Diff.Stat.Added, c.Diff.Stat.Deleted)
@@ -443,6 +461,13 @@ func collectContextIncludes(ctx context.Context, runner *git.ExecRunner, cfg *co
 			out.Remotes = remotes
 		} else {
 			out.Notes = append(out.Notes, "remotes skipped: "+rerr.Error())
+		}
+	}
+	if includes["release"] {
+		if rel, rerr := collectContextRelease(ctx, runner, out.LatestTag); rerr == nil {
+			out.Release = rel
+		} else {
+			out.Notes = append(out.Notes, "release skipped: "+rerr.Error())
 		}
 	}
 }
@@ -580,6 +605,57 @@ func countLines(data []byte) int {
 		n++
 	}
 	return n
+}
+
+// collectContextRelease reports the commits between the latest tag and HEAD —
+// the unshipped backlog. latestTag empty (no tags) is an error so the caller
+// degrades to a note rather than reporting the whole history as "unreleased".
+// CommitCount is the true total via rev-list --count; the commit list is
+// capped at 20 so the section stays orientation-sized, the cap visible through
+// CommitCount. Read-only: no network.
+func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTag string) (*contextReleaseJSON, error) {
+	if latestTag == "" {
+		return nil, fmt.Errorf("no tags")
+	}
+	rangeSpec := latestTag + "..HEAD"
+	rel := &contextReleaseJSON{SinceTag: latestTag}
+
+	countOut, stderr, err := runner.Run(ctx, "rev-list", "--count", rangeSpec)
+	if err != nil {
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	n, perr := parsePositiveInt(strings.TrimSpace(string(countOut)))
+	if perr != nil {
+		return nil, perr
+	}
+	rel.CommitCount = n
+	if n == 0 {
+		return rel, nil
+	}
+
+	stdout, lstderr, lerr := runner.Run(ctx, "log",
+		"--max-count=20", "--pretty=format:%h\x1f%s\x1f%an\x1f%cI", rangeSpec)
+	if lerr != nil {
+		msg := strings.TrimSpace(string(lstderr))
+		if msg == "" {
+			msg = lerr.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(stdout), "\n"), "\n") {
+		parts := strings.SplitN(line, "\x1f", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		rel.Commits = append(rel.Commits, contextLogJSON{
+			SHA: parts[0], Subject: parts[1], Author: parts[2], Date: parts[3],
+		})
+	}
+	return rel, nil
 }
 
 // collectContextLog returns the last n commits on HEAD. Unit-separator

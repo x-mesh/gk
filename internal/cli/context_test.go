@@ -111,7 +111,7 @@ func TestParseContextIncludes(t *testing.T) {
 	if got, err := parseContextIncludes(mk("diff", "log")); err != nil || !got["diff"] || !got["log"] || got["precheck"] {
 		t.Errorf("diff,log: got %v, %v", got, err)
 	}
-	if got, err := parseContextIncludes(mk("all")); err != nil || len(got) != len(contextIncludeValues) {
+	if got, err := parseContextIncludes(mk("all")); err != nil || len(got) != len(contextIncludeValues) || !got["release"] {
 		t.Errorf("all: got %v, %v", got, err)
 	}
 	if _, err := parseContextIncludes(mk("digest")); err == nil || !strings.Contains(err.Error(), "unknown --include") {
@@ -171,6 +171,88 @@ func TestIntegration_ContextIncludes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("notes = %v, want a precheck-skipped note", out.Notes)
+	}
+}
+
+func TestIntegration_ContextRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "seed\n")
+	repo.Commit("feat: seed")
+	repo.RunGit("tag", "v1.0.0")
+	repo.WriteFile("b.txt", "b\n")
+	repo.Commit("feat: first since tag")
+	repo.WriteFile("c.txt", "c\n")
+	repo.Commit("fix: second since tag")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"release": true}, &out)
+
+	if out.Release == nil {
+		t.Fatalf("release section missing, notes=%v", out.Notes)
+	}
+	if out.Release.SinceTag != "v1.0.0" {
+		t.Errorf("since_tag = %q, want v1.0.0", out.Release.SinceTag)
+	}
+	if out.Release.CommitCount != 2 {
+		t.Errorf("commit_count = %d, want 2", out.Release.CommitCount)
+	}
+	if len(out.Release.Commits) != 2 {
+		t.Fatalf("commits = %+v, want 2 entries", out.Release.Commits)
+	}
+	// log order is newest-first.
+	if out.Release.Commits[0].Subject != "fix: second since tag" {
+		t.Errorf("newest commit = %+v, want 'fix: second since tag'", out.Release.Commits[0])
+	}
+	if out.Release.Commits[0].SHA == "" || out.Release.Commits[0].Date == "" {
+		t.Errorf("commit entry incomplete: %+v", out.Release.Commits[0])
+	}
+}
+
+// A repo with no tags: the release section must degrade to a note, never
+// report the whole history as "unreleased" or fail the call.
+func TestIntegration_ContextReleaseNoTags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "seed\n")
+	repo.Commit("feat: seed")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"release": true}, &out)
+
+	if out.Release != nil {
+		t.Errorf("release should be absent without tags, got %+v", out.Release)
+	}
+	found := false
+	for _, n := range out.Notes {
+		if strings.Contains(n, "release skipped") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("notes = %v, want a release-skipped note", out.Notes)
 	}
 }
 

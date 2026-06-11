@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-06-11
+
 ### Added
 
 - **`gk promote` — 네트워크 없는 로컬 승격 명령.** `gk land --promote`에서 push를 뺀 짝: 변경이 있으면 먼저 AI 커밋하고, 현재 브랜치를 부모(gk-parent 메타데이터, 없으면 base)로 forward-merge한다. `gk promote <branch>`는 parent 체인을 한 홉씩 걸어 중간 브랜치도 함께 전진시키고, `--push`를 붙일 때만 홉마다 전진한 브랜치를 발행한다(`push --from <target>` — land --promote와 동일 동작). 받는 브랜치는 worktree가 없어도 된다: FF는 ref 갱신, 깨끗한 non-FF는 merge-tree 커밋, 진짜 충돌만 체크아웃을 요구한다. 통합이 로컬에서 끝나야 할 때(land는 너무 일찍 push) 쓰며, land와 같은 per-step 결과 계약을 따른다.

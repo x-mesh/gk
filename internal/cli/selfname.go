@@ -40,11 +40,17 @@ func computeInvokedName(args []string) string {
 
 func invokedName() string { return invokedNameValue }
 
-// Two patterns because ANSI styling breaks \b: bold("gk continue")
-// renders as ESC[1mgk — 'm' is a word character, so the plain word
-// boundary never fires there.
+// Two patterns because ANSI styling breaks the predecessor class:
+// bold("gk continue") renders as ESC[1mgk, so the styled variant anchors
+// on the ANSI sequence itself.
+//
+// The plain pattern requires a command-position predecessor (start of
+// string, whitespace, backtick, paren, quote) instead of a bare \b: a
+// word boundary also fires after "/", so a hint containing a path whose
+// basename is gk ("cd /work/agentic/gk or ...") would get its directory
+// rewritten into a binary name that does not exist on disk.
 var (
-	selfCmdPlainRE = regexp.MustCompile(`\bgk ([a-z-])`)
+	selfCmdPlainRE = regexp.MustCompile("(^|[\\s\x60(\"'])gk ([a-z-])")
 	selfCmdANSIRE  = regexp.MustCompile(`(\x1b\[[0-9;]*m)gk ([a-z-])`)
 )
 
@@ -57,7 +63,7 @@ func selfRewrite(s string) string {
 		return s
 	}
 	s = selfCmdANSIRE.ReplaceAllString(s, "${1}"+name+" ${2}")
-	return selfCmdPlainRE.ReplaceAllString(s, name+" ${1}")
+	return selfCmdPlainRE.ReplaceAllString(s, "${1}"+name+" ${2}")
 }
 
 // selfCmd builds a runnable command reference ("continue" →

@@ -186,6 +186,11 @@ type landStep struct {
 	run    func(context.Context) error
 	plan   string // dry-run description (defaults to "gk <args>")
 	resume string // shown when the step fails
+	// resumeFn picks the resume by failure kind (e.g. conflict pause vs
+	// plain refusal) — a static resume that assumes "conflict" misleads
+	// when the step was stopped by a guard. Wins over resume when set
+	// and returning non-empty.
+	resumeFn func(error) string
 }
 
 // landPipelineOpts carries the per-command vocabulary so land and promote
@@ -264,16 +269,22 @@ func runLandPipeline(cmd *cobra.Command, repo string, jsonMode bool, steps []lan
 			stepErr = landRunChild(ctx, gkPath, repo, jsonMode, s.args...)
 		}
 		if stepErr != nil {
+			resume := s.resume
+			if s.resumeFn != nil {
+				if r := s.resumeFn(stepErr); r != "" {
+					resume = r
+				}
+			}
 			res.Result = "failed"
 			res.FailedStep = s.name
-			res.Resume = selfRewrite(s.resume)
+			res.Resume = selfRewrite(resume)
 			res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: "failed", Detail: stepErr.Error()})
 			if jsonMode {
 				_ = emitAgentResult(cmd.OutOrStdout(), res)
 			}
 			return WithRemedy(
 				fmt.Errorf("%s: step %q failed: %w", opts.errPrefix, s.name, stepErr),
-				s.resume,
+				resume,
 				errRemedy{Command: opts.rerun, Safety: "safe"},
 			)
 		}
@@ -342,11 +353,26 @@ func runLandChild(ctx context.Context, gkPath, repo string, jsonMode bool, args 
 	if err := c.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return fmt.Errorf("exit %d", ee.ExitCode())
+			return &childExitError{Code: ee.ExitCode()}
 		}
 		return err
 	}
 	return nil
+}
+
+// childExitError is a child gk process's non-zero exit, typed so step
+// failure handling can branch on the exit-code contract — 3 means
+// "paused on a conflict with a resolve/continue path", anything else is
+// a plain failure where suggesting `gk resolve` would mislead.
+type childExitError struct{ Code int }
+
+func (e *childExitError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
+
+// childPausedOnConflict reports whether err (anywhere in its chain) is a
+// child exit with the conflict-pause code.
+func childPausedOnConflict(err error) bool {
+	var ce *childExitError
+	return errors.As(err, &ce) && ce.Code == 3
 }
 
 // landPromote forward-merges source into base and, when push is set,
@@ -401,8 +427,18 @@ func promoteHopSteps(repo string, jsonMode bool, hops []landPromoteHop, push boo
 				}
 				return landPromote(c, gkPath, repo, jsonMode, hop.source, hop.target, push)
 			},
-			plan:   plan,
-			resume: "resolve the promote conflict (gk resolve --ai && gk continue), then rerun: " + rerun,
+			plan: plan,
+			// Only a conflict pause (child exit 3) has a resolve/continue
+			// path; a guard refusal (dirty receiver, precheck conflicts)
+			// already printed its own remedy — pointing at gk resolve
+			// there sends the user chasing a merge that never started.
+			resume: "fix the reported failure above, then rerun: " + rerun,
+			resumeFn: func(err error) string {
+				if childPausedOnConflict(err) {
+					return "resolve the promote conflict (gk resolve --ai && gk continue), then rerun: " + rerun
+				}
+				return ""
+			},
 		})
 	}
 	return steps

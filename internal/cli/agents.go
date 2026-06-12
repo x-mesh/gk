@@ -22,7 +22,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 10
+const agentsContractVersion = 11
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -45,7 +45,7 @@ This repository is driven with git-kit, an agent-native git CLI. Always invoke i
 - **Commit / push**: ` + "`git-kit commit -f`" + ` groups changes into conventional commits; ` + "`git-kit push`" + ` scans for secrets before pushing.
 - **Curated multi-commit**: when YOU decide the grouping instead of the AI, ` + "`git-kit commit --plan-template`" + ` emits the dirty files as a JSON draft; split it into ` + "`{\"commits\":[{\"message\":\"feat(x): ...\",\"files\":[...]}]}`" + ` and run ` + "`git-kit commit --plan -`" + ` — N curated commits in one deterministic call (no AI, secret scan included, backup ref behind ` + "`gk commit --abort`" + `). Duplicate/unknown files and malformed messages are rejected up front; files the plan does not cover stay dirty. Use this instead of chaining raw ` + "`git add`" + ` + ` + "`git commit`" + ` pairs.
 - **History editing**: never open ` + "`git rebase -i`" + ` (the editor session is unusable for you). Instead: ` + "`git-kit rebase --plan-template`" + ` emits the commit range as JSON (action/commit/subject/pushed), you decide each commit's fate (pick/squash/fixup/reword/drop), then ` + "`git-kit rebase --plan -`" + ` validates it (every commit addressed, pushed commits guarded) and drives git's own rebase with a backup ref.
-- **Conflicts**: ` + "`git-kit resolve --ai`" + `, then ` + "`git-kit continue`" + ` (abort with ` + "`git-kit abort`" + `). A paused state is a result (exit 3), not an error.
+- **Conflicts**: ` + "`git-kit resolve --ai`" + ` (or ` + "`--strategy ours|theirs`" + `) resolves AND finishes the operation — it runs the continue step itself, re-resolves later picks that conflict with the same strategy, auto-skips picks the resolution emptied, and also handles delete/modify and markerless conflicts from the index stages (AI decides keep/delete/merge with a rationale); one call takes a paused rebase to done (` + "`--no-continue`" + ` to stop after resolving, ` + "`git-kit abort`" + ` to give up). ` + "`git-kit continue`" + ` remains for manually edited resolutions. A paused state is a result (exit 3), not an error.
 - **Release**: ` + "`git-kit ship --dry-run`" + ` to read the full plan (version, changelog draft, pipeline steps); ` + "`git-kit ship -y`" + ` executes everything — preflight, version/CHANGELOG, tag, push, CI watch, artifact verify.
 - **Stuck repo** (stale index.lock, orphan merge, prunable worktrees, asymmetric push-only remotes whose merged work never comes down): ` + "`git-kit doctor --fix`" + `.
 - On any failure run the first entry of ` + "`error.remedies`" + ` (check ` + "`safety`" + ` first) instead of retrying variations.`

@@ -33,35 +33,26 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no rebase/merge/cherry-pick in progress")
 	}
 
-	runner := &git.ExecRunner{
-		Dir:      RepoFlag(),
-		ExtraEnv: os.Environ(),
-	}
+	runner := &git.ExecRunner{Dir: RepoFlag()}
 	yes, _ := cmd.Flags().GetBool("yes")
 
 	if !yes {
-		client := git.NewClient(runner)
-		dirty, err := client.IsDirty(ctx)
+		// --continue commits the index only: unstaged edits and untracked
+		// files (e.g. resolve's *.orig backups) are left behind in the
+		// working tree, not folded into the resolved commit. Staged
+		// changes are the expected post-resolve state — no note for them.
+		out, _, err := runner.Run(ctx, "status", "--porcelain=v1")
 		if err != nil {
 			return err
 		}
-		if dirty {
-			printNote(os.Stderr, "working tree still has changes (they will be included)")
+		if flags := git.ParsePorcelainV1(out); flags.Modified || hasUntrackedEntry(out) {
+			printNote(os.Stderr, "unstaged/untracked files stay in the working tree — they are NOT included in the resolved commit")
 		}
 	}
 
-	var sub string
-	switch state.Kind {
-	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
-		sub = "rebase"
-	case gitstate.StateMerge:
-		sub = "merge"
-	case gitstate.StateCherryPick:
-		sub = "cherry-pick"
-	case gitstate.StateRevert:
-		sub = "revert"
-	default:
-		return fmt.Errorf("unsupported state %s", state.Kind)
+	sub, err := stateSubcommand(state.Kind)
+	if err != nil {
+		return err
 	}
 
 	_, stderr, err := runner.Run(ctx, sub, "--continue")
@@ -81,7 +72,59 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("git %s --continue failed: %s: %w", sub, strings.TrimSpace(string(stderr)), err)
 	}
+
+	// Success feedback: silence here reads as a hang, so always say what
+	// happened. The operation can legitimately still be in progress after
+	// a successful --continue (an `edit`/`break` rebase step).
+	done := true
+	if after, err := gitstate.Detect(ctx, RepoFlag()); err == nil && after.Kind != gitstate.StateNone {
+		done = false
+	}
+	if JSONOut() {
+		return emitAgentResult(cmd.OutOrStdout(), continueReport{Action: sub, Done: done})
+	}
+	if done {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s complete\n", color.GreenString("✓"), sub)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s continued — still in progress\n", color.GreenString("✓"), sub)
+	}
 	return nil
+}
+
+// stateSubcommand maps an in-progress state to the git subcommand that
+// owns its --continue/--abort/--skip verbs.
+func stateSubcommand(kind gitstate.StateKind) (string, error) {
+	switch kind {
+	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
+		return "rebase", nil
+	case gitstate.StateMerge:
+		return "merge", nil
+	case gitstate.StateCherryPick:
+		return "cherry-pick", nil
+	case gitstate.StateRevert:
+		return "revert", nil
+	default:
+		return "", fmt.Errorf("unsupported state %s", kind)
+	}
+}
+
+// continueReport is the JSON payload for a successful `gk continue`.
+type continueReport struct {
+	Action string `json:"action"` // rebase | merge | cherry-pick | revert
+	Done   bool   `json:"done"`   // false when the operation paused again (edit/break step)
+}
+
+// hasUntrackedEntry reports whether porcelain v1 output lists an
+// untracked file. ParsePorcelainV1 deliberately skips `??` entries, but
+// for the pre-continue note untracked leftovers (resolve's *.orig
+// backups) are exactly what the user needs to hear about.
+func hasUntrackedEntry(out []byte) bool {
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "??") {
+			return true
+		}
+	}
+	return false
 }
 
 // listUnmergedFiles returns the paths in the index that still carry

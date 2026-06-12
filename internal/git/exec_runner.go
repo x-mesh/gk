@@ -35,6 +35,12 @@ var guardEnv = []string{
 	"LANG=C",
 	"GIT_OPTIONAL_LOCKS=0",
 	"GIT_TERMINAL_PROMPT=0",
+	// Run captures stdout/stderr into buffers with no tty attached, so any
+	// editor git spawns (rebase/merge/cherry-pick --continue confirm the
+	// commit message through one) hangs invisibly. `true` makes git accept
+	// the prepared message as-is. ExtraEnv still overrides for callers
+	// that need a different editor (e.g. the rebase todo driver).
+	"GIT_EDITOR=true",
 }
 
 // buildCmd constructs the exec.Cmd for the given args without starting it.

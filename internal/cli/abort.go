@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -30,23 +29,11 @@ func runAbort(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no rebase/merge/cherry-pick in progress")
 	}
 
-	runner := &git.ExecRunner{
-		Dir:      RepoFlag(),
-		ExtraEnv: os.Environ(),
-	}
+	runner := &git.ExecRunner{Dir: RepoFlag()}
 
-	var sub string
-	switch state.Kind {
-	case gitstate.StateRebaseMerge, gitstate.StateRebaseApply:
-		sub = "rebase"
-	case gitstate.StateMerge:
-		sub = "merge"
-	case gitstate.StateCherryPick:
-		sub = "cherry-pick"
-	case gitstate.StateRevert:
-		sub = "revert"
-	default:
-		return fmt.Errorf("unsupported state %s", state.Kind)
+	sub, err := stateSubcommand(state.Kind)
+	if err != nil {
+		return err
 	}
 
 	_, stderr, err := runner.Run(ctx, sub, "--abort")

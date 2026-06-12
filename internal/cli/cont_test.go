@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -83,8 +84,11 @@ func TestRunContinue_RebaseConflictResolvedAndContinue(t *testing.T) {
 	r.WriteFile("file.txt", "feat change\n")
 	r.RunGit("add", "file.txt")
 
-	// Set GIT_EDITOR to avoid interactive editor during --continue
-	t.Setenv("GIT_EDITOR", "true")
+	// Regression: rebase --continue asks git to open an editor for the
+	// commit message. ExecRunner's GIT_EDITOR=true guard must override
+	// the inherited shell value — `false` here fails the commit if git
+	// ever invokes it (stand-in for vim hanging on a captured pipe).
+	t.Setenv("GIT_EDITOR", "false")
 
 	// Set flagRepo and call runContinue
 	flagRepo = r.Dir
@@ -106,6 +110,41 @@ func TestRunContinue_RebaseConflictResolvedAndContinue(t *testing.T) {
 	}
 	if state.Kind != gitstate.StateNone {
 		t.Errorf("expected StateNone after continue, got %s", state.Kind)
+	}
+}
+
+// TestRunContinue_UntrackedLeftoverStaysOut covers the resolve→continue
+// path with a *.orig backup left behind: the backup must survive in the
+// working tree without leaking into the resolved commit, and continue
+// must finish without an editor even when the shell's GIT_EDITOR would
+// block (the invisible-vim hang).
+func TestRunContinue_UntrackedLeftoverStaysOut(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found")
+	}
+
+	r := setupRebaseConflict(t)
+	r.WriteFile("file.txt", "resolved\n")
+	r.RunGit("add", "file.txt")
+	r.WriteFile("file.txt.orig", "backup\n") // resolve-style backup, untracked
+	t.Setenv("GIT_EDITOR", "false")
+
+	flagRepo = r.Dir
+	cmd := &cobra.Command{Use: "continue"}
+	cmd.Flags().Bool("yes", false, "")
+	cmd.SetContext(context.Background())
+
+	if err := runContinue(cmd, nil); err != nil {
+		t.Fatalf("runContinue: %v", err)
+	}
+
+	tree := r.RunGit("ls-tree", "--name-only", "HEAD")
+	if strings.Contains(tree, "file.txt.orig") {
+		t.Errorf(".orig backup leaked into the commit: %s", tree)
+	}
+	status := r.RunGit("status", "--porcelain=v1")
+	if !strings.Contains(status, "?? file.txt.orig") {
+		t.Errorf("expected .orig to stay untracked in the working tree, status: %q", status)
 	}
 }
 

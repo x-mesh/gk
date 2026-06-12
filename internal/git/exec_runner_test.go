@@ -46,6 +46,22 @@ func TestExecRunnerBuildCmdGuardWinsOverParent(t *testing.T) {
 	}
 }
 
+// TestExecRunnerBuildCmdEditorGuard verifies the GIT_EDITOR=true guard
+// beats an inherited shell editor. Without it, captured-pipe commands
+// that reach an editor (rebase/merge/cherry-pick --continue) spawn an
+// invisible vim and hang forever.
+func TestExecRunnerBuildCmdEditorGuard(t *testing.T) {
+	t.Setenv("GIT_EDITOR", "vim")
+
+	r := &ExecRunner{}
+	cmd := r.buildCmd(context.Background(), "rebase", "--continue")
+
+	got := lastValue(cmd.Env, "GIT_EDITOR")
+	if got != "true" {
+		t.Errorf("GIT_EDITOR effective value = %q, want %q (guard must override parent editor)", got, "true")
+	}
+}
+
 // TestExecRunnerBuildCmdExtraEnvWinsOverGuard verifies that ExtraEnv has
 // the highest precedence, so callers can opt out of guards when needed.
 func TestExecRunnerBuildCmdExtraEnvWinsOverGuard(t *testing.T) {

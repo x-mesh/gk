@@ -165,7 +165,7 @@ func TestPrintResolveResult_AllResolved(t *testing.T) {
 		Resolved: []string{"a.go", "b.go"},
 		Total:    2,
 	}
-	printResolveResult(buf, result)
+	printResolveResult(buf, result, true)
 	out := buf.String()
 	if !strings.Contains(out, "all conflicts resolved") {
 		t.Errorf("expected 'all conflicts resolved', got: %q", out)
@@ -178,7 +178,7 @@ func TestPrintResolveResult_Partial(t *testing.T) {
 		Resolved: []string{"a.go"},
 		Total:    3,
 	}
-	printResolveResult(buf, result)
+	printResolveResult(buf, result, true)
 	out := buf.String()
 	if !strings.Contains(out, "1/3 conflicts resolved") {
 		t.Errorf("expected partial message, got: %q", out)
@@ -193,7 +193,7 @@ func TestPrintResolveResult_NoneResolved(t *testing.T) {
 	result := &resolve.ResolveResult{
 		Total: 2,
 	}
-	printResolveResult(buf, result)
+	printResolveResult(buf, result, true)
 	out := buf.String()
 	if out != "" {
 		t.Errorf("expected empty output when none resolved, got: %q", out)
@@ -202,7 +202,7 @@ func TestPrintResolveResult_NoneResolved(t *testing.T) {
 
 func TestPrintResolveResult_Nil(t *testing.T) {
 	buf := &bytes.Buffer{}
-	printResolveResult(buf, nil)
+	printResolveResult(buf, nil, true)
 	if buf.Len() != 0 {
 		t.Errorf("expected no output for nil result, got: %q", buf.String())
 	}

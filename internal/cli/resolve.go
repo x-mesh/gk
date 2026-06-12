@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -27,6 +28,7 @@ func init() {
 	resolveCmd.Flags().Bool("no-backup", false, "skip .orig backup file creation")
 	resolveCmd.Flags().String("strategy", "", "apply strategy to all conflicts: ours, theirs, ai")
 	resolveCmd.Flags().Bool("ai", false, "shortcut for --strategy ai (resolve every conflict with AI)")
+	resolveCmd.Flags().Bool("no-continue", false, "stop after resolving; do not run the continue step")
 	rootCmd.AddCommand(resolveCmd)
 }
 
@@ -67,8 +69,18 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Build runner and client.
-	runner := &git.ExecRunner{Dir: RepoFlag(), ExtraEnv: os.Environ()}
+	// Build runner and client. Conflict paths from git are repo-root
+	// relative, so anchor every git call and all file IO at the worktree
+	// top level — resolve then works from a repo subdirectory or with
+	// --repo from outside the repo.
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	var repoRoot string
+	if out, _, rerr := runner.Run(ctx, "rev-parse", "--show-toplevel"); rerr == nil {
+		repoRoot = strings.TrimSpace(string(out))
+	}
+	if repoRoot != "" {
+		runner.Dir = repoRoot
+	}
 	client := git.NewClient(runner)
 
 	// Load config for AI settings.
@@ -127,6 +139,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		Provider: prov,
 		Stderr:   cmd.ErrOrStderr(),
 		Stdout:   cmd.OutOrStdout(),
+		Root:     repoRoot,
 	}
 
 	// Interactive TUI mode: TTY + no strategy.
@@ -147,8 +160,64 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	printResolveResult(cmd.OutOrStdout(), result)
+	noContinue, _ := cmd.Flags().GetBool("no-continue")
+	if !canAutoContinue(ctx, runner, state, result, dryRun, noContinue) {
+		if JSONOut() && !dryRun {
+			return emitAgentResult(cmd.OutOrStdout(), plainResolveReport(result, state))
+		}
+		printResolveResult(cmd.OutOrStdout(), result, state.Kind != gitstate.StateNone)
+		return nil
+	}
+
+	if !JSONOut() {
+		printResolveResult(cmd.OutOrStdout(), result, false)
+	}
+	rep, err := autoContinueBatch(ctx, cmd, r, state.Kind, opts, result)
+	if err != nil {
+		return err
+	}
+	if JSONOut() {
+		return emitAgentResult(cmd.OutOrStdout(), rep)
+	}
 	return nil
+}
+
+// canAutoContinue gates the continue step: only after a full resolution
+// of every conflicted path, on a real in-progress operation, and only
+// when the caller didn't opt out. A file-filtered run (gk resolve a.go)
+// can fully resolve its own slice while other paths stay unmerged —
+// the index check catches that, not the result counters.
+func canAutoContinue(
+	ctx context.Context,
+	runner git.Runner,
+	state *gitstate.State,
+	result *resolve.ResolveResult,
+	dryRun, noContinue bool,
+) bool {
+	if dryRun || noContinue || result == nil {
+		return false
+	}
+	if result.Total == 0 || len(result.Resolved) != result.Total {
+		return false
+	}
+	if state.Kind == gitstate.StateNone {
+		return false // stash apply / 3-way apply: nothing to continue
+	}
+	return !pullHasUnmergedPaths(ctx, runner)
+}
+
+// plainResolveReport renders the no-continue / partial outcome as JSON.
+func plainResolveReport(result *resolve.ResolveResult, state *gitstate.State) *resolveReport {
+	rep := &resolveReport{Rounds: 1, State: "none"}
+	if result != nil {
+		rep.Resolved = append([]string{}, result.Resolved...)
+		rep.Total = result.Total
+	}
+	if sub, err := stateSubcommand(state.Kind); err == nil {
+		rep.State = sub
+		rep.Resume = selfCmd("continue")
+	}
+	return rep
 }
 
 // runResolveInteractive handles the TTY interactive flow:
@@ -260,7 +329,12 @@ func runResolveInteractive(
 		result.Resolved = append(result.Resolved, fr.Path)
 	}
 
-	printResolveResult(cmd.OutOrStdout(), result)
+	noContinue, _ := cmd.Flags().GetBool("no-continue")
+	if canAutoContinue(ctx, r.Runner, state, result, opts.DryRun, noContinue) {
+		printResolveResult(cmd.OutOrStdout(), result, false)
+		return autoContinueInteractive(ctx, cmd, r, state.Kind)
+	}
+	printResolveResult(cmd.OutOrStdout(), result, state.Kind != gitstate.StateNone)
 	return nil
 }
 
@@ -278,13 +352,19 @@ func stateKindToOpType(kind gitstate.StateKind) string {
 	}
 }
 
-// printResolveResult outputs the resolution summary.
-func printResolveResult(out interface{ Write(p []byte) (int, error) }, result *resolve.ResolveResult) {
+// printResolveResult outputs the resolution summary. hintContinue adds
+// the "run 'gk continue'" pointer — false when resolve drives the
+// continue step itself or when there is no operation to continue.
+func printResolveResult(out interface{ Write(p []byte) (int, error) }, result *resolve.ResolveResult, hintContinue bool) {
 	if result == nil {
 		return
 	}
 	if len(result.Resolved) == result.Total && result.Total > 0 {
-		fmt.Fprintln(out, "all conflicts resolved. run 'gk continue' to proceed")
+		if hintContinue {
+			fmt.Fprintln(out, "all conflicts resolved. run 'gk continue' to proceed")
+		} else {
+			fmt.Fprintln(out, "all conflicts resolved")
+		}
 	} else if len(result.Resolved) > 0 {
 		fmt.Fprintf(out, "%d/%d conflicts resolved, %d remaining\n",
 			len(result.Resolved), result.Total, result.Total-len(result.Resolved))

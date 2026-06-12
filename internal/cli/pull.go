@@ -201,9 +201,12 @@ func resolvePullConflictWithAI(cmd *cobra.Command, ce *ConflictError) error {
 			return nil
 		}
 		if pullHasUnmergedPaths(ctx, runner) {
+			// resolve drives its own continue loop to completion; the
+			// next round's state check observes whatever it left behind.
 			if err := runGkInherit(ctx, gkPath, repo, "resolve", "--ai"); err != nil {
 				return fmt.Errorf("pull --ai: `gk resolve --ai` failed: %w\n  finish the remaining conflicts, then run `gk continue`", err)
 			}
+			continue
 		}
 		if err := runGkInherit(ctx, gkPath, repo, "continue", "--yes"); err != nil {
 			return fmt.Errorf("pull --ai: `gk continue` failed: %w\n  inspect with `gk status`, then run `gk continue`", err)

@@ -24,6 +24,10 @@ type ConflictHunkInput struct {
 	Base          []string `json:"base,omitempty"`
 	ContextBefore []string `json:"context_before,omitempty"`
 	ContextAfter  []string `json:"context_after,omitempty"`
+	// Delete/modify 충돌: 한쪽 stage가 통째로 없다 — 그쪽은 파일 자체를
+	// 삭제했다. 이 플래그가 켜진 쪽을 고르는 것은 "파일을 지운다"는 뜻이다.
+	OursDeleted   bool `json:"ours_deleted,omitempty"`
+	TheirsDeleted bool `json:"theirs_deleted,omitempty"`
 }
 
 // ConflictResolutionInput은 ConflictResolver.ResolveConflicts의 입력이다.
@@ -64,7 +68,12 @@ Rules:
   set the merged rationale to explain why and recommend "ours" or "theirs".
 - Provide a one-line rationale (max 120 chars) for each resolution.
 - The "resolved" field must contain the exact lines of code (no markers).
-- Preserve indentation and formatting of the original code.`
+- Preserve indentation and formatting of the original code.
+- A hunk may carry "ours_deleted" or "theirs_deleted": that side deleted
+  the whole file (delete/modify conflict). Choosing the deleted side
+  means deleting the file — set "resolved" to []. Weigh whether the
+  deletion or the surviving modification expresses the newer intent for
+  the given operation_type; explain the choice in the rationale.`
 
 // buildConflictResolutionUserPrompt는 ConflictResolutionInput을 user prompt 문자열로 변환한다.
 func buildConflictResolutionUserPrompt(in ConflictResolutionInput) string {

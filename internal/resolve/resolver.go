@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -21,10 +22,20 @@ type Resolver struct {
 	Provider provider.Provider // nil이면 AI 비활성
 	Stderr   io.Writer
 	Stdout   io.Writer
+	// Root는 worktree 최상위 디렉토리. git이 주는 충돌 경로는 repo-root
+	// 상대 경로이므로, 여기서 join해야 --repo로 밖에서 실행하거나 repo
+	// 하위 디렉토리에서 실행해도 파일 IO가 맞는다. 빈 문자열이면 cwd 기준
+	// (기존 동작).
+	Root string
 	// ReadFile은 파일 읽기 함수. 테스트에서 override 가능. nil이면 os.ReadFile.
 	ReadFile func(path string) ([]byte, error)
 	// WriteFile은 파일 쓰기 함수. 테스트에서 override 가능. nil이면 os.WriteFile.
 	WriteFile func(path string, data []byte, perm os.FileMode) error
+
+	// deferSkipped는 Run(batch)이 skipped 경로를 degenerate 경로
+	// (delete/modify 등)로 곧바로 재처리할 예정임을 표시한다 —
+	// ParseConflictFiles가 수동 해결 힌트를 찍지 않게 한다.
+	deferSkipped bool
 }
 
 // readFile은 ReadFile 필드가 nil이면 os.ReadFile을 사용한다.
@@ -33,6 +44,14 @@ func (r *Resolver) readFile(path string) ([]byte, error) {
 		return r.ReadFile(path)
 	}
 	return os.ReadFile(path)
+}
+
+// absPath는 repo-root 상대 경로를 Root 기준 절대 경로로 만든다.
+func (r *Resolver) absPath(p string) string {
+	if r.Root == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(r.Root, p)
 }
 
 // CollectConflictedFiles는 git status에서 unmerged 파일 경로를 수집한다.
@@ -64,9 +83,9 @@ func (r *Resolver) ParseConflictFiles(paths []string) ([]ConflictFile, []string,
 	var skipped []string
 
 	for _, p := range paths {
-		data, err := r.readFile(p)
+		data, err := r.readFile(r.absPath(p))
 		if err != nil {
-			if r.Stderr != nil {
+			if r.Stderr != nil && !r.deferSkipped {
 				if os.IsNotExist(err) {
 					// Unmerged in the index but absent from the working tree —
 					// usually a delete/modify conflict or a file the user removed
@@ -84,7 +103,7 @@ func (r *Resolver) ParseConflictFiles(paths []string) ([]ConflictFile, []string,
 		}
 		cf, err := Parse(p, data)
 		if err != nil {
-			if r.Stderr != nil {
+			if r.Stderr != nil && !r.deferSkipped {
 				fmt.Fprintf(r.Stderr, "warning: gk resolve: parse %s: %v\n", p, err)
 			}
 			skipped = append(skipped, p)
@@ -197,9 +216,9 @@ func (r *Resolver) ApplyFileResolution(
 	}
 
 	if backup {
-		orig, readErr := r.readFile(cf.Path)
+		orig, readErr := r.readFile(r.absPath(cf.Path))
 		if readErr == nil {
-			if backupErr := BackupOriginal(r.WriteFile, cf.Path, orig); backupErr != nil {
+			if backupErr := BackupOriginal(r.WriteFile, r.absPath(cf.Path), orig); backupErr != nil {
 				if r.Stderr != nil {
 					fmt.Fprintf(r.Stderr, "warning: gk resolve: backup %s.orig: %v\n", cf.Path, backupErr)
 				}
@@ -207,7 +226,7 @@ func (r *Resolver) ApplyFileResolution(
 		}
 	}
 
-	if err := WriteResolved(r.WriteFile, cf.Path, resolved); err != nil {
+	if err := WriteResolved(r.WriteFile, r.absPath(cf.Path), resolved); err != nil {
 		return fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
 	}
 
@@ -280,8 +299,11 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		return &ResolveResult{}, nil
 	}
 
-	// 4. 파싱
+	// 4. 파싱 — strategy 모드에서는 skipped 경로를 아래 7.5에서 degenerate
+	// 경로로 재처리하므로 수동 해결 힌트를 찍지 않는다.
+	r.deferSkipped = opts.Strategy != ""
 	parsed, skipped, err := r.ParseConflictFiles(filesToProcess)
+	r.deferSkipped = false
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +327,15 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		return nil, fmt.Errorf("gk resolve: --strategy ai requires an available AI provider")
 	}
 
+	// 6.5 stage 정보 — marker 없는 unmerged 파일과 skipped 경로의 분기에
+	// 필요하다 (ls-files -u 한 번).
+	stages, serr := r.unmergedStages(ctx)
+	if serr != nil {
+		return nil, serr
+	}
+
 	// 7. 파일별 처리
+	var degenerate []string
 	for _, cf := range parsed {
 		var resolutions []HunkResolution
 
@@ -317,7 +347,23 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			}
 		}
 		if hunkCount == 0 {
-			result.Resolved = append(result.Resolved, cf.Path)
+			// marker가 없어도 index는 여전히 unmerged다. 양쪽 stage가 있는
+			// UU는 사용자가 이미 내용을 정리한 파일 — 내용을 그대로 받아들여
+			// stage만 해소한다. stage가 비대칭이면(delete/modify에서 git이
+			// 살아남은 쪽을 worktree에 남긴 경우) 7.5의 degenerate 경로가
+			// strategy에 따라 keep/delete를 결정한다. 예전에는 둘 다 손도
+			// 안 대고 "해결됨"으로 집계해 continue가 막혔다.
+			sp := stages[cf.Path]
+			if sp.Ours && sp.Theirs {
+				if !opts.DryRun {
+					if err := GitAdd(ctx, r.Runner, cf.Path); err != nil {
+						return nil, fmt.Errorf("gk resolve: git add %s: %w", cf.Path, err)
+					}
+				}
+				result.Resolved = append(result.Resolved, cf.Path)
+			} else {
+				degenerate = append(degenerate, cf.Path)
+			}
 			continue
 		}
 
@@ -355,6 +401,40 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			return nil, err
 		}
 		result.Resolved = append(result.Resolved, cf.Path)
+	}
+
+	// 7.5 degenerate 경로 — delete/modify, markerless 비대칭 stage,
+	// worktree에 없는 파일. marker 파서가 다루지 못한 것을 index stage
+	// 기반으로 해결한다: ours/theirs는 기계적으로, ai는 양쪽 내용+삭제
+	// 여부를 AI가 판단.
+	pending := append(append([]string{}, result.Skipped...), degenerate...)
+	if len(pending) > 0 && opts.Strategy != "" {
+		var still []string
+		for _, p := range pending {
+			sp, ok := stages[p]
+			if !ok {
+				still = append(still, p)
+				continue
+			}
+			done, derr := r.resolveDegenerate(ctx, p, sp, opts, opType)
+			if derr != nil {
+				result.Failed[p] = derr
+				still = append(still, p)
+				continue
+			}
+			if done {
+				result.Resolved = append(result.Resolved, p)
+				if opts.Strategy == "ai" {
+					result.AIUsed = true
+				}
+			} else {
+				still = append(still, p)
+			}
+		}
+		result.Skipped = still
+	} else if len(degenerate) > 0 {
+		// strategy 없는 호출 — 해결하지 못한 경로로 보고만 한다.
+		result.Skipped = append(result.Skipped, degenerate...)
 	}
 
 	return result, nil

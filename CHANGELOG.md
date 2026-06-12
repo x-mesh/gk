@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk resolve`가 continue까지 끝낸다 — 충돌 한 번에 작업 완주.** 지금까지 resolve는 충돌을 풀고 "run 'gk continue'"를 출력하며 멈췄다(에이전트 기준 호출 1번 손해, 사람 기준 명령 하나 더). 이제 전체 해결에 성공하면 `git <op> --continue`를 직접 실행하고, batch 모드(`--strategy`/`--ai`)에서는 이후 pick이 또 충돌해도 같은 전략으로 재해결하며 rebase가 끝날 때까지 루프한다 — `gk pull --ai`가 서브프로세스 재실행으로 하던 루프의 in-process 판이며, pull --ai도 이 경로를 타도록 정리했다. 해결 결과가 빈 pick이 되면(`--strategy ours`로 상류와 동일해진 경우 등) 빈 커밋 실패 대신 `--skip`으로 자동 건너뛴다 — stderr 파싱 없이 `diff --cached --quiet` 구조 판정. interactive(TUI) 모드도 세션 후 continue까지 가되, 다음 pick의 새 충돌은 루프하지 않고 사람에게 돌려준다. `--no-continue`로 기존 2단계 흐름 유지, `--dry-run`은 여전히 아무것도 건드리지 않는다. batch 모드에 `--json`/`GK_AGENT` 결과 `{resolved, total, rounds, skipped_empty, done, state, resume}`도 신설(기존엔 prose뿐). 부수: 충돌 파일이 있어도 in-progress op이 없으면(stash apply 등) "run 'gk continue'" 힌트를 더 이상 출력하지 않는다 — continue할 대상이 없는데 안내하던 오류. agents 규약 블록 v11.
+
+- **`gk resolve`가 delete/modify·markerless 충돌도 해결한다 — index stage 기반 degenerate 경로.** 지금까지 worktree에 파일이 없거나(한쪽이 삭제) 충돌 marker가 없는 unmerged 파일은 "git rm 또는 git checkout --ours를 직접 치라"는 힌트만 내고 건너뛰었다. 이제 `:1/:2/:3` stage에서 직접 해결한다: `--strategy ours|theirs`는 선택한 쪽을 복원하거나 그쪽이 지운 파일이면 삭제(기계적), `--ai`는 양쪽 전체 내용과 삭제 플래그(`ours_deleted`/`theirs_deleted`)를 provider에 보내 keep/delete/merge를 근거와 함께 결정한다. binary 충돌은 AI 제외(ours/theirs만). 함께 잡은 잠복 버그: modify/delete에서 git이 살아남은 쪽을 worktree에 남기면 marker가 없어서 "hunk 0개 = 해결됨"으로 집계했는데 index는 unmerged인 채라 continue가 막혔다 — 이제 양쪽 stage가 있는 markerless 파일은 수동 해결로 받아들여 stage하고, 비대칭이면 degenerate 경로로 보낸다.
+
+- **`gk resolve`가 worktree root에 앵커링된다.** 충돌 파일 IO가 프로세스 cwd 기준 상대 경로여서 `--repo <path>`로 repo 밖에서 실행하거나 repo 하위 디렉토리에서 실행하면 파일을 못 찾았다. 이제 `rev-parse --show-toplevel`로 root를 잡아 모든 git 호출과 파일 읽기/쓰기/백업을 root 기준으로 수행한다.
+
+### Fixed
+
+- **`gk continue`가 보이지 않는 에디터를 기다리며 무한 대기하던 버그.** `git rebase|merge|cherry-pick --continue`는 커밋 메시지 확인을 위해 에디터를 띄우는데, ExecRunner가 stdout/stderr를 파이프로 캡처한 채 실행하므로 vim이 화면 없이 멈춰 있었다(셸에 `GIT_EDITOR`가 없으면 항상 재현 — `GIT_EDITOR=true`인 에이전트 환경에서만 우연히 통과). 이제 guardEnv에 `GIT_EDITOR=true`를 넣어 모든 git 자식 프로세스가 준비된 메시지를 그대로 쓴다(`GIT_TERMINAL_PROMPT=0`과 같은 비대화 원칙). 함께: `continue`/`abort`/`resolve`가 `ExtraEnv: os.Environ()`으로 guardEnv를 도로 덮어쓰던 경로 제거(사용자 셸의 `GIT_EDITOR=vim`이 가드를 이겼다), 성공 시 침묵하던 `continue`에 `✓ <op> complete` 출력과 `--json`/`GK_AGENT` `{action, done}` 결과 추가(침묵은 행과 구분 불가).
+
+- **`gk continue`의 사전 NOTE가 정반대 안내를 하던 문제.** 기존 "working tree still has changes (they will be included)"는 충돌 해결로 staged된 파일 때문에 매번 출력되는 노이즈였고, 내용도 틀렸다 — `--continue`는 index만 커밋하므로 unstaged/untracked 파일(예: `gk resolve`의 `*.orig` 백업)은 포함되지 **않는다**. 이제 staged 변경(정상 상태)에는 침묵하고, unstaged/untracked 잔여물이 있을 때만 "working tree에 남고 커밋에 포함되지 않는다"고 정확히 알린다.
+
 ## [0.85.0] - 2026-06-11
 
 ### Added

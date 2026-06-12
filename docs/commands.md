@@ -1893,9 +1893,60 @@ gk prompt-info --format=json | jq -r '.repo // empty'
 
 ---
 
+## gk resolve
+
+Resolve the current conflicts — and finish the operation. After a full resolution, `gk resolve` drives `git <op> --continue` itself; in batch mode (`--strategy` / `--ai`) later picks that conflict again are re-resolved with the same strategy until the rebase/cherry-pick completes. One command takes a paused multi-pick rebase from conflict to done.
+
+### Synopsis
+
+```
+gk resolve [files...] [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--strategy` | (interactive) | Apply one strategy to all conflicts: `ours`, `theirs`, `ai` |
+| `--ai` | false | Shortcut for `--strategy ai` (AI decides per hunk: ours / theirs / merged, with a rationale) |
+| `--no-continue` | false | Stop after resolving; print the `gk continue` hint instead of running it |
+| `--dry-run` | false | Show the resolution diff without modifying files (never continues) |
+| `--no-backup` | false | Skip `.orig` backup file creation |
+| `--no-ai` | false | Disable AI analysis in interactive mode |
+
+### Examples
+
+```bash
+# Take the incoming side everywhere and finish the whole rebase
+gk resolve --strategy theirs
+
+# AI-assisted: per-hunk semantic resolution, then continue to completion
+gk resolve --ai
+
+# Preview what the AI would do first
+gk resolve --ai --dry-run
+
+# Old two-step flow
+gk resolve --strategy theirs --no-continue
+gk continue
+```
+
+### Notes
+
+- The continue step runs only after a **full** resolution: every conflicted path cleared, a real operation in progress, no `--dry-run`/`--no-continue`. A file-filtered run (`gk resolve a.go`) that leaves other paths unmerged never continues.
+- **Delete/modify and markerless conflicts** are handled from the index stages (`:1` base, `:2` ours, `:3` theirs), not from worktree text: `--strategy ours|theirs` restores the chosen side or deletes the file when that side removed it; `--ai` sends both sides (with deletion flags) to the provider, which decides keep / delete / merge and prints its rationale. Binary conflicts stay manual (`ours`/`theirs` only). A markerless file whose both stages exist is accepted as a manual resolution and staged as-is.
+- All git calls and file IO are anchored at the worktree root — resolve works from a repo subdirectory and with `--repo <path>` from outside the repo.
+- A pick whose resolution becomes empty (its content already exists upstream — common with `--strategy ours`) is skipped via `git <op> --skip` instead of failing on the empty commit. Merges are never skipped — an empty merge commit still records the ancestry join.
+- Interactive (TUI) mode also continues after the session, but a *later* pick that conflicts goes back to you instead of looping — you already chose to decide hunk by hunk.
+- An `edit`/`break` rebase step pauses with a note; finish it and run `gk continue`.
+- With `--json` / `GK_AGENT=1` the result is `{resolved, total, rounds, skipped_empty, done, state, resume}`.
+- `*.orig` backups stay in the working tree and are never part of any commit.
+
+---
+
 ## gk continue
 
-Continue the current rebase, merge, or cherry-pick after resolving conflicts.
+Continue the current rebase, merge, or cherry-pick after resolving conflicts. `gk resolve` runs this step automatically — reach for `gk continue` after resolving conflicts by hand (manual edits + `git add`).
 
 ### Synopsis
 
@@ -1921,9 +1972,10 @@ gk continue --yes
 
 ### Notes
 
-- Detects the in-progress operation (`rebase`, `merge`, or `cherry-pick`) automatically.
-- In a non-TTY environment without `--yes`, gk aborts safely instead of hanging.
-- Exits with code 3 if there is a conflict that must be resolved first.
+- Detects the in-progress operation (`rebase`, `merge`, `cherry-pick`, or `revert`) automatically.
+- Never opens an editor: the prepared commit message is used as-is (a `GIT_EDITOR=true` guard on every git subprocess), so it cannot hang waiting for vim on a captured pipe.
+- Only staged changes become part of the resolved commit. Unstaged edits and untracked files (e.g. `*.orig` backups from `gk resolve`) stay in the working tree — a NOTE warns when such leftovers exist.
+- On success prints `✓ <op> complete`, or `still in progress` when the operation legitimately pauses again (an `edit`/`break` rebase step). With `--json` / `GK_AGENT=1` the result is `{action, done}`.
 
 ---
 

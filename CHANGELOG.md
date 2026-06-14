@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-06-14
+
 ### Added
 
 - **`gk resolve`가 continue까지 끝낸다 — 충돌 한 번에 작업 완주.** 지금까지 resolve는 충돌을 풀고 "run 'gk continue'"를 출력하며 멈췄다(에이전트 기준 호출 1번 손해, 사람 기준 명령 하나 더). 이제 전체 해결에 성공하면 `git <op> --continue`를 직접 실행하고, batch 모드(`--strategy`/`--ai`)에서는 이후 pick이 또 충돌해도 같은 전략으로 재해결하며 rebase가 끝날 때까지 루프한다 — `gk pull --ai`가 서브프로세스 재실행으로 하던 루프의 in-process 판이며, pull --ai도 이 경로를 타도록 정리했다. 해결 결과가 빈 pick이 되면(`--strategy ours`로 상류와 동일해진 경우 등) 빈 커밋 실패 대신 `--skip`으로 자동 건너뛴다 — stderr 파싱 없이 `diff --cached --quiet` 구조 판정. interactive(TUI) 모드도 세션 후 continue까지 가되, 다음 pick의 새 충돌은 루프하지 않고 사람에게 돌려준다. `--no-continue`로 기존 2단계 흐름 유지, `--dry-run`은 여전히 아무것도 건드리지 않는다. batch 모드에 `--json`/`GK_AGENT` 결과 `{resolved, total, rounds, skipped_empty, done, state, resume}`도 신설(기존엔 prose뿐). 부수: 충돌 파일이 있어도 in-progress op이 없으면(stash apply 등) "run 'gk continue'" 힌트를 더 이상 출력하지 않는다 — continue할 대상이 없는데 안내하던 오류. agents 규약 블록 v11.

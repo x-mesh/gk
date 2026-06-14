@@ -359,7 +359,7 @@ gk batch --plan - < plan.json          # validate + execute
 echo '{"steps":[{"args":["pull"]},{"args":["push"]}]}' | gk batch --plan -
 ```
 
-Plan schema: `{"steps":[{"args":["pull","--with-base"], "name?", "on_failure?"}]}` — `args` is the full gk argv for the step (sub-command first); `on_failure` is `"abort"` (default, stops the plan) or `"continue"` (records the failure and moves on).
+Plan schema: `{"steps":[{"args":["pull","--with-base"], "name?", "on_failure?", "worktree?"}]}` — `args` is the full gk argv for the step (sub-command first); `on_failure` is `"abort"` (default, stops the plan) or `"continue"` (records the failure and moves on); `worktree` runs the step in a specific worktree instead of the repo root — an absolute worktree path, or a branch name resolved to the worktree checked out on it — so one transaction can span worktrees (e.g. commit in `feat-a`, sync in `feat-b`). A `worktree` reference that resolves to no registered worktree fails the step under its `on_failure` policy.
 
 Validation happens before any step executes: an unknown sub-command, a nested `batch`, args starting with a flag, or more than 20 steps reject the whole plan. A gating failure skip-marks the remaining steps and reports `failed_step`/`resume`. A child that pauses for conflict resolution (exit 3) stops the plan even under `on_failure: continue` — the next step must not stack on an unresolved pause.
 
@@ -379,6 +379,8 @@ Validation happens before any step executes: an unknown sub-command, a nested `b
 ## gk context
 
 One-call repository orientation — current branch, upstream and ahead/behind, dirty counts (staged/unstaged/untracked/conflicts), any in-progress rebase/merge with its resume/abort commands, base-branch drift vs its remote, linked worktrees, and suggested `next_actions`.
+
+Each linked worktree carries its own status: `current` (the worktree this call runs from), `parent`/`ahead`/`behind` (where it diverged), and a `dirty` block **present only when that worktree holds uncommitted work** — so a non-empty `dirty` anywhere in `worktrees` is the one-call answer to "which worktree has unfinished work?". `gk worktree list --json` carries the same per-worktree enrichment.
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
@@ -1669,6 +1671,7 @@ Alias: `gk wt`.
 | `add <name\|path> [branch]` | Create a worktree (managed base for relative names, passthrough for absolute paths) |
 | `remove <path>` | Remove a worktree |
 | `prune` | Prune worktree administrative records |
+| `run <branch> -- <cmd>` | Create (or reuse) a worktree, run a command in it, optionally reclaim it with `--cleanup` |
 
 ### Interactive mode (`gk wt`)
 
@@ -1704,6 +1707,8 @@ Flags:
 | `--detach` | false | Detach HEAD in the worktree instead of tracking a branch |
 
 The success line names what landed where, so the base of a new branch is never a guess: `added worktree at <path> (new branch feat/x from main@8bd48c9)` — new branches are cut from **HEAD (the branch you run the command on)** unless `--from` says otherwise, never implicitly from main.
+
+`--dry-run` describes the plan and touches nothing — no directory, no `git worktree add`, no init — printing `would add worktree at <path> …`. With `--json` it returns the same machine-readable result (`{path, branch, parent, created, managed, dry_run, init}`) the real run emits, so an agent reads `result.path` straight from the envelope instead of scraping the success line; under `--json` the init bootstrap runs silently (its link/copy/run log would otherwise corrupt the envelope) and reports only `init: done | skipped`.
 
 A newly created branch also records its fork parent (`branch.<name>.gk-parent = <base>`), the same metadata `gk branch set-parent` writes — creation is the only moment the parent is known for certain (git's own reflog only says "Created from HEAD"). `gk status`, the `SOURCE` column, and `gk land --promote` then resolve against the real parent instead of the trunk. Recording is skipped when the base is not a local branch (detached HEAD, remote ref, raw SHA) and is undone with `gk branch unset-parent`.
 
@@ -1751,6 +1756,29 @@ Project layout on disk:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f, --force` | false | Force remove even when the worktree is dirty or locked |
+
+### gk worktree run
+
+Runs a command inside a worktree for `<branch>` — the CLI form of an isolated, parallel task (the single-shot sibling of the Workflow worktree-isolation pattern). If a worktree is already checked out on `<branch>` it is reused; otherwise gk creates one (managed-base layout, `gk-parent` recorded, `worktree.init` applied) before running. The command runs with the worktree as its working directory, and **gk exits with the command's exit code**.
+
+Everything after `--` is the command, run directly (not through a shell), so chain with an explicit shell when you need operators:
+
+```bash
+gk worktree run feat/api -- go test ./...
+gk worktree run hotfix -- make build                  # new branch + worktree off HEAD
+gk worktree run feat/api --cleanup -- sh -c 'npm ci && npm test'
+```
+
+With `--cleanup`, a command that **succeeds** (exit 0) has its worktree removed — and, when this call created the branch, the branch deleted too. A **failing** command always leaves the worktree in place for inspection.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from <ref>` | HEAD | Base ref when creating a new branch |
+| `--cleanup` | false | Remove the worktree when the command succeeds (and delete the branch if this call created it) |
+| `--init` | false | Force `worktree init` on create |
+| `--no-init` | false | Skip `worktree init` on create |
+
+With `--json` (or `GK_AGENT=1`) the result is `{path, branch, created, command, exit_code, removed}`; the command's own stdout moves to stderr so gk's stdout carries only the envelope.
 
 ### List columns
 

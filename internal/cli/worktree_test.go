@@ -73,7 +73,7 @@ func buildWorktreeCmd(repoDir string, sub string, extraArgs ...string) (*cobra.C
 	initc := &cobra.Command{Use: "init", Args: cobra.RangeArgs(0, 1), RunE: runWorktreeInit}
 	initc.Flags().Bool("save", false, "")
 
-	wt.AddCommand(list, add, rm, prune, initc)
+	wt.AddCommand(list, add, rm, prune, initc, newWorktreeRunCmd())
 	testRoot.AddCommand(wt)
 
 	buf := &bytes.Buffer{}
@@ -118,6 +118,184 @@ func TestWorktree_AddListRemove(t *testing.T) {
 	root3, buf3 := buildWorktreeCmd(repo.Dir, "remove", wtPath)
 	if err := root3.Execute(); err != nil {
 		t.Fatalf("worktree remove failed: %v\nout: %s", err, buf3.String())
+	}
+}
+
+// TestWorktreeAdd_DryRunNoSideEffect guards the fixed bug: --dry-run must
+// describe the plan without creating a worktree or branch.
+func TestWorktreeAdd_DryRunNoSideEffect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "dry-wt")
+
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--dry-run", "-b", wtPath, "feat/dry")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add --dry-run failed: %v\nout: %s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "would add worktree") {
+		t.Errorf("dry-run output missing plan line:\n%s", buf.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created the worktree at %s (stat err=%v)", wtPath, err)
+	}
+	if branchExists(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "feat/dry") {
+		t.Errorf("dry-run created branch feat/dry")
+	}
+}
+
+// TestWorktreeAdd_DryRunJSONEnvelope checks the agent envelope shape and the
+// no-side-effect contract together.
+func TestWorktreeAdd_DryRunJSONEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "dry-json-wt")
+
+	flagAgent = true
+	t.Cleanup(func() { flagAgent = false })
+
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--json", "--dry-run", "-b", wtPath, "feat/dj")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add --json --dry-run failed: %v\nout: %s", err, buf.String())
+	}
+
+	var env struct {
+		OK     bool            `json:"ok"`
+		Result worktreeAddJSON `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("envelope unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if !env.OK {
+		t.Errorf("envelope ok=false:\n%s", buf.String())
+	}
+	if !env.Result.DryRun || !env.Result.Created || env.Result.Branch != "feat/dj" {
+		t.Errorf("unexpected dry-run result: %+v", env.Result)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run --json created the worktree at %s", wtPath)
+	}
+}
+
+// TestWorktreeAdd_JSON verifies the bare result payload for a real add,
+// including the init outcome field.
+func TestWorktreeAdd_JSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "json-wt")
+
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--json", "--no-init", "-b", wtPath, "feat/js")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add --json failed: %v\nout: %s", err, buf.String())
+	}
+	var res worktreeAddJSON
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("result unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if filepath.Base(res.Path) != "json-wt" || res.Branch != "feat/js" || !res.Created || res.Init != "skipped" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("add did not create worktree at %s: %v", wtPath, err)
+	}
+	// Remove it so the temp repo tears down cleanly.
+	rm, rbuf := buildWorktreeCmd(repo.Dir, "remove", wtPath)
+	if err := rm.Execute(); err != nil {
+		t.Fatalf("remove failed: %v\nout: %s", err, rbuf.String())
+	}
+}
+
+// TestDirtyPtrIfAny covers the clean→nil / dirty→non-nil contract that drives
+// the omitempty dirty field on context and list entries.
+func TestDirtyPtrIfAny(t *testing.T) {
+	if dirtyPtrIfAny(contextDirtyJSON{}) != nil {
+		t.Error("clean tree should yield nil")
+	}
+	if got := dirtyPtrIfAny(contextDirtyJSON{Untracked: 1}); got == nil || got.Untracked != 1 {
+		t.Errorf("dirty tree should yield non-nil, got %+v", got)
+	}
+}
+
+// TestWorktreeList_JSONEnriched verifies the list --json payload carries the
+// current mark and a dirty block for a worktree with uncommitted work.
+func TestWorktreeList_JSONEnriched(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	if err := os.WriteFile(filepath.Join(repo.Dir, "scratch.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root, buf := buildWorktreeCmd(repo.Dir, "list", "--json")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list --json: %v\nout: %s", err, buf.String())
+	}
+	var entries []worktreeListEntryJSON
+	if err := json.Unmarshal(buf.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	var cur *worktreeListEntryJSON
+	for i := range entries {
+		if entries[i].Current {
+			cur = &entries[i]
+		}
+	}
+	if cur == nil {
+		t.Fatalf("no current worktree marked in %d entries", len(entries))
+	}
+	if cur.Dirty == nil || cur.Dirty.Untracked < 1 {
+		t.Errorf("expected untracked dirty on current worktree, got %+v", cur.Dirty)
+	}
+}
+
+// TestRunInWorktree_ExitCode covers exit-code reporting and the
+// could-not-start error path.
+func TestRunInWorktree_ExitCode(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	if code, err := runInWorktree(ctx, dir, []string{"true"}, true); err != nil || code != 0 {
+		t.Errorf("true: code=%d err=%v", code, err)
+	}
+	if code, err := runInWorktree(ctx, dir, []string{"false"}, true); err != nil || code != 1 {
+		t.Errorf("false: code=%d err=%v", code, err)
+	}
+	if _, err := runInWorktree(ctx, dir, []string{"gk-no-such-binary-zzz"}, true); err == nil {
+		t.Error("expected error for a command that cannot start")
+	}
+}
+
+// TestWorktreeRun_CreatesRunsCleansUp exercises the full isolated-task
+// transaction: create a worktree, run a command in it, reclaim on success.
+func TestWorktreeRun_CreatesRunsCleansUp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	// Keep the managed worktree base inside the test sandbox.
+	t.Setenv("GK_WORKTREE_BASE", filepath.Join(t.TempDir(), "wtbase"))
+
+	root, buf := buildWorktreeCmd(repo.Dir, "run", "--json", "iso-task", "--cleanup", "--no-init", "--", "true")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree run: %v\nout: %s", err, buf.String())
+	}
+	var res worktreeRunJSON
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if !res.Created || res.ExitCode != 0 || !res.Removed || res.Branch != "iso-task" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
+		t.Errorf("cleanup left the worktree at %s (stat err=%v)", res.Path, err)
+	}
+	if branchExists(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "iso-task") {
+		t.Error("cleanup left the created branch iso-task behind")
 	}
 }
 

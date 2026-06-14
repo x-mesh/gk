@@ -5,13 +5,55 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+// TestResolveBatchWorktree covers branch-name and absolute-path resolution
+// plus the miss cases that must fail a step rather than run in the repo root.
+func TestResolveBatchWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	wtPath := filepath.Join(t.TempDir(), "wt-a")
+	if _, _, err := runner.Run(ctx, "worktree", "add", "-b", "feat-a", wtPath); err != nil {
+		t.Fatalf("setup worktree: %v", err)
+	}
+	want := canonWorktreePath(wtPath)
+
+	got, err := resolveBatchWorktree(ctx, runner, "feat-a")
+	if err != nil {
+		t.Fatalf("resolve by branch: %v", err)
+	}
+	if canonWorktreePath(got) != want {
+		t.Errorf("by branch: got %q want %q", got, want)
+	}
+
+	got2, err := resolveBatchWorktree(ctx, runner, wtPath)
+	if err != nil {
+		t.Fatalf("resolve by path: %v", err)
+	}
+	if canonWorktreePath(got2) != want {
+		t.Errorf("by path: got %q want %q", got2, want)
+	}
+
+	if _, err := resolveBatchWorktree(ctx, runner, "no-such-branch"); err == nil {
+		t.Error("expected error for an unknown branch")
+	}
+	if _, err := resolveBatchWorktree(ctx, runner, filepath.Join(t.TempDir(), "not-a-worktree")); err == nil {
+		t.Error("expected error for an unregistered absolute path")
+	}
+}
 
 // ---------- plan validation ----------
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -37,6 +38,12 @@ type batchStepJSON struct {
 	// OnFailure: "abort" (default) stops the plan; "continue" records the
 	// failure and proceeds — for steps that are nice-to-have, not gating.
 	OnFailure string `json:"on_failure,omitempty"`
+	// Worktree, when set, runs this step in that worktree instead of the
+	// repo root: an absolute worktree path, or a branch name resolved to
+	// the worktree checked out on it. Lets one transaction span worktrees
+	// (e.g. commit in feat-a, sync in feat-b). A reference that resolves to
+	// no worktree fails the step under its on_failure policy.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 type batchPlanJSON struct {
@@ -145,7 +152,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(progress, landHeader("─── Batch plan ───────────────────────────────"))
 		for _, s := range plan.Steps {
 			cmdline := "gk " + strings.Join(s.Args, " ")
-			fmt.Fprintf(progress, "  %-12s %s%s\n", batchStepName(s), cmdline, batchPolicySuffix(s))
+			fmt.Fprintf(progress, "  %-12s %s%s%s\n", batchStepName(s), cmdline, batchWorktreeSuffix(s), batchPolicySuffix(s))
 			res.Steps = append(res.Steps, batchStepRun{Name: batchStepName(s), Command: cmdline, Result: "dry-run"})
 		}
 		if jsonMode {
@@ -168,7 +175,23 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		cmdline := "gk " + strings.Join(s.Args, " ")
 		fmt.Fprintln(progress, landHeader(fmt.Sprintf("─── batch %d/%d: %s ─────────────────────────", i+1, len(plan.Steps), name)))
 
-		exitCode, stepErr := batchRunChild(ctx, gkPath, repo, jsonMode, s.Args...)
+		// Resolve the working directory: the repo root by default, or the
+		// step's worktree. A resolution miss becomes a step failure so it
+		// flows through the same on_failure handling below as a child error.
+		stepDir := repo
+		var exitCode int
+		var stepErr error
+		if s.Worktree != "" {
+			resolved, rerr := resolveBatchWorktree(ctx, runner, s.Worktree)
+			if rerr != nil {
+				exitCode, stepErr = -1, rerr
+			} else {
+				stepDir = resolved
+			}
+		}
+		if stepErr == nil {
+			exitCode, stepErr = batchRunChild(ctx, gkPath, stepDir, jsonMode, s.Args...)
+		}
 		if stepErr == nil {
 			fmt.Fprintf(progress, "  %s %-12s\n", good("✓"), name)
 			res.Steps = append(res.Steps, batchStepRun{Name: name, Command: cmdline, Result: "ok"})
@@ -242,6 +265,58 @@ func batchPolicySuffix(s batchStepJSON) string {
 		return "  (on_failure: continue)"
 	}
 	return ""
+}
+
+func batchWorktreeSuffix(s batchStepJSON) string {
+	if s.Worktree != "" {
+		return "  @" + s.Worktree
+	}
+	return ""
+}
+
+// resolveBatchWorktree maps a step's worktree reference to the directory the
+// child runs in. A branch name resolves to the worktree checked out on it; an
+// absolute path is accepted only when it is a registered worktree. Either
+// miss is an error so the step fails loudly instead of silently running in
+// the repo root.
+func resolveBatchWorktree(ctx context.Context, runner *git.ExecRunner, ref string) (string, error) {
+	if entry, err := findWorktreeForBranch(ctx, runner, ref); err == nil && entry != nil {
+		return entry.Path, nil
+	}
+	if filepath.IsAbs(ref) {
+		if isRegisteredWorktree(ctx, runner, ref) {
+			return ref, nil
+		}
+		return "", fmt.Errorf("batch: %q is not a registered worktree (gk worktree list)", ref)
+	}
+	return "", fmt.Errorf("batch: no worktree checked out on branch %q (create one: gk worktree add %s)", ref, ref)
+}
+
+// isRegisteredWorktree reports whether path matches a worktree git tracks —
+// the guard that keeps an absolute worktree reference from running a step in
+// an arbitrary directory. Both sides are resolved through symlinks first so a
+// /var vs /private/var (macOS) or other symlinked base still matches.
+func isRegisteredWorktree(ctx context.Context, runner *git.ExecRunner, path string) bool {
+	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	want := canonWorktreePath(path)
+	for _, e := range parseWorktreePorcelain(string(out)) {
+		if canonWorktreePath(e.Path) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// canonWorktreePath resolves symlinks when possible, falling back to a lexical
+// clean — so two spellings of the same worktree directory compare equal.
+func canonWorktreePath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // readBatchPlan loads the plan document from stdin ("-") or a file path.
@@ -328,11 +403,12 @@ var batchRunChild = runBatchChild
 // exit code. Mirrors land's child contract: the child inherits the
 // terminal, JSON mode reroutes its stdout to stderr so batch's stdout
 // carries only the result document, and GK_AGENT is stripped — batch owns
-// the machine contract.
-func runBatchChild(ctx context.Context, gkPath, repo string, jsonMode bool, args ...string) (int, error) {
+// the machine contract. dir is the working directory (repo root, or the
+// step's resolved worktree).
+func runBatchChild(ctx context.Context, gkPath, dir string, jsonMode bool, args ...string) (int, error) {
 	c := exec.CommandContext(ctx, gkPath, args...)
-	if repo != "" {
-		c.Dir = repo
+	if dir != "" {
+		c.Dir = dir
 	}
 	c.Stdin = os.Stdin
 	c.Stderr = os.Stderr

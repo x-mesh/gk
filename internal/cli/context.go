@@ -45,8 +45,17 @@ type contextBaseJSON struct {
 }
 
 type contextWorktreeJSON struct {
-	Path   string `json:"path"`
-	Branch string `json:"branch,omitempty"`
+	Path     string `json:"path"`
+	Branch   string `json:"branch,omitempty"`
+	Current  bool   `json:"current,omitempty"`
+	Detached bool   `json:"detached,omitempty"`
+	Parent   string `json:"parent,omitempty"`
+	Ahead    int    `json:"ahead,omitempty"`
+	Behind   int    `json:"behind,omitempty"`
+	// Dirty is present only when the worktree holds uncommitted work, so a
+	// non-nil dirty across the list is the "which worktree has unfinished
+	// work?" answer in one call. Clean worktrees omit it entirely.
+	Dirty *contextDirtyJSON `json:"dirty,omitempty"`
 }
 
 type contextJSON struct {
@@ -213,11 +222,30 @@ func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 	}
 
 	if wtOut, _, werr := runner.Run(ctx, "worktree", "list", "--porcelain"); werr == nil {
-		for _, e := range parseWorktreePorcelain(string(wtOut)) {
+		entries := parseWorktreePorcelain(string(wtOut))
+		// Enrich each worktree with the same divergence + dirtiness signals
+		// the top-level fields carry, so an agent sees not just "which
+		// worktrees exist" but "which one holds unfinished work" without a
+		// follow-up scan per path.
+		meta := loadWorktreeBranchMeta(ctx, runner)
+		currentPath := currentWorktreePath(ctx, runner)
+		for _, e := range entries {
 			if e.Bare {
 				continue
 			}
-			out.Worktrees = append(out.Worktrees, contextWorktreeJSON{Path: e.Path, Branch: e.Branch})
+			wj := contextWorktreeJSON{Path: e.Path, Branch: e.Branch, Detached: e.Detached}
+			wj.Current = currentPath != "" && filepath.Clean(e.Path) == filepath.Clean(currentPath)
+			if m, ok := meta[e.Branch]; ok {
+				wj.Ahead, wj.Behind, wj.Parent = m.Ahead, m.Behind, m.ForkBranch
+			}
+			// The current worktree was already scanned for out.Dirty; reuse
+			// it instead of shelling out a second time.
+			if wj.Current {
+				wj.Dirty = dirtyPtrIfAny(out.Dirty)
+			} else {
+				wj.Dirty = worktreeDirtyAt(ctx, e.Path)
+			}
+			out.Worktrees = append(out.Worktrees, wj)
 		}
 	}
 
@@ -254,6 +282,24 @@ func countContextDirty(ctx context.Context, runner git.Runner) contextDirtyJSON 
 		}
 	}
 	return d
+}
+
+// dirtyPtrIfAny returns &d when d records any change, else nil — so a clean
+// worktree's dirty field is omitted (omitempty) rather than serialized as an
+// all-zero object. The non-nil result is the signal "this tree has work".
+func dirtyPtrIfAny(d contextDirtyJSON) *contextDirtyJSON {
+	if d.Staged == 0 && d.Unstaged == 0 && d.Untracked == 0 && d.Conflicts == 0 {
+		return nil
+	}
+	return &d
+}
+
+// worktreeDirtyAt scans one linked worktree's working tree for uncommitted
+// changes by running the same porcelain tally against its own path. Returns
+// nil when clean (or unscannable) so only worktrees with work get a dirty
+// block. Best-effort: a scan failure degrades to nil, never an error.
+func worktreeDirtyAt(ctx context.Context, path string) *contextDirtyJSON {
+	return dirtyPtrIfAny(countContextDirty(ctx, &git.ExecRunner{Dir: path}))
 }
 
 func collectContextBase(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, current string) *contextBaseJSON {

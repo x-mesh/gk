@@ -132,7 +132,7 @@ Examples:
 	// --dry-run is the inherited persistent flag (root.go) — reused here to
 	// preview link/copy/run without performing them.
 
-	wt.AddCommand(list, add, rm, prune, initc)
+	wt.AddCommand(list, add, rm, prune, initc, newWorktreeRunCmd())
 	rootCmd.AddCommand(wt)
 }
 
@@ -147,6 +147,42 @@ type WorktreeEntry struct {
 	Prunable bool   `json:"prunable"`
 }
 
+// worktreeAddJSON is the machine-readable result of `gk worktree add`: the
+// plan under --dry-run, the outcome otherwise. Agent mode wraps it in the
+// standard envelope so callers read result.path instead of scraping the
+// human success line.
+type worktreeAddJSON struct {
+	Path     string `json:"path"`
+	Branch   string `json:"branch,omitempty"`
+	Parent   string `json:"parent,omitempty"`
+	From     string `json:"from,omitempty"`
+	Created  bool   `json:"created"`
+	Detached bool   `json:"detached,omitempty"`
+	Managed  bool   `json:"managed"`
+	DryRun   bool   `json:"dry_run,omitempty"`
+	Init     string `json:"init,omitempty"` // done | skipped (JSON mode only)
+}
+
+// worktreeListEntryJSON enriches the raw porcelain record with the same
+// where-it-diverged / has-it-uncommitted-work signals the human table shows,
+// so `gk worktree list --json` answers "which worktree holds unfinished
+// work?" in one call instead of forcing a per-path status probe.
+type worktreeListEntryJSON struct {
+	Path     string            `json:"path"`
+	Head     string            `json:"head,omitempty"`
+	Branch   string            `json:"branch,omitempty"`
+	Detached bool              `json:"detached,omitempty"`
+	Bare     bool              `json:"bare,omitempty"`
+	Locked   bool              `json:"locked,omitempty"`
+	Prunable bool              `json:"prunable,omitempty"`
+	Current  bool              `json:"current,omitempty"`
+	Upstream string            `json:"upstream,omitempty"`
+	Parent   string            `json:"parent,omitempty"`
+	Ahead    int               `json:"ahead,omitempty"`
+	Behind   int               `json:"behind,omitempty"`
+	Dirty    *contextDirtyJSON `json:"dirty,omitempty"`
+}
+
 func runWorktreeList(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	stdout, stderr, err := runner.Run(cmd.Context(), "worktree", "list", "--porcelain")
@@ -155,20 +191,34 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	}
 	entries := parseWorktreePorcelain(string(stdout))
 
+	// Enrich entries with branchInfo (upstream, ahead/behind, fork parent,
+	// last-commit age) so both the JSON document and the table mirror `gk
+	// sw` columns: "where this branch came from" + "how far diverged" +
+	// "when last touched". Best-effort: a git failure collapses the
+	// enrichment rather than aborting the whole list.
+	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
+	currentPath := currentWorktreePath(cmd.Context(), runner)
+
 	if JSONOut() {
-		return emitAgentResult(cmd.OutOrStdout(), entries)
+		enriched := make([]worktreeListEntryJSON, 0, len(entries))
+		for _, e := range entries {
+			j := worktreeListEntryJSON{
+				Path: e.Path, Head: e.Head, Branch: e.Branch,
+				Detached: e.Detached, Bare: e.Bare, Locked: e.Locked, Prunable: e.Prunable,
+				Current: currentPath != "" && filepath.Clean(e.Path) == filepath.Clean(currentPath),
+			}
+			if !e.Bare {
+				if m, ok := branchMeta[e.Branch]; ok {
+					j.Upstream, j.Ahead, j.Behind, j.Parent = m.Upstream, m.Ahead, m.Behind, m.ForkBranch
+				}
+				j.Dirty = worktreeDirtyAt(cmd.Context(), e.Path)
+			}
+			enriched = append(enriched, j)
+		}
+		return emitAgentResult(cmd.OutOrStdout(), enriched)
 	}
 
 	w := cmd.OutOrStdout()
-
-	// Enrich entries with branchInfo (upstream, ahead/behind, fork
-	// parent, last-commit age) so the table can mirror `gk sw` columns:
-	// "where this branch came from" + "how far diverged" + "when last
-	// touched" — the three signals you actually want when switching
-	// worktrees. Best-effort: a git failure collapses the enrichment
-	// rather than aborting the whole list.
-	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
-	currentPath := currentWorktreePath(cmd.Context(), runner)
 
 	// Build the table body and accumulate per-state counts so the
 	// section's title summary can carry the magnitude (n entries · m
@@ -554,14 +604,8 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	Dbg("worktree add: raw=%q resolved=%q managed=%v", rawPath, resolvedPath, resolvedPath != rawPath)
-	// Only create intermediate dirs when the path was rewritten through
-	// the managed layout. An absolute path is the user's responsibility.
-	if resolvedPath != rawPath {
-		if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
-			return fmt.Errorf("ensure worktree base: %w", err)
-		}
-	}
+	managed := resolvedPath != rawPath
+	Dbg("worktree add: raw=%q resolved=%q managed=%v", rawPath, resolvedPath, managed)
 
 	gitArgs := []string{"worktree", "add"}
 	if detach {
@@ -593,6 +637,43 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		sumNew = !branchExists(ctx, runner, sumBranch)
 	}
 
+	doInit, _ := cmd.Flags().GetBool("init")
+	noInit, _ := cmd.Flags().GetBool("no-init")
+
+	// Build the machine-readable plan up front: --dry-run, --json, and the
+	// human success line all describe the same intent, so compute it once.
+	res := worktreeAddJSON{
+		Path:     resolvedPath,
+		Branch:   sumBranch,
+		Created:  sumNew,
+		From:     from,
+		Detached: detach,
+		Managed:  managed,
+	}
+	if sumNew && !detach {
+		res.Parent = predictWorktreeParent(ctx, runner, from)
+	}
+
+	// --dry-run must not touch anything: no mkdir, no git, no init. Report
+	// the plan and stop. (Pre-fix bug: add ran git regardless of --dry-run.)
+	if DryRun() {
+		res.DryRun = true
+		if JSONOut() {
+			return emitAgentResult(w, res)
+		}
+		fmt.Fprintf(w, "would add worktree at %s%s\n", resolvedPath,
+			worktreeAddDetail(ctx, runner, sumNew, sumBranch, from, detach))
+		return nil
+	}
+
+	// Only create intermediate dirs when the path was rewritten through
+	// the managed layout. An absolute path is the user's responsibility.
+	if managed {
+		if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
+			return fmt.Errorf("ensure worktree base: %w", err)
+		}
+	}
+
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	if err != nil {
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(stderr)), err)
@@ -600,14 +681,35 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	if sumNew {
 		recordWorktreeParent(ctx, runner, sumBranch, from)
 	}
+
+	// JSON mode: bootstrap emits human prose (link/copy/run logs) that would
+	// corrupt the envelope, so run it silently and report only the outcome.
+	if JSONOut() {
+		if noInit {
+			res.Init = "skipped"
+		} else {
+			if ierr := bootstrapWorktree(ctx, io.Discard, runner, cfg, resolvedPath, worktreeInitOpts{
+				explicitInit: doInit,
+				prompt:       false,
+				fromAdd:      true,
+			}); ierr != nil {
+				return ierr
+			}
+			if doInit {
+				res.Init = "done"
+			} else {
+				res.Init = "skipped"
+			}
+		}
+		return emitAgentResult(w, res)
+	}
+
 	if len(stdout) > 0 {
 		_, _ = w.Write(stdout)
 	}
 	fmt.Fprintf(w, "added worktree at %s%s\n", resolvedPath,
 		worktreeAddDetail(ctx, runner, sumNew, sumBranch, from, detach))
 
-	doInit, _ := cmd.Flags().GetBool("init")
-	noInit, _ := cmd.Flags().GetBool("no-init")
 	if noInit {
 		return nil
 	}
@@ -631,19 +733,33 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 // record nothing. Failures are silent: metadata is decoration, never a
 // reason to fail the add. Undo with `gk branch unset-parent`.
 func recordWorktreeParent(ctx context.Context, runner git.Runner, branch, from string) {
-	client := git.NewClient(runner)
-	parent := strings.TrimPrefix(from, "refs/heads/")
+	parent := predictWorktreeParent(ctx, runner, from)
 	if parent == "" {
-		cur, err := client.CurrentBranch(ctx)
-		if err != nil {
-			return
-		}
-		parent = cur
+		return
 	}
+	client := git.NewClient(runner)
 	if branchparent.ValidateSet(ctx, client, branch, parent) != nil {
 		return
 	}
 	_ = branchparent.NewConfig(client).SetParent(ctx, branch, parent)
+}
+
+// predictWorktreeParent computes the gk-parent recordWorktreeParent would
+// write — the explicit --from (minus refs/heads/) or, absent that, the
+// invoking worktree's current branch — without persisting it. It feeds the
+// --dry-run / --json preview before git runs. Best-effort: returns "" when
+// no parent can be determined, and skips the ValidateSet check the real
+// write applies, so a previewed parent may still be dropped at write time.
+func predictWorktreeParent(ctx context.Context, runner git.Runner, from string) string {
+	parent := strings.TrimPrefix(from, "refs/heads/")
+	if parent != "" {
+		return parent
+	}
+	cur, err := git.NewClient(runner).CurrentBranch(ctx)
+	if err != nil {
+		return ""
+	}
+	return cur
 }
 
 // worktreeAddDetail names the branch that landed in the new worktree

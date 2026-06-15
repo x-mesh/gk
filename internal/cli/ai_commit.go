@@ -1202,6 +1202,7 @@ func printApplySummary(out interface{ Write(p []byte) (int, error) }, kept []aic
 		fmt.Fprintf(out, "commit: dry-run — %d commit(s) would be made (backup ref: %s)\n", len(kept), res.BackupRef)
 		return
 	}
+	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, successLinef("commit: created", "%d commit(s)", len(kept)))
 	for i, m := range kept {
 		sha := ""

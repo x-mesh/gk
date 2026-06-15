@@ -224,7 +224,7 @@ func printSummary(out io.Writer, messages []Message, stats map[string]FileStat) 
 		for _, f := range m.Group.Files {
 			s, ok := stats[f]
 			if !haveStats || !ok {
-				_, _ = fmt.Fprintf(out, "         • %s\n", f)
+				_, _ = fmt.Fprintf(out, "    • %s\n", f)
 				continue
 			}
 			glyph := s.Glyph
@@ -237,14 +237,14 @@ func printSummary(out io.Writer, messages []Message, stats map[string]FileStat) 
 			if pad := deltaW - utf8.RuneCountInString(delta); pad > 0 {
 				delta += strings.Repeat(" ", pad)
 			}
-			line := fmt.Sprintf("         %s  %-*s  %s", glyph, pathW, f, delta)
+			line := fmt.Sprintf("    %s  %-*s  %s", glyph, pathW, f, delta)
 			if s.Symbols != "" {
 				line += "  " + s.Symbols
 			}
 			_, _ = fmt.Fprintln(out, strings.TrimRight(line, " "))
 		}
 		if m.Body != "" {
-			indented := "         │ " + strings.ReplaceAll(strings.TrimSpace(m.Body), "\n", "\n         │ ")
+			indented := "    │ " + strings.ReplaceAll(strings.TrimSpace(m.Body), "\n", "\n    │ ")
 			_, _ = fmt.Fprintln(out, indented)
 		}
 		if i != len(messages)-1 {

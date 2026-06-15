@@ -92,6 +92,12 @@ type shipFlags struct {
 	// machine-readable plan (the contract agent tooling consumes) instead
 	// of the human rendering.
 	jsonOut bool
+	// jsonExplicit is true only when --json was typed on the command line,
+	// false when it was implied by GK_AGENT. A live run refuses an EXPLICIT
+	// --json (the user asked for the plan document, which a streaming run
+	// can't produce) but tolerates the IMPLIED one — streaming progress to
+	// stderr and emitting a result envelope to stdout instead of erroring.
+	jsonExplicit bool
 }
 
 type shipMode string
@@ -182,6 +188,7 @@ func readShipFlags(cmd *cobra.Command, args []string, cfg *config.Config) (shipF
 	f.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	f.noFetch, _ = cmd.Flags().GetBool("no-fetch")
 	f.jsonOut = JSONOut()
+	f.jsonExplicit = cmd.Flags().Changed("json")
 	if DryRun() {
 		f.dryRun = true
 	}
@@ -264,18 +271,30 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		return nil
 	}
 
-	// --json is a plan-output contract: it pairs with --dry-run so agent
-	// tooling can read the full pipeline before driving the real run with
-	// -y. Allowing it on a live run would interleave progress output with
-	// the JSON document, so refuse rather than emit something unparseable.
+	// --json is a plan-output contract: with --dry-run it emits the whole
+	// pipeline as JSON so agent tooling can read it before driving the real
+	// run with -y.
+	//
+	// resultEnvelopeTo is non-nil only on a LIVE run reached under an
+	// agent-implied --json (GK_AGENT, no --json typed): there we stream the
+	// human pipeline to stderr and emit one result envelope to stdout at the
+	// end — far friendlier than refusing `GK_AGENT=1 gk ship -y` outright.
+	// An EXPLICIT --json on a live run is still refused: the user asked for
+	// the plan document, which a streaming execution cannot produce.
+	var resultEnvelopeTo io.Writer
 	if flags.jsonOut {
-		if !flags.dryRun && flags.mode != shipModeDryRun {
+		live := !flags.dryRun && flags.mode != shipModeDryRun
+		if !live {
+			return renderShipPlanJSON(deps.Out, plan, flags)
+		}
+		if flags.jsonExplicit {
 			return WithHint(
 				fmt.Errorf("ship: --json emits the release plan and requires --dry-run"),
 				hintCommand("gk ship --dry-run --json"),
 			)
 		}
-		return renderShipPlanJSON(deps.Out, plan, flags)
+		resultEnvelopeTo = deps.Out
+		deps.Out = deps.ErrOut // human progress → stderr; stdout stays clean for the envelope
 	}
 
 	renderShipPlan(deps.Out, plan, flags)
@@ -386,7 +405,31 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 	if !flags.noRelease && flags.push {
 		fmt.Fprintf(deps.Out, "  %s release workflow triggered by tag push: %s\n", good("→"), tag(plan.NextTag))
 	}
+
+	// Agent-implied --json on a live run: the human banner above went to
+	// stderr; emit the machine-readable outcome to the captured stdout.
+	if resultEnvelopeTo != nil {
+		_ = emitAgentResult(resultEnvelopeTo, shipResultJSON{
+			Tag:          plan.NextTag,
+			Branch:       plan.Branch,
+			Base:         plan.Base,
+			MergedToBase: plan.MergeToBase,
+			Pushed:       flags.push && !flags.noRelease,
+			ShippedOn:    shippedOn,
+		})
+	}
 	return nil
+}
+
+// shipResultJSON is the result envelope for a completed live run reached
+// under an agent-implied --json. Fields are append-only.
+type shipResultJSON struct {
+	Tag          string `json:"tag"`
+	Branch       string `json:"branch"`
+	Base         string `json:"base,omitempty"`
+	MergedToBase bool   `json:"merged_to_base"`
+	Pushed       bool   `json:"pushed"`
+	ShippedOn    string `json:"shipped_on"`
 }
 
 func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags shipFlags) (shipPlan, error) {

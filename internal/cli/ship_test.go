@@ -148,6 +148,68 @@ func TestRunShipCoreBumpsVersionAndPromotesChangelog(t *testing.T) {
 	}
 }
 
+// shipLiveHarness builds a temp repo + FakeRunner that drives a full local
+// `ship -y` (minor bump v1.2.3 → v1.3.0, no push). Shared by the agent-mode
+// --json routing tests below.
+func shipLiveHarness(t *testing.T) (string, *git.FakeRunner) {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, dir+"/VERSION", "1.2.3\n")
+	writeTestFile(t, dir+"/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New command.\n\n## [1.2.3] - 2026-04-01\n")
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                  {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":         {Stdout: "main\n"},
+		"rev-parse --show-toplevel":           {Stdout: dir + "\n"},
+		"describe --tags --abbrev=0":          {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":    {Stdout: "feat: add ship\n\x1e"},
+		"rev-parse --verify refs/tags/v1.3.0": {ExitCode: 1, Stderr: "not found"},
+		"add -A":                              {Stdout: ""},
+		"commit -m release: v1.3.0":           {Stdout: "[main abc123] release\n"},
+		"tag -a v1.3.0 -m Release v1.3.0":     {Stdout: ""},
+	}}
+	return dir, runner
+}
+
+// TestRunShipCore_ImpliedJSONStreamsToStderrAndEmitsEnvelope locks the fix for
+// `GK_AGENT=1 gk ship -y`: an --json that was IMPLIED by agent mode (not typed)
+// must not be refused on a live run. The human pipeline streams to stderr so
+// stdout stays a clean result envelope.
+func TestRunShipCore_ImpliedJSONStreamsToStderrAndEmitsEnvelope(t *testing.T) {
+	withAgentMode(t, true) // GK_AGENT → AgentOut() true so the result wraps in an envelope
+	_, runner := shipLiveHarness(t)
+
+	var out, errOut bytes.Buffer
+	err := runShipCore(context.Background(), shipDeps{
+		Runner: runner, Config: testShipConfig(), Out: &out, ErrOut: &errOut,
+	}, shipFlags{yes: true, skipPreflight: true, push: false, jsonOut: true, jsonExplicit: false})
+	if err != nil {
+		t.Fatalf("implied --json on a live run must not error: %v", err)
+	}
+
+	// stdout: a clean envelope, no human banner. A successful json.Unmarshal
+	// of the WHOLE buffer is the strong proof — any leaked banner text would
+	// make it fail on leading/trailing non-JSON.
+	so := out.String()
+	if strings.Contains(so, "Ship complete") {
+		t.Errorf("stdout must stay clean for the envelope, leaked banner:\n%s", so)
+	}
+	var env struct {
+		OK     bool           `json:"ok"`
+		Result shipResultJSON `json:"result"`
+	}
+	if jerr := json.Unmarshal([]byte(so), &env); jerr != nil {
+		t.Fatalf("stdout is not a JSON envelope: %v\n%s", jerr, so)
+	}
+	if !env.OK || env.Result.Tag != "v1.3.0" {
+		t.Errorf("envelope = %+v, want ok=true tag=v1.3.0", env)
+	}
+
+	// stderr: the human progress (banner) was streamed here.
+	if se := errOut.String(); !strings.Contains(se, "shipped") || !strings.Contains(se, "v1.3.0") {
+		t.Errorf("stderr must carry the human pipeline, got:\n%s", se)
+	}
+}
+
 func TestRunShipCoreSquashModeUsesSoftResetAndCommit(t *testing.T) {
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"status --porcelain":                                                  {Stdout: ""},
@@ -747,11 +809,19 @@ func TestRunShipCoreJSONRequiresDryRun(t *testing.T) {
 		"rev-parse --verify refs/tags/v1.2.4": {ExitCode: 1, Stderr: "not found"},
 	}}
 	var out bytes.Buffer
+	// EXPLICIT --json (jsonExplicit) on a live run is refused; yes:true rules
+	// out the confirm-refusal path so the error is specifically the json one.
 	err := runShipCore(context.Background(),
 		shipDeps{Runner: runner, Config: testShipConfig(), Out: &out, ErrOut: &out},
-		shipFlags{jsonOut: true, noFetch: true, push: true})
-	if err == nil || !strings.Contains(err.Error(), "--dry-run") {
+		shipFlags{jsonOut: true, jsonExplicit: true, yes: true, noFetch: true, push: true})
+	if err == nil || !strings.Contains(err.Error(), "emits the release plan and requires --dry-run") {
 		t.Fatalf("want --json-requires-dry-run error, got %v", err)
+	}
+	// The guard fires before any mutation.
+	for _, call := range runner.Calls {
+		if len(call.Args) > 0 && (call.Args[0] == "tag" || call.Args[0] == "commit" || call.Args[0] == "push") {
+			t.Fatalf("refused run must not mutate, but called git %s", strings.Join(call.Args, " "))
+		}
 	}
 }
 

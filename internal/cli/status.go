@@ -34,6 +34,42 @@ var statusExitCode bool
 var statusWatch bool
 var statusWatchInterval time.Duration
 var statusExplainBase bool
+
+// watchIntervalValue is the --watch-interval flag type. It accepts a bare
+// number as SECONDS (e.g. "100" → 100s, "0.5" → 500ms) — the common case — and
+// still parses a Go duration string ("500ms", "2s", "1m") for precision or
+// habit. A friendlier `--watch-interval 2` instead of forcing `2s`.
+type watchIntervalValue struct{ d *time.Duration }
+
+func (v watchIntervalValue) String() string {
+	if v.d == nil || *v.d <= 0 {
+		return "2s"
+	}
+	return v.d.String()
+}
+
+func (v watchIntervalValue) Set(s string) error {
+	s = strings.TrimSpace(s)
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		if f <= 0 {
+			return fmt.Errorf("watch-interval must be positive")
+		}
+		*v.d = time.Duration(f * float64(time.Second))
+		return nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid interval %q: pass seconds (e.g. 2) or a duration (e.g. 500ms, 2s, 1m)", s)
+	}
+	if d <= 0 {
+		return fmt.Errorf("watch-interval must be positive")
+	}
+	*v.d = d
+	return nil
+}
+
+func (v watchIntervalValue) Type() string { return "seconds" }
+
 var statusFetchDefault bool
 
 // effectiveVis holds the resolved visualization set for the current runStatus
@@ -71,8 +107,8 @@ func init() {
 	cmd.Flags().StringVar(&statusXYStyleFlag, "xy-style", "", "per-entry state column: 'labels' (new/mod/staged/conflict, default), 'glyphs' (+ ~ ● ⚔ #), or 'raw' (git's two-char code like ??/.M/UU)")
 	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "show a richer status summary; repeat for diagnostic details")
 	cmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "exit 0 clean, 1 dirty, 2 submodule-only dirty, 3 conflicts, 4 behind remote")
-	cmd.Flags().BoolVar(&statusWatch, "watch", false, "refresh status until interrupted")
-	cmd.Flags().DurationVar(&statusWatchInterval, "watch-interval", 2*time.Second, "refresh interval for --watch")
+	cmd.Flags().BoolVar(&statusWatch, "watch", false, "live change-feed: a timeline of which files change (fsnotify, polling fallback) — for watching an AI agent edit in real time; press [s] for the full status dashboard")
+	cmd.Flags().Var(watchIntervalValue{d: &statusWatchInterval}, "watch-interval", "polling-fallback refresh interval for --watch, in seconds (e.g. 2) or a duration (500ms, 2s); implies --watch")
 	cmd.Flags().BoolVar(&statusExplainBase, "explain-base", false, "print a multi-line block explaining how the base branch was resolved (sources, mismatches, action hints)")
 	cmd.Flags().BoolVar(&statusFetchDefault, "fetch-default", false, "with --explain-base, also query the remote's live default branch via ls-remote (one network call)")
 	cmd.Flags().Bool("ai", false, "explain the current status and next safe actions with AI")
@@ -1436,7 +1472,10 @@ func statusExitCodeFor(g groupedEntries, st *git.Status) int {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	if statusWatch {
+	// --watch-interval has no meaning without the watch loop, so passing it
+	// implies --watch — far less surprising than printing a one-shot status
+	// and exiting (the user clearly asked to keep watching).
+	if statusWatch || cmd.Flags().Changed("watch-interval") {
 		cfg, _ := loadStatusConfig()
 		if statusAssistExplicit(cmd) || statusAssistAuto(cfg) {
 			return fmt.Errorf("status --watch does not support --ai")
@@ -1447,7 +1486,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if statusExitCode {
 			return fmt.Errorf("status --watch does not support --exit-code")
 		}
-		return runStatusWatch(cmd)
+		// --watch is the live change-feed (compact status header + timeline,
+		// fsnotify-driven). Press [s] inside it for the full status dashboard.
+		return runChangeWatch(cmd)
 	}
 	code, err := runStatusOnce(cmd)
 	if err != nil {

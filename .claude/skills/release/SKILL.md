@@ -55,6 +55,8 @@ Ship runs everything: preflight (lint, race tests, goreleaser check) → release
 
 Stream the output to the user. Do not run `gh run watch` or clone the tap yourself — ship already did.
 
+Under an exported `GK_AGENT` session this works as-is — **no `env -u GK_AGENT` needed**: `ship -y` streams human progress to stderr and emits a result envelope `{tag, branch, base, merged_to_base, pushed, shipped_on}` on stdout when the pipeline completes. Read that envelope for the outcome.
+
 ## Phase 5 — REPORT
 
 ```

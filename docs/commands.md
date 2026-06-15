@@ -49,6 +49,7 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `--no-release` | false | Push the branch without creating or pushing a release tag |
 | `--push` | true | Push the branch and release tag; pass `--push=false` to tag locally only |
 | `--skip-preflight` | false | Skip configured preflight checks |
+| `--preflight` | false | Run only the configured preflight checks (lint/test/…) and exit — validate before a real ship. Builds no plan, so it works on a dirty tree and never tags or pushes. Runs every step (not fail-fast) so one call surfaces all problems; exits non-zero on failure (chainable: `gk ship --preflight && gk ship -y`). With `--json`/`GK_AGENT` emits `{result, steps:[{name,command,ok}], failed_step}` (exit 0 — branch on `result`). |
 | `-n`, `--no-verify` | false | Skip the secret-pattern scan before pushing (matches `gk commit -n` / `gk push -n`) |
 | `--allow-dirty` | false | Allow shipping with a dirty working tree |
 | `--allow-non-base` | false | Allow release tags from a non-base branch |

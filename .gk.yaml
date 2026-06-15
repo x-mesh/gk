@@ -29,6 +29,8 @@ ai:
 # The /release skill drives this via `gk ship --dry-run --json` + `gk ship -y`.
 preflight:
   steps:
+    - name: gofmt
+      command: gofmt          # builtin: fail fast on formatting before the slower lint
     - name: lint
       command: golangci-lint run
     - name: test

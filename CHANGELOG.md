@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk status --watch`가 라이브 체인지 피드로 재편 — "풀 status 2초 재렌더" 대신 "지금 뭘 편집 중인가".** 기존 `--watch`는 전체 status 블록을 2초마다 통째로 다시 그렸는데, 세션 중 거의 안 변하는 블록(DIVERGENCE·ACTIVITY·NEXT)까지 매번 재렌더하는 비용이 컸고 정작 라이브로 의미 있는 "변하는 파일"엔 시간축이 없었다. 이제 `--watch`는 **변화의 타임라인**이다: 작업 트리를 스냅샷해 직전과 비교하고 **new / re-touched / cleared** 이벤트를 쌓는다(글리프 `+`new `~`mod `−`del `→`rename `⚔`conflict `✓`cleared + `+N −M` stat + 1/100초 정밀 시각 `14:25:18.11`로 실시간 감). 화면은 split — 상단에 압축 status 헤더(repo · branch ⇄ upstream ↑↓ + HEAD 짧은해시·제목 + 변경 파일수·총±)가 고정되고 하단 `─── live changes ───` 아래 피드가 남은 높이를 채우며 스크롤한다(헤더 값은 매 렌더가 아니라 refresh 때만 가져와 렌더당 git 호출 0). 구분선 우측에는 **매초 똑딱이는 라이브 시계 `● 14:25:18`** — 파일 변화가 없어도 UI가 살아있음을 보여준다(render-only 1초 틱, git 호출 0). **`[s]`로 풀 status 대시보드**(기존 watch의 트리/DIVERGENCE/ACTIVITY)를 그 자리에 띄웠다 끌 수 있다. 트리거는 **fsnotify가 1차**(파일 변경 순간 ~200ms debounce, idle 비용 ≈ 0)이고 12s heartbeat 폴이 안전망 — fsnotify 미가용(미지원 플랫폼·디렉토리 수가 descriptor 예산 초과·설정 실패)은 `--watch-interval` **폴링으로 자동 폴백**한다. 재귀 감시는 `.gitignore` 디렉토리(node_modules 등)·`.git`을 제외하고 런타임에 새로 생긴 디렉토리도 따라붙는다. 스냅샷은 `git status --porcelain -z`/`diff --numstat -z`를 모두 `--no-optional-locks`로 호출해 agent의 `git add`와 .git/index.lock 경합을 피한다(폴링 폴백 시 틱 사이 중간 편집은 net만 보이는 게 한계). 비-TTY(파이프/캡처)는 `tail -f`식 append-only 스트림(상위 도구가 소비 가능). 한동안 `--watch-files`로 시험하던 이 동작을 `--watch`로 합치고 별도 플래그는 제거했다.
+
+### Fixed
+
+- **`gk status --watch`를 빠져나오면 이후 셸 글씨가 밀리던(터미널 깨짐) 문제.** lipgloss 기본 렌더러는 첫 스타일 렌더 때 터미널에 OSC 11(배경색)+DSR 질의를 lazily 보내는데, 이게 bubbletea 세션 *중*에 일어나면 bubbletea의 stdin 리더와 응답을 두고 경합해 미소비 응답 바이트가 종료 후 셸 입력으로 새어 프롬프트가 어긋났다. 이제 bubbletea가 stdin을 잡기 **전에** `lipgloss.ColorProfile()`/`HasDarkBackground()`로 감지를 강제해(응답을 cooked 모드에서 깨끗이 소비) 세션 중엔 캐시만 쓰고 질의하지 않는다 — PTY 검증: OSC 11 질의 1회, alt-screen 진입 전, 세션 중 재질의 없음.
+
+- **`GK_AGENT=1 gk ship -y`가 "requires --dry-run"으로 거부되던 문제.** agent 모드는 `--json`을 *암시*하는데, ship의 `--json`은 릴리스 *계획* 출력 계약이라 `--dry-run`과만 짝지어야 해서, 에이전트가 자연스럽게 친 `GK_AGENT=1 gk ship -y`가 에러로 막혔다(release 스킬도 `env -u GK_AGENT`로 우회 중이었다). 이제 **암시된** `--json`(명령줄에 `--json`을 타이핑하지 않음, `Changed("json")==false`)으로 라이브 실행에 들어오면 사람용 진행 출력을 stderr로 흘리고 **끝에 결과 envelope를 stdout**으로 내보낸다(`{tag,branch,base,merged_to_base,pushed,shipped_on}`) — stdout은 깨끗한 JSON 한 덩어리로 유지된다. **명시적** `--json`(`gk ship -y --json`)은 계획 문서를 요청한 것이므로 종전대로 거부한다(스트리밍 실행은 단일 계획 JSON을 만들 수 없음).
+
 ## [0.87.0] - 2026-06-15
 
 ### Added

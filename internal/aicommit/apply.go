@@ -176,10 +176,39 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 
 		toAdd := filterStaged(m.Group.Files, stagedDeletes)
 		if len(toAdd) > 0 {
-			addArgs := append([]string{"add", "-A", "--"}, toAdd...)
-			if _, stderr, err := runner.Run(ctx, addArgs...); err != nil {
-				return result, fmt.Errorf("aicommit: git add %v: %w (stderr=%s)",
-					toAdd, err, string(stderr))
+			// A file git already tracks but that sits inside a gitignored
+			// directory (e.g. a config force-added under an ignored data/
+			// dir) makes a plain `git add -A -- <path>` fail with "paths are
+			// ignored, use -f" — even though the file is tracked. Stage such
+			// paths with `git add -u`, which updates tracked entries only and
+			// never consults the ignore rules; it stages a tracked file's
+			// modification or deletion exactly like -A did. Genuinely new
+			// (untracked) paths keep the ignore-respecting `git add -A` so a
+			// plan can't smuggle in a truly ignored file.
+			tracked, err := trackedPaths(ctx, runner, toAdd)
+			if err != nil {
+				return result, err
+			}
+			var update, create []string
+			for _, f := range toAdd {
+				if _, ok := tracked[f]; ok {
+					update = append(update, f)
+				} else {
+					create = append(create, f)
+				}
+			}
+			for _, step := range []struct {
+				flag  string
+				files []string
+			}{{"-u", update}, {"-A", create}} {
+				if len(step.files) == 0 {
+					continue
+				}
+				addArgs := append([]string{"add", step.flag, "--"}, step.files...)
+				if _, stderr, err := runner.Run(ctx, addArgs...); err != nil {
+					return result, fmt.Errorf("aicommit: git add %s %v: %w (stderr=%s)",
+						step.flag, step.files, err, string(stderr))
+				}
 			}
 		}
 
@@ -358,6 +387,31 @@ func stagedDeletedPaths(ctx context.Context, runner git.Runner) (map[string]stru
 		return nil, fmt.Errorf("aicommit: list staged deletions: %w", err)
 	}
 	set := map[string]struct{}{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	return set, nil
+}
+
+// trackedPaths returns the subset of files that git already tracks (i.e.
+// have an index entry). It drives the staging-flag split in ApplyMessages:
+// a tracked file inside a gitignored directory makes `git add -A -- <path>`
+// fail with "paths are ignored, use -f", so such paths are staged with
+// `git add -u` instead, which never consults the ignore rules. `git ls-files`
+// lists only tracked paths, so any file it echoes back is safe to update;
+// the rest are genuinely new and keep the ignore-respecting `git add -A`.
+func trackedPaths(ctx context.Context, runner git.Runner, files []string) (map[string]struct{}, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	args := append([]string{"ls-files", "-z", "--"}, files...)
+	out, _, err := runner.Run(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("aicommit: list tracked paths: %w", err)
+	}
+	set := make(map[string]struct{}, len(files))
 	for _, p := range strings.Split(string(out), "\x00") {
 		if p != "" {
 			set[p] = struct{}{}

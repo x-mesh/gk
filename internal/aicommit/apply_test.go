@@ -321,10 +321,10 @@ func TestApplyMessagesAddFailureAborts(t *testing.T) {
 
 // TestApplyMessagesStagesUnstagedDeletion covers the path where the
 // user removed a tracked file from disk but hadn't run `git rm` — the
-// index still has the entry, working tree doesn't (porcelain " D"). On
-// these `git add -A -- <path>` matches the index entry and stages the
-// deletion. The earlier bug (pre-`-A`) silently lost the deletion; this
-// guards the fix.
+// index still has the entry, working tree doesn't (porcelain " D"). The
+// file is tracked, so it stages via `git add -u -- <path>`, which records
+// deletions of tracked entries just as well as modifications. The earlier
+// bug silently lost the deletion; this guards the fix.
 func TestApplyMessagesStagesUnstagedDeletion(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
@@ -332,6 +332,8 @@ func TestApplyMessagesStagesUnstagedDeletion(t *testing.T) {
 			"rev-parse HEAD":                    {Stdout: "abc\n"},
 			"write-tree":                        {Stdout: "t\n"},
 			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			// gone.go still has an index entry → git tracks it → `git add -u`.
+			"ls-files -z -- gone.go": {Stdout: "gone.go\x00"},
 		},
 		DefaultResp: git.FakeResponse{Stdout: "[main 2222222] chore: drop\n"},
 	}
@@ -343,12 +345,61 @@ func TestApplyMessagesStagesUnstagedDeletion(t *testing.T) {
 	}
 	var saw bool
 	for _, c := range fake.Calls {
-		if len(c.Args) >= 4 && c.Args[0] == "add" && c.Args[1] == "-A" && c.Args[2] == "--" && c.Args[3] == "gone.go" {
+		if len(c.Args) >= 4 && c.Args[0] == "add" && c.Args[1] == "-u" && c.Args[2] == "--" && c.Args[3] == "gone.go" {
 			saw = true
 		}
 	}
 	if !saw {
-		t.Errorf("expected `git add -A -- gone.go`, got calls=%+v", fake.Calls)
+		t.Errorf("expected `git add -u -- gone.go`, got calls=%+v", fake.Calls)
+	}
+}
+
+// TestApplyMessagesStagesTrackedFileInIgnoredDir guards the 2026-06-15
+// fix: a file git already tracks but that lives inside a gitignored
+// directory (e.g. a config force-added under an ignored data/ dir) makes
+// `git add -A -- <path>` fail with "paths are ignored, use -f". gk must
+// stage it via `git add -u` (tracked-only, ignore-blind) so the commit
+// still lands. The fake fails on -A to prove gk never takes that path.
+func TestApplyMessagesStagesTrackedFileInIgnoredDir(t *testing.T) {
+	const path = "data/space_names.json"
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "abc\n"},
+			"write-tree":                        {Stdout: "t\n"},
+			"diff --cached --no-renames --diff-filter=D --name-only -z": {Stdout: ""},
+			"diff --cached --name-status -z -M":                         {Stdout: ""},
+			// git tracks the file despite its ignored parent dir.
+			"ls-files -z -- " + path: {Stdout: path + "\x00"},
+			// Plain `git add -A` would reject the ignored path — if gk ever
+			// routed a tracked file here again, this turns the test red.
+			"add -A -- " + path: {
+				Stderr:   "The following paths are ignored by one of your .gitignore files:\ndata\nhint: Use -f if you really want to add them.",
+				ExitCode: 1,
+			},
+		},
+		DefaultResp: git.FakeResponse{Stdout: "[main 4444444] chore: x\n"},
+	}
+	msgs := []Message{
+		{Group: provider.Group{Type: "chore", Files: []string{path}}, Subject: "update mappings"},
+	}
+	if _, err := ApplyMessages(context.Background(), fake, msgs, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyMessages must succeed for a tracked file in an ignored dir: %v", err)
+	}
+	var sawUpdate, sawForbiddenA bool
+	for _, c := range fake.Calls {
+		switch strings.Join(c.Args, " ") {
+		case "add -u -- " + path:
+			sawUpdate = true
+		case "add -A -- " + path:
+			sawForbiddenA = true
+		}
+	}
+	if !sawUpdate {
+		t.Errorf("expected `git add -u -- %s`, calls=%+v", path, fake.Calls)
+	}
+	if sawForbiddenA {
+		t.Errorf("must not run the ignore-rejecting `git add -A -- %s`, calls=%+v", path, fake.Calls)
 	}
 }
 

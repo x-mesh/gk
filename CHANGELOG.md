@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-06-15
+
 ### Added
 
 - **`gk worktree run <branch> -- <command>` — 격리된 병렬 작업의 단발 CLI.** `<branch>`용 worktree를 만들거나(이미 그 브랜치를 체크아웃한 worktree가 있으면 재사용) 그 안에서 명령을 실행하고(작업 디렉토리 = worktree), 명령의 exit code를 그대로 전파한다 — 새 브랜치는 HEAD에서 잘라 managed-base 레이아웃에 두고 gk-parent를 기록하며 `worktree.init`(link/copy/run)을 적용한다. `--cleanup`은 명령이 성공(exit 0)하면 worktree를 회수하고, 이 호출이 브랜치까지 만든 경우 브랜치도 삭제한다 — 실패한 명령은 검사할 수 있게 worktree를 그대로 남긴다. `--` 뒤는 셸을 거치지 않고 직접 실행하므로 연산자가 필요하면 `sh -c '...'`로 감싼다(`gk worktree run feat/api --cleanup -- sh -c 'npm ci && npm test'`). `--from <ref>`(새 브랜치 베이스, 기본 HEAD), `--init`/`--no-init`(부트스트랩 강제/생략). 결과는 `{path,branch,created,command,exit_code,removed}`로 보고한다(`--json`/`GK_AGENT`). Workflow의 worktree-격리 패턴을 명령 한 줄로 쓰는 형태다.

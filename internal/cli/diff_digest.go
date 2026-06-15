@@ -82,22 +82,6 @@ func digestToJSON(d diff.Digest) diffDigestJSON {
 //	A  internal/cli/land.go        +280 −0  ·1
 //	   3 files · 7 hunks · +340 −12
 func renderDiffDigest(w io.Writer, d diff.Digest, noColor bool) {
-	statusGlyph := func(s diff.FileStatus) string {
-		switch s {
-		case diff.StatusAdded:
-			return "A"
-		case diff.StatusDeleted:
-			return "D"
-		case diff.StatusRenamed:
-			return "R"
-		case diff.StatusCopied:
-			return "C"
-		case diff.StatusModeChanged:
-			return "T"
-		default:
-			return "M"
-		}
-	}
 	pathWidth := 0
 	for _, f := range d.Files {
 		if n := len(displayDigestPath(f)); n > pathWidth {
@@ -137,6 +121,26 @@ func renderDiffDigest(w io.Writer, d diff.Digest, noColor bool) {
 	}
 	fmt.Fprintf(w, "   %d files · %d hunks · +%d −%d\n",
 		d.Stat.Files, d.Stat.Hunks, d.Stat.Added, d.Stat.Deleted)
+}
+
+// statusGlyph maps a file's change status to its single-char digest
+// glyph (M/A/D/R/C/T), shared by `gk diff --digest` and the `gk commit`
+// plan preview so both speak the same vocabulary.
+func statusGlyph(s diff.FileStatus) string {
+	switch s {
+	case diff.StatusAdded:
+		return "A"
+	case diff.StatusDeleted:
+		return "D"
+	case diff.StatusRenamed:
+		return "R"
+	case diff.StatusCopied:
+		return "C"
+	case diff.StatusModeChanged:
+		return "T"
+	default:
+		return "M"
+	}
 }
 
 func displayDigestPath(f diff.FileDigest) string {

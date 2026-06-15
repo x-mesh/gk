@@ -6,9 +6,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/x-mesh/gk/internal/ui"
 )
+
+// fileDelta renders a FileStat's line delta in the digest's "+A −B"
+// form (U+2212 minus, matching `gk diff --digest`).
+func fileDelta(s FileStat) string {
+	return fmt.Sprintf("+%d −%d", s.Added, s.Deleted)
+}
 
 // ReviewDecision is the per-group action a user picked in ReviewPlan.
 type ReviewDecision struct {
@@ -39,6 +46,28 @@ type ReviewOptions struct {
 	// Prompter is an optional hook for tests — when nil ReviewPlan
 	// falls back to ui.Confirm for accept/drop prompts.
 	Prompter ReviewPrompter
+	// FileStats maps a changed path to its display-ready change stats.
+	// When non-nil, printSummary annotates each file with its change
+	// kind + line delta and prints a totals line; nil keeps the plain
+	// "• path" preview (plan-run / tests / a digest that failed to
+	// build). aicommit never parses a diff itself — the CLI builds this.
+	FileStats map[string]FileStat
+}
+
+// FileStat is display-ready per-file change info for the plan preview,
+// mirroring one row of `gk diff --digest`. All fields are presentation
+// values the caller already computed (glyph mapped, symbols joined and
+// truncated, docs/build symbols suppressed); printSummary only lays
+// them out.
+type FileStat struct {
+	// Glyph is the single-char change kind (M/A/D/R/C/T). Empty defaults
+	// to "M" at render time.
+	Glyph   string
+	Added   int
+	Deleted int
+	// Symbols is the pre-joined "fn, fn2, +N more" display string; empty
+	// when the file has no informative symbols (or is docs/build).
+	Symbols string
 }
 
 // ReviewPrompter abstracts the per-message accept/regenerate/drop
@@ -60,7 +89,7 @@ func ReviewPlan(messages []Message, opts ReviewOptions) ([]ReviewDecision, error
 	if out == nil {
 		out = io.Discard
 	}
-	_ = printSummary(out, messages)
+	_ = printSummary(out, messages, opts.FileStats)
 
 	if opts.Force {
 		decisions := make([]ReviewDecision, len(messages))
@@ -146,17 +175,73 @@ func renderMessageBody(m Message) string {
 }
 
 // printSummary writes a tabular preview of the plan to out. Callers
-// can tee this into a log before prompting.
-func printSummary(out io.Writer, messages []Message) error {
+// can tee this into a log before prompting. When stats carries per-file
+// change info the file list gains a change-kind glyph + line delta and
+// the header gains a "· F file(s) · +A −D" totals tail; a nil/empty map
+// degrades to the plain count header and "• path" file list. Output is
+// intentionally ANSI-free so a tee'd log stays readable.
+func printSummary(out io.Writer, messages []Message, stats map[string]FileStat) error {
 	if len(messages) == 0 {
 		_, err := fmt.Fprintln(out, "no commit groups proposed")
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "Proposed %d commit(s):\n\n", len(messages))
+
+	// One pass over the plan's files to size the path + delta columns
+	// and total the deltas — all only meaningful when stats is supplied.
+	haveStats := len(stats) > 0
+	var totalFiles, totalAdd, totalDel, pathW, deltaW int
+	if haveStats {
+		for _, m := range messages {
+			for _, f := range m.Group.Files {
+				totalFiles++
+				if n := len(f); n > pathW {
+					pathW = n
+				}
+				s, ok := stats[f]
+				if !ok {
+					continue
+				}
+				totalAdd += s.Added
+				totalDel += s.Deleted
+				// Rune count, not byte count: the "−" (U+2212) is 3 bytes
+				// but one display column, so byte width would over-pad.
+				if n := utf8.RuneCountInString(fileDelta(s)); n > deltaW {
+					deltaW = n
+				}
+			}
+		}
+	}
+
+	if haveStats {
+		_, _ = fmt.Fprintf(out, "Proposed %d commit(s) · %d file(s) · +%d −%d\n\n",
+			len(messages), totalFiles, totalAdd, totalDel)
+	} else {
+		_, _ = fmt.Fprintf(out, "Proposed %d commit(s):\n\n", len(messages))
+	}
+
 	for i, m := range messages {
 		_, _ = fmt.Fprintf(out, "  [%d/%d] %s\n", i+1, len(messages), m.Header())
 		for _, f := range m.Group.Files {
-			_, _ = fmt.Fprintf(out, "         • %s\n", f)
+			s, ok := stats[f]
+			if !haveStats || !ok {
+				_, _ = fmt.Fprintf(out, "         • %s\n", f)
+				continue
+			}
+			glyph := s.Glyph
+			if glyph == "" {
+				glyph = "M"
+			}
+			// Pad the delta to deltaW runes (not bytes) so the symbol
+			// column lines up despite the multi-byte "−".
+			delta := fileDelta(s)
+			if pad := deltaW - utf8.RuneCountInString(delta); pad > 0 {
+				delta += strings.Repeat(" ", pad)
+			}
+			line := fmt.Sprintf("         %s  %-*s  %s", glyph, pathW, f, delta)
+			if s.Symbols != "" {
+				line += "  " + s.Symbols
+			}
+			_, _ = fmt.Fprintln(out, strings.TrimRight(line, " "))
 		}
 		if m.Body != "" {
 			indented := "         │ " + strings.ReplaceAll(strings.TrimSpace(m.Body), "\n", "\n         │ ")

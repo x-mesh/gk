@@ -18,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/diff"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
@@ -313,6 +314,11 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("commit: classify: %w", err)
 	}
 	Dbg("commit: classify ok — %d group(s) in %s", len(groups), time.Since(classifyStart).Round(time.Millisecond))
+	// Mirror the compose timing line below: surface the classify
+	// wall-clock + grouping on the human stream so the two LLM phases
+	// each report their cost, not just -d.
+	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classified %d file(s) into %d group(s) in %s\n",
+		len(files), len(groups), time.Since(classifyStart).Round(time.Millisecond))
 	if len(groups) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after filtering")
 		return nil
@@ -394,6 +400,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		Out:            cmd.OutOrStdout(),
 		Force:          flags.force || flags.yes,
 		NonInteractive: flags.ci && !ui.IsTerminal(),
+		FileStats:      commitDisplayStats(ctx, runner, files, wipCommit),
 	}
 	decisions, err := aicommit.ReviewPlan(messages, reviewOpts)
 	if err != nil {
@@ -978,6 +985,76 @@ func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider
 	return diffs, nil
 }
 
+// commitDisplayStats digests the same cached+unstaged(+WIP) diff the
+// commit is about to apply and returns a path → FileStat map for the
+// plan preview: change kind, line delta, and touched symbols, mirroring
+// `gk diff --digest`. Unlike collectGroupDiffs (per-group, truncated for
+// the LLM payload) this is a single untruncated pass over every in-scope
+// file so the preview totals are exact. Any failure returns nil so the
+// preview falls back to the plain file list rather than blocking commit.
+func commitDisplayStats(ctx context.Context, runner git.Runner, files []aicommit.FileChange, wipCommit wipCommitForAICommit) map[string]aicommit.FileStat {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	if wipCommit.Present {
+		depth := wipCommit.ChainLen
+		if depth <= 0 {
+			depth = 1
+		}
+		args := append([]string{"diff", fmt.Sprintf("HEAD~%d..HEAD", depth), "--"}, paths...)
+		if d, _, err := runner.Run(ctx, args...); err == nil {
+			b.Write(d)
+			if len(d) > 0 && !strings.HasSuffix(string(d), "\n") {
+				b.WriteByte('\n')
+			}
+		}
+	}
+	cached, _, _ := runner.Run(ctx, append([]string{"diff", "--cached", "--"}, paths...)...)
+	unstaged, _, _ := runner.Run(ctx, append([]string{"diff", "--"}, paths...)...)
+	b.Write(cached)
+	if len(cached) > 0 && !strings.HasSuffix(string(cached), "\n") {
+		b.WriteByte('\n')
+	}
+	b.Write(unstaged)
+
+	res, err := diff.ParseUnifiedDiff(strings.NewReader(b.String()))
+	if err != nil || res == nil {
+		return nil
+	}
+	d := diff.BuildDigest(res)
+	if len(d.Files) == 0 {
+		return nil
+	}
+	stats := make(map[string]aicommit.FileStat, len(d.Files))
+	for _, fd := range d.Files {
+		// Suppress docs/build "symbols" — git's generic hunk-header
+		// heuristic catches body text there, matching the digest contract.
+		names := fd.Symbols
+		if kind := aicommit.FileKind(fd.Path); kind == "docs" || kind == "build" {
+			names = nil
+		}
+		fs := aicommit.FileStat{
+			Glyph:   statusGlyph(fd.Status),
+			Added:   fd.Added,
+			Deleted: fd.Deleted,
+			Symbols: joinSymbolNames(names, 3),
+		}
+		stats[fd.Path] = fs
+		// A rename's group file may carry the old path — key both so the
+		// preview lookup hits regardless of which side classification used.
+		if fd.OldPath != "" {
+			stats[fd.OldPath] = fs
+		}
+	}
+	return stats
+}
+
 // groupKeyLocal mirrors internal/aicommit.groupKey; we duplicate rather
 // than export the package-internal helper.
 func groupKeyLocal(g provider.Group) string {
@@ -1125,14 +1202,19 @@ func printApplySummary(out interface{ Write(p []byte) (int, error) }, kept []aic
 		fmt.Fprintf(out, "commit: dry-run — %d commit(s) would be made (backup ref: %s)\n", len(kept), res.BackupRef)
 		return
 	}
-	fmt.Fprint(out, successLinef("commit: created", "%d commit(s)", len(kept)))
-	fmt.Fprintln(out, " "+cellFaint("(backup ref: "+res.BackupRef+")"))
+	fmt.Fprintln(out, successLinef("commit: created", "%d commit(s)", len(kept)))
 	for i, m := range kept {
 		sha := ""
 		if i < len(res.CommitShas) {
 			sha = res.CommitShas[i]
 		}
-		fmt.Fprintf(out, "  %s  %s\n", sha, m.Header())
+		fmt.Fprintf(out, "  %s  %s\n", cellFaint(sha), m.Header())
+	}
+	// Undo affordance front-and-center; the raw backup ref is demoted to
+	// dim metadata so the actionable command reads first.
+	if res.BackupRef != "" {
+		fmt.Fprintln(out, "  "+stylizeHintLine(
+			fmt.Sprintf("hint: gk commit --abort (undo · backup ref %s)", res.BackupRef)))
 	}
 }
 

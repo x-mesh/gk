@@ -24,6 +24,56 @@ func (s *scriptedPrompter) Prompt(_, _ int, _ Message) (ReviewDecision, error) {
 	return d, nil
 }
 
+func TestPrintSummaryWithStats(t *testing.T) {
+	out := &bytes.Buffer{}
+	messages := []Message{
+		{Group: provider.Group{Type: "feat", Files: []string{"a.go", "b.go"}}, Subject: "do a"},
+		{Group: provider.Group{Type: "docs", Files: []string{"README.md"}}, Subject: "note it"},
+	}
+	stats := map[string]FileStat{
+		"a.go":      {Glyph: "M", Added: 10, Deleted: 2, Symbols: "Foo"},
+		"b.go":      {Glyph: "A", Added: 30, Deleted: 0},
+		"README.md": {Glyph: "M", Added: 4, Deleted: 1},
+	}
+	if err := printSummary(out, messages, stats); err != nil {
+		t.Fatalf("printSummary: %v", err)
+	}
+	got := out.String()
+	// Header totals: 3 files, +44 −3.
+	if !strings.Contains(got, "Proposed 2 commit(s) · 3 file(s) · +44 −3") {
+		t.Errorf("totals header missing:\n%s", got)
+	}
+	// Per-file line carries glyph, delta, and symbol.
+	if !strings.Contains(got, "A  b.go") {
+		t.Errorf("added-file glyph missing:\n%s", got)
+	}
+	if !strings.Contains(got, "+10 −2") || !strings.Contains(got, "Foo") {
+		t.Errorf("delta/symbol missing:\n%s", got)
+	}
+	// No plain bullet when stats cover the file.
+	if strings.Contains(got, "• a.go") {
+		t.Errorf("expected annotated line, got plain bullet:\n%s", got)
+	}
+}
+
+func TestPrintSummaryFallsBackWithoutStats(t *testing.T) {
+	out := &bytes.Buffer{}
+	messages := []Message{{Group: provider.Group{Type: "feat", Files: []string{"a.go"}}, Subject: "do a"}}
+	if err := printSummary(out, messages, nil); err != nil {
+		t.Fatalf("printSummary: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Proposed 1 commit(s):") {
+		t.Errorf("plain header missing:\n%s", got)
+	}
+	if !strings.Contains(got, "• a.go") {
+		t.Errorf("plain bullet missing:\n%s", got)
+	}
+	if strings.Contains(got, "· 1 file(s)") {
+		t.Errorf("totals tail should be absent without stats:\n%s", got)
+	}
+}
+
 func TestReviewPlanForceSkipsPrompter(t *testing.T) {
 	out := &bytes.Buffer{}
 	messages := []Message{

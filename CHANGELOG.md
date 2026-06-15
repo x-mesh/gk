@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk worktree run <branch> -- <command>` — 격리된 병렬 작업의 단발 CLI.** `<branch>`용 worktree를 만들거나(이미 그 브랜치를 체크아웃한 worktree가 있으면 재사용) 그 안에서 명령을 실행하고(작업 디렉토리 = worktree), 명령의 exit code를 그대로 전파한다 — 새 브랜치는 HEAD에서 잘라 managed-base 레이아웃에 두고 gk-parent를 기록하며 `worktree.init`(link/copy/run)을 적용한다. `--cleanup`은 명령이 성공(exit 0)하면 worktree를 회수하고, 이 호출이 브랜치까지 만든 경우 브랜치도 삭제한다 — 실패한 명령은 검사할 수 있게 worktree를 그대로 남긴다. `--` 뒤는 셸을 거치지 않고 직접 실행하므로 연산자가 필요하면 `sh -c '...'`로 감싼다(`gk worktree run feat/api --cleanup -- sh -c 'npm ci && npm test'`). `--from <ref>`(새 브랜치 베이스, 기본 HEAD), `--init`/`--no-init`(부트스트랩 강제/생략). 결과는 `{path,branch,created,command,exit_code,removed}`로 보고한다(`--json`/`GK_AGENT`). Workflow의 worktree-격리 패턴을 명령 한 줄로 쓰는 형태다.
+
+- **per-worktree 상태 — "어느 worktree에 미완 작업이 있나"를 한 호출로.** `gk worktree list --json`과 `gk context`가 worktree별 branch·ahead/behind·parent·lock·dirty(staged/unstaged/untracked) 신호를 함께 싣는다 — 경로마다 따로 `git status`를 돌리지 않고 한 번에 답한다.
+
+- **`gk batch`의 per-step worktree 타게팅.** plan의 각 step에 `"worktree"` 필드(브랜치 이름 또는 절대 경로)를 주면 그 step을 해당 worktree에서 실행한다 — 한 트랜잭션이 여러 worktree를 가로지른다. 브랜치 이름은 그 위에 체크아웃된 worktree로, 경로는 등록된 worktree일 때만 해석되며, 해석 실패는 그 step의 `on_failure` 정책을 따르는 실패로 처리된다.
+
+### Changed
+
+- **agents 규약 블록 v12 — `worktree run` 격리 태스크 안내 추가.** `gk agents` 계약 블록에 **Isolated worktree task** 항목을 신설했다: `git-kit worktree run <branch> -- <command>`(브랜치용 worktree 생성/재사용 → 그 안에서 명령 실행 → 명령의 exit code로 종료, `--cleanup`은 성공 시 worktree 회수+생성한 브랜치 삭제, `--from`/`--init`/`--no-init`)와, "어느 worktree에 미완 작업이 있나"를 경로별 프로브 없이 한 호출로 답하는 `git-kit worktree list --json`(worktree별 ahead/behind·parent·lock·dirty). `gk agents install`로 CLAUDE.md/AGENTS.md 블록이 v12로 갱신된다.
+
+- **`gk st` rich BRANCH 섹션이 HEAD 커밋을 두 줄로 — 전체 해시 + 커밋 제목.** 기존엔 정체성 줄 끝에 `· last commit 7h 2f6e7520`처럼 짧은 SHA만 붙어 무슨 커밋인지 알 수 없었다. 이제 1줄은 브랜치 정체성 + `· 7h ago`(상대 시각)로 끝나고, 2줄에 **전체 40자 해시**(복붙 가능, git-log 관례대로 노란색)와 **커밋 제목(subject)**이 내려온다. 제목은 터미널 폭(3칸 indent + 40자 해시 + 2칸 gap 차감)에 맞춰 `runewidth`로 잘려 줄바꿈을 막고, non-TTY(파이프/캡처)에선 전체를 그대로 출력한다. `--vis staleness` 레이어에 속하므로 staleness를 끄면 함께 사라진다.
+
+### Fixed
+
+- **`gk worktree add --dry-run`이 실제로 worktree를 만들던 버그.** `--dry-run`이 무시돼 계획만 보려 해도 worktree가 생성됐다. 이제 `--dry-run`은 아무것도 만들지 않고 계획만 내며, agent envelope/`--json` 결과 `{path,branch,parent,created,init}`로 보고한다(기존엔 사람용 성공 줄뿐).
+
+- **`gk switch` 피커에서 `d`/`D`로 워크트리 브랜치를 지우면 "delete failed"로 끝나던 버그.** 다른 워크트리에 체크아웃된 브랜치(피커의 WORKTREE 컬럼에 표시되는 행)에 커서를 두고 `d`를 누르면 `git branch -d`가 실행됐는데, git은 워크트리가 점유한 브랜치 삭제를 거부한다(`cannot delete branch 'x' used by worktree at ...`) — 사용자는 워크트리를 치우려는 의도였지만 브랜치 삭제가 시도되며 혼란스러운 실패만 봤다. 이제 `d`/`D`가 점유 브랜치를 감지하면 `gk wt`의 워크트리 제거 흐름(`worktreeTUIRemove`)으로 리다이렉트한다 — lock(살아있는 holder는 강제 확인, stale은 unlock+remove)·dirty(강제 제거 확인)·stale 레코드(prune)를 모두 처리하고, 제거 후 해방된 브랜치를 지울지도 물어본 뒤 피커를 다시 그린다. 재사용을 위해 `worktreeTUIRemove`/`worktreeLockInfo`/`forceRemoveWorktree`/`maybeDeleteOrphanBranch`의 시그니처를 `*git.ExecRunner`/`*cobra.Command`에서 `git.Runner`/`io.Writer` 인터페이스로 일반화했다(동작 불변).
+
 ## [0.86.0] - 2026-06-14
 
 ### Added

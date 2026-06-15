@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **그 손상 에러가 어느 명령에서 터지든 `gk doctor --fix`로 안내한다.** `invalid commit position` / `commit-graph is likely corrupt` 문구를 에러 체인 단일 지점에서 감지해(not-a-repo 처리와 같은 방식, git 원문 메시지는 보존) hint와 machine-executable remedy(`gk doctor --fix`, safety `safe`)를 입힌다. agent envelope에는 안정 코드 `commit-graph-corrupt`와 함께 노출되어(errcode 어휘는 append-only), 사람·에이전트 양쪽이 동일한 해결책을 받는다.
 
+### Fixed
+
+- **`gk commit`이 gitignored 디렉토리 안의 tracked 파일을 처리하도록 staging을 두 단계로 분리.** 기존엔 `git add -A` 한 번으로 처리해, ignore된 디렉토리 안에 이미 추적 중인 파일이 있으면 add가 실패했다. 이제 tracked 파일은 `git add -u`(ignore 규칙 무시), 신규 파일은 `git add -A`(ignore 규칙 준수)로 나눠 stage한다 — ignore 디렉토리 안의 추적 파일도 정상 커밋된다.
+
 ## [0.88.0] - 2026-06-15
 
 ### Added

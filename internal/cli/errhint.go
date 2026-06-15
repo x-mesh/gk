@@ -111,6 +111,12 @@ func FormatError(err error) string {
 		)
 	}
 
+	// Layer gk guidance onto known raw-git failures that arrive with no
+	// hint of their own (e.g. a corrupt commit-graph cache surfacing mid
+	// rebase). Unlike the not-a-repo case this keeps git's own message —
+	// it is diagnostic — and only adds the hint + remedy.
+	err = decorateRawGitError(err)
+
 	// Easy Mode branch: use EasyFormatter for friendlier output.
 	// Skip when --json is active (Property 9: JSON Mode Bypass).
 	if eng := EasyEngine(); eng != nil && eng.IsEnabled() && !JSONOut() {
@@ -378,6 +384,56 @@ func isNotAGitRepoError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// isCommitGraphCorruptError reports whether err originates from git tripping
+// over a corrupt commit-graph cache — the failure that strands `gk sync` /
+// `gk pull` mid-rebase with "fatal: invalid commit position. commit-graph is
+// likely corrupt". As with isNotAGitRepoError we check both the wrapped
+// message and the ExitError's stderr so detection survives chain wrapping
+// (RebaseOnto returns the raw *git.ExitError; executePullStrategy passes it
+// through untouched). git emits either or both signature phrases.
+func isCommitGraphCorruptError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if commitGraphCorruptText(err.Error()) {
+		return true
+	}
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) && commitGraphCorruptText(exitErr.Stderr) {
+		return true
+	}
+	return false
+}
+
+// commitGraphCorruptText matches the two phrases git prints when the
+// commit-graph file is out of sync with the object store. "invalid commit
+// position" is the proximate failure; "commit-graph is likely corrupt" is
+// git's own diagnosis appended to it.
+func commitGraphCorruptText(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "commit-graph is likely corrupt") ||
+		strings.Contains(s, "invalid commit position")
+}
+
+// decorateRawGitError layers gk guidance onto known raw-git failures that
+// arrive with no hint of their own. It preserves the underlying error
+// (Unwrap still reaches it) and only attaches a hint + machine-executable
+// remedy, so both the human renderer (FormatError) and the agent envelope
+// (FormatErrorJSON) surface the same fix. A no-op when err already carries a
+// hint or matches no known pattern.
+func decorateRawGitError(err error) error {
+	if err == nil || HintFrom(err) != "" {
+		return err
+	}
+	if isCommitGraphCorruptError(err) {
+		return WithRemedy(err,
+			"git's commit-graph cache is corrupt — repair it with `gk doctor --fix`",
+			errRemedy{Command: "gk doctor --fix", Safety: "safe"},
+		)
+	}
+	return err
 }
 
 // ensureGitRepo returns a not-a-git-repo error (which FormatError renders as the

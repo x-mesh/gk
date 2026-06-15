@@ -234,6 +234,159 @@ func checkDirtyTree(ctx context.Context, runner git.Runner) doctorCheck {
 	}
 }
 
+// commitGraphPaths returns the absolute paths of the commit-graph cache in
+// both forms — the single-file `commit-graph` and the split-chain
+// `commit-graphs/` directory. Resolved via `git rev-parse --git-path` so it
+// is correct inside linked worktrees too, where the object store (and thus
+// the commit-graph) lives under the common dir, not the worktree's gitdir.
+func commitGraphPaths(ctx context.Context, runner git.Runner) []string {
+	var out []string
+	for _, rel := range []string{
+		"objects/info/commit-graph",
+		"objects/info/commit-graphs",
+	} {
+		raw, _, err := runner.Run(ctx, "rev-parse", "--git-path", rel)
+		if err != nil {
+			continue
+		}
+		p := strings.TrimSpace(string(raw))
+		if p == "" {
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			base := RepoFlag()
+			if base == "" {
+				base, _ = os.Getwd()
+			}
+			p = filepath.Join(base, p)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// commitGraphPresent reports whether any commit-graph cache file exists.
+// There is nothing to verify (or corrupt) when git has never written one,
+// and some git versions make `commit-graph verify` error loudly on a
+// missing graph — which would otherwise read as a false FAIL.
+func commitGraphPresent(ctx context.Context, runner git.Runner) bool {
+	for _, p := range commitGraphPaths(ctx, runner) {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// checkCommitGraph flags a corrupt commit-graph cache — the failure that
+// strands `gk sync` / `gk pull` mid-rebase with "fatal: invalid commit
+// position. commit-graph is likely corrupt". The cache is a pure speed
+// optimisation rebuilt from the object store, so repair never risks
+// history. PASS when no cache exists (nothing to corrupt).
+func checkCommitGraph(ctx context.Context, runner git.Runner) doctorCheck {
+	if !commitGraphPresent(ctx, runner) {
+		return doctorCheck{Name: "repo: commit-graph", Status: statusPass, Detail: "no cache"}
+	}
+	_, stderr, err := runner.Run(ctx, "commit-graph", "verify")
+	if err == nil {
+		return doctorCheck{Name: "repo: commit-graph", Status: statusPass, Detail: "valid"}
+	}
+	detail := strings.TrimSpace(string(stderr))
+	if i := strings.IndexByte(detail, '\n'); i >= 0 {
+		detail = detail[:i]
+	}
+	if detail == "" {
+		detail = "verify failed"
+	}
+	if len(detail) > 70 {
+		detail = detail[:67] + "..."
+	}
+	return doctorCheck{
+		Name:   "repo: commit-graph",
+		Status: statusFail,
+		Detail: "corrupt — " + detail,
+		Fix:    "rebuild it: rm -rf .git/objects/info/commit-graph .git/objects/info/commit-graphs && git commit-graph write --reachable  (or run `gk doctor --fix`)",
+	}
+}
+
+// removeCommitGraph deletes every commit-graph cache path. os.RemoveAll
+// copes with the read-only mode git assigns graph files — on Unix unlink
+// needs write on the parent dir, not on the file itself.
+func removeCommitGraph(ctx context.Context, runner git.Runner) error {
+	for _, p := range commitGraphPaths(ctx, runner) {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hardenCommitGraph writes the --local git config that stops the cache from
+// being auto-(re)written (gc / fetch) and from being read at all, so a
+// future race between concurrent git processes can never corrupt an
+// operation. Scoped to this repo; the trade-off is slightly slower history
+// traversal, negligible outside very large repos.
+func hardenCommitGraph(ctx context.Context, runner git.Runner) error {
+	for _, kv := range [][2]string{
+		{"gc.writeCommitGraph", "false"},
+		{"fetch.writeCommitGraph", "false"},
+		{"core.commitGraph", "false"},
+	} {
+		if _, errOut, err := runner.Run(ctx, "config", "--local", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("set %s: %w (%s)", kv[0], err, strings.TrimSpace(string(errOut)))
+		}
+	}
+	return nil
+}
+
+// promptFixCommitGraph repairs a corrupt commit-graph cache after
+// confirmation. Both options delete the corrupt cache; "repair" regenerates
+// a fresh one, "harden" also disables auto-write/read so the corruption
+// cannot recur (the durable fix when parallel agents/worktrees keep racing
+// on the same repo's cache). Neither can lose commits — the cache is rebuilt
+// from the object store.
+func promptFixCommitGraph(ctx context.Context, cmd *cobra.Command, runner git.Runner) error {
+	body := "git's commit-graph cache is corrupt — it desynced from the object store\n" +
+		"(an interrupted write, or two git processes racing on the same repo).\n\n" +
+		"The cache is a pure speed optimisation rebuilt from your objects, so repair\n" +
+		"cannot lose commits. Hardening also stops git from auto-writing/reading it."
+	choice, err := ui.ScrollSelectTUI(ctx, "fix: corrupt commit-graph", body, []ui.ScrollSelectOption{
+		{Key: "r", Value: "repair", Display: "repair — delete cache & regenerate (git commit-graph write --reachable)", IsDefault: true},
+		{Key: "h", Value: "harden", Display: "repair + harden — delete cache & disable auto-write/read so it can't recur"},
+		{Key: "s", Value: "skip", Display: "skip — leave it"},
+	})
+	if err != nil || choice == "skip" || choice == "" {
+		return errSkipFix
+	}
+	if rmErr := removeCommitGraph(ctx, runner); rmErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "could not remove commit-graph cache: %v\n", rmErr)
+		return errSkipFix
+	}
+	switch choice {
+	case "repair":
+		if _, errOut, wErr := runner.Run(ctx, "commit-graph", "write", "--reachable"); wErr != nil {
+			// The corrupt cache is already gone — git falls back to walking
+			// the object store, so the repo is fully usable even if the
+			// rebuild failed. Don't fail the fix over a lost optimisation.
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"removed the corrupt cache, but regeneration failed: %s\n"+
+					"git will use the object store directly (slower history walks); retry later with `git commit-graph write --reachable`.\n",
+				strings.TrimSpace(string(errOut)))
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "commit-graph repaired (deleted + regenerated)")
+	case "harden":
+		if hErr := hardenCommitGraph(ctx, runner); hErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "removed the corrupt cache, but hardening config failed: %v\n", hErr)
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout(),
+			"commit-graph removed and disabled for this repo "+
+				"(gc.writeCommitGraph=false, fetch.writeCommitGraph=false, core.commitGraph=false) — corruption can't recur")
+	}
+	return nil
+}
+
 // runDoctorFix walks the repo-state findings (FAIL/WARN) and offers
 // in-line repair via ScrollSelectTUI. After each potential mutation
 // the repo is re-checked so a fix that uncovers (or unblocks) the next
@@ -258,6 +411,7 @@ func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gi
 			checkRepoLockFile(gitDir),
 			checkInProgressOp(gitDir),
 			checkUnmergedPaths(ctx, runner),
+			checkCommitGraph(ctx, runner),
 			checkDirtyTree(ctx, runner),
 			checkPrunableWorktrees(ctx, runner),
 			checkBranchTracking(ctx, runner, remote),
@@ -288,6 +442,8 @@ func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gi
 					detail += " (no conflicted files — aborting cannot lose conflict work)"
 				}
 				err = promptFixInProgress(ctx, cmd, runner, detail)
+			case "repo: commit-graph":
+				err = promptFixCommitGraph(ctx, cmd, runner)
 			case "repo: prunable worktrees":
 				err = promptFixPrunable(ctx, cmd, runner)
 			case "repo: unmerged paths":

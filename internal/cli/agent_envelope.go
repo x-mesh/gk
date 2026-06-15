@@ -54,6 +54,11 @@ func FormatErrorJSON(err error) string {
 	if err == nil {
 		return ""
 	}
+	// Layer gk guidance onto known raw-git failures (e.g. corrupt
+	// commit-graph) before extracting hint/remedies/code, so the agent
+	// envelope carries the same fix the human renderer shows. No-op when
+	// the error already has a hint or matches no known pattern.
+	err = decorateRawGitError(err)
 	// Remedies and hints are command suggestions — rebrand them to the
 	// invoked name so the caller can execute them verbatim. The message
 	// is left alone: it may quote repository content.

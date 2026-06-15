@@ -58,6 +58,8 @@ the index" and "you're stuck mid-rebase" situations:
   - stale .git/index.lock
   - in-progress rebase/merge/cherry-pick/bisect
   - unmerged paths
+  - a corrupt commit-graph cache (the "invalid commit position. commit-graph
+    is likely corrupt" failure that strands sync/pull mid-rebase)
 
 With --fix, doctor walks each finding and offers to repair it interactively.
 Pass --verbose or --ai to also probe optional AI integrations (anthropic /
@@ -117,6 +119,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			checkRepoLockFile(gitDir),
 			checkInProgressOp(gitDir),
 			checkUnmergedPaths(ctx, runner),
+			checkCommitGraph(ctx, runner),
 			checkDirtyTree(ctx, runner),
 			checkGitignore(RepoFlag()),
 			checkStagedSize(ctx, runner),

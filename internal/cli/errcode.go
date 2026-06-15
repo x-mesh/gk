@@ -23,6 +23,9 @@ func errorCodeFromError(err error) string {
 	if isNotAGitRepoError(err) {
 		return "not-a-repo"
 	}
+	if isCommitGraphCorruptError(err) {
+		return "commit-graph-corrupt"
+	}
 	var ce *ConflictError
 	if errors.As(err, &ce) {
 		return "conflict"

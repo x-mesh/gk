@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -122,6 +124,8 @@ func runStep(ctx context.Context, r git.Runner, cfg *config.Config, step config.
 		return runBuiltinBranchCheck(ctx, r, cfg)
 	case "no-conflict":
 		return runBuiltinNoConflict(ctx, r, cfg)
+	case "gofmt":
+		return runBuiltinGofmt(ctx, r)
 	default:
 		return runShellStep(ctx, step.Command)
 	}
@@ -136,9 +140,79 @@ func resolveDescription(cmd string) string {
 		return "[builtin] validate branch name against patterns"
 	case "no-conflict":
 		return "[builtin] pre-merge conflict scan vs base"
+	case "gofmt":
+		return "[builtin] gofmt -l on tracked .go files"
 	default:
 		return "[shell] " + cmd
 	}
+}
+
+// runBuiltinGofmt is the `gofmt` preflight step: it fails when any tracked,
+// non-generated .go file in the repo is not gofmt-clean — the release-gate
+// counterpart to commit's advisory guardGofmt, fast enough to run before the
+// slower golangci-lint so a formatting slip is caught early, not mid-release.
+// Self-skips (passes) when the repo is not a Go module or gofmt is absent.
+func runBuiltinGofmt(ctx context.Context, r git.Runner) error {
+	// Resolve the worktree root through the same runner that enumerates files,
+	// so root and file list always refer to the same repo (honors --repo).
+	topOut, terr := func() (string, error) {
+		out, _, e := r.Run(ctx, "rev-parse", "--show-toplevel")
+		return strings.TrimSpace(string(out)), e
+	}()
+	root := topOut
+	if terr != nil || root == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return nil // not a Go module — not our concern
+	}
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		return nil // gofmt absent (rare outside CI) — skip rather than fail
+	}
+
+	out, _, err := r.Run(ctx, "ls-files", "-z", "--", "*.go")
+	if err != nil {
+		return nil // can't enumerate — let golangci-lint own it
+	}
+	var targets []string
+	for _, p := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if p == "" || isGeneratedGoFile(p) {
+			continue
+		}
+		abs := filepath.Join(root, p)
+		if _, e := os.Stat(abs); e != nil {
+			continue // deleted/missing on disk
+		}
+		targets = append(targets, abs)
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	// `gofmt -l` lists files whose formatting differs. A non-zero exit (e.g. a
+	// syntax error gofmt can't parse) is left to the compiler/linter, not a
+	// formatting gate.
+	cmd := exec.CommandContext(ctx, "gofmt", append([]string{"-l"}, targets...)...)
+	stdout, gerr := cmd.Output()
+	if gerr != nil {
+		return nil
+	}
+	var bad []string
+	for _, line := range strings.Split(strings.TrimSpace(string(stdout)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if rel, e := filepath.Rel(root, line); e == nil {
+				line = rel
+			}
+			bad = append(bad, line)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return WithHint(
+		fmt.Errorf("gofmt: %d file(s) not formatted: %s", len(bad), strings.Join(bad, ", ")),
+		"fix with: gofmt -w "+strings.Join(bad, " "),
+	)
 }
 
 // runBuiltinCommitLint lints the HEAD commit message.

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -12,6 +13,57 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+// TestRunBuiltinGofmt covers the `gofmt` preflight gate: skips when there's no
+// go.mod, fails (naming the file) on an unformatted tracked .go, ignores
+// generated files, and passes once formatted.
+func TestRunBuiltinGofmt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		t.Skip("gofmt not on PATH")
+	}
+	repo := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	// No go.mod → the gate self-skips even with an unformatted file.
+	repo.WriteFile("main.go", "package main\nfunc main(){}\n")
+	repo.RunGit("add", "main.go")
+	repo.Commit("add main")
+	if err := runBuiltinGofmt(ctx, runner); err != nil {
+		t.Errorf("without go.mod the gate must skip (pass), got %v", err)
+	}
+
+	// Add go.mod; format main.go (it was deliberately ugly above) so the only
+	// real offender is bad.go. Also add a generated unformatted file.
+	repo.WriteFile("go.mod", "module x\n\ngo 1.21\n")
+	repo.WriteFile("main.go", "package main\n\nfunc main() {}\n")
+	repo.WriteFile("bad.go", "package x\nfunc  F( ){\n}\n")
+	repo.WriteFile("zz_gen.go", "package x\nfunc  G( ){}\n") // generated → excluded
+	repo.RunGit("add", "go.mod", "main.go", "bad.go", "zz_gen.go")
+	repo.Commit("module + sources")
+
+	err := runBuiltinGofmt(ctx, runner)
+	if err == nil || !strings.Contains(err.Error(), "gofmt") {
+		t.Fatalf("unformatted tracked .go must fail the gate, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "bad.go") {
+		t.Errorf("error should name the offending file, got %v", err)
+	}
+	if strings.Contains(err.Error(), "zz_gen.go") {
+		t.Errorf("generated file must be excluded, got %v", err)
+	}
+
+	// Reformat bad.go → the gate passes.
+	repo.WriteFile("bad.go", "package x\n\nfunc F() {}\n")
+	repo.RunGit("add", "bad.go")
+	repo.Commit("gofmt bad.go")
+	if err := runBuiltinGofmt(ctx, runner); err != nil {
+		t.Errorf("formatted tree must pass, got %v", err)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests — runShellStep

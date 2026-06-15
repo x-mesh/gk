@@ -29,6 +29,7 @@ func TestErrorCodeFromError(t *testing.T) {
 		{"secret found", errors.New("aborting push due to 2 secret finding(s)"), "secret-found"},
 		{"no upstream", errors.New("gk log: current branch has no upstream configured"), "no-upstream"},
 		{"preflight", errors.New(`ship: preflight failed at step "test"`), "preflight-failed"},
+		{"json needs dry-run", errors.New("ship: --json emits the release plan and requires --dry-run"), "json-needs-dry-run"},
 		{"config invalid", errors.New(`gk config set: 알 수 없는 키 "pull.xyz"`), "config-invalid"},
 		{"unknown", errors.New("something completely else"), "unknown"},
 	}

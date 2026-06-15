@@ -60,6 +60,7 @@ The global --json flag with --dry-run emits the whole plan as JSON for tooling.`
 	cmd.Flags().Bool("no-release", false, "push the branch without creating or pushing a release tag")
 	cmd.Flags().Bool("push", true, "push the branch and release tag")
 	cmd.Flags().Bool("skip-preflight", false, "skip configured preflight checks")
+	cmd.Flags().Bool("preflight", false, "run only the configured preflight checks (lint/test/…) and exit — validate before a real ship; works on a dirty tree, never tags or pushes")
 	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan before pushing (matches 'gk commit -n' / 'gk push -n')")
 	cmd.Flags().Bool("allow-dirty", false, "allow shipping with a dirty working tree")
 	cmd.Flags().Bool("allow-non-base", false, "tag the current branch in place instead of fast-forwarding base (skip the base merge)")
@@ -108,6 +109,7 @@ const (
 	shipModeStatus      shipMode = "status"
 	shipModeDryRun      shipMode = "dry-run"
 	shipModeSquash      shipMode = "squash"
+	shipModePreflight   shipMode = "preflight"
 )
 
 type shipDeps struct {
@@ -232,6 +234,11 @@ func readShipFlags(cmd *cobra.Command, args []string, cfg *config.Config) (shipF
 	if f.version != "" && f.bump != "" {
 		return f, fmt.Errorf("ship: --version cannot be combined with --%s", f.bump)
 	}
+	// --preflight is a standalone "check only" mode that never builds a release
+	// plan; resolve it last so it wins over any positional mode it's mixed with.
+	if pf, _ := cmd.Flags().GetBool("preflight"); pf {
+		f.mode = shipModePreflight
+	}
 	return f, nil
 }
 
@@ -260,6 +267,13 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 	if deps.Config == nil {
 		d := config.Defaults()
 		deps.Config = &d
+	}
+
+	// --preflight: run only the configured checks and exit. No plan, no
+	// clean-tree requirement, no tag/push — so an agent can validate
+	// lint/test/etc. on the working tree BEFORE committing to a release.
+	if flags.mode == shipModePreflight {
+		return runShipPreflightOnly(ctx, deps, flags)
 	}
 
 	plan, err := buildShipPlan(ctx, deps.Runner, deps.Config, flags)
@@ -631,6 +645,87 @@ func remoteHasTag(ctx context.Context, r git.Runner, remote, tag string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(out)) != ""
+}
+
+// shipPreflightJSON is the result of `gk ship --preflight` (--json / GK_AGENT):
+// every configured step's outcome plus an overall pass/fail.
+type shipPreflightJSON struct {
+	Result     string                  `json:"result"` // pass | fail
+	Steps      []shipPreflightStepJSON `json:"steps"`
+	FailedStep string                  `json:"failed_step,omitempty"`
+}
+
+type shipPreflightStepJSON struct {
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	OK      bool   `json:"ok"`
+}
+
+// runShipPreflightOnly runs the configured preflight steps without building a
+// release plan (no clean-tree gate, no tag/push). Unlike the in-pipeline
+// preflight it runs EVERY step rather than failing fast, so one call surfaces
+// all problems for a single fix-up pass. commit-lint needs only the latest tag
+// to form its range, fetched cheaply here.
+func runShipPreflightOnly(ctx context.Context, deps shipDeps, flags shipFlags) error {
+	steps := deps.Config.Preflight.Steps
+	if len(steps) == 0 {
+		if flags.jsonOut {
+			return emitAgentResult(deps.Out, shipPreflightJSON{Result: "pass"})
+		}
+		fmt.Fprintln(deps.Out, "preflight: no steps configured")
+		return nil
+	}
+
+	// commit-lint reads only plan.LatestTag (range = <tag>..HEAD, or HEAD when
+	// untagged); get it best-effort so a tagless repo still works.
+	plan := shipPlan{}
+	if out, _, err := deps.Runner.Run(ctx, "describe", "--tags", "--abbrev=0"); err == nil {
+		plan.LatestTag = strings.TrimSpace(string(out))
+	}
+
+	ok := color.New(color.FgGreen, color.Bold).SprintFunc()
+	bad := color.New(color.FgRed, color.Bold).SprintFunc()
+	results := make([]shipPreflightStepJSON, 0, len(steps))
+	failed := ""
+	for _, step := range steps {
+		name := step.Name
+		if name == "" {
+			name = step.Command
+		}
+		var serr error
+		if step.Command == "commit-lint" {
+			serr = runShipCommitLint(ctx, deps.Runner, deps.Config, plan)
+		} else {
+			serr = runStep(ctx, deps.Runner, deps.Config, step)
+		}
+		results = append(results, shipPreflightStepJSON{Name: name, Command: step.Command, OK: serr == nil})
+		if serr != nil && failed == "" {
+			failed = name
+		}
+		if !flags.jsonOut {
+			if serr == nil {
+				fmt.Fprintf(deps.Out, "  %s %-22s\n", ok("✓"), name)
+			} else {
+				fmt.Fprintf(deps.Out, "  %s %-22s %s\n", bad("✗"), name, strings.TrimSpace(serr.Error()))
+			}
+		}
+	}
+
+	res := "pass"
+	if failed != "" {
+		res = "fail"
+	}
+	if flags.jsonOut {
+		return emitAgentResult(deps.Out, shipPreflightJSON{Result: res, Steps: results, FailedStep: failed})
+	}
+	if failed != "" {
+		return WithHint(
+			fmt.Errorf("ship: preflight failed (%s)", failed),
+			"fix the reported step(s) and re-run `gk ship --preflight`; the real `gk ship` would stop here too",
+		)
+	}
+	fmt.Fprintln(deps.Out, ok("✓")+" preflight passed")
+	return nil
 }
 
 func runShipPreflight(ctx context.Context, deps shipDeps, plan shipPlan, flags shipFlags) error {

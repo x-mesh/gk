@@ -533,6 +533,71 @@ func TestDraftShipChangelogUnmappedOnly(t *testing.T) {
 	}
 }
 
+func shipCfgWithPreflight(steps ...config.PreflightStep) *config.Config {
+	c := testShipConfig()
+	c.Preflight.Steps = steps
+	return c
+}
+
+// TestRunShipCorePreflightOnly covers `gk ship --preflight`: it runs the
+// configured steps (shell `true`/`false`) without building a plan (no clean-tree
+// gate — FakeRunner has no `status` mapping), runs EVERY step (not fail-fast),
+// and never tags/pushes.
+func TestRunShipCorePreflightOnly(t *testing.T) {
+	// All pass → ✓, no error, no git mutation.
+	runner := &git.FakeRunner{}
+	var out bytes.Buffer
+	err := runShipCore(context.Background(), shipDeps{
+		Runner: runner, Config: shipCfgWithPreflight(
+			config.PreflightStep{Name: "a", Command: "true"},
+			config.PreflightStep{Name: "b", Command: "true"},
+		), Out: &out,
+	}, shipFlags{mode: shipModePreflight})
+	if err != nil {
+		t.Fatalf("all-pass: unexpected error %v", err)
+	}
+	if !strings.Contains(out.String(), "preflight passed") {
+		t.Errorf("all-pass output: %q", out.String())
+	}
+	for _, call := range runner.Calls {
+		if len(call.Args) > 0 && (call.Args[0] == "tag" || call.Args[0] == "push" || call.Args[0] == "commit") {
+			t.Fatalf("--preflight must never mutate, but ran git %s", strings.Join(call.Args, " "))
+		}
+	}
+
+	// A failing step → error, but every step still ran (run-all). Verify via
+	// the --json result: 3 steps reported, the third (after the failure) ran.
+	var jout bytes.Buffer
+	err = runShipCore(context.Background(), shipDeps{
+		Runner: &git.FakeRunner{}, Config: shipCfgWithPreflight(
+			config.PreflightStep{Name: "a", Command: "true"},
+			config.PreflightStep{Name: "b", Command: "false"},
+			config.PreflightStep{Name: "c", Command: "true"},
+		), Out: &jout,
+	}, shipFlags{mode: shipModePreflight, jsonOut: true})
+	if err != nil {
+		t.Fatalf("json mode must not return an error, got %v", err)
+	}
+	var res shipPreflightJSON
+	if e := json.Unmarshal(jout.Bytes(), &res); e != nil {
+		t.Fatalf("not JSON: %v\n%s", e, jout.String())
+	}
+	if res.Result != "fail" || res.FailedStep != "b" || len(res.Steps) != 3 {
+		t.Fatalf("result=%+v, want fail / failed=b / 3 steps", res)
+	}
+	if !res.Steps[0].OK || res.Steps[1].OK || !res.Steps[2].OK {
+		t.Errorf("step OK flags = %v %v %v, want true false true (run-all)", res.Steps[0].OK, res.Steps[1].OK, res.Steps[2].OK)
+	}
+
+	// No steps configured → pass, no-op.
+	var empty bytes.Buffer
+	if err := runShipCore(context.Background(), shipDeps{
+		Runner: &git.FakeRunner{}, Config: shipCfgWithPreflight(), Out: &empty,
+	}, shipFlags{mode: shipModePreflight}); err != nil {
+		t.Errorf("no-steps: unexpected error %v", err)
+	}
+}
+
 func TestShipChangelogUnreleasedEmpty(t *testing.T) {
 	dir := t.TempDir()
 	empty := dir + "/empty.md"

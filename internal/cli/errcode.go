@@ -57,6 +57,8 @@ func errorCodeFromError(err error) string {
 		return "no-upstream"
 	case strings.Contains(msg, "preflight failed"):
 		return "preflight-failed"
+	case strings.Contains(msg, "requires --dry-run"):
+		return "json-needs-dry-run"
 	case strings.Contains(msg, "config error") ||
 		strings.Contains(msg, "알 수 없는 키") ||
 		(strings.Contains(msg, "config") && strings.Contains(msg, "key")):

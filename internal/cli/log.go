@@ -660,6 +660,13 @@ func renderLogLegend(w io.Writer, viz logVizFlags, pulse, calendar, tagsRule boo
 		fmt.Fprintln(w, "  note: SHA-identity based — a squash/rebase-merged commit reads as unmerged")
 	}
 
+	// The base boundary rule is drawn by default on any branch ahead of its
+	// base, independent of the --vis merged column, so document it
+	// unconditionally.
+	sec("base boundary — ahead-of-base divider (default, off on the base branch)")
+	fmt.Fprintln(w, "  ──┤ ↑ N unmerged → <base> ├──             everything above is ahead of the base branch")
+	fmt.Fprintln(w, "  ──┤ ↑ N unpushed · unmerged → <base> ├──  combined rule when that block is also unpushed")
+
 	if viz.impact {
 		sec("--vis impact — eighths-bar (|+adds −dels|)")
 		fmt.Fprintln(w, "  ▏▎▍▌▋▊▇█  scaled to the peak diff size in the current view")
@@ -1062,17 +1069,24 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 
 	// Base-integration set: which of the shown commits already live on the
 	// base branch. Resolved through the same resolveBaseForStatus the status
-	// line uses, so `○` here marks exactly the commits `gk log --ahead --base`
-	// would list. Skipped (mergedOK=false) when the base is unresolved or the
-	// current branch *is* the base — both make every commit trivially merged.
+	// line uses, so `○` (and the base boundary divider) mark exactly the
+	// commits `gk log --ahead --base` would list. Computed whenever the
+	// current branch differs from the base: the per-row `○` marker stays
+	// gated on --vis merged, but the base boundary rule is drawn by default —
+	// it's a single divider, not a per-row column, so it carries the
+	// "ahead of <base>" signal without the marker's noise. Skipped
+	// (mergedOK=false) on the base branch itself, where every commit is
+	// trivially merged.
 	var merged map[string]bool
 	var mergedOK bool
-	if v.merged {
+	var baseName string
+	{
 		cfg, _ := config.Load(cmd.Flags())
 		client := git.NewClient(runner)
 		res := resolveBaseForStatus(ctx, runner, client, cfg)
 		if cur, _ := client.CurrentBranch(ctx); res.Resolved != "" && res.Resolved != cur {
 			merged, mergedOK = collectMergedShas(ctx, runner, res.Resolved)
+			baseName = res.Resolved
 		}
 	}
 
@@ -1088,6 +1102,20 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 		for i, r := range records {
 			if pushed[r.sha] {
 				boundaryIdx = i
+				break
+			}
+		}
+	}
+
+	// Base boundary: the first shown commit already reachable from the base,
+	// mirroring the push boundary. Everything above it is "ahead of <base>".
+	// Drawn whenever we resolved a base distinct from the current branch —
+	// no --vis gate, since the divider is a single line, not a per-row column.
+	baseBoundaryIdx := -1
+	if mergedOK {
+		for i, r := range records {
+			if merged[r.sha] {
+				baseBoundaryIdx = i
 				break
 			}
 		}
@@ -1277,9 +1305,7 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 					lines = append(lines, renderTagRule(t, width))
 				}
 			}
-			if i == boundaryIdx && boundaryIdx > 0 {
-				lines = append(lines, renderPushBoundary(boundaryIdx, width))
-			}
+			lines = append(lines, boundaryLines(i, boundaryIdx, baseBoundaryIdx, baseName, width)...)
 			return lines
 		}
 		renderSelfGraph(w, records, logUseColor(), trimWidth, renderRow, bodyOf, beforeRow)
@@ -1300,10 +1326,12 @@ func renderVizLog(cmd *cobra.Command, runner *git.ExecRunner, since string, limi
 			}
 		}
 
-		// Push boundary divider: printed just before the first commit that is
-		// already on a remote, so everything above reads as "local-only."
-		if i == boundaryIdx && boundaryIdx > 0 {
-			fmt.Fprintln(w, renderPushBoundary(boundaryIdx, width))
+		// Structure dividers: the base-integration boundary (ahead of <base>)
+		// and the push boundary (local-only). When both land on the same row
+		// — the common case once everything ahead of base is also unpushed —
+		// they collapse into one combined rule instead of two stacked lines.
+		for _, bl := range boundaryLines(i, boundaryIdx, baseBoundaryIdx, baseName, width) {
+			fmt.Fprintln(w, bl)
 		}
 
 		// Inside a WIP run, flag a visible time discontinuity between
@@ -1472,6 +1500,61 @@ func renderTagRule(t tagInfo, width int) string {
 //	──┤ ↑ 5 unpushed ├────────────────
 func renderPushBoundary(count, width int) string {
 	head := fmt.Sprintf("──┤ ↑ %d unpushed ├", count)
+	headRunes := utf8.RuneCountInString(head)
+	tail := width - headRunes
+	if tail < 2 {
+		tail = 2
+	}
+	return color.YellowString(head) + color.New(color.Faint).Sprint(strings.Repeat("─", tail))
+}
+
+// boundaryLines returns the structure-divider rows to print just above row i.
+// It unifies the base-integration boundary (ahead of <base>) and the push
+// boundary (local-only) so the flat and --graph paths share identical
+// placement and same-row merging. When both boundaries fall on row i — the
+// common case once everything ahead of base is also unpushed — they collapse
+// into one combined rule rather than two adjacent lines.
+func boundaryLines(i, pushIdx, baseIdx int, base string, width int) []string {
+	drawBase := baseIdx > 0 && i == baseIdx
+	drawPush := pushIdx > 0 && i == pushIdx
+	if drawBase && drawPush {
+		return []string{renderBaseUnpushedBoundary(baseIdx, base, width)}
+	}
+	var lines []string
+	if drawBase {
+		lines = append(lines, renderBaseBoundary(baseIdx, base, width))
+	}
+	if drawPush {
+		lines = append(lines, renderPushBoundary(pushIdx, width))
+	}
+	return lines
+}
+
+// renderBaseBoundary marks the divide between commits ahead of the base
+// branch (above) and commits already merged into it (below). It mirrors
+// renderPushBoundary's shape but uses cyan — the hue of the `○` unmerged
+// marker — so the two read as one vocabulary, and names the base so the
+// reader knows what they are ahead of.
+//
+//	──┤ ↑ 3 unmerged → main ├────────────────
+func renderBaseBoundary(count int, base string, width int) string {
+	head := fmt.Sprintf("──┤ ↑ %d unmerged → %s ├", count, base)
+	headRunes := utf8.RuneCountInString(head)
+	tail := width - headRunes
+	if tail < 2 {
+		tail = 2
+	}
+	return color.CyanString(head) + color.New(color.Faint).Sprint(strings.Repeat("─", tail))
+}
+
+// renderBaseUnpushedBoundary is the combined rule drawn when the base and
+// push boundaries coincide: the block above is both ahead of the base and
+// unpushed. Yellow wins the hue contest — unpushed is the more urgent of the
+// two states (the work exists only locally, nowhere else).
+//
+//	──┤ ↑ 3 unpushed · unmerged → main ├──────
+func renderBaseUnpushedBoundary(count int, base string, width int) string {
+	head := fmt.Sprintf("──┤ ↑ %d unpushed · unmerged → %s ├", count, base)
 	headRunes := utf8.RuneCountInString(head)
 	tail := width - headRunes
 	if tail < 2 {

@@ -700,6 +700,56 @@ func TestRenderPushBoundary(t *testing.T) {
 	}
 }
 
+func TestRenderBaseBoundary(t *testing.T) {
+	prevNoColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prevNoColor })
+
+	got := renderBaseBoundary(3, "main", 72)
+	if !strings.Contains(got, "──┤ ↑ 3 unmerged → main ├") {
+		t.Errorf("missing base boundary header in %q", got)
+	}
+	if w := utf8.RuneCountInString(got); w != 72 {
+		t.Errorf("base boundary width = %d runes, want 72: %q", w, got)
+	}
+}
+
+// boundaryLines is the placement/merge brain shared by the flat and --graph
+// paths: which divider(s), if any, print just above row i. The same-row case
+// must collapse to a single combined rule rather than two stacked lines.
+func TestBoundaryLines(t *testing.T) {
+	prevNoColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prevNoColor })
+
+	joined := func(ls []string) string { return strings.Join(ls, "\n") }
+
+	// Distinct rows: base divider at row 3, push divider at row 5.
+	if ls := boundaryLines(3, 5, 3, "main", 72); len(ls) != 1 || !strings.Contains(ls[0], "3 unmerged → main") {
+		t.Errorf("base-only row: got %q", joined(ls))
+	}
+	if ls := boundaryLines(5, 5, 3, "main", 72); len(ls) != 1 || !strings.Contains(ls[0], "↑ 5 unpushed ├") {
+		t.Errorf("push-only row: got %q", joined(ls))
+	}
+
+	// Same row: one combined rule, not two stacked lines.
+	ls := boundaryLines(4, 4, 4, "main", 72)
+	if len(ls) != 1 {
+		t.Fatalf("coincident boundaries should collapse to 1 line, got %d: %q", len(ls), joined(ls))
+	}
+	if !strings.Contains(ls[0], "↑ 4 unpushed · unmerged → main ├") {
+		t.Errorf("combined rule wrong: %q", ls[0])
+	}
+
+	// No boundary on an ordinary row; idx 0 never draws (whole view is the block).
+	if ls := boundaryLines(1, 5, 3, "main", 72); len(ls) != 0 {
+		t.Errorf("ordinary row should draw nothing, got %q", joined(ls))
+	}
+	if ls := boundaryLines(0, 0, 0, "main", 72); len(ls) != 0 {
+		t.Errorf("idx 0 must not draw a divider, got %q", joined(ls))
+	}
+}
+
 func TestCollectRecentlyAmended_FreshRepo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

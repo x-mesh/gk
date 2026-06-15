@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.1] - 2026-06-15
+
 ### Added
 
 - **`gk doctor`가 손상된 commit-graph 캐시를 감지·복구한다 + 재발 방지 하드닝.** git의 commit-graph 캐시(`.git/objects/info/commit-graph(s)`)가 객체 저장소와 desync되면 `gk sync`/`gk pull`이 rebase 도중 `fatal: invalid commit position. commit-graph is likely corrupt`로 멈춘다(인터럽트된 쓰기, 또는 한 repo에 여러 git 프로세스가 동시 접근 — 병렬 에이전트/워크트리 환경에서 흔함). 이제 `gk doctor`에 `repo: commit-graph` 검사가 추가되어 `git commit-graph verify`로 손상을 FAIL로 표시하고(human·`--json` 양쪽, fix 힌트 포함), `gk doctor --fix`는 두 가지를 제안한다 — **repair**(캐시 삭제 후 `git commit-graph write --reachable`로 재생성)와 **repair + harden**(삭제 + `gc.writeCommitGraph`/`fetch.writeCommitGraph`/`core.commitGraph`를 `--local false`로 꺼 재발 차단). 캐시는 객체 저장소에서 재생성되는 순수 성능 최적화라 어느 쪽도 커밋을 잃지 않는다.

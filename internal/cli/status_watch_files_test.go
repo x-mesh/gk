@@ -54,7 +54,7 @@ func TestChangeSnapshot_RenameKeysNewPath(t *testing.T) {
 	repo.WriteFile("new.go", "l1\nl2\nl3\n") // +1 line on top of the rename
 	repo.RunGit("add", "new.go")
 
-	sigs := changeSnapshot(context.Background(), &git.ExecRunner{Dir: repo.Dir})
+	sigs := changeSnapshot(context.Background(), &git.ExecRunner{Dir: repo.Dir}, repo.Dir)
 	s, ok := sigs["new.go"]
 	if !ok {
 		t.Fatalf("snapshot missing new.go: %+v", sigs)
@@ -126,6 +126,22 @@ func TestDiffChangeSnapshots_NewRetouchedClearedUnchanged(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("want exactly 3 events (edit/new/gone), got %d", len(got))
+	}
+}
+
+// TestDiffChangeSnapshots_MtimeReTouch: a re-save that leaves the porcelain
+// code and +/- counts identical but bumps mtime must still emit "re-touched".
+func TestDiffChangeSnapshots_MtimeReTouch(t *testing.T) {
+	ts := time.Unix(3000, 0)
+	prev := map[string]fileSig{"f.go": {xy: ".M", added: 2, removed: 1, mtime: 100}}
+	curr := map[string]fileSig{"f.go": {xy: ".M", added: 2, removed: 1, mtime: 200}} // only mtime changed
+	evs := diffChangeSnapshots(prev, curr, ts)
+	if len(evs) != 1 || evs[0].note != "re-touched" {
+		t.Fatalf("an mtime-only change must emit re-touched, got %+v", evs)
+	}
+	// Identical signature (same mtime) stays silent.
+	if evs := diffChangeSnapshots(prev, prev, ts); len(evs) != 0 {
+		t.Errorf("unchanged sig must emit nothing, got %+v", evs)
 	}
 }
 
@@ -231,6 +247,7 @@ func TestChangeGlyph(t *testing.T) {
 		want string
 	}{
 		{changeEvent{label: "new"}, "+"},
+		{changeEvent{label: "added"}, "+"}, // staged-add (xyLabel "A ") is also "+"
 		{changeEvent{label: "deleted"}, "−"},
 		{changeEvent{label: "conflict"}, "⚔"},
 		{changeEvent{label: "renamed"}, "→"},

@@ -114,3 +114,45 @@ func TestIgnoredDirs(t *testing.T) {
 		t.Errorf("node_modules must be in the ignored set, got %v", set)
 	}
 }
+
+// TestRepoToplevelGate covers the --watch startup gate (fix for the
+// "git error shown as clean" finding): a real repo resolves a root, a non-repo
+// resolves "" so runChangeWatch can refuse instead of looping on a fake clean.
+func TestRepoToplevelGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	if root := repoToplevel(context.Background(), &git.ExecRunner{Dir: repo.Dir}); root == "" {
+		t.Errorf("a real repo must resolve a worktree root")
+	}
+	if root := repoToplevel(context.Background(), &git.ExecRunner{Dir: t.TempDir()}); root != "" {
+		t.Errorf("a non-repo must resolve to \"\" (the gate signal), got %q", root)
+	}
+}
+
+// TestFSWatcherIsIgnored covers the runtime ignored-dir check (fix for the
+// "newly-created ignored dir watched" finding): a dir gitignored at runtime is
+// reported ignored so the loop declines to watch it.
+func TestFSWatcherIsIgnored(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gitignore", "node_modules/\n")
+	repo.RunGit("add", ".gitignore")
+	repo.Commit("ignore")
+	// The dir-only pattern (node_modules/) matches only when the path is a real
+	// directory — which it is in production (isIgnored runs after fi.IsDir()).
+	if err := os.Mkdir(filepath.Join(repo.Dir, "node_modules"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	fw := &fsWatcher{runner: &git.ExecRunner{Dir: repo.Dir}, ctx: context.Background()}
+	if !fw.isIgnored(filepath.Join(repo.Dir, "node_modules")) {
+		t.Errorf("node_modules must be reported ignored")
+	}
+	if fw.isIgnored(filepath.Join(repo.Dir, "internal")) {
+		t.Errorf("a non-ignored path must not be reported ignored")
+	}
+}

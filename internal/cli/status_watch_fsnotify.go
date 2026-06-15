@@ -57,6 +57,10 @@ type fsWatcher struct {
 	closed  chan struct{} // loop closes this after it tears the watcher down
 	once    sync.Once     // makes Close() idempotent (no double-close panic)
 	ignored map[string]bool
+	// runner/ctx let the loop re-check git-ignore status for directories
+	// created AFTER startup (the `ignored` set is only the startup snapshot).
+	runner git.Runner
+	ctx    context.Context
 }
 
 // newFSWatcher sets up a watcher over the repo's working tree. Returns
@@ -100,6 +104,7 @@ func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Dur
 	fw := &fsWatcher{
 		w: w, events: make(chan struct{}, 1),
 		done: make(chan struct{}), closed: make(chan struct{}), ignored: ignored,
+		runner: runner, ctx: ctx,
 	}
 	go fw.loop(debounce)
 	return fw, true
@@ -123,9 +128,15 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 				return
 			}
 			// A freshly created directory must be watched too, or edits inside
-			// it would go unseen until the next heartbeat.
-			if ev.Op&fsnotify.Create != 0 && !fw.ignored[ev.Name] {
-				if fi, serr := os.Stat(ev.Name); serr == nil && fi.IsDir() {
+			// it would go unseen until the next heartbeat — UNLESS it's
+			// gitignored (e.g. node_modules from an `npm install` mid-watch),
+			// which would blow the descriptor budget and spam refreshes. The
+			// startup `ignored` set can't know about dirs created later, so
+			// re-check with `git check-ignore`. Children of a dir we decline to
+			// Add never fire events, so this stays one check per new top dir.
+			if ev.Op&fsnotify.Create != 0 {
+				if fi, serr := os.Stat(ev.Name); serr == nil && fi.IsDir() &&
+					!fw.ignored[ev.Name] && !fw.isIgnored(ev.Name) {
 					_ = fw.w.Add(ev.Name)
 				}
 			}
@@ -156,6 +167,17 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 			return
 		}
 	}
+}
+
+// isIgnored reports whether path is gitignored, via `git check-ignore -q`
+// (exit 0 = ignored). Any error (not ignored, or check failed) → false, so the
+// directory is watched — conservative: only a confirmed-ignored dir is skipped.
+func (fw *fsWatcher) isIgnored(path string) bool {
+	if fw.runner == nil {
+		return false
+	}
+	_, _, err := fw.runner.Run(fw.ctx, "check-ignore", "-q", "--", path)
+	return err == nil
 }
 
 // Close stops the debounce loop and waits for it to release the OS watch

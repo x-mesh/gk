@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +39,11 @@ type fileSig struct {
 	xy      string
 	added   int
 	removed int
+	// mtime is the file's on-disk modification time (UnixNano). It lets the
+	// diff catch a re-save that leaves the porcelain code and +/- counts
+	// unchanged (e.g. swapping a line for one of equal length) — without it
+	// those edits would be silently dropped from the live feed.
+	mtime int64
 }
 
 // changeEvent is one entry in the timeline feed.
@@ -54,7 +61,7 @@ type changeEvent struct {
 // `--no-optional-locks` so polling never contends with the agent's own
 // `git add`/commit (which would otherwise race on .git/index.lock), and
 // porcelain v1 -z so the parse stays a trivial NUL split.
-func changeSnapshot(ctx context.Context, runner *git.ExecRunner) map[string]fileSig {
+func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) map[string]fileSig {
 	sigs := map[string]fileSig{}
 	out, _, err := runner.Run(ctx, "--no-optional-locks", "status", "--porcelain", "-z")
 	if err != nil {
@@ -75,7 +82,13 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner) map[string]file
 			i++
 		}
 		ds := stats[path]
-		sigs[path] = fileSig{xy: xy, added: ds.added, removed: ds.removed}
+		var mtime int64
+		if root != "" {
+			if fi, serr := os.Stat(filepath.Join(root, path)); serr == nil {
+				mtime = fi.ModTime().UnixNano()
+			}
+		}
+		sigs[path] = fileSig{xy: xy, added: ds.added, removed: ds.removed, mtime: mtime}
 	}
 	return sigs
 }
@@ -183,7 +196,7 @@ func changeGlyph(e changeEvent) string {
 		return "✓"
 	}
 	switch e.label {
-	case "new":
+	case "new", "added": // untracked, or staged-add (xyLabel "A ") — both are "+"
 		return "+"
 	case "deleted", "del":
 		return "−"
@@ -207,6 +220,19 @@ func runChangeWatch(cmd *cobra.Command) error {
 	interval = clampWatchInterval(interval)
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+	// Resolve the worktree root once. A failure here means "not a git repo (or
+	// the index is unreadable)" — surface it instead of looping forever showing
+	// a misleading "working tree clean" (snapshots swallow git errors so the
+	// feed stays responsive to transient hiccups; the persistent case is caught
+	// right here). root also anchors the per-file mtime stat in changeSnapshot.
+	root := repoToplevel(cmd.Context(), runner)
+	if root == "" {
+		return WithHint(
+			fmt.Errorf("gk status --watch: not a git repository (or its index is unreadable)"),
+			"run it from inside a git repository",
+		)
+	}
+
 	// fsnotify is the primary trigger when available; polling is the fallback.
 	fs, _ := newFSWatcher(cmd.Context(), runner, fsWatchDebounce)
 	if fs != nil {
@@ -214,7 +240,7 @@ func runChangeWatch(cmd *cobra.Command) error {
 	}
 
 	if _, ok := ui.TTYWidth(); !ok || NoColorFlag() {
-		return runChangeWatchPlain(cmd, runner, interval, fs)
+		return runChangeWatchPlain(cmd, runner, interval, fs, root)
 	}
 	// lipgloss's default renderer lazily probes the terminal (OSC 11 background
 	// + DSR cursor query) the first time it styles a string. Inside a bubbletea
@@ -227,6 +253,7 @@ func runChangeWatch(cmd *cobra.Command) error {
 
 	model := newChangeWatchModel(cmd, interval)
 	model.runner = runner
+	model.root = root
 	model.fs = fs
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(cmd.Context()))
 	_, err := prog.Run()
@@ -237,7 +264,7 @@ func runChangeWatch(cmd *cobra.Command) error {
 // line as it happens (tail -f style), no alt screen, no key handling. An fs
 // event or the heartbeat ticker both trigger a snapshot; a nil fs channel is
 // never selected, collapsing this to pure polling.
-func runChangeWatchPlain(cmd *cobra.Command, runner *git.ExecRunner, interval time.Duration, fs *fsWatcher) error {
+func runChangeWatchPlain(cmd *cobra.Command, runner *git.ExecRunner, interval time.Duration, fs *fsWatcher, root string) error {
 	hb := interval
 	if fs != nil {
 		hb = fsHeartbeatInterval // events do the work; the poll is just a safety net
@@ -253,7 +280,7 @@ func runChangeWatchPlain(cmd *cobra.Command, runner *git.ExecRunner, interval ti
 
 	var prev map[string]fileSig
 	snap := func() {
-		curr := changeSnapshot(cmd.Context(), runner)
+		curr := changeSnapshot(cmd.Context(), runner, root)
 		for _, e := range diffChangeSnapshots(prev, curr, time.Now()) {
 			fmt.Fprintln(w, plainEventLine(e))
 		}
@@ -297,6 +324,7 @@ const changeTSFormat = "15:04:05.00"
 type changeWatchModel struct {
 	cmd      *cobra.Command
 	runner   *git.ExecRunner
+	root     string // worktree top, for per-file mtime stats
 	interval time.Duration
 	fs       *fsWatcher // non-nil → fsnotify drives refreshes; tick is a heartbeat
 
@@ -443,12 +471,13 @@ func (m *changeWatchModel) refreshCmd() tea.Cmd {
 	m.refreshing = true
 	runner := m.runner
 	cmd := m.cmd
+	root := m.root
 	prev := m.prev
 	ctx := m.cmd.Context()
 	now := m.nowFn()
 	showDash := m.showDash
 	return func() tea.Msg {
-		curr := changeSnapshot(ctx, runner)
+		curr := changeSnapshot(ctx, runner, root)
 		msg := changeFrameMsg{
 			curr:   curr,
 			events: diffChangeSnapshots(prev, curr, now),

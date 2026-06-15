@@ -232,6 +232,23 @@ type AICommitConfig struct {
 	// `!WIPEnabled` per invocation, so users can disable entirely via
 	// config or one-shot via flag.
 	WIPEnabled bool `mapstructure:"wip_enabled"   yaml:"wip_enabled"`
+	// Concurrency caps how many commit groups are composed in parallel.
+	// Compose is the dominant latency in `gk commit` — each group is an
+	// independent LLM round-trip — so groups fan out concurrently. 0
+	// falls back to 4: enough to run a typical multi-group commit fully
+	// in parallel while bounding burst pressure on provider rate limits
+	// (e.g. Groq's free tier) and the number of CLI-provider subprocesses
+	// (gemini/qwen/kiro) spawned at once. Lower it for strict quotas;
+	// raise it on a paid tier.
+	Concurrency int `mapstructure:"concurrency"   yaml:"concurrency"`
+	// WarmCache, when true AND the provider caches its system prompt
+	// (Anthropic), composes the first group synchronously to prime the
+	// prompt cache before the rest fan out. Default FALSE: measurement
+	// showed the warm-up serialises one extra round-trip (≈1.8× slower on
+	// a cache-less provider), and the offsetting cache saving is unproven
+	// for gk's small system prompt. Enable only after measuring a net win
+	// on your Anthropic setup.
+	WarmCache bool `mapstructure:"warm_cache"    yaml:"warm_cache"`
 }
 
 // PrivacyConfig tunes the Privacy Gate that runs before remote AI
@@ -681,6 +698,7 @@ func Defaults() Config {
 				Audit:       false,
 				WIPMaxChain: 10,
 				WIPEnabled:  true,
+				Concurrency: 4,
 			},
 			Nvidia: AINvidiaConfig{
 				Timeout: "60s",

@@ -1,13 +1,22 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // Fake is a test double for Provider.
 //
 // Tests build one with canned responses, stub errors, and optional
 // hooks to assert what inputs the adapter received. Calls is appended
 // to on every method so tests can inspect invocation order.
+//
+// All methods are guarded by mu so a Fake can stand in for a provider
+// driven concurrently (e.g. ComposeAll fanning out groups in parallel)
+// without racing on the response cursors or the Calls log.
 type Fake struct {
+	mu sync.Mutex
+
 	NameVal     string
 	LocalityVal Locality
 
@@ -43,11 +52,15 @@ func (f *Fake) Name() string       { return f.NameVal }
 func (f *Fake) Locality() Locality { return f.LocalityVal }
 
 func (f *Fake) Available(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "Available")
 	return f.AvailableErr
 }
 
 func (f *Fake) Classify(_ context.Context, in ClassifyInput) (ClassifyResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "Classify")
 	if f.OnClassify != nil {
 		f.OnClassify(in)
@@ -68,6 +81,8 @@ func (f *Fake) Classify(_ context.Context, in ClassifyInput) (ClassifyResult, er
 }
 
 func (f *Fake) Compose(_ context.Context, in ComposeInput) (ComposeResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "Compose")
 	if f.OnCompose != nil {
 		f.OnCompose(in)
@@ -88,6 +103,8 @@ func (f *Fake) Compose(_ context.Context, in ComposeInput) (ComposeResult, error
 }
 
 func (f *Fake) Summarize(_ context.Context, in SummarizeInput) (SummarizeResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "Summarize")
 	if f.OnSummarize != nil {
 		f.OnSummarize(in)

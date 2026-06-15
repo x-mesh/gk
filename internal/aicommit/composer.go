@@ -4,9 +4,27 @@ import (
 	"context"
 	"fmt"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/commitlint"
 )
+
+// DefaultComposeConcurrency caps how many groups Compose runs in
+// parallel. Compose is the dominant latency in `gk commit`: each group
+// is an independent LLM round-trip (plus up to MaxAttempts-1 commitlint
+// retries), and running them serially made wall-clock scale linearly
+// with the group count. The groups share no state, so they fan out.
+//
+// 4 is a deliberate ceiling, not a target: it keeps a typical 2-4 group
+// commit fully concurrent while bounding (a) burst pressure on remote
+// providers' rate limits (Groq's free tier in particular) and (b) the
+// number of CLI-provider subprocesses (gemini/qwen/kiro) spawned at
+// once. ai.commit.concurrency overrides it; this is the fallback.
+//
+// Exported so the CLI can label the effective dispatch
+// ("parallel ×N") without re-deriving the fallback.
+const DefaultComposeConcurrency = 4
 
 // Message is one fully-formed commit message draft along with the
 // Group it targets. Subject/Body come from Provider.Compose after
@@ -46,18 +64,32 @@ type ComposeOptions struct {
 	ScopeRequired    bool
 	MaxSubjectLength int
 	Lang             string
+	// Concurrency caps how many groups Compose runs in parallel. <= 0
+	// falls back to defaultComposeConcurrency. Wired from
+	// ai.commit.concurrency so operators can tighten it for strict
+	// provider rate limits or loosen it on a paid tier.
+	Concurrency int
+	// WarmCache, when true and there is more than one LLM group, runs the
+	// first group synchronously before fanning out the rest. The first
+	// call populates the provider's prompt cache (Anthropic's ephemeral
+	// system-prompt cache) so the parallel siblings read the cached prefix
+	// instead of each paying a cache-miss. Pure latency plays leave this
+	// false; the CLI sets it only for cache-capable providers.
+	WarmCache bool
 }
 
 // ComposeAll runs Provider.Compose per group with commitlint validation
-// after each attempt. Groups are processed sequentially — one bad
-// group does NOT abort later ones; the caller inspects the returned
-// slice for len != len(groups) or error-shaped Messages.
+// after each attempt. Groups are independent, so they are composed
+// CONCURRENTLY (bounded by defaultComposeConcurrency) and the results
+// re-assembled in input order — out[i] always corresponds to groups[i].
 //
-// On unrecoverable failure for a single group the loop returns (nil,
-// err). That lets the caller distinguish "partial success" (all N
-// messages returned) from "outright failure". Partial-success scenarios
-// for mixed retries are not supported yet — if the user wants that,
-// they can drop the offending group and re-run.
+// On unrecoverable failure for a single group the call returns (nil,
+// err): the first failing group's error is surfaced and the shared
+// context is cancelled so in-flight siblings stop early. That lets the
+// caller distinguish "partial success" (all N messages returned) from
+// "outright failure". Partial-success scenarios for mixed retries are
+// not supported yet — if the user wants that, they can drop the
+// offending group and re-run.
 func ComposeAll(
 	ctx context.Context,
 	p provider.Provider,
@@ -75,22 +107,80 @@ func ComposeAll(
 		MaxSubjectLength: opts.MaxSubjectLength,
 	}
 
-	out := make([]Message, 0, len(groups))
-	for _, g := range groups {
-		// Lockfile-only / CI-only groups skip the LLM. Saves the 50K+
-		// tokens a single lockfile diff would burn, which is what was
-		// hitting Groq's 100K daily TPD ceiling.
-		if msg, ok := heuristicMessage(g, opts.Lang); ok {
-			out = append(out, msg)
+	// Index-aligned output: each goroutine writes its own slot, so no
+	// lock is needed and input order is preserved for review/apply.
+	out := make([]Message, len(groups))
+
+	// Split into heuristic (inline, no network) and LLM (fan-out) work.
+	// Lockfile-only / CI-only groups skip the LLM — saves the 50K+ tokens
+	// a single lockfile diff would burn (the original Groq TPD trigger) —
+	// so resolve them here without spending a goroutine or a slot.
+	llm := make([]int, 0, len(groups))
+	for i, grp := range groups {
+		if msg, ok := heuristicMessage(grp, opts.Lang); ok {
+			out[i] = msg
 			continue
 		}
-		msg, err := composeOne(ctx, p, g, diffs[groupKey(g)], rules, opts, max)
+		llm = append(llm, i)
+	}
+	if len(llm) == 0 {
+		return out, nil
+	}
+
+	composeAt := func(ctx context.Context, i int) error {
+		grp := groups[i]
+		msg, err := composeOne(ctx, p, grp, diffs[groupKey(grp)], rules, opts, max)
 		if err != nil {
-			return nil, fmt.Errorf("compose group %q: %w", g.Type, err)
+			return fmt.Errorf("compose group %q: %w", grp.Type, err)
 		}
-		out = append(out, msg)
+		out[i] = msg
+		return nil
+	}
+
+	// Single-group fast-path: one LLM call, the claude/codex shape. No
+	// errgroup, no goroutine — just compose it on the calling goroutine.
+	if len(llm) == 1 {
+		if err := composeAt(ctx, llm[0]); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+
+	// Optional cache warm-up: compose the first group synchronously so a
+	// prompt cache is primed before the siblings fan out (see WarmCache).
+	rest := llm
+	if opts.WarmCache {
+		if err := composeAt(ctx, llm[0]); err != nil {
+			return nil, err
+		}
+		rest = llm[1:]
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(composeConcurrency(len(rest), opts.Concurrency))
+	for _, i := range rest {
+		g.Go(func() error { return composeAt(gctx, i) })
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// composeConcurrency resolves the worker limit. configured <= 0 falls
+// back to defaultComposeConcurrency; the result is then clamped to
+// [1, groupCount] so there are no idle workers and SetLimit(0) (which
+// would block every Go call) can never happen. Callers pass groupCount
+// >= 1.
+func composeConcurrency(groupCount, configured int) int {
+	limit := configured
+	if limit <= 0 {
+		limit = DefaultComposeConcurrency
+	}
+	if groupCount < limit {
+		return groupCount
+	}
+	return limit
 }
 
 // composeOne is the per-group retry loop.

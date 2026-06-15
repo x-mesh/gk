@@ -318,6 +318,23 @@ ai:
     # branches where every commit is a save-point.
     wip_max_chain: 10
 
+    # How many commit groups to compose in parallel. Compose is the
+    # dominant latency in `gk commit` (each group is its own LLM
+    # round-trip), so groups fan out concurrently. 0 falls back to 4 —
+    # enough to run a typical multi-group commit fully in parallel while
+    # bounding burst pressure on provider rate limits (e.g. Groq's free
+    # tier) and the number of CLI-provider subprocesses (gemini/qwen/kiro)
+    # spawned at once. Lower it for strict quotas; raise it on a paid tier.
+    concurrency: 4
+
+    # Prime the prompt cache by composing the first group synchronously
+    # before the rest fan out. Only takes effect on a prompt-caching
+    # provider (Anthropic). Default false: measured ~1.8× slower on a
+    # cache-less provider (one extra serial round-trip) with no proven
+    # offsetting saving for gk's small system prompt. Turn on only if you
+    # measured a net win on your Anthropic setup.
+    warm_cache: false
+
     # Paths matching any of these globs (filepath.Match syntax, applied
     # to both basename and full path) are dropped from the WIP set
     # before anything leaves the process. Keeps secret-bearing files

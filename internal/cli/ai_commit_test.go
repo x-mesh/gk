@@ -69,6 +69,31 @@ func TestSecretBypass(t *testing.T) {
 	}
 }
 
+func TestComposeDispatchLabel(t *testing.T) {
+	cases := []struct {
+		name       string
+		llmN       int
+		configured int
+		warm       bool
+		want       string
+	}{
+		{"all heuristic", 0, 0, false, "no LLM calls"},
+		{"single LLM group is fast-path", 1, 4, false, "single-shot"},
+		{"two groups, default concurrency", 2, 0, false, "parallel ×2"},
+		{"many groups clamp to default", 8, 0, false, "parallel ×4"},
+		{"many groups clamp to configured", 8, 2, false, "parallel ×2"},
+		{"configured above group count clamps down", 3, 16, false, "parallel ×3"},
+		{"warm reserves the first call", 4, 0, true, "warm+parallel ×3"},
+		{"warm with two groups fans out one", 2, 0, true, "warm+parallel ×1"},
+	}
+	for _, tc := range cases {
+		if got := composeDispatchLabel(tc.llmN, tc.configured, tc.warm); got != tc.want {
+			t.Errorf("%s: composeDispatchLabel(%d, %d, %v) = %q, want %q",
+				tc.name, tc.llmN, tc.configured, tc.warm, got, tc.want)
+		}
+	}
+}
+
 // TestNoVerifyCanSetSkipPrivacy guards the premise of the --no-verify ⇒
 // --skip-privacy implication in runAICommit: the commit command must be able
 // to flip the root-level persistent `skip-privacy` flag, and applyPrivacyGate

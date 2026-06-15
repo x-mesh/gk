@@ -343,12 +343,26 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	heuristicN := aicommit.CountHeuristicGroups(groups, ai.Lang)
 	llmN := len(groups) - heuristicN
+	// WarmCache is opt-in (ai.commit.warm_cache, default false) AND only
+	// meaningful for a prompt-caching provider. Measurement showed the
+	// warm-up serialises one round-trip (~1.8× slower on a cache-less
+	// provider) with no proven offsetting saving, so it stays off unless
+	// the operator measured a net win on Anthropic and enabled it.
+	warmCache := ai.Commit.WarmCache && providerCachesPrompt(prov)
+	// Dispatch label makes the concurrency setting observable: it names
+	// whether the LLM groups run single-shot, parallel ×N (with the
+	// effective worker count, so ai.commit.concurrency is visible), or
+	// not at all (all heuristic). Without this the parallelism — and
+	// whether the config knob took effect — was invisible.
+	dispatch := composeDispatchLabel(llmN, ai.Commit.Concurrency, warmCache)
 	if heuristicN > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"commit: composing %d message(s) (%d via heuristic, %d via %s)...\n",
-			len(groups), heuristicN, llmN, prov.Name())
+			"commit: composing %d message(s) (%d via heuristic, %d via %s; %s)...\n",
+			len(groups), heuristicN, llmN, prov.Name(), dispatch)
 	} else {
-		fmt.Fprintf(cmd.ErrOrStderr(), "commit: composing %d message(s)...\n", len(groups))
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"commit: composing %d message(s) via %s (%s)...\n",
+			len(groups), prov.Name(), dispatch)
 	}
 	stopCompose := ui.StartBubbleSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
 	composeStart := time.Now()
@@ -358,10 +372,20 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		ScopeRequired:    cfg.Commit.ScopeRequired,
 		MaxSubjectLength: cfg.Commit.MaxSubjectLength,
 		Lang:             ai.Lang,
+		Concurrency:      ai.Commit.Concurrency,
+		WarmCache:        warmCache,
 	})
 	stopCompose()
 	if err != nil {
 		return fmt.Errorf("commit: compose: %w", err)
+	}
+	// Wall-clock + dispatch on the human stream (not just -d): with a
+	// parallel dispatch this is where the speedup shows; with single-shot
+	// it surfaces a slow model round-trip that parallelism can't fix. Skip
+	// only the all-heuristic case, which is instant and makes no LLM call.
+	if llmN >= 1 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "commit: composed %d message(s) in %s (%s)\n",
+			len(messages), time.Since(composeStart).Round(time.Millisecond), dispatch)
 	}
 	Dbg("commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
 
@@ -1020,6 +1044,61 @@ func providerModel(p provider.Provider) string {
 		}
 	}
 	return "n/a"
+}
+
+// composeDispatchLabel describes how the LLM groups will be composed,
+// so the concurrency knob is observable in the normal output:
+//
+//   - 0 LLM groups        → "no LLM calls" (everything heuristic)
+//   - 1 LLM group         → "single-shot" (fast-path, no fan-out)
+//   - N>1 LLM groups       → "parallel ×K" (K = effective worker count)
+//     or "warm+parallel ×K" when the first call
+//     primes a prompt cache before the rest fan out
+//
+// K mirrors ComposeAll's own math: the first group runs synchronously
+// when warming, so only llmN-1 groups fan out in that case.
+func composeDispatchLabel(llmN, configured int, warm bool) string {
+	switch {
+	case llmN <= 0:
+		return "no LLM calls"
+	case llmN == 1:
+		return "single-shot"
+	default:
+		fanOut := llmN
+		prefix := ""
+		if warm {
+			fanOut = llmN - 1
+			prefix = "warm+"
+		}
+		limit := configured
+		if limit <= 0 {
+			limit = aicommit.DefaultComposeConcurrency
+		}
+		if limit > fanOut {
+			limit = fanOut
+		}
+		return fmt.Sprintf("%sparallel ×%d", prefix, limit)
+	}
+}
+
+// providerCachesPrompt reports whether the provider benefits from
+// priming a shared prompt prefix before the parallel Compose fan-out.
+// Anthropic caches the system-prompt block (cache_control: ephemeral),
+// so one synchronous warm-up call turns the siblings' full-price input
+// tokens into cheap cache reads. Adapters without such a cache gain
+// nothing from warming (it would only serialise the first call), so
+// they report false and Compose stays fully parallel. A FallbackChain
+// defers to whichever provider it would actually use first.
+func providerCachesPrompt(p provider.Provider) bool {
+	switch v := p.(type) {
+	case *provider.Anthropic:
+		return true
+	case *provider.FallbackChain:
+		if len(v.Providers) > 0 {
+			return providerCachesPrompt(v.Providers[0])
+		}
+	}
+	return false
 }
 
 // readProviderVersion tries `<provider> --version`; returns "unknown"

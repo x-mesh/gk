@@ -33,5 +33,14 @@ func TestMain(m *testing.M) {
 	}
 	color.NoColor = true
 	flagNoColor = true
+	// Neutralize ambient GK_AGENT for the whole package. GK_AGENT / GK_JSON
+	// are runtime output-mode switches read from the environment in init();
+	// a dev or agent shell that exports GK_AGENT=1 (as the gk agents contract
+	// instructs) would otherwise flip every command under test to the agent
+	// envelope, breaking the dozens of bare-output assertions. Tests that
+	// exercise agent/JSON mode set these flags explicitly with their own
+	// Cleanup (see TestAgentEnvImpliesJSON, commitgraph_test.go).
+	flagAgent = false
+	flagJSON = false
 	os.Exit(m.Run())
 }

@@ -288,9 +288,33 @@ func runBuiltinNoConflict(ctx context.Context, r git.Runner, cfg *config.Config)
 	return nil
 }
 
+// envWithoutAgentMode returns the current environment with GK_AGENT stripped,
+// for preflight subprocess steps. GK_AGENT switches gk's OWN output to the
+// agent envelope; a preflight step is a child process (the project's
+// test/lint command) and must never inherit that mode. This matters when gk
+// drives a project that itself reads GK_AGENT — most visibly gk's own test
+// suite: a `gk ship` launched in an `export GK_AGENT=1` shell (as the gk
+// agents contract instructs) would otherwise pass GK_AGENT=1 into
+// `go test ./...`, flipping the gk-under-test to envelope output and breaking
+// its bare-output assertions. The release that follows preflight reads
+// nothing from the step's stdout (only its exit code), so stripping the flag
+// changes no contract.
+func envWithoutAgentMode() []string {
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if strings.HasPrefix(kv, "GK_AGENT=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // runShellStep executes an arbitrary shell command via `sh -c`.
 func runShellStep(ctx context.Context, command string) error {
 	c := exec.CommandContext(ctx, "sh", "-c", command)
+	c.Env = envWithoutAgentMode()
 	out, err := c.CombinedOutput()
 	if err != nil {
 		trimmed := strings.TrimSpace(string(out))

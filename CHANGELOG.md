@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gk commit`이 gitignored 디렉토리 안의 tracked 파일을 처리하도록 staging을 두 단계로 분리.** 기존엔 `git add -A` 한 번으로 처리해, ignore된 디렉토리 안에 이미 추적 중인 파일이 있으면 add가 실패했다. 이제 tracked 파일은 `git add -u`(ignore 규칙 무시), 신규 파일은 `git add -A`(ignore 규칙 준수)로 나눠 stage한다 — ignore 디렉토리 안의 추적 파일도 정상 커밋된다.
 
+- **`gk ship` preflight가 `GK_AGENT`를 자식 스텝에 흘리지 않는다 — `export GK_AGENT=1` 환경에서 gk 자기 릴리스가 깨지던 문제.** `GK_AGENT=1`은 gk *자신*의 출력을 JSON envelope으로 바꾸는 스위치다. preflight 스텝(`go test`/`golangci-lint` 등)은 자식 프로세스인데 이 env를 그대로 상속해, gk가 자기 자신을 dogfooding할 때(`gk ship`의 preflight가 gk의 `go test ./...`를 띄울 때) 테스트 안의 gk가 envelope으로 출력 → bare 출력을 가정한 단언 수십 건이 이중 래핑으로 깨졌다(다른 프로젝트는 테스트가 `GK_AGENT`를 안 읽어 무관). 이제 preflight는 자식 스텝 env에서 `GK_AGENT`를 제거하고(스텝 결과는 stdout이 아니라 exit code로만 읽으므로 계약 불변), gk 자체 테스트 스위트도 ambient `GK_AGENT`에 무관하게 결정적이 되도록 baseline을 고정했다. 계약서의 "`export GK_AGENT=1` once"와 "ship works under GK_AGENT" 약속이 gk 자기 릴리스에서도 참이 된다.
+
 ## [0.88.0] - 2026-06-15
 
 ### Added

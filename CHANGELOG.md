@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.0] - 2026-06-16
+
 ### Added
 
 - **`gk log`가 base 통합 경계를 한 줄 divider로 그린다 — 어디까지가 아직 base에 안 올라간 작업인지 한눈에.** `develop`처럼 base(`main`) 위에서 일하면 로컬 브랜치가 base보다 앞서지만, `gk log`만 봐서는 어느 커밋까지가 미머지인지 드러나지 않았다(`gk pull`이 "Already up to date"여도 브랜치 간 해시는 다르니 "동기화된 게 맞나" 혼란이 반복됐다). 이제 base에 도달하는 첫 커밋 바로 위에 `──┤ ↑ N unmerged → main ├──` 경계선을 그린다(`--safety`의 push boundary와 동형, cyan — `○` 마커와 같은 vocabulary). 커밋마다 `○`를 찍는 `--vis merged` 마커와 달리 divider는 한 줄이라 노이즈 없이 **기본 노출**된다: 현재 브랜치가 base와 다를 때만 그려지고(base 위에선 모든 커밋이 이미 머지된 상태라 자동 생략 — 추가 `rev-list` 비용 0), push boundary와 같은 행에 겹치면 `──┤ ↑ N unpushed · unmerged → main ├──` 합본 한 줄로 합친다(unpushed가 더 긴급하므로 yellow). flat·`--graph` 양쪽 렌더 경로가 같은 배치 로직(`boundaryLines`)을 공유한다.

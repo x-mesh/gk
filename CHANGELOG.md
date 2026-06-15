@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gk status --watch` 체인지 피드 정확성 4건 (Codex 리뷰).** (1) `git status` 실패를 빈 스냅샷으로 삼켜 깨진 repo/`--repo` 비-repo에서 "working tree clean"을 무한 표시하던 문제 → 진입 시 worktree root를 한 번 해석해 실패면 명확히 에러(`not a git repository`)로 중단. (2) 이미 dirty인 파일을 ±수 변화 없이 재저장(동수 줄 교체 등)하면 `re-touched`가 드롭되던 문제 → `fileSig`에 mtime을 포함해 모든 재저장을 잡는다. (3) watch 중 새로 생긴 ignored 디렉토리(`npm install`의 node_modules 등)가 startup 스냅샷에 없어 감시에 붙어 descriptor 예산을 소진하던 문제 → 새 디렉토리 Add 전 `git check-ignore`로 재확인(미감시 디렉토리의 자식은 이벤트가 안 와 신규 top 디렉토리당 1회로 한정). (4) staged-add(`A `)가 `+` 대신 노란 `~`로 표시되던 문제 → `added`도 `+` 글리프로.
+
 - **ship의 `--json`+라이브-실행 거부 에러에 안정 코드 부여.** `gk ship -y --json`(또는 명시 `--json`)이 거부될 때 agent envelope의 `error.code`가 `unknown`이었다 — agents 계약은 "code로 분기"를 약속하는데 분기할 수 없었다. 이제 `json-needs-dry-run` 안정 코드를 반환한다(errcode 어휘는 append-only).
 
 - **`gk status --watch`를 빠져나오면 이후 셸 글씨가 밀리던(터미널 깨짐) 문제.** lipgloss 기본 렌더러는 첫 스타일 렌더 때 터미널에 OSC 11(배경색)+DSR 질의를 lazily 보내는데, 이게 bubbletea 세션 *중*에 일어나면 bubbletea의 stdin 리더와 응답을 두고 경합해 미소비 응답 바이트가 종료 후 셸 입력으로 새어 프롬프트가 어긋났다. 이제 bubbletea가 stdin을 잡기 **전에** `lipgloss.ColorProfile()`/`HasDarkBackground()`로 감지를 강제해(응답을 cooked 모드에서 깨끗이 소비) 세션 중엔 캐시만 쓰고 질의하지 않는다 — PTY 검증: OSC 11 질의 1회, alt-screen 진입 전, 세션 중 재질의 없음.

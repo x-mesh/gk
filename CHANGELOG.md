@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-06-15
+
 ### Added
 
 - **`gk ship --preflight` — 릴리스 없이 preflight만 돌려 미리 검증.** 에이전트/사람이 `ship -y`로 커밋·태그·푸시에 들어가기 *전에* 설정된 preflight(lint/test/goreleaser 등)를 싸게 돌려본다. 릴리스 plan을 만들지 않으므로 **dirty 트리에서도 동작**하고 절대 태그·푸시하지 않는다. 파이프라인의 preflight와 달리 **fail-fast가 아니라 모든 스텝을 돌려** 한 번에 모든 문제를 보여주고, 실패 시 비정상 종료한다(`gk ship --preflight && gk ship -y`로 게이트 가능). `--json`/`GK_AGENT`은 `{result, steps:[{name,command,ok}], failed_step}`(exit 0 — `result` 필드로 분기). "gofmt 위반이 릴리스 도중 preflight를 깨뜨려 수정 커밋을 강요하던" 반복 마찰의 정면 해결책 — agents 규약 v14의 Release 항목이 이걸 `-y` 전에 쓰라고 안내한다.

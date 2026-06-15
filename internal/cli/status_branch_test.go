@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -271,5 +272,79 @@ func TestRenderBranchSectionDetached(t *testing.T) {
 
 	if !strings.Contains(out, "detached") {
 		t.Errorf("detached HEAD must surface 'detached'\n%s", out)
+	}
+}
+
+// TestRenderBranchSectionShowsHeadCommit locks the two-line layout: the
+// FULL head sha and the commit subject drop to a dedicated second line.
+func TestRenderBranchSectionShowsHeadCommit(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "t@example.com")
+	runGit(t, repo, "config", "user.name", "t")
+	runGit(t, repo, "commit", "--allow-empty", "-q", "-m", "wire up the thing")
+
+	r := &git.ExecRunner{Dir: repo}
+	shaOut, _, err := r.Run(context.Background(), "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	fullSHA := strings.TrimSpace(string(shaOut))
+
+	// The commit line rides the "staleness" vis layer (on by default at
+	// runtime); renderBranchSection is called here without runStatus, so
+	// seed effectiveVis explicitly.
+	defer func(prev []string) { effectiveVis = prev }(effectiveVis)
+	effectiveVis = []string{"staleness"}
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	st := &git.Status{Branch: "main"}
+	out := renderBranchSection(cmd, r, st, ui.SectionLayoutBar, "main", "", "main")
+
+	if !strings.Contains(out, fullSHA) {
+		t.Errorf("BRANCH section should show the FULL head sha %q\n%s", fullSHA, out)
+	}
+	if !strings.Contains(out, "wire up the thing") {
+		t.Errorf("BRANCH section should show the commit subject\n%s", out)
+	}
+}
+
+// TestHeadCommitLine pins the width-budgeting: the hash is always shown in
+// full; the subject is trimmed only when a TTY width is known and tight.
+func TestHeadCommitLine(t *testing.T) {
+	defer func(prev bool) { color.NoColor = prev }(color.NoColor)
+	color.NoColor = true // assert on plain text
+
+	const sha = "2f6e75206d6a0be1d81272a74fe1e6b3fb7fdbaa" // 40 chars
+	const subj = "feat(worktree): isolated run, per-worktree status, batch targeting"
+
+	// Non-TTY (ttyW=0): full hash + full subject, never truncated.
+	full := headCommitLine(sha, subj, 0)
+	if !strings.Contains(full, sha) || !strings.Contains(full, subj) {
+		t.Errorf("non-TTY line must carry full hash and full subject: %q", full)
+	}
+	if strings.Contains(full, "…") {
+		t.Errorf("non-TTY line must not truncate: %q", full)
+	}
+
+	// Width 80 → budget 80-3-40-2 = 35: subject truncates with an ellipsis,
+	// hash stays full.
+	w80 := headCommitLine(sha, subj, 80)
+	if !strings.Contains(w80, sha) {
+		t.Errorf("hash must stay full even when subject truncates: %q", w80)
+	}
+	if !strings.Contains(w80, "…") || strings.Contains(w80, subj) {
+		t.Errorf("subject should truncate with … at width 80: %q", w80)
+	}
+
+	// Width 46 → budget 1 (<8): bare hash, no subject, no stray ellipsis.
+	if tiny := headCommitLine(sha, subj, 46); strings.TrimSpace(tiny) != sha {
+		t.Errorf("at a tiny width the line must be the bare hash, got %q", tiny)
+	}
+
+	// Empty subject → bare hash regardless of width.
+	if got := headCommitLine(sha, "", 80); strings.TrimSpace(got) != sha {
+		t.Errorf("empty subject → bare hash, got %q", got)
 	}
 }

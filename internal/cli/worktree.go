@@ -1109,7 +1109,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			if entry == nil {
 				continue
 			}
-			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, *entry)
+			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, *entry, cfgProtected(cfg))
 			if err != nil {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
@@ -1267,7 +1267,7 @@ func worktreeRowPartsPlain(e WorktreeEntry) (branch, flags string) {
 // worktreeTUIActOnEntry is the secondary picker: what to do with the
 // worktree the user just selected. Returns (done, err) — done=true
 // means the outer loop should exit (e.g. user picked "cd").
-func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry) (bool, error) {
+func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry, protected []string) (bool, error) {
 	const (
 		actCD     = "cd"
 		actRemove = "remove"
@@ -1303,7 +1303,7 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 		}
 		return true, enterWorktreeSubshell(cmd, entry.Path)
 	case actRemove:
-		return false, worktreeTUIRemove(ctx, runner, cmd, entry)
+		return false, worktreeTUIRemove(ctx, runner, cmd.ErrOrStderr(), entry, protected)
 	default: // cancel
 		return false, nil
 	}
@@ -1364,8 +1364,14 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 // was checked out, but only when no other worktree still owns it.
 // Confirm defaults to yes because the user already picked "remove" in
 // the action menu — a second No-by-default prompt feels redundant.
-func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry) error {
-	stderr := cmd.ErrOrStderr()
+//
+// runner/w are interface-typed (not *ExecRunner/*cobra.Command) so the
+// flow is reusable outside the worktree TUI — `gk switch`'s d/D action
+// redirects here when the targeted branch lives in another worktree.
+// `protected` is forwarded to the orphan-branch offer so a protected branch
+// is never casually -D'd; it is the caller's repo-correct list.
+func worktreeTUIRemove(ctx context.Context, runner git.Runner, w io.Writer, entry WorktreeEntry, protected []string) error {
+	stderr := w
 
 	if entry.Bare {
 		return fmt.Errorf("cannot remove the bare/main worktree: %s", entry.Path)
@@ -1395,7 +1401,7 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		if err := forceRemoveWorktree(ctx, runner, stderr, entry.Path); err != nil {
 			return err
 		}
-		return maybeDeleteOrphanBranch(ctx, runner, stderr, entry)
+		return maybeDeleteOrphanBranch(ctx, runner, stderr, entry, protected)
 	}
 
 	// First try: plain remove.
@@ -1430,17 +1436,27 @@ func worktreeTUIRemove(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		}
 	}
 	fmt.Fprintf(stderr, "removed %s\n", entry.Path)
-	return maybeDeleteOrphanBranch(ctx, runner, stderr, entry)
+	return maybeDeleteOrphanBranch(ctx, runner, stderr, entry, protected)
 }
 
 // maybeDeleteOrphanBranch offers to delete the branch a just-removed
 // worktree had checked out. Guardrails: only when the branch name is
-// known, it isn't detached, and no other worktree still owns it.
-func maybeDeleteOrphanBranch(ctx context.Context, runner *git.ExecRunner, stderr io.Writer, entry WorktreeEntry) error {
+// known, it isn't detached, no other worktree still owns it, and it
+// isn't a protected branch (main/master/develop by default) — removing a
+// worktree must never become a casual `branch -D` of trunk that discards
+// unmerged work. Intentional protected deletion stays on `gk branch`.
+//
+// `protected` is the caller's already-resolved protected list (which
+// honors --repo and includes the built-in defaults); resolving it here via
+// config.Load(nil) would read the cwd's config, not the target repo's.
+func maybeDeleteOrphanBranch(ctx context.Context, runner git.Runner, stderr io.Writer, entry WorktreeEntry, protected []string) error {
 	if entry.Branch == "" || entry.Detached {
 		return nil
 	}
 	if branchInUse(ctx, runner, entry.Branch) {
+		return nil
+	}
+	if isProtectedBranchName(entry.Branch, protected) {
 		return nil
 	}
 	drop, _ := ui.Confirm(fmt.Sprintf("also delete branch %q?", entry.Branch), false)

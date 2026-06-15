@@ -3199,6 +3199,31 @@ func lastCommitAgo(cmd *cobra.Command, runner *git.ExecRunner) (ago, sha string)
 	return formatAge(age), shortSHA(parts[1])
 }
 
+// headCommitInfo returns HEAD's age, full SHA, and subject for the rich
+// BRANCH section's two-line layout. Returns empty strings on any git error
+// or an unborn HEAD. The %n field separators keep a multi-word subject
+// intact — splitting the old "%ct %H" line on spaces would mangle it.
+func headCommitInfo(cmd *cobra.Command, runner *git.ExecRunner) (ago, fullSHA, subject string) {
+	out, _, err := runner.Run(cmd.Context(), "log", "-1", "--format=%ct%n%H%n%s", "HEAD")
+	if err != nil {
+		return "", "", ""
+	}
+	lines := strings.SplitN(strings.TrimRight(string(out), "\n"), "\n", 3)
+	if len(lines) < 2 {
+		return "", "", ""
+	}
+	var secs int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(lines[0]), "%d", &secs); err != nil {
+		return "", "", ""
+	}
+	ago = formatAge(time.Since(time.Unix(secs, 0)))
+	fullSHA = strings.TrimSpace(lines[1])
+	if len(lines) >= 3 {
+		subject = lines[2]
+	}
+	return ago, fullSHA, subject
+}
+
 // untrackedAge returns a short relative age of an untracked file's mtime,
 // suppressed under 1 day so recent scratch files don't get annotated.
 func untrackedAge(repoDir, path string) string {

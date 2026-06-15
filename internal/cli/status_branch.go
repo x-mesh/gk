@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/branchparent"
@@ -160,13 +161,16 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 	// same helpers the legacy renderer called so output stays in lock-step
 	// with `gk status` (compact mode), which still goes through the older
 	// path.
+	// HEAD commit: the age chip rides the identity line, while the full
+	// SHA + subject drop to a dedicated second line below (see lines
+	// assembly). Captured here so a single `git log -1` feeds both.
+	var headSHA, headSubject string
 	if statusVisEnabled("staleness") {
-		if ago, sha := lastCommitAgo(cmd, runner); ago != "" {
-			text := "· last commit " + ago
-			if sha != "" {
-				text += " " + sha
+		if ago, sha, subj := headCommitInfo(cmd, runner); sha != "" {
+			if ago != "" {
+				head.WriteString("  " + faint("· "+ago+" ago"))
 			}
-			head.WriteString("  " + faint(text))
+			headSHA, headSubject = sha, subj
 		}
 	}
 	if statusVisEnabled("since-push") && !detached {
@@ -176,6 +180,12 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 	}
 
 	lines := []string{head.String()}
+	// Second line: the full HEAD hash + commit subject. Full (not short)
+	// so it's copy-paste-able; the subject is width-trimmed so the line
+	// never wraps. Sits directly under the identity line, above wt:.
+	if headSHA != "" {
+		lines = append(lines, renderHeadCommitLine(headSHA, headSubject))
+	}
 	if showWT {
 		lines = append(lines, faint("wt:")+" "+condenseHomePath(wt.Path))
 	}
@@ -190,6 +200,44 @@ func renderBranchSection(cmd *cobra.Command, runner *git.ExecRunner, st *git.Sta
 		}
 	}
 	return renderSection("branch", "", lines, layout)
+}
+
+// renderHeadCommitLine renders the BRANCH section's second line: the full
+// HEAD hash followed by its commit subject. The hash is yellow (git-log
+// convention, and it stays copy-paste-able), the subject faint so the line
+// reads as secondary to the identity line above it. The subject is trimmed
+// to the terminal width — accounting for the 3-space section indent, the
+// 40-char hash, and a 2-space gap — so the line never wraps; on a non-TTY
+// (piped, captured) the full subject is emitted verbatim.
+func renderHeadCommitLine(sha, subject string) string {
+	ttyW := 0
+	if w, ok := ui.TTYWidth(); ok && w > 0 {
+		ttyW = w
+	}
+	return headCommitLine(sha, subject, ttyW)
+}
+
+// headCommitLine is the width-aware core of renderHeadCommitLine, split out
+// so the truncation maths is testable without a real TTY. ttyW <= 0 means
+// "unknown width" (non-TTY / piped) → the subject is never trimmed.
+func headCommitLine(sha, subject string, ttyW int) string {
+	hash := color.YellowString(sha)
+	if subject == "" {
+		return hash
+	}
+	if ttyW > 0 {
+		// Reserve the section body indent (3) + full hash + 2-space gap
+		// before the subject so the rendered line fits within ttyW.
+		budget := ttyW - len(ui.SectionIndent) - len(sha) - 2
+		if budget < 8 {
+			// Too narrow to add a useful subject — show the hash alone
+			// rather than a one-character "…" stub.
+			return hash
+		}
+		subject = runewidth.Truncate(subject, budget, "…")
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	return hash + "  " + faint(subject)
 }
 
 // otherWorktreeView is the rendering projection used by listOtherWorktrees.

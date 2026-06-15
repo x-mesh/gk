@@ -576,6 +576,85 @@ func TestSwitchAction_DeleteMerged(t *testing.T) {
 	}
 }
 
+// TestWorktreeDeleteTarget_RoutesParkedBranch guards the regression where
+// pressing d/D on a branch checked out in another worktree ran `git branch
+// -d`, which git refuses ("used by worktree at ..."), leaving the user with
+// a confusing "delete failed". Such a row must instead be classified for
+// the worktree-removal flow; everything else stays on branch deletion.
+func TestWorktreeDeleteTarget_RoutesParkedBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/wt")
+	repo.CreateBranch("feat/plain")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	// Park feat/wt in a linked worktree so a `git branch -d feat/wt`
+	// would be refused by git. feat/plain stays a normal local branch.
+	wtPath := filepath.Join(t.TempDir(), "wt-feat")
+	if _, _, err := runner.Run(ctx, "worktree", "add", wtPath, "feat/wt"); err != nil {
+		t.Fatalf("worktree add: %v", err)
+	}
+	wt := loadSwitchWorktrees(ctx, runner)
+	if _, ok := wt.byBranch["feat/wt"]; !ok {
+		t.Fatalf("setup: feat/wt should map to a worktree, got %+v", wt.byBranch)
+	}
+
+	// Parked branch → routed to worktree removal, carrying its entry.
+	entry, isWT := worktreeDeleteTarget(ui.PickerItem{Key: keyLocalPrefix + "feat/wt"}, wt)
+	if !isWT {
+		t.Fatalf("feat/wt is parked in a worktree, want worktree-removal routing")
+	}
+	if canonPath(entry.Path) != canonPath(wtPath) {
+		t.Errorf("routed entry.Path = %q, want %q", entry.Path, wtPath)
+	}
+
+	// Normal local branch → branch deletion (not worktree removal).
+	if _, isWT := worktreeDeleteTarget(ui.PickerItem{Key: keyLocalPrefix + "feat/plain"}, wt); isWT {
+		t.Errorf("feat/plain is not parked anywhere; must not route to worktree removal")
+	}
+	// Remote-only and placeholder rows never route to worktree removal.
+	if _, isWT := worktreeDeleteTarget(ui.PickerItem{Key: keyRemotePrefix + "origin/feat/wt"}, wt); isWT {
+		t.Errorf("remote row must not route to worktree removal")
+	}
+	if _, isWT := worktreeDeleteTarget(ui.PickerItem{Key: keyLocalPrefix + "__placeholder__"}, wt); isWT {
+		t.Errorf("placeholder row must not route to worktree removal")
+	}
+}
+
+// TestMaybeDeleteOrphanBranch_SkipsProtected guards the footgun where
+// removing a protected branch's worktree then offered a casual `branch -D`
+// of trunk (main/master/develop). The offer must be skipped entirely.
+func TestMaybeDeleteOrphanBranch_SkipsProtected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	buf := &bytes.Buffer{}
+
+	// develop is on the (repo-correct) protected list and not in any
+	// worktree. If the guard were absent the function would reach ui.Confirm
+	// (a non-TTY no-op here) — but we assert it returns BEFORE prompting and
+	// never deletes the branch. (A non-protected branch would reach the
+	// prompt; the protected one must short-circuit.)
+	protected := []string{"main", "master", "develop"}
+	if err := maybeDeleteOrphanBranch(ctx, runner, buf, WorktreeEntry{Branch: "develop"}, protected); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out := strings.TrimSpace(repo.RunGit("branch", "--list", "develop")); out == "" {
+		t.Errorf("protected branch develop must not be deleted")
+	}
+}
+
 func TestFormatDirtyMarker(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

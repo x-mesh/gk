@@ -585,10 +585,13 @@ func canonPath(p string) string {
 func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command, showRemotes bool) (switchPick, error) {
 
 	// Hoist loop-invariant probes outside the picker re-entry loop.
-	// `cur`, `defaultBr`, and `wt` don't change across n/d/D actions
-	// (n exits the loop entirely; d/D never delete the current branch
-	// or modify worktrees). Refreshing them every iteration was the
-	// dominant source of post-action stalls.
+	// `cur` and `defaultBr` don't change across n/d/D actions (n exits the
+	// loop entirely; d/D never delete the current branch). `wt`/`dirty` are
+	// likewise reused per iteration to avoid a per-worktree `git status`
+	// stall on every render — the one action that DOES mutate worktree
+	// topology (d/D on a branch parked in another worktree → worktree
+	// removal) reloads both before it re-lists. Refreshing them every
+	// iteration was the dominant source of post-action stalls.
 	cur, _ := client.CurrentBranch(ctx)
 	remote := "origin"
 	if cfg != nil && cfg.Remote != "" {
@@ -762,6 +765,22 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			}
 			continue
 		case "d", "D":
+			// A branch checked out in another worktree can't be removed with
+			// `git branch -d` — git refuses it ("cannot delete branch 'x' used
+			// by worktree at ..."). Pressing d/D on such a row means "get rid
+			// of that worktree", so redirect to the worktree-removal flow
+			// (lock/dirty-aware, then offers to drop the now-freed branch).
+			// This mutates worktree topology, so refresh the hoisted wt/dirty
+			// before re-listing or the picker would keep a phantom WORKTREE
+			// column and re-route a now-free branch here forever.
+			if entry, isWT := worktreeDeleteTarget(choice, wt); isWT {
+				if rerr := worktreeTUIRemove(ctx, runner, w, entry, cfgProtected(cfg)); rerr != nil {
+					fmt.Fprintln(w, "✗ "+rerr.Error())
+				}
+				wt = loadSwitchWorktrees(ctx, runner)
+				dirty = loadWorktreeDirtyStates(ctx, wt)
+				continue
+			}
 			force := choice.ExtraAction == "D"
 			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, protected, merged, force); err != nil {
 				if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, errSwitchActionRetry) {
@@ -1218,6 +1237,20 @@ func decodeBranchTarget(choice ui.PickerItem) targetBranchInfo {
 	}
 }
 
+// worktreeDeleteTarget reports whether a d/D cursor row targets a branch
+// that lives in ANOTHER worktree. git refuses `branch -d` on such a branch
+// ("used by worktree at ..."), and the user's real intent is to remove that
+// worktree — so the picker routes these to the worktree-removal flow instead
+// of branch deletion. Remote-only and placeholder rows never qualify.
+func worktreeDeleteTarget(choice ui.PickerItem, wt switchWorktreeMap) (WorktreeEntry, bool) {
+	target := decodeBranchTarget(choice)
+	if target.IsRemote || target.Placeholder {
+		return WorktreeEntry{}, false
+	}
+	entry, locked := wt.byBranch[target.Name]
+	return entry, locked
+}
+
 // guardDelete returns nil if (target, force) is safe to delete,
 // otherwise an error explaining why. Pure function — no I/O.
 //
@@ -1437,6 +1470,17 @@ func isLinkedWorktree(ctx context.Context, r git.Runner) bool {
 		return false
 	}
 	return strings.TrimSpace(lines[0]) != strings.TrimSpace(lines[1])
+}
+
+// cfgProtected returns the configured protected-branch list, or nil when
+// cfg is nil. Lets call sites forward the repo-correct list (loaded with
+// --repo honored) into worktree-removal's orphan-branch guard instead of
+// re-loading config against the cwd.
+func cfgProtected(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Branch.Protected
 }
 
 // isProtectedBranchName reports whether branch is on the configured

@@ -34,7 +34,7 @@ var lockPidRe = regexp.MustCompile(`pid (\d+)`)
 // worktreeLockInfo parses `git worktree list --porcelain` for the block
 // matching path and reports its lock state. Symlink-resolved path equality
 // (sameDir) keeps macOS /var → /private/var aliasing from missing a match.
-func worktreeLockInfo(ctx context.Context, runner *git.ExecRunner, path string) worktreeLock {
+func worktreeLockInfo(ctx context.Context, runner git.Runner, path string) worktreeLock {
 	out, _, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return worktreeLock{}
@@ -95,7 +95,7 @@ func pidAlive(pid int) bool {
 // locked) then removes with --force. This is the `-f -f` equivalent: a
 // single `worktree remove --force` leaves a lock in place, so the explicit
 // unlock is what lets a locked worktree actually go.
-func forceRemoveWorktree(ctx context.Context, runner *git.ExecRunner, w io.Writer, path string) error {
+func forceRemoveWorktree(ctx context.Context, runner git.Runner, w io.Writer, path string) error {
 	// Best-effort unlock: ignore the error when it wasn't locked.
 	_, _, _ = runner.Run(ctx, "worktree", "unlock", path)
 	if _, stderr, err := runner.Run(ctx, "worktree", "remove", "--force", path); err != nil {

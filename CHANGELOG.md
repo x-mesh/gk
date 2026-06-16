@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk agents`가 global 스코프를 다룬다 — `--global`로 `~/.claude/CLAUDE.md`·`~/.codex/AGENTS.md`에 설치, `check`는 local·global 상태를 한 번에 보고.** 기존 `gk agents install`/`check`는 repo 루트의 `CLAUDE.md`/`AGENTS.md`만 봤다. 이제 `gk agents install --global`은 에이전트별 전역 지시 파일에 계약 블록을 심어(부모 디렉토리 자동 생성) 모든 프로젝트가 gk 사용 규약을 상속하게 한다 — 경로는 `$CLAUDE_CONFIG_DIR`(기본 `~/.claude`)와 `$CODEX_HOME`(기본 `~/.codex`)을 따른다. `gk agents check`는 인자 없이 **local(저장소 안일 때)과 global 양쪽**을 스코프별로 묶어 각 파일의 설치 상태·버전을 출력한다: 설치돼 있지만 구버전인 drift(예: 전역에 남은 v11 블록)는 non-zero exit + `gk agents install --global` 힌트로 잡고, 아직 설치 안 된 스코프는 정보성으로만 표시해 기본 뷰를 실패시키지 않는다(`--global`로 명시 타게팅하면 미설치도 실패). repo 밖에서 `gk agents install`은 `--global`/`--file`을 안내하는 에러로 끝난다.
+
 ## [0.89.0] - 2026-06-16
 
 ### Added

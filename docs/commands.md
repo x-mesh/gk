@@ -396,13 +396,17 @@ gk context --include=remotes --json         # per-remote drift + asymmetric push
 
 ## gk agents
 
-Manages the gk usage contract inside the repository's agent instruction files (`CLAUDE.md`, `AGENTS.md`). The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
+Manages the gk usage contract inside agent instruction files (`CLAUDE.md`, `AGENTS.md`). The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
+
+Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the **per-agent global files** that every project inherits — Claude's `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`) and Codex's `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), selected with `--global`.
 
 | Subcommand | Description |
 |------------|-------------|
 | `gk agents print` | Print the contract block to stdout (paste anywhere) |
 | `gk agents install [--file <path>]` | Insert or refresh the block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent) |
-| `gk agents check` | Verify installed blocks match this gk version; non-zero exit + hint when stale |
+| `gk agents install --global` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
+| `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
+| `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
 
 ## gk pull
 

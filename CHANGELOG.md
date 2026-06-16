@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk land --to parent|base` — 마무리를 한 단계 통합까지 한 번에 끝내는 단일 wrap-up 동사.** 기존 `gk land`는 commit → `pull --with-base` → push로 끝났고, 푸시 후 상위 브랜치로 머지하려면 의미가 다른 `--promote` 플래그를 따로 써야 했다. 이제 `--to parent`는 현재 브랜치를 부모(`branch.<name>.gk-parent`, 없으면 설정된 base)로 **한 단계** forward-merge하고, `--to base`는 곧장 base로 한 번에 머지한다 — 같은 FF-only promote 머신(`gk merge --into <target>` + `gk push --from <target>`)을 재사용한다. 스택의 중간 브랜치까지 차례로 올리는 다단계 워크는 그대로 `gk promote <branch>`다. `--no-push`는 실행을 로컬에 묶는다: push와 통합 push를 모두 건너뛰고 commit + pull + 로컬 머지만 수행한다(나중에 통합 브랜치에서 publish하는 흐름의 접힌 형태). bare `gk land`는 불변이다 — `--to`를 주지 않으면 base·parent를 건드리지 않는다(위험한 기본값 없음). `--promote`는 `--to`의 deprecated 별칭으로 한 릴리스 동안 유지되며(사용 시 soft stderr 힌트), 기존 흐름과 `land.promote` 설정은 그대로 동작한다. agents 계약 v17.
+
 ### Changed
+
+- **에이전트 envelope가 이진 `{ok}`에서 명시적 상태 enum `state: ok|paused|blocked|error`로 바뀐다.** 기존 envelope은 성공/실패만 구분해, 충돌로 *멈춘* 상태("이어서 해줘")와 진짜 실패를 종료 코드 없이는 구분할 수 없었다. 이제 `state`가 1차 분기 키다: pull/merge/rebase 충돌, 부분 resolve, 다시 멈춘 continue 같은 멈춤 결과는 `agentStater` 인터페이스를 통해 `state:"paused"`로 보고되어, 에이전트가 exit code를 들여다보지 않고도 "resume me"와 "done"을 구분한다. `ok`는 파생 별칭(`ok == state=="ok"`)으로 남아 기존 `ok`-분기 소비자는 깨지지 않는다. agents 계약 v15. (`blocked`는 아래 base-FF 통합을 위해 예약됐다 — roadmap RFC #2.)
+
+- **diverged base는 이제 `state:"blocked"` + 안정 코드 `base-diverged`로 보고되고, remedy는 `gk sync`다 — ship/pull의 신호를 통일.** non-base 브랜치(예: develop)에서 `gk ship`은 base(main)를 fast-forward한 뒤 태그하는데, 히스토리가 갈라지면 멈춰야 한다. 이전엔 이게 평범한 `error`였고 계약 텍스트는 잘못된 remedy(`pull --with-base`)를 안내했다 — `pull --with-base`는 로컬 base를 *원격에서* 갱신하는 반대 방향이라 no-op 재시도 루프를 만들었다. 이제 "아무것도 바꾸지 않았지만 먼저 해소해야 하는 선행조건"을 위한 `blocked` 상태를 `WithBlocked(err, code, hint, remedies...)`로 production에 들였고(hintError에 state+code 필드, `FormatErrorJSON`이 `state:"blocked"`·`ok:false`를 존중, localized 메시지도 안정 코드로 매핑), ship의 diverged-base 하드스톱을 여기에 연결했다. remedy는 `gk sync`(브랜치를 로컬 base 위로 rebase — ship의 게이트가 로컬 `isAncestor(base, branch)`라 이게 실제로 게이트를 해소한다)로 못 박았다. `pull --with-base`의 base FF는 거기선 선택적이라 best-effort soft-skip을 유지한다(보고 동등성이지 동작 동등성이 아님 — council 합의). agents 계약 v16.
 
 - **`gk agents check/install`가 `GK_AGENT=1`에서 Codex가 바로 분기할 수 있는 단일 JSON envelope를 낸다.** `check`는 파일별 `scope`·`state`·`reason`·버전과 `drift`/`absent` 집계를 결과에 담고, 명시 타깃(`--global`/`--file`)이 빠져 있으면 별도 에러 JSON을 또 쓰지 않고 `state:"blocked"` + `needs_install` + `install_commands`로 보고한다. `install`도 타깃별 `action`(`created`/`updated`/`unchanged`)을 결과로 낸다. 사람용 출력은 그대로 유지된다.
 

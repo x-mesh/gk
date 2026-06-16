@@ -328,22 +328,24 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--with-base` | true | Fast-forward the local base branch during the pull step (`--with-base=false` to skip) |
-| `--promote` | (off) | After pushing, forward-merge the current branch into its base and push it (`gk merge --into <base>` + `gk push --from <base>`). Bare `--promote` climbs **one hop**: the branch's parent when `branch.<name>.gk-parent` is set (the same resolution `gk status` uses for its ready-to-merge line), else the configured base — in a `main→develop→feat` stack, landing `feat` promotes to `develop`, not `main`. `--promote=<branch>` walks the parent chain **hop by hop** until `<branch>`: `feat→develop→main` runs merge+push per boundary (steps `promote:develop`, `promote:main`) so intermediate branches advance instead of going stale; a target outside the chain is an error (use `gk merge --into` for a one-off direct merge). A conflict pauses with the normal resolve/continue contract and the failed hop is reported with a resume path; re-running skips already-merged hops. Skipped when already on the target. `land.promote` in config makes the step a default: `parent` (or `true`) for the bare one-hop semantics, a branch name for the chain walk — an explicit `--promote` flag wins over config. |
+| `--to` | (off) | After pushing, forward-merge the current branch **one hop** into its parent (`branch.<name>.gk-parent`, else the configured base) with `--to parent`, or straight into the base with `--to base`. Reuses the FF-only promote machinery (`gk merge --into <target>` + `gk push --from <target>`). To advance intermediate branches in a stack, use `gk promote <branch>` (the multi-hop walk). A conflict pauses with the normal resolve/continue contract and the failed step reports a resume path; re-running skips an already-merged target. `land.promote` in config makes this a default: `parent` (or `true`) for the one-hop semantics, a branch name for the chain walk. |
+| `--no-push` | false | Local wrap-up: skip the push step **and** any integration push — commit + pull + local merge only. The folded form of the old local-promote flow (integrate now, publish later from the receiving branch). |
+| `--promote` | (off) | **DEPRECATED** alias for `--to` (kept one release; a soft stderr hint fires when used). Bare `--promote` = one hop to parent/base; `--promote=<branch>` = chain walk to `<branch>`. Existing flows and `land.promote` config keep working unchanged — prefer `--to parent\|base`, or `gk promote <branch>` for the multi-hop walk. |
 | `--no-promote` | false | Skip the promote step for this run — the per-invocation escape from a `land.promote` config default |
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 
 ## gk promote
 
-The local half of `gk land --promote`: commit what's dirty (AI-grouped via `gk commit -f`), then forward-merge the current branch into its parent/base — **no pull, no push**. Built for worktree-centric flows where integration happens locally (merge into `develop` now, publish later from `develop`) and `land`'s mandatory network steps are exactly what you don't want.
+The local half of `gk land --to`: commit what's dirty (AI-grouped via `gk commit -f`), then forward-merge the current branch into its parent/base — **no pull, no push**. Built for worktree-centric flows where integration happens locally (merge into `develop` now, publish later from `develop`) and `land`'s mandatory network steps are exactly what you don't want.
 
 ```bash
 gk promote          # commit → merge into the parent (gk-parent metadata, else the configured base)
 gk promote main     # walk the parent chain hop by hop: feat→develop→main, each boundary merged
-gk promote --push   # also publish each advanced branch (push --from <target>) — land --promote's behavior
+gk promote --push   # also publish each advanced branch (push --from <target>) — land --to's behavior
 ```
 
-Bare `gk promote` climbs **one hop** — the same target resolution as `gk status`'s ready-to-merge line and bare `land --promote`. `gk promote <branch>` walks the parent chain until `<branch>`; a target outside the chain is an error (use `gk merge --into` for a one-off direct merge). The receiving branch does not need a worktree: a fast-forward updates the ref directly, a clean non-FF merge commits via merge-tree, and only a real conflict requires a checkout. Conflicts pause with the normal resolve/continue contract; re-running is safe (a clean tree skips commit, merged hops merge nothing). Already on the target → a quiet no-op that leaves the dirty tree alone.
+Bare `gk promote` climbs **one hop** — the same target resolution as `gk status`'s ready-to-merge line and `land --to parent`. `gk promote <branch>` walks the parent chain until `<branch>`; a target outside the chain is an error (use `gk merge --into` for a one-off direct merge). The receiving branch does not need a worktree: a fast-forward updates the ref directly, a clean non-FF merge commits via merge-tree, and only a real conflict requires a checkout. Conflicts pause with the normal resolve/continue contract; re-running is safe (a clean tree skips commit, merged hops merge nothing). Already on the target → a quiet no-op that leaves the dirty tree alone.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -1717,7 +1719,7 @@ The success line names what landed where, so the base of a new branch is never a
 
 `--dry-run` describes the plan and touches nothing — no directory, no `git worktree add`, no init — printing `would add worktree at <path> …`. With `--json` it returns the same machine-readable result (`{path, branch, parent, created, managed, dry_run, init}`) the real run emits, so an agent reads `result.path` straight from the envelope instead of scraping the success line; under `--json` the init bootstrap runs silently (its link/copy/run log would otherwise corrupt the envelope) and reports only `init: done | skipped`.
 
-A newly created branch also records its fork parent (`branch.<name>.gk-parent = <base>`), the same metadata `gk branch set-parent` writes — creation is the only moment the parent is known for certain (git's own reflog only says "Created from HEAD"). `gk status`, the `SOURCE` column, and `gk land --promote` then resolve against the real parent instead of the trunk. Recording is skipped when the base is not a local branch (detached HEAD, remote ref, raw SHA) and is undone with `gk branch unset-parent`.
+A newly created branch also records its fork parent (`branch.<name>.gk-parent = <base>`), the same metadata `gk branch set-parent` writes — creation is the only moment the parent is known for certain (git's own reflog only says "Created from HEAD"). `gk status`, the `SOURCE` column, and `gk land --to` then resolve against the real parent instead of the trunk. Recording is skipped when the base is not a local branch (detached HEAD, remote ref, raw SHA) and is undone with `gk branch unset-parent`.
 
 #### Managed base directory
 

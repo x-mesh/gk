@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-06-16
+
 ### Added
 
 - **`gk land --to parent|base` — 마무리를 한 단계 통합까지 한 번에 끝내는 단일 wrap-up 동사.** 기존 `gk land`는 commit → `pull --with-base` → push로 끝났고, 푸시 후 상위 브랜치로 머지하려면 의미가 다른 `--promote` 플래그를 따로 써야 했다. 이제 `--to parent`는 현재 브랜치를 부모(`branch.<name>.gk-parent`, 없으면 설정된 base)로 **한 단계** forward-merge하고, `--to base`는 곧장 base로 한 번에 머지한다 — 같은 FF-only promote 머신(`gk merge --into <target>` + `gk push --from <target>`)을 재사용한다. 스택의 중간 브랜치까지 차례로 올리는 다단계 워크는 그대로 `gk promote <branch>`다. `--no-push`는 실행을 로컬에 묶는다: push와 통합 push를 모두 건너뛰고 commit + pull + 로컬 머지만 수행한다(나중에 통합 브랜치에서 publish하는 흐름의 접힌 형태). bare `gk land`는 불변이다 — `--to`를 주지 않으면 base·parent를 건드리지 않는다(위험한 기본값 없음). `--promote`는 `--to`의 deprecated 별칭으로 한 릴리스 동안 유지되며(사용 시 soft stderr 힌트), 기존 흐름과 `land.promote` 설정은 그대로 동작한다. agents 계약 v17.

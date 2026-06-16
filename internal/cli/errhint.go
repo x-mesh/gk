@@ -23,6 +23,14 @@ type hintError struct {
 	err      error
 	hint     string
 	remedies []errRemedy
+	// state overrides the agent-envelope state for this error. "" means the
+	// default "error"; "blocked" marks a precondition failure (e.g. a diverged
+	// base) where nothing was changed and a remedy clears the block.
+	state string
+	// code overrides error.code. "" means derive it from the message; a
+	// non-empty value short-circuits errorCodeFromError so a localized message
+	// still maps to a stable code.
+	code string
 }
 
 // errRemedy is one machine-executable fix attached to an error — the agent
@@ -57,6 +65,48 @@ func WithRemedy(err error, hint string, remedies ...errRemedy) error {
 		return nil
 	}
 	return &hintError{err: err, hint: strings.TrimSpace(hint), remedies: remedies}
+}
+
+// WithBlocked decorates err as a blocked precondition: the command made no
+// change, but a precondition (e.g. a diverged base that cannot fast-forward)
+// must be cleared before it can proceed. The agent envelope renders it as
+// state:"blocked" (ok:false, non-zero exit) with the given code and remedies,
+// so an agent runs the remedy instead of treating it as a hard failure. code
+// is the stable error.code; hint and remedies carry the fix. Nil err → nil.
+func WithBlocked(err error, code, hint string, remedies ...errRemedy) error {
+	if err == nil {
+		return nil
+	}
+	return &hintError{
+		err:      err,
+		hint:     strings.TrimSpace(hint),
+		remedies: remedies,
+		state:    envStateBlocked,
+		code:     code,
+	}
+}
+
+// stateFrom walks the error chain and returns the first explicit envelope-state
+// override (e.g. "blocked"), or "" when none is set (caller defaults to
+// "error").
+func stateFrom(err error) string {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if he, ok := e.(*hintError); ok && he.state != "" {
+			return he.state
+		}
+	}
+	return ""
+}
+
+// codeFrom walks the error chain and returns the first explicit error.code
+// override, or "" when none is set (caller derives the code from the message).
+func codeFrom(err error) string {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if he, ok := e.(*hintError); ok && he.code != "" {
+			return he.code
+		}
+	}
+	return ""
 }
 
 // RemediesFrom extracts machine-executable remedies from the error chain.

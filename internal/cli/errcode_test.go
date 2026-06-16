@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -67,6 +68,53 @@ func TestRemediesFrom(t *testing.T) {
 	// HintFrom compatibility unchanged.
 	if HintFrom(err) != "fix it" {
 		t.Errorf("HintFrom through WithRemedy = %q", HintFrom(err))
+	}
+}
+
+// TestWithBlocked pins the blocked-precondition error contract: state
+// "blocked", an explicit code that survives a localized message, the carried
+// remedies, and a FormatErrorJSON envelope that renders state:"blocked"
+// ok:false (not "error").
+func TestWithBlocked(t *testing.T) {
+	err := WithBlocked(
+		fmt.Errorf("ship: %q는 base %q를 fast-forward할 수 없습니다 (히스토리 분기)", "develop", "main"),
+		"base-diverged",
+		"먼저 base를 branch로 통합하세요: `gk sync`",
+		errRemedy{Command: "gk sync", Safety: "safe"},
+	)
+
+	if s := stateFrom(err); s != envStateBlocked {
+		t.Errorf("stateFrom = %q, want %q", s, envStateBlocked)
+	}
+	// Explicit code wins even though the message is Korean (no "diverged" token).
+	if c := errorCodeFromError(err); c != "base-diverged" {
+		t.Errorf("errorCodeFromError = %q, want base-diverged", c)
+	}
+	if r := RemediesFrom(err); len(r) != 1 || r[0].Command != "gk sync" {
+		t.Errorf("remedies = %+v, want one gk sync", r)
+	}
+
+	prevA, prevJ := flagAgent, flagJSON
+	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
+	flagAgent, flagJSON = true, true
+
+	var env struct {
+		State string `json:"state"`
+		OK    bool   `json:"ok"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if uerr := json.Unmarshal([]byte(FormatErrorJSON(err)), &env); uerr != nil {
+		t.Fatalf("not valid JSON: %v", uerr)
+	}
+	if env.State != envStateBlocked || env.OK || env.Error.Code != "base-diverged" {
+		t.Errorf("blocked envelope: state=%q ok=%v code=%q", env.State, env.OK, env.Error.Code)
+	}
+
+	// WithBlocked(nil) is nil, like the other decorators.
+	if WithBlocked(nil, "x", "y") != nil {
+		t.Error("WithBlocked(nil) must be nil")
 	}
 }
 

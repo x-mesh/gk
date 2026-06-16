@@ -20,6 +20,11 @@ func errorCodeFromError(err error) string {
 	if err == nil {
 		return ""
 	}
+	// An explicit code (e.g. from WithBlocked) wins: it lets a localized
+	// message still map to a stable code without a brittle prose match.
+	if c := codeFrom(err); c != "" {
+		return c
+	}
 	if isNotAGitRepoError(err) {
 		return "not-a-repo"
 	}

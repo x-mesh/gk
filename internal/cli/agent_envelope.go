@@ -114,7 +114,15 @@ func FormatErrorJSON(err error) string {
 	for i := range remedies {
 		remedies[i].Command = selfRewrite(remedies[i].Command)
 	}
-	env := agentEnvelope{Schema: 1, State: envStateError, OK: false, Error: &agentError{
+	// Most failures are state:"error"; a blocked precondition (WithBlocked,
+	// e.g. a diverged base) overrides to state:"blocked" so an agent runs the
+	// remedy instead of treating it as a hard failure. ok stays false either
+	// way — only state=="ok" derives ok:true.
+	state := envStateError
+	if s := stateFrom(err); agentStateValid(s) {
+		state = s
+	}
+	env := agentEnvelope{Schema: 1, State: state, OK: false, Error: &agentError{
 		Code:     errorCodeFromError(err),
 		Message:  err.Error(),
 		Hint:     selfRewrite(HintFrom(err)),

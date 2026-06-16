@@ -501,9 +501,19 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 			// releases from it, so the tag lands on base, not the feature branch.
 			mergeToBase = true
 		default:
-			return shipPlan{}, WithHint(
+			// Diverged base is a blocked precondition, not a hard failure:
+			// ship changed nothing. ship's gate is local (isAncestor(base,
+			// branch)), so the fix is to bring base INTO the branch — `gk sync`
+			// rebases the branch onto its local base, after which base is an
+			// ancestor and ship can fast-forward. (pull --with-base updates the
+			// local base FROM the remote — the wrong direction here; pointing at
+			// it is the no-op loop RELEASE-ENG flagged.) Reported as
+			// state:"blocked" with the remedy that actually clears it.
+			return shipPlan{}, WithBlocked(
 				fmt.Errorf("ship: %q는 base %q를 fast-forward할 수 없습니다 (히스토리 분기)", branch, base),
-				"먼저 base를 통합하세요: `gk sync` 후 다시 ship — 또는 그 자리에 태그하려면 --allow-non-base",
+				"base-diverged",
+				"먼저 base를 branch로 통합하세요: `gk sync` 후 다시 ship — 또는 그 자리에 태그하려면 --allow-non-base",
+				errRemedy{Command: selfCmd("sync"), Safety: "safe"},
 			)
 		}
 	}

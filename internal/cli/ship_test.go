@@ -421,6 +421,22 @@ func TestBuildShipPlan_RejectsDivergedNonBaseBranch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for diverged non-base branch, got nil")
 	}
+	// A diverged base is a blocked precondition, not a hard failure: it must
+	// report state:"blocked" with a stable code and the remedy that actually
+	// clears it — `gk sync` (rebase branch onto base), not pull --with-base.
+	if s := stateFrom(err); s != envStateBlocked {
+		t.Errorf("stateFrom = %q, want %q", s, envStateBlocked)
+	}
+	if c := errorCodeFromError(err); c != "base-diverged" {
+		t.Errorf("error code = %q, want base-diverged", c)
+	}
+	rems := RemediesFrom(err)
+	if len(rems) != 1 || !strings.Contains(rems[0].Command, "sync") {
+		t.Errorf("remedies = %+v, want one `…sync` command", rems)
+	}
+	if strings.Contains(rems[0].Command, "with-base") {
+		t.Errorf("remedy must not point at pull --with-base (no-op for ship's divergence): %+v", rems)
+	}
 }
 
 func TestBuildShipPlan_AllowNonBaseSkipsMerge(t *testing.T) {

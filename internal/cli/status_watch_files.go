@@ -396,6 +396,7 @@ type headInfo struct {
 	ahead    int
 	behind   int
 	sha      string // short
+	ago      string // relative age of the HEAD commit ("22m", "" when <1m)
 	subject  string
 }
 
@@ -411,8 +412,9 @@ func fetchHeadInfo(cmd *cobra.Command, runner *git.ExecRunner) headInfo {
 		h.upstream = strings.TrimSpace(string(out))
 		h.ahead, h.behind = detectPromptAheadBehind(ctx, runner)
 	}
-	if _, sha, subj := headCommitInfo(cmd, runner); sha != "" {
+	if ago, sha, subj := headCommitInfo(cmd, runner); sha != "" {
 		h.sha = shortSHA(sha)
+		h.ago = ago
 		h.subject = subj
 	}
 	return h
@@ -678,13 +680,21 @@ func (m *changeWatchModel) compactHeader() string {
 		return line1
 	}
 	subj := h.subject
+	// HEAD commit age chip — "now" when committed under a minute ago, since
+	// formatAge floors sub-minute spans to "". Tells the reader at a glance how
+	// fresh the latest commit is: a commit landing mid-watch reads "now", then
+	// ticks up ("1m", "2m", …) as later refreshes refetch the header.
+	ageChip := h.ago
+	if ageChip == "" {
+		ageChip = "now"
+	}
 	if m.width > 20 {
-		budget := m.width - 3 - runewidth.StringWidth(h.sha) - 2
+		budget := m.width - 3 - runewidth.StringWidth(h.sha) - 2 - runewidth.StringWidth(ageChip) - 2
 		if budget > 8 && runewidth.StringWidth(subj) > budget {
 			subj = runewidth.Truncate(subj, budget, "…")
 		}
 	}
-	line2 := "   " + yellow.Render(h.sha) + "  " + dim.Render(subj)
+	line2 := "   " + yellow.Render(h.sha) + "  " + green.Render(ageChip) + "  " + dim.Render(subj)
 	return line1 + "\n" + line2
 }
 

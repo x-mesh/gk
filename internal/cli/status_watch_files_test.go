@@ -36,6 +36,12 @@ func TestFetchHeadInfo(t *testing.T) {
 	if !strings.Contains(h.subject, "the initial thing") {
 		t.Errorf("subject = %q, want it to contain the commit message", h.subject)
 	}
+	// A just-created commit is under a minute old, so formatAge floors it to
+	// "" — the header renders that as "now". Proves the ago field is wired
+	// through fetchHeadInfo (the value used to be discarded).
+	if h.ago != "" {
+		t.Errorf("fresh commit age = %q, want empty (sub-minute floors to \"\")", h.ago)
+	}
 }
 
 // TestChangeSnapshot_RenameKeysNewPath drives changeSnapshot against a real
@@ -188,7 +194,7 @@ func TestChangeWatchView_CompactHeaderAndFeed(t *testing.T) {
 		height:   20,
 		head: headInfo{
 			repo: "gk", branch: "develop", upstream: "origin/develop",
-			ahead: 8, sha: "0dbe763d", subject: "chore(scripts): add embedding probe",
+			ahead: 8, sha: "0dbe763d", ago: "12m", subject: "chore(scripts): add embedding probe",
 		},
 		files: 5, added: 228, removed: 79,
 		events: []changeEvent{
@@ -200,7 +206,7 @@ func TestChangeWatchView_CompactHeaderAndFeed(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{
 		"WATCHING", "develop", "origin/develop", "↑8", // orientation line
-		"5 files", "0dbe763d", "embedding probe", // rollup + HEAD commit
+		"5 files", "0dbe763d", "12m", "embedding probe", // rollup + HEAD commit + age chip
 		"live changes",                                // divider
 		"base.py", "+72", "test_blue_green.py", "new", // feed
 	} {
@@ -217,6 +223,26 @@ func TestChangeWatchView_CompactHeaderAndFeed(t *testing.T) {
 		t.Errorf("divider must show the live dot\n%s", v)
 	}
 	t.Logf("rendered frame:\n%s", v) // visible with `go test -v`
+}
+
+// TestCompactHeader_AgeNowFallback proves a commit that landed under a minute
+// ago (ago == "") renders as "now" rather than leaving a blank gap — the
+// mid-watch commit case the age chip exists for.
+func TestCompactHeader_AgeNowFallback(t *testing.T) {
+	m := &changeWatchModel{
+		width: 100, height: 20,
+		head: headInfo{
+			branch: "develop", sha: "abc1234", ago: "", subject: "feat: just landed",
+		},
+		now: func() time.Time { return time.Unix(2000, 0) },
+	}
+	hdr := m.compactHeader()
+	if !strings.Contains(hdr, "now") {
+		t.Errorf("sub-minute HEAD commit should show a \"now\" age chip\n%s", hdr)
+	}
+	if !strings.Contains(hdr, "abc1234") || !strings.Contains(hdr, "just landed") {
+		t.Errorf("header missing sha/subject\n%s", hdr)
+	}
 }
 
 // TestChangeWatchView_DashboardToggle verifies the [s] toggle swaps the feed

@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestInstallAgentsBlock_Lifecycle(t *testing.T) {
@@ -134,5 +137,135 @@ func TestCheckAgentsFile_States(t *testing.T) {
 	}
 	if s := checkAgentsFile(&buf, noBlk, "NOTES.md"); s != agentsAbsent {
 		t.Errorf("no block → %v, want absent", s)
+	}
+}
+
+func TestRunAgentsCheck_AgentJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	if _, err := installAgentsBlock(path); err != nil {
+		t.Fatal(err)
+	}
+	withAgentMode(t, true)
+
+	cmd := &cobra.Command{Use: "agents check", RunE: runAgentsCheck}
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	if err := cmd.Flags().Set("file", path); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agents check: %v\n%s", err, out.String())
+	}
+	var env struct {
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			Schema int `json:"schema"`
+			Files  []struct {
+				Path    string `json:"path"`
+				Scope   string `json:"scope"`
+				State   string `json:"state"`
+				Version int    `json:"version"`
+			} `json:"files"`
+			Drift  int `json:"drift"`
+			Absent int `json:"absent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not agent JSON: %v\n%s", err, out.String())
+	}
+	if env.State != envStateOK || !env.OK || env.Result.Schema != 1 || len(env.Result.Files) != 1 {
+		t.Fatalf("unexpected envelope: %+v", env)
+	}
+	f := env.Result.Files[0]
+	if f.Path != path || f.Scope != "custom" || f.State != "ok" || f.Version != agentsContractVersion {
+		t.Errorf("file status: %+v", f)
+	}
+	if env.Result.Drift != 0 || env.Result.Absent != 0 {
+		t.Errorf("summary: drift=%d absent=%d", env.Result.Drift, env.Result.Absent)
+	}
+}
+
+func TestRunAgentsCheck_AgentJSONBlockedForExplicitMissing(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex"))
+	withAgentMode(t, true)
+
+	cmd := &cobra.Command{Use: "agents check", RunE: runAgentsCheck}
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	if err := cmd.Flags().Set("global", "true"); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agent JSON check should report blocked in the result, not return a second error envelope: %v\n%s", err, out.String())
+	}
+	var env struct {
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			NeedsInstall    bool     `json:"needs_install"`
+			InstallCommands []string `json:"install_commands"`
+			Absent          int      `json:"absent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not agent JSON: %v\n%s", err, out.String())
+	}
+	if env.State != envStateBlocked || env.OK || !env.Result.NeedsInstall || env.Result.Absent != 2 {
+		t.Fatalf("blocked envelope: %+v", env)
+	}
+	if len(env.Result.InstallCommands) != 1 || !strings.Contains(env.Result.InstallCommands[0], "agents install --global") {
+		t.Errorf("install commands: %+v", env.Result.InstallCommands)
+	}
+}
+
+func TestRunAgentsInstall_AgentJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	withAgentMode(t, true)
+
+	cmd := &cobra.Command{Use: "agents install", RunE: runAgentsInstall}
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	if err := cmd.Flags().Set("file", path); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agents install: %v\n%s", err, out.String())
+	}
+	var env struct {
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			Schema int `json:"schema"`
+			Files  []struct {
+				Path    string `json:"path"`
+				Scope   string `json:"scope"`
+				Action  string `json:"action"`
+				Version int    `json:"version"`
+			} `json:"files"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not agent JSON: %v\n%s", err, out.String())
+	}
+	if env.State != envStateOK || !env.OK || env.Result.Schema != 1 || len(env.Result.Files) != 1 {
+		t.Fatalf("unexpected envelope: %+v", env)
+	}
+	f := env.Result.Files[0]
+	if f.Path != path || f.Scope != "custom" || f.Action != "created" || f.Version != agentsContractVersion {
+		t.Errorf("install result: %+v", f)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("file not created: %v", err)
 	}
 }

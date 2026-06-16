@@ -67,6 +67,45 @@ type agentsFile struct {
 	scope string // "local" (repo root) · "global" (~/.claude, ~/.codex) · "custom" (--file)
 }
 
+type agentsFileStatusJSON struct {
+	Path    string `json:"path"`
+	Label   string `json:"label"`
+	Scope   string `json:"scope"`
+	State   string `json:"state"` // ok | stale | absent
+	Reason  string `json:"reason,omitempty"`
+	Version int    `json:"version,omitempty"`
+	Want    int    `json:"want"`
+}
+
+type agentsInstallFileJSON struct {
+	Path    string `json:"path"`
+	Label   string `json:"label"`
+	Scope   string `json:"scope"`
+	Action  string `json:"action"` // created | updated | unchanged
+	Version int    `json:"version"`
+}
+
+type agentsCheckJSON struct {
+	Schema          int                    `json:"schema"`
+	Files           []agentsFileStatusJSON `json:"files"`
+	Drift           int                    `json:"drift"`
+	Absent          int                    `json:"absent"`
+	NeedsInstall    bool                   `json:"needs_install,omitempty"`
+	InstallCommands []string               `json:"install_commands,omitempty"`
+}
+
+type agentsInstallJSON struct {
+	Schema int                     `json:"schema"`
+	Files  []agentsInstallFileJSON `json:"files"`
+}
+
+func (r agentsCheckJSON) agentState() string {
+	if r.NeedsInstall {
+		return envStateBlocked
+	}
+	return ""
+}
+
 func init() {
 	cmd := &cobra.Command{
 		Use:   "agents",
@@ -222,12 +261,29 @@ func runAgentsInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	w := cmd.OutOrStdout()
+	var res agentsInstallJSON
+	if JSONOut() {
+		res.Schema = 1
+	}
 	for _, t := range targets {
 		state, werr := installAgentsBlock(t.path)
 		if werr != nil {
 			return werr
 		}
+		if JSONOut() {
+			res.Files = append(res.Files, agentsInstallFileJSON{
+				Path:    t.path,
+				Label:   agentsFileLabel(t),
+				Scope:   t.scope,
+				Action:  state,
+				Version: agentsContractVersion,
+			})
+			continue
+		}
 		fmt.Fprintln(w, successLine(state, tildePath(t.path)))
+	}
+	if JSONOut() {
+		return emitAgentResult(w, res)
 	}
 	return nil
 }
@@ -280,28 +336,79 @@ const (
 
 // checkAgentsFile prints one status line and reports the file's state.
 func checkAgentsFile(w io.Writer, path, label string) agentsState {
+	st := inspectAgentsFile(path, label)
+	renderAgentsFileStatus(w, st)
+	return agentsStateFromString(st.State)
+}
+
+func inspectAgentsFile(path, label string) agentsFileStatusJSON {
+	st := agentsFileStatusJSON{
+		Path:  path,
+		Label: label,
+		Want:  agentsContractVersion,
+	}
 	b, rerr := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(rerr):
-		fmt.Fprintf(w, "  %s %s — not installed\n", cellYellow("·"), label)
-		return agentsAbsent
+		st.State = "absent"
+		st.Reason = "missing"
+		return st
 	case rerr != nil:
-		fmt.Fprintf(w, "  %s %s — unreadable: %v\n", cellYellow("·"), label, rerr)
-		return agentsAbsent
+		st.State = "absent"
+		st.Reason = "unreadable"
+		return st
 	}
 	content := string(b)
 	m := agentsVersionRE.FindStringSubmatch(content)
 	switch {
 	case m == nil:
-		fmt.Fprintf(w, "  %s %s — no gk agents block\n", cellYellow("·"), label)
-		return agentsAbsent
+		st.State = "absent"
+		st.Reason = "no-block"
 	case !strings.Contains(content, agentsContractBlock()):
-		fmt.Fprintf(w, "  %s %s — out of date (have v%s, want v%d)\n", cellYellow("·"), label, m[1], agentsContractVersion)
+		st.State = "stale"
+		st.Version = atoiDefault(m[1], 0)
+	default:
+		st.State = "ok"
+		st.Version = agentsContractVersion
+	}
+	return st
+}
+
+func renderAgentsFileStatus(w io.Writer, st agentsFileStatusJSON) {
+	switch st.State {
+	case "ok":
+		fmt.Fprintf(w, "  %s %s — up to date (v%d)\n", cellGreen("✓"), st.Label, agentsContractVersion)
+	case "stale":
+		fmt.Fprintf(w, "  %s %s — out of date (have v%d, want v%d)\n", cellYellow("·"), st.Label, st.Version, agentsContractVersion)
+	default:
+		switch st.Reason {
+		case "unreadable":
+			fmt.Fprintf(w, "  %s %s — unreadable\n", cellYellow("·"), st.Label)
+		case "no-block":
+			fmt.Fprintf(w, "  %s %s — no gk agents block\n", cellYellow("·"), st.Label)
+		default:
+			fmt.Fprintf(w, "  %s %s — not installed\n", cellYellow("·"), st.Label)
+		}
+	}
+}
+
+func agentsStateFromString(s string) agentsState {
+	switch s {
+	case "ok":
+		return agentsOK
+	case "stale":
 		return agentsStale
 	default:
-		fmt.Fprintf(w, "  %s %s — up to date (v%d)\n", cellGreen("✓"), label, agentsContractVersion)
-		return agentsOK
+		return agentsAbsent
 	}
+}
+
+func atoiDefault(s string, def int) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return def
+	}
+	return n
 }
 
 func runAgentsCheck(cmd *cobra.Command, args []string) error {
@@ -325,15 +432,22 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 	drift, absent := 0, 0
 	staleScopes := map[string]bool{}
 	lastScope := ""
+	res := agentsCheckJSON{Schema: 1}
 	for _, t := range targets {
-		if t.scope != lastScope {
+		if !JSONOut() && t.scope != lastScope {
 			if lastScope != "" {
 				fmt.Fprintln(w)
 			}
 			fmt.Fprintln(w, color.New(color.Faint).Sprint(agentsScopeHeader(t.scope)))
 			lastScope = t.scope
 		}
-		switch checkAgentsFile(w, t.path, agentsFileLabel(t)) {
+		st := inspectAgentsFile(t.path, agentsFileLabel(t))
+		st.Scope = t.scope
+		res.Files = append(res.Files, st)
+		if !JSONOut() {
+			renderAgentsFileStatus(w, st)
+		}
+		switch agentsStateFromString(st.State) {
 		case agentsStale:
 			drift++
 			staleScopes[t.scope] = true
@@ -342,15 +456,17 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 			staleScopes[t.scope] = true
 		}
 	}
+	res.Drift = drift
+	res.Absent = absent
+
+	if JSONOut() {
+		res.NeedsInstall = drift > 0 || (explicit && absent > 0)
+		res.InstallCommands = agentsInstallCommands(staleScopes)
+		return emitAgentResult(w, res)
+	}
 
 	if drift > 0 || (explicit && absent > 0) {
-		var cmds []string
-		if staleScopes["local"] || staleScopes["custom"] {
-			cmds = append(cmds, "gk agents install")
-		}
-		if staleScopes["global"] {
-			cmds = append(cmds, "gk agents install --global")
-		}
+		cmds := agentsInstallCommands(staleScopes)
 		n := drift
 		if explicit {
 			n += absent
@@ -361,6 +477,17 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 		)
 	}
 	return nil
+}
+
+func agentsInstallCommands(scopes map[string]bool) []string {
+	var cmds []string
+	if scopes["local"] || scopes["custom"] {
+		cmds = append(cmds, selfCmd("agents install"))
+	}
+	if scopes["global"] {
+		cmds = append(cmds, selfCmd("agents install --global"))
+	}
+	return cmds
 }
 
 // agentsScopeHeader is the faint group header printed above each scope's files.

@@ -475,3 +475,119 @@ Total: 3-way parallel schedule **11–13d → 9–11d**; LoC **13.4k → 11.8k**
 - Latent bugs incidentally fixed during v2 extraction:
   - `internal/cli/wipe.go:L38-L48` currently has no preflight; `gitsafe.Check(AllowDirty())` added in SHARED-01.
   - `internal/cli/undo.go:L183-L185` `*git.ExecRunner` type-assertion; replaced by `WithWorkDir(dir)` option in SHARED-01.
+
+---
+
+## RFC: Agent Integration-Core Redesign — tri-state envelope + single base-FF engine
+
+| Field | Value |
+|-------|-------|
+| Status | Draft (x-op council consensus — CONSENSUS WITH RESERVATIONS) |
+| Author | x-op council — AGENT-UX · GIT-SAFETY · RELEASE-ENG · DX-MINIMALIST |
+| Date | 2026-06-16 |
+| Target | v0.9x → v2 (post-v0.90.0) |
+| Affected | `GK_AGENT` envelope · `land` · `promote` · `ship` · `pull --with-base` · `worktree run --cleanup` · `resolve` · `rebase --plan` |
+| Source record | `.xm/op/council-2026-06-16-gk-workflow-critique.json` |
+
+> Every "current state" claim below was verified against the source by a parallel grounding sweep; file:line citations are real. One council claim was **refuted** during verification and corrected (see Problem 4 note).
+
+### Summary
+
+Three changes to the agent-facing integration core:
+
+1. Replace the binary `{ok}` envelope with a `state: ok|paused|blocked|error` enum (keep `ok` as a derived alias, so existing consumers do not break).
+2. Route `land` / `promote` / `pull --with-base` / `ship` through ONE base-fast-forward contract, so a diverged base behaves identically everywhere.
+3. Make every destructive verb recoverable-by-construction (snapshot to `refs/wip` + a `restore` handle in the envelope).
+
+The integration surface stays at two named verbs — `land` (network wrap-up) and `promote` (local / multi-hop) — but they become thin parameterizations of a single engine. The `land --promote` spelling is removed and single-hop `promote` collapses into `land --no-push --to parent`.
+
+### Motivation (verified current state)
+
+**Problem 1 — the binary envelope cannot encode a paused operation.**
+The envelope is `agentEnvelope{schema, ok, result, error}` (`internal/cli/agent_envelope.go:23-35`). A paused operation (a `pull` conflict, a mid-`rebase`/`resolve`) is encoded as `ok:true` + exit code 3 — "a paused state is a result (exit 3), not an error" (`internal/cli/agents.go:38,51`). An agent that branches `if (!ok) runRemedy() else done` mis-handles the single most frequent decision point: a paused result reads as success (reports "done" and proceeds), or — if it treats the non-zero exit as failure — it may fire an `abort` remedy and discard half-resolved work. No field says "paused".
+
+**Problem 2 — base advancement has two contradictory contracts.**
+`pull --with-base` (and `land`'s embedded step) SOFT-SKIPS a diverged base: it checks `merge-base --is-ancestor`, and on divergence prints a NOTE and records `result:"skipped-diverged"` with `ok:true` (`internal/cli/pull_base.go:164-171`). `ship` from a non-base branch HARD-STOPS the identical condition, returning an error ("히스토리 분기 … gk sync"; `internal/cli/ship.go:494-509`, `isAncestor` at `:625-631`). An agent can loop: `land` succeeds (base silently skipped) → `ship` blocks demanding `gk sync`/`pull --with-base` → `pull --with-base` soft-skips again (`ok:true`) → `ship` still blocks. Same fact, two opposite signals.
+
+**Problem 3 — `land` and `promote` are already one pipeline wearing two names.**
+Both delegate to `runLandPipeline` (`internal/cli/land.go:174`, `internal/cli/promote.go:104`) and share `promoteHopSteps`. They differ only on two axes: push (land always pushes; promote opts in) and merge target (parent vs base). That is two flags' worth of difference — yet the surface offers `land`, `promote`, AND `land --promote` for overlapping outcomes, with no rule telling an agent which to pick at wrap-up.
+
+**Problem 4 — destructive verbs are not uniformly recoverable.**
+- `worktree run --cleanup` force-removes the worktree (`worktree remove --force`) and deletes the branch if this call created it (`git branch -D`) on success (`internal/cli/worktree_run.go:227-234`). Force-removal discards untracked/gitignored files (`.env`, venvs, local DBs) git never tracked; deleting a just-created branch whose commits were never integrated orphans them.
+- `resolve --strategy ours|theirs` applies the strategy to all conflicts in a batch, then auto-continues — re-resolving later conflicting picks with the same strategy (up to `maxAutoResolveRounds`) and auto-skipping emptied picks via `--skip` — with no per-pick review gate (`internal/cli/resolve_continue.go:102-203`). One side of a multi-commit merge can be discarded across commits the agent never inspected.
+- `rebase --plan`'s pushed-commit guard determines "pushed" from `collectPushedShas`, which reads `@{upstream}`/`--remotes` — git-cached remote-tracking refs (`internal/cli/log.go:882-894`). A stale or absent cache misclassifies a pushed commit as local, bypassing the guard and rewriting published history. With no remote-tracking ref at all, `anyRemoteTrackingRef` would mark every commit local-only (`internal/cli/log.go:853-858`).
+
+> **Corrected during verification:** the council asserted `land --cleanup` removes untracked files unrecoverably. **Refuted** — branch-clean refuses to remove a dirty worktree without `--force` and skips the branch, so it does not lose untracked work (`internal/branchclean/cleaner.go:241-251`). The untracked-loss path is specific to `worktree run --cleanup`'s `--force`.
+
+### Proposed design
+
+**1. Tri-state envelope.**
+
+```
+state: "ok" | "paused" | "blocked" | "error"
+ok:    derived alias — ok == (state == "ok")     // additive; existing branch-on-ok consumers keep working
+```
+
+- `paused` — operation suspended awaiting input (rebase/resolve/pull conflict); carries resume/abort `remedies`.
+- `blocked` — precondition unmet (diverged base); MUST carry ≥1 remedy (an `auto_runnable:false` remedy is fine, but the list must not be empty).
+- `error` — the command failed.
+- `remedies`/`next_actions` standardize to `{command, safety:<enum>, auto_runnable:bool}` so an agent decides auto-run vs surface deterministically.
+- `paused` and `blocked` MUST be distinguishable from `state` alone — never from prose or the exit code.
+
+**2. Single base-FF engine.**
+`pull --with-base`, `land`, `promote`, and `ship` integrate the base through one contract: fast-forward only via `update-ref` CAS; non-FF → `state:blocked` + an identical remedy (`gk sync` / `gk pull --with-base`); never `--force`. The soft-skip vs hard-stop split is removed — every entry point reports the same `blocked`. `ship --dry-run` surfaces a diverged base before tagging.
+
+**3. `land` is the single wrap-up verb (single-hop integration folded into flags).**
+
+```
+land [--push | --no-push] [--to parent | base]
+```
+
+- Bare `land` = commit → `pull --with-base` → push to upstream only. NO dangerous default — never auto-advances base or parent.
+- `--to parent|base` adds the single-hop forward-merge. `--to none` is NOT offered — commit-only stays `gk commit`.
+- `land --promote` removed; single-hop `promote` is `land --no-push --to parent`.
+
+**4. `promote` retained ONLY for the multi-hop parent-chain walk.**
+`promote <branch>` walks the gk-parent chain hop by hop (`landPromoteChain`, `internal/cli/land.go:566-599`), performing N merges (`merge --into`, `:418-434`) across N intermediate parent refs with a cycle guard (`visited` map, `maxDepth=10`). This is the one capability a single flag cannot express, so the verb survives — but only in its positional multi-hop form.
+
+**5. Recoverable-by-construction.**
+Every destructive verb snapshots to `refs/wip/<branch>` before any ref move and surfaces a `restore` handle in the envelope:
+- `worktree run --cleanup` stashes untracked/gitignored into the snapshot BEFORE `worktree remove --force`, and snapshots a created-branch tip before `branch -D`.
+- `resolve --strategy` snapshots before auto-continuing the batch.
+- `rebase --plan` keeps its backup ref AND hardens the guard: when `anyRemoteTrackingRef` is false or the cache may be stale, treat commits as potentially-pushed (fail safe) rather than local.
+
+### Tradeoffs
+
+**Pros**
+- One decision (`land` vs `promote`) at wrap-up; one base-FF contract to learn; one `state` switch to branch on.
+- The land/ship divergence loop becomes structurally impossible once both report `blocked`.
+- Recovery is structural, not advisory — a mistaken `--cleanup` or `--strategy` is always reversible.
+
+**Cons / risks**
+- The `state` field is additive (`ok` stays derived), but tooling asserting the exact envelope shape needs a one-line update.
+- `--to` concentrates base/parent advancement behind one verb's flags. Verified mitigation: blast radius is spelling-invariant — `pull_base.go`/`ship.go` are FF-only via `merge-base --is-ancestor` + CAS, so a mistaken `--to base` cannot rewrite published base (worst case: FF earlier than intended), and the snapshot makes the local tip recoverable.
+
+### Reservations (carried from council, unresolved)
+
+- **DX-MINIMALIST** — would fold the multi-hop walk into `land --cascade` too (zero second verb). Deferred: revisit after the single engine lands and decode-cost data is in.
+- **RELEASE-ENG** — `ship`'s non-base FF must emit the same `state:blocked`; the `--allow-non-base` in-place tag must stay explicit, never a silent fallback.
+
+### Migration
+
+1. Add `state` to the envelope with `ok` derived (additive, no flag). Bump the `gk agents` contract block to document the enum.
+2. Unify the base-FF path: `ship` consumes the same `pull_base` outcome; the soft-skip NOTE and the ship hard-stop both become one `state:blocked` result.
+3. Add `land --to`; deprecate `land --promote` (one release of alias + hint); remove single-hop bare `promote`.
+4. Extend the `refs/wip` snapshot helper to `worktree run --cleanup`, `resolve`, and the `rebase --plan` guard.
+
+### References (verified source)
+
+- `internal/cli/agent_envelope.go:23-35` — envelope + error structs (binary `ok`, no `state`)
+- `internal/cli/agents.go:38,51` — contract text: "a paused state is a result (exit 3), not an error"
+- `internal/cli/pull_base.go:164-171` — base soft-skip (`skipped-diverged`, `ok:true`)
+- `internal/cli/ship.go:494-509,625-631` — ship hard-stop on diverged base + `isAncestor`
+- `internal/cli/land.go:174` / `internal/cli/promote.go:104` — shared `runLandPipeline`
+- `internal/cli/land.go:566-599,442-478,418-434` — `landPromoteChain` multi-hop + cycle guard + `merge --into`
+- `internal/cli/worktree_run.go:227-234` — `--cleanup` force-remove + `branch -D`
+- `internal/branchclean/cleaner.go:241-251` — `land`-side cleanup refuses dirty worktrees (already safe)
+- `internal/cli/resolve_continue.go:102-203` — batch strategy + auto-continue + auto-skip
+- `internal/cli/log.go:853-894` — `collectPushedShas` / `anyRemoteTrackingRef` (pushed-guard cache source)

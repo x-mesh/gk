@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`gk agents`가 global 스코프를 다룬다 — `--global`로 `~/.claude/CLAUDE.md`·`~/.codex/AGENTS.md`에 설치, `check`는 local·global 상태를 한 번에 보고.** 기존 `gk agents install`/`check`는 repo 루트의 `CLAUDE.md`/`AGENTS.md`만 봤다. 이제 `gk agents install --global`은 에이전트별 전역 지시 파일에 계약 블록을 심어(부모 디렉토리 자동 생성) 모든 프로젝트가 gk 사용 규약을 상속하게 한다 — 경로는 `$CLAUDE_CONFIG_DIR`(기본 `~/.claude`)와 `$CODEX_HOME`(기본 `~/.codex`)을 따른다. `gk agents check`는 인자 없이 **local(저장소 안일 때)과 global 양쪽**을 스코프별로 묶어 각 파일의 설치 상태·버전을 출력한다: 설치돼 있지만 구버전인 drift(예: 전역에 남은 v11 블록)는 non-zero exit + `gk agents install --global` 힌트로 잡고, 아직 설치 안 된 스코프는 정보성으로만 표시해 기본 뷰를 실패시키지 않는다(`--global`로 명시 타게팅하면 미설치도 실패). repo 밖에서 `gk agents install`은 `--global`/`--file`을 안내하는 에러로 끝난다.
+- **`gk agents`가 global 스코프를 다룬다 — `--global`로 `~/.claude/CLAUDE.md`·`~/.codex/AGENTS.md`에 설치하고, `check`는 local·global 상태를 한 번에 보고한다.** 기존 `gk agents install`/`check`는 repo 루트의 `CLAUDE.md`/`AGENTS.md`만 봤다. 이제 `gk agents install --global`은 에이전트별 전역 지시 파일에 계약 블록을 심는다(부모 디렉토리는 없으면 자동으로 만든다). 그러면 모든 프로젝트가 gk 사용 규약을 상속한다. 경로는 `$CLAUDE_CONFIG_DIR`(기본 `~/.claude`)와 `$CODEX_HOME`(기본 `~/.codex`)을 따른다. `gk agents check`는 인자 없이 **local(저장소 안일 때)과 global 양쪽**을 스코프별로 묶어 각 파일의 설치 상태와 버전을 출력한다. 설치돼 있지만 구버전인 drift(예: 전역에 남은 v11 블록)는 non-zero exit과 `gk agents install --global` 힌트로 잡고, 아직 설치 안 된 스코프는 정보성으로만 표시해 기본 뷰를 실패시키지 않는다(`--global`로 명시해서 타게팅하면 미설치도 실패한다). repo 밖에서 `gk agents install`은 `--global`이나 `--file`을 안내하는 에러로 끝난다.
 
 ## [0.89.0] - 2026-06-16
 
 ### Added
 
-- **`gk log`가 base 통합 경계를 한 줄 divider로 그린다 — 어디까지가 아직 base에 안 올라간 작업인지 한눈에.** `develop`처럼 base(`main`) 위에서 일하면 로컬 브랜치가 base보다 앞서지만, `gk log`만 봐서는 어느 커밋까지가 미머지인지 드러나지 않았다(`gk pull`이 "Already up to date"여도 브랜치 간 해시는 다르니 "동기화된 게 맞나" 혼란이 반복됐다). 이제 base에 도달하는 첫 커밋 바로 위에 `──┤ ↑ N unmerged → main ├──` 경계선을 그린다(`--safety`의 push boundary와 동형, cyan — `○` 마커와 같은 vocabulary). 커밋마다 `○`를 찍는 `--vis merged` 마커와 달리 divider는 한 줄이라 노이즈 없이 **기본 노출**된다: 현재 브랜치가 base와 다를 때만 그려지고(base 위에선 모든 커밋이 이미 머지된 상태라 자동 생략 — 추가 `rev-list` 비용 0), push boundary와 같은 행에 겹치면 `──┤ ↑ N unpushed · unmerged → main ├──` 합본 한 줄로 합친다(unpushed가 더 긴급하므로 yellow). flat·`--graph` 양쪽 렌더 경로가 같은 배치 로직(`boundaryLines`)을 공유한다.
+- **`gk log`가 base 통합 경계를 한 줄 divider로 그린다 — 어디까지가 아직 base에 안 올라간 작업인지 한눈에.** `develop`처럼 base(`main`) 위에서 일하면 로컬 브랜치가 base보다 앞서는데, `gk log`만 봐서는 어느 커밋까지가 미머지인지 알 수 없었다(`gk pull`이 "Already up to date"라고 해도 브랜치 간 해시는 다르니 "동기화된 게 맞나" 하는 혼란이 반복됐다). 이제 base에 도달하는 첫 커밋 바로 위에 `──┤ ↑ N unmerged → main ├──` 경계선을 그린다. `--safety`의 push boundary와 같은 모양이고, 색은 `○` 마커와 맞춘 cyan이다. 커밋마다 `○`를 찍는 `--vis merged` 마커와 달리 divider는 한 줄이라 노이즈 없이 **기본 노출**된다. 현재 브랜치가 base와 다를 때만 그려지고, base 위에서는 모든 커밋이 이미 머지된 상태라 자동 생략되므로 추가 `rev-list` 비용이 없다. push boundary와 같은 행에 겹치면 `──┤ ↑ N unpushed · unmerged → main ├──` 한 줄로 합치는데, unpushed가 더 급하니 색은 yellow다. flat과 `--graph` 양쪽 렌더 경로가 같은 배치 로직(`boundaryLines`)을 공유한다.
 
 ### Changed
 

@@ -58,13 +58,18 @@ func init() {
 
   1. commit   gk commit -f          (skipped when the tree is clean)
   2. pull     gk pull --with-base   (sync upstream and fast-forward the base)
-  3. push     gk push               (secret scan included)
-  4. promote  merge --into <base> + push --from <base>  (only with --promote)
-  5. cleanup  merged-branch + worktree reclaim          (only with --cleanup)
+  3. push     gk push               (secret scan included; skipped with --no-push)
+  4. promote  merge --into <target> + push --from <target>  (only with --to)
+  5. cleanup  merged-branch + worktree reclaim              (only with --cleanup)
 
---promote forward-merges the current branch into its base and pushes it
-(the manual gk merge --into <base> + gk push --from <base> pair) as a final
-step. Bare --promote climbs ONE hop: the branch's parent when one is set
+--to parent|base forward-merges the current branch ONE hop into its parent
+(branch.<name>.gk-parent, else the base) or directly into the base, then
+pushes it. To advance intermediate branches too, use gk promote <branch> (the
+multi-hop parent-chain walk). --no-push makes the run local: it skips the
+branch push and the integration push (commit + pull + local merge only).
+
+--promote is the DEPRECATED alias for --to, kept one release. Bare --promote
+climbs ONE hop: the branch's parent when one is set
 (branch.<name>.gk-parent — the same resolution gk status uses for its
 "ready to merge into" line), else the configured base. --promote=<branch>
 walks the parent chain hop by hop until <branch> — feat→develop→main runs
@@ -91,7 +96,9 @@ moves to stderr so stdout stays parseable.`,
 	}
 	cmd.Flags().Bool("with-base", true, "fast-forward the local base branch during the pull step (--with-base=false to skip)")
 	cmd.Flags().Bool("cleanup", false, "after pushing, delete fully-merged branches and reclaim their worktrees")
-	cmd.Flags().String("promote", "", "after pushing, promote the current branch: bare = one hop to its parent/base; --promote=<branch> = walk the parent chain hop by hop until <branch> (config: land.promote)")
+	cmd.Flags().String("to", "", "after pushing, integrate the current branch one hop into `parent` or `base` (--to base merges directly into the base; use `gk promote <branch>` to advance intermediate branches too)")
+	cmd.Flags().Bool("no-push", false, "local wrap-up: skip the push step and any integration push (commit + pull + local merge only)")
+	cmd.Flags().String("promote", "", "DEPRECATED — use --to parent|base (or `gk promote <branch>` for the multi-hop walk); bare = one hop to parent/base, --promote=<branch> = chain walk (config: land.promote)")
 	// A bare `--promote` (no value) resolves to the configured base branch.
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.Flags().Bool("no-promote", false, "skip the promote step for this run (overrides land.promote in config)")
@@ -109,7 +116,9 @@ func runLand(cmd *cobra.Command, args []string) error {
 
 	withBase, _ := cmd.Flags().GetBool("with-base")
 	cleanup, _ := cmd.Flags().GetBool("cleanup")
-	promote := resolveLandPromote(cmd, cfg)
+	to, _ := cmd.Flags().GetString("to")
+	noPush, _ := cmd.Flags().GetBool("no-push")
+	push := !noPush
 	jsonMode := JSONOut()
 
 	dirty, err := landTreeDirty(ctx, runner)
@@ -117,19 +126,39 @@ func runLand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve the promote target: a bare --promote (sentinel) means the
-	// branch's parent/base; --promote=<branch> overrides; empty means the
-	// step is off.
+	// Resolve the integration target. --to parent|base is the primary spelling;
+	// --promote is the deprecated alias kept for one release. Both resolve to
+	// the same FF-only hop list. --to none / no flag = no integration step.
 	promoteTarget := ""
 	currentBranch := ""
 	var promoteHops []landPromoteHop
-	if promote != "" {
-		var perr error
-		currentBranch, promoteTarget, promoteHops, perr = resolvePromoteHops(
-			ctx, cmd.ErrOrStderr(), runner, cfg, promote, promoteFlavorLand)
-		if perr != nil {
-			return perr
+	rerun := "gk land"
+	switch {
+	case to != "":
+		currentBranch, promoteTarget, promoteHops, err = resolveLandTo(ctx, cmd.ErrOrStderr(), runner, cfg, to)
+		if err != nil {
+			return err
 		}
+		rerun = "gk land --to " + to
+	default:
+		promote := resolveLandPromote(cmd, cfg)
+		if promote != "" {
+			if cmd.Flags().Changed("promote") && !jsonMode {
+				fmt.Fprintln(cmd.ErrOrStderr(), stylizeHintLine("note: --promote is being replaced by `--to parent|base` (use `gk promote <branch>` for the multi-hop walk)"))
+			}
+			currentBranch, promoteTarget, promoteHops, err = resolvePromoteHops(
+				ctx, cmd.ErrOrStderr(), runner, cfg, promote, promoteFlavorLand)
+			if err != nil {
+				return err
+			}
+			rerun = "gk land --promote"
+			if promote != landPromoteUseBase {
+				rerun = "gk land --promote=" + promoteTarget
+			}
+		}
+	}
+	if !push {
+		rerun += " --no-push"
 	}
 
 	// Pass the flag in BOTH polarities: the child pull reads pull.with_base
@@ -148,6 +177,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 		},
 		{
 			name: "push", args: []string{"push"},
+			skip:   landSkipWhen(!push, "--no-push"),
 			resume: "fix the push (gk push), then rerun: gk land",
 		},
 	}
@@ -155,11 +185,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 		if currentBranch == promoteTarget {
 			steps = append(steps, landStep{name: "promote", skip: "already on " + promoteTarget})
 		} else {
-			rerun := "gk land --promote"
-			if promote != landPromoteUseBase {
-				rerun = "gk land --promote=" + promoteTarget
-			}
-			steps = append(steps, promoteHopSteps(repo, jsonMode, promoteHops, true, rerun)...)
+			steps = append(steps, promoteHopSteps(repo, jsonMode, promoteHops, push, rerun)...)
 		}
 	}
 	if cleanup {
@@ -331,6 +357,45 @@ func resolveLandPromote(cmd *cobra.Command, cfg *config.Config) string {
 		return landPromoteUseBase
 	}
 	return v
+}
+
+// resolveLandTo maps the --to axis (parent|base) to a promote target + hop
+// list, reusing the same FF-only merge machinery as --promote. "parent" is one
+// hop to the branch's gk-parent (falling back to the trunk) — the clearer
+// spelling of a bare --promote. "base" is a single direct hop into the
+// configured base, regardless of intermediate parents; to advance the
+// intermediates too, use `gk promote <base>` (the multi-hop walk). "" / "none"
+// means no integration step.
+func resolveLandTo(ctx context.Context, errW io.Writer, runner *git.ExecRunner, cfg *config.Config, to string) (current, target string, hops []landPromoteHop, err error) {
+	switch strings.ToLower(strings.TrimSpace(to)) {
+	case "", "none":
+		return "", "", nil, nil
+	case "parent":
+		return resolvePromoteHops(ctx, errW, runner, cfg, landPromoteUseBase, promoteFlavorLand)
+	case "base":
+		client := git.NewClient(runner)
+		cb, cerr := client.CurrentBranch(ctx)
+		if cerr != nil {
+			return "", "", nil, fmt.Errorf("land: --to base: resolve current branch: %w", cerr)
+		}
+		current = strings.TrimSpace(cb)
+		target = resolveBaseForStatus(ctx, runner, client, cfg).Resolved
+		if target == "" {
+			return current, "", nil, WithHint(
+				fmt.Errorf("land: --to base could not resolve a base branch"),
+				"set base_branch in .gk.yaml or pass --to parent",
+			)
+		}
+		if current != target {
+			hops = []landPromoteHop{{source: current, target: target, via: "base"}}
+		}
+		return current, target, hops, nil
+	default:
+		return "", "", nil, WithHint(
+			fmt.Errorf("land: --to %q is not valid", to),
+			"use --to parent or --to base",
+		)
+	}
 }
 
 func landHeader(s string) string {

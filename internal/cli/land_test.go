@@ -49,6 +49,8 @@ func setupLandTest(t *testing.T, dir string) (*cobra.Command, *landRecorder, *by
 	cmd.Flags().String("repo", dir, "")
 	cmd.Flags().Bool("with-base", true, "")
 	cmd.Flags().Bool("cleanup", false, "")
+	cmd.Flags().String("to", "", "")
+	cmd.Flags().Bool("no-push", false, "")
 	cmd.Flags().String("promote", "", "")
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.Flags().Bool("no-promote", false, "")
@@ -227,6 +229,83 @@ func TestLand_PromoteBareTargetsParent(t *testing.T) {
 	}
 	if strings.Contains(got, "--into main") {
 		t.Errorf("must not skip the parent and jump to trunk: %q", got)
+	}
+}
+
+// TestLand_ToParentTargetsParent: `--to parent` is the clearer spelling of a
+// bare --promote — one hop to the gk-parent, not the trunk.
+func TestLand_ToParentTargetsParent(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("to", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --to parent: %v", err)
+	}
+	got := landCallNames(rec)
+	if !strings.Contains(got, "merge feat --into develop --no-ai | push --from develop") {
+		t.Errorf("--to parent must target parent develop: %q", got)
+	}
+	if strings.Contains(got, "--into main") {
+		t.Errorf("--to parent must not jump to the trunk: %q", got)
+	}
+}
+
+// TestLand_ToBaseMergesDirectlyIntoBase: `--to base` merges straight into the
+// configured base in one hop, skipping the intermediate parent (that's what
+// gk promote <branch> is for).
+func TestLand_ToBaseMergesDirectlyIntoBase(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("to", "base"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --to base: %v", err)
+	}
+	got := landCallNames(rec)
+	if !strings.Contains(got, "merge feat --into main --no-ai | push --from main") {
+		t.Errorf("--to base must merge directly into base main: %q", got)
+	}
+	if strings.Contains(got, "--into develop") {
+		t.Errorf("--to base must not walk the intermediate parent: %q", got)
+	}
+}
+
+// TestLand_NoPushIsLocal: `--no-push` skips the branch push AND the integration
+// push — commit + pull + local merge only.
+func TestLand_NoPushIsLocal(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+	repo.WriteFile("wip.txt", "x\n") // dirty
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("to", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("no-push", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --to parent --no-push: %v", err)
+	}
+	want := "commit -f | pull --with-base=true | merge feat --into develop --no-ai"
+	if got := landCallNames(rec); got != want {
+		t.Errorf("--no-push steps = %q, want %q (no push, no push --from)", got, want)
 	}
 }
 

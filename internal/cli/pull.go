@@ -490,12 +490,12 @@ func runPullCore(cmd *cobra.Command) error {
 		}
 		args = append(args, "fetch", fetchRemote)
 		if fetchBranch != "" {
-			args = append(args, fetchBranch)
+			args = append(args, remoteTrackingFetchSpec(fetchRemote, fetchBranch))
 		}
 		fetchErr = ui.RunCommandStreamTUI(ctx, "fetching "+upstream, "git", args...)
 	} else {
 		stopFetch := ui.StartBubbleSpinner(fmt.Sprintf("fetching %s", upstream))
-		fetchErr = client.Fetch(ctx, fetchRemote, fetchBranch, false)
+		fetchErr = fetchRemoteTrackingBranch(ctx, runner, fetchRemote, fetchBranch)
 		stopFetch()
 	}
 	if fetchErr != nil {

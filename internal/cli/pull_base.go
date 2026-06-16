@@ -108,7 +108,7 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 
 	if !alreadyFetched {
 		stop := ui.StartBubbleSpinner(fmt.Sprintf("fetching %s (base)", remoteRef))
-		_, stderr, err := runner.Run(ctx, "fetch", remote, branch)
+		_, stderr, err := fetchRemoteTrackingBranchWithStderr(ctx, runner, remote, branch)
 		stop()
 		if err != nil {
 			printNote(w, fmt.Sprintf("base '%s' not synced — fetch failed: %s",
@@ -183,4 +183,26 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 	outcome.Result = "fast-forwarded"
 	outcome.Post = newSHA
 	return outcome
+}
+
+func fetchRemoteTrackingBranch(ctx context.Context, runner git.Runner, remote, branch string) error {
+	_, _, err := fetchRemoteTrackingBranchWithStderr(ctx, runner, remote, branch)
+	return err
+}
+
+func fetchRemoteTrackingBranchWithStderr(ctx context.Context, runner git.Runner, remote, branch string) ([]byte, []byte, error) {
+	if remote == "" {
+		remote = "origin"
+	}
+	if branch == "" {
+		return runner.Run(ctx, "fetch", remote)
+	}
+	return runner.Run(ctx, "fetch", remote, remoteTrackingFetchSpec(remote, branch))
+}
+
+func remoteTrackingFetchSpec(remote, branch string) string {
+	if remote == "" {
+		remote = "origin"
+	}
+	return "+refs/heads/" + branch + ":refs/remotes/" + remote + "/" + branch
 }

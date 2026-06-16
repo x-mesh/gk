@@ -83,8 +83,9 @@ func TestFFSyncBranch_FetchesWhenNotAlreadyFetched(t *testing.T) {
 
 	ffSyncBranch(context.Background(), fake, buf, "origin", "main", false, branchLabeler("main"))
 
-	if got := ffCalls(fake, "fetch"); len(got) != 1 || got[0] != "fetch origin main" {
-		t.Errorf("expected exactly 'fetch origin main', got %v", got)
+	wantFetch := "fetch origin +refs/heads/main:refs/remotes/origin/main"
+	if got := ffCalls(fake, "fetch"); len(got) != 1 || got[0] != wantFetch {
+		t.Errorf("expected exactly %q, got %v", wantFetch, got)
 	}
 	if len(ffCalls(fake, "update-ref")) != 1 {
 		t.Error("expected the FF to proceed after fetching")
@@ -234,6 +235,38 @@ func TestIntegration_PullWithBase_FastForwardsBase(t *testing.T) {
 	}
 	if !hasBranchLine(stderr.String(), "main", "✓ fast-forwarded") {
 		t.Errorf("missing labeled base success line, stderr:\n%s", stderr.String())
+	}
+}
+
+func TestIntegration_PullWithBase_UpdatesBaseWithNarrowFetchRefspec(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream, downstream := makeWithBaseClone(t)
+
+	// Reproduce a single-branch clone shape: the local repo has a stale
+	// origin/main and local main, but remote.origin.fetch only maps develop. A
+	// plain `git fetch origin main` updates FETCH_HEAD, not
+	// refs/remotes/origin/main, so pull must use an explicit destination refspec
+	// for the base fetch.
+	downstream.RunGit("config", "--unset-all", "remote.origin.fetch")
+	downstream.RunGit("config", "--add", "remote.origin.fetch", "+refs/heads/develop:refs/remotes/origin/develop")
+
+	cmd := pullCoreCmd(t, downstream.Dir)
+	if err := cmd.Flags().Set("with-base", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stderr := &bytes.Buffer{}
+	cmd.SetErr(stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pull --with-base failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	gotMain := downstream.RunGit("rev-parse", "main")
+	wantMain := upstream.RunGit("rev-parse", "main")
+	if gotMain != wantMain {
+		t.Errorf("main = %s, want %s (base not synced with narrow fetch refspec)\nstderr:\n%s", gotMain, wantMain, stderr.String())
 	}
 }
 

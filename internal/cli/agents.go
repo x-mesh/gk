@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -58,21 +60,33 @@ func agentsContractBlock() string {
 
 var agentsTargetNames = []string{"CLAUDE.md", "AGENTS.md"}
 
+// agentsFile is one instruction-file location plus the scope it belongs to,
+// so install/check output can group and label by where the file lives.
+type agentsFile struct {
+	path  string
+	scope string // "local" (repo root) · "global" (~/.claude, ~/.codex) · "custom" (--file)
+}
+
 func init() {
 	cmd := &cobra.Command{
 		Use:   "agents",
 		Short: "Manage the gk usage contract in agent instruction files (CLAUDE.md / AGENTS.md)",
-		Long: `Keeps a versioned "how to use gk" paragraph in the repository's agent
-instruction files, so AI agents (Claude, Codex, ...) route git work through
-gk's one-call commands instead of probing with raw git.
+		Long: `Keeps a versioned "how to use gk" paragraph in agent instruction files,
+so AI agents (Claude, Codex, ...) route git work through gk's one-call
+commands instead of probing with raw git.
 
 The paragraph is embedded in the gk binary — it always describes the
 installed gk's real surface — and is fenced with markers; nothing outside
 the block is ever modified.
 
-  gk agents print     print the contract block (paste it anywhere)
-  gk agents install   insert or refresh the block in CLAUDE.md + AGENTS.md
-  gk agents check     verify installed blocks match this gk version`,
+Two scopes: the repo root (CLAUDE.md / AGENTS.md, the default) and the
+per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
+--global) that every project inherits.
+
+  gk agents print              print the contract block (paste it anywhere)
+  gk agents install            insert/refresh the block at the repo root
+  gk agents install --global   insert/refresh ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
+  gk agents check              report block status + version for local AND global`,
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "print",
@@ -88,66 +102,148 @@ the block is ever modified.
 		RunE:  runAgentsInstall,
 	}
 	install.Flags().StringSlice("file", nil, "restrict to specific files (default: CLAUDE.md and AGENTS.md at the repo root)")
+	install.Flags().Bool("global", false, "install into the per-agent global files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) instead of the repo root")
 	cmd.AddCommand(install)
-	cmd.AddCommand(&cobra.Command{
+	check := &cobra.Command{
 		Use:   "check",
-		Short: "Verify installed contract blocks match this gk version",
+		Short: "Report contract-block status and version (local + global)",
 		RunE:  runAgentsCheck,
-	})
+	}
+	check.Flags().StringSlice("file", nil, "restrict to specific files")
+	check.Flags().Bool("global", false, "check only the global files (default reports local + global)")
+	cmd.AddCommand(check)
 	rootCmd.AddCommand(cmd)
 }
 
-// agentsTargets resolves the instruction-file paths at the repo root.
-func agentsTargets(cmd *cobra.Command) ([]string, error) {
+// agentsGlobalFiles returns the per-agent global instruction files: Claude's
+// CLAUDE.md under $CLAUDE_CONFIG_DIR (default ~/.claude) and Codex's AGENTS.md
+// under $CODEX_HOME (default ~/.codex). Installing the contract here routes
+// git work through gk in every project, not just the current repo.
+func agentsGlobalFiles() ([]agentsFile, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("gk agents: cannot resolve home directory: %w", err)
+	}
+	claudeDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if claudeDir == "" {
+		claudeDir = filepath.Join(home, ".claude")
+	}
+	codexDir := os.Getenv("CODEX_HOME")
+	if codexDir == "" {
+		codexDir = filepath.Join(home, ".codex")
+	}
+	return []agentsFile{
+		{path: filepath.Join(claudeDir, "CLAUDE.md"), scope: "global"},
+		{path: filepath.Join(codexDir, "AGENTS.md"), scope: "global"},
+	}, nil
+}
+
+// agentsLocalFiles returns the repo-root instruction files. ok=false (not an
+// error) when we're not inside a git repository, so check can fall back to
+// global-only and install can print an actionable hint.
+func agentsLocalFiles(cmd *cobra.Command) ([]agentsFile, bool) {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	out, _, err := runner.Run(cmd.Context(), "rev-parse", "--show-toplevel")
 	if err != nil {
-		return nil, fmt.Errorf("gk agents: not inside a git repository")
+		return nil, false
 	}
 	root := strings.TrimSpace(string(out))
-
-	if files, _ := cmd.Flags().GetStringSlice("file"); len(files) > 0 {
-		paths := make([]string, 0, len(files))
-		for _, f := range files {
-			if filepath.IsAbs(f) {
-				paths = append(paths, f)
-			} else {
-				paths = append(paths, filepath.Join(root, f))
-			}
-		}
-		return paths, nil
-	}
-	paths := make([]string, 0, len(agentsTargetNames))
+	files := make([]agentsFile, 0, len(agentsTargetNames))
 	for _, name := range agentsTargetNames {
-		paths = append(paths, filepath.Join(root, name))
+		files = append(files, agentsFile{path: filepath.Join(root, name), scope: "local"})
 	}
-	return paths, nil
+	return files, true
+}
+
+// agentsCustomFiles resolves explicit --file paths (absolute as-is, otherwise
+// relative to the repo root). Shared by install and check.
+func agentsCustomFiles(cmd *cobra.Command, files []string) ([]agentsFile, error) {
+	var root string
+	out := make([]agentsFile, 0, len(files))
+	for _, f := range files {
+		if filepath.IsAbs(f) {
+			out = append(out, agentsFile{path: f, scope: "custom"})
+			continue
+		}
+		if root == "" {
+			runner := &git.ExecRunner{Dir: RepoFlag()}
+			top, _, err := runner.Run(cmd.Context(), "rev-parse", "--show-toplevel")
+			if err != nil {
+				return nil, fmt.Errorf("gk agents: --file %q is relative but not inside a git repository (use an absolute path)", f)
+			}
+			root = strings.TrimSpace(string(top))
+		}
+		out = append(out, agentsFile{path: filepath.Join(root, f), scope: "custom"})
+	}
+	return out, nil
+}
+
+// agentsInstallTargets resolves where install writes: --file wins, then
+// --global, else the repo root (an error with a --global hint when outside a
+// repo).
+func agentsInstallTargets(cmd *cobra.Command) ([]agentsFile, error) {
+	if files, _ := cmd.Flags().GetStringSlice("file"); len(files) > 0 {
+		return agentsCustomFiles(cmd, files)
+	}
+	if global, _ := cmd.Flags().GetBool("global"); global {
+		return agentsGlobalFiles()
+	}
+	local, ok := agentsLocalFiles(cmd)
+	if !ok {
+		return nil, fmt.Errorf("gk agents: not inside a git repository — use --global to install into ~/.claude and ~/.codex, or --file <path>")
+	}
+	return local, nil
+}
+
+// agentsCheckTargets resolves what check reports on: --file wins, then
+// --global (global only), else the full picture — local files (when inside a
+// repo) plus the global files.
+func agentsCheckTargets(cmd *cobra.Command) ([]agentsFile, error) {
+	if files, _ := cmd.Flags().GetStringSlice("file"); len(files) > 0 {
+		return agentsCustomFiles(cmd, files)
+	}
+	if global, _ := cmd.Flags().GetBool("global"); global {
+		return agentsGlobalFiles()
+	}
+	var out []agentsFile
+	if local, ok := agentsLocalFiles(cmd); ok {
+		out = append(out, local...)
+	}
+	g, err := agentsGlobalFiles()
+	if err != nil {
+		return nil, err
+	}
+	return append(out, g...), nil
 }
 
 func runAgentsInstall(cmd *cobra.Command, args []string) error {
-	targets, err := agentsTargets(cmd)
+	targets, err := agentsInstallTargets(cmd)
 	if err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
-	for _, path := range targets {
-		state, werr := installAgentsBlock(path)
+	for _, t := range targets {
+		state, werr := installAgentsBlock(t.path)
 		if werr != nil {
 			return werr
 		}
-		fmt.Fprintln(w, successLine(state, filepath.Base(path)))
+		fmt.Fprintln(w, successLine(state, tildePath(t.path)))
 	}
 	return nil
 }
 
 // installAgentsBlock writes the current contract block into path, replacing
-// an existing fenced block or appending one. Returns the verb describing
-// what happened: created / updated / unchanged.
+// an existing fenced block or appending one (creating the parent directory
+// and file when absent). Returns the verb describing what happened:
+// created / updated / unchanged.
 func installAgentsBlock(path string) (string, error) {
 	block := agentsContractBlock()
 	b, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
+		if mkerr := os.MkdirAll(filepath.Dir(path), 0o755); mkerr != nil {
+			return "", fmt.Errorf("gk agents: mkdir %s: %w", filepath.Dir(path), mkerr)
+		}
 		content := block + "\n"
 		if werr := os.WriteFile(path, []byte(content), 0o644); werr != nil {
 			return "", fmt.Errorf("gk agents: write %s: %w", path, werr)
@@ -173,42 +269,130 @@ func installAgentsBlock(path string) (string, error) {
 	return "updated", nil
 }
 
+// agentsState is the outcome of checking one instruction file.
+type agentsState int
+
+const (
+	agentsOK     agentsState = iota // block present and current
+	agentsStale                     // block present but an older version (drift)
+	agentsAbsent                    // file missing, or present without a gk block
+)
+
+// checkAgentsFile prints one status line and reports the file's state.
+func checkAgentsFile(w io.Writer, path, label string) agentsState {
+	b, rerr := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(rerr):
+		fmt.Fprintf(w, "  %s %s — not installed\n", cellYellow("·"), label)
+		return agentsAbsent
+	case rerr != nil:
+		fmt.Fprintf(w, "  %s %s — unreadable: %v\n", cellYellow("·"), label, rerr)
+		return agentsAbsent
+	}
+	content := string(b)
+	m := agentsVersionRE.FindStringSubmatch(content)
+	switch {
+	case m == nil:
+		fmt.Fprintf(w, "  %s %s — no gk agents block\n", cellYellow("·"), label)
+		return agentsAbsent
+	case !strings.Contains(content, agentsContractBlock()):
+		fmt.Fprintf(w, "  %s %s — out of date (have v%s, want v%d)\n", cellYellow("·"), label, m[1], agentsContractVersion)
+		return agentsStale
+	default:
+		fmt.Fprintf(w, "  %s %s — up to date (v%d)\n", cellGreen("✓"), label, agentsContractVersion)
+		return agentsOK
+	}
+}
+
 func runAgentsCheck(cmd *cobra.Command, args []string) error {
-	targets, err := agentsTargets(cmd)
+	targets, err := agentsCheckTargets(cmd)
 	if err != nil {
 		return err
 	}
+	// In an explicit target (--global or --file), "not installed" is a
+	// failure the user asked us to flag. In the default combined view it's
+	// just an absent scope (you may not want global installed), so only
+	// version *drift* fails the command there.
+	explicit := false
+	if g, _ := cmd.Flags().GetBool("global"); g {
+		explicit = true
+	}
+	if f, _ := cmd.Flags().GetStringSlice("file"); len(f) > 0 {
+		explicit = true
+	}
+
 	w := cmd.OutOrStdout()
-	stale := 0
-	for _, path := range targets {
-		name := filepath.Base(path)
-		b, rerr := os.ReadFile(path)
-		if os.IsNotExist(rerr) {
-			fmt.Fprintf(w, "  %s %s — file missing\n", cellYellow("·"), name)
-			stale++
-			continue
+	drift, absent := 0, 0
+	staleScopes := map[string]bool{}
+	lastScope := ""
+	for _, t := range targets {
+		if t.scope != lastScope {
+			if lastScope != "" {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintln(w, color.New(color.Faint).Sprint(agentsScopeHeader(t.scope)))
+			lastScope = t.scope
 		}
-		if rerr != nil {
-			return fmt.Errorf("gk agents: read %s: %w", path, rerr)
-		}
-		content := string(b)
-		m := agentsVersionRE.FindStringSubmatch(content)
-		switch {
-		case m == nil:
-			fmt.Fprintf(w, "  %s %s — no gk agents block\n", cellYellow("·"), name)
-			stale++
-		case !strings.Contains(content, agentsContractBlock()):
-			fmt.Fprintf(w, "  %s %s — block out of date (have v%s, want v%d)\n", cellYellow("·"), name, m[1], agentsContractVersion)
-			stale++
-		default:
-			fmt.Fprintf(w, "  %s %s — up to date (v%d)\n", cellGreen("✓"), name, agentsContractVersion)
+		switch checkAgentsFile(w, t.path, agentsFileLabel(t)) {
+		case agentsStale:
+			drift++
+			staleScopes[t.scope] = true
+		case agentsAbsent:
+			absent++
+			staleScopes[t.scope] = true
 		}
 	}
-	if stale > 0 {
+
+	if drift > 0 || (explicit && absent > 0) {
+		var cmds []string
+		if staleScopes["local"] || staleScopes["custom"] {
+			cmds = append(cmds, "gk agents install")
+		}
+		if staleScopes["global"] {
+			cmds = append(cmds, "gk agents install --global")
+		}
+		n := drift
+		if explicit {
+			n += absent
+		}
 		return WithHint(
-			fmt.Errorf("gk agents: %d file(s) missing or stale", stale),
-			hintCommand("gk agents install"),
+			fmt.Errorf("gk agents: %d file(s) out of date or missing", n),
+			hintCommand(strings.Join(cmds, " && ")),
 		)
 	}
 	return nil
+}
+
+// agentsScopeHeader is the faint group header printed above each scope's files.
+func agentsScopeHeader(scope string) string {
+	switch scope {
+	case "local":
+		return "local (repo)"
+	case "global":
+		return "global"
+	default:
+		return "files"
+	}
+}
+
+// agentsFileLabel shows the bare filename for local/custom files (the scope
+// header gives context) and the ~-relative path for global files (two
+// different dirs, so the path disambiguates).
+func agentsFileLabel(t agentsFile) string {
+	if t.scope == "global" {
+		return tildePath(t.path)
+	}
+	return filepath.Base(t.path)
+}
+
+// tildePath shortens an absolute path to ~-relative form for display,
+// leaving paths outside the home directory untouched.
+func tildePath(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel, rerr := filepath.Rel(home, path); rerr == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.Join("~", rel)
+		}
+	}
+	return path
 }

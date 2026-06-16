@@ -51,6 +51,17 @@ type pullResultJSON struct {
 	Conflict *pullConflictJSON `json:"conflict,omitempty"`
 }
 
+// agentState marks a conflict outcome as the paused envelope state so an
+// agent can tell "stopped, resume me" from "done" without reading the exit
+// code. merge and rebase conflicts reuse this payload via emitPullConflictJSON,
+// so all three integration conflicts report paused from here.
+func (r pullResultJSON) agentState() string {
+	if r.Result == "conflict" {
+		return envStatePaused
+	}
+	return ""
+}
+
 type pullConflictJSON struct {
 	Files  []string `json:"files"`
 	Resume string   `json:"resume"`

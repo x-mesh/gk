@@ -114,6 +114,15 @@ type continueReport struct {
 	Done   bool   `json:"done"`   // false when the operation paused again (edit/break step)
 }
 
+// agentState reports paused when the operation stopped again at an edit/break
+// step instead of finishing — the agent must run another continue/abort.
+func (r continueReport) agentState() string {
+	if !r.Done {
+		return envStatePaused
+	}
+	return ""
+}
+
 // hasUntrackedEntry reports whether porcelain v1 output lists an
 // untracked file. ParsePorcelainV1 deliberately skips `??` entries, but
 // for the pre-continue note untracked leftovers (resolve's *.orig

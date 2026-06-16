@@ -6,25 +6,67 @@ import (
 )
 
 // Agent mode (GK_AGENT=1) wraps every machine-readable output in one uniform
-// envelope so agent tooling branches on two fields — `ok` and `error.code` —
+// envelope so agent tooling branches on a single dispatch key — `state` —
 // instead of learning each command's shape:
 //
-//	{ "schema": 1, "ok": true,  "result": { ...command payload... } }
-//	{ "schema": 1, "ok": false, "error": { "code", "message", "hint", "remedies" } }
+//	{ "schema": 1, "state": "ok",     "ok": true,  "result": { ...payload... } }
+//	{ "schema": 1, "state": "paused", "ok": false, "result": { ...resume contract... } }
+//	{ "schema": 1, "state": "error",  "ok": false, "error": { "code", "message", "hint", "remedies" } }
+//
+// `state` is one of ok | paused | blocked | error:
+//   - ok      — the command succeeded.
+//   - paused  — the operation is suspended awaiting input (a rebase/merge/
+//     cherry-pick conflict, a `gk continue` that stopped again); the result
+//     carries the resume/abort contract.
+//   - blocked — a precondition is unmet (e.g. a diverged base that cannot
+//     fast-forward); the result or error carries the remedy.
+//   - error   — the command failed.
+//
+// `ok` is retained as a derived alias (ok == state=="ok") so existing
+// consumers that branch on `ok` keep working without a re-parse. The non-zero
+// exit code still signals paused/blocked/error to shell callers; `state` lets
+// an agent tell them apart without inspecting the exit code or the prose.
 //
 // Without GK_AGENT the payload is emitted bare, byte-identical to the
-// pre-envelope output — existing --json consumers see no change. A paused
-// state with a resume contract (e.g. pull's result:"conflict") is a
-// *result*, not an error: ok stays true and the non-zero exit code signals
-// the pause.
+// pre-envelope output — existing --json consumers see no change.
 //
 // The envelope schema is append-only; breaking changes bump `schema`.
 
 type agentEnvelope struct {
 	Schema int         `json:"schema"`
+	State  string      `json:"state"`
 	OK     bool        `json:"ok"`
 	Result any         `json:"result,omitempty"`
 	Error  *agentError `json:"error,omitempty"`
+}
+
+// Envelope state values. `state` is the primary dispatch key; see the package
+// doc above for the semantics of each.
+const (
+	envStateOK      = "ok"
+	envStatePaused  = "paused"
+	envStateBlocked = "blocked"
+	envStateError   = "error"
+)
+
+// agentStater lets a result payload declare a non-"ok" envelope state.
+// Payloads that don't implement it (the common case) default to "ok"; an
+// implementer may also return "" to mean "ok", so the state can be derived
+// from the payload's own fields without special-casing the default.
+type agentStater interface {
+	agentState() string
+}
+
+// agentStateValid reports whether s is one of the four known envelope states.
+// It is the single source of truth for the enum and guards emitAgentResult
+// against a payload returning an out-of-range (or empty) state — either falls
+// back to "ok".
+func agentStateValid(s string) bool {
+	switch s {
+	case envStateOK, envStatePaused, envStateBlocked, envStateError:
+		return true
+	}
+	return false
 }
 
 type agentError struct {
@@ -42,7 +84,13 @@ func emitAgentResult(w io.Writer, payload any) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if AgentOut() {
-		return enc.Encode(agentEnvelope{Schema: 1, OK: true, Result: payload})
+		state := envStateOK
+		if s, ok := payload.(agentStater); ok {
+			if st := s.agentState(); agentStateValid(st) {
+				state = st
+			}
+		}
+		return enc.Encode(agentEnvelope{Schema: 1, State: state, OK: state == envStateOK, Result: payload})
 	}
 	return enc.Encode(payload)
 }
@@ -66,7 +114,7 @@ func FormatErrorJSON(err error) string {
 	for i := range remedies {
 		remedies[i].Command = selfRewrite(remedies[i].Command)
 	}
-	env := agentEnvelope{Schema: 1, OK: false, Error: &agentError{
+	env := agentEnvelope{Schema: 1, State: envStateError, OK: false, Error: &agentError{
 		Code:     errorCodeFromError(err),
 		Message:  err.Error(),
 		Hint:     selfRewrite(HintFrom(err)),

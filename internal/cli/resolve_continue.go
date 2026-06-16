@@ -175,6 +175,16 @@ type resolveReport struct {
 	Resume       string   `json:"resume,omitempty"`        // next command when not done
 }
 
+// agentState reports paused when resolution stopped with the operation still
+// in progress (a later pick needs hand-resolution, or --no-continue was set).
+// A finished resolution leaves State "none" and reports the default ok.
+func (r resolveReport) agentState() string {
+	if !r.Done && r.State != "none" {
+		return envStatePaused
+	}
+	return ""
+}
+
 // autoContinueBatch drives the operation to completion after a fully
 // successful batch resolution, re-resolving later conflicts with the
 // same options. A paused end state is a result, not an error.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk agents check/install`가 `GK_AGENT=1`에서 Codex가 바로 분기할 수 있는 단일 JSON envelope를 낸다.** `check`는 파일별 `scope`·`state`·`reason`·버전과 `drift`/`absent` 집계를 결과에 담고, 명시 타깃(`--global`/`--file`)이 빠져 있으면 별도 에러 JSON을 또 쓰지 않고 `state:"blocked"` + `needs_install` + `install_commands`로 보고한다. `install`도 타깃별 `action`(`created`/`updated`/`unchanged`)을 결과로 낸다. 사람용 출력은 그대로 유지된다.
+
+### Fixed
+
+- **`gk pull --with-base`가 narrow/single-branch fetch 설정에서도 첫 실행에 base remote-tracking ref를 갱신한다.** 기존 base fetch는 `git fetch origin main` 형태라 repo의 `remote.origin.fetch`가 `develop`만 매핑하는 경우 `FETCH_HEAD`만 갱신되고 `origin/main`은 stale하게 남을 수 있었다. 이제 `+refs/heads/<base>:refs/remotes/<remote>/<base>` refspec으로 명시 갱신해 첫 `gk pull --with-base`에서 바로 local base를 fast-forward한다.
+
 ## [0.90.0] - 2026-06-16
 
 ### Added

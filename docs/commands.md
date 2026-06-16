@@ -375,7 +375,7 @@ Validation happens before any step executes: an unknown sub-command, a nested `b
 
 ## GK_AGENT=1 — agent mode
 
-`export GK_AGENT=1` turns on agent mode for every gk invocation: `--json` is implied, JSON payloads are wrapped in a uniform envelope (`{schema, ok, result}` on success), and failures print `{ok:false, error:{code, message, hint, remedies:[{command,safety}]}}` to stderr while keeping the normal exit codes. `error.code` is a stable, append-only vocabulary (`not-a-repo`, `dirty-tree`, `conflict`, `diverged`, `in-progress-op`, ...). Without GK_AGENT, `--json` output is byte-identical to previous releases. A paused state with a resume contract (pull/merge conflict, exit 3) is a result, not an error.
+`export GK_AGENT=1` turns on agent mode for every gk invocation: `--json` is implied, JSON payloads are wrapped in a uniform envelope (`{schema, state, ok, result}` on success), and failures print `{state:"error", ok:false, error:{code, message, hint, remedies:[{command,safety}]}}` to stderr while keeping the normal exit codes. `state` is the primary dispatch key: `ok`, `paused`, `blocked`, or `error`; `ok` remains a derived alias for existing consumers. `error.code` is a stable, append-only vocabulary (`not-a-repo`, `dirty-tree`, `conflict`, `diverged`, `in-progress-op`, ...). Without GK_AGENT, explicit `--json` output stays command-specific. A paused state with a resume contract (pull/merge conflict, exit 3) is a result, not an error.
 
 ## gk context
 
@@ -408,6 +408,8 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
 
+With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
+
 ## gk pull
 
 Fetch and rebase the current branch onto the base branch.
@@ -430,7 +432,7 @@ gk pull [flags]
 | `--fetch-only` | false | Fetch only, do not integrate |
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
 | `--autostash` | false | Stash dirty changes before integration, pop after |
-| `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Skipped under `--fetch-only` |
+| `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Base fetches use an explicit remote-tracking refspec, so narrow/single-branch fetch configs still refresh `origin/<base>` on the first run. Skipped under `--fetch-only` |
 | `--json` (global) | false | Emit the machine-readable result on stdout (`result`: `updated`/`up-to-date`/`ahead-only`/`fetch-only`/`conflict`, moved SHAs, `base` outcomes, conflict files + resume/abort commands). The human progress stream stays on stderr |
 | `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
 

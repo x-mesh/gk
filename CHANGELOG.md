@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk ship`·`gk merge --into`(=`gk land --to`/`gk promote`)가 브랜치 ref를 옮길 때 공유 안전 primitive(`gitsafe.BranchFF`)를 쓴다 — CAS + 이동 전 backup + worktree 가드.** ship의 base fast-forward는 `branch -f`로 CAS 없이 ref를 옮겨, 병렬 worktree가 동시에 base를 건드리면 조용히 덮어쓸 위험이 있었다. `merge --into`(land --to/promote가 호출)는 머지 커밋 전에 backup ref를 안 만들어, 잘못된 머지를 되돌릴 gk 경로가 없었다(`gk reset --hard` 수동 의존). 이제 두 경로 모두 `BranchFF`로 통일한다: 이동 전 항상 `refs/gk/<kind>-backup/<branch>/<unix>`를 남기고(`gk timemachine`으로 복구 가능), oldSHA compare-and-swap로만 옮기며(동시 변경 시 조용한 덮어쓰기 대신 실패), 다른 worktree에 체크아웃된 브랜치는 거부한다. ship의 차단은 `state:"blocked"`(code `base-ff-blocked`)로 보고해 diverged-base 신호와 일관된다. `BranchFF`는 자기 종류(`<kind>-backup`)의 오래된 backup을 자동 정리(최근 10개/30일 보존)해 매 마무리마다 ref가 무한 누적되는 것을 막는다.
+
+- **`gk land --to <branch>`가 임의 브랜치까지 부모 체인을 단계별로 통합한다 — `--to`가 deprecated `--promote`를 완전히 대체.** 지금까지 `--to`는 `parent`·`base`만 받아, 다단계 체인 워크는 deprecated `--promote=<branch>`로만 가능했다(후속 플래그가 별칭보다 표현력이 낮은 역전). 이제 `--to <branch>`는 `--promote=<branch>`와 동일하게 부모 스택을 hop by hop 올린다(체인 밖 타깃은 거부, `gk promote <branch>`와 같은 머신). 더불어 실패·중단 시 재실행 안내(resume)가 더 이상 deprecated `--promote`를 출력하지 않고 `--to` 철자로 안내한다 — bare `--promote`→`--to parent`, `--promote=<branch>`→`--to <branch>`.
+
 ## [0.91.0] - 2026-06-16
 
 ### Added

@@ -359,6 +359,32 @@ func TestLand_PromoteChainWalksParents(t *testing.T) {
 	}
 }
 
+// TestLand_ToBranchChainWalks: `--to <branch>` (a named target, not parent or
+// base) chain-walks the parent stack hop by hop, exactly like the deprecated
+// --promote=<branch> — so --to fully replaces --promote on the named-target
+// axis, not just for parent/base.
+func TestLand_ToBranchChainWalks(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("to", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --to main: %v", err)
+	}
+	want := "pull --with-base=true | push" +
+		" | merge feat --into develop --no-ai | push --from develop" +
+		" | merge develop --into main --no-ai | push --from main"
+	if got := landCallNames(rec); got != want {
+		t.Errorf("steps = %q, want %q", got, want)
+	}
+}
+
 // TestLand_PromoteChainTargetNotInChain: a target the parent chain never
 // reaches aborts before ANY step runs — land must not silently degrade to a
 // direct merge that skips intermediates.
@@ -437,8 +463,10 @@ func TestLand_PromoteChainFailedHopNamesBoundary(t *testing.T) {
 	if res.FailedStep != "promote:develop" {
 		t.Errorf("failed_step = %q, want promote:develop", res.FailedStep)
 	}
-	if !strings.Contains(res.Resume, "--promote=main") {
-		t.Errorf("resume must name the full chain rerun: %q", res.Resume)
+	// Even when invoked via the deprecated --promote, reruns are steered to the
+	// --to spelling (--promote=<branch> → --to <branch>).
+	if !strings.Contains(res.Resume, "--to main") {
+		t.Errorf("resume must name the full chain rerun in --to form: %q", res.Resume)
 	}
 	if got := landCallNames(rec); strings.Contains(got, "--into main") {
 		t.Errorf("second hop must not run after the first fails: %q", got)

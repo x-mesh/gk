@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -462,8 +464,20 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 		newSHA = strings.TrimSpace(string(commitOut))
 	}
 
-	if _, errOut, err := deps.Runner.Run(ctx, "update-ref", "refs/heads/"+receiver, newSHA, receiverSHA); err != nil {
-		return fmt.Errorf("update-ref: %s: %w", strings.TrimSpace(string(errOut)), err)
+	// Advance the receiver ref through the shared safe primitive: it writes a
+	// backup ref at the prior tip BEFORE the compare-and-swap move, so a wrong
+	// merge (bad source/message) is recoverable via gk timemachine — the
+	// recoverable-by-construction gap that this bare path (and its land --to /
+	// promote callers) previously left open. This path runs only when the
+	// receiver is checked out nowhere (runMergeIntoBare's precondition), so
+	// BranchFF's worktree guard is a no-op and its FF gate always passes
+	// (receiverSHA is a parent of newSHA in both the FF and merge-commit cases).
+	res, err := gitsafe.BranchFF(ctx, deps.Runner, time.Now, "merge", receiver, newSHA)
+	if err != nil {
+		return fmt.Errorf("advance %s: %w", receiver, err)
+	}
+	if res.Outcome == gitsafe.FFBlocked {
+		return fmt.Errorf("advance %s: %s", receiver, res.Reason)
 	}
 
 	if deps.ErrOut != nil {

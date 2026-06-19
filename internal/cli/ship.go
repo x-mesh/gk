@@ -18,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/commitlint"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitsafe"
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
 )
@@ -364,13 +365,28 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 
 	// Fast-forward the base branch to this branch's tip so the release lands on
 	// base. Done before tagging so the tag (created on HEAD) sits on a commit
-	// that base now points at too. `branch -f` only touches the ref; it refuses
-	// if base is checked out in another worktree, surfacing that as an error.
+	// that base now points at too. gitsafe.BranchFF moves the ref via a
+	// compare-and-swap update-ref (no silent overwrite under a concurrent
+	// worktree, unlike the old `branch -f`), writes a backup ref at the prior
+	// base tip first, and refuses if base is checked out elsewhere.
 	if plan.MergeToBase {
-		if _, stderr, err := deps.Runner.Run(ctx, "branch", "-f", plan.Base, plan.Branch); err != nil {
-			return WithHint(
-				fmt.Errorf("ship: fast-forward %s → %s: %s", plan.Base, plan.Branch, strings.TrimSpace(string(stderr))),
-				"base가 다른 worktree에 체크아웃되어 있으면 거기서 정리한 뒤 다시 시도하세요",
+		newSHA, err := gitsafe.ResolveRef(ctx, deps.Runner, "refs/heads/"+plan.Branch)
+		if err != nil {
+			return fmt.Errorf("ship: resolve %s: %w", plan.Branch, err)
+		}
+		res, err := gitsafe.BranchFF(ctx, deps.Runner, time.Now, "ship", plan.Base, newSHA)
+		if err != nil {
+			return fmt.Errorf("ship: fast-forward %s → %s: %w", plan.Base, plan.Branch, err)
+		}
+		// The diverged-base case is already gated as state:"blocked" in
+		// buildShipPlan, so by here a block means base moved or is checked out
+		// in another worktree — report it as blocked too, not a hard failure.
+		if res.Outcome == gitsafe.FFBlocked {
+			return WithBlocked(
+				fmt.Errorf("ship: %s를 %s로 fast-forward할 수 없습니다: %s", plan.Base, plan.Branch, res.Reason),
+				"base-ff-blocked",
+				"base가 다른 worktree에 체크아웃돼 있으면 거기서 정리하고, 분기됐다면 `gk sync` 후 다시 ship 하세요",
+				errRemedy{Command: selfCmd("sync"), Safety: "safe"},
 			)
 		}
 		ok := color.New(color.FgGreen, color.Bold).SprintFunc()

@@ -288,8 +288,9 @@ func TestRunMergeIntoBareFastForwardUpdatesRef(t *testing.T) {
 		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
 		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
 		"merge-base main ship":                        {Stdout: "aaa1111\n"},
-		"update-ref refs/heads/main bbb2222 aaa1111":  {Stdout: ""},
-		"rev-list --count aaa1111..bbb2222":           {Stdout: "3\n"},
+		"merge-base --is-ancestor aaa1111 bbb2222":    {Stdout: ""},
+		"update-ref -m gk merge: fast-forward to bbb2222 refs/heads/main bbb2222 aaa1111": {Stdout: ""},
+		"rev-list --count aaa1111..bbb2222":                                               {Stdout: "3\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -298,8 +299,13 @@ func TestRunMergeIntoBareFastForwardUpdatesRef(t *testing.T) {
 		t.Fatalf("runMergeInto: %v", err)
 	}
 	calls := joinedShipCalls(sourceRunner.Calls)
-	if !strings.Contains(calls, "update-ref refs/heads/main bbb2222 aaa1111") {
-		t.Fatalf("expected fast-forward update-ref, calls:\n%s", calls)
+	// BranchFF advances main via a CAS update-ref (<ref> <new> <old>) after
+	// writing a backup ref at the prior tip.
+	if !strings.Contains(calls, "refs/heads/main bbb2222 aaa1111") {
+		t.Fatalf("expected fast-forward CAS update-ref, calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "update-ref refs/gk/merge-backup/main/") {
+		t.Fatalf("expected a backup ref before the move, calls:\n%s", calls)
 	}
 	if strings.Contains(calls, "commit-tree") {
 		t.Fatalf("FF path must not run commit-tree, calls:\n%s", calls)
@@ -323,8 +329,9 @@ func TestRunMergeIntoBareNonFFCleanCreatesMergeCommit(t *testing.T) {
 		"commit-tree 0123456789abcdef0123456789abcdef01234567 -p aaa1111 -p bbb2222 -m Merge branch 'ship' into main": {
 			Stdout: "ddd4444\n",
 		},
-		"update-ref refs/heads/main ddd4444 aaa1111": {Stdout: ""},
-		"rev-list --count aaa1111..ddd4444":          {Stdout: "4\n"},
+		"merge-base --is-ancestor aaa1111 ddd4444":                                        {Stdout: ""},
+		"update-ref -m gk merge: fast-forward to ddd4444 refs/heads/main ddd4444 aaa1111": {Stdout: ""},
+		"rev-list --count aaa1111..ddd4444":                                               {Stdout: "4\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -336,7 +343,10 @@ func TestRunMergeIntoBareNonFFCleanCreatesMergeCommit(t *testing.T) {
 	for _, want := range []string{
 		"merge-tree --write-tree --no-messages --name-only --merge-base ccc3333 main ship",
 		"commit-tree 0123456789abcdef0123456789abcdef01234567 -p aaa1111 -p bbb2222 -m Merge branch 'ship' into main",
-		"update-ref refs/heads/main ddd4444 aaa1111",
+		// The merge commit ref-move now goes through BranchFF: a backup ref
+		// first, then a CAS update-ref (<ref> <new> <old>).
+		"update-ref refs/gk/merge-backup/main/",
+		"refs/heads/main ddd4444 aaa1111",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Fatalf("missing call %q in:\n%s", want, calls)

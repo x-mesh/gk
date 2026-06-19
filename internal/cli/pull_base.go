@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -26,7 +27,7 @@ import (
 // human lines.
 type ffSyncOutcome struct {
 	Branch string `json:"branch"`
-	// Result: fast-forwarded | up-to-date | skipped-diverged |
+	// Result: fast-forwarded | up-to-date | skipped-ahead | skipped-diverged |
 	// skipped-worktree | skipped-no-local | skipped-no-remote | fetch-failed |
 	// error
 	Result string `json:"result"`
@@ -160,11 +161,35 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 	}
 
 	// FF-only gate: the local tip must be a strict ancestor of the remote
-	// tip, which makes losing local commits structurally impossible.
+	// tip, which makes losing local commits structurally impossible. When it
+	// is not, the branch has one of two shapes that need opposite advice, so
+	// distinguish them rather than lumping both under "diverged" with a pull
+	// suggestion that does nothing for the ahead-only case.
 	if _, _, err := runner.Run(ctx, "merge-base", "--is-ancestor", oldSHA, newSHA); err != nil {
+		// Remote tip is an ancestor of the local tip → the branch is strictly
+		// ahead: nothing to integrate, the commits simply are not pushed yet.
+		// The fix is push, not pull.
+		if _, _, rerr := runner.Run(ctx, "merge-base", "--is-ancestor", newSHA, oldSHA); rerr == nil {
+			summary := fmt.Sprintf("base '%s' ahead of %s — local commits not pushed", branch, remoteRef)
+			if n := countRevs(ctx, runner, remoteRef+".."+branch); n > 0 {
+				summary = fmt.Sprintf("base '%s' ahead of %s — %d commit%s not pushed", branch, remoteRef, n, plural(n))
+			}
+			printNote(w, appendEasyLine([]string{
+				summary,
+				fmt.Sprintf("publish them with: gk sw %s && gk push", branch),
+			}, "pull.note.with_base_ahead", branch, remoteRef)...)
+			outcome.Result = "skipped-ahead"
+			return outcome
+		}
+		// Neither tip is an ancestor of the other → genuine divergence:
+		// commits on both sides, reconcile by switching to it and pulling.
+		summary := fmt.Sprintf("base '%s' diverged from %s — local and remote both moved", branch, remoteRef)
+		if a, b := countAheadBehind(ctx, runner, branch, remoteRef); a > 0 || b > 0 {
+			summary = fmt.Sprintf("base '%s' diverged from %s — %d local, %d remote", branch, remoteRef, a, b)
+		}
 		printNote(w, appendEasyLine([]string{
-			fmt.Sprintf("base '%s' not synced — it has local commits not on %s", branch, remoteRef),
-			fmt.Sprintf("integrate them with: gk sw %s && gk pull", branch),
+			summary,
+			fmt.Sprintf("reconcile them with: gk sw %s && gk pull", branch),
 		}, "pull.note.with_base_diverged", branch, remoteRef)...)
 		outcome.Result = "skipped-diverged"
 		return outcome
@@ -183,6 +208,35 @@ func ffSyncBranch(ctx context.Context, runner git.Runner, w io.Writer, remote, b
 	outcome.Result = "fast-forwarded"
 	outcome.Post = newSHA
 	return outcome
+}
+
+// countRevs returns the number of commits in rangeExpr (e.g.
+// "origin/main..main"), or 0 when the count cannot be determined. Best-effort
+// only — it enriches a NOTE and never gates a ref update.
+func countRevs(ctx context.Context, runner git.Runner, rangeExpr string) int {
+	out, _, err := runner.Run(ctx, "rev-list", "--count", rangeExpr)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
+}
+
+// countAheadBehind reports how many commits local has beyond remote (ahead)
+// and vice versa (behind) via a single rev-list, returning 0, 0 when it cannot
+// be determined. Best-effort, like countRevs.
+func countAheadBehind(ctx context.Context, runner git.Runner, local, remote string) (ahead, behind int) {
+	out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", local+"..."+remote)
+	if err != nil {
+		return 0, 0
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return 0, 0
+	}
+	ahead, _ = strconv.Atoi(fields[0])
+	behind, _ = strconv.Atoi(fields[1])
+	return ahead, behind
 }
 
 func fetchRemoteTrackingBranch(ctx context.Context, runner git.Runner, remote, branch string) error {

@@ -364,6 +364,20 @@ func TestNewHintKeys_EasyModeBothLangs(t *testing.T) {
 			wantContainsKo:   "4",
 			wantMarkerPrefix: "✓",
 		},
+		{
+			key:              "pull.note.with_base_ahead",
+			args:             []interface{}{"main", "origin/main"},
+			wantContainsEn:   "origin/main",
+			wantContainsKo:   "origin/main",
+			wantMarkerPrefix: "※",
+		},
+		{
+			key:              "pull.note.with_base_diverged",
+			args:             []interface{}{"main", "origin/main"},
+			wantContainsEn:   "origin/main",
+			wantContainsKo:   "origin/main",
+			wantMarkerPrefix: "※",
+		},
 	}
 
 	emoji := []string{"💡", "✅", "❌", "⚠️", "💥", "🆕", "✏️", "🗑️", "📦", "🚀", "📤", "📥", "🌿", "🔀", "✨"}

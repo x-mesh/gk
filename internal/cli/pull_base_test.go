@@ -94,16 +94,43 @@ func TestFFSyncBranch_FetchesWhenNotAlreadyFetched(t *testing.T) {
 
 func TestFFSyncBranch_SkipGates(t *testing.T) {
 	cases := []struct {
-		name     string
-		mutate   func(*git.FakeRunner)
-		wantNote string
+		name       string
+		mutate     func(*git.FakeRunner)
+		wantNote   string
+		wantCmd    string // remedy substring that must appear (optional)
+		wantNoCmd  string // command substring that must NOT appear (optional)
+		wantResult string // ffSyncOutcome.Result the gate must set (the JSON contract)
 	}{
 		{
-			name: "diverged local commits",
+			// FF gate fails, but the remote tip is an ancestor of the local
+			// tip → strictly ahead, just unpushed. Fix is push, not pull.
+			// The stubbed count pins the singular phrasing and proves the
+			// count comes from origin/main..main (local commits, not behind).
+			name: "ahead-only local commits",
 			mutate: func(f *git.FakeRunner) {
 				f.Responses["merge-base --is-ancestor "+ffOldSHA+" "+ffNewSHA] = git.FakeResponse{ExitCode: 1}
+				f.Responses["merge-base --is-ancestor "+ffNewSHA+" "+ffOldSHA] = git.FakeResponse{ExitCode: 0}
+				f.Responses["rev-list --count origin/main..main"] = git.FakeResponse{Stdout: "1\n"}
 			},
-			wantNote: "local commits not on origin/main",
+			wantNote:   "ahead of origin/main — 1 commit not pushed",
+			wantCmd:    "gk sw main && gk push",
+			wantNoCmd:  "gk sw main && gk pull",
+			wantResult: "skipped-ahead",
+		},
+		{
+			// Neither tip is an ancestor of the other → genuine divergence.
+			// Asymmetric counts (2 local, 1 remote) catch any swap of the
+			// ahead/behind fields in countAheadBehind.
+			name: "diverged on both sides",
+			mutate: func(f *git.FakeRunner) {
+				f.Responses["merge-base --is-ancestor "+ffOldSHA+" "+ffNewSHA] = git.FakeResponse{ExitCode: 1}
+				f.Responses["merge-base --is-ancestor "+ffNewSHA+" "+ffOldSHA] = git.FakeResponse{ExitCode: 1}
+				f.Responses["rev-list --left-right --count main...origin/main"] = git.FakeResponse{Stdout: "2\t1\n"}
+			},
+			wantNote:   "diverged from origin/main — 2 local, 1 remote",
+			wantCmd:    "gk sw main && gk pull",
+			wantNoCmd:  "gk sw main && gk push",
+			wantResult: "skipped-diverged",
 		},
 		{
 			name: "checked out in a worktree",
@@ -112,21 +139,24 @@ func TestFFSyncBranch_SkipGates(t *testing.T) {
 					Stdout: "worktree /repo\nHEAD " + ffOldSHA + "\nbranch refs/heads/develop\n\nworktree /repo-main\nHEAD " + ffOldSHA + "\nbranch refs/heads/main\n\n",
 				}
 			},
-			wantNote: "checked out in /repo-main",
+			wantNote:   "checked out in /repo-main",
+			wantResult: "skipped-worktree",
 		},
 		{
 			name: "no local branch",
 			mutate: func(f *git.FakeRunner) {
 				f.Responses["rev-parse --verify --quiet refs/heads/main"] = git.FakeResponse{ExitCode: 1}
 			},
-			wantNote: "no local branch",
+			wantNote:   "no local branch",
+			wantResult: "skipped-no-local",
 		},
 		{
 			name: "remote ref missing after fetch",
 			mutate: func(f *git.FakeRunner) {
 				f.Responses["rev-parse --verify --quiet origin/main"] = git.FakeResponse{ExitCode: 1}
 			},
-			wantNote: "'origin/main' does not exist after fetch",
+			wantNote:   "'origin/main' does not exist after fetch",
+			wantResult: "skipped-no-remote",
 		},
 	}
 	for _, tc := range cases {
@@ -137,11 +167,20 @@ func TestFFSyncBranch_SkipGates(t *testing.T) {
 			tc.mutate(fake)
 			buf := &bytes.Buffer{}
 
-			ffSyncBranch(context.Background(), fake, buf, "origin", "main", true, branchLabeler("main"))
+			outcome := ffSyncBranch(context.Background(), fake, buf, "origin", "main", true, branchLabeler("main"))
 
 			out := buf.String()
 			if !strings.Contains(out, "█  NOTE") || !strings.Contains(out, tc.wantNote) {
 				t.Errorf("want NOTE containing %q, got:\n%s", tc.wantNote, out)
+			}
+			if tc.wantCmd != "" && !strings.Contains(out, tc.wantCmd) {
+				t.Errorf("want remedy %q, got:\n%s", tc.wantCmd, out)
+			}
+			if tc.wantNoCmd != "" && strings.Contains(out, tc.wantNoCmd) {
+				t.Errorf("must not suggest %q, got:\n%s", tc.wantNoCmd, out)
+			}
+			if outcome.Result != tc.wantResult {
+				t.Errorf("Result = %q, want %q (the --json machine contract)", outcome.Result, tc.wantResult)
 			}
 			if got := ffCalls(fake, "update-ref"); len(got) != 0 {
 				t.Errorf("skip gate must not move the ref, got %v", got)
@@ -276,10 +315,14 @@ func TestIntegration_PullWithBase_SkipsDivergedBase(t *testing.T) {
 	}
 	_, downstream := makeWithBaseClone(t)
 
-	// Give local main a commit origin/main does not have.
+	// makeWithBaseClone advances origin/main by one commit; give local main two
+	// of its own → genuine divergence with asymmetric counts (2 local, 1
+	// remote), which catches any swap of the ahead/behind fields.
 	downstream.Checkout("main")
-	downstream.WriteFile("local-only.txt", "x\n")
-	localMain := downstream.Commit("feat: local-only on main")
+	downstream.WriteFile("local-only-1.txt", "x\n")
+	downstream.Commit("feat: local-only on main (1)")
+	downstream.WriteFile("local-only-2.txt", "y\n")
+	localMain := downstream.Commit("feat: local-only on main (2)")
 	downstream.Checkout("develop")
 
 	cmd := pullCoreCmd(t, downstream.Dir)
@@ -297,11 +340,82 @@ func TestIntegration_PullWithBase_SkipsDivergedBase(t *testing.T) {
 		t.Errorf("diverged main moved: %s → %s", localMain, got)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "local commits not on origin/main") {
-		t.Errorf("missing diverged skip NOTE, stderr:\n%s", out)
+	if !strings.Contains(out, "diverged from origin/main — 2 local, 1 remote") {
+		t.Errorf("missing diverged skip NOTE with asymmetric counts, stderr:\n%s", out)
 	}
 	if !strings.Contains(out, "gk sw main && gk pull") {
 		t.Errorf("missing remediation command, stderr:\n%s", out)
+	}
+	if strings.Contains(out, "gk sw main && gk push") {
+		t.Errorf("diverged base must not suggest push, stderr:\n%s", out)
+	}
+}
+
+// makeAheadBaseClone returns (upstream, downstream) where downstream's local
+// main is strictly ahead of origin/main (one unpushed commit, origin/main
+// unchanged), while origin/develop has advanced so the pull still does work.
+func makeAheadBaseClone(t *testing.T) (*testutil.Repo, *testutil.Repo) {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("seed.txt", "seed\n")
+	upstream.Commit("seed: initial")
+	upstream.RunGit("branch", "develop")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main")
+	downstream.RunGit("reset", "--hard", "origin/main")
+	downstream.RunGit("branch", "--set-upstream-to=origin/main", "main")
+	downstream.RunGit("switch", "-q", "-c", "develop", "origin/develop")
+	downstream.RunGit("branch", "--set-upstream-to=origin/develop", "develop")
+
+	// Only develop advances on the remote — origin/main stays put.
+	upstream.Checkout("develop")
+	upstream.WriteFile("dev.txt", "dev\n")
+	upstream.Commit("feat: develop work")
+
+	return upstream, downstream
+}
+
+func TestIntegration_PullWithBase_SkipsAheadBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	_, downstream := makeAheadBaseClone(t)
+
+	// Local main gains two commits not on origin/main → strictly ahead,
+	// unpushed. Two commits also exercises the plural "commits" branch.
+	downstream.Checkout("main")
+	downstream.WriteFile("ahead1.txt", "a\n")
+	downstream.Commit("feat: ahead on main (1)")
+	downstream.WriteFile("ahead2.txt", "b\n")
+	localMain := downstream.Commit("feat: ahead on main (2)")
+	downstream.Checkout("develop")
+
+	cmd := pullCoreCmd(t, downstream.Dir)
+	if err := cmd.Flags().Set("with-base", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stderr := &bytes.Buffer{}
+	cmd.SetErr(stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pull --with-base failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	if got := downstream.RunGit("rev-parse", "main"); got != localMain {
+		t.Errorf("ahead main moved: %s → %s", localMain, got)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "ahead of origin/main — 2 commits not pushed") {
+		t.Errorf("missing ahead skip NOTE with plural count, stderr:\n%s", out)
+	}
+	if !strings.Contains(out, "gk sw main && gk push") {
+		t.Errorf("ahead base must suggest push, stderr:\n%s", out)
+	}
+	if strings.Contains(out, "gk sw main && gk pull") {
+		t.Errorf("ahead base must not suggest pull, stderr:\n%s", out)
 	}
 }
 

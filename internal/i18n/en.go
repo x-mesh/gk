@@ -286,9 +286,13 @@ var enMessages = map[string]map[Mode]string{
 		ModeNormal: "'%s' is not linked to any server branch; gk pulled the default branch %s instead",
 		ModeEasy:   "※ Your branch '%s' is not linked to any server branch, so gk downloaded the default branch %s instead — if the server has a branch with the same name, link it with the command above",
 	},
+	"pull.note.with_base_ahead": {
+		ModeNormal: "'%s' has local commits not yet pushed to %s; push them — there is nothing to pull",
+		ModeEasy:   "※ Your branch '%s' has commits not yet pushed to the server (%s) — push them with the command above. There is nothing to pull, and your current work is unaffected",
+	},
 	"pull.note.with_base_diverged": {
-		ModeNormal: "'%s' has commits the server (%s) lacks, so gk left it untouched; switch to it and pull to combine them",
-		ModeEasy:   "※ Your branch '%s' has commits the server (%s) does not have, so gk left it alone — combine them with the command above; merging automatically could cause conflicts",
+		ModeNormal: "'%s' and the server (%s) have diverged — each has commits the other lacks; switch to it and pull to combine them",
+		ModeEasy:   "※ Your branch '%s' and the server (%s) have each gained different commits (diverged), so gk left it alone — combine them with the command above; merging automatically could cause conflicts",
 	},
 
 	// ── Merge --into next-step hints ────────────────────────────────────

@@ -308,6 +308,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		AllowedScopes:   allowedScopesFromFiles(files),
 		Lang:            ai.Lang,
 		HybridFileLimit: 5,
+		ScopeRequired:   cfg.Commit.ScopeRequired,
 	})
 	stopClassify()
 	if err != nil {
@@ -502,6 +503,7 @@ func runCommitDryRunPreview(
 		AllowedScopes:   allowedScopesFromFiles(files),
 		Lang:            ai.Lang,
 		HybridFileLimit: 5,
+		ScopeRequired:   cfg.Commit.ScopeRequired,
 	})
 	if err != nil {
 		return fmt.Errorf("commit: dry-run classify: %w", err)
@@ -946,6 +948,21 @@ func topLevelDirSimple(p string) string {
 	return "."
 }
 
+// composeDiffContextLines is the unified-diff context (-U) used for the
+// compose payload. git's default is 3; we drop to 1 because the model
+// needs only enough surrounding lines to anchor a hunk, not three on each
+// side. Measured over 30 real commits this trims the aggregate diff ~15%
+// (315KB → 267KB) — a direct token saving on every compose round-trip —
+// while keeping one context line as a safer floor than the -U0 that
+// `gk diff --digest` forces for symbol extraction (see internal/cli/diff.go).
+//
+// NOTE: this lower context is applied ONLY to the compose payload, not to
+// commitDisplayStats: fewer context lines change git's hunk-header funcname
+// pick (measured: 18/30 real commits differ), which would shift the
+// preview's symbol column. The stat pass keeps its own default context so
+// preview numbers stay exact.
+const composeDiffContextLines = 1
+
 // collectGroupDiffs runs `git diff --cached` / `git diff` per group
 // file set. Binary files fall back to `--stat`-only output so the
 // provider sees a stub instead of junk bytes.
@@ -955,6 +972,7 @@ func topLevelDirSimple(p string) string {
 // diff (typical: a generated lockfile that escaped the heuristic
 // bypass) blowing through the daily token budget.
 func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider.Group, wipCommit wipCommitForAICommit) (map[string]string, error) {
+	uFlag := fmt.Sprintf("-U%d", composeDiffContextLines)
 	diffs := map[string]string{}
 	for _, g := range groups {
 		var b strings.Builder
@@ -964,16 +982,16 @@ func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider
 				depth = 1
 			}
 			rangeRef := fmt.Sprintf("HEAD~%d..HEAD", depth)
-			args := append([]string{"diff", rangeRef, "--"}, g.Files...)
+			args := append([]string{"diff", uFlag, rangeRef, "--"}, g.Files...)
 			wipDiff, _, _ := runner.Run(ctx, args...)
 			b.Write(wipDiff)
 			if len(wipDiff) > 0 && !strings.HasSuffix(string(wipDiff), "\n") {
 				b.WriteByte('\n')
 			}
 		}
-		args := append([]string{"diff", "--cached", "--"}, g.Files...)
+		args := append([]string{"diff", uFlag, "--cached", "--"}, g.Files...)
 		cached, _, _ := runner.Run(ctx, args...)
-		unstagedArgs := append([]string{"diff", "--"}, g.Files...)
+		unstagedArgs := append([]string{"diff", uFlag, "--"}, g.Files...)
 		unstaged, _, _ := runner.Run(ctx, unstagedArgs...)
 		b.Write(cached)
 		if len(cached) > 0 && !strings.HasSuffix(string(cached), "\n") {

@@ -78,6 +78,110 @@ func TestClassifySmallHomogeneousShortCircuitsLLM(t *testing.T) {
 	}
 }
 
+// TestClassifyDefiniteSingleGroupSkipsLLM proves the net-new fast path:
+// a change that resolves to exactly one DEFINITE-kind group skips the LLM
+// Classify round-trip even when isSmallHomogeneous would NOT (here: >5
+// files spanning multiple top-dirs). classifyCalls must stay 0.
+func TestClassifyDefiniteSingleGroupSkipsLLM(t *testing.T) {
+	classifyCalls := 0
+	p := provider.NewFake()
+	p.OnClassify = func(provider.ClassifyInput) { classifyCalls++ }
+	// Rig the fake to misbehave if it IS called.
+	p.ClassifyErrs = []error{errUnexpected{}}
+
+	// 6 docs files (> HybridFileLimit) across two top-dirs (docs/, .) —
+	// isSmallHomogeneous returns false, so without the definite fast path
+	// this would hit the LLM. All map to the single "docs" heuristic type.
+	files := []FileChange{
+		{Path: "README.md"},
+		{Path: "docs/a.md"},
+		{Path: "docs/b.md"},
+		{Path: "docs/c.md"},
+		{Path: "docs/d.md"},
+		{Path: "docs/e.md"},
+	}
+	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 5,
+		AllowedTypes:    []string{"feat", "docs", "chore"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Type != "docs" {
+		t.Fatalf("want single docs group, got %+v", groups)
+	}
+	if classifyCalls != 0 {
+		t.Errorf("definite single-group input must NOT call Classify, got %d call(s)", classifyCalls)
+	}
+	if count(p.Calls, "Classify") != 0 {
+		t.Errorf("definite single-group input must skip LLM, calls=%v", p.Calls)
+	}
+}
+
+// TestClassifyChoreSingleGroupStillCallsLLM guards the exclusion: a single
+// "chore" group is a mixed source change the LLM must be allowed to split
+// into feat/fix/refactor. The definite fast path must NOT swallow it.
+func TestClassifyChoreSingleGroupStillCallsLLM(t *testing.T) {
+	classifyCalls := 0
+	p := provider.NewFake()
+	p.OnClassify = func(provider.ClassifyInput) { classifyCalls++ }
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{
+			{Type: "feat", Files: []string{"internal/a.go", "internal/b.go", "internal/c.go"}},
+			{Type: "fix", Files: []string{"internal/d.go", "internal/e.go", "internal/f.go"}},
+		},
+	}}
+	// 6 plain source files → one "chore" heuristic group, but spread across
+	// >5 files so isSmallHomogeneous does NOT short-circuit either.
+	files := []FileChange{
+		{Path: "internal/a.go"}, {Path: "internal/b.go"}, {Path: "internal/c.go"},
+		{Path: "internal/d.go"}, {Path: "internal/e.go"}, {Path: "internal/f.go"},
+	}
+	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 5,
+		AllowedTypes:    []string{"feat", "fix", "chore"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if classifyCalls != 1 {
+		t.Errorf("single chore group MUST still call Classify, got %d call(s)", classifyCalls)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("LLM split should yield 2 groups, got %+v", groups)
+	}
+}
+
+// TestClassifyScopeRequiredDisablesDefiniteFastPath guards the review fix:
+// heuristic groups carry no scope, so when a scope is mandatory the
+// definite-kind fast path must NOT fire — otherwise a scopeless message
+// would hard-fail commitlint. The same docs input that skips the LLM
+// without ScopeRequired must call it WITH ScopeRequired.
+func TestClassifyScopeRequiredDisablesDefiniteFastPath(t *testing.T) {
+	classifyCalls := 0
+	p := provider.NewFake()
+	p.OnClassify = func(provider.ClassifyInput) { classifyCalls++ }
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{{Type: "docs", Scope: "api", Files: []string{
+			"README.md", "docs/a.md", "docs/b.md", "docs/c.md", "docs/d.md", "docs/e.md",
+		}}},
+	}}
+	files := []FileChange{
+		{Path: "README.md"}, {Path: "docs/a.md"}, {Path: "docs/b.md"},
+		{Path: "docs/c.md"}, {Path: "docs/d.md"}, {Path: "docs/e.md"},
+	}
+	if _, err := Classify(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 5,
+		AllowedTypes:    []string{"feat", "docs", "chore"},
+		ScopeRequired:   true,
+	}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if classifyCalls != 1 {
+		t.Errorf("ScopeRequired must disable the definite fast path and call the LLM, got %d call(s)", classifyCalls)
+	}
+}
+
 func TestClassifyLLMInvokedForDiverseSet(t *testing.T) {
 	p := provider.NewFake()
 	p.ClassifyResponses = []provider.ClassifyResult{{

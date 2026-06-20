@@ -23,6 +23,11 @@ type ClassifyOptions struct {
 	AllowedTypes    []string
 	AllowedScopes   []string
 	Lang            string
+	// ScopeRequired mirrors commit.scope_required. Heuristic groups carry
+	// no scope, so when a scope is mandatory the definite-kind fast path is
+	// disabled: a scopeless heuristic message would fail commitlint, so the
+	// LLM Classify path runs instead (it can infer a scope).
+	ScopeRequired bool
 }
 
 // Classify groups the WIP file list into proposed commits.
@@ -48,6 +53,20 @@ func Classify(
 
 	heuristic := heuristicGroups(safe)
 	if opts.HeuristicOnly || isSmallHomogeneous(safe, opts.HybridFileLimit) {
+		return heuristic, nil
+	}
+	// Definite-type single-group fast path: when the heuristic already
+	// resolves the whole change to exactly ONE group of a DEFINITE kind
+	// (test / docs / ci / build), the Conventional Commit type is certain
+	// and the LLM Classify round-trip can add nothing — skip it. This
+	// covers cases isSmallHomogeneous misses (e.g. >5 doc files, or docs
+	// spanning several top-dirs like README.md + docs/x.md). The catch-all
+	// "chore" type is deliberately excluded: a single chore group may be a
+	// mixed source change the LLM should split into feat/fix/refactor.
+	// Skipped when ScopeRequired: heuristic groups have no scope, so the
+	// scopeless message would fail commitlint — defer to the LLM, which can
+	// infer one.
+	if len(heuristic) == 1 && isDefiniteKind(heuristic[0].Type) && !opts.ScopeRequired {
 		return heuristic, nil
 	}
 
@@ -113,10 +132,23 @@ func topLevelDir(p string) string {
 // the path is regular source. Exported wrapper over the commit
 // classifier's path heuristics so the vocabulary stays in one place.
 func FileKind(path string) string {
-	if t := heuristicType(path); t == "test" || t == "docs" || t == "ci" || t == "build" {
-		return t
+	if isDefiniteKind(heuristicType(path)) {
+		return heuristicType(path)
 	}
 	return ""
+}
+
+// isDefiniteKind reports whether a heuristic type is a path-certain
+// Conventional Commit kind (test / docs / ci / build) — i.e. one the LLM
+// cannot improve on. The catch-all "chore" and the empty (no-heuristic)
+// type are NOT definite. Used by both FileKind and the Classify fast path.
+func isDefiniteKind(t string) bool {
+	switch t {
+	case "test", "docs", "ci", "build":
+		return true
+	default:
+		return false
+	}
 }
 
 // heuristicType picks a Conventional Commit type from a path alone.

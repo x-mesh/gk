@@ -39,7 +39,7 @@ func (f *followRunner) Run(ctx context.Context, args ...string) ([]byte, []byte,
 	// only delegate for the generic ones).
 	switch {
 	case len(args) >= 1 && args[0] == "ls-remote":
-		f.FakeRunner.Calls = append(f.FakeRunner.Calls, git.FakeCall{Args: append([]string(nil), args...)})
+		f.Calls = append(f.Calls, git.FakeCall{Args: append([]string(nil), args...)})
 		sha := ""
 		if len(f.lsRemoteSeq) > 0 {
 			if f.lsIdx >= len(f.lsRemoteSeq) {
@@ -54,27 +54,27 @@ func (f *followRunner) Run(ctx context.Context, args ...string) ([]byte, []byte,
 		}
 		return []byte(sha + "\trefs/heads/main\n"), nil, nil
 	case len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain":
-		f.FakeRunner.Calls = append(f.FakeRunner.Calls, git.FakeCall{Args: append([]string(nil), args...)})
+		f.Calls = append(f.Calls, git.FakeCall{Args: append([]string(nil), args...)})
 		if f.dirty {
 			return []byte(" M file.go\n"), nil, nil
 		}
 		return nil, nil, nil
 	case len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--verify":
 		// HEAD resolution for the backup ref.
-		f.FakeRunner.Calls = append(f.FakeRunner.Calls, git.FakeCall{Args: append([]string(nil), args...)})
+		f.Calls = append(f.Calls, git.FakeCall{Args: append([]string(nil), args...)})
 		if f.noHead {
 			return nil, []byte("fatal: needed a single revision\n"), errors.New("exit status 128")
 		}
 		return []byte("oldoldoldoldoldoldoldoldoldoldoldoldold0\n"), nil, nil
 	case len(args) >= 1 && args[0] == "rev-list":
 		// repoHasNoCommits probe: empty output ⇒ no commits (genuinely empty).
-		f.FakeRunner.Calls = append(f.FakeRunner.Calls, git.FakeCall{Args: append([]string(nil), args...)})
+		f.Calls = append(f.Calls, git.FakeCall{Args: append([]string(nil), args...)})
 		if f.hasCommits {
 			return []byte("commitcommitcommitcommitcommitcommit0001\n"), nil, nil
 		}
 		return nil, nil, nil
 	case len(args) >= 2 && args[0] == "reset" && args[1] == "--hard":
-		f.FakeRunner.Calls = append(f.FakeRunner.Calls, git.FakeCall{Args: append([]string(nil), args...)})
+		f.Calls = append(f.Calls, git.FakeCall{Args: append([]string(nil), args...)})
 		return nil, nil, nil
 	default:
 		return f.FakeRunner.Run(ctx, args...)
@@ -84,8 +84,8 @@ func (f *followRunner) Run(ctx context.Context, args ...string) ([]byte, []byte,
 // callArgs flattens recorded calls into "arg0 arg1 ..." strings for order
 // assertions.
 func (f *followRunner) callArgs() []string {
-	out := make([]string, 0, len(f.FakeRunner.Calls))
-	for _, c := range f.FakeRunner.Calls {
+	out := make([]string, 0, len(f.Calls))
+	for _, c := range f.Calls {
 		out = append(out, strings.Join(c.Args, " "))
 	}
 	return out
@@ -135,7 +135,7 @@ func TestFollow_ChangedTriggersBackupFetchResetHook(t *testing.T) {
 	if iBackup < 0 || iFetch < 0 || iReset < 0 {
 		t.Fatalf("missing expected calls: backup=%d fetch=%d reset=%d in %v", iBackup, iFetch, iReset, calls)
 	}
-	if !(iBackup < iFetch && iFetch < iReset) {
+	if iBackup >= iFetch || iFetch >= iReset {
 		t.Fatalf("wrong order: backup=%d fetch=%d reset=%d (want backup<fetch<reset) in %v", iBackup, iFetch, iReset, calls)
 	}
 }

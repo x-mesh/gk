@@ -447,16 +447,16 @@ func followEmit(w io.Writer, opts followOpts, res followResult) {
 	}
 }
 
-// followEmitErr renders a cycle failure (agent envelope or human line) and
-// returns the original error so the loop can fold it into backoff. The watcher
-// never crashes on a cycle error — it logs and keeps polling.
-func followEmitErr(w io.Writer, opts followOpts, err error) error {
+// followEmitErr renders a cycle failure for the continuous loop — the agent
+// envelope on stdout, or a human line — and returns nothing: the caller already
+// holds the error (it folds it into backoff). The watcher never crashes on a
+// cycle error; it logs and keeps polling.
+func followEmitErr(w io.Writer, opts followOpts, err error) {
 	if opts.agent {
 		fmt.Fprintln(w, FormatErrorJSON(err))
 	} else {
 		fmt.Fprintf(w, "follow: %v\n", err)
 	}
-	return err
 }
 
 func shortFollowSHA(s string) string {

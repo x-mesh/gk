@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.0] - 2026-06-20
+
 ### Changed
 
 - **`gk ship`·`gk merge --into`(=`gk land --to`/`gk promote`)가 브랜치 ref를 옮길 때 공유 안전 primitive(`gitsafe.BranchFF`)를 쓴다 — CAS + 이동 전 backup + worktree 가드.** ship의 base fast-forward는 `branch -f`로 CAS 없이 ref를 옮겨, 병렬 worktree가 동시에 base를 건드리면 조용히 덮어쓸 위험이 있었다. `merge --into`(land --to/promote가 호출)는 머지 커밋 전에 backup ref를 안 만들어, 잘못된 머지를 되돌릴 gk 경로가 없었다(`gk reset --hard` 수동 의존). 이제 두 경로 모두 `BranchFF`로 통일한다: 이동 전 항상 `refs/gk/<kind>-backup/<branch>/<unix>`를 남기고(`gk timemachine`으로 복구 가능), oldSHA compare-and-swap로만 옮기며(동시 변경 시 조용한 덮어쓰기 대신 실패), 다른 worktree에 체크아웃된 브랜치는 거부한다. ship의 차단은 `state:"blocked"`(code `base-ff-blocked`)로 보고해 diverged-base 신호와 일관된다. `BranchFF`는 자기 종류(`<kind>-backup`)의 오래된 backup을 자동 정리(최근 10개/30일 보존)해 매 마무리마다 ref가 무한 누적되는 것을 막는다.

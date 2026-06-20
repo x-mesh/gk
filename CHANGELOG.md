@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk follow <branch>` — 원격 브랜치를 추종하며 변경될 때마다 로컬을 미러하고 훅을 한 번 돌리는 포그라운드 워처(인프라 0의 "git-sync + watchexec").** ArgoCD/CI 없이 개발 박스·에이전트 샌드박스·단일 컨테이너를 원격에 자동 추종시키고 싶을 때, `git ls-remote`로 원격 SHA를 싸게 폴링하다 SHA가 움직이면 fetch 후 `git reset --hard`로 로컬 체크아웃을 원격 tip에 맞추고(GitOps 미러) 훅 명령을 한 번 실행한다. 파괴적 reset은 git-kit의 안전 wedge로 감싼다 — reset **전에** 항상 backup ref(`refs/gk/follow-backup/<branch>/<unix>`)를 남겨 `git reset --hard <backup-ref>`로 복구할 수 있고, 작업 트리에 미커밋 변경이 있으면(사람의 실수일 가능성) reset을 거부한다(`--discard-dirty`로 명시 우회). 훅은 루프 안에서 동기로 돌아 실행이 겹치지 않으며, 0이 아닌 종료 코드는 폴링 간격을 지수 backoff(interval‥10×)시켜 깨진 커밋이 thrash하지 않게 한다. 데몬 매니저는 내장하지 않는다 — SIGINT/SIGTERM에 깨끗이 멈추는(exit 0) 포그라운드 프로세스로, systemd·docker `--restart`·k8s가 supervise한다(루트 `Dockerfile` 동봉). `GK_AGENT`에선 사이클마다 결과 envelope를 낸다. 플래그: `--remote`(기본 origin)·`--interval`(기본 30s, 초 또는 duration)·`--run "<sh -c>"`(또는 후행 `-- <cmd>...`가 우선)·`--once`·`--discard-dirty`. 이름은 의도적으로 `gk watch`가 아니다 — `gk status --watch`가 정반대(로컬 파일 변경 피드) 의미로 그 이름을 이미 쓴다.
+
 ## [0.92.0] - 2026-06-20
 
 ### Changed

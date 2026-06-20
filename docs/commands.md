@@ -3024,6 +3024,93 @@ gk hooks uninstall --pre-commit
 
 ---
 
+## gk follow
+
+Foreground watcher that polls a **remote** branch and, each time it advances,
+hard-resets the local checkout to the remote tip (a GitOps mirror) and runs a
+hook command once. It is "git-sync + watchexec" with zero infra — for dev
+boxes, agent sandboxes, and single-container deploys where ArgoCD/CI is
+overkill. Not to be confused with `gk status --watch`, which is a *local*
+file-change feed.
+
+### Synopsis
+
+```
+gk follow <branch> [-- <hook> args...] [flags]
+```
+
+Each cycle: read the remote SHA with a cheap `git ls-remote` (no fetch unless it
+moved); if it changed, run the safety-gated mirror (backup → fetch →
+`reset --hard`) and then the hook. The hook runs synchronously, so runs never
+overlap.
+
+### Flags
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--remote` | config remote, else `origin` | remote to watch |
+| `--interval` | `30s` | poll interval — bare seconds (`30`) or a duration (`500ms`, `1m`) |
+| `--run` | — | hook command run via `sh -c` on each change |
+| `--discard-dirty` | `false` | allow the hard reset to discard uncommitted local changes (DESTRUCTIVE) |
+| `--once` | `false` | run exactly one cycle (check, maybe update+hook) then exit |
+
+Hook precedence: a trailing `-- <cmd> args...` wins over `--run`. With neither,
+the cycle still mirrors but runs no hook.
+
+### Safety
+
+The update is deliberately destructive — the local checkout is treated as
+disposable and reset to the remote tip — so it is fenced the same way every gk
+verb that moves HEAD is:
+
+- **Backup before reset.** A backup ref of the current HEAD is written *before*
+  every reset (`refs/gk/follow-backup/<branch>/<unix>`). Recover the previous
+  tip with `git reset --hard <backup-ref>` (or `gk timemachine`).
+- **Dirty refusal.** If the working tree has uncommitted changes (tracked or
+  untracked), the reset is refused and the cycle reports an error — pass
+  `--discard-dirty` to mirror anyway.
+- **No anchorless reset.** If HEAD cannot be resolved but the repo has history,
+  the cycle aborts rather than resetting with no recovery anchor. A genuinely
+  empty repo (no commits) mirrors without a backup.
+- **Backoff.** A non-zero hook exit (or a cycle error) backs the poll off
+  exponentially (`interval` .. `10×interval`) so a broken commit cannot thrash;
+  a clean cycle resets it.
+- **Graceful stop.** SIGINT/SIGTERM stop the loop cleanly (exit 0).
+
+### Examples
+
+```
+# Mirror origin/main every 30s and re-run the test suite on each change
+gk follow main -- make test
+
+# Watch a release branch on a deploy box, redeploy on each push
+gk follow release --interval 15s -- ./deploy.sh
+
+# One-shot reconcile (cron): check once, mirror+hook if changed, then exit
+gk follow main --once -- make deploy
+
+# Allow the mirror to discard local edits (true disposable box)
+gk follow main --discard-dirty -- systemctl restart myapp
+```
+
+### Container
+
+`gk follow` is designed to be supervised, not daemonized. The repo ships a
+root `Dockerfile` that builds a minimal image (git + ssh + gk) with
+`ENTRYPOINT ["gk", "follow"]`:
+
+```
+docker build -t gk-follow .
+docker run --rm --restart=always \
+  -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
+  gk-follow main -- make deploy
+```
+
+The base image is intentionally minimal; a hook that needs a toolchain
+(`make`, `node`, …) should `FROM` it and add what it needs.
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |

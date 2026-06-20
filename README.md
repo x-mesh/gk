@@ -234,6 +234,12 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
 | `gk snapshot` / `gk snapshots` | | Non-destructive safety-net snapshot of the working tree to `refs/wip/<branch>` (untracked included, `.gitignore` respected); never touches HEAD/index, never pushes. `restore [n]` brings one back, auto-backing-up a dirty tree first. `-q` suits a Stop hook |
 
+### Continuous
+
+| Command | Alias | Description |
+|---|---|---|
+| `gk follow <branch> [-- <hook>...]` | | Foreground watcher that polls a **remote** branch and, each time it advances, hard-resets the local checkout to the remote tip (GitOps mirror) and runs a hook once. Zero-infra "git-sync + watchexec" for dev boxes, agent sandboxes, and single-container deploys — supervised externally (systemd/docker/k8s), no built-in daemon. A backup ref is written before every reset (recover with `git reset --hard <backup-ref>`); an uncommitted working tree is refused unless `--discard-dirty`. A non-zero hook exit backs the poll off exponentially. `--remote`, `--interval` (default 30s), `--run`, `--once`. Not to be confused with `gk status --watch` (local file-change feed). Ships as a container (`Dockerfile`). |
+
 ### AI
 | Command | Description |
 |---|---|

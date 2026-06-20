@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gk land --to <branch>`가 임의 브랜치까지 부모 체인을 단계별로 통합한다 — `--to`가 deprecated `--promote`를 완전히 대체.** 지금까지 `--to`는 `parent`·`base`만 받아, 다단계 체인 워크는 deprecated `--promote=<branch>`로만 가능했다(후속 플래그가 별칭보다 표현력이 낮은 역전). 이제 `--to <branch>`는 `--promote=<branch>`와 동일하게 부모 스택을 hop by hop 올린다(체인 밖 타깃은 거부, `gk promote <branch>`와 같은 머신). 더불어 실패·중단 시 재실행 안내(resume)가 더 이상 deprecated `--promote`를 출력하지 않고 `--to` 철자로 안내한다 — bare `--promote`→`--to parent`, `--promote=<branch>`→`--to <branch>`.
 
+- **`gk commit`이 LLM에 보내는 diff 페이로드를 줄여 토큰·비용을 낮춘다 — 큰 파일은 심볼 digest로 접고, compose 컨텍스트를 `-U1`로 줄이며, CLI provider의 diff 이중 전송을 없앤다.** 커밋 메시지 생성은 그룹별 diff를 LLM에 보내는데, 대형 파일·과한 컨텍스트·provider 이중 전송이 입력 토큰을 불필요하게 키웠다. 네 가지를 적용한다: (1) 파일 12KB(`DefaultComposePerFileDiffCap`)/그룹 32KB를 넘는 파일은 raw hunk 대신 한 줄 **digest**(바뀐 함수 심볼·±줄·hunk 수)로 접는다 — 실측 40.8KB 2-파일 커밋에서 ~3,900→~130 입력 토큰(96.7%↓)이고 수정 파일의 심볼은 보존된다. 순수-add 신규 파일은 hunk에 함수 컨텍스트가 없어 added 라인의 top-level 선언명을 추출해 심볼을 복구한다(무-오탐 우선). (2) compose diff를 git 기본 `-U3` 대신 **`-U1`**로 떠 정상 커밋의 diff 본문을 실측 ~15% 줄인다(가감 줄 수는 불변이고, 미리보기 stat 패스는 심볼 컬럼 보존을 위해 `-U3`를 유지). (3) `kiro`·`gemini`·`qwen`이 diff를 프롬프트와 stdin 양쪽으로 **이중 전송**하던 것을 stdin을 비워 끊는다 — diff는 이미 프롬프트에 인라인돼 있어 CLI provider 입력이 ~50% 줄고 내용은 동일하다(무손실). (4) 변경 전체가 단일 확정-종류 그룹(test/docs/ci/build)이면 classify LLM 왕복을 건너뛴다 — 혼합·`chore` 변경은 그대로 LLM이 분리하고, `scope_required`에선 비활성이다.
+
+- **`gk pull`이 base 브랜치의 ahead-only와 진짜 diverged를 구분해 알맞은 remedy를 안내한다.** 기존엔 로컬 base가 원격보다 앞서기만 한 경우(미푸시 커밋만)와 양쪽에 커밋이 갈라진 경우를 같은 신호로 묶어, ahead-only인데도 pull을 권하는 어긋난 안내가 나올 수 있었다. 이제 `countRevs`/`countAheadBehind`로 둘을 가려 ahead-only면 push를, 진짜 diverged면 pull을 제안한다(i18n 메시지·테스트도 구분에 맞춰 갱신).
+
 ## [0.91.0] - 2026-06-16
 
 ### Added

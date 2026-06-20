@@ -2,6 +2,7 @@ package aicommit
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/diff"
@@ -117,11 +118,71 @@ func digestFileBlock(f fileDiff) string {
 	// docs/build "symbols" are body text the generic hunk heuristic
 	// mistook for signatures — noise. test/source function names are real.
 	if kind := FileKind(fd.Path); kind != "docs" && kind != "build" {
-		if syms := joinBareSymbols(fd.Symbols, 6); syms != "" {
-			summary += " · symbols: " + syms
+		syms := fd.Symbols
+		if len(syms) == 0 {
+			// A pure-add file's only hunk is "@@ -0,0 +1,N @@" with no
+			// function context, so BuildDigest finds no symbols and the
+			// digest would read just "+N lines". Recover signal from the
+			// added top-level declarations. This costs a few tokens — it is
+			// a quality floor for digested adds, not a saving.
+			syms = addedDeclSymbols(f.body)
+		}
+		if s := joinBareSymbols(syms, 6); s != "" {
+			summary += " · symbols: " + s
 		}
 	}
 	return f.header + "[gk: large diff digested · " + summary + "]\n"
+}
+
+// declLineRE matches a top-level declaration on an added line (after its
+// leading '+'), capturing the declared name. It is deliberately
+// conservative: a single decl keyword at column 0, optionally past a Go
+// method receiver "(r *T)". That surfaces real API for pure-add files —
+// where hunk headers give no function context — without dredging up
+// locals, nested closures, or prose, across Go/Rust/Python/JS/TS/Java/C#.
+//
+// It favours zero false positives over completeness: it intentionally
+// skips const/var *block* members (they are indented, indistinguishable
+// from struct fields/map entries) and Java/C# return-typed methods (no
+// decl keyword), trading a few missed names for never emitting garbage
+// into a commit subject. Missed names only soften the digest; they never
+// corrupt it.
+var declLineRE = regexp.MustCompile(
+	`^(?:export |default |pub |public |private |protected |static |async |final |abstract )*` +
+		`(?:function|func|fn|def|class|type|struct|interface|enum|trait|impl|record|const|var|let)\b[ \t]+` +
+		`(?:\([^)]*\)[ \t]*)?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// addedDeclSymbols extracts top-level declaration names from the added
+// ('+') lines of a unified-diff file block, in first-seen order, deduped.
+// Used as a digest fallback when the hunk headers carry no function
+// context (the pure-add case). Only column-0 declarations count, so a
+// generated file's nested fields/locals stay out of the digest.
+func addedDeclSymbols(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(body, "\n") {
+		// Added content only; skip the "+++ b/path" file header.
+		if len(line) < 2 || line[0] != '+' || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		content := line[1:]
+		// Top-level only: no leading indentation after the '+'.
+		if content[0] == ' ' || content[0] == '\t' {
+			continue
+		}
+		m := declLineRE.FindStringSubmatch(content)
+		if m == nil {
+			continue
+		}
+		if name := m[1]; !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+			if len(out) >= 32 { // hard cap; joinBareSymbols trims to display count
+				break
+			}
+		}
+	}
+	return out
 }
 
 // joinBareSymbols renders hunk-context signatures as bare identifiers for

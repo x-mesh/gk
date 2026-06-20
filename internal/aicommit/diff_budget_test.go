@@ -117,6 +117,83 @@ func TestDigestForTruncatedSavings(t *testing.T) {
 	}
 }
 
+// TestDigestNewFileRecoversSymbols covers #8: a pure-add file's single
+// "@@ -0,0 +1,N @@" hunk has no function context, so BuildDigest yields no
+// symbols and the digest would read just "+N lines". addedDeclSymbols must
+// recover the top-level declarations from the added body — and must NOT
+// promote indented fields/locals.
+func TestDigestNewFileRecoversSymbols(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("diff --git a/svc/handler.go b/svc/handler.go\n")
+	b.WriteString("new file mode 100644\n")
+	b.WriteString("index 0000000..abc1234\n")
+	b.WriteString("--- /dev/null\n")
+	b.WriteString("+++ b/svc/handler.go\n")
+	b.WriteString("@@ -0,0 +1,40 @@\n")
+	b.WriteString("+package svc\n")
+	b.WriteString("+type Server struct {\n")
+	b.WriteString("+\tport int\n") // indented field — must NOT become a symbol
+	b.WriteString("+}\n")
+	b.WriteString("+func NewServer(p int) *Server {\n")
+	b.WriteString("+\treturn &Server{port: p}\n")
+	b.WriteString("+}\n")
+	b.WriteString("+func (s *Server) Start() error {\n")
+	b.WriteString("+\treturn nil\n")
+	b.WriteString("+}\n")
+	for i := 0; i < 30; i++ {
+		b.WriteString("+\t// padding line to grow the body\n")
+	}
+
+	files := splitDiffByFile(b.String())
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	dig := digestFileBlock(files[0])
+
+	for _, want := range []string{"Server", "NewServer", "Start"} {
+		if !strings.Contains(dig, want) {
+			t.Errorf("digest should recover added decl %q, got: %s", want, dig)
+		}
+	}
+	if strings.Contains(dig, "port") {
+		t.Errorf("indented field must not be a top-level symbol, got: %s", dig)
+	}
+	if strings.Contains(dig, "package") {
+		t.Errorf("non-decl keyword must not be captured, got: %s", dig)
+	}
+}
+
+// TestAddedDeclSymbols locks in the decl-extraction heuristic across
+// languages: real top-level declarations are captured in order (deduped),
+// while indented members, prose, and non-decl keywords are excluded. The
+// safety property under test is "no false positives" — never emit a name
+// that isn't a top-level declaration.
+func TestAddedDeclSymbols(t *testing.T) {
+	body := strings.Join([]string{
+		"diff --git a/x b/x", "+++ b/x", "@@ -0,0 +1,1 @@",
+		"+func Foo() {}",
+		"+func (r *T) Bar() {}",
+		"+type Server struct {",
+		"+\tport int", // indented field — excluded
+		"+const MaxN = 5",
+		"+export function handle() {}",
+		"+export const router = mk()",
+		"+public class Account {",
+		"+public record Money(int c) {}",
+		"+def parse(self):",
+		"+class Parser:",
+		"+pub fn run() {}",
+		"+package main",     // not a decl keyword — excluded
+		"+// func Hidden()", // comment — excluded
+		"+\tlocal := 1",     // indented local — excluded
+	}, "\n")
+	got := strings.Join(addedDeclSymbols(body), ",")
+	want := "Foo,Bar,Server,MaxN,handle,router,Account,Money,parse,Parser,run"
+	if got != want {
+		t.Errorf("addedDeclSymbols mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
 // buildLargeFileDiff synthesises a ~20KB single-file Go diff: five hunks,
 // each with a function context (so the digest can name symbols) padded
 // with added lines.

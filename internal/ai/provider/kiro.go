@@ -59,9 +59,15 @@ func (k *Kiro) Available(_ context.Context) error {
 }
 
 // Classify implements Provider.
+//
+// buildClassifyUserPrompt already inlines the aggregate diff inside the
+// prompt's <DIFF> fence, which kiro-cli takes as a CLI arg, so we pass
+// nil stdin: piping the same diff again would double the diff-bearing
+// payload. The arg size is unchanged, so dropping stdin adds no ARG_MAX
+// risk.
 func (k *Kiro) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	prompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	raw, err := k.invoke(ctx, prompt, concatFileDiffs(in.Files))
+	raw, err := k.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -69,9 +75,12 @@ func (k *Kiro) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, 
 }
 
 // Compose implements Provider.
+//
+// buildComposeUserPrompt already inlines in.Diff inside the prompt's
+// <DIFF> fence, so we pass nil stdin to avoid sending the diff twice.
 func (k *Kiro) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	prompt := buildComposeUserPrompt(in)
-	raw, err := k.invoke(ctx, prompt, []byte(in.Diff))
+	raw, err := k.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ComposeResult{}, err
 	}

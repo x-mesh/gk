@@ -32,6 +32,54 @@ func TestKiroClassifySuccess(t *testing.T) {
 	}
 }
 
+func TestKiroComposeDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	// The diff lives in the prompt arg (inside the <DIFF> fence); it must
+	// NOT also be piped on stdin, or kiro-cli receives it twice.
+	const diff = "+func Added() {}\n-func Removed() {}\n"
+	runner := &FakeCommandRunner{
+		Responses: []FakeCommandResponse{{Stdout: []byte(`{"subject":"feat: x"}`)}},
+	}
+	k := &Kiro{Runner: runner, Binary: "kiro-cli"}
+	if _, err := k.Compose(context.Background(), ComposeInput{
+		Group:            Group{Type: "feat", Files: []string{"a.go"}},
+		AllowedTypes:     []string{"feat"},
+		MaxSubjectLength: 72,
+		Diff:             diff,
+	}); err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("compose must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[3], diff) {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[3])
+	}
+}
+
+func TestKiroClassifyDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	// concatFileDiffs(in.Files) is inlined in the prompt arg; the same
+	// payload must not be piped on stdin as well.
+	const hint = "@@ -1 +1 @@\n-old\n+new\n"
+	runner := &FakeCommandRunner{
+		Responses: []FakeCommandResponse{{Stdout: []byte(`{"groups":[{"type":"feat","files":["a.go"],"rationale":"x"}]}`)}},
+	}
+	k := &Kiro{Runner: runner, Binary: "kiro-cli"}
+	if _, err := k.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "modified", DiffHint: hint}},
+		AllowedTypes: []string{"feat"},
+	}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("classify must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[3], "+new") {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[3])
+	}
+}
+
 func TestKiroComposePlainTextFallback(t *testing.T) {
 	// Kiro responds in plain text — the parser's text fallback should
 	// take over when JSON isn't parseable.

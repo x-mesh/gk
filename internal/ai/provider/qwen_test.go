@@ -45,6 +45,48 @@ func TestQwenReturnsErrOnIsError(t *testing.T) {
 	}
 }
 
+func TestQwenComposeDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	const diff = "+func Added() {}\n-func Removed() {}\n"
+	events := `[{"type":"assistant","text":"{\"subject\":\"feat: x\"}","model":"q"}]`
+	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: []byte(events)}}}
+	q := &Qwen{Runner: runner, Binary: "qwen", EnvLookup: func(string) string { return "x" }}
+	if _, err := q.Compose(context.Background(), ComposeInput{
+		Group:            Group{Type: "feat", Files: []string{"a.go"}},
+		AllowedTypes:     []string{"feat"},
+		MaxSubjectLength: 72,
+		Diff:             diff,
+	}); err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("compose must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[0], diff) {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[0])
+	}
+}
+
+func TestQwenClassifyDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	const hint = "@@ -1 +1 @@\n-old\n+new\n"
+	events := `[{"type":"assistant","text":"{\"groups\":[{\"type\":\"feat\",\"files\":[\"a.go\"],\"rationale\":\"x\"}]}","model":"q"}]`
+	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: []byte(events)}}}
+	q := &Qwen{Runner: runner, Binary: "qwen", EnvLookup: func(string) string { return "x" }}
+	if _, err := q.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "modified", DiffHint: hint}},
+		AllowedTypes: []string{"feat"},
+	}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("classify must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[0], "+new") {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[0])
+	}
+}
+
 func TestQwenSummarizeSuccess(t *testing.T) {
 	events := `[{"type":"assistant","text":"\u001b[1mRisk: low\u001b[0m\nInspect: file.go","model":"qwen3-coder"}]`
 	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{Stdout: []byte(events)}}}

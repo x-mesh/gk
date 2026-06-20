@@ -15,7 +15,6 @@ import (
 //
 //	gemini -p <prompt> -o json --approval-mode plan
 //	gemini <prompt>      -o json --approval-mode plan   # positional form
-//	echo <diff> | gemini -p <prompt> -o json            # stdin concat
 //
 // -o json yields {session_id, response, stats} — we extract .response
 // and feed it to parse{Classify,Compose}Response. Gemini sometimes
@@ -64,9 +63,13 @@ func (g *Gemini) Available(_ context.Context) error {
 }
 
 // Classify implements Provider.
+//
+// The aggregate diff is already inlined in the prompt's <DIFF> fence
+// (buildClassifyUserPrompt), which gemini takes as the -p arg; pass nil
+// stdin so the same diff isn't sent twice.
 func (g *Gemini) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	prompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	raw, err := g.invoke(ctx, prompt, concatFileDiffs(in.Files))
+	raw, err := g.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -80,9 +83,12 @@ func (g *Gemini) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult
 }
 
 // Compose implements Provider.
+//
+// in.Diff is already inlined in the prompt's <DIFF> fence
+// (buildComposeUserPrompt); pass nil stdin to avoid sending it twice.
 func (g *Gemini) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	prompt := buildComposeUserPrompt(in)
-	raw, err := g.invoke(ctx, prompt, []byte(in.Diff))
+	raw, err := g.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ComposeResult{}, err
 	}
@@ -130,9 +136,9 @@ type geminiResponse struct {
 // as JSON/text downstream.
 func (r *geminiResponse) responseText() []byte { return []byte(r.Response) }
 
-// invoke runs the gemini binary with systemPrompt on stdin alongside the diff.
-// Gemini's --prompt can grow large so we pass the prompt as an argument
-// and the diff as stdin (the binary concatenates them).
+// invoke runs the gemini binary with the prompt as the -p argument.
+// stdinExtra is piped to the binary's stdin; Classify/Compose now inline
+// the diff in the prompt and pass nil, so it carries nothing today.
 func (g *Gemini) invoke(ctx context.Context, userPrompt string, stdinExtra []byte) (*geminiResponse, error) {
 	args := []string{
 		"-p", userPrompt,

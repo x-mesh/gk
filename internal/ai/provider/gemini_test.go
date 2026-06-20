@@ -38,8 +38,11 @@ func TestGeminiClassifySuccess(t *testing.T) {
 	if args[0] != "-p" || args[2] != "-o" || args[3] != "json" {
 		t.Errorf("args missing -p / -o json: %v", args)
 	}
-	if !strings.Contains(string(runner.Calls[0].Stdin), "package main") {
-		t.Errorf("diff not forwarded on stdin")
+	if len(runner.Calls[0].Stdin) != 0 {
+		t.Errorf("diff must not be piped on stdin (it is inlined in the prompt), got: %q", runner.Calls[0].Stdin)
+	}
+	if !strings.Contains(args[1], "package main") {
+		t.Errorf("diff must be inlined in the prompt arg, got: %q", args[1])
 	}
 }
 
@@ -66,6 +69,52 @@ func TestGeminiComposeSuccessMarkdownFence(t *testing.T) {
 	}
 	if res.Body != "reads XDG first" {
 		t.Errorf("body: %q", res.Body)
+	}
+}
+
+func TestGeminiComposeDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	// The diff lives in the prompt's -p arg (inside <DIFF>); it must NOT
+	// also be piped on stdin, or gemini receives it twice.
+	const diff = "+func Added() {}\n-func Removed() {}\n"
+	runner := &FakeCommandRunner{
+		Responses: []FakeCommandResponse{{Stdout: []byte(`{"response":"{\"subject\":\"feat: x\"}"}`)}},
+	}
+	g := &Gemini{Runner: runner, Binary: "gemini"}
+	if _, err := g.Compose(context.Background(), ComposeInput{
+		Group:            Group{Type: "feat", Files: []string{"a.go"}},
+		AllowedTypes:     []string{"feat"},
+		MaxSubjectLength: 72,
+		Diff:             diff,
+	}); err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("compose must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[1], diff) {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[1])
+	}
+}
+
+func TestGeminiClassifyDoesNotDuplicateDiffOnStdin(t *testing.T) {
+	const hint = "@@ -1 +1 @@\n-old\n+new\n"
+	runner := &FakeCommandRunner{
+		Responses: []FakeCommandResponse{{Stdout: []byte(`{"response":"{\"groups\":[{\"type\":\"feat\",\"files\":[\"a.go\"],\"rationale\":\"x\"}]}"}`)}},
+	}
+	g := &Gemini{Runner: runner, Binary: "gemini"}
+	if _, err := g.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "modified", DiffHint: hint}},
+		AllowedTypes: []string{"feat"},
+	}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	call := runner.Calls[0]
+	if len(call.Stdin) != 0 {
+		t.Errorf("classify must not pipe diff on stdin, got %d bytes: %q", len(call.Stdin), call.Stdin)
+	}
+	if !strings.Contains(call.Args[1], "+new") {
+		t.Errorf("prompt arg must still carry the diff, got: %q", call.Args[1])
 	}
 }
 

@@ -69,9 +69,12 @@ func (q *Qwen) Available(_ context.Context) error {
 }
 
 // Classify implements Provider.
+//
+// The aggregate diff is already inlined in the prompt (buildClassifyUserPrompt),
+// passed as the leading CLI arg; pass nil stdin so it isn't sent twice.
 func (q *Qwen) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	prompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	raw, err := q.invoke(ctx, prompt, concatFileDiffs(in.Files))
+	raw, err := q.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -84,9 +87,12 @@ func (q *Qwen) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, 
 }
 
 // Compose implements Provider.
+//
+// in.Diff is already inlined in the prompt (buildComposeUserPrompt);
+// pass nil stdin to avoid sending it twice.
 func (q *Qwen) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	prompt := buildComposeUserPrompt(in)
-	raw, err := q.invoke(ctx, prompt, []byte(in.Diff))
+	raw, err := q.invoke(ctx, prompt, nil)
 	if err != nil {
 		return ComposeResult{}, err
 	}

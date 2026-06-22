@@ -267,10 +267,11 @@ func TestLoadEnvVar(t *testing.T) {
 	}
 }
 
-// TestLoadLandPromoteEnv guards the env binding parity gap: land.promote got a
-// config/git path but, unlike ship.* and output.*, no SetDefault/BindEnv — so
-// GK_LAND_PROMOTE silently did nothing in CI/scripts. Both the natural-name and
-// (post-fix) bound env must populate cfg.Land.Promote.
+// TestLoadLandPromoteEnv guards GK_LAND_PROMOTE resolution. Before the fix the
+// key was unregistered (no SetDefault), so AutomaticEnv never looked it up and
+// the env var silently did nothing in CI/scripts. The SetDefault now registers
+// it, and AutomaticEnv + the "."→"_" replacer resolve GK_LAND_PROMOTE without an
+// explicit BindEnv — the same path GK_SHIP_WAIT uses. This asserts that path.
 func TestLoadLandPromoteEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
 	t.Setenv("GK_BASE_BRANCH", "")

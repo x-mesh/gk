@@ -53,14 +53,14 @@ always reach the pre-restore state.
 		Use:   "list-backups",
 		Short: "List gk-managed backup refs newest-first (refs/gk/*-backup/)",
 		Long: `Surfaces every backup ref created by gk undo / gk wipe / gk timemachine
-restore. Each entry can be restored via ` + "`gk timemachine restore <ref>`" + `.
+restore / gk forget / gk commit (ai-commit). Each entry can be restored via ` + "`gk timemachine restore <ref>`" + `.
 
 Use --json to emit one NDJSON object per line, suitable for piping into jq.
 `,
 		RunE: runTimemachineListBackups,
 	}
 	listBackupsCmd.Flags().Bool("json", false, "emit NDJSON (one entry per line)")
-	listBackupsCmd.Flags().String("kind", "", "filter by kind: undo, wipe, timemachine")
+	listBackupsCmd.Flags().String("kind", "", "filter by kind: undo, wipe, timemachine, forget, ai-commit")
 
 	listCmd := &cobra.Command{
 		Use:   "list",

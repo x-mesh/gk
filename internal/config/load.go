@@ -221,12 +221,11 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	_ = v.BindEnv("output.emoji", "GK_EMOJI")
 	_ = v.BindEnv("output.hints", "GK_HINTS")
 
-	// land.promote follows the ship.* defaults above (SetDefault registers the
-	// key so AutomaticEnv resolves GK_LAND_PROMOTE); the explicit BindEnv makes
-	// the override guaranteed regardless of viper's nested-key env handling, so
-	// CI/scripts can set the promote target without a config file — parity with
-	// ship.* and output.*.
-	_ = v.BindEnv("land.promote", "GK_LAND_PROMOTE")
+	// land.promote needs no explicit BindEnv: the SetDefault above registers the
+	// key, so AutomaticEnv + the "."→"_" replacer resolve GK_LAND_PROMOTE on
+	// their own — the same mechanism that carries GK_SHIP_WAIT / GK_SHIP_AUTO_CONFIRM.
+	// (The output.* binds below exist only for their short aliases like GK_EASY,
+	// which AutomaticEnv cannot derive from the key name.)
 
 	// --- 6. CLI flags ---
 	// BindPFlags maps each flag to a viper key by its bare name. A command

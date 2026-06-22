@@ -574,7 +574,7 @@ func checkBackupRefs(ctx context.Context, r git.Runner) doctorCheck {
 		return doctorCheck{
 			Name:   "gk backup refs",
 			Status: statusPass,
-			Detail: "0 refs (no gk undo/wipe/timemachine backups yet)",
+			Detail: "0 refs (no gk backup refs yet)",
 		}
 	}
 

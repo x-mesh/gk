@@ -2828,7 +2828,7 @@ EOF
 
 Every live run writes `refs/gk/ai-commit-backup/<branch>/<unix>` **before** the first commit, pointing at the **pre-commit HEAD** (the state `--abort` rolls back to). Two things worth knowing:
 
-- **It is a single snapshot, not a range.** `git diff <ref>~2..<ref>` comes back empty because the ref is one commit, not a series — to see what the run produced, diff the ref against the new tip: `git diff <ref>..HEAD` (or `gk timemachine show <ref>`).
+- **To see what the run produced, diff the ref against the new tip:** `git diff <ref>..HEAD` (or `gk timemachine show <ref>`). Diffing *backwards from* the ref (`git diff <ref>~2..<ref>`) instead shows pre-snapshot history — not the new commits — which is why it looks empty or wrong.
 - **Recovery** is `gk commit --abort` (restores HEAD to the latest such ref) or, by hand, `git reset --hard <ref>`.
 
 Retention is automatic: the 10 newest refs within 30 days are kept and older ones pruned on the next commit (parity with gk's other backup families), so they never accumulate for the life of the clone. List them with `gk timemachine list`.

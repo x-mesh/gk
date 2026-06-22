@@ -172,11 +172,23 @@ func runPush(cmd *cobra.Command, args []string) error {
 	// ref-update line) and append a one-line gk-style summary so the
 	// flow has a clear "what just happened" signal.
 	fmt.Fprint(cmd.OutOrStdout(), string(stdout))
-	fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
+	gitErr := string(stderr)
+	var summary string
 	if e := EasyEngine(); e != nil {
-		if msg := e.PushSummaryHint(ahead, remote, branch, short); msg != "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), msg)
-		}
+		summary = e.PushSummaryHint(ahead, remote, branch, short)
+	}
+	// guardEnv forces LC_ALL=C, so an up-to-date push always emits exactly
+	// "Everything up-to-date" on stderr. When the localized summary below will
+	// restate that in the user's language, drop git's line — otherwise the flow
+	// shows the same fact twice in two languages (git EN + gk localized). git's
+	// stderr on a real push carries the URL + ref-update lines, so only the
+	// no-op message is ever suppressed.
+	if summary != "" && strings.TrimSpace(gitErr) == "Everything up-to-date" {
+		gitErr = ""
+	}
+	fmt.Fprint(cmd.ErrOrStderr(), gitErr)
+	if summary != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), summary)
 	}
 	return nil
 }

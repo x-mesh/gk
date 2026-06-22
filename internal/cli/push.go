@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
@@ -172,25 +173,39 @@ func runPush(cmd *cobra.Command, args []string) error {
 	// ref-update line) and append a one-line gk-style summary so the
 	// flow has a clear "what just happened" signal.
 	fmt.Fprint(cmd.OutOrStdout(), string(stdout))
-	gitErr := string(stderr)
-	var summary string
-	if e := EasyEngine(); e != nil {
-		summary = e.PushSummaryHint(ahead, remote, branch, short)
-	}
-	// guardEnv forces LC_ALL=C, so an up-to-date push always emits exactly
-	// "Everything up-to-date" on stderr. When the localized summary below will
-	// restate that in the user's language, drop git's line — otherwise the flow
-	// shows the same fact twice in two languages (git EN + gk localized). git's
-	// stderr on a real push carries the URL + ref-update lines, so only the
-	// no-op message is ever suppressed.
-	if summary != "" && strings.TrimSpace(gitErr) == "Everything up-to-date" {
-		gitErr = ""
-	}
-	fmt.Fprint(cmd.ErrOrStderr(), gitErr)
+	gitOut, summary := pushReport(string(stderr), ahead, EasyEngine(), remote, branch, short)
+	fmt.Fprint(cmd.ErrOrStderr(), gitOut)
 	if summary != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), summary)
 	}
 	return nil
+}
+
+// pushReport decides what to print after a successful push, given git's stderr
+// and the pre-push ahead count. Returns the (possibly emptied) git output to
+// echo and the localized one-line summary to append.
+//
+// guardEnv forces LC_ALL=C, so git emits exactly "Everything up-to-date" when
+// the push sent nothing. That message is authoritative — more reliable than
+// `ahead`, which is counted against the local remote-tracking ref and can be
+// stale (commits already on the real remote still count as ahead). So when git
+// reports up-to-date we summarize as up-to-date (n=0) instead of claiming
+// "N pushed", and drop git's English line as a duplicate of the localized one.
+// On a real push git's stderr carries the URL + ref-update lines and is kept.
+func pushReport(gitStderr string, ahead int, eng *easy.Engine, remote, branch, short string) (gitOut, summary string) {
+	upToDate := strings.TrimSpace(gitStderr) == "Everything up-to-date"
+	if eng != nil {
+		n := ahead
+		if upToDate {
+			n = 0
+		}
+		summary = eng.PushSummaryHint(n, remote, branch, short)
+	}
+	gitOut = gitStderr
+	if summary != "" && upToDate {
+		gitOut = ""
+	}
+	return gitOut, summary
 }
 
 // resolvePushBranch decides which branch `gk push` targets, given the

@@ -11,9 +11,50 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+// TestPushReport guards the post-push output policy, including the codex P2
+// regression: a stale remote-tracking ref makes ahead>0 even when the real
+// remote already has the commits, so git returns "Everything up-to-date" — the
+// summary must not then claim "N pushed".
+func TestPushReport(t *testing.T) {
+	eng := easy.NewEngine(config.OutputConfig{Easy: true, Lang: "en", Emoji: false, Hints: "verbose"}, true, false)
+
+	// Real push: git prints ref-update lines (not the up-to-date sentinel),
+	// ahead>0 → keep git output AND a "pushed" summary.
+	gitOut, summary := pushReport("To example.com:x/y.git\n   abc..def  main -> main\n", 2, eng, "origin", "main", "def1234")
+	if gitOut == "" {
+		t.Errorf("real push must keep git output")
+	}
+	if summary == "" {
+		t.Errorf("real push must produce a summary")
+	}
+
+	// Genuine up-to-date: ahead=0, git up-to-date → suppress git's duplicate
+	// English line, keep the localized summary.
+	gitOut, summary = pushReport("Everything up-to-date\n", 0, eng, "origin", "main", "def1234")
+	if gitOut != "" {
+		t.Errorf("up-to-date git line must be suppressed, got %q", gitOut)
+	}
+	if summary == "" {
+		t.Errorf("up-to-date must still summarize")
+	}
+
+	// Stale upstream (codex P2): ahead>0 but git reports up-to-date because the
+	// real remote already has the commits. The summary must match the up-to-date
+	// (n=0) variant — never "N pushed" — and git's duplicate line is suppressed.
+	gitOut, summary = pushReport("Everything up-to-date\n", 5, eng, "origin", "main", "def1234")
+	if want := eng.PushSummaryHint(0, "origin", "main", "def1234"); summary != want {
+		t.Errorf("stale upstream must summarize as up-to-date: got %q want %q", summary, want)
+	}
+	if gitOut != "" {
+		t.Errorf("stale up-to-date git line must be suppressed, got %q", gitOut)
+	}
+}
 
 // buildPushCmd constructs a push cobra.Command for unit tests that calls
 // runPush directly via its RunE, with persistent flags needed by config.Load.

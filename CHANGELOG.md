@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-06-22
+
 ### Added
 
 - **`land.promote`를 `GK_LAND_PROMOTE` 환경 변수로도 설정한다 — `ship.*`·`output.*`와 env parity를 맞춘다.** `land.promote`는 `.gk.yaml`·git config로만 켤 수 있어, config 파일 없이 도는 CI·스크립트에서는 promote 기본값을 줄 방법이 없었다(viper `AutomaticEnv`가 등록되지 않은 nested 키를 집지 않아 `ship.auto_confirm` 등과 비대칭이었다). 이제 `land.promote`에 `SetDefault` + `BindEnv("GK_LAND_PROMOTE")`를 달아 `GK_LAND_PROMOTE=parent`(또는 브랜치명)로 promote 타깃을 환경에서 지정할 수 있다. 값 의미는 config와 동일하다 — `parent`는 gk-parent 한 단계(없으면 base), 브랜치명은 거기까지 부모 체인 walk이며, base는 그 브랜치의 실제 이름으로 적는다(`base`라는 단어는 `--to` 플래그 전용).

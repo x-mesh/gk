@@ -75,11 +75,12 @@ type contextJSON struct {
 	// fuse the follow-up probes an agent would otherwise issue as separate
 	// calls (diff --digest, log, precheck, remote drift) into this same
 	// document.
-	Diff     *diffDigestJSON     `json:"diff,omitempty"`
-	Log      []contextLogJSON    `json:"log,omitempty"`
-	Precheck *precheckResult     `json:"precheck,omitempty"`
-	Remotes  []contextRemoteJSON `json:"remotes,omitempty"`
-	Release  *contextReleaseJSON `json:"release,omitempty"`
+	Diff     *diffDigestJSON      `json:"diff,omitempty"`
+	Log      []contextLogJSON     `json:"log,omitempty"`
+	Precheck *precheckResult      `json:"precheck,omitempty"`
+	Conflict *contextConflictJSON `json:"conflict,omitempty"`
+	Remotes  []contextRemoteJSON  `json:"remotes,omitempty"`
+	Release  *contextReleaseJSON  `json:"release,omitempty"`
 	// Notes records sections that were requested but degraded (e.g.
 	// precheck with no upstream) — absence of a section plus its note is
 	// the contract for "asked, not available".
@@ -123,7 +124,7 @@ type contextRemoteJSON struct {
 
 // contextIncludeValues are the sections --include accepts; "all" expands to
 // every entry.
-var contextIncludeValues = []string{"diff", "log", "precheck", "remotes", "release"}
+var contextIncludeValues = []string{"diff", "log", "precheck", "conflict", "remotes", "release"}
 
 func init() {
 	cmd := &cobra.Command{
@@ -147,6 +148,7 @@ replaces the usual status/branch/log/worktree probe sequence.
             untracked files included
   log       the last 5 commits (sha, subject, author, date)
   precheck  merge-tree forecast for the next pull
+  conflict  current unmerged files with operation kind, stages, and hunk counts
   remotes   every registered remote with the current branch's drift as of
             the last fetch, plus asymmetric push URLs (see gk doctor)
   release   commits since the latest tag (tag..HEAD) — "what hasn't shipped?"
@@ -358,7 +360,7 @@ func contextNextActions(c contextJSON) []string {
 		actions = append(actions, c.InProgress.Resume, c.InProgress.Abort)
 		return actions
 	case c.Dirty.Conflicts > 0:
-		return append(actions, selfCmd("resolve --ai"), selfCmd("continue"))
+		return append(actions, selfCmd("resolve --ai"))
 	}
 	if c.Dirty.Staged+c.Dirty.Unstaged+c.Dirty.Untracked > 0 {
 		actions = append(actions, selfCmd("commit"))
@@ -420,6 +422,20 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 		} else {
 			fmt.Fprintf(w, "precheck: %d conflict(s) merging into %s: %s\n",
 				len(c.Precheck.Conflicts), c.Precheck.Target, strings.Join(c.Precheck.Conflicts, ", "))
+		}
+	}
+	if c.Conflict != nil {
+		fmt.Fprintf(w, "conflict: %d file(s)", c.Conflict.Count)
+		if c.Conflict.Operation != "" && c.Conflict.Operation != "none" {
+			fmt.Fprintf(w, " · %s", c.Conflict.Operation)
+		}
+		fmt.Fprintln(w)
+		for _, f := range c.Conflict.Files {
+			detail := f.Kind
+			if f.Hunks > 0 {
+				detail = fmt.Sprintf("%s, %d hunk(s)", detail, f.Hunks)
+			}
+			fmt.Fprintf(w, "  %s  %s\n", f.Path, detail)
 		}
 	}
 	for _, r := range c.Remotes {
@@ -500,6 +516,13 @@ func collectContextIncludes(ctx context.Context, runner *git.ExecRunner, cfg *co
 			out.Precheck = &res
 		} else {
 			out.Notes = append(out.Notes, "precheck skipped: "+perr.Error())
+		}
+	}
+	if includes["conflict"] {
+		if conflicts, cerr := collectContextConflict(ctx, runner, *out); cerr == nil {
+			out.Conflict = conflicts
+		} else {
+			out.Notes = append(out.Notes, "conflict skipped: "+cerr.Error())
 		}
 	}
 	if includes["remotes"] {

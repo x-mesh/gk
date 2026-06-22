@@ -46,9 +46,16 @@ type pullResultJSON struct {
 	Behind   int    `json:"behind,omitempty"`
 	// Base reports the --with-base outcomes (absent without the flag).
 	Base []ffSyncOutcome `json:"base,omitempty"`
+	// Autostash reports whether local changes were stashed and restored.
+	Autostash *pullAutostashJSON `json:"autostash,omitempty"`
 	// Conflict carries the exact files and the resume/abort commands when
 	// result == "conflict" — the agent contract for the paused state.
 	Conflict *pullConflictJSON `json:"conflict,omitempty"`
+}
+
+type pullAutostashJSON struct {
+	Stashed          bool `json:"stashed"`
+	StagingPreserved bool `json:"staging_preserved"`
 }
 
 // agentState marks a conflict outcome as the paused envelope state so an
@@ -74,6 +81,13 @@ func emitPullJSON(cmd *cobra.Command, res pullResultJSON) {
 	}
 	res.Schema = 1
 	_ = emitAgentResult(cmd.OutOrStdout(), res)
+}
+
+func autostashJSON(stashed bool) *pullAutostashJSON {
+	if !stashed {
+		return nil
+	}
+	return &pullAutostashJSON{Stashed: true, StagingPreserved: true}
 }
 
 // ConflictError is returned by runPullCore when a rebase conflict is detected.
@@ -148,7 +162,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 		// Paused-state contract for agents: which files conflict and the
 		// exact commands that resume or abort. Emitted before the non-zero
 		// exit so tooling reads structure, not stderr prose.
-		emitPullConflictJSON(cmd, ce.Dir)
+		emitPullConflictJSON(cmd, ce.Dir, ce.Stashed)
 		os.Exit(ce.Code)
 	}
 	return err
@@ -158,7 +172,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 // already happened, so one extra status probe is noise-free. dir overrides
 // where to probe (the receiver worktree for merge --into); empty means the
 // invoking checkout.
-func emitPullConflictJSON(cmd *cobra.Command, dir string) {
+func emitPullConflictJSON(cmd *cobra.Command, dir string, stashed bool) {
 	if !JSONOut() {
 		return
 	}
@@ -176,8 +190,9 @@ func emitPullConflictJSON(cmd *cobra.Command, dir string) {
 		}
 	}
 	res := pullResultJSON{
-		Result:   "conflict",
-		Conflict: &pullConflictJSON{Files: files, Resume: selfCmd("continue"), Abort: selfCmd("abort")},
+		Result:    "conflict",
+		Autostash: autostashJSON(stashed),
+		Conflict:  &pullConflictJSON{Files: files, Resume: selfCmd("continue"), Abort: selfCmd("abort")},
 	}
 	if cur, err := git.NewClient(runner).CurrentBranch(ctx); err == nil {
 		res.Branch = cur
@@ -546,7 +561,7 @@ func runPullCore(cmd *cobra.Command) error {
 			})
 		}
 		renderFetchOnlySummary(cmd, runner, upstream)
-		emitPullJSON(cmd, pullResultJSON{Result: "fetch-only", Branch: current, Upstream: upstream, Base: baseOutcomes})
+		emitPullJSON(cmd, pullResultJSON{Result: "fetch-only", Branch: current, Upstream: upstream, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
 
@@ -569,7 +584,7 @@ func runPullCore(cmd *cobra.Command) error {
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "%sAlready up to date  %s\n", labeler(branchLabel), tipSuffix(ctx, runner, preHEAD))
-		emitPullJSON(cmd, pullResultJSON{Result: "up-to-date", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Base: baseOutcomes})
+		emitPullJSON(cmd, pullResultJSON{Result: "up-to-date", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
 
@@ -584,7 +599,7 @@ func runPullCore(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"%sno upstream changes — ahead by %d commit%s, nothing to pull\n",
 			labeler(branchLabel), ahead, plural(ahead))
-		emitPullJSON(cmd, pullResultJSON{Result: "ahead-only", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Ahead: ahead, Base: baseOutcomes})
+		emitPullJSON(cmd, pullResultJSON{Result: "ahead-only", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Ahead: ahead, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
 
@@ -693,7 +708,7 @@ func runPullCore(cmd *cobra.Command) error {
 	}
 	emitPullJSON(cmd, pullResultJSON{
 		Result: "updated", Branch: current, Upstream: upstream, Strategy: strategy,
-		Pre: preHEAD, Post: postHEAD, Ahead: ahead, Behind: behind, Base: baseOutcomes,
+		Pre: preHEAD, Post: postHEAD, Ahead: ahead, Behind: behind, Base: baseOutcomes, Autostash: autostashJSON(stashed),
 	})
 	return nil
 }
@@ -1399,7 +1414,7 @@ func renderConflictFileLists(w io.Writer, info *git.RebaseConflictInfo, red, gre
 }
 
 func popStash(ctx context.Context, r git.Runner) error {
-	_, stderr, err := r.Run(ctx, "stash", "pop")
+	_, stderr, err := r.Run(ctx, "stash", "pop", "--index")
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(stderr)))
 	}
@@ -1600,5 +1615,5 @@ func plural2(n int, noun string) string {
 }
 
 func popStashBestEffort(ctx context.Context, r git.Runner) {
-	_, _, _ = r.Run(ctx, "stash", "pop")
+	_, _, _ = r.Run(ctx, "stash", "pop", "--index")
 }

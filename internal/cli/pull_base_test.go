@@ -667,3 +667,64 @@ func TestIntegration_PullJSONAutostashPopConflict(t *testing.T) {
 		t.Errorf("success JSON must not precede a pop failure:\n%s", stdout.String())
 	}
 }
+
+func TestIntegration_PullAutostashPreservesIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("local.txt", "base\n")
+	upstream.Commit("seed: local")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	down.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	// Upstream advances on an unrelated path so the pull fast-forwards cleanly.
+	upstream.WriteFile("remote.txt", "remote\n")
+	upstream.Commit("feat: remote")
+
+	// Local partial staging: index has "staged", worktree adds "unstaged".
+	down.WriteFile("local.txt", "base\nstaged\n")
+	down.RunGit("add", "local.txt")
+	down.WriteFile("local.txt", "base\nstaged\nunstaged\n")
+
+	prevJSON := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJSON })
+
+	cmd := pullCoreCmd(t, down.Dir)
+	if err := cmd.Flags().Set("autostash", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pull --autostash: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	status := down.RunGit("status", "--porcelain=v1", "--", "local.txt")
+	if !strings.HasPrefix(status, "MM ") {
+		t.Fatalf("local.txt status = %q, want MM after indexed autostash pop", status)
+	}
+	cached := down.RunGit("diff", "--cached", "--", "local.txt")
+	if !strings.Contains(cached, "+staged") || strings.Contains(cached, "+unstaged") {
+		t.Fatalf("cached diff did not preserve only staged content:\n%s", cached)
+	}
+	unstaged := down.RunGit("diff", "--", "local.txt")
+	if !strings.Contains(unstaged, "+unstaged") {
+		t.Fatalf("unstaged diff missing worktree-only content:\n%s", unstaged)
+	}
+
+	var res pullResultJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if res.Autostash == nil || !res.Autostash.Stashed || !res.Autostash.StagingPreserved {
+		t.Fatalf("autostash json = %+v", res.Autostash)
+	}
+}

@@ -29,11 +29,19 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	runner := &git.ExecRunner{Dir: RepoFlag()}
 	if state.Kind == gitstate.StateNone {
+		if unmerged := listUnmergedFiles(ctx, runner); len(unmerged) > 0 {
+			return WithBlocked(
+				fmt.Errorf("unmerged paths exist but no rebase/merge/cherry-pick is in progress (likely stash/apply conflict): %s", strings.Join(unmerged, ", ")),
+				"unmerged-index",
+				"resolve the unmerged paths; stash/apply conflicts have nothing to continue",
+				errRemedy{Command: selfCmd("resolve --ai"), Safety: "safe"},
+			)
+		}
 		return fmt.Errorf("no rebase/merge/cherry-pick in progress")
 	}
 
-	runner := &git.ExecRunner{Dir: RepoFlag()}
 	yes, _ := cmd.Flags().GetBool("yes")
 
 	if !yes {

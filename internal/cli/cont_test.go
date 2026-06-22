@@ -63,6 +63,49 @@ func TestRunContinue_NoStateInProgress(t *testing.T) {
 	}
 }
 
+func TestRunContinue_UnmergedWithoutOperationSuggestsResolve(t *testing.T) {
+	r := testutil.NewRepo(t)
+	r.WriteFile("file.txt", "base\n")
+	r.Commit("add file")
+	r.WriteFile("file.txt", "stashed\n")
+	r.RunGit("stash", "push", "-m", "wip")
+	r.WriteFile("file.txt", "current\n")
+	r.Commit("current edit")
+	if _, err := r.TryGit("stash", "pop"); err == nil {
+		t.Fatal("stash pop should conflict")
+	}
+	state, err := gitstate.Detect(context.Background(), r.Dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if state.Kind != gitstate.StateNone {
+		t.Fatalf("stash conflict should have no continuable operation, got %s", state.Kind)
+	}
+
+	prev := flagRepo
+	flagRepo = r.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	cmd := &cobra.Command{Use: "continue"}
+	cmd.Flags().Bool("yes", false, "")
+	cmd.SetContext(context.Background())
+
+	err = runContinue(cmd, nil)
+	if err == nil {
+		t.Fatal("expected blocked error")
+	}
+	if stateFrom(err) != envStateBlocked || codeFrom(err) != "unmerged-index" {
+		t.Fatalf("error contract state=%q code=%q err=%v", stateFrom(err), codeFrom(err), err)
+	}
+	if !strings.Contains(HintFrom(err), "nothing to continue") {
+		t.Fatalf("hint = %q", HintFrom(err))
+	}
+	remedies := RemediesFrom(err)
+	if len(remedies) != 1 || !strings.Contains(remedies[0].Command, "resolve --ai") {
+		t.Fatalf("remedies = %+v", remedies)
+	}
+}
+
 func TestRunContinue_RebaseConflictResolvedAndContinue(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found")

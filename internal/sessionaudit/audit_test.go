@@ -1,0 +1,160 @@
+package sessionaudit
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestExtractCommands_CodexArgumentsAndClaudeCommand(t *testing.T) {
+	codex := []byte(`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"git status --short && git log --oneline -5\"}"}}`)
+	claude := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git add a.go; git commit -m test"}}]}}`)
+
+	got := append(ExtractCommands(codex), ExtractCommands(claude)...)
+	if len(got) != 2 {
+		t.Fatalf("commands = %d, want 2: %#v", len(got), got)
+	}
+	if got[0] != "git status --short && git log --oneline -5" {
+		t.Fatalf("codex command = %q", got[0])
+	}
+	if got[1] != "git add a.go; git commit -m test" {
+		t.Fatalf("claude command = %q", got[1])
+	}
+}
+
+func TestAudit_ClassifiesAgentGitPatterns(t *testing.T) {
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex.jsonl")
+	claude := filepath.Join(dir, "claude.jsonl")
+	writeLines(t, codex,
+		`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"git status --short && git log --oneline -5\"}"}}`,
+		`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"GK_AGENT=1 git-kit context --include=diff,log\"}"}}`,
+		`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"git diff --name-only --diff-filter=U && git diff --cc\"}"}}`,
+	)
+	writeLines(t, claude,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git add CHANGELOG.md; git commit -m release && git tag -a v1.0.0 -m v1.0.0 && git push origin main && git push origin v1.0.0"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gk pull --with-base"}}]}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{codex, claude}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Files != 2 {
+		t.Fatalf("files = %d, want 2", report.Totals.Files)
+	}
+	if report.Totals.RawGit == 0 || report.Totals.GitKit == 0 || report.Totals.GKShort == 0 {
+		t.Fatalf("unexpected totals: %+v", report.Totals)
+	}
+	for _, kind := range []string{
+		"raw-context-probes",
+		"raw-conflict-probes",
+		"raw-release-sequence",
+		"raw-commit-sequence",
+		"gk-short-alias",
+		"shell-chain",
+	} {
+		if !hasFinding(report, kind) {
+			t.Fatalf("missing finding %q in %+v", kind, report.Findings)
+		}
+	}
+}
+
+func TestAudit_MarksCoveredFindings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git merge-base main develop\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git diff -- src/app.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git diff --check docs/commands.md\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contextProbe := findingByKind(report, "raw-context-probes")
+	if contextProbe == nil || contextProbe.Status != "covered" {
+		t.Fatalf("context finding = %+v", contextProbe)
+	}
+	fullDiff := findingByKind(report, "raw-full-diff")
+	if fullDiff == nil || fullDiff.Status != "covered" || !containsString(fullDiff.CoveredBy, "git-kit diff --raw-patch --json") {
+		t.Fatalf("full diff finding = %+v", fullDiff)
+	}
+	diffCheck := findingByKind(report, "raw-diff-check")
+	if diffCheck == nil || diffCheck.Status != "covered" || !containsString(diffCheck.CoveredBy, "git-kit diff --check --json") {
+		t.Fatalf("diff check finding = %+v", diffCheck)
+	}
+	if hasFinding(report, "raw-integration") {
+		t.Fatalf("merge-base must not be classified as integration: %+v", report.Findings)
+	}
+}
+
+func TestAudit_DoesNotCountGitWordsInsideQuotedSearchPatterns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"rg -n \\\"git status|git pull|gk promote\\\" README.md\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git status --short && rg -n \\\"git commit\\\" docs\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.RawGit != 1 {
+		t.Fatalf("raw git count = %d, want 1", report.Totals.RawGit)
+	}
+	if report.Totals.GKShort != 0 {
+		t.Fatalf("gk short count = %d, want 0", report.Totals.GKShort)
+	}
+}
+
+func TestAudit_UsesDefaultSessionRoots(t *testing.T) {
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".codex", "sessions", "2026")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sessionDir, "one.jsonl")
+	writeLines(t, path, `{"payload":{"arguments":"{\"cmd\":\"git status --short\"}"}}`)
+
+	report, err := Audit(Options{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Files != 1 || report.Totals.RawGit == 0 {
+		t.Fatalf("default roots not scanned: %+v", report.Totals)
+	}
+}
+
+func writeLines(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasFinding(report Report, kind string) bool {
+	return findingByKind(report, kind) != nil
+}
+
+func findingByKind(report Report, kind string) *Finding {
+	for _, f := range report.Findings {
+		if f.Kind == kind {
+			return &f
+		}
+	}
+	return nil
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}

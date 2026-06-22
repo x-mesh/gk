@@ -119,7 +119,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		// Agent contract for the paused state — same shape as pull's:
 		// conflicted files plus the exact resume/abort commands, read from
 		// the worktree the merge actually paused in.
-		emitPullConflictJSON(cmd, ce.Dir)
+		emitPullConflictJSON(cmd, ce.Dir, false)
 		os.Exit(ce.Code)
 	}
 	return err

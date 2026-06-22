@@ -220,7 +220,7 @@ func runRebasePlan(cmd *cobra.Command, args []string) error {
 		if st, derr := gitstate.Detect(ctx, repo); derr == nil && st.Kind != gitstate.StateNone {
 			fmt.Fprintln(cmd.ErrOrStderr(), "conflict — resolve, then `gk continue` (or `gk abort`)")
 			if JSONOut() {
-				emitPullConflictJSON(cmd, "")
+				emitPullConflictJSON(cmd, "", false)
 			}
 			return &ConflictError{Code: 3}
 		}

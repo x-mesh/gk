@@ -89,14 +89,14 @@ func runPullWithRunner(cmd *cobra.Command, runner git.Runner) error {
 
 	if err := client.Fetch(ctx, remote, base, false); err != nil {
 		if stashed {
-			_, _, _ = runner.Run(ctx, "stash", "pop")
+			_, _, _ = runner.Run(ctx, "stash", "pop", "--index")
 		}
 		return errors.New("fetch failed")
 	}
 
 	if noRebase {
 		if stashed {
-			_, _, _ = runner.Run(ctx, "stash", "pop")
+			_, _, _ = runner.Run(ctx, "stash", "pop", "--index")
 		}
 		return nil
 	}
@@ -105,7 +105,7 @@ func runPullWithRunner(cmd *cobra.Command, runner git.Runner) error {
 	res, err := client.RebaseOnto(ctx, upstream)
 	if err != nil {
 		if stashed {
-			_, _, _ = runner.Run(ctx, "stash", "pop")
+			_, _, _ = runner.Run(ctx, "stash", "pop", "--index")
 		}
 		return err
 	}
@@ -114,7 +114,7 @@ func runPullWithRunner(cmd *cobra.Command, runner git.Runner) error {
 	}
 
 	if stashed {
-		_, _, err = runner.Run(ctx, "stash", "pop")
+		_, _, err = runner.Run(ctx, "stash", "pop", "--index")
 		if err != nil {
 			return errors.New("stash pop failed")
 		}
@@ -210,7 +210,7 @@ func TestRunPull_Autostash(t *testing.T) {
 			"stash push -m gk pull autostash":               {},
 			"fetch origin main":                             {},
 			"rebase origin/main":                            {Stdout: "Successfully rebased.\n"},
-			"stash pop":                                     {},
+			"stash pop --index":                             {},
 		},
 	}
 

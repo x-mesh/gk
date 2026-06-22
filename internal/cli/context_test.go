@@ -111,11 +111,29 @@ func TestParseContextIncludes(t *testing.T) {
 	if got, err := parseContextIncludes(mk("diff", "log")); err != nil || !got["diff"] || !got["log"] || got["precheck"] {
 		t.Errorf("diff,log: got %v, %v", got, err)
 	}
-	if got, err := parseContextIncludes(mk("all")); err != nil || len(got) != len(contextIncludeValues) || !got["release"] {
+	if got, err := parseContextIncludes(mk("all")); err != nil || len(got) != len(contextIncludeValues) || !got["release"] || !got["conflict"] {
 		t.Errorf("all: got %v, %v", got, err)
 	}
 	if _, err := parseContextIncludes(mk("digest")); err == nil || !strings.Contains(err.Error(), "unknown --include") {
 		t.Errorf("typo must be a usage error, got %v", err)
+	}
+}
+
+func TestParseContextConflictStatus(t *testing.T) {
+	raw := strings.Join([]string{
+		"u UU N... 100644 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc path with space.go",
+		"1 .M N... 100644 100644 100644 dddddddddddddddddddddddddddddddddddddddd dddddddddddddddddddddddddddddddddddddddd clean.go",
+	}, "\x00") + "\x00"
+
+	got := parseContextConflictStatus([]byte(raw))
+	if len(got) != 1 {
+		t.Fatalf("conflicts = %+v, want 1", got)
+	}
+	if got[0].Path != "path with space.go" || got[0].XY != "UU" {
+		t.Fatalf("file = %+v", got[0])
+	}
+	if len(got[0].Stages) != 3 || got[0].Stages[0].Role != "base" || !got[0].Stages[2].Present {
+		t.Fatalf("stages = %+v", got[0].Stages)
 	}
 }
 
@@ -139,7 +157,7 @@ func TestIntegration_ContextIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectContext: %v", err)
 	}
-	includes := map[string]bool{"diff": true, "log": true, "precheck": true}
+	includes := map[string]bool{"diff": true, "log": true, "precheck": true, "conflict": true}
 	collectContextIncludes(context.Background(), runner, &cfg, includes, &out)
 
 	if out.Diff == nil || out.Diff.Stat.Files != 2 {
@@ -158,6 +176,9 @@ func TestIntegration_ContextIncludes(t *testing.T) {
 	if out.Log[0].SHA == "" || out.Log[0].Date == "" {
 		t.Errorf("log entry incomplete: %+v", out.Log[0])
 	}
+	if out.Conflict == nil || out.Conflict.Count != 0 || len(out.Conflict.Files) != 0 {
+		t.Errorf("conflict section = %+v, want empty section", out.Conflict)
+	}
 	// No remote/upstream in this repo: precheck must degrade to a note,
 	// never fail the call.
 	if out.Precheck != nil {
@@ -171,6 +192,95 @@ func TestIntegration_ContextIncludes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("notes = %v, want a precheck-skipped note", out.Notes)
+	}
+}
+
+func TestIntegration_ContextConflictIncludeMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("f.txt", "base\n")
+	repo.Commit("feat: base")
+	repo.CreateBranch("side")
+	repo.WriteFile("f.txt", "side\n")
+	repo.Commit("feat: side")
+	repo.Checkout("main")
+	repo.WriteFile("f.txt", "main\n")
+	repo.Commit("feat: main")
+	if _, err := repo.TryGit("merge", "side"); err == nil {
+		t.Fatal("merge should conflict")
+	}
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"conflict": true}, &out)
+
+	if out.Conflict == nil {
+		t.Fatalf("conflict section missing, notes=%v", out.Notes)
+	}
+	if out.Conflict.Operation != "merge" || out.Conflict.Count != 1 {
+		t.Fatalf("conflict summary = %+v", out.Conflict)
+	}
+	file := out.Conflict.Files[0]
+	if file.Path != "f.txt" || file.XY != "UU" || file.Kind != "both modified" {
+		t.Fatalf("conflict file = %+v", file)
+	}
+	if file.Hunks != 1 || !file.Markers || !file.WorktreeExists {
+		t.Fatalf("conflict anatomy = %+v", file)
+	}
+	if len(file.Stages) != 3 || file.Stages[0].Role != "base" || file.Stages[1].Role != "ours" || file.Stages[2].Role != "theirs" {
+		t.Fatalf("stages = %+v", file.Stages)
+	}
+}
+
+func TestIntegration_ContextConflictIncludeStashApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("f.txt", "base\n")
+	repo.Commit("feat: base")
+	repo.WriteFile("f.txt", "stashed\n")
+	repo.RunGit("stash", "push", "-m", "wip")
+	repo.WriteFile("f.txt", "current\n")
+	repo.Commit("feat: current")
+	if _, err := repo.TryGit("stash", "pop"); err == nil {
+		t.Fatal("stash pop should conflict")
+	}
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"conflict": true}, &out)
+
+	if out.Conflict == nil {
+		t.Fatalf("conflict section missing, notes=%v", out.Notes)
+	}
+	if out.Conflict.Operation != "stash-apply-conflict" {
+		t.Fatalf("operation = %q, want stash-apply-conflict", out.Conflict.Operation)
+	}
+	gotActions := strings.Join(out.NextActions, ",")
+	if strings.Contains(gotActions, "continue") {
+		t.Fatalf("stash conflict should not suggest continue: %v", out.NextActions)
+	}
+	if !strings.Contains(gotActions, "resolve --ai") {
+		t.Fatalf("next_actions = %v, want resolve", out.NextActions)
 	}
 }
 

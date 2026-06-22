@@ -60,6 +60,29 @@ func TestDecorateRawGitError_CommitGraph(t *testing.T) {
 	}
 }
 
+func TestDecorateRawGitError_IndexLockPermission(t *testing.T) {
+	raw := &git.ExitError{Code: 128, Args: []string{"add", "file.txt"}, Stderr: "fatal: Unable to create '/repo/.git/index.lock': Operation not permitted"}
+
+	dec := decorateRawGitError(raw)
+
+	if stateFrom(dec) != envStateBlocked {
+		t.Fatalf("state = %q, want blocked", stateFrom(dec))
+	}
+	if codeFrom(dec) != "permission-denied-index-lock" {
+		t.Fatalf("code = %q, want permission-denied-index-lock", codeFrom(dec))
+	}
+	if h := HintFrom(dec); !strings.Contains(h, "filesystem write access") {
+		t.Fatalf("hint = %q", h)
+	}
+	if r := RemediesFrom(dec); len(r) != 0 {
+		t.Fatalf("index lock permission should not fabricate command remedies: %+v", r)
+	}
+	var ee *git.ExitError
+	if !errors.As(dec, &ee) {
+		t.Error("decorated error must still unwrap to *git.ExitError")
+	}
+}
+
 func TestDecorateRawGitError_NoOp(t *testing.T) {
 	// Already-hinted errors are left untouched (don't clobber a richer hint).
 	pre := WithHint(errors.New("invalid commit position"), "custom hint")
@@ -108,6 +131,43 @@ func TestFormatErrorJSON_CommitGraphRemedy(t *testing.T) {
 	}
 	if len(env.Error.Remedies) != 1 || !strings.Contains(env.Error.Remedies[0].Command, "doctor --fix") {
 		t.Errorf("remedies = %+v, want a doctor --fix entry", env.Error.Remedies)
+	}
+}
+
+func TestFormatErrorJSON_IndexLockPermissionBlocked(t *testing.T) {
+	prevA := flagAgent
+	flagAgent = true
+	t.Cleanup(func() { flagAgent = prevA })
+
+	raw := &git.ExitError{Code: 128, Args: []string{"stash", "push"}, Stderr: "fatal: Unable to create '/repo/.git/index.lock': Operation not permitted"}
+	out := FormatErrorJSON(raw)
+
+	var env struct {
+		State string `json:"state"`
+		OK    bool   `json:"ok"`
+		Error struct {
+			Code     string `json:"code"`
+			Hint     string `json:"hint"`
+			Remedies []struct {
+				Command string `json:"command"`
+				Safety  string `json:"safety"`
+			} `json:"remedies"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("invalid JSON envelope: %v\n%s", err, out)
+	}
+	if env.State != envStateBlocked || env.OK {
+		t.Fatalf("state=%q ok=%v, want blocked false", env.State, env.OK)
+	}
+	if env.Error.Code != "permission-denied-index-lock" {
+		t.Fatalf("code = %q", env.Error.Code)
+	}
+	if !strings.Contains(env.Error.Hint, "filesystem write access") {
+		t.Fatalf("hint = %q", env.Error.Hint)
+	}
+	if len(env.Error.Remedies) != 0 {
+		t.Fatalf("remedies = %+v, want none", env.Error.Remedies)
 	}
 }
 

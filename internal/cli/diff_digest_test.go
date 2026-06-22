@@ -42,6 +42,7 @@ func TestIntegration_DiffDigest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")
 	}
+	resetDiffFlags(t)
 	repo := testutil.NewRepo(t)
 	// Greet 본문이 파일 중간에 오도록 충분히 길게 — git의 funcname
 	// 휴리스틱은 hunk 시작 이전의 컨텍스트 줄에서 찾으므로, 파일 전체를
@@ -115,10 +116,226 @@ func TestIntegration_DiffDigest(t *testing.T) {
 	}
 }
 
+func TestIntegration_DiffRawPatchJSONScopesPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	resetDiffFlags(t)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "one\n")
+	repo.WriteFile("b.txt", "one\n")
+	repo.Commit("seed files")
+	repo.WriteFile("a.txt", "two\n")
+	repo.WriteFile("b.txt", "two\n")
+
+	prevRepo, prevJSON := flagRepo, flagJSON
+	flagRepo, flagJSON = repo.Dir, true
+	t.Cleanup(func() { flagRepo, flagJSON = prevRepo, prevJSON })
+	diffFlagRawPatch = true
+
+	cmd := diffTestCmd(t)
+	cmd.SetArgs([]string{"--", "a.txt"})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("diff --raw-patch --json -- a.txt: %v", err)
+	}
+
+	var res diffPatchJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if res.Schema != 1 || res.Parsed == nil {
+		t.Fatalf("payload: %+v", res)
+	}
+	if !strings.Contains(res.Patch, "diff --git a/a.txt b/a.txt") {
+		t.Fatalf("raw patch missing selected file:\n%s", res.Patch)
+	}
+	if strings.Contains(res.Patch, "b.txt") {
+		t.Fatalf("raw patch leaked unselected file:\n%s", res.Patch)
+	}
+	if res.Parsed.Stat.TotalFiles != 1 || len(res.Parsed.Files) != 1 || res.Parsed.Files[0].Path != "a.txt" {
+		t.Fatalf("parsed diff = %+v", res.Parsed)
+	}
+}
+
+func TestIntegration_DiffJSONAgentEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	resetDiffFlags(t)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "one\n")
+	repo.Commit("seed file")
+	repo.WriteFile("a.txt", "two\n")
+
+	prevRepo := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prevRepo })
+	withAgentMode(t, true)
+
+	cmd := diffTestCmd(t)
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agent diff --json: %v", err)
+	}
+
+	var env struct {
+		Schema int           `json:"schema"`
+		State  string        `json:"state"`
+		OK     bool          `json:"ok"`
+		Result diff.DiffJSON `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not valid envelope JSON: %v\n%s", err, stdout.String())
+	}
+	if env.Schema != 1 || env.State != "ok" || !env.OK {
+		t.Fatalf("envelope: %+v", env)
+	}
+	if env.Result.Stat.TotalFiles != 1 || len(env.Result.Files) != 1 || env.Result.Files[0].Path != "a.txt" {
+		t.Fatalf("result: %+v", env.Result)
+	}
+}
+
+func TestIntegration_DiffCheckJSONAgentEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	resetDiffFlags(t)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "ok\n")
+	repo.Commit("seed file")
+	repo.WriteFile("a.txt", "bad   \n")
+
+	prevRepo := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prevRepo })
+	withAgentMode(t, true)
+	diffFlagCheck = true
+
+	exitCode := -1
+	prevExit := diffExitFunc
+	diffExitFunc = func(code int) { exitCode = code }
+	t.Cleanup(func() { diffExitFunc = prevExit })
+
+	cmd := diffTestCmd(t)
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agent diff --check --json: %v", err)
+	}
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", exitCode)
+	}
+
+	var env struct {
+		Schema int           `json:"schema"`
+		State  string        `json:"state"`
+		OK     bool          `json:"ok"`
+		Result diffCheckJSON `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not valid envelope JSON: %v\n%s", err, stdout.String())
+	}
+	if env.Schema != 1 || env.State != "blocked" || env.OK {
+		t.Fatalf("envelope: %+v", env)
+	}
+	if env.Result.Clean || env.Result.Count != 1 || len(env.Result.Problems) != 1 {
+		t.Fatalf("result: %+v", env.Result)
+	}
+	p := env.Result.Problems[0]
+	if p.Path != "a.txt" || p.Line != 1 || p.Kind != "trailing-whitespace" || !strings.Contains(p.Content, "bad") {
+		t.Fatalf("problem: %+v", p)
+	}
+}
+
+func TestIntegration_DiffCheckJSONClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	resetDiffFlags(t)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "ok\n")
+	repo.Commit("seed file")
+	repo.WriteFile("a.txt", "better\n")
+
+	prevRepo, prevJSON := flagRepo, flagJSON
+	flagRepo, flagJSON = repo.Dir, true
+	t.Cleanup(func() { flagRepo, flagJSON = prevRepo, prevJSON })
+	diffFlagCheck = true
+
+	exitCode := -1
+	prevExit := diffExitFunc
+	diffExitFunc = func(code int) { exitCode = code }
+	t.Cleanup(func() { diffExitFunc = prevExit })
+
+	cmd := diffTestCmd(t)
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("diff --check --json clean: %v", err)
+	}
+	if exitCode != -1 {
+		t.Fatalf("exit called with %d on clean diff", exitCode)
+	}
+
+	var res diffCheckJSON
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !res.Clean || res.Result != "clean" || res.Count != 0 || len(res.Problems) != 0 {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
 // diffTestCmd wires a cobra command around runDiff with the flags it reads.
 func diffTestCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "diff", RunE: runDiff, SilenceUsage: true, SilenceErrors: true}
 	cmd.SetContext(context.Background())
 	return cmd
+}
+
+func resetDiffFlags(t *testing.T) {
+	t.Helper()
+	prevStaged := diffFlagStaged
+	prevStat := diffFlagStat
+	prevDigest := diffFlagDigest
+	prevInteract := diffFlagInteract
+	prevNoPager := diffFlagNoPager
+	prevNoWordDiff := diffFlagNoWordDiff
+	prevContext := diffFlagContext
+	prevNoRefLabels := diffFlagNoRefLabels
+	prevConflicts := diffFlagConflicts
+	prevRawPatch := diffFlagRawPatch
+	prevCheck := diffFlagCheck
+	diffFlagStaged = false
+	diffFlagStat = false
+	diffFlagDigest = false
+	diffFlagInteract = false
+	diffFlagNoPager = false
+	diffFlagNoWordDiff = false
+	diffFlagContext = 3
+	diffFlagNoRefLabels = false
+	diffFlagConflicts = false
+	diffFlagRawPatch = false
+	diffFlagCheck = false
+	t.Cleanup(func() {
+		diffFlagStaged = prevStaged
+		diffFlagStat = prevStat
+		diffFlagDigest = prevDigest
+		diffFlagInteract = prevInteract
+		diffFlagNoPager = prevNoPager
+		diffFlagNoWordDiff = prevNoWordDiff
+		diffFlagContext = prevContext
+		diffFlagNoRefLabels = prevNoRefLabels
+		diffFlagConflicts = prevConflicts
+		diffFlagRawPatch = prevRawPatch
+		diffFlagCheck = prevCheck
+	})
 }

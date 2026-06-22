@@ -137,6 +137,29 @@ func TestMergeConfig_PreservesExistingValues(t *testing.T) {
 	}
 }
 
+func TestMergeConfig_PreservesExistingCommentsAndOrder(t *testing.T) {
+	existing := []byte("# repo settings\nbase_branch: develop\n\n# keep this branch note\nbranch:\n  protected:\n    - develop\n")
+	generated := []byte("base_branch: main\nbranch:\n  protected:\n    - main\n  patterns:\n    - ^feat/[a-z0-9._-]+\ncommit:\n  types: [feat, fix]\n")
+
+	merged, added, err := MergeConfig(existing, generated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(merged)
+	if !strings.Contains(got, "# repo settings") || !strings.Contains(got, "# keep this branch note") {
+		t.Fatalf("existing comments should be preserved:\n%s", got)
+	}
+	if strings.Index(got, "base_branch: develop") > strings.Index(got, "branch:") {
+		t.Fatalf("existing key order should be preserved:\n%s", got)
+	}
+	if !strings.Contains(got, "patterns:") || !strings.Contains(got, "commit:") {
+		t.Fatalf("missing generated fields:\n%s", got)
+	}
+	if len(added) == 0 {
+		t.Fatal("expected added field paths")
+	}
+}
+
 func TestMergeConfig_EmptyExisting(t *testing.T) {
 	existing := []byte("{}\n")
 	generated := []byte("base_branch: main\nbranch:\n  protected:\n    - main\n")

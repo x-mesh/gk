@@ -20,3 +20,40 @@ coverage.out
 .kiro/
 .cache/
 .xm/
+
+# Security
+.env.*
+*.pem
+id_rsa*
+credentials.json
+*.pfx
+*.kdbx
+*.keystore
+service-account*.json
+
+# IDE/Editor
+.cursor/
+.claude/
+*.swp
+Thumbs.db
+
+# Compiled artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.class
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.cover
+*.coverage
+coverage/
+.tox/

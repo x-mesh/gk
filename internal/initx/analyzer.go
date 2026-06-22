@@ -3,7 +3,6 @@ package initx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,9 +109,6 @@ func AnalyzeProject(dir string, gitRunner GitRunner) (*AnalysisResult, error) {
 
 	// 1. 언어 감지
 	result.Languages = detectLanguages(dir)
-	if len(result.Languages) == 0 {
-		fmt.Fprintln(os.Stderr, "gk init: no language marker files found")
-	}
 
 	// 2. 빌드 시스템 감지
 	result.BuildSystems = detectBuildSystems(dir)
@@ -143,17 +139,14 @@ func detectLanguages(dir string) []Language {
 	var langs []Language
 	seen := make(map[string]bool)
 
-	for _, marker := range MarkerFiles {
-		path := filepath.Join(dir, marker)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
+	for _, markerPath := range detectProjectMarkerPaths(dir, MarkerFiles) {
+		marker := filepath.Base(markerPath)
 		lang := markerToLang[marker]
 		if seen[lang] {
 			continue
 		}
 		seen[lang] = true
-		langs = append(langs, Language{Name: lang, MarkerFile: marker})
+		langs = append(langs, Language{Name: lang, MarkerFile: filepath.ToSlash(markerPath)})
 	}
 	return langs
 }
@@ -164,11 +157,8 @@ func detectBuildSystems(dir string) []BuildSystem {
 	var systems []BuildSystem
 	seen := make(map[string]bool)
 
-	for _, file := range BuildSystemFileList {
-		path := filepath.Join(dir, file)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
+	for _, rel := range detectProjectMarkerPaths(dir, BuildSystemFileList) {
+		file := filepath.Base(rel)
 		name := buildSystemFiles[file]
 		if seen[name] {
 			continue
@@ -177,6 +167,66 @@ func detectBuildSystems(dir string) []BuildSystem {
 		systems = append(systems, BuildSystem{Name: name})
 	}
 	return systems
+}
+
+const initNestedScanMaxDepth = 3
+
+var initScanSkipDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, "target": true,
+	"build": true, "dist": true, ".next": true, ".venv": true, "venv": true,
+	"env": true, "__pycache__": true, ".cache": true, ".gradle": true,
+}
+
+func detectProjectMarkerPaths(root string, markers []string) []string {
+	wanted := map[string]bool{}
+	for _, marker := range markers {
+		wanted[marker] = true
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, marker := range markers {
+		if fileExists(filepath.Join(root, marker)) {
+			out = append(out, marker)
+			seen[marker] = true
+		}
+	}
+
+	var nested []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		depth := strings.Count(rel, "/") + 1
+		if d.IsDir() {
+			if initScanSkipDirs[d.Name()] || strings.HasPrefix(d.Name(), ".") || depth > initNestedScanMaxDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if depth == 1 || depth > initNestedScanMaxDepth+1 {
+			return nil
+		}
+		if wanted[d.Name()] && !seen[rel] {
+			nested = append(nested, rel)
+			seen[rel] = true
+		}
+		return nil
+	})
+	sort.Strings(nested)
+	out = append(out, nested...)
+	return out
 }
 
 // detectPreflightSteps는 프로젝트에서 preflight step을 감지한다.
@@ -191,9 +241,11 @@ func detectPreflightSteps(dir string) []PreflightStep {
 
 	// package.json scripts 파싱
 	steps = append(steps, detectNodeScripts(dir)...)
+	steps = append(steps, detectNestedNodeScripts(dir)...)
 
 	// Makefile 타겟 파싱
 	steps = append(steps, detectMakeTargets(dir)...)
+	steps = append(steps, detectNestedMakeTargets(dir)...)
 
 	// .golangci.yml / .golangci.yaml 존재 확인
 	if fileExists(filepath.Join(dir, ".golangci.yml")) || fileExists(filepath.Join(dir, ".golangci.yaml")) {
@@ -210,6 +262,10 @@ func detectPreflightSteps(dir string) []PreflightStep {
 
 // detectNodeScripts는 package.json에서 lint/test 스크립트를 감지한다.
 func detectNodeScripts(dir string) []PreflightStep {
+	return detectNodeScriptsIn(dir, "", "")
+}
+
+func detectNodeScriptsIn(dir, nameSuffix, commandPrefix string) []PreflightStep {
 	path := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -225,10 +281,24 @@ func detectNodeScripts(dir string) []PreflightStep {
 
 	var steps []PreflightStep
 	if _, ok := pkg.Scripts["lint"]; ok {
-		steps = append(steps, PreflightStep{Name: "lint", Command: "npm run lint"})
+		steps = append(steps, PreflightStep{Name: "lint" + nameSuffix, Command: commandPrefix + "npm run lint"})
 	}
 	if _, ok := pkg.Scripts["test"]; ok {
-		steps = append(steps, PreflightStep{Name: "test", Command: "npm run test"})
+		steps = append(steps, PreflightStep{Name: "test" + nameSuffix, Command: commandPrefix + "npm run test"})
+	}
+	return steps
+}
+
+func detectNestedNodeScripts(root string) []PreflightStep {
+	var steps []PreflightStep
+	for _, rel := range detectProjectMarkerPaths(root, []string{"package.json"}) {
+		if rel == "package.json" {
+			continue
+		}
+		dir := filepath.Join(root, filepath.Dir(rel))
+		suffix := ":" + filepath.ToSlash(filepath.Dir(rel))
+		prefix := "cd " + shellQuoteRel(filepath.ToSlash(filepath.Dir(rel))) + " && "
+		steps = append(steps, detectNodeScriptsIn(dir, suffix, prefix)...)
 	}
 	return steps
 }
@@ -236,6 +306,10 @@ func detectNodeScripts(dir string) []PreflightStep {
 // detectMakeTargets는 Makefile에서 lint/test 타겟을 감지한다.
 // 줄 시작이 "lint:" 또는 "test:"인지 확인한다.
 func detectMakeTargets(dir string) []PreflightStep {
+	return detectMakeTargetsIn(dir, "", "")
+}
+
+func detectMakeTargetsIn(dir, nameSuffix, commandPrefix string) []PreflightStep {
 	path := filepath.Join(dir, "Makefile")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -246,13 +320,34 @@ func detectMakeTargets(dir string) []PreflightStep {
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "lint:") {
-			steps = append(steps, PreflightStep{Name: "lint", Command: "make lint"})
+			steps = append(steps, PreflightStep{Name: "lint" + nameSuffix, Command: commandPrefix + "make lint"})
 		}
 		if strings.HasPrefix(trimmed, "test:") {
-			steps = append(steps, PreflightStep{Name: "test", Command: "make test"})
+			steps = append(steps, PreflightStep{Name: "test" + nameSuffix, Command: commandPrefix + "make test"})
 		}
 	}
 	return steps
+}
+
+func detectNestedMakeTargets(root string) []PreflightStep {
+	var steps []PreflightStep
+	for _, rel := range detectProjectMarkerPaths(root, []string{"Makefile"}) {
+		if rel == "Makefile" {
+			continue
+		}
+		dir := filepath.Join(root, filepath.Dir(rel))
+		suffix := ":" + filepath.ToSlash(filepath.Dir(rel))
+		prefix := "cd " + shellQuoteRel(filepath.ToSlash(filepath.Dir(rel))) + " && "
+		steps = append(steps, detectMakeTargetsIn(dir, suffix, prefix)...)
+	}
+	return steps
+}
+
+func shellQuoteRel(rel string) string {
+	if rel == "." || rel == "" {
+		return "."
+	}
+	return "'" + strings.ReplaceAll(rel, "'", "'\\''") + "'"
 }
 
 // detectAIProviders는 사용 가능한 AI provider를 감지한다.
@@ -285,6 +380,10 @@ var DefaultCommitTypes = []string{"feat", "fix", "chore", "docs", "style", "refa
 
 // DefaultBranchPattern은 branch 패턴을 추출할 수 없을 때 사용하는 기본 패턴이다.
 var DefaultBranchPattern = "^(feat|fix|chore|docs|refactor|test|perf|build|ci|revert)/[a-z0-9._-]+"
+
+var defaultBranchPrefixes = []string{
+	"feat", "fix", "chore", "docs", "refactor", "test", "perf", "build", "ci", "revert",
+}
 
 // analyzeCommits는 git log를 통해 커밋 히스토리를 분석한다.
 // git 실패 시 경고를 stderr에 출력하고 기본값을 반환한다 (graceful degradation).
@@ -417,10 +516,14 @@ func detectLangFromLocale() string {
 // analyzeBranches는 git branch -a를 통해 branch 패턴, base branch, protected branch를 분석한다.
 func analyzeBranches(ctx context.Context, gitRunner GitRunner) (baseBranch string, protected []string, patterns []string) {
 	baseBranch = "main" // 기본값
+	remoteHeadFound := false
+	if remoteHead := detectRemoteHeadBaseBranch(ctx, gitRunner, "origin"); remoteHead != "" {
+		baseBranch = remoteHead
+		remoteHeadFound = true
+	}
 
 	stdout, _, err := gitRunner.Run(ctx, "branch", "-a")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gk init: git branch failed: %v, using defaults\n", err)
 		return baseBranch, nil, []string{DefaultBranchPattern}
 	}
 
@@ -429,8 +532,9 @@ func analyzeBranches(ctx context.Context, gitRunner GitRunner) (baseBranch strin
 		return baseBranch, nil, []string{DefaultBranchPattern}
 	}
 
-	// Base branch 감지: origin/HEAD → develop → main → master
-	baseBranch = detectBaseBranch(branches)
+	if !remoteHeadFound {
+		baseBranch = detectBaseBranch(branches)
+	}
 
 	// Protected branch 감지
 	protected = detectProtectedBranches(branches)
@@ -439,6 +543,25 @@ func analyzeBranches(ctx context.Context, gitRunner GitRunner) (baseBranch strin
 	patterns = ExtractBranchPatterns(branches)
 
 	return baseBranch, protected, patterns
+}
+
+func detectRemoteHeadBaseBranch(ctx context.Context, gitRunner GitRunner, remote string) string {
+	if remote == "" {
+		remote = "origin"
+	}
+	stdout, _, err := gitRunner.Run(ctx, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
+	if err != nil {
+		return ""
+	}
+	ref := strings.TrimSpace(string(stdout))
+	prefix := remote + "/"
+	if strings.HasPrefix(ref, prefix) {
+		ref = strings.TrimPrefix(ref, prefix)
+	}
+	if ref == "" || strings.Contains(ref, " ") {
+		return ""
+	}
+	return ref
 }
 
 // parseBranchOutput은 `git branch -a` 출력을 파싱하여 branch 이름 목록을 반환한다.
@@ -529,26 +652,24 @@ func ExtractBranchPatterns(branches []string) []string {
 		return []string{DefaultBranchPattern}
 	}
 
-	// prefix를 빈도 내림차순으로 정렬
-	type kv struct {
-		Prefix string
-		Count  int
+	// Keep the conventional defaults as a floor. Branch history is often sparse
+	// when gk init first runs, so deriving policy from only observed prefixes can
+	// accidentally reject normal future branches such as feat/*.
+	seen := make(map[string]bool, len(defaultBranchPrefixes)+len(prefixCounts))
+	var prefixes []string
+	for _, prefix := range defaultBranchPrefixes {
+		prefixes = append(prefixes, regexp.QuoteMeta(prefix))
+		seen[prefix] = true
 	}
-	var pairs []kv
-	for k, v := range prefixCounts {
-		pairs = append(pairs, kv{k, v})
-	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].Count != pairs[j].Count {
-			return pairs[i].Count > pairs[j].Count
+	var extras []string
+	for prefix := range prefixCounts {
+		if !seen[prefix] {
+			extras = append(extras, prefix)
 		}
-		return pairs[i].Prefix < pairs[j].Prefix
-	})
-
-	// 추출된 prefix로 정규식 생성
-	prefixes := make([]string, len(pairs))
-	for i, p := range pairs {
-		prefixes[i] = regexp.QuoteMeta(p.Prefix)
+	}
+	sort.Strings(extras)
+	for _, prefix := range extras {
+		prefixes = append(prefixes, regexp.QuoteMeta(prefix))
 	}
 
 	pattern := "^(" + strings.Join(prefixes, "|") + ")/[a-z0-9._-]+"

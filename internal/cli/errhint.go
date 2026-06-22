@@ -467,6 +467,31 @@ func commitGraphCorruptText(s string) bool {
 		strings.Contains(s, "invalid commit position")
 }
 
+// isIndexLockPermissionError reports git failures where creating .git/index.lock
+// is blocked by filesystem permissions rather than a stale lock. This is common
+// in agent sandboxes: retrying variants will not help until the command runs
+// with write access to .git.
+func isIndexLockPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if indexLockPermissionText(err.Error()) {
+		return true
+	}
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) && indexLockPermissionText(exitErr.Stderr) {
+		return true
+	}
+	return false
+}
+
+func indexLockPermissionText(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "index.lock") &&
+		(strings.Contains(s, "operation not permitted") ||
+			strings.Contains(s, "permission denied"))
+}
+
 // decorateRawGitError layers gk guidance onto known raw-git failures that
 // arrive with no hint of their own. It preserves the underlying error
 // (Unwrap still reaches it) and only attaches a hint + machine-executable
@@ -481,6 +506,12 @@ func decorateRawGitError(err error) error {
 		return WithRemedy(err,
 			"git's commit-graph cache is corrupt — repair it with `gk doctor --fix`",
 			errRemedy{Command: "gk doctor --fix", Safety: "safe"},
+		)
+	}
+	if isIndexLockPermissionError(err) {
+		return WithBlocked(err,
+			"permission-denied-index-lock",
+			"git cannot create .git/index.lock; rerun with filesystem write access to the repository .git directory",
 		)
 	}
 	return err

@@ -19,6 +19,8 @@ func TestErrorCodeFromError(t *testing.T) {
 		{"not a repo", &git.ExitError{Code: 128, Stderr: "fatal: not a git repository (or any of the parent directories)"}, "not-a-repo"},
 		{"commit-graph corrupt via stderr", &git.ExitError{Code: 128, Stderr: "fatal: invalid commit position. commit-graph is likely corrupt"}, "commit-graph-corrupt"},
 		{"commit-graph corrupt wrapped", fmt.Errorf("rebase: %w", &git.ExitError{Code: 128, Stderr: "fatal: commit-graph is likely corrupt"}), "commit-graph-corrupt"},
+		{"index lock operation not permitted", &git.ExitError{Code: 128, Stderr: "fatal: Unable to create '/repo/.git/index.lock': Operation not permitted"}, "permission-denied-index-lock"},
+		{"index lock permission denied wrapped", fmt.Errorf("add: %w", &git.ExitError{Code: 128, Stderr: "fatal: Unable to create '/repo/.git/index.lock': Permission denied"}), "permission-denied-index-lock"},
 		{"conflict error type", &ConflictError{Code: 3}, "conflict"},
 		{"wrapped conflict error", fmt.Errorf("pull: %w", &ConflictError{Code: 3}), "conflict"},
 		{"branch not found", errors.New("switch: invalid reference: feature/x"), "branch-not-found"},

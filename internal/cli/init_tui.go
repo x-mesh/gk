@@ -13,7 +13,7 @@ import (
 
 // RunInitTUI prints the analysis summary and asks the user to confirm.
 // On cancel/non-TTY-without-confirm, every plan entry is set to Skip.
-func RunInitTUI(result *initx.AnalysisResult, plan *initx.InitPlan) (*initx.InitPlan, error) {
+func RunInitTUI(result *initx.AnalysisResult, plan *initx.InitPlan) (*initx.InitPlan, bool, error) {
 	summary := buildSummary(result, plan)
 
 	// Note-style header lives outside the bubbletea program so the user
@@ -24,14 +24,14 @@ func RunInitTUI(result *initx.AnalysisResult, plan *initx.InitPlan) (*initx.Init
 	confirm, err := ui.ConfirmTUI(context.Background(), "proceed with initialization?", "", false)
 	if err != nil {
 		if errors.Is(err, ui.ErrPickerAborted) {
-			return skipAll(plan), nil
+			return skipAll(plan), false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 	if !confirm {
-		return skipAll(plan), nil
+		return skipAll(plan), false, nil
 	}
-	return plan, nil
+	return plan, true, nil
 }
 
 // buildSummary는 분석 결과와 plan을 기반으로 TUI에 표시할 요약 문자열을 생성한다.

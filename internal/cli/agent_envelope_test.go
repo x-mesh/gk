@@ -197,7 +197,7 @@ func TestEmitPullConflictJSON_DirAware(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
-	emitPullConflictJSON(cmd, conflicted.Dir)
+	emitPullConflictJSON(cmd, conflicted.Dir, false)
 
 	var res pullResultJSON
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil {

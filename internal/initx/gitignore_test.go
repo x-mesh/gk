@@ -169,6 +169,29 @@ func TestMergeGitignore_PreservesOrder(t *testing.T) {
 	}
 }
 
+func TestCleanAISuggestedPatternsFiltersUnsafeEntries(t *testing.T) {
+	got := CleanAISuggestedPatterns([]string{
+		"coverage-local/",
+		"coverage-local/",
+		"!secrets.env",
+		"*",
+		"/tmp/",
+		"../outside",
+		"has space/",
+		"# comment",
+		"- .turbo/",
+	})
+	want := []string{"coverage-local/", ".turbo/"}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d]=%q want %q (all=%#v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // --- Property Tests ---
 
 // Feature: gk-init, Property 3: Gitignore 생성 완전성

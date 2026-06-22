@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/x-mesh/gk/internal/initx"
 )
 
 func TestDetectProjectType(t *testing.T) {
@@ -303,6 +306,76 @@ func TestInitCmd_AutoGitInit(t *testing.T) {
 	}
 }
 
+func TestInitCmd_DryRunDoesNotAutoGitInit(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd, _, _ := rootCmd.Find([]string{"init"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	_ = cmd.Flags().Set("only", "gitignore")
+	_ = cmd.Flags().Set("force", "false")
+	_ = cmd.Root().PersistentFlags().Set("dry-run", "true")
+	_ = cmd.Root().PersistentFlags().Set("repo", dir)
+	defer func() {
+		_ = cmd.Flags().Set("only", "")
+		_ = cmd.Flags().Set("force", "false")
+		_ = cmd.Root().PersistentFlags().Set("dry-run", "false")
+		_ = cmd.Root().PersistentFlags().Set("repo", "")
+	}()
+
+	if err := runInit(cmd, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not create .git, stat err=%v", err)
+	}
+	if !strings.Contains(buf.String(), "would initialize git repository") {
+		t.Fatalf("dry-run should report planned git init, got:\n%s", buf.String())
+	}
+}
+
+func TestInitCmd_AgentEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	cmd, _, _ := rootCmd.Find([]string{"init"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&bytes.Buffer{})
+	withAgentMode(t, true)
+
+	_ = cmd.Flags().Set("only", "gitignore")
+	_ = cmd.Root().PersistentFlags().Set("dry-run", "true")
+	_ = cmd.Root().PersistentFlags().Set("repo", dir)
+	defer func() {
+		_ = cmd.Flags().Set("only", "")
+		_ = cmd.Root().PersistentFlags().Set("dry-run", "false")
+		_ = cmd.Root().PersistentFlags().Set("repo", "")
+	}()
+
+	if err := runInit(cmd, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	var env struct {
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			Result  string             `json:"result"`
+			GitInit string             `json:"git_init"`
+			Files   []initx.FileResult `json:"files"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("agent output should be JSON envelope: %v\n%s", err, buf.String())
+	}
+	if env.State != "ok" || !env.OK || env.Result.Result != "dry-run" || env.Result.GitInit != "planned" {
+		t.Fatalf("unexpected envelope: %+v", env)
+	}
+	if len(env.Result.Files) == 0 || env.Result.Files[0].Status != "dry-run" {
+		t.Fatalf("expected dry-run file result, got %+v", env.Result.Files)
+	}
+}
+
 func TestInitCmd_DeprecatedAIAlias(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0o755)
@@ -323,6 +396,7 @@ func TestInitCmd_DeprecatedAIAlias(t *testing.T) {
 	_ = parent.Root().PersistentFlags().Set("repo", dir)
 	defer func() {
 		_ = parent.Flags().Set("only", "")
+		_ = parent.Flags().Set("kiro", "false")
 		_ = parent.Root().PersistentFlags().Set("dry-run", "false")
 		_ = parent.Root().PersistentFlags().Set("repo", "")
 	}()
@@ -335,7 +409,7 @@ func TestInitCmd_DeprecatedAIAlias(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "deprecated") {
 		t.Errorf("stderr should contain deprecated warning, got: %q", errBuf.String())
 	}
-	if !strings.Contains(errBuf.String(), `gk init --only ai`) {
+	if !strings.Contains(errBuf.String(), `gk init --kiro`) {
 		t.Errorf("stderr should mention replacement command, got: %q", errBuf.String())
 	}
 }

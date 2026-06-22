@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -29,7 +30,11 @@ var (
 	diffFlagContext     int
 	diffFlagNoRefLabels bool
 	diffFlagConflicts   bool
+	diffFlagRawPatch    bool
+	diffFlagCheck       bool
 )
+
+var diffExitFunc = os.Exit
 
 func init() {
 	diffCmd := &cobra.Command{
@@ -47,8 +52,41 @@ func init() {
 	diffCmd.Flags().IntVarP(&diffFlagContext, "context", "U", 3, "컨텍스트 라인 수")
 	diffCmd.Flags().BoolVar(&diffFlagNoRefLabels, "no-ref-labels", false, "파일 헤더 아래 ◀/▶ ref 라벨 비활성화")
 	diffCmd.Flags().BoolVar(&diffFlagConflicts, "conflicts", false, "merge conflict 마커를 포함한 hunk만 표시 (working tree 비교에서만 유효)")
+	diffCmd.Flags().BoolVar(&diffFlagRawPatch, "raw-patch", false, "원본 unified patch를 출력 (--json이면 {schema, patch, parsed})")
+	diffCmd.Flags().BoolVar(&diffFlagCheck, "check", false, "whitespace/conflict-marker 문제 검사 (--json이면 {schema, clean, problems})")
 	// --json, --no-color는 rootCmd의 persistent 플래그 사용
 	rootCmd.AddCommand(diffCmd)
+}
+
+type diffPatchJSON struct {
+	Schema     int            `json:"schema"`
+	Patch      string         `json:"patch"`
+	Parsed     *diff.DiffJSON `json:"parsed,omitempty"`
+	ParseError string         `json:"parse_error,omitempty"`
+}
+
+type diffCheckJSON struct {
+	Schema   int                `json:"schema"`
+	Result   string             `json:"result"`
+	Clean    bool               `json:"clean"`
+	Count    int                `json:"count"`
+	Problems []diffCheckProblem `json:"problems,omitempty"`
+}
+
+func (r diffCheckJSON) agentState() string {
+	if !r.Clean {
+		return envStateBlocked
+	}
+	return ""
+}
+
+type diffCheckProblem struct {
+	Path    string `json:"path,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Message string `json:"message"`
+	Content string `json:"content,omitempty"`
+	Raw     string `json:"raw,omitempty"`
 }
 
 // runDiff는 gk diff 명령어의 메인 실행 함수이다.
@@ -64,6 +102,24 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return WithHint(
 			fmt.Errorf("gk diff: 컨텍스트 라인 수는 0 이상이어야 합니다: %d", diffFlagContext),
 			"예: gk diff -U3",
+		)
+	}
+	if diffFlagDigest && diffFlagRawPatch {
+		return WithHint(
+			fmt.Errorf("gk diff: --digest와 --raw-patch는 함께 쓸 수 없습니다"),
+			"요약은 gk diff --digest --json, 원문 patch는 gk diff --raw-patch --json을 사용하세요",
+		)
+	}
+	if diffFlagCheck && (diffFlagDigest || diffFlagRawPatch || diffFlagConflicts || diffFlagStat || diffFlagInteract) {
+		return WithHint(
+			fmt.Errorf("gk diff --check: patch 출력 옵션과 함께 쓸 수 없습니다"),
+			"검사는 gk diff --check --json, patch 본문은 gk diff --raw-patch --json을 사용하세요",
+		)
+	}
+	if diffFlagConflicts && diffFlagRawPatch {
+		return WithHint(
+			fmt.Errorf("gk diff: --conflicts와 --raw-patch는 함께 쓸 수 없습니다"),
+			"충돌 hunk 구조는 gk diff --conflicts --json을 사용하세요",
 		)
 	}
 
@@ -93,6 +149,17 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+
+	if diffFlagCheck {
+		code, err := runDiffCheck(cmd, ctx, runner, args, useJSON)
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			diffExitFunc(code)
+		}
+		return nil
+	}
 
 	// --conflicts 모드는 두 데이터 소스 중 하나를 쓴다 (위 검증부 참고).
 	if diffFlagConflicts {
@@ -136,7 +203,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 		if len(result.Files) == 0 {
 			if useJSON {
-				return diff.WriteJSON(cmd.OutOrStdout(), result)
+				return writeDiffJSON(cmd, result)
 			}
 			noConflictTarget := ""
 			if hasExplicitDiffRef(conflictRefArgs) {
@@ -147,7 +214,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		}
 
 		if useJSON {
-			return diff.WriteJSON(cmd.OutOrStdout(), result)
+			return writeDiffJSON(cmd, result)
 		}
 		if diffFlagInteract && ui.IsTerminal() {
 			return runDiffInteractive(result, opts, noPager)
@@ -187,8 +254,14 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		if diffFlagDigest && useJSON {
 			return emitAgentResult(cmd.OutOrStdout(), digestToJSON(diff.BuildDigest(&diff.DiffResult{})))
 		}
+		if diffFlagRawPatch {
+			if useJSON {
+				return writeDiffPatchJSON(cmd, raw, &diff.DiffResult{}, nil)
+			}
+			return nil
+		}
 		if useJSON {
-			return diff.WriteJSON(cmd.OutOrStdout(), &diff.DiffResult{})
+			return writeDiffJSON(cmd, &diff.DiffResult{})
 		}
 		renderDiffNoChanges(cmd.ErrOrStderr(), ctx, runner, diffFlagStaged, args)
 		return nil
@@ -197,9 +270,19 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	// ── 4. diff 파싱 ────────────────────────────────────────────
 	result, parseErr := diff.ParseUnifiedDiff(bytes.NewReader(stdout))
 	if parseErr != nil {
+		if diffFlagRawPatch && useJSON {
+			return writeDiffPatchJSON(cmd, raw, nil, parseErr)
+		}
 		// 그레이스풀 디그레이드: 파싱 실패 시 원본 텍스트 그대로 출력
 		fmt.Fprintln(cmd.ErrOrStderr(), "diff 파싱 실패, 원본 출력을 표시합니다")
 		return writeDiffWithPager(cmd, []byte(raw), noPager)
+	}
+
+	if diffFlagRawPatch {
+		if useJSON {
+			return writeDiffPatchJSON(cmd, raw, result, nil)
+		}
+		return writeDiffWithPager(cmd, stdout, noPager)
 	}
 
 	// --conflicts 모드는 이미 위쪽 분기에서 처리됨 (combined-diff 우회).
@@ -238,7 +321,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// 6a. JSON 출력
 	if useJSON {
-		return diff.WriteJSON(cmd.OutOrStdout(), result)
+		return writeDiffJSON(cmd, result)
 	}
 
 	// 6b. 인터랙티브 모드
@@ -267,6 +350,161 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// 6d. 페이저 연동
 	return writeDiffWithPager(cmd, buf.Bytes(), noPager)
+}
+
+func writeDiffJSON(cmd *cobra.Command, result *diff.DiffResult) error {
+	if AgentOut() {
+		return emitAgentResult(cmd.OutOrStdout(), diff.ToJSON(result))
+	}
+	return diff.WriteJSON(cmd.OutOrStdout(), result)
+}
+
+func writeDiffPatchJSON(cmd *cobra.Command, raw string, result *diff.DiffResult, parseErr error) error {
+	payload := diffPatchJSON{
+		Schema: 1,
+		Patch:  raw,
+	}
+	if result != nil {
+		payload.Parsed = diff.ToJSON(result)
+	}
+	if parseErr != nil {
+		payload.ParseError = parseErr.Error()
+	}
+	return emitAgentResult(cmd.OutOrStdout(), payload)
+}
+
+func runDiffCheck(cmd *cobra.Command, ctx context.Context, runner git.Runner, args []string, useJSON bool) (int, error) {
+	gitArgs := buildDiffCheckArgs(args)
+	stdout, stderr, err := runner.Run(ctx, gitArgs...)
+	problems, hasStructuredProblem := parseDiffCheckOutput(stdout, stderr)
+	result := diffCheckResult(problems)
+
+	if err != nil {
+		var exitErr *git.ExitError
+		if errors.As(err, &exitErr) && hasStructuredProblem {
+			if useJSON {
+				if werr := emitAgentResult(cmd.OutOrStdout(), result); werr != nil {
+					return 0, werr
+				}
+			} else {
+				renderDiffCheck(cmd.OutOrStdout(), result)
+			}
+			if exitErr.Code != 0 {
+				return exitErr.Code, nil
+			}
+			return 2, nil
+		}
+		return 0, classifyGitError(err, stderr, args)
+	}
+
+	if useJSON {
+		return 0, emitAgentResult(cmd.OutOrStdout(), result)
+	}
+	renderDiffCheck(cmd.OutOrStdout(), result)
+	return 0, nil
+}
+
+func buildDiffCheckArgs(userArgs []string) []string {
+	args := []string{"diff", "--check"}
+	if diffFlagStaged {
+		args = append(args, "--cached")
+	}
+	args = append(args, userArgs...)
+	return args
+}
+
+func diffCheckResult(problems []diffCheckProblem) diffCheckJSON {
+	if len(problems) == 0 {
+		return diffCheckJSON{Schema: 1, Result: "clean", Clean: true}
+	}
+	return diffCheckJSON{Schema: 1, Result: "problems", Clean: false, Count: len(problems), Problems: problems}
+}
+
+func parseDiffCheckOutput(stdout, stderr []byte) ([]diffCheckProblem, bool) {
+	raw := strings.TrimRight(string(stdout), "\n")
+	if s := strings.TrimRight(string(stderr), "\n"); s != "" {
+		if raw != "" {
+			raw += "\n"
+		}
+		raw += s
+	}
+	if raw == "" {
+		return nil, false
+	}
+	var problems []diffCheckProblem
+	hasStructured := false
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if path, lineNo, msg, ok := parseDiffCheckProblemLine(line); ok {
+			hasStructured = true
+			problems = append(problems, diffCheckProblem{
+				Path:    path,
+				Line:    lineNo,
+				Kind:    classifyDiffCheckMessage(msg),
+				Message: msg,
+			})
+			continue
+		}
+		if len(problems) > 0 && problems[len(problems)-1].Content == "" {
+			problems[len(problems)-1].Content = line
+			continue
+		}
+		problems = append(problems, diffCheckProblem{Message: line, Raw: line})
+	}
+	return problems, hasStructured
+}
+
+func parseDiffCheckProblemLine(line string) (string, int, string, bool) {
+	msgSep := strings.LastIndex(line, ": ")
+	if msgSep < 0 {
+		return "", 0, "", false
+	}
+	prefix := line[:msgSep]
+	lineSep := strings.LastIndex(prefix, ":")
+	if lineSep <= 0 || lineSep == len(prefix)-1 {
+		return "", 0, "", false
+	}
+	lineNo, err := strconv.Atoi(prefix[lineSep+1:])
+	if err != nil {
+		return "", 0, "", false
+	}
+	return prefix[:lineSep], lineNo, line[msgSep+2:], true
+}
+
+func classifyDiffCheckMessage(msg string) string {
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "trailing whitespace"):
+		return "trailing-whitespace"
+	case strings.Contains(lower, "space before tab"):
+		return "space-before-tab"
+	case strings.Contains(lower, "conflict marker"):
+		return "conflict-marker"
+	case strings.Contains(lower, "blank line at eof"):
+		return "blank-line-at-eof"
+	default:
+		return "diff-check"
+	}
+}
+
+func renderDiffCheck(w io.Writer, result diffCheckJSON) {
+	if result.Clean {
+		fmt.Fprintln(w, "diff check: clean")
+		return
+	}
+	fmt.Fprintf(w, "diff check: %d problem(s)\n", result.Count)
+	for _, p := range result.Problems {
+		if p.Path != "" && p.Line > 0 {
+			fmt.Fprintf(w, "  %s:%d: %s\n", p.Path, p.Line, p.Message)
+		} else {
+			fmt.Fprintf(w, "  %s\n", p.Message)
+		}
+		if p.Content != "" {
+			fmt.Fprintf(w, "    %s\n", p.Content)
+		}
+	}
 }
 
 // buildDiffArgs는 사용자 인자와 플래그를 기반으로 git diff 인자를 조합한다.

@@ -1,6 +1,7 @@
 package initx
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -162,29 +163,124 @@ func buildPreflightSteps(r *AnalysisResult) []preflightStepCfg {
 // 기존 필드의 값은 변경하지 않는다.
 // force=true 시 generated를 그대로 반환한다 (완전 덮어쓰기).
 func MergeConfig(existing []byte, generated []byte) (merged []byte, added []string, err error) {
-	var existMap map[string]any
-	if err := yaml.Unmarshal(existing, &existMap); err != nil {
+	var existDoc yaml.Node
+	if err := yaml.Unmarshal(existing, &existDoc); err != nil {
 		return nil, nil, fmt.Errorf("gk init: parse existing config: %w", err)
 	}
-	if existMap == nil {
-		existMap = make(map[string]any)
-	}
+	existMap := ensureDocumentMapping(&existDoc)
 
-	var genMap map[string]any
-	if err := yaml.Unmarshal(generated, &genMap); err != nil {
+	var genDoc yaml.Node
+	if err := yaml.Unmarshal(generated, &genDoc); err != nil {
 		return nil, nil, fmt.Errorf("gk init: parse generated config: %w", err)
 	}
+	genMap := documentMapping(&genDoc)
 	if genMap == nil {
-		genMap = make(map[string]any)
+		genMap = &yaml.Node{Kind: yaml.MappingNode}
 	}
 
-	added = deepMerge(existMap, genMap, "")
+	added = mergeMappingNodes(existMap, genMap, "")
 
-	out, err := yaml.Marshal(existMap)
-	if err != nil {
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&existDoc); err != nil {
+		_ = enc.Close()
 		return nil, nil, fmt.Errorf("gk init: marshal merged config: %w", err)
 	}
-	return out, added, nil
+	if err := enc.Close(); err != nil {
+		return nil, nil, fmt.Errorf("gk init: marshal merged config: %w", err)
+	}
+	return out.Bytes(), added, nil
+}
+
+func ensureDocumentMapping(doc *yaml.Node) *yaml.Node {
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+		return doc.Content[0]
+	}
+	if doc.Kind == yaml.MappingNode {
+		cp := *doc
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{&cp}
+		return doc.Content[0]
+	}
+	if doc.Kind != yaml.DocumentNode {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+		return doc.Content[0]
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+		return doc.Content[0]
+	}
+	if doc.Content[0].Kind != yaml.MappingNode {
+		doc.Content[0] = &yaml.Node{Kind: yaml.MappingNode}
+	}
+	return doc.Content[0]
+}
+
+func documentMapping(doc *yaml.Node) *yaml.Node {
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 && doc.Content[0].Kind == yaml.MappingNode {
+		return doc.Content[0]
+	}
+	if doc.Kind == yaml.MappingNode {
+		return doc
+	}
+	return nil
+}
+
+func mergeMappingNodes(dst, src *yaml.Node, prefix string) []string {
+	var added []string
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		srcKey := src.Content[i]
+		srcVal := src.Content[i+1]
+		if srcKey.Kind != yaml.ScalarNode {
+			continue
+		}
+		key := srcKey.Value
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+
+		dstVal := mappingValue(dst, key)
+		if dstVal == nil {
+			dst.Content = append(dst.Content, cloneYAMLNode(srcKey), cloneYAMLNode(srcVal))
+			added = append(added, path)
+			continue
+		}
+		if dstVal.Kind == yaml.MappingNode && srcVal.Kind == yaml.MappingNode {
+			added = append(added, mergeMappingNodes(dstVal, srcVal, path)...)
+		}
+	}
+	return added
+}
+
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Kind == yaml.ScalarNode && m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func cloneYAMLNode(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	if len(n.Content) > 0 {
+		cp.Content = make([]*yaml.Node, len(n.Content))
+		for i, child := range n.Content {
+			cp.Content[i] = cloneYAMLNode(child)
+		}
+	}
+	return &cp
 }
 
 // deepMerge는 src의 키를 dst에 재귀적으로 병합한다.

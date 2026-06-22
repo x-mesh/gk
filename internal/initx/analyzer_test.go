@@ -106,6 +106,68 @@ func TestProperty1_MarkerFileDetectionAccuracy(t *testing.T) {
 	})
 }
 
+func TestAnalyzeProjectDetectsNestedMarkers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "frontend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "frontend", "package.json"), []byte(`{"scripts":{"test":"vitest"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AnalyzeProject(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundNode := false
+	for _, lang := range result.Languages {
+		if lang.Name == "node" && lang.MarkerFile == "frontend/package.json" {
+			foundNode = true
+		}
+	}
+	if !foundNode {
+		t.Fatalf("nested package.json should detect node, got %+v", result.Languages)
+	}
+	foundNestedTest := false
+	for _, step := range result.Preflight {
+		if step.Name == "test:frontend" && step.Command == "cd 'frontend' && npm run test" {
+			foundNestedTest = true
+		}
+	}
+	if !foundNestedTest {
+		t.Fatalf("nested package.json should add scoped test step, got %+v", result.Preflight)
+	}
+}
+
+func TestAnalyzeBranchesPrefersOriginHead(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
+			"branch -a": {Stdout: "* develop\n  main\n  remotes/origin/HEAD -> origin/main\n  remotes/origin/develop\n  remotes/origin/main\n"},
+		},
+	}
+	base, _, _ := analyzeBranches(context.Background(), fake)
+	if base != "main" {
+		t.Fatalf("base branch = %q, want main", base)
+	}
+}
+
+func TestExtractBranchPatternsKeepsConventionalDefaults(t *testing.T) {
+	patterns := ExtractBranchPatterns([]string{"main", "fix/current-bug"})
+	if len(patterns) != 1 {
+		t.Fatalf("patterns = %#v, want one combined pattern", patterns)
+	}
+	re, err := regexp.Compile(patterns[0])
+	if err != nil {
+		t.Fatalf("invalid pattern %q: %v", patterns[0], err)
+	}
+	for _, branch := range []string{"fix/current-bug", "feat/new-work"} {
+		if !re.MatchString(branch) {
+			t.Fatalf("pattern %q should match %q", patterns[0], branch)
+		}
+	}
+}
+
 // setKeys는 map의 키를 정렬된 슬라이스로 반환한다 (디버깅용).
 func setKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))

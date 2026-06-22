@@ -31,6 +31,9 @@ func errorCodeFromError(err error) string {
 	if isCommitGraphCorruptError(err) {
 		return "commit-graph-corrupt"
 	}
+	if isIndexLockPermissionError(err) {
+		return "permission-denied-index-lock"
+	}
 	var ce *ConflictError
 	if errors.As(err, &ce) {
 		return "conflict"

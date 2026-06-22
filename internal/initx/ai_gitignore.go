@@ -69,6 +69,9 @@ func buildProjectInfo(dir string, result *AnalysisResult) string {
 			if strings.HasPrefix(name, ".git") && name != ".gitignore" {
 				continue // .git 디렉토리는 제외
 			}
+			if !shareableProjectInfoName(name) {
+				continue
+			}
 			if e.IsDir() {
 				b.WriteString("  " + name + "/\n")
 			} else {
@@ -96,18 +99,73 @@ func buildProjectInfo(dir string, result *AnalysisResult) string {
 
 // FormatAISuggestedSection은 AI가 제안한 패턴을 gitignore 섹션 문자열로 포맷한다.
 func FormatAISuggestedSection(patterns []string) string {
+	patterns = CleanAISuggestedPatterns(patterns)
 	if len(patterns) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("# AI-suggested\n")
 	for _, p := range patterns {
-		p = strings.TrimSpace(p)
-		if p == "" || strings.HasPrefix(p, "#") {
-			continue
-		}
 		b.WriteString(p)
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// CleanAISuggestedPatterns keeps only conservative, single-line gitignore
+// patterns. AI output is advisory and must not be able to unignore files or add
+// catch-all rules such as "*".
+func CleanAISuggestedPatterns(patterns []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range patterns {
+		p := strings.TrimSpace(raw)
+		p = strings.TrimLeft(p, "-*•> \t")
+		p = strings.TrimSpace(p)
+		if !safeAIGitignorePattern(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+func safeAIGitignorePattern(p string) bool {
+	if p == "" || strings.HasPrefix(p, "#") || strings.HasPrefix(p, "```") {
+		return false
+	}
+	if strings.HasPrefix(p, "!") {
+		return false
+	}
+	if strings.ContainsAny(p, "\r\n\t ") {
+		return false
+	}
+	if p == "*" || p == "/*" || p == "/" || p == "." || p == ".." {
+		return false
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "../") || strings.Contains(p, "/../") {
+		return false
+	}
+	return true
+}
+
+func shareableProjectInfoName(name string) bool {
+	for _, pat := range SecurityPatterns {
+		if gitignoreNameMatch(pat, name) {
+			return false
+		}
+	}
+	return true
+}
+
+func gitignoreNameMatch(pattern, name string) bool {
+	p := strings.TrimSuffix(pattern, "/")
+	if p == "" {
+		return false
+	}
+	if ok, _ := filepath.Match(p, name); ok {
+		return true
+	}
+	return p == name
 }

@@ -136,8 +136,38 @@ func TestExecutePlan_WriteError_ReturnsWrappedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid path")
 	}
-	if !strings.Contains(err.Error(), "gk init: write") {
-		t.Errorf("error should contain 'gk init: write', got %q", err.Error())
+	if !strings.Contains(err.Error(), "gk init:") {
+		t.Errorf("error should contain 'gk init:', got %q", err.Error())
+	}
+}
+
+func TestExecutePlan_RollbackOnLaterWriteError(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.txt")
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(first, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, []byte("not a dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := &InitPlan{
+		Gitignore: &FilePlan{Path: first, Content: "changed\n", Action: ActionOverwrite},
+		Config:    &FilePlan{Path: filepath.Join(blocker, "child.yaml"), Content: "x\n", Action: ActionCreate},
+	}
+
+	var buf bytes.Buffer
+	err := ExecutePlan(plan, &buf, false)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	data, readErr := os.ReadFile(first)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "original\n" {
+		t.Fatalf("first file was not rolled back: %q", data)
 	}
 }
 

@@ -328,7 +328,7 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--with-base` | true | Fast-forward the local base branch during the pull step (`--with-base=false` to skip) |
-| `--to` | (off) | After pushing, forward-merge the current branch into a target via the FF-only promote machinery (`gk merge --into <target>` + `gk push --from <target>`). Three forms: `--to parent` advances **one hop** to the branch's parent (`branch.<name>.gk-parent`, else the configured base); `--to base` merges straight into the configured base in one direct hop; `--to <branch>` chain-walks the parent stack hop by hop up to `<branch>` (advancing each intermediate — the same as the standalone `gk promote <branch>`). A target outside the parent chain is rejected. A conflict pauses with the normal resolve/continue contract and the failed step reports a resume path; re-running skips an already-merged target. `land.promote` in config makes this a default: `parent` (or `true`) for the one-hop semantics, a branch name for the chain walk. (`--to <branch>` fully replaces the deprecated `--promote=<branch>`.) |
+| `--to` | (off) | After pushing, forward-merge the current branch into a target via the FF-only promote machinery (`gk merge --into <target>` + `gk push --from <target>`). Three forms: `--to parent` advances **one hop** to the branch's parent (`branch.<name>.gk-parent`, else the configured base); `--to base` merges straight into the configured base in one direct hop; `--to <branch>` chain-walks the parent stack hop by hop up to `<branch>` (advancing each intermediate — the same as the standalone `gk promote <branch>`). A target outside the parent chain is rejected. A conflict pauses with the normal resolve/continue contract and the failed step reports a resume path; re-running skips an already-merged target. `land.promote` in config makes this a default: `parent` (or `true`) for the one-hop semantics, a branch name for the chain walk. Note `base` is a `--to` keyword only — in `land.promote` config write the base branch's **actual name** (e.g. `main`); a literal `base` there is read as a branch named `base` and fails. See [config: `land.promote`](config.md#landpromote). |
 | `--no-push` | false | Local wrap-up: skip the push step **and** any integration push — commit + pull + local merge only. The folded form of the old local-promote flow (integrate now, publish later from the receiving branch). |
 | `--promote` | (off) | **DEPRECATED** alias for `--to` (kept one release; a soft stderr hint fires when used). Bare `--promote` = one hop to parent/base; `--promote=<branch>` = chain walk to `<branch>`. Existing flows and `land.promote` config keep working unchanged — prefer `--to parent\|base`, or `gk promote <branch>` for the multi-hop walk. |
 | `--no-promote` | false | Skip the promote step for this run — the per-invocation escape from a `land.promote` config default |
@@ -387,12 +387,13 @@ Each linked worktree carries its own status: `current` (the worktree this call r
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
-`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (commit count + summaries since the latest tag — what is still unreleased; degrades to a note when the repo has no tags). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, and stage blobs), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (commit count + summaries since the latest tag — what is still unreleased; degrades to a note when the repo has no tags). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
 
 ```bash
 gk context                                  # human one-screen summary (alias: gk ctx)
 gk context --json                           # agent contract
 gk context --include=diff,log,precheck      # fuse follow-up probes (or --include=all)
+gk context --include=conflict --json         # unmerged paths + stages + hunk counts
 gk context --include=remotes --json         # per-remote drift + asymmetric push URLs
 ```
 
@@ -411,6 +412,39 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
 
 With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
+
+## gk session audit
+
+Reads local Codex and Claude JSONL session logs, extracts shell commands from
+tool calls, and reports where agents still fall back to raw `git`, short `gk`
+aliases, or shell chains that git-kit can absorb.
+
+With no path arguments it scans the newest session files under:
+
+- `~/.codex/sessions`
+- `~/.claude/projects`
+- `~/.claude/sessions`
+
+Pass files or directories to audit a specific subset. The command is local and
+read-only; it never sends session contents anywhere.
+
+```bash
+gk session audit
+gk session audit --max-files 50
+gk session audit ~/.codex/sessions/2026/06/22/session.jsonl --json
+```
+
+The JSON schema reports per-file counts, totals, and aggregated findings such
+as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
+`raw-commit-sequence`, `raw-full-diff`, `raw-diff-check`, `gk-short-alias`,
+and `shell-chain`. Each finding carries a `status`:
+
+- `covered`: git-kit already has a replacement; read `covered_by`.
+- `partial`: git-kit covers the common path, but the finding still names a remaining workflow gap.
+- `gap`: session evidence points to a missing git-kit feature; read `gap`.
+
+Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
+envelope.
 
 ## gk pull
 
@@ -433,7 +467,7 @@ gk pull [flags]
 | `--from <remote>[/<branch>]` | — | Pull from a specific remote instead of the upstream — a mirror or org fork the tracking chain never fetches. Branch defaults to the current branch's name; tracking config stays untouched. Unregistered remotes are rejected with the registered list |
 | `--fetch-only` | false | Fetch only, do not integrate |
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
-| `--autostash` | false | Stash dirty changes before integration, pop after |
+| `--autostash` | false | Stash dirty changes before integration, then pop with index state preserved |
 | `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Base fetches use an explicit remote-tracking refspec, so narrow/single-branch fetch configs still refresh `origin/<base>` on the first run. Skipped under `--fetch-only` |
 | `--json` (global) | false | Emit the machine-readable result on stdout (`result`: `updated`/`up-to-date`/`ahead-only`/`fetch-only`/`conflict`, moved SHAs, `base` outcomes, conflict files + resume/abort commands). The human progress stream stays on stderr |
 | `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
@@ -471,7 +505,7 @@ gk pull --dry-run
 
 ### Notes
 
-- Requires a clean working tree unless `--autostash` is set. If the tree is dirty and `--autostash` is not set, gk exits with an error and prints guidance.
+- Requires a clean working tree unless `--autostash` is set. If the tree is dirty and `--autostash` is not set, gk exits with an error and prints guidance. Autostash restores with `--index`, so already-staged hunks stay staged when the pop succeeds.
 - Runs `git fetch <remote> <base>` then `git rebase origin/<base>`.
 - On conflict, gk pauses and prompts. Use `gk continue` or `gk abort` to resume.
 
@@ -526,6 +560,8 @@ Positional arguments and `--` paths are forwarded to `git diff` unchanged, so th
 | `-U`, `--context <n>` | `3` | Context lines per hunk |
 | `--no-pager` | false | Disable the auto-pager (`$GK_PAGER` / `$PAGER` / `less`) |
 | `--no-word-diff` | false | Disable intra-line word-level highlights |
+| `--raw-patch` | false | Emit the raw unified patch. With `--json`, emit `{schema, patch, parsed}` so agents can get both the original patch body and the structured parse in one call |
+| `--check` | false | Check whitespace/conflict-marker problems without rendering the patch. With `--json`, emit `{schema, result, clean, count, problems[]}` |
 | `--json` | (global) | Emit a structured JSON document; implies `--no-color --no-pager` |
 
 ### "No changes" hint
@@ -560,13 +596,15 @@ gk diff main..HEAD            # everything since branching
 gk diff -i                    # interactive file picker → per-file viewer
 gk diff --stat                # diffstat prefix + diff body
 gk diff --json                # machine-readable output (implies no color, no pager)
+gk diff --raw-patch --json -- internal/cli/pull.go
+gk diff --check --json        # whitespace/conflict-marker check
 gk diff -U10                  # 10 context lines per hunk
 gk diff -- internal/ui/       # restrict to a path
 ```
 
 ### Exit codes
 
-`0` regardless of whether changes were found — `gk diff` is a *viewer*, not a status check. Use `gk status --exit-code` when you need an exit-code-driven dirty/clean signal.
+`0` regardless of whether changes were found — `gk diff` is a *viewer*, not a status check. Use `gk status --exit-code` when you need an exit-code-driven dirty/clean signal. Exception: `gk diff --check` mirrors `git diff --check` and exits non-zero when whitespace/conflict-marker problems are found; under `GK_AGENT=1` the JSON envelope reports `state:"blocked"` with the structured problem list.
 
 ---
 
@@ -582,6 +620,10 @@ M  docs/commands.md         +9 −0   ·2   [docs]
 ```
 
 With `--json` / `GK_AGENT=1` it emits the agent contract `{schema, files:[{path, status, hunks, added, deleted, symbols[], kind}], stat}` — the most frequent multi-turn agent pattern (status → diff --stat → per-file reads) in one call. Accepts the same ref/path arguments as plain `gk diff` (`--staged`, `HEAD~3`, `main..feature`, `-- path`).
+
+When an agent needs the exact unified patch text instead of only parsed hunks, use `gk diff --raw-patch --json -- <path>`. The result is `{schema, patch, parsed}` and respects the same ref/path arguments, so it replaces the usual `git diff -- <path>` fallback without leaving the gk JSON contract.
+
+`gk diff --check --json` replaces raw `git diff --check` probes. It reports `clean`, `count`, and `problems[]` with `path`, `line`, `kind`, `message`, and the offending added line when git provides one.
 
 ## gk merge
 
@@ -2639,13 +2681,13 @@ gk guide undo           # recovery flow
 
 ## gk init
 
-One-shot project bootstrap. Analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds the three artifacts a new repo usually needs:
+One-shot project bootstrap. Analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds the artifacts a new repo usually needs:
 
-1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when an AI provider is available (`GitignoreSuggester` capability).
+1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when `--ai-gitignore` is passed.
 2. `.gk.yaml` — repo-local gk configuration with a sensible default `ai.commit.deny_paths` block.
 3. AI context files — `.kiro/steering/{product,tech,structure}.md` when `--kiro` is passed (`CLAUDE.md` / `AGENTS.md` are intentionally left to the assistants themselves).
 
-The default flow opens an interactive [huh](https://github.com/charmbracelet/huh) form that previews the analysis and the planned writes, then asks for confirmation. Non-TTY callers (CI, piped output) fall back to the plan-write path automatically; `--dry-run` previews the plan and exits without writing.
+The default flow opens an interactive [huh](https://github.com/charmbracelet/huh) form that previews the analysis and the planned writes, then asks for confirmation. Non-TTY callers (CI, piped output) fall back to the plan-write path automatically; `--dry-run` previews the plan and exits without writing files or running `git init`.
 
 ### Synopsis
 
@@ -2659,6 +2701,7 @@ gk init [flags]
 |------|---------|-------------|
 | `--force` | false | Overwrite existing files instead of merging or skipping |
 | `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
+| `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in |
 | `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, or `ai` |
 | `--dry-run` (global) | false | Print the plan without touching the filesystem |
 
@@ -2666,7 +2709,7 @@ gk init [flags]
 
 | File | Trigger | Purpose |
 |------|---------|---------|
-| `.gitignore` | always (unless `--only` filters) | Baseline rules + AI-suggested project-specific patterns |
+| `.gitignore` | always (unless `--only` filters) | Baseline rules; with `--ai-gitignore`, conservative AI-suggested project-specific patterns are merged after confirmation |
 | `.gk.yaml` | always (unless `--only` filters) | Repo-local config with `ai.commit.deny_paths` baseline |
 | `.kiro/steering/product.md` | `--kiro` | Product overview and goals |
 | `.kiro/steering/tech.md` | `--kiro` | Tech stack, architecture decisions, coding standards |
@@ -2686,6 +2729,9 @@ gk init --kiro
 # Only generate the gitignore (skip config + AI context).
 gk init --only gitignore
 
+# Ask the configured AI provider for extra ignore patterns after confirmation.
+gk init --ai-gitignore
+
 # CI / unattended use — preview, then force-write.
 gk init --dry-run
 gk init --force --only config
@@ -2695,7 +2741,7 @@ gk init --force --only config
 
 | Old form | New form | Status |
 |----------|----------|--------|
-| `gk init ai` | `gk init` (or `gk init --kiro`) | Available as a hidden alias for compatibility; the `CLAUDE.md`/`AGENTS.md` scaffolds are no longer emitted |
+| `gk init ai` | `gk init --kiro` | Available as a hidden alias for compatibility; the `CLAUDE.md`/`AGENTS.md` scaffolds are no longer emitted |
 | `gk init config` | `gk config init` | Backward-compatible alias delegates to the canonical command |
 
 ---
@@ -2711,7 +2757,7 @@ Provider resolution order (all commands):
 
 Optional capabilities exposed via type-asserted interfaces:
 - **`Summarizer`** — pre-summarize oversized diffs before classification (currently `nvidia`, `groq`).
-- **`GitignoreSuggester`** — suggest project-specific `.gitignore` patterns from filesystem context. Used by `gk init`. Implemented for `nvidia`, `groq`, `gemini`, `qwen`, `kiro`.
+- **`GitignoreSuggester`** — suggest project-specific `.gitignore` patterns from filesystem context. Used only by `gk init --ai-gitignore`. Implemented for `nvidia`, `groq`, `gemini`, `qwen`, `kiro`.
 
 ### gk commit
 

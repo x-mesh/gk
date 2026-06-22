@@ -437,6 +437,35 @@ worktree:
       - uv venv && uv pip install -r requirements.txt
 ```
 
+### `land.promote`
+
+| | |
+|-|-|
+| Type | string |
+| Default | `""` (promote step off) |
+| CLI flag | `--to parent\|base` / `--promote` (override) · `--no-promote` (skip for one run) |
+
+Turns the `gk land` promote step on by default, as if every run passed the flag: after the push, the current branch is forward-merged into a target and that target is pushed too (so `gk land` alone also publishes the base/parent). Recognised values:
+
+| Value | Behavior |
+|-------|----------|
+| `""` / `false` / `0` / `none` / `off` | Promote only when `--to` / `--promote` is passed |
+| `parent` / `true` / `1` | One hop to the branch's `gk-parent` (else the configured base) — same as `--to parent`. YAML booleans are tolerated so `promote: true` does the intuitive thing |
+| *a branch name* (e.g. `main`) | Walk the parent chain hop by hop until that branch — same as `gk promote <branch>` then push (advances intermediate branches in a stack too) |
+
+> **`base` is not a config keyword.** To target the base branch, write its **actual name** (`main`, `develop`, …). A literal `promote: base` is read as "a branch named `base`" and fails to resolve. The `--to base` *flag* accepts the word `base`; the `land.promote` config value does not — there is no single config value equivalent to `--to base`, so use the base branch's real name.
+
+An explicit `--to` / `--promote` flag always wins over this; `--no-promote` skips the step for one run. No environment variable binds this key.
+
+```yaml
+land:
+  promote: main      # gk land also merges the current branch into main and pushes it
+```
+
+See [`gk land`](commands.md#gk-land) for the full flag semantics.
+
+---
+
 ### `ai.assist`
 
 | | |

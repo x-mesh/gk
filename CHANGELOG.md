@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`land.promote`를 `GK_LAND_PROMOTE` 환경 변수로도 설정한다 — `ship.*`·`output.*`와 env parity를 맞춘다.** `land.promote`는 `.gk.yaml`·git config로만 켤 수 있어, config 파일 없이 도는 CI·스크립트에서는 promote 기본값을 줄 방법이 없었다(viper `AutomaticEnv`가 등록되지 않은 nested 키를 집지 않아 `ship.auto_confirm` 등과 비대칭이었다). 이제 `land.promote`에 `SetDefault` + `BindEnv("GK_LAND_PROMOTE")`를 달아 `GK_LAND_PROMOTE=parent`(또는 브랜치명)로 promote 타깃을 환경에서 지정할 수 있다. 값 의미는 config와 동일하다 — `parent`는 gk-parent 한 단계(없으면 base), 브랜치명은 거기까지 부모 체인 walk이며, base는 그 브랜치의 실제 이름으로 적는다(`base`라는 단어는 `--to` 플래그 전용).
+
+- **agents 계약 v18 — `GK_AGENT=1`을 매 호출 prefix로 안내하고, 3턴 Quick start와 `--to` 3모드를 명시한다.** 기존 계약은 "Set `export GK_AGENT=1` once"라고 적었는데, 에이전트의 툴 호출은 셸 환경이 호출 간 유지되지 않아 한 번 export해도 다음 호출에서 사라져 envelope 대신 산문이 나오고 "parse prose 금지" 원칙이 조용히 깨졌다. 이제 "매 에이전트 툴 호출을 `GK_AGENT=1 git-kit …`로 prefix하라(사람은 인터랙티브 셸에서 한 번 `export`로 충분)"로 바꿔 함정을 없앤다. 더불어 도입부에 "대부분의 세션은 3턴 — `git-kit context`(오리엔트) → 작업 → `git-kit land`(commit+pull+push), 릴리스는 `ship -y`"라는 Quick start를 넣고, `--to parent|base|<branch>`의 세 모드(parent=gk-parent 한 단계+base fallback, base=곧장 base, `<branch>`=부모 체인 hop-walk)와 `land.promote`/`GK_LAND_PROMOTE` 기본값 연결을 명확히 했다.
+
+### Fixed
+
+- **`gk commit`의 ai-commit backup ref가 무한 누적되지 않도록 retention을 건다(브랜치별 최근 10개·30일).** 매 `gk commit`은 커밋 *전* HEAD를 가리키는 `refs/gk/ai-commit-backup/<branch>/<unix>` 스냅샷을 남기는데, 이 패밀리만 정리 경로가 없어(`git.PruneBackups`는 `refs/gk/backup/*`만, `BranchFF`의 prune은 자기 종류만 본다) clone 수명 동안 ref가 끝없이 쌓였다(실측 한 저장소에 ~73개). 이제 `EnsureBackupRef`가 ref를 만든 뒤 BranchFF와 같은 정책으로 정리한다 — 브랜치별 최근 10개와 30일 이내는 보존하고 나머지를 best-effort로 prune한다(방금 만든 ref는 최신이라 항상 남는다). 더불어 backup ref가 단일 스냅샷임을 문서화해 커밋 결과는 `git diff <ref>..HEAD`로 보도록 안내한다.
+
+- **`gk push`가 동기화된 상태에서 git 영어 줄과 gk 현지화 요약을 이중으로 내지 않고, stale한 ahead 카운트보다 git의 no-op 보고를 신뢰한다.** push가 보낼 게 없을 때 git은(guardEnv의 `LC_ALL=C`로 항상 영어) "Everything up-to-date"를 내는데, gk가 그 위에 현지화 요약을 또 얹어 같은 사실이 두 언어로 중복됐다 — 이제 요약이 그 사실을 전할 때는 git 줄을 억제해 한 번만 보인다. 또한 ahead 카운트는 로컬 remote-tracking ref 기준이라 stale하면(이미 원격에 있는 커밋) 실제론 no-op인데 "N개 푸시됨"이라는 거짓 요약이 날 수 있었다 — 이제 git이 "up-to-date"를 보고하면 그것을 권위로 삼아 요약도 up-to-date로 맞춘다.
+
 ## [0.94.0] - 2026-06-22
 
 ### Added

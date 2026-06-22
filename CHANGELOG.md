@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.95.1] - 2026-06-23
+
 ### Fixed
 
 - **`gk push`의 stale ahead 카운트 교정이 사람 요약뿐 아니라 `--json`/agent 봉투에도 적용된다.** v0.95.0은 push가 보낼 게 없을 때 git의 "Everything up-to-date"를 stale ahead 카운트보다 신뢰하도록 고쳤지만, 그 교정이 사람용 요약 경로에만 들어가고 `--json` 봉투(`pushResult.Ahead`)에는 빠져 있었다 — remote-tracking ref가 stale한 상황(이미 원격에 있는 커밋)에서 사람에겐 "up-to-date", 에이전트에겐 "N개 푸시됨"으로 서로 모순됐다. 봉투는 에이전트가 신뢰하는 권위 경로인데도 정작 고친 버그가 거기 그대로 남아 있던 셈이다. 이제 두 경로가 공통 `reportedPushCount` 헬퍼를 거쳐 git의 no-op 보고를 단일 권위로 삼아 항상 일치한다. 더불어 upstream 없는 새 브랜치의 첫 push는 ahead가 0으로 하드코딩돼 실제로 커밋을 올리는데도 거짓 "이미 up-to-date"로 표시됐는데, 이제 `rev-list --count <branch> --not --remotes=<remote>`로 아직 원격에 없는 커밋 수를 세어 실제 푸시 수를 보고한다.

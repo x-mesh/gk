@@ -123,6 +123,33 @@ func TestPruneBackupRefs_KeepsRecentDeletesOld(t *testing.T) {
 	}
 }
 
+// TestPruneKindBackups covers the exported wrapper aicommit's EnsureBackupRef
+// uses to bound refs/gk/ai-commit-backup/* — the family nothing else reclaimed.
+// The seeded timestamps (1000-4000) are far below now()-maxAge, so every ref is
+// "old" and keepRecent alone decides survivors, independent of the wall clock.
+func TestPruneKindBackups(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "v1")
+	sha := repo.Commit("c1")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	for _, ts := range []int64{1000, 2000, 3000, 4000} {
+		repo.RunGit("update-ref", fmt.Sprintf("refs/gk/ai-commit-backup/main/%d", ts), sha)
+	}
+
+	deleted := PruneKindBackups(context.Background(), runner, "ai-commit", "main", 30*24*time.Hour, 2)
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	remaining := repo.RunGit("for-each-ref", "--format=%(refname)", "refs/gk/ai-commit-backup/main/*")
+	if strings.Contains(remaining, "/1000") || strings.Contains(remaining, "/2000") {
+		t.Errorf("old ai-commit backups should be pruned, got:\n%s", remaining)
+	}
+	if !strings.Contains(remaining, "/3000") || !strings.Contains(remaining, "/4000") {
+		t.Errorf("recent ai-commit backups must survive, got:\n%s", remaining)
+	}
+}
+
 func TestBranchFF_BlockedWhenCheckedOutElsewhere(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	repo.WriteFile("a.txt", "v1")

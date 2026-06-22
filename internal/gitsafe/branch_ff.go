@@ -134,6 +134,17 @@ func BranchFF(ctx context.Context, runner git.Runner, now func() time.Time, kind
 	return res, nil
 }
 
+// PruneKindBackups bounds the refs/gk/<kind>-backup/<branch>/<unix> family for
+// callers outside BranchFF — notably aicommit's EnsureBackupRef, which writes a
+// refs/gk/ai-commit-backup/* ref on every `gk commit` and otherwise has nothing
+// to prune it (git.PruneBackups scans only refs/gk/backup/*, and BranchFF's prune
+// runs only for its own integration kinds). Same conservative policy: keep the
+// keepRecent newest, delete the rest older than maxAge. Best-effort; returns the
+// number deleted.
+func PruneKindBackups(ctx context.Context, runner git.Runner, kind, branch string, maxAge time.Duration, keepRecent int) int {
+	return pruneBackupRefs(ctx, runner, time.Now, kind, branch, maxAge, keepRecent)
+}
+
 // pruneBackupRefs deletes BranchFF backup refs for (kind, branch) that are both
 // beyond the keepRecent newest AND older than maxAge — the same conservative
 // policy git.PruneBackups applies to refs/gk/backup/*, but for the

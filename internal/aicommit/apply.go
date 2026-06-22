@@ -64,6 +64,12 @@ func EnsureBackupRef(ctx context.Context, runner git.Runner) (string, error) {
 	if _, _, err := runner.Run(ctx, "update-ref", refName, sha); err != nil {
 		return "", fmt.Errorf("aicommit: create backup ref: %w", err)
 	}
+	// Bound the ai-commit backup family. Every non-dry-run `gk commit` writes
+	// one of these snapshots and nothing else reclaims them — without this they
+	// accumulate for the life of the clone. Best-effort, same 10-newest/30-day
+	// policy BranchFF applies to its own kinds; the just-written ref is the
+	// newest so it is always preserved.
+	_ = gitsafe.PruneKindBackups(ctx, runner, "ai-commit", branch, 30*24*time.Hour, 10)
 	return refName, nil
 }
 

@@ -147,6 +147,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("output.hints", defaults.Output.Hints)
 	v.SetDefault("ship.auto_confirm", defaults.Ship.AutoConfirm)
 	v.SetDefault("ship.wait", defaults.Ship.Wait)
+	v.SetDefault("land.promote", defaults.Land.Promote)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()
@@ -219,6 +220,13 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	_ = v.BindEnv("output.lang", "GK_LANG")
 	_ = v.BindEnv("output.emoji", "GK_EMOJI")
 	_ = v.BindEnv("output.hints", "GK_HINTS")
+
+	// land.promote follows the ship.* defaults above (SetDefault registers the
+	// key so AutomaticEnv resolves GK_LAND_PROMOTE); the explicit BindEnv makes
+	// the override guaranteed regardless of viper's nested-key env handling, so
+	// CI/scripts can set the promote target without a config file — parity with
+	// ship.* and output.*.
+	_ = v.BindEnv("land.promote", "GK_LAND_PROMOTE")
 
 	// --- 6. CLI flags ---
 	// BindPFlags maps each flag to a viper key by its bare name. A command

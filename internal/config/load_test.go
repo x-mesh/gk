@@ -267,6 +267,25 @@ func TestLoadEnvVar(t *testing.T) {
 	}
 }
 
+// TestLoadLandPromoteEnv guards the env binding parity gap: land.promote got a
+// config/git path but, unlike ship.* and output.*, no SetDefault/BindEnv — so
+// GK_LAND_PROMOTE silently did nothing in CI/scripts. Both the natural-name and
+// (post-fix) bound env must populate cfg.Land.Promote.
+func TestLoadLandPromoteEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "")
+	t.Setenv("GK_LAND_PROMOTE", "main")
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.Land.Promote != "main" {
+		t.Errorf("Land.Promote: want %q from GK_LAND_PROMOTE, got %q", "main", cfg.Land.Promote)
+	}
+}
+
 func TestLoadFlagPriority(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
 	t.Setenv("GK_BASE_BRANCH", "env-branch")

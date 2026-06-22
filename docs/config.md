@@ -455,7 +455,7 @@ Turns the `gk land` promote step on by default, as if every run passed the flag:
 
 > **`base` is not a config keyword.** To target the base branch, write its **actual name** (`main`, `develop`, …). A literal `promote: base` is read as "a branch named `base`" and fails to resolve. The `--to base` *flag* accepts the word `base`; the `land.promote` config value does not — there is no single config value equivalent to `--to base`, so use the base branch's real name.
 
-An explicit `--to` / `--promote` flag always wins over this; `--no-promote` skips the step for one run. No environment variable binds this key.
+An explicit `--to` / `--promote` flag always wins over this; `--no-promote` skips the step for one run. Set it from the environment with `GK_LAND_PROMOTE` (same values) for CI/scripts without a config file.
 
 ```yaml
 land:
@@ -463,6 +463,44 @@ land:
 ```
 
 See [`gk land`](commands.md#gk-land) for the full flag semantics.
+
+---
+
+### `ship.auto_confirm`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `false` |
+| CLI flag | `-y` / `--yes` (override) · `--yes=false` (force the prompt for one run) |
+| Env | `GK_SHIP_AUTO_CONFIRM` |
+
+Skip the final confirmation gate by default, as if every `gk ship` passed `-y`. An explicit `--yes=false` still forces the prompt for a single invocation. Pairs with `ship.wait` to make `gk ship` fully non-interactive in CI.
+
+```yaml
+ship:
+  auto_confirm: true
+```
+
+---
+
+### `ship.wait`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `true` |
+| CLI flag | `--wait` / `--wait=false` |
+| Env | `GK_SHIP_WAIT` |
+
+Run the post-tag CI-watch + artifact-verify pipeline (default `true`). `false` returns right after the push — the release is published but unwatched, and `gk ship` prints the skipped steps as a note. Use it when CI is slow or you verify out of band.
+
+```yaml
+ship:
+  wait: false
+```
+
+See [`gk ship`](commands.md#gk-ship) for the full pipeline.
 
 ---
 

@@ -157,14 +157,16 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// JSON mode: render structured result, suppress git's raw output.
+	// JSON mode: render structured result, suppress git's raw output. The
+	// reported count is reportedPushCount(stderr, ahead), NOT the raw pre-push
+	// ahead — so the agent envelope agrees with the human summary when git
+	// reports a no-op against a stale remote-tracking ref (see pushReport).
 	if JSONOut() {
 		_ = stdout // git push writes nothing to stdout
-		_ = stderr
 		return emitAgentResult(cmd.OutOrStdout(), pushResult{
 			Remote: remote,
 			Branch: branch,
-			Ahead:  ahead,
+			Ahead:  reportedPushCount(string(stderr), ahead),
 			Head:   short,
 		})
 	}
@@ -183,29 +185,32 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 // pushReport decides what to print after a successful push, given git's stderr
 // and the pre-push ahead count. Returns the (possibly emptied) git output to
-// echo and the localized one-line summary to append.
-//
-// guardEnv forces LC_ALL=C, so git emits exactly "Everything up-to-date" when
-// the push sent nothing. That message is authoritative — more reliable than
-// `ahead`, which is counted against the local remote-tracking ref and can be
-// stale (commits already on the real remote still count as ahead). So when git
-// reports up-to-date we summarize as up-to-date (n=0) instead of claiming
-// "N pushed", and drop git's English line as a duplicate of the localized one.
-// On a real push git's stderr carries the URL + ref-update lines and is kept.
+// echo and the localized one-line summary to append. The reported commit count
+// is delegated to reportedPushCount; on a no-op push git's duplicate English
+// "Everything up-to-date" line is dropped in favor of the localized summary,
+// while a real push's stderr (URL + ref-update lines) is always kept.
 func pushReport(gitStderr string, ahead int, eng *easy.Engine, remote, branch, short string) (gitOut, summary string) {
 	upToDate := strings.TrimSpace(gitStderr) == "Everything up-to-date"
 	if eng != nil {
-		n := ahead
-		if upToDate {
-			n = 0
-		}
-		summary = eng.PushSummaryHint(n, remote, branch, short)
+		summary = eng.PushSummaryHint(reportedPushCount(gitStderr, ahead), remote, branch, short)
 	}
-	gitOut = gitStderr
 	if summary != "" && upToDate {
-		gitOut = ""
+		return "", summary
 	}
-	return gitOut, summary
+	return gitStderr, summary
+}
+
+// reportedPushCount is the commit count to report after a push. git's
+// "Everything up-to-date" (emitted under the LC_ALL=C guardEnv) is authoritative:
+// when git sent nothing we report 0 even if the pre-push `ahead` is stale and
+// positive — commits already on the real remote still count against a stale
+// remote-tracking ref. Otherwise the pre-push ahead count stands. Shared by the
+// human summary and the --json/agent envelope so the two never disagree.
+func reportedPushCount(gitStderr string, ahead int) int {
+	if strings.TrimSpace(gitStderr) == "Everything up-to-date" {
+		return 0
+	}
+	return ahead
 }
 
 // resolvePushBranch decides which branch `gk push` targets, given the
@@ -232,14 +237,18 @@ type pushResult struct {
 	Head   string `json:"head"`
 }
 
-// pushAheadCount returns how many commits the local branch is ahead of
-// its upstream counterpart, or 0 when no upstream exists / git fails.
-// Best-effort: callers must tolerate a 0 result on transient failures.
+// pushAheadCount returns how many commits the local branch will push: counted
+// against its upstream when one exists, else the commits not yet on any of the
+// remote's refs (the first-push case). Returning 0 for a no-upstream branch
+// would render a false "already up-to-date" summary for a genuine first push,
+// so that case counts `<branch> --not --remotes=<remote>` instead. Returns 0
+// when git fails — best-effort, callers must tolerate a 0 on transient failures.
 func pushAheadCount(ctx context.Context, r git.Runner, remote, branch string, hasUpstream bool) int {
+	args := []string{"rev-list", "--count", remote + "/" + branch + ".." + branch}
 	if !hasUpstream {
-		return 0
+		args = []string{"rev-list", "--count", branch, "--not", "--remotes=" + remote}
 	}
-	out, _, err := r.Run(ctx, "rev-list", "--count", remote+"/"+branch+".."+branch)
+	out, _, err := r.Run(ctx, args...)
 	if err != nil {
 		return 0
 	}

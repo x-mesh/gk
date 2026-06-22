@@ -16,7 +16,7 @@ import (
 // (refs/gk/<kind>-backup/<branch>/<unix>) and the pointed-at commit SHA.
 type BackupRef struct {
 	Ref    string    // full ref path, e.g. refs/gk/undo-backup/main/1700000000
-	Kind   string    // "undo" | "wipe" | "timemachine"
+	Kind   string    // "undo" | "wipe" | "timemachine" | "forget" | "ai-commit"
 	Branch string    // branch segment as stored (NOT de-sanitized); empty when "detached"
 	When   time.Time // parsed from the unix segment; zero when unparseable
 	SHA    string    // commit the ref points at
@@ -38,6 +38,7 @@ func ListBackups(ctx context.Context, r git.Runner) ([]BackupRef, error) {
 		"refs/gk/wipe-backup/",
 		"refs/gk/timemachine-backup/",
 		"refs/gk/forget-backup/",
+		"refs/gk/ai-commit-backup/",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)

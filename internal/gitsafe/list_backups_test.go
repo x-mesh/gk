@@ -68,6 +68,34 @@ func TestListBackups_EmptyRepo(t *testing.T) {
 	}
 }
 
+// TestListBackups_IncludesAICommit guards that the lister surfaces the
+// ai-commit-backup family written by aicommit.EnsureBackupRef. `gk timemachine
+// list` (via timemachine.ReadBackups), doctor, and the `gk timemachine show`
+// context header all read through ListBackups, so omitting the prefix made the
+// per-commit recovery anchor invisible despite the docs pointing users to it.
+func TestListBackups_IncludesAICommit(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	sha := repo.Commit("init")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	repo.RunGit("update-ref", "refs/gk/ai-commit-backup/main/1700000000", sha)
+
+	refs, err := ListBackups(context.Background(), runner)
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	var found bool
+	for _, r := range refs {
+		if r.Kind == "ai-commit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ai-commit backup not surfaced by ListBackups; got %+v", refs)
+	}
+}
+
 func TestListBackups_ReturnsNewestFirst(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	repo.WriteFile("a.txt", "a")

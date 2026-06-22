@@ -56,6 +56,25 @@ func TestPushReport(t *testing.T) {
 	}
 }
 
+// TestReportedPushCount guards the shared count helper that both the human
+// summary and the --json/agent envelope now route through, so the two can never
+// disagree. The key case is a stale remote-tracking ref (ahead>0) where git
+// reports the push as a no-op: the reported count must be 0, not the stale ahead.
+func TestReportedPushCount(t *testing.T) {
+	// Real push: git printed ref-update lines → report the pre-push ahead count.
+	if got := reportedPushCount("To x\n   a..b  main -> main\n", 3); got != 3 {
+		t.Errorf("real push: got %d, want 3", got)
+	}
+	// Stale up-to-date: ahead>0 but git sent nothing → authoritative 0.
+	if got := reportedPushCount("Everything up-to-date\n", 5); got != 0 {
+		t.Errorf("stale up-to-date: got %d, want 0", got)
+	}
+	// Genuine up-to-date.
+	if got := reportedPushCount("Everything up-to-date\n", 0); got != 0 {
+		t.Errorf("genuine up-to-date: got %d, want 0", got)
+	}
+}
+
 // buildPushCmd constructs a push cobra.Command for unit tests that calls
 // runPush directly via its RunE, with persistent flags needed by config.Load.
 func buildPushCmd() *cobra.Command {
@@ -241,10 +260,14 @@ func TestPushJSON_Schema_UpToDate(t *testing.T) {
 }
 
 func TestPushAheadCount(t *testing.T) {
-	t.Run("no_upstream_returns_zero", func(t *testing.T) {
-		fake := &git.FakeRunner{}
-		if got := pushAheadCount(context.Background(), fake, "origin", "main", false); got != 0 {
-			t.Fatalf("got %d, want 0", got)
+	t.Run("no_upstream_counts_unpushed", func(t *testing.T) {
+		// First push (no upstream): count commits not yet on any of the
+		// remote's refs, rather than the old hardcoded 0.
+		fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-list --count main --not --remotes=origin": {Stdout: "3\n"},
+		}}
+		if got := pushAheadCount(context.Background(), fake, "origin", "main", false); got != 3 {
+			t.Fatalf("got %d, want 3", got)
 		}
 	})
 	t.Run("counts_ahead", func(t *testing.T) {

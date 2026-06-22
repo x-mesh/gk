@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk push`의 stale ahead 카운트 교정이 사람 요약뿐 아니라 `--json`/agent 봉투에도 적용된다.** v0.95.0은 push가 보낼 게 없을 때 git의 "Everything up-to-date"를 stale ahead 카운트보다 신뢰하도록 고쳤지만, 그 교정이 사람용 요약 경로에만 들어가고 `--json` 봉투(`pushResult.Ahead`)에는 빠져 있었다 — remote-tracking ref가 stale한 상황(이미 원격에 있는 커밋)에서 사람에겐 "up-to-date", 에이전트에겐 "N개 푸시됨"으로 서로 모순됐다. 봉투는 에이전트가 신뢰하는 권위 경로인데도 정작 고친 버그가 거기 그대로 남아 있던 셈이다. 이제 두 경로가 공통 `reportedPushCount` 헬퍼를 거쳐 git의 no-op 보고를 단일 권위로 삼아 항상 일치한다. 더불어 upstream 없는 새 브랜치의 첫 push는 ahead가 0으로 하드코딩돼 실제로 커밋을 올리는데도 거짓 "이미 up-to-date"로 표시됐는데, 이제 `rev-list --count <branch> --not --remotes=<remote>`로 아직 원격에 없는 커밋 수를 세어 실제 푸시 수를 보고한다.
+
+- **`gk commit`의 ai-commit backup ref가 `gk timemachine list`·doctor에서 실제로 보인다.** v0.95.0이 매 `gk commit`마다 `refs/gk/ai-commit-backup/<branch>/<unix>` 스냅샷을 남기고 문서가 "`gk timemachine list`로 찾으라" 안내했지만, lister(`gitsafe.ListBackups`)의 종류 allow-list에 그 패밀리가 빠져 있어 git `for-each-ref` 단계에서 걸러져 복구 앵커가 전혀 보이지 않았다. 이제 allow-list에 `refs/gk/ai-commit-backup/`를 추가해 `gk timemachine list`·doctor·`gk timemachine show` 컨텍스트 헤더가 모두 노출하며 `--kind ai-commit`로 필터할 수 있다(함께 누락돼 있던 `forget` 종류 표기도 `--kind` 도움말·docs에 보완).
+
+- **backup ref 문서의 부정확한 설명을 바로잡는다.** `gk timemachine show <ref>`를 `git diff <ref>..HEAD`와 등가로 적었으나, 실제로는 rollback 대상 커밋(커밋 전 HEAD) 자체의 부모 대비 diff를 보여줄 뿐 run이 만든 새 커밋이 아니다 — 잘못된 등가 표기를 제거했다. retention 문구의 "30일 내 최근 10개 유지 … 절대 누적되지 않음"도 실제 union 정책(30일이 지났고 **그리고** 최신 10개 밖일 때만 prune, 최근 스냅샷은 항상 보존 — 커밋 폭주 시 만료 전까지 커밋당 한 개씩 남을 수 있음)에 맞게 정정했다.
+
+### Changed
+
+- **`land.promote`의 `GK_LAND_PROMOTE` 해소에서 잉여 `BindEnv`를 제거한다(동작·우선순위 불변).** v0.95.0이 추가한 `SetDefault`만으로 viper의 `AutomaticEnv` + `.`→`_` replacer가 `GK_LAND_PROMOTE`를 이미 해소하므로(`GK_SHIP_WAIT`와 동일 경로), 중복 `BindEnv`와 사실과 반대로 적혀 있던 "parity with ship.*" 주석을 제거했다 — 환경변수 해소와 flag·config·env 우선순위는 그대로다.
+
 ## [0.95.0] - 2026-06-22
 
 ### Added

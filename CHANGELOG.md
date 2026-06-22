@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-06-22
+
+### Added
+
+- **internal:** add conflict context section and stash-apply detection
+
+### Changed
+
+- **internal:** enhance diff and init features with agent support
+
 ## [0.93.0] - 2026-06-21
 
 ### Added

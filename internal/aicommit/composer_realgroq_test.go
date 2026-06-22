@@ -15,14 +15,13 @@ import (
 // efficacy check for the Compose fan-out: parallel must be meaningfully
 // faster than sequential when each group is its own network round-trip.
 //
-// Gated on GROQ_API_KEY — skips when unset so the normal suite stays
-// hermetic. Run with:
+// Gated on GK_REAL_PROVIDER_TESTS=1 and GROQ_API_KEY — skips by default so
+// the normal suite stays hermetic and release preflight cannot fail on an
+// external rate limit. Run with:
 //
-//	GROQ_API_KEY=… go test ./internal/aicommit -run RealGroq -v -count=1
+//	GK_REAL_PROVIDER_TESTS=1 GROQ_API_KEY=… go test ./internal/aicommit -run RealGroq -v -count=1
 func TestComposeAll_RealGroq_ParallelSpeedup(t *testing.T) {
-	if os.Getenv("GROQ_API_KEY") == "" {
-		t.Skip("GROQ_API_KEY unset — skipping real-provider benchmark")
-	}
+	skipUnlessRealGroq(t)
 	p := provider.NewGroq()
 
 	groups := []provider.Group{
@@ -63,9 +62,7 @@ func TestComposeAll_RealGroq_ParallelSpeedup(t *testing.T) {
 // cache hit. This is why the CLI enables WarmCache only for Anthropic;
 // the Anthropic-side *benefit* needs a separate measurement with a key.
 func TestComposeAll_RealGroq_WarmCacheCost(t *testing.T) {
-	if os.Getenv("GROQ_API_KEY") == "" {
-		t.Skip("GROQ_API_KEY unset — skipping real-provider benchmark")
-	}
+	skipUnlessRealGroq(t)
 	p := provider.NewGroq()
 	groups := []provider.Group{
 		{Type: "feat", Files: []string{"a.go"}},
@@ -96,9 +93,7 @@ func TestComposeAll_RealGroq_WarmCacheCost(t *testing.T) {
 // single-group fast-path: one LLM group should take the same wall-clock
 // regardless of the concurrency setting (it bypasses errgroup entirely).
 func TestComposeAll_RealGroq_SingleShotIgnoresConcurrency(t *testing.T) {
-	if os.Getenv("GROQ_API_KEY") == "" {
-		t.Skip("GROQ_API_KEY unset — skipping real-provider benchmark")
-	}
+	skipUnlessRealGroq(t)
 	p := provider.NewGroq()
 	groups := []provider.Group{{Type: "feat", Files: []string{"internal/auth/login.go"}}}
 	diffs := map[string]string{
@@ -114,5 +109,15 @@ func TestComposeAll_RealGroq_SingleShotIgnoresConcurrency(t *testing.T) {
 			t.Fatalf("concurrency=%d: %v", conc, err)
 		}
 		t.Logf("single group, concurrency=%d : %v (should be ~same — fast-path)", conc, time.Since(start).Round(time.Millisecond))
+	}
+}
+
+func skipUnlessRealGroq(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GK_REAL_PROVIDER_TESTS") != "1" {
+		t.Skip("GK_REAL_PROVIDER_TESTS=1 unset — skipping real-provider benchmark")
+	}
+	if os.Getenv("GROQ_API_KEY") == "" {
+		t.Skip("GROQ_API_KEY unset — skipping real-provider benchmark")
 	}
 }

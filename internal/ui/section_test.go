@@ -18,6 +18,15 @@ func withNoColor(t *testing.T) {
 	t.Cleanup(func() { color.NoColor = prev })
 }
 
+func resetSectionColors() {
+	SectionInfo = color.New(38, 5, 33, color.Bold)
+	SectionCaution = color.New(38, 5, 136, color.Bold)
+	SectionDiverged = color.New(38, 5, 61, color.Bold)
+	SectionHealth = color.New(38, 5, 64, color.Bold)
+	SectionAction = color.New(38, 5, 166, color.Bold)
+	SectionMuted = color.New(color.FgCyan, color.Faint)
+}
+
 func TestRenderSection_Bar_NoSummary(t *testing.T) {
 	withNoColor(t)
 	got := RenderSection("branch", "", []string{"main → origin/main  ↑3 ↓0"}, SectionOpts{
@@ -237,11 +246,13 @@ func TestSectionColor_AllIntentsRender(t *testing.T) {
 		SectionInfo, SectionCaution, SectionDiverged,
 		SectionHealth, SectionAction, SectionMuted,
 	}
+	t.Cleanup(resetSectionColors)
 	for i, c := range intents {
 		if c == nil {
 			t.Errorf("intent #%d is nil", i)
 			continue
 		}
+		c.EnableColor()
 		if got := c.Sprint("X"); !strings.Contains(got, "\x1b[") {
 			t.Errorf("intent #%d emitted no ANSI prefix: %q", i, got)
 		}
@@ -294,9 +305,11 @@ func TestRenderSection_TitleSharesChromeColor(t *testing.T) {
 	color.NoColor = false
 	t.Cleanup(func() { color.NoColor = prev })
 
+	red := color.New(color.FgRed)
+	red.EnableColor()
 	got := RenderSection("x", "", []string{"plain"}, SectionOpts{
 		Layout: SectionLayoutBar,
-		Color:  color.New(color.FgRed),
+		Color:  red,
 	})
 	// Two red ANSI prefixes expected: one for the bar, one for the title.
 	prefixes := strings.Count(got, "\x1b[31m")

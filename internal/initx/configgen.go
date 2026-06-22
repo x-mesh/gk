@@ -283,37 +283,6 @@ func cloneYAMLNode(n *yaml.Node) *yaml.Node {
 	return &cp
 }
 
-// deepMerge는 src의 키를 dst에 재귀적으로 병합한다.
-// dst에 이미 존재하는 키의 값은 변경하지 않는다.
-// 새로 추가된 키의 경로를 반환한다.
-func deepMerge(dst, src map[string]any, prefix string) []string {
-	var added []string
-	for key, srcVal := range src {
-		path := key
-		if prefix != "" {
-			path = prefix + "." + key
-		}
-
-		dstVal, exists := dst[key]
-		if !exists {
-			dst[key] = srcVal
-			added = append(added, path)
-			continue
-		}
-
-		// 양쪽 모두 map이면 재귀 병합
-		dstMap, dstIsMap := toStringMap(dstVal)
-		srcMap, srcIsMap := toStringMap(srcVal)
-		if dstIsMap && srcIsMap {
-			added = append(added, deepMerge(dstMap, srcMap, path)...)
-			dst[key] = dstMap
-			continue
-		}
-		// dst에 이미 값이 있으면 변경하지 않음
-	}
-	return added
-}
-
 // toStringMap은 any를 map[string]any로 변환한다.
 // yaml.Unmarshal은 map[string]any를 반환하므로 대부분 성공한다.
 func toStringMap(v any) (map[string]any, bool) {

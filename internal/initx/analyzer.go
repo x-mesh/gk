@@ -555,9 +555,7 @@ func detectRemoteHeadBaseBranch(ctx context.Context, gitRunner GitRunner, remote
 	}
 	ref := strings.TrimSpace(string(stdout))
 	prefix := remote + "/"
-	if strings.HasPrefix(ref, prefix) {
-		ref = strings.TrimPrefix(ref, prefix)
-	}
+	ref = strings.TrimPrefix(ref, prefix)
 	if ref == "" || strings.Contains(ref, " ") {
 		return ""
 	}

@@ -517,7 +517,9 @@ func isEnvAssignment(s string) bool {
 	}
 	for i := 0; i < idx; i++ {
 		c := s[i]
-		if !(c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || i > 0 && c >= '0' && c <= '9') {
+		isAlpha := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+		isDigit := i > 0 && c >= '0' && c <= '9'
+		if c != '_' && !isAlpha && !isDigit {
 			return false
 		}
 	}
@@ -632,15 +634,6 @@ func severityRank(s string) int {
 	default:
 		return 0
 	}
-}
-
-func containsAny(s string, needles ...string) bool {
-	for _, n := range needles {
-		if strings.Contains(s, n) {
-			return true
-		}
-	}
-	return false
 }
 
 func gitSubcommand(segment string) (string, []string, bool) {

@@ -2553,7 +2553,7 @@ gk timemachine list-backups [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | `false` | Emit NDJSON |
-| `--kind <name>` | `""` | Filter by kind: `undo`, `wipe`, `timemachine` |
+| `--kind <name>` | `""` | Filter by kind: `undo`, `wipe`, `timemachine`, `forget`, `ai-commit` |
 
 #### Examples
 
@@ -2828,10 +2828,10 @@ EOF
 
 Every live run writes `refs/gk/ai-commit-backup/<branch>/<unix>` **before** the first commit, pointing at the **pre-commit HEAD** (the state `--abort` rolls back to). Two things worth knowing:
 
-- **To see what the run produced, diff the ref against the new tip:** `git diff <ref>..HEAD` (or `gk timemachine show <ref>`). Diffing *backwards from* the ref (`git diff <ref>~2..<ref>`) instead shows pre-snapshot history — not the new commits — which is why it looks empty or wrong.
+- **To see what the run produced, diff the ref against the new tip:** `git diff <ref>..HEAD`. Diffing *backwards from* the ref (`git diff <ref>~2..<ref>`) instead shows pre-snapshot history — not the new commits — which is why it looks empty or wrong. (`gk timemachine show <ref>` shows the **rollback-target commit** itself — the pre-commit HEAD, i.e. its own diff against its parent — *not* the commits the run added, so it is not a substitute for `git diff <ref>..HEAD`.)
 - **Recovery** is `gk commit --abort` (restores HEAD to the latest such ref) or, by hand, `git reset --hard <ref>`.
 
-Retention is automatic: the 10 newest refs within 30 days are kept and older ones pruned on the next commit (parity with gk's other backup families), so they never accumulate for the life of the clone. List them with `gk timemachine list`.
+Retention is automatic and best-effort: on the next commit a backup ref is pruned only once it is **both** older than 30 days **and** beyond the 10 newest (the same conservative policy gk's other backup families use). Recent snapshots within 30 days are always kept, so a burst of commits can hold one ref per commit until they age out — they don't accumulate for the life of the clone, but they aren't hard-capped at 10 either. List them with `gk timemachine list`.
 
 #### Examples
 

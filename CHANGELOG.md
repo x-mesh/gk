@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gk session audit`가 git-kit 채택률(adoption) 지표를 보고한다 — 지침 회귀를 측정 가능하게 만든다.** finding 목록은 "무엇이 새는가"는 보여줬지만 "얼마나 새는가"는 한눈에 잡히지 않았다. 이제 `usage` 줄 아래 `adoption: git-kit N of M git calls (P%); K raw calls had a git-kit path`를 출력한다 — `Rate`는 `GitKit / (RawGit+GitKit+GKShort)`, `CoveredRawHits`는 이미 git-kit 대체 경로가 있는 raw-git 패턴 적중 수(covered `raw-*` finding count 합, 순수 습관 누수). audit을 주기적으로 다시 돌려 `Rate`가 오르고 `CoveredRawHits`가 줄어드는지로 지침 변경의 효과를 추적한다. `--json`/agent 봉투엔 `adoption` 객체로 노출된다.
 
+- **`gk fleet` — 여러 worktree를 한눈에 보는 라이브 관제 대시보드를 추가한다.** 병렬 작업(특히 worktree마다 AI 에이전트가 도는 상황)을 사람이 감독할 때 "누가 dirty·충돌·behind인지"를 worktree별 status 조회 없이 보여준다. `git worktree list`를 주기 폴링해 branch·ahead/behind·dirty/conflict·current를 색상 테이블로 렌더하고(`q` 종료·`j`/`k` 이동·`r` 새로고침, 기본 2초 간격, `--interval`로 조정), 파생 `status`(clean/dirty/conflict/ahead/behind/diverged)로 한 줄 롤업한다. `--json`(또는 GK_AGENT)에선 같은 데이터를 1회 스냅샷 봉투로 emit해 에이전트·스크립트가 직접 폴링할 수 있다 — 머신 계약이 먼저고 TUI는 그 consumer다. 기존 `gk worktree list` 보강 로직(porcelain 파싱 + ahead/behind + per-path dirty 프로브)을 그대로 재사용한다.
+
+- **`gk commit -i` / `--interactive` — working-tree 파일을 손으로 커밋 단위로 묶는 TUI를 추가한다.** AI 분류(`gk commit`)에 맡기지 않고 사람이 직접 그룹을 정하고 싶을 때, plan JSON을 손으로 쓰는(`gk commit --plan`) 대신 인터랙티브하게 묶는다. 각 라운드에서 남은 파일을 고르고(라이브 선택 프리뷰) Conventional Commit 메시지를 입력하면(commitlint 통과까지 재프롬프트), 빈 선택을 확인해 종료한다. 결과는 `--plan`이 적용하는 것과 동일한 commit plan이라 검증·시크릿 게이트·백업 ref 뒤 적용을 그대로 공유한다(AI 호출 없음). 고르지 않은 파일은 트리에 남는다. non-TTY에선 `gk commit --plan` 사용을 안내하며 거부한다.
+
 ## [0.95.1] - 2026-06-23
 
 ### Fixed

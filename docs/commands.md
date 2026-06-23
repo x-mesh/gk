@@ -1891,6 +1891,32 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ---
 
+## gk fleet
+
+Live multi-worktree supervision dashboard: every worktree at once — branch, ahead/behind, dirty/conflict state, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + per-path dirty probe).
+
+The TUI polls `git worktree list` on an interval and renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `ahead` / `behind` / `diverged`). Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable snapshot of the same data — the contract a GUI/agent polls, with the TUI as its consumer.
+
+### Synopsis
+
+```
+gk fleet [--interval <seconds>]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--interval <seconds>` | `2` | Poll interval in TUI mode |
+
+### Keys (TUI)
+
+`j`/`k` (or ↓/↑) move the cursor · `r` refreshes now · `q` (or esc) quits.
+
+With `--json` / `GK_AGENT=1` the result is an array of `{path, branch, current, ahead, behind, dirty, status}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table instead of starting the interactive program.
+
+---
+
 ## gk prompt-info
 
 Emit a compact label for shell prompt integration. Three formats cover the common needs: a minimal linked-worktree marker (`plain`), a unified `<repo>/<branch>` label suitable for replacing starship's `$directory` + `$git_branch` (`segment`), and a structured payload for prompt frameworks that compose their own segments (`json`).
@@ -2786,6 +2812,7 @@ gk commit [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f`, `--force` | false | Apply commits without interactive review (secret gate still blocks) |
+| `-i`, `--interactive` | false | Interactively group working-tree files into commits in a TUI (no AI): each round pick a file set + type its Conventional-Commit message, confirm an empty selection to finish. Builds the same commit plan as `--plan`, so validation, secret gate, and the backup-ref apply are identical; unselected files stay in the tree. Needs a TTY (use `--plan` in scripts) |
 | `--dry-run` | false | Print the plan and exit without committing |
 | `--provider <name>` | config | Override `ai.provider` (`nvidia` \| `groq` \| `gemini` \| `qwen` \| `kiro`) |
 | `--lang <code>` | `en` | Override `ai.lang` (BCP-47 short code: `en`, `ko`, …) |

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -73,8 +74,12 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 	fmt.Fprintf(w, "usage: raw git %d, git-kit %d, gk(short) %d, shell chains %d\n",
 		report.Totals.RawGit, report.Totals.GitKit, report.Totals.GKShort, report.Totals.ShellChains)
 	if a := report.Adoption; a.GitInvocations > 0 {
-		fmt.Fprintf(w, "adoption: git-kit %d of %d git calls (%.1f%%); %d raw calls had a git-kit path\n",
+		line := fmt.Sprintf("adoption: git-kit %d of %d git calls (%.1f%%); %d raw calls had a git-kit path",
 			a.GitKit, a.GitInvocations, a.Rate*100, a.CoveredRawHits)
+		if a.UncoveredRawHits > 0 {
+			line += fmt.Sprintf("; %d had none (see uncovered-raw-git)", a.UncoveredRawHits)
+		}
+		fmt.Fprintln(w, line)
 	}
 
 	if len(report.Findings) == 0 {
@@ -94,6 +99,9 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 			if f.Gap != "" {
 				fmt.Fprintf(w, "    gap: %s\n", f.Gap)
 			}
+			if len(f.Subcommands) > 0 {
+				fmt.Fprintf(w, "    subcommands: %s\n", formatSubcommandBreakdown(f.Subcommands))
+			}
 			if len(f.Evidence) > 0 {
 				ev := f.Evidence[0]
 				fmt.Fprintf(w, "    e.g. %s\n", ev.Command)
@@ -112,6 +120,27 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 	for _, note := range report.Notes {
 		fmt.Fprintf(w, "note: %s\n", note)
 	}
+}
+
+// formatSubcommandBreakdown renders a gap finding's per-subcommand counts as
+// "stash x40, reset x22, switch x15" — most frequent first, ties broken
+// alphabetically so the line is stable across runs.
+func formatSubcommandBreakdown(counts map[string]int) string {
+	subs := make([]string, 0, len(counts))
+	for s := range counts {
+		subs = append(subs, s)
+	}
+	sort.Slice(subs, func(i, j int) bool {
+		if counts[subs[i]] != counts[subs[j]] {
+			return counts[subs[i]] > counts[subs[j]]
+		}
+		return subs[i] < subs[j]
+	})
+	parts := make([]string, len(subs))
+	for i, s := range subs {
+		parts[i] = fmt.Sprintf("%s x%d", s, counts[s])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // sessionBatchPlanWire renders a synthesized plan in the exact git-kit batch

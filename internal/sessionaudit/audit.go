@@ -46,6 +46,11 @@ type Adoption struct {
 	// git-kit replacement (the sum of covered raw-* findings). These are pure
 	// habit leaks: the capability exists, the agent skipped it.
 	CoveredRawHits int `json:"covered_raw_hits"`
+	// UncoveredRawHits is the number of raw-git hits with no recognized git-kit
+	// mapping (the uncovered-raw-git gap finding). Separating these from the rate
+	// keeps the adoption number honest: plumbing like `git rev-parse` should not
+	// count as a missed git-kit call.
+	UncoveredRawHits int `json:"uncovered_raw_hits"`
 }
 
 type FileReport struct {
@@ -68,14 +73,18 @@ type Totals struct {
 }
 
 type Finding struct {
-	Kind           string     `json:"kind"`
-	Severity       string     `json:"severity"`
-	Status         string     `json:"status"`
-	Count          int        `json:"count"`
-	Recommendation string     `json:"recommendation"`
-	CoveredBy      []string   `json:"covered_by,omitempty"`
-	Gap            string     `json:"gap,omitempty"`
-	Evidence       []Evidence `json:"evidence,omitempty"`
+	Kind           string   `json:"kind"`
+	Severity       string   `json:"severity"`
+	Status         string   `json:"status"`
+	Count          int      `json:"count"`
+	Recommendation string   `json:"recommendation"`
+	CoveredBy      []string `json:"covered_by,omitempty"`
+	Gap            string   `json:"gap,omitempty"`
+	// Subcommands breaks a gap finding down by raw-git subcommand
+	// (e.g. {"stash":40,"reset":22}) — the roadmap signal for which verbs
+	// git-kit has no answer for. Empty for covered findings.
+	Subcommands map[string]int `json:"subcommands,omitempty"`
+	Evidence    []Evidence     `json:"evidence,omitempty"`
 }
 
 type Evidence struct {
@@ -148,6 +157,20 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit pull/sync/merge/rebase so paused and blocked states stay in the agent envelope.",
 		coveredBy:      []string{"git-kit pull", "git-kit sync", "git-kit merge", "git-kit rebase"},
 	},
+	"raw-branch-switch": {
+		kind:           "raw-branch-switch",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit switch to move between branches — it records the gk-parent metadata that raw checkout/switch does not.",
+		coveredBy:      []string{"git-kit switch"},
+	},
+	"raw-worktree": {
+		kind:           "raw-worktree",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit worktree (add/list/run) so worktrees get gk-parent metadata and the gitignored-state bootstrap.",
+		coveredBy:      []string{"git-kit worktree"},
+	},
 	"raw-full-diff": {
 		kind:           "raw-full-diff",
 		severity:       "low",
@@ -176,6 +199,36 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit batch --plan - for multi-step git-kit workflows instead of shell chains; a synthesized plan is attached to each example.",
 		coveredBy:      []string{"git-kit batch --plan -"},
 	},
+	// uncovered-raw-git is the inverse of the covered findings: raw git the
+	// audit recognised no git-kit mapping for. It is the roadmap signal — read
+	// the subcommand breakdown to tell a missing git-kit verb (build it) from a
+	// coverage gap in this audit (classify it) — not a compliance nag, so it
+	// carries no covered_by.
+	"uncovered-raw-git": {
+		kind:           "uncovered-raw-git",
+		severity:       "info",
+		status:         "gap",
+		recommendation: "Raw git with no recognized git-kit mapping. Read the subcommand breakdown: a frequent verb is either a missing git-kit command or a coverage gap in this audit's classifiers.",
+		gap:            "no git-kit verb recognized for these raw-git subcommands",
+	},
+}
+
+// rawGitNonGap lists raw-git subcommands that must NOT be reported as a coverage
+// gap: read-only plumbing an agent legitimately reaches for, plus the diff/show
+// family (a covered domain whose rarer flag forms — `--numstat`, `--raw`,
+// `--exit-code` — otherwise slip past the diff classifiers). Every other
+// unmatched raw-git subcommand is a genuine signal that git-kit has no verb for
+// it.
+var rawGitNonGap = map[string]bool{
+	// diff/show domain — covered conceptually; guard against false gaps.
+	"diff": true, "show": true,
+	// read-only inspection / plumbing.
+	"rev-parse": true, "config": true, "cat-file": true, "symbolic-ref": true,
+	"for-each-ref": true, "ls-tree": true, "ls-files": true, "show-ref": true,
+	"ls-remote": true, "hash-object": true, "name-rev": true, "update-ref": true,
+	"var": true, "check-ignore": true, "check-attr": true, "describe": true,
+	"reflog": true, "blame": true, "grep": true, "shortlog": true,
+	"count-objects": true, "verify-commit": true, "verify-tag": true, "version": true,
 }
 
 // Audit reads local Codex/Claude JSONL sessions and reports git usage patterns.
@@ -236,8 +289,11 @@ func computeAdoption(t Totals, findings []Finding) Adoption {
 		a.Rate = float64(t.GitKit) / float64(a.GitInvocations)
 	}
 	for _, f := range findings {
-		if f.Status == "covered" && strings.HasPrefix(f.Kind, "raw-") {
+		switch {
+		case f.Status == "covered" && strings.HasPrefix(f.Kind, "raw-"):
 			a.CoveredRawHits += f.Count
+		case f.Status == "gap":
+			a.UncoveredRawHits += f.Count
 		}
 	}
 	return a
@@ -594,35 +650,33 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 				if !ok {
 					continue
 				}
+				matched := false
+				// tag/push are release-flow signals aggregated across segments
+				// (raw-release-sequence fires only when both appear), so they are
+				// flagged here rather than via gitSegmentFinding.
 				if subcmd == "tag" {
 					gitTag = true
 					if releaseEvidence == "" {
 						releaseEvidence = seg.Text
 					}
+					matched = true
 				}
 				if subcmd == "push" {
 					gitPush = true
 					if releaseEvidence == "" {
 						releaseEvidence = seg.Text
 					}
+					matched = true
 				}
-				if isRawContextProbe(subcmd, args) {
-					addFinding(findings, "raw-context-probes", file, seg.Text)
+				if kind := gitSegmentFinding(subcmd, args); kind != "" {
+					addFinding(findings, kind, file, seg.Text)
+					matched = true
 				}
-				if isRawConflictProbe(subcmd, args) {
-					addFinding(findings, "raw-conflict-probes", file, seg.Text)
-				}
-				if subcmd == "add" || subcmd == "commit" {
-					addFinding(findings, "raw-commit-sequence", file, seg.Text)
-				}
-				if isRawIntegration(subcmd) {
-					addFinding(findings, "raw-integration", file, seg.Text)
-				}
-				if subcmd == "diff" && hasArg(args, "--check") {
-					addFinding(findings, "raw-diff-check", file, seg.Text)
-				}
-				if isRawFullDiff(subcmd, args) {
-					addFinding(findings, "raw-full-diff", file, seg.Text)
+				// Anything left over is raw git the audit has no git-kit mapping
+				// for: a coverage gap or a missing verb. Plumbing/diff forms are
+				// suppressed so the gap stays a real roadmap signal.
+				if !matched && !rawGitNonGap[subcmd] {
+					addGapFinding(findings, file, subcmd, seg.Text)
 				}
 			case "gk":
 				addFinding(findings, "gk-short-alias", file, seg.Text)
@@ -749,6 +803,30 @@ func addFinding(findings map[string]*Finding, kind, file, command string) *Evide
 	return nil
 }
 
+// addGapFinding records one uncovered raw-git hit, accumulating the per-subcommand
+// breakdown that makes the gap finding a roadmap rather than a flat count.
+func addGapFinding(findings map[string]*Finding, file, subcmd, command string) {
+	const kind = "uncovered-raw-git"
+	spec := findingSpecs[kind]
+	f := findings[kind]
+	if f == nil {
+		f = &Finding{
+			Kind:           spec.kind,
+			Severity:       spec.severity,
+			Status:         spec.status,
+			Recommendation: spec.recommendation,
+			Gap:            spec.gap,
+			Subcommands:    map[string]int{},
+		}
+		findings[kind] = f
+	}
+	f.Count++
+	f.Subcommands[subcmd]++
+	if len(f.Evidence) < maxEvidence {
+		f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
+	}
+}
+
 func sortedFindings(findings map[string]*Finding) []Finding {
 	out := make([]Finding, 0, len(findings))
 	for _, f := range findings {
@@ -851,6 +929,52 @@ func isRawIntegration(subcmd string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// isRawBranchSwitch matches raw branch movement that git-kit switch covers.
+// `git switch` is always branch-oriented; for the overloaded `git checkout` the
+// `--` (or bare-pathspec) restore form is excluded — that is file restoration,
+// a different operation git-kit switch does not replace.
+func isRawBranchSwitch(subcmd string, args []string) bool {
+	switch subcmd {
+	case "switch":
+		return true
+	case "checkout":
+		return !hasArg(args, "--")
+	default:
+		return false
+	}
+}
+
+func isRawWorktree(subcmd string) bool { return subcmd == "worktree" }
+
+// gitSegmentFinding maps one raw-git segment to the covered finding kind it
+// triggers, or "" when the segment needs no git-kit nudge. It is the single
+// source of truth shared by the audit aggregation (addFindings) and the
+// single-command Hint, so adding a classifier improves both at once. tag/push
+// are handled by the caller because raw-release-sequence aggregates across
+// segments.
+func gitSegmentFinding(subcmd string, args []string) string {
+	switch {
+	case isRawContextProbe(subcmd, args):
+		return "raw-context-probes"
+	case isRawConflictProbe(subcmd, args):
+		return "raw-conflict-probes"
+	case subcmd == "add" || subcmd == "commit":
+		return "raw-commit-sequence"
+	case isRawIntegration(subcmd):
+		return "raw-integration"
+	case isRawBranchSwitch(subcmd, args):
+		return "raw-branch-switch"
+	case isRawWorktree(subcmd):
+		return "raw-worktree"
+	case subcmd == "diff" && hasArg(args, "--check"):
+		return "raw-diff-check"
+	case isRawFullDiff(subcmd, args):
+		return "raw-full-diff"
+	default:
+		return ""
 	}
 }
 

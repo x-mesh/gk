@@ -193,6 +193,84 @@ func TestAudit_ComputesAdoption(t *testing.T) {
 	}
 }
 
+func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git stash\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git stash pop\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --hard HEAD~1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply fix.patch\"}"}}`,
+		// Suppressed: read-only plumbing and a diff flag variant must NOT be
+		// reported as gaps, or the roadmap signal drowns in noise.
+		`{"payload":{"arguments":"{\"cmd\":\"git rev-parse HEAD\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git diff --numstat\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := findingByKind(report, "uncovered-raw-git")
+	if f == nil {
+		t.Fatalf("missing uncovered-raw-git finding in %+v", report.Findings)
+	}
+	if f.Status != "gap" {
+		t.Errorf("status = %q, want gap", f.Status)
+	}
+	// stash x2 + reset x1 + apply x1 = 4; rev-parse and diff are suppressed.
+	if f.Count != 4 {
+		t.Errorf("gap count = %d, want 4 (subs %v)", f.Count, f.Subcommands)
+	}
+	if f.Subcommands["stash"] != 2 {
+		t.Errorf("stash count = %d, want 2 (subs %v)", f.Subcommands["stash"], f.Subcommands)
+	}
+	for _, suppressed := range []string{"rev-parse", "diff"} {
+		if _, ok := f.Subcommands[suppressed]; ok {
+			t.Errorf("%q should be suppressed from the gap, got %v", suppressed, f.Subcommands)
+		}
+	}
+	if report.Adoption.UncoveredRawHits != 4 {
+		t.Errorf("UncoveredRawHits = %d, want 4", report.Adoption.UncoveredRawHits)
+	}
+	// A pure gap session has no git-kit calls, so it must not inflate CoveredRawHits.
+	if report.Adoption.CoveredRawHits != 0 {
+		t.Errorf("CoveredRawHits = %d, want 0", report.Adoption.CoveredRawHits)
+	}
+}
+
+func TestAudit_PromotesBranchSwitchAndWorktree(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git checkout -b feat/x\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git switch main\"}"}}`,
+		// `checkout -- <path>` is a file restore, not a branch switch — it must
+		// stay a gap, not get folded into raw-branch-switch.
+		`{"payload":{"arguments":"{\"cmd\":\"git checkout -- app.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git worktree add ../wt feat/x\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git worktree list\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if f := findingByKind(report, "raw-branch-switch"); f == nil || f.Count != 2 {
+		t.Fatalf("raw-branch-switch = %+v, want count 2 (checkout -b + switch)", f)
+	}
+	if f := findingByKind(report, "raw-worktree"); f == nil || f.Count != 2 {
+		t.Fatalf("raw-worktree = %+v, want count 2", f)
+	}
+	// The file-restore checkout is the only thing left uncovered.
+	gap := findingByKind(report, "uncovered-raw-git")
+	if gap == nil || gap.Subcommands["checkout"] != 1 {
+		t.Fatalf("expected checkout restore as the sole gap, got %+v", gap)
+	}
+}
+
 func writeLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

@@ -60,13 +60,30 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 
 ### Metadata updates
 
-`gk ship` bumps every file listed in `ship.version_files` (paths relative to the repo root). When the list is unset it falls back to the first auto-detected file:
+`gk ship` bumps every file listed in `ship.version_files` (paths relative to the repo root). Each entry is either a bare path — the format is inferred from the filename — or a `{path, pattern, key}` mapping for formats with no native handler. Native handlers (bare path is enough):
 
-1. `VERSION`
-2. `package.json`
-3. `marketplace.json`
+| File | What it rewrites |
+|------|------------------|
+| `VERSION` | the whole file |
+| `package.json` / `marketplace.json` | the `"version"` field |
+| `pyproject.toml` | `version` under `[project]` or `[tool.poetry]` only — dependency pins are left alone |
+| `Cargo.toml` | `version` under `[package]` only |
+| `*.py` | the `__version__ = "…"` assignment |
+| `pubspec.yaml` / `Chart.yaml` | the top-level `version:` key |
 
-If no version file exists, the release is tag-only. When `CHANGELOG.md` contains a non-empty `## [Unreleased]` section, `gk ship` promotes that section into `## [X.Y.Z] - YYYY-MM-DD` and commits the metadata before tagging. When `[Unreleased]` is **empty**, ship drafts the section from the conventional commits in the release range (`feat` → Added, `refactor`/`perf` → Changed, `fix` → Fixed, breaking commits marked `(breaking)`); the draft is shown in the plan and at the confirm gate before anything is written. Commits with other types (`docs`, `chore`, `ci`, …) stay out of the draft — if nothing maps, the changelog is left untouched as before.
+For anything else, give the entry a `pattern` (a literal template with one `{version}` placeholder — works on any text file) or a `key` (a dotted key path into a YAML file, comments preserved):
+
+```yaml
+ship:
+  version_files:
+    - pyproject.toml                       # native handler
+    - path: src/myapp/__init__.py
+      pattern: '__version__ = "{version}"' # any text file
+    - path: helm/Chart.yaml
+      key: appVersion                      # dotted YAML key path
+```
+
+When the list is unset, ship falls back to the **first** auto-detected file in repo root: `VERSION`, `package.json`, `marketplace.json`, `pyproject.toml`, `Cargo.toml`, then `pubspec.yaml`. A listed file whose format has no handler and no `pattern`/`key` is an error, not a silent skip — ship refuses rather than tag a release whose version never moved. `gk init` seeds `ship.version_files` from the manifests it detects, so most projects never write this by hand. If no version file exists, the release is tag-only. When `CHANGELOG.md` contains a non-empty `## [Unreleased]` section, `gk ship` promotes that section into `## [X.Y.Z] - YYYY-MM-DD` and commits the metadata before tagging. When `[Unreleased]` is **empty**, ship drafts the section from the conventional commits in the release range (`feat` → Added, `refactor`/`perf` → Changed, `fix` → Fixed, breaking commits marked `(breaking)`); the draft is shown in the plan and at the confirm gate before anything is written. Commits with other types (`docs`, `chore`, `ci`, …) stay out of the draft — if nothing maps, the changelog is left untouched as before.
 
 ### Version inference
 
@@ -94,7 +111,9 @@ ship:
       command: curl -fsI https://github.com/you/repo/releases/download/$(git describe --tags --abbrev=0)/checksums.txt
   version_files:              # explicit version files (replaces auto-detection)
     - VERSION
-    - extension/package.json
+    - pyproject.toml           # [project]/[tool.poetry] version, dependency pins untouched
+    - path: src/app/__init__.py
+      pattern: '__version__ = "{version}"'
   auto_confirm: true          # default false — skip the confirm prompt (as if -y); --yes=false escapes once
   wait: false                 # default true — false returns right after the push, skipping watch/verify
 ```

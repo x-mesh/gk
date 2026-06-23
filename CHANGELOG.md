@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk ship`가 `pyproject.toml`·`Cargo.toml`·`pubspec.yaml`/`Chart.yaml`·Python `__version__` 모듈의 버전을 네이티브로 bump한다.** 종전엔 `VERSION`·`package.json`·`marketplace.json` 세 포맷만 교체하고 나머지는 조용히 건너뛰었다. 이제 TOML은 테이블 스코프로 다뤄 `[project]`/`[tool.poetry]`(pyproject)·`[package]`(Cargo) 아래의 `version`만 고치고 의존성 핀은 절대 건드리지 않으며, YAML은 top-level `version:`을, Python은 `__version__ = "…"` 대입을 교체한다. `ship.version_files` 미설정 시 자동 감지 목록에도 `pyproject.toml`·`Cargo.toml`·`pubspec.yaml`이 추가된다.
+
+- **`ship.version_files`가 bare 경로 문자열과 `{path, pattern, key}` 매핑을 한 목록에서 섞어 받는다.** 네이티브 핸들러가 없는 포맷까지 커버하기 위해, `pattern`은 `{version}` 자리표시자 하나를 담은 리터럴 템플릿으로 임의 텍스트 파일의 해당 위치만 교체하고(`__version__ = "{version}"` 등), `key`는 YAML의 점 경로(`tool.poetry.version`)를 주석을 보존한 채 고친다. viper 언마샬에 string→struct 디코드 훅을 더해 두 형식이 같은 리스트에 공존한다(기존 duration·slice 훅은 compose로 보존).
+
+- **`gk init`이 감지한 버전 매니페스트로 `ship.version_files`를 미리 채운다.** 프로젝트 루트의 `pyproject.toml`·`Cargo.toml`·`package.json`·`pubspec.yaml`·`VERSION`을 찾아 `.gk.yaml`에 기록하고, 버전이 태그에만 사는 Go 같은 프로젝트는 `ship:` 섹션 없이 둔다. `gk config init` 템플릿에도 주석 처리된 `ship:` 섹션 전체(version_files 두 형식·watch·verify·auto_confirm·wait)를 문서화한다.
+
+### Changed
+
+- **`ship.version_files`에 적힌 파일을 더 이상 조용히 건너뛰지 않는다.** 네이티브 핸들러도 없고 `pattern`/`key`도 없는 항목은 사일런트 no-op 대신 하드 에러로 막는다 — 버전이 그대로인 파일을 안고 릴리스가 태그되는 사고를 차단한다.
+
 ## [0.96.0] - 2026-06-23
 
 ### Added

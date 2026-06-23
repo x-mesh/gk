@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-06-24
+
 ### Added
 
 - **`gk agents hook`을 추가한다 — Claude Code PreToolUse 강제 훅을 명령으로 설치·원복한다.** `gk agents install`이 까는 지시 블록(CLAUDE.md/AGENTS.md)이 "조언"이라면, 이 훅은 명령 실행 시점의 강제다. `gk agents hook install`이 `settings.json`의 `hooks.PreToolUse`에 Bash 매처 엔트리를 더해, 매 Bash 호출 직전 `gk agents hook run`(이 바이너리의 핸들러)이 명령을 `gk session audit`과 같은 매핑으로 분류한다. 두 모드 — warn(기본, 명령은 그대로 실행하되 에이전트에 노트를 주입)과 block(`--mode block`, covered raw git을 deny해 git-kit으로 재시도시킴). settings 편집은 수술적이다(tidwall sjson/gjson): gk 엔트리만 더하거나 빼고 나머지 훅·설정은 보존하며, `.bak`을 먼저 쓰고 파일 권한을 유지하고 `--dry-run`으로 미리 본다. `--global`은 repo 대신 `~/.claude/settings.json`을 대상으로 한다. 핸들러는 fail-open이다 — 비-Bash·미커버·빈 명령·깨진 stdin이면 아무것도 출력하지 않고 정상 흐름에 맡긴다.

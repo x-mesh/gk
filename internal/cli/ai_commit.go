@@ -305,12 +305,15 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		return runCommitDryRunPreview(cmd, runner, ctx, prov, files, wipCommit, *cfg, ai)
 	}
 
-	// Classify — the first provider call. Spinner advertises we are
-	// waiting on the AI CLI, not stuck.
+	// Classify — the first provider call. The spinner advertises we are waiting
+	// on the AI CLI, not stuck, and counts down against the classify timeout so
+	// an imminent deadline (the cause of "context deadline exceeded") is visible
+	// rather than waiting blind.
 	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
-	stopClassify := ui.StartBubbleSpinner(fmt.Sprintf("classify — %s", prov.Name()))
+	classifyBudget := parseDurationOrDefault(ai.Commit.Timeout, 0)
+	stopClassify := ui.StartBubbleSpinnerWithBudget(fmt.Sprintf("classify — %s", prov.Name()), classifyBudget)
 	classifyStart := time.Now()
-	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
+	res, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
 		AllowedTypes:    cfg.Commit.Types,
 		AllowedScopes:   allowedScopesFromFiles(files),
 		Lang:            ai.Lang,
@@ -321,12 +324,21 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("commit: classify: %w", err)
 	}
+	groups := res.Groups
 	Dbg("commit: classify ok — %d group(s) in %s", len(groups), time.Since(classifyStart).Round(time.Millisecond))
-	// Mirror the compose timing line below: surface the classify
-	// wall-clock + grouping on the human stream so the two LLM phases
-	// each report their cost, not just -d.
-	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classified %d file(s) into %d group(s) in %s\n",
+	// Mirror the compose timing line below: surface the classify wall-clock +
+	// grouping on the human stream so the two LLM phases each report their cost.
+	// The model/token tail is appended when the provider reports them (the
+	// heuristic short-circuit shows "heuristic" with no token count).
+	classifyLine := fmt.Sprintf("commit: classified %d file(s) into %d group(s) in %s",
 		len(files), len(groups), time.Since(classifyStart).Round(time.Millisecond))
+	if res.Model != "" {
+		classifyLine += " · " + res.Model
+	}
+	if res.TokensUsed > 0 {
+		classifyLine += " · " + formatTokens(res.TokensUsed)
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), classifyLine)
 	if len(groups) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: nothing to commit after filtering")
 		return nil
@@ -504,7 +516,7 @@ func runCommitDryRunPreview(
 ) error {
 	out := cmd.OutOrStdout()
 
-	groups, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
+	res, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
 		HeuristicOnly:   true,
 		AllowedTypes:    cfg.Commit.Types,
 		AllowedScopes:   allowedScopesFromFiles(files),
@@ -515,6 +527,7 @@ func runCommitDryRunPreview(
 	if err != nil {
 		return fmt.Errorf("commit: dry-run classify: %w", err)
 	}
+	groups := res.Groups
 	if len(groups) == 0 {
 		fmt.Fprintln(out, "commit: dry-run — nothing to commit after filtering")
 		return nil
@@ -1340,4 +1353,13 @@ func parseUnixTS(s string) (int64, error) {
 		n = n*10 + int64(c-'0')
 	}
 	return n, nil
+}
+
+// formatTokens renders a provider token count for the classify/compose timing
+// lines: a compact "1.2k tok" above a thousand, the bare count below it.
+func formatTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk tok", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d tok", n)
 }

@@ -715,7 +715,7 @@ func Defaults() Config {
 				Mode:        "interactive",
 				MaxGroups:   10,
 				MaxTokens:   24000,
-				Timeout:     "30s",
+				Timeout:     "120s",
 				DenyPaths:   DefaultDenyPaths(),
 				AllowRemote: true,
 				Trailer:     false,

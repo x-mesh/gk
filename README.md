@@ -343,7 +343,7 @@ ai:
     max_groups: 10
     # model: "kiro/claude-haiku-4.5"  # cheaper/faster model for commits only; chat/advice keep ai.<provider>.model. One-shot: gk commit --model <id>
     max_tokens: 24000
-    timeout: "30s"
+    timeout: "120s"          # total deadline across retries; classify on a large tree is slow
     allow_remote: true       # repo-wide: set false to block remote providers for EVERY AI command, not just commit
     trailer: false           # true → append "AI-Assisted-By: <provider>@<version>" to each commit
     audit: false             # true → append JSONL to .git/gk-ai-commit/audit.jsonl

@@ -43,7 +43,7 @@ func TestIntegrationGatherClassifyComposeApplyHappyPath(t *testing.T) {
 
 	p := provider.NewFake()
 	// Heuristic path: homogeneous (same top-dir, <=5 files) — LLM not called.
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		AllowedTypes:    []string{"feat", "chore"},
 		HybridFileLimit: 5,
 	})

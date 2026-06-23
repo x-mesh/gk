@@ -39,21 +39,25 @@ type ClassifyOptions struct {
 //     override** so test/docs/ci files always keep their heuristic
 //     type even if the LLM picked something else — this is the pitfall
 //     research's P2.1 mitigation.
+//
+// The returned ClassifyResult carries the provider's Model and TokensUsed so
+// the caller can report classify cost; the heuristic short-circuits report
+// Model "heuristic" with zero tokens (no provider call was made).
 func Classify(
 	ctx context.Context,
 	p provider.Provider,
 	files []FileChange,
 	opts ClassifyOptions,
-) ([]provider.Group, error) {
+) (provider.ClassifyResult, error) {
 	// Drop denied files up front — never sent to the LLM.
 	safe := filterSafe(files)
 	if len(safe) == 0 {
-		return nil, nil
+		return provider.ClassifyResult{}, nil
 	}
 
 	heuristic := heuristicGroups(safe)
 	if opts.HeuristicOnly || isSmallHomogeneous(safe, opts.HybridFileLimit) {
-		return heuristic, nil
+		return provider.ClassifyResult{Groups: heuristic, Model: heuristicModel}, nil
 	}
 	// Definite-type single-group fast path: when the heuristic already
 	// resolves the whole change to exactly ONE group of a DEFINITE kind
@@ -67,7 +71,7 @@ func Classify(
 	// scopeless message would fail commitlint — defer to the LLM, which can
 	// infer one.
 	if len(heuristic) == 1 && isDefiniteKind(heuristic[0].Type) && !opts.ScopeRequired {
-		return heuristic, nil
+		return provider.ClassifyResult{Groups: heuristic, Model: heuristicModel}, nil
 	}
 
 	// LLM path.
@@ -79,9 +83,11 @@ func Classify(
 	}
 	res, err := p.Classify(ctx, in)
 	if err != nil {
-		return nil, err
+		return provider.ClassifyResult{}, err
 	}
-	return overrideWithPathRules(res.Groups, safe), nil
+	// Keep the provider's Model/TokensUsed; only the groups are post-processed.
+	res.Groups = overrideWithPathRules(res.Groups, safe)
+	return res, nil
 }
 
 // filterSafe drops entries where DeniedBy is set.

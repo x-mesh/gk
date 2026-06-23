@@ -326,8 +326,9 @@ ai:
     # (stat → hunk head → cluster summary) to stay under this limit.
     max_tokens: 24000
 
-    # Per-provider timeout (Go duration). Stuck subprocess is cancelled.
-    timeout: 30s
+    # Per-provider timeout (Go duration), total across retries. Classifying a
+    # large working tree can be slow, so this is more generous than chat's 30s.
+    timeout: 120s
 
     # When false, providers whose Locality() is "remote" are blocked for
     # EVERY AI command (commit, pr, review, changelog, ask, explain, do,

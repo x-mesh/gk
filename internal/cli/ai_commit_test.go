@@ -13,6 +13,25 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 )
 
+func TestFormatTokens(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "0 tok"},
+		{1, "1 tok"},
+		{999, "999 tok"},
+		{1000, "1.0k tok"},
+		{1234, "1.2k tok"},
+		{24000, "24.0k tok"},
+	}
+	for _, tc := range cases {
+		if got := formatTokens(tc.n); got != tc.want {
+			t.Errorf("formatTokens(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
+
 func TestAICommitRegistered(t *testing.T) {
 	// rootCmd should resolve "commit" directly.
 	found, _, err := rootCmd.Find([]string{"commit"})

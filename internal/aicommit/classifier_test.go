@@ -7,6 +7,14 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 )
 
+// classifyGroups is a test shim for the pre-ClassifyResult call style: it runs
+// Classify and returns just the groups, so the existing tests stay terse now
+// that Classify returns model/token metadata alongside the groups.
+func classifyGroups(ctx context.Context, p provider.Provider, files []FileChange, opts ClassifyOptions) ([]provider.Group, error) {
+	res, err := Classify(ctx, p, files, opts)
+	return res.Groups, err
+}
+
 func TestHeuristicType(t *testing.T) {
 	cases := []struct {
 		path string
@@ -42,7 +50,7 @@ func TestClassifyHeuristicOnlyShortCircuitsLLM(t *testing.T) {
 		{Path: "internal/cli/root_test.go", Status: "modified"},
 		{Path: "internal/cli/root.go", Status: "modified"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HeuristicOnly: true,
 		AllowedTypes:  []string{"feat", "test"},
 	})
@@ -63,7 +71,7 @@ func TestClassifySmallHomogeneousShortCircuitsLLM(t *testing.T) {
 		{Path: "internal/cli/a.go"},
 		{Path: "internal/cli/b.go"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 5,
 		AllowedTypes:    []string{"feat", "chore"},
 	})
@@ -100,7 +108,7 @@ func TestClassifyDefiniteSingleGroupSkipsLLM(t *testing.T) {
 		{Path: "docs/d.md"},
 		{Path: "docs/e.md"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 5,
 		AllowedTypes:    []string{"feat", "docs", "chore"},
 	})
@@ -137,7 +145,7 @@ func TestClassifyChoreSingleGroupStillCallsLLM(t *testing.T) {
 		{Path: "internal/a.go"}, {Path: "internal/b.go"}, {Path: "internal/c.go"},
 		{Path: "internal/d.go"}, {Path: "internal/e.go"}, {Path: "internal/f.go"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 5,
 		AllowedTypes:    []string{"feat", "fix", "chore"},
 	})
@@ -170,7 +178,7 @@ func TestClassifyScopeRequiredDisablesDefiniteFastPath(t *testing.T) {
 		{Path: "README.md"}, {Path: "docs/a.md"}, {Path: "docs/b.md"},
 		{Path: "docs/c.md"}, {Path: "docs/d.md"}, {Path: "docs/e.md"},
 	}
-	if _, err := Classify(context.Background(), p, files, ClassifyOptions{
+	if _, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 5,
 		AllowedTypes:    []string{"feat", "docs", "chore"},
 		ScopeRequired:   true,
@@ -194,7 +202,7 @@ func TestClassifyLLMInvokedForDiverseSet(t *testing.T) {
 		{Path: "cmd/gk/main.go", Status: "modified"},
 		{Path: "internal/cli/foo_test.go", Status: "added"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 5, // diverse top-dirs → LLM path
 		AllowedTypes:    []string{"feat", "test", "chore"},
 	})
@@ -221,7 +229,7 @@ func TestClassifyKeepsAuxiliaryTestWithFeatureGroup(t *testing.T) {
 		{Path: "cmd/gk/main.go"},
 		{Path: "internal/cli/foo_test.go"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 1, // force LLM path even for small set
 		AllowedTypes:    []string{"feat", "test"},
 	})
@@ -248,7 +256,7 @@ func TestClassifyPathRuleOverrideMovesStandaloneTestOutOfFeat(t *testing.T) {
 		}},
 	}}
 	files := []FileChange{{Path: "internal/cli/foo_test.go"}}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 0,
 		AllowedTypes:    []string{"feat", "test"},
 	})
@@ -273,7 +281,7 @@ func TestClassifyKeepsAuxiliaryDocsWithFeatureGroup(t *testing.T) {
 		{Path: "README.md"},
 		{Path: "docs/commands.md"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
 		HybridFileLimit: 1,
 		AllowedTypes:    []string{"feat", "docs"},
 	})
@@ -291,7 +299,7 @@ func TestClassifyDropsDeniedFiles(t *testing.T) {
 		{Path: ".env", DeniedBy: ".env"},
 		{Path: "cmd/gk/main.go"},
 	}
-	groups, err := Classify(context.Background(), p, files, ClassifyOptions{HeuristicOnly: true})
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{HeuristicOnly: true})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}

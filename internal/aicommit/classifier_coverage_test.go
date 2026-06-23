@@ -36,7 +36,7 @@ func TestClassify_SweepsUncoveredFiles(t *testing.T) {
 			},
 		}},
 	}
-	groups, err := Classify(context.Background(), fake, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), fake, files, ClassifyOptions{
 		AllowedTypes:    []string{"feat", "chore"},
 		HybridFileLimit: 1,
 	})
@@ -67,7 +67,7 @@ func TestClassify_IgnoresPhantomLLMPaths(t *testing.T) {
 			},
 		}},
 	}
-	groups, err := Classify(context.Background(), fake, files, ClassifyOptions{
+	groups, err := classifyGroups(context.Background(), fake, files, ClassifyOptions{
 		AllowedTypes:    []string{"feat"},
 		HybridFileLimit: 1,
 	})

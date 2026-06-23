@@ -104,22 +104,12 @@ func runAICommitPlanTemplate(cmd *cobra.Command, ctx context.Context, runner git
 // commitPlanResultJSON contract (JSON mode → stdout, progress → stderr; human
 // mode → per-commit ✓ lines).
 func runAICommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner, cfg *config.Config, ai config.AIConfig, flags aiCommitFlags) error {
-	planArg := flags.plan
-	jsonMode := JSONOut()
-
-	// Progress goes to stderr in JSON mode so stdout carries only the result
-	// document; in human mode everything shares stdout (same split as land).
-	progress := cmd.OutOrStdout()
-	if jsonMode {
-		progress = cmd.ErrOrStderr()
-	}
-
-	// 1. Read the plan: "-" = stdin, else a file path (rebase.go:155-163).
+	// Read the plan: "-" = stdin, else a file path (rebase.go:155-163).
 	var planReader io.Reader
-	if planArg == "-" {
+	if flags.plan == "-" {
 		planReader = cmd.InOrStdin()
 	} else {
-		f, oerr := os.Open(planArg)
+		f, oerr := os.Open(flags.plan)
 		if oerr != nil {
 			return fmt.Errorf("commit: open plan: %w", oerr)
 		}
@@ -130,8 +120,28 @@ func runAICommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner,
 	if err != nil {
 		return err
 	}
+	return applyCommitPlan(cmd, ctx, runner, cfg, ai, flags, plan)
+}
 
-	// 2. Build the dirty universe from the real tree, then validate the plan
+// applyCommitPlan validates a commit plan against the real working tree +
+// commitlint, runs the gofmt advisory + secret guard over the plan's files,
+// then converts and applies it behind a backup ref. No provider, no LLM call.
+// Shared by the `--plan` path (plan read from stdin/a file) and the
+// `--interactive` TUI path (plan built from the user's file grouping), so both
+// get the identical validation, secret gate, and apply semantics. The result is
+// the commitPlanResultJSON contract (JSON mode → stdout, progress → stderr;
+// human mode → per-commit ✓ lines).
+func applyCommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner, cfg *config.Config, ai config.AIConfig, flags aiCommitFlags, plan commitPlanJSON) error {
+	jsonMode := JSONOut()
+
+	// Progress goes to stderr in JSON mode so stdout carries only the result
+	// document; in human mode everything shares stdout (same split as land).
+	progress := cmd.OutOrStdout()
+	if jsonMode {
+		progress = cmd.ErrOrStderr()
+	}
+
+	// Build the dirty universe from the real tree, then validate the plan
 	// against it + the repo's commitlint rules (lint_commit.go:37 selects the
 	// same three fields).
 	files, err := aicommit.GatherWIP(ctx, runner, aicommit.GatherOptions{

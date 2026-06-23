@@ -79,6 +79,7 @@ the most recent run.
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
 	cmd.Flags().String("plan", "", "JSON commit plan: a file path, or '-' for stdin (deterministic, no AI)")
 	cmd.Flags().Bool("plan-template", false, "emit current working-tree changes as a commit-plan draft (JSON) and exit")
+	cmd.Flags().BoolP("interactive", "i", false, "interactively group working-tree files into commits (TUI; builds a commit plan, no AI)")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
 	cmd.Flags().Bool("no-wip-unwrap", false, "skip detection/unwrap of WIP-like commits in HEAD chain")
@@ -129,6 +130,12 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	if flags.plan != "" {
 		return runAICommitPlan(cmd, ctx, runner, cfg, ai, flags)
+	}
+	// --interactive is also AI-free: the human groups files and writes the
+	// messages in a TUI, which builds the same commit plan the --plan path
+	// applies. Branch before any provider is constructed.
+	if flags.interactive {
+		return runAICommitInteractive(cmd, ctx, runner, cfg, ai, flags)
 	}
 
 	// Resolve provider first so Preflight can query Locality / Available.
@@ -778,6 +785,7 @@ type aiCommitFlags struct {
 	forceWIP         bool
 	plan             string
 	planTemplate     bool
+	interactive      bool
 }
 
 // secretBypass reports whether secret findings should be waved through
@@ -809,6 +817,7 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.forceWIP, _ = cmd.Flags().GetBool("force-wip")
 	f.plan, _ = cmd.Flags().GetString("plan")
 	f.planTemplate, _ = cmd.Flags().GetBool("plan-template")
+	f.interactive, _ = cmd.Flags().GetBool("interactive")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
 	}

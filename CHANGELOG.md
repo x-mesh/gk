@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-06-23
+
 ### Added
 
 - **`gk session audit`가 shell-chain마다 대체 `git-kit batch --plan -` 계획을 합성한다 — `shell-chain` finding의 마지막 PARTIAL 갭을 닫는다.** 종전 audit은 `git … && git … && git …` 체인을 감지해 "batch를 쓰라"고 권하면서도 정작 어떤 batch 계획으로 바꿀지는 보여주지 못해 status가 `partial`이었다. 이제 각 체인을 segment로 쪼개 raw-git segment를 finding이 쓰는 동일 분류기(`isRawContextProbe`/`isRawConflictProbe`/`isRawFullDiff` 등)로 git-kit verb에 매핑하고(연속 중복 step은 하나로 접고, `echo`/`grep`/`cd` 등 git-kit이 실행할 수 없는 segment는 `omitted`로 분리), 그 결과를 evidence에 붙은 복사-실행 가능한 `{"steps":[{"args":[...]}]}` 한 줄로 emit한다 — 사람 출력엔 `batch plan: git-kit batch --plan - <<< '…'` 줄로, `--json`/agent 봉투엔 `findings[].evidence[].plan`으로. status는 `covered`로 올라가고 gap 문구는 사라진다.

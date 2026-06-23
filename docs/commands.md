@@ -429,8 +429,29 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 | `gk agents install --global` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
+| `gk agents hook install [--mode block\|warn] [--global] [--dry-run]` | Register a Claude Code PreToolUse(Bash) hook in `settings.json` that steers raw git to git-kit at the moment a command runs (default `.claude/settings.json`; `--global` for `~/.claude/settings.json`) |
+| `gk agents hook uninstall [--global] [--dry-run]` | Remove the gk-managed hook (revert), preserving every other hook |
+| `gk agents hook status` | Report hook install state + mode for local and global settings |
 
 With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
+
+`gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Two modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`) and **block** (`--mode block` — covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.)
+
+## gk hint
+
+Maps a single raw `git` command to the git-kit verb that covers it — the single source of truth behind `gk agents hook` and the same mapping `gk session audit` reports. The command text comes from the arguments, or from stdin when none are given:
+
+```bash
+gk hint "git status --short"
+echo "$TOOL_CMD" | gk hint --json
+```
+
+| Flag | Effect |
+|------|--------|
+| `--json` (or `GK_AGENT=1`) | Emit `{covered, kind, severity, covered_by, suggestion, matched}` instead of the one human line |
+| `--exit-code` | Exit 1 when a git-kit replacement exists (0 otherwise), so a hook script can branch on the status without parsing output |
+
+A command containing several git segments reports the highest-severity covered pattern. Read-only plumbing (`git rev-parse`, `git config --get`, `git cat-file`, …), the `git diff`/`show` family, commands already on git-kit, and non-git commands all report not-covered.
 
 ## gk session audit
 
@@ -455,12 +476,13 @@ gk session audit ~/.codex/sessions/2026/06/22/session.jsonl --json
 
 The JSON schema reports per-file counts, totals, and aggregated findings such
 as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
-`raw-commit-sequence`, `raw-full-diff`, `raw-diff-check`, `gk-short-alias`,
-and `shell-chain`. Each finding carries a `status`:
+`raw-commit-sequence`, `raw-branch-switch`, `raw-worktree`, `raw-full-diff`,
+`raw-diff-check`, `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
+Each finding carries a `status`:
 
 - `covered`: git-kit already has a replacement; read `covered_by`.
 - `partial`: git-kit covers the common path, but the finding still names a remaining workflow gap.
-- `gap`: session evidence points to a missing git-kit feature; read `gap`.
+- `gap`: session evidence points to a missing git-kit feature; read `gap`. The `uncovered-raw-git` finding collects every raw-git subcommand with no recognized git-kit mapping (read-only plumbing excluded) and carries a `subcommands` breakdown (`{"stash":4,"apply":3,…}`) — the roadmap signal for which verbs to build or classify.
 
 Each `shell-chain` finding's evidence carries a synthesized `plan`: a ready-to-run
 `git-kit batch --plan -` payload (`{"steps":[{"args":[...]}]}`) that replaces the
@@ -469,10 +491,12 @@ segments (`echo`, `grep`, `cd`, …) that batch cannot carry. The human output
 prints it as a `batch plan:` line.
 
 The report also includes an `adoption` block — `git_invocations`, `git_kit`,
-`rate` (git-kit's share of all git-shaped calls), and `covered_raw_hits` (raw-git
-hits that already have a git-kit path, i.e. pure habit leaks). Rerun the audit
-over time and watch `rate` climb and `covered_raw_hits` fall to track whether
-guidance changes are landing.
+`rate` (git-kit's share of all git-shaped calls), `covered_raw_hits` (raw-git
+hits that already have a git-kit path, i.e. pure habit leaks), and
+`uncovered_raw_hits` (raw git with no git-kit mapping, kept separate so the rate
+is not dragged down by plumbing that git-kit never intends to wrap). Rerun the
+audit over time and watch `rate` climb and `covered_raw_hits` fall to track
+whether guidance changes are landing.
 
 Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
 envelope.

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk agents hook`을 추가한다 — Claude Code PreToolUse 강제 훅을 명령으로 설치·원복한다.** `gk agents install`이 까는 지시 블록(CLAUDE.md/AGENTS.md)이 "조언"이라면, 이 훅은 명령 실행 시점의 강제다. `gk agents hook install`이 `settings.json`의 `hooks.PreToolUse`에 Bash 매처 엔트리를 더해, 매 Bash 호출 직전 `gk agents hook run`(이 바이너리의 핸들러)이 명령을 `gk session audit`과 같은 매핑으로 분류한다. 두 모드 — warn(기본, 명령은 그대로 실행하되 에이전트에 노트를 주입)과 block(`--mode block`, covered raw git을 deny해 git-kit으로 재시도시킴). settings 편집은 수술적이다(tidwall sjson/gjson): gk 엔트리만 더하거나 빼고 나머지 훅·설정은 보존하며, `.bak`을 먼저 쓰고 파일 권한을 유지하고 `--dry-run`으로 미리 본다. `--global`은 repo 대신 `~/.claude/settings.json`을 대상으로 한다. 핸들러는 fail-open이다 — 비-Bash·미커버·빈 명령·깨진 stdin이면 아무것도 출력하지 않고 정상 흐름에 맡긴다.
+
+- **`gk hint`를 추가한다 — raw git 한 줄을 그에 대응하는 git-kit 동사로 매핑한다.** `gk session audit`이 쓰는 분류기를 단일 명령에 적용해, 셸 명령(인자 또는 stdin)을 받아 `{covered, kind, covered_by, suggestion, matched}`를 emit한다(`--json`/사람용 한 줄). 체인이면 최고 심각도 패턴을 고르고, `--exit-code`는 git-kit 대체가 있으면 1로 나가 훅 스크립트가 분기할 수 있게 한다. 읽기 전용 plumbing(`rev-parse`/`config` 등)·이미 git-kit인 명령은 통과시킨다. `gk agents hook`의 백엔드이자 audit 매핑의 단일 출처다.
+
+- **`gk session audit`가 미커버 raw-git을 `uncovered-raw-git` gap finding으로 서피싱하고, `checkout`/`switch`·`worktree`를 covered로 승격한다.** 종전 audit은 git-kit이 *대체하는* raw git만 잔소리했고, git-kit이 대응 동사가 없는 raw git은 리포트에 안 보였다(죽어 있던 `gap` 인프라). 이제 어떤 covered 분류기에도 안 걸리고 plumbing(`rev-parse`/`config`/`cat-file`/diff 변형 등)이 아닌 raw git을 모아 subcommand 분해(`stash x4, apply x3, …`)와 함께 emit한다 — 잔소리 도구에서 "무엇을 만들지" 알려주는 로드맵으로. 더불어 raw `git checkout <branch>`/`git switch`는 `git-kit switch`, `git worktree …`는 `git-kit worktree`로 매핑하는 `raw-branch-switch`·`raw-worktree` 분류기를 더해(`checkout -- <path>` 파일 복원 형태는 제외) 종전 gap에 잘못 새던 항목을 covered로 옮긴다. adoption 줄에 미커버 수(`… ; K had none`)를 분리해 채택률 지표가 plumbing을 누수로 오인하지 않게 한다.
+
+- **agents 계약 v19 — 블록 상단에 raw-git→git-kit DON'T→DO 규칙 표를 단다.** `gk agents install`이 CLAUDE.md/AGENTS.md에 까는 계약을, 긴 산문 레퍼런스에서 스캔 가능한 규칙집으로 바꾼다. audit이 잡는 누수 패턴(status/log/diff probe→context, add+commit→commit, checkout/switch→switch, worktree, pull/merge/rebase→pull/sync/…, tag+push→ship, full diff→diff, 체인→batch, short `gk`→`git-kit`)을 표 한 장으로 최상단에 올리고, 읽기 전용 plumbing은 raw로 둔다는 예외를 명시한다. 기존 상세 산문은 `### Detail`로 강등해 보존한다. 계약 버전이 18→19로 올라 `gk agents check`가 모든 repo에서 drift를 감지한다.
+
+- **`gk fleet`이 worktree별 활동성·중단된 작업·parent/land 준비도를 보여주고, 커서 행 상세 패널과 라이브 벽시계를 단다.** 병렬 에이전트 감독에서 "누가 멈췄나·언제 작업했나·정리해도 되나"를 채우기 위해, 엔트리마다 `active_ago_s`(HEAD 커밋 시각, dirty면 변경 파일 mtime으로 끌어올림 — 커밋 안 한 채 편집 중인 에이전트도 "now"), `operation`+`resume`(중단된 rebase/merge/cherry-pick + `gk continue`), `parent`/`parent_behind`/`land_ready`를 더한다(JSON 계약 append-only). `paused`를 새 status로 두어 conflict보다 우선 표시하고(브랜치 옆 `⏸`), TUI는 글랜스 테이블에 커서 행 상세 패널을 붙이고(`enter` 토글) 헤더 우측에 `gk status --watch`와 같은 라이브 벽시계(1초 render-only tick)를 그려 폴 사이에도 살아 있음을 보여준다.
+
+### Changed
+
+- **`gk commit`의 AI classify 기본 timeout을 30s→120s로 올리고, classify 진행을 경과/한도 카운트다운 스피너로 보여준다.** 파일이 많을 때 30s로는 classify 호출이 자주 `context deadline exceeded`로 끊겼다(이 timeout은 재시도까지 포함한 전체 예산이다) — `ai.commit.timeout` 기본값을 120s로 올린다(채팅 timeout은 30s 유지). 더불어 classify 스피너에 `42s / 120s` 경과/예산 카운트다운을 달아(80%↑ 노랑, 95%↑ 빨강) 타임아웃 임박을 눈으로 보게 하고, 완료 라인에 provider model과 토큰 수를 붙인다(`… in 18.3s · <model> · 1.2k tok`). 스피너는 stderr 전용·비-TTY/agent no-op이라 머신 출력엔 영향이 없다.
+
 ## [0.97.0] - 2026-06-23
 
 ### Added

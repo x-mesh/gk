@@ -1,5 +1,23 @@
-<!-- gk:agents:begin v18 — managed by `gk agents install`; edit outside this block -->
+<!-- gk:agents:begin v19 — managed by `gk agents install`; edit outside this block -->
 ## Git workflow (git-kit)
+
+### Reach for git-kit first — raw git that has a git-kit path
+
+| Don't (raw git) | Do (git-kit) |
+| --- | --- |
+| git status / log / diff --stat / branch (orienting) | git-kit context — one call; add --include=diff,log,precheck,remotes for more |
+| git add + git commit | git-kit commit (AI groups) — or git-kit commit --plan - to group it yourself |
+| git checkout / git switch (to a branch) | git-kit switch |
+| git worktree … | git-kit worktree … |
+| git pull / fetch / merge / rebase | git-kit pull / sync / merge / rebase (paused states stay in the envelope) |
+| git tag + git push (cutting a release) | git-kit ship -y |
+| git diff (the full patch) | git-kit diff --raw-patch --json — or --digest for a summary |
+| git … && git … && git … (multi-step chains) | git-kit batch --plan - (one transaction) |
+| the short gk (shadowed by shell aliases) | git-kit (always the full name) |
+
+Read-only plumbing stays raw — git-kit does not wrap git rev-parse, git config --get, git cat-file, git ls-files, and the like.
+
+### Detail
 
 This repository is driven with git-kit, an agent-native git CLI. Always invoke it as `git-kit` — the short name `gk` is the same binary but is commonly shadowed by shell aliases (oh-my-zsh maps `gk` to gitk), so it is not reliable from an agent shell. Prefix every agent tool call with `GK_AGENT=1 git-kit …` — an agent shell does not persist environment between tool calls, so setting it just once would silently lapse to human-readable prose on the next call (a human at an interactive shell can `export GK_AGENT=1` once instead). With it set, every command emits a uniform envelope — `{state, ok, result}` on success, `{state:"error", ok:false, error:{code, message, remedies:[{command,safety}]}}` on failure — so you branch on fields, never parse prose. `state` is the dispatch key: `ok` (done) · `paused` (a conflict/operation is mid-flight — resume or abort it) · `blocked` (a precondition like a diverged base failed — run the remedy) · `error` (the command failed); `ok` is kept as a derived alias (`ok == state=="ok"`). **Quick start — most agent sessions are three turns:** `git-kit context` (orient) → make your edits → `git-kit land` (commit + pull + push in one transaction); add `git-kit ship -y` to cut a release. Prefer git-kit over raw git — each verb below collapses several git calls into one:
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.0] - 2026-06-23
+
 ### Added
 
 - **`gk ship`가 `pyproject.toml`·`Cargo.toml`·`pubspec.yaml`/`Chart.yaml`·Python `__version__` 모듈의 버전을 네이티브로 bump한다.** 종전엔 `VERSION`·`package.json`·`marketplace.json` 세 포맷만 교체하고 나머지는 조용히 건너뛰었다. 이제 TOML은 테이블 스코프로 다뤄 `[project]`/`[tool.poetry]`(pyproject)·`[package]`(Cargo) 아래의 `version`만 고치고 의존성 핀은 절대 건드리지 않으며, YAML은 top-level `version:`을, Python은 `__version__ = "…"` 대입을 교체한다. `ship.version_files` 미설정 시 자동 감지 목록에도 `pyproject.toml`·`Cargo.toml`·`pubspec.yaml`이 추가된다.

@@ -443,6 +443,18 @@ and `shell-chain`. Each finding carries a `status`:
 - `partial`: git-kit covers the common path, but the finding still names a remaining workflow gap.
 - `gap`: session evidence points to a missing git-kit feature; read `gap`.
 
+Each `shell-chain` finding's evidence carries a synthesized `plan`: a ready-to-run
+`git-kit batch --plan -` payload (`{"steps":[{"args":[...]}]}`) that replaces the
+observed `git … && git …` chain, plus an `omitted` list naming the non-git-kit
+segments (`echo`, `grep`, `cd`, …) that batch cannot carry. The human output
+prints it as a `batch plan:` line.
+
+The report also includes an `adoption` block — `git_invocations`, `git_kit`,
+`rate` (git-kit's share of all git-shaped calls), and `covered_raw_hits` (raw-git
+hits that already have a git-kit path, i.e. pure habit leaks). Rerun the audit
+over time and watch `rate` climb and `covered_raw_hits` fall to track whether
+guidance changes are landing.
+
 Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
 envelope.
 

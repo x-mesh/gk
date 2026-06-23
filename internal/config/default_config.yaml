@@ -108,6 +108,50 @@ refresh:
   #   - main
   #   - develop
 
+# gk ship — the release pipeline (preflight → version/CHANGELOG → tag →
+# push → CI watch → verify). All fields optional; omit the section for a
+# tag-only release. `gk init` seeds version_files from the manifests it
+# finds, so most projects never edit this by hand.
+#
+# ship:
+#   # Files whose version string ship rewrites alongside the git tag. Each
+#   # entry is either a bare path (format inferred from the filename) or a
+#   # {path, pattern, key} mapping for formats with no native handler.
+#   #
+#   # Native handlers (bare path is enough):
+#   #   VERSION · package.json · marketplace.json · pyproject.toml
+#   #   ([project]/[tool.poetry] only) · Cargo.toml ([package]) ·
+#   #   *.py (__version__) · pubspec.yaml / Chart.yaml (top-level version:)
+#   version_files:
+#     - pyproject.toml
+#     - VERSION
+#     # pattern: a literal template with one {version} placeholder —
+#     # rewrites whatever text sits where {version} does. Any text file.
+#     - path: src/myapp/__init__.py
+#       pattern: '__version__ = "{version}"'
+#     # key: a dotted key path into a YAML file; comments are preserved.
+#     - path: helm/Chart.yaml
+#       key: appVersion
+#
+#   # Commands run after the tag is pushed — typically a blocking CI watch.
+#   # A failure aborts ship with a rerun hint (the tag is already live).
+#   watch:
+#     - name: ci
+#       command: gh run watch --exit-status
+#
+#   # Post-release checks run after every watch step succeeds.
+#   verify:
+#     - name: cdn
+#       command: curl -fsI https://example.com/checksums.txt
+#       continue_on_failure: true
+#
+#   # Skip the final confirmation prompt by default (as if -y was passed).
+#   auto_confirm: false
+#
+#   # Run the post-tag watch/verify pipeline. false returns right after the
+#   # push — published but untracked. Override with --wait / --wait=false.
+#   wait: true
+
 branch:
   # Threshold in days for `gk branch list --stale`.
   stale_days: 30

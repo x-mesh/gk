@@ -132,8 +132,10 @@ type shipPlan struct {
 	RepoRoot    string
 	// VersionFiles lists every version file the release bumps — the
 	// ship.version_files config when set, else the single auto-detected
-	// file (VERSION / package.json / marketplace.json). Empty = tag-only.
-	VersionFiles []string
+	// file (VERSION / package.json / marketplace.json / pyproject.toml /
+	// Cargo.toml / pubspec.yaml). Each entry's Path is resolved to an
+	// absolute path; Pattern/Key carry the optional override. Empty = tag-only.
+	VersionFiles []config.VersionFile
 	Changelog    string
 	// Preflight/Watch/Verify carry the configured pipeline steps so the
 	// plan (human render and --json) shows the whole release pipeline,
@@ -605,18 +607,19 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 
 	// ship.version_files overrides the auto-detection: an explicit list is
 	// the user's statement of every file that carries the version, so a
-	// missing entry should fail loudly later rather than fall back.
-	var versionFiles []string
+	// missing entry should fail loudly later rather than fall back. Paths are
+	// resolved to absolute here; Pattern/Key ride along to applyShipReleaseFiles.
+	var versionFiles []config.VersionFile
 	if len(cfg.Ship.VersionFiles) > 0 {
 		for _, vf := range cfg.Ship.VersionFiles {
-			p := vf
+			p := vf.Path
 			if !filepath.IsAbs(p) && repoRoot != "" {
-				p = filepath.Join(repoRoot, vf)
+				p = filepath.Join(repoRoot, p)
 			}
-			versionFiles = append(versionFiles, p)
+			versionFiles = append(versionFiles, config.VersionFile{Path: p, Pattern: vf.Pattern, Key: vf.Key})
 		}
 	} else if versionFile != "" {
-		versionFiles = []string{versionFile}
+		versionFiles = []config.VersionFile{{Path: versionFile}}
 	}
 
 	// When the changelog has an empty [Unreleased] section, draft one from
@@ -967,7 +970,7 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 		fmt.Fprintf(w, "  %s   %s\n", label("Next tag: "), tag(plan.NextTag))
 	}
 	if len(plan.VersionFiles) > 0 {
-		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), value(strings.Join(plan.VersionFiles, ", ")))
+		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), value(strings.Join(versionFilePaths(plan.VersionFiles), ", ")))
 	} else {
 		fmt.Fprintf(w, "  %s   %s\n", label("Version:  "), label("tag-only"))
 	}
@@ -1143,7 +1146,7 @@ func renderShipPlanJSON(w io.Writer, plan shipPlan, flags shipFlags) error {
 		BumpDowngraded: plan.BumpDowngraded,
 		CommitCount:    plan.CommitCount,
 		MergeToBase:    plan.MergeToBase,
-		VersionFiles:   plan.VersionFiles,
+		VersionFiles:   versionFilePaths(plan.VersionFiles),
 		Changelog:      plan.Changelog,
 		ChangelogDraft: plan.ChangelogDraft,
 		NoRelease:      flags.noRelease,
@@ -1168,7 +1171,7 @@ func renderShipStatus(w io.Writer, plan shipPlan) {
 		fmt.Fprintf(w, "  Next tag:  %s (%s)\n", plan.NextTag, plan.Bump)
 	}
 	if len(plan.VersionFiles) > 0 {
-		fmt.Fprintf(w, "  Version:   %s\n", strings.Join(plan.VersionFiles, ", "))
+		fmt.Fprintf(w, "  Version:   %s\n", strings.Join(versionFilePaths(plan.VersionFiles), ", "))
 	} else {
 		fmt.Fprintln(w, "  Version:   tag-only")
 	}
@@ -1233,7 +1236,7 @@ func detectShipReleaseFiles(repoRoot string) (versionFile, changelog string) {
 	if repoRoot == "" {
 		return "", ""
 	}
-	for _, name := range []string{"VERSION", "package.json", "marketplace.json"} {
+	for _, name := range []string{"VERSION", "package.json", "marketplace.json", "pyproject.toml", "Cargo.toml", "pubspec.yaml"} {
 		path := filepath.Join(repoRoot, name)
 		if _, err := os.Stat(path); err == nil {
 			versionFile = path
@@ -1275,34 +1278,6 @@ func applyShipReleaseFiles(plan shipPlan) (bool, error) {
 		changed = changed || ok
 	}
 	return changed, nil
-}
-
-func bumpShipVersionFile(path, version string) (bool, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return false, fmt.Errorf("ship: read version file: %w", err)
-	}
-	before := string(b)
-	var after string
-	switch filepath.Base(path) {
-	case "VERSION":
-		after = version + "\n"
-	case "package.json", "marketplace.json":
-		re := regexp.MustCompile(`(?m)("version"\s*:\s*")([^"]+)(")`)
-		if !re.MatchString(before) {
-			return false, fmt.Errorf("ship: %s has no version field", filepath.Base(path))
-		}
-		after = re.ReplaceAllString(before, `${1}`+version+`${3}`)
-	default:
-		return false, nil
-	}
-	if after == before {
-		return false, nil
-	}
-	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
-		return false, fmt.Errorf("ship: write version file: %w", err)
-	}
-	return true, nil
 }
 
 // shipScopeRE captures the scope of a conventional-commit subject —

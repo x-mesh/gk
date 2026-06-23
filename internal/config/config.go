@@ -367,9 +367,11 @@ type PullConfig struct {
 //     ship with a rerun hint; the tag is already published at that point.
 //   - Verify: post-release checks run after every Watch step succeeds
 //     (artifact reachable on the CDN, tap/registry bumped, ...).
-//   - VersionFiles: explicit version-file paths (relative to the repo
+//   - VersionFiles: explicit version-file list (paths relative to the repo
 //     root). When set it replaces the VERSION/package.json/
-//     marketplace.json auto-detection.
+//     marketplace.json auto-detection. Each entry is either a bare path
+//     string (the format is inferred from the filename) or a {path,
+//     pattern, key} object — see VersionFile.
 //   - AutoConfirm: skip the final confirmation prompt by default, as if
 //     every run passed -y. An explicit --yes=false still forces the
 //     prompt for one invocation.
@@ -383,9 +385,31 @@ type PullConfig struct {
 type ShipConfig struct {
 	Watch        []PreflightStep `mapstructure:"watch"         yaml:"watch"`
 	Verify       []PreflightStep `mapstructure:"verify"        yaml:"verify"`
-	VersionFiles []string        `mapstructure:"version_files" yaml:"version_files"`
+	VersionFiles []VersionFile   `mapstructure:"version_files" yaml:"version_files"`
 	AutoConfirm  bool            `mapstructure:"auto_confirm"  yaml:"auto_confirm"`
 	Wait         bool            `mapstructure:"wait"          yaml:"wait"`
+}
+
+// VersionFile is one entry of ship.version_files. It decodes from either a
+// bare string (`- pyproject.toml`, handled by the stringToVersionFile decode
+// hook in load.go) or a mapping (`- {path: ..., pattern: ...}`):
+//
+//   - Path: the file to rewrite, relative to the repo root. Required.
+//   - Pattern: a literal template containing exactly one `{version}`
+//     placeholder (e.g. `__version__ = "{version}"`). ship replaces the
+//     text that sits where `{version}` does. Works on any text file — the
+//     escape hatch for formats with no native handler.
+//   - Key: a dotted key path into a YAML file (e.g. `version` or
+//     `tool.poetry.version`). ship rewrites that scalar while preserving
+//     comments and surrounding structure.
+//
+// Pattern and Key are mutually exclusive; when both are empty ship infers
+// the format from the filename (VERSION, package.json, pyproject.toml,
+// Cargo.toml, *.py __version__, pubspec.yaml / Chart.yaml).
+type VersionFile struct {
+	Path    string `mapstructure:"path"    yaml:"path"`
+	Pattern string `mapstructure:"pattern" yaml:"pattern,omitempty"`
+	Key     string `mapstructure:"key"     yaml:"key,omitempty"`
 }
 
 // LandConfig controls gk land. Promote turns the promote step on by

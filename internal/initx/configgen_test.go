@@ -54,6 +54,22 @@ func TestGenerateConfig_WithAnalysis(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_ShipVersionFiles(t *testing.T) {
+	withFiles := &AnalysisResult{VersionFiles: []string{"pyproject.toml", "VERSION"}}
+	got := GenerateConfig(withFiles)
+	if !strings.Contains(got, "ship:") {
+		t.Errorf("expected ship section:\n%s", got)
+	}
+	if !strings.Contains(got, "version_files:") || !strings.Contains(got, "pyproject.toml") {
+		t.Errorf("expected scaffolded version_files:\n%s", got)
+	}
+
+	// Tag-only projects (no manifest) keep a ship-less config.
+	if got := GenerateConfig(&AnalysisResult{}); strings.Contains(got, "ship:") {
+		t.Errorf("ship section should be omitted when no version files:\n%s", got)
+	}
+}
+
 func TestGenerateConfig_NoPersonalFields(t *testing.T) {
 	result := &AnalysisResult{}
 	got := GenerateConfig(result)

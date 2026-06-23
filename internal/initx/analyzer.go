@@ -50,6 +50,11 @@ type AnalysisResult struct {
 	CommitInfo   CommitAnalysis
 	Preflight    []PreflightStep
 	AIProviders  []string
+	// VersionFiles lists repo-root manifests that carry a release version
+	// gk ship can bump (pyproject.toml, Cargo.toml, package.json, VERSION,
+	// …). Empty for tag-only projects like Go, where the version lives only
+	// in the git tag. gk init scaffolds these as ship.version_files.
+	VersionFiles []string
 	// Garbage는 working tree에서 발견된 컴파일 산출물(.pyc, *.class 등)이다.
 	// nil이면 깨끗하다는 뜻; 비어있지 않으면 CLI가 사용자에게 git rm -rf
 	// --cached 가이드를 출력한다. .gitignore 패턴 추가만으로는 이미
@@ -123,6 +128,9 @@ func AnalyzeProject(dir string, gitRunner GitRunner) (*AnalysisResult, error) {
 	//    .pyc / *.class 등을 찾아 사용자에게 알린다.
 	result.Garbage = DetectExistingGarbage(dir)
 
+	// 5b. 버전 파일 감지 — gk ship이 bump할 수 있는 매니페스트.
+	result.VersionFiles = detectVersionFiles(dir)
+
 	// 6. Git 관련 분석 (gitRunner가 nil이면 건너뜀)
 	if gitRunner != nil {
 		ctx := context.Background()
@@ -167,6 +175,31 @@ func detectBuildSystems(dir string) []BuildSystem {
 		systems = append(systems, BuildSystem{Name: name})
 	}
 	return systems
+}
+
+// versionFileCandidates are the repo-root manifests gk ship has a native
+// version-bump handler for, in scaffolding order. Kept in sync with
+// bumpVersionByFormat in internal/cli/ship_versionfile.go.
+var versionFileCandidates = []string{
+	"pyproject.toml",
+	"Cargo.toml",
+	"package.json",
+	"pubspec.yaml",
+	"Chart.yaml",
+	"VERSION",
+}
+
+// detectVersionFiles returns the version-bearing manifests present at the repo
+// root, so gk init can seed ship.version_files. It only looks at the root: a
+// nested package.json is a sub-package, not the project's release version.
+func detectVersionFiles(dir string) []string {
+	var out []string
+	for _, name := range versionFileCandidates {
+		if fileExists(filepath.Join(dir, name)) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 const initNestedScanMaxDepth = 3

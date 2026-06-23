@@ -139,6 +139,43 @@ func TestAnalyzeProjectDetectsNestedMarkers(t *testing.T) {
 	}
 }
 
+func TestDetectVersionFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"pyproject.toml", "VERSION", "go.mod"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// nested package.json must NOT be picked up — only the repo root carries
+	// the release version.
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "web", "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := detectVersionFiles(dir)
+	want := []string{"pyproject.toml", "VERSION"}
+	if len(got) != len(want) {
+		t.Fatalf("detectVersionFiles = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("detectVersionFiles[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Go-only project: version lives in the tag, so no version files.
+	goOnly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goOnly, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectVersionFiles(goOnly); len(got) != 0 {
+		t.Errorf("Go-only project should have no version files, got %v", got)
+	}
+}
+
 func TestAnalyzeBranchesPrefersOriginHead(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

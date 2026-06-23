@@ -6,13 +6,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
+
+// stringToVersionFileHookFunc lets ship.version_files mix bare path strings
+// (`- pyproject.toml`) and {path, pattern, key} mappings in the same list:
+// mapstructure cannot decode a scalar into a struct on its own, so this hook
+// promotes a string into VersionFile{Path: s} before the struct decode runs.
+func stringToVersionFileHookFunc() mapstructure.DecodeHookFunc {
+	versionFileType := reflect.TypeOf(VersionFile{})
+	return func(from reflect.Type, to reflect.Type, data any) (any, error) {
+		if from.Kind() != reflect.String || to != versionFileType {
+			return data, nil
+		}
+		return VersionFile{Path: data.(string)}, nil
+	}
+}
 
 // Broken-config warnings are deduped per file per process: Load runs several
 // times per invocation (command body, EasyEngine, …) and the user needs the
@@ -252,7 +268,17 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	// section is expected) degrade to defaults rather than returning nil —
 	// `cfg, _ := config.Load(...)` call sites dereference the result.
 	cfg := Defaults()
-	if err := v.Unmarshal(&cfg); err != nil {
+	// Override viper's default decode hook so ship.version_files accepts both
+	// string and mapping entries. The two viper defaults
+	// (StringToTimeDurationHookFunc, StringToSliceHookFunc) must be re-composed
+	// here — passing DecodeHook replaces them wholesale — or duration strings
+	// and comma-separated env slices would stop decoding.
+	decodeHook := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		stringToVersionFileHookFunc(),
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+	))
+	if err := v.Unmarshal(&cfg, decodeHook); err != nil {
 		warnBrokenConfig("config", err)
 		fallback := Defaults()
 		if fallback.AI.Lang == "" {

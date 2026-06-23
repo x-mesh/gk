@@ -17,7 +17,14 @@ type gkConfig struct {
 	Branch     branchCfg    `yaml:"branch"`
 	Commit     commitCfg    `yaml:"commit"`
 	Preflight  preflightCfg `yaml:"preflight"`
+	Ship       *shipCfg     `yaml:"ship,omitempty"`
 	AI         aiCfg        `yaml:"ai"`
+}
+
+// shipCfg is emitted only when the analyzer found a version-bearing manifest,
+// so tag-only projects (e.g. Go) keep a clean ship-less config.
+type shipCfg struct {
+	VersionFiles []string `yaml:"version_files"`
 }
 
 type branchCfg struct {
@@ -111,6 +118,9 @@ func buildConfig(result *AnalysisResult) gkConfig {
 				Audit:     false,
 			},
 		},
+	}
+	if len(result.VersionFiles) > 0 {
+		cfg.Ship = &shipCfg{VersionFiles: append([]string(nil), result.VersionFiles...)}
 	}
 	return cfg
 }

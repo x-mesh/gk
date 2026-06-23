@@ -920,14 +920,27 @@ func TestBuildShipPlanVersionFilesConfig(t *testing.T) {
 		"rev-parse --verify refs/tags/v0.5.1": {ExitCode: 1, Stderr: "not found"},
 	}}
 	cfg := testShipConfig()
-	cfg.Ship.VersionFiles = []string{"VERSION", "extension/package.json"}
+	cfg.Ship.VersionFiles = []config.VersionFile{
+		{Path: "VERSION"},
+		{Path: "extension/package.json"},
+		{Path: "src/app/__init__.py", Pattern: `__version__ = "{version}"`},
+	}
 
 	plan, err := buildShipPlan(context.Background(), runner, cfg, shipFlags{noFetch: true})
 	if err != nil {
 		t.Fatalf("buildShipPlan: %v", err)
 	}
-	want := []string{"/repo/VERSION", "/repo/extension/package.json"}
-	if len(plan.VersionFiles) != 2 || plan.VersionFiles[0] != want[0] || plan.VersionFiles[1] != want[1] {
-		t.Errorf("VersionFiles = %v, want %v", plan.VersionFiles, want)
+	want := []config.VersionFile{
+		{Path: "/repo/VERSION"},
+		{Path: "/repo/extension/package.json"},
+		{Path: "/repo/src/app/__init__.py", Pattern: `__version__ = "{version}"`},
+	}
+	if len(plan.VersionFiles) != len(want) {
+		t.Fatalf("VersionFiles = %+v, want %+v", plan.VersionFiles, want)
+	}
+	for i, w := range want {
+		if plan.VersionFiles[i] != w {
+			t.Errorf("VersionFiles[%d] = %+v, want %+v", i, plan.VersionFiles[i], w)
+		}
 	}
 }

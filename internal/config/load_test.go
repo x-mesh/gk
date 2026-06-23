@@ -594,6 +594,8 @@ func TestLoad_ShipConfig(t *testing.T) {
   version_files:
     - VERSION
     - extension/package.json
+    - path: src/app/__init__.py
+      pattern: '__version__ = "{version}"'
   auto_confirm: true
   wait: false
 `
@@ -611,8 +613,16 @@ func TestLoad_ShipConfig(t *testing.T) {
 	if len(cfg.Ship.Verify) != 1 || !cfg.Ship.Verify[0].ContinueOnFailure {
 		t.Errorf("Ship.Verify = %+v", cfg.Ship.Verify)
 	}
-	if len(cfg.Ship.VersionFiles) != 2 || cfg.Ship.VersionFiles[1] != "extension/package.json" {
-		t.Errorf("Ship.VersionFiles = %+v", cfg.Ship.VersionFiles)
+	// The string-or-mapping decode hook: bare strings become {Path}, while a
+	// mapping carries its pattern/key through.
+	if len(cfg.Ship.VersionFiles) != 3 {
+		t.Fatalf("Ship.VersionFiles = %+v", cfg.Ship.VersionFiles)
+	}
+	if cfg.Ship.VersionFiles[0].Path != "VERSION" || cfg.Ship.VersionFiles[1].Path != "extension/package.json" {
+		t.Errorf("Ship.VersionFiles paths = %+v", cfg.Ship.VersionFiles)
+	}
+	if vf := cfg.Ship.VersionFiles[2]; vf.Path != "src/app/__init__.py" || vf.Pattern != `__version__ = "{version}"` {
+		t.Errorf("Ship.VersionFiles[2] = %+v", vf)
 	}
 	if !cfg.Ship.AutoConfirm {
 		t.Error("Ship.AutoConfirm = false, want true")

@@ -28,8 +28,24 @@ type Report struct {
 	Schema   int          `json:"schema"`
 	Files    []FileReport `json:"files"`
 	Totals   Totals       `json:"totals"`
+	Adoption Adoption     `json:"adoption"`
 	Findings []Finding    `json:"findings,omitempty"`
 	Notes    []string     `json:"notes,omitempty"`
+}
+
+// Adoption tracks how often agents reach for git-kit versus raw git across the
+// scanned sessions. It is the regression metric: rerun the audit over time and
+// watch Rate climb and CoveredRawHits fall as guidance lands.
+type Adoption struct {
+	// GitInvocations is RawGit + GitKit + GKShort — every git-shaped call.
+	GitInvocations int `json:"git_invocations"`
+	GitKit         int `json:"git_kit"`
+	// Rate is GitKit / GitInvocations in [0,1].
+	Rate float64 `json:"rate"`
+	// CoveredRawHits is the number of raw-git pattern hits that already have a
+	// git-kit replacement (the sum of covered raw-* findings). These are pure
+	// habit leaks: the capability exists, the agent skipped it.
+	CoveredRawHits int `json:"covered_raw_hits"`
 }
 
 type FileReport struct {
@@ -63,8 +79,27 @@ type Finding struct {
 }
 
 type Evidence struct {
-	File    string `json:"file,omitempty"`
-	Command string `json:"command"`
+	File    string     `json:"file,omitempty"`
+	Command string     `json:"command"`
+	Plan    *BatchPlan `json:"plan,omitempty"`
+}
+
+// BatchPlan is a git-kit batch --plan payload synthesized from an observed
+// shell chain: each mappable raw-git segment becomes a git-kit step, so the
+// agent can replace the whole `git … && git … && git …` line with one
+// `git-kit batch --plan -` call. Steps carries the executable plan; Omitted
+// names the non-git-kit segments (echo, tail, …) that batch cannot run and
+// that drop out of the replacement.
+type BatchPlan struct {
+	Steps   []BatchStep `json:"steps"`
+	Omitted []string    `json:"omitted,omitempty"`
+}
+
+type BatchStep struct {
+	// Args is the git-kit argv for the step, e.g. ["context","--include=diff,log"].
+	Args []string `json:"args"`
+	// From is the raw git segment this step replaces, for human review.
+	From string `json:"from,omitempty"`
 }
 
 type fileCandidate struct {
@@ -137,10 +172,9 @@ var findingSpecs = map[string]findingSpec{
 	"shell-chain": {
 		kind:           "shell-chain",
 		severity:       "low",
-		status:         "partial",
-		recommendation: "Use git-kit batch --plan - for multi-step git-kit workflows instead of shell chains.",
+		status:         "covered",
+		recommendation: "Use git-kit batch --plan - for multi-step git-kit workflows instead of shell chains; a synthesized plan is attached to each example.",
 		coveredBy:      []string{"git-kit batch --plan -"},
-		gap:            "session audit reports shell chains but does not yet synthesize a replacement batch plan from the observed commands.",
 	},
 }
 
@@ -186,7 +220,27 @@ func Audit(opts Options) (Report, error) {
 		addFindings(aggregate, fc.path, commands)
 	}
 	report.Findings = sortedFindings(aggregate)
+	report.Adoption = computeAdoption(report.Totals, report.Findings)
 	return report, nil
+}
+
+// computeAdoption derives the git-kit adoption rate and the count of raw-git
+// hits that already have a git-kit replacement. Rerunning the audit and
+// comparing these numbers is how guidance changes are tracked for regression.
+func computeAdoption(t Totals, findings []Finding) Adoption {
+	a := Adoption{
+		GitInvocations: t.RawGit + t.GitKit + t.GKShort,
+		GitKit:         t.GitKit,
+	}
+	if a.GitInvocations > 0 {
+		a.Rate = float64(t.GitKit) / float64(a.GitInvocations)
+	}
+	for _, f := range findings {
+		if f.Status == "covered" && strings.HasPrefix(f.Kind, "raw-") {
+			a.CoveredRawHits += f.Count
+		}
+	}
+	return a
 }
 
 func DefaultPaths(home string) []string {
@@ -575,7 +629,9 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 			}
 		}
 		if rawInChain && class.ShellChain {
-			addFinding(findings, "shell-chain", file, cmd)
+			if ev := addFinding(findings, "shell-chain", file, cmd); ev != nil {
+				ev.Plan = synthesizeBatchPlan(cmd)
+			}
 		}
 	}
 	if gitTag && gitPush {
@@ -583,10 +639,95 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 	}
 }
 
-func addFinding(findings map[string]*Finding, kind, file, command string) {
+// addFinding records one hit and returns a pointer to the freshly appended
+// Evidence (or nil if the evidence cap is already reached), so callers that
+// need to enrich the evidence — e.g. attach a synthesized batch plan — can do
+// so without re-scanning. The pointer is valid only until the next append.
+// synthesizeBatchPlan turns one observed shell chain into a git-kit batch
+// plan. Each git segment that maps to a git-kit verb becomes a step (collapsing
+// consecutive duplicates — three context probes in a row are one context call);
+// non-git-kit segments are recorded in Omitted so the caller can see what batch
+// will not carry. Returns nil when nothing maps (a pure raw-git chain with no
+// covered equivalent), leaving the recommendation as the only guidance.
+func synthesizeBatchPlan(chain string) *BatchPlan {
+	parts, _ := splitShellSegments(chain)
+	plan := &BatchPlan{}
+	seenStep := map[string]bool{}
+	seenOmit := map[string]bool{}
+	for _, part := range parts {
+		tool := leadingTool(part)
+		if tool == "" {
+			continue
+		}
+		if tool == "git-kit" || tool == "gk" {
+			// Already a git-kit call (or its short alias) — nothing to replace.
+			continue
+		}
+		if tool != "git" {
+			if !seenOmit[tool] {
+				seenOmit[tool] = true
+				plan.Omitted = append(plan.Omitted, tool)
+			}
+			continue
+		}
+		subcmd, gitArgs, ok := gitSubcommand(part)
+		if !ok {
+			continue
+		}
+		stepArgs, ok := batchStepForGit(subcmd, gitArgs)
+		if !ok {
+			label := "git " + subcmd
+			if !seenOmit[label] {
+				seenOmit[label] = true
+				plan.Omitted = append(plan.Omitted, label)
+			}
+			continue
+		}
+		key := strings.Join(stepArgs, " ")
+		if seenStep[key] {
+			continue
+		}
+		seenStep[key] = true
+		plan.Steps = append(plan.Steps, BatchStep{Args: stepArgs, From: "git " + subcmd})
+	}
+	if len(plan.Steps) == 0 {
+		return nil
+	}
+	return plan
+}
+
+// batchStepForGit maps a raw git subcommand to the git-kit argv that replaces
+// it, reusing the same classifiers the findings use so the plan and the
+// recommendations never drift. Order matters: the narrower probe/check cases
+// are tested before the catch-all full-diff.
+func batchStepForGit(subcmd string, args []string) ([]string, bool) {
+	switch {
+	case isRawContextProbe(subcmd, args):
+		return []string{"context", "--include=diff,log"}, true
+	case isRawConflictProbe(subcmd, args):
+		return []string{"context", "--include=conflict"}, true
+	case subcmd == "add" || subcmd == "commit":
+		return []string{"commit"}, true
+	case subcmd == "pull" || subcmd == "fetch":
+		return []string{"pull"}, true
+	case subcmd == "merge":
+		return []string{"merge"}, true
+	case subcmd == "rebase":
+		return []string{"rebase"}, true
+	case subcmd == "push":
+		return []string{"push"}, true
+	case subcmd == "diff" && hasArg(args, "--check"):
+		return []string{"diff", "--check"}, true
+	case isRawFullDiff(subcmd, args):
+		return []string{"diff", "--json"}, true
+	}
+	return nil, false
+}
+
+func addFinding(findings map[string]*Finding, kind, file, command string) *Evidence {
 	spec, ok := findingSpecs[kind]
 	if !ok {
-		return
+		return nil
 	}
 	f := findings[kind]
 	if f == nil {
@@ -603,7 +744,9 @@ func addFinding(findings map[string]*Finding, kind, file, command string) {
 	f.Count++
 	if len(f.Evidence) < maxEvidence {
 		f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
+		return &f.Evidence[len(f.Evidence)-1]
 	}
+	return nil
 }
 
 func sortedFindings(findings map[string]*Finding) []Finding {

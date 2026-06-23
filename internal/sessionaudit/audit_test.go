@@ -130,6 +130,69 @@ func TestAudit_UsesDefaultSessionRoots(t *testing.T) {
 	}
 }
 
+func TestAudit_SynthesizesBatchPlanForShellChain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"echo head && git status --short && git add x && git commit -m y\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc := findingByKind(report, "shell-chain")
+	if sc == nil {
+		t.Fatalf("missing shell-chain finding: %+v", report.Findings)
+	}
+	if sc.Status != "covered" || sc.Gap != "" {
+		t.Fatalf("shell-chain should be covered with no gap: %+v", sc)
+	}
+	if len(sc.Evidence) == 0 || sc.Evidence[0].Plan == nil {
+		t.Fatalf("shell-chain evidence missing plan: %+v", sc.Evidence)
+	}
+	plan := sc.Evidence[0].Plan
+	want := [][]string{{"context", "--include=diff,log"}, {"commit"}}
+	if len(plan.Steps) != len(want) {
+		t.Fatalf("plan steps = %+v, want %d", plan.Steps, len(want))
+	}
+	for i, w := range want {
+		if strings.Join(plan.Steps[i].Args, " ") != strings.Join(w, " ") {
+			t.Fatalf("step %d = %v, want %v", i, plan.Steps[i].Args, w)
+		}
+	}
+	if !containsString(plan.Omitted, "echo") {
+		t.Fatalf("plan omitted = %v, want echo", plan.Omitted)
+	}
+}
+
+func TestAudit_ComputesAdoption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git status --short\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git log --oneline -5\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git-kit context\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a := report.Adoption
+	if a.GitInvocations != 3 || a.GitKit != 1 {
+		t.Fatalf("adoption totals = %+v", a)
+	}
+	if a.CoveredRawHits != 2 {
+		t.Fatalf("covered raw hits = %d, want 2", a.CoveredRawHits)
+	}
+	if a.Rate < 0.33 || a.Rate > 0.34 {
+		t.Fatalf("rate = %f, want ~0.333", a.Rate)
+	}
+}
+
 func writeLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

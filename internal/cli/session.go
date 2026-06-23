@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -35,6 +36,11 @@ Pass files or directories to audit a specific subset.`,
 and Claude tool-call shapes, then classifies raw git, git-kit, short gk alias,
 shell-chain, conflict-probe, release, and commit-flow patterns.
 
+Each shell-chain finding carries a synthesized git-kit batch --plan - payload
+that replaces the observed chain, and the report prints a git-kit adoption rate
+(plus the count of raw-git hits that already have a git-kit path) so guidance
+regressions can be tracked across reruns.
+
 The command is local and read-only. With --json or GK_AGENT=1 it emits the
 standard machine-readable envelope.`,
 		Args: cobra.ArbitraryArgs,
@@ -66,6 +72,10 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 		report.Totals.Files, report.Totals.Commands)
 	fmt.Fprintf(w, "usage: raw git %d, git-kit %d, gk(short) %d, shell chains %d\n",
 		report.Totals.RawGit, report.Totals.GitKit, report.Totals.GKShort, report.Totals.ShellChains)
+	if a := report.Adoption; a.GitInvocations > 0 {
+		fmt.Fprintf(w, "adoption: git-kit %d of %d git calls (%.1f%%); %d raw calls had a git-kit path\n",
+			a.GitKit, a.GitInvocations, a.Rate*100, a.CoveredRawHits)
+	}
 
 	if len(report.Findings) == 0 {
 		fmt.Fprintln(w, "findings: none")
@@ -85,7 +95,16 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 				fmt.Fprintf(w, "    gap: %s\n", f.Gap)
 			}
 			if len(f.Evidence) > 0 {
-				fmt.Fprintf(w, "    e.g. %s\n", f.Evidence[0].Command)
+				ev := f.Evidence[0]
+				fmt.Fprintf(w, "    e.g. %s\n", ev.Command)
+				if ev.Plan != nil {
+					if js := sessionBatchPlanWire(ev.Plan); js != "" {
+						fmt.Fprintf(w, "    batch plan: git-kit batch --plan - <<< '%s'\n", js)
+					}
+					if len(ev.Plan.Omitted) > 0 {
+						fmt.Fprintf(w, "    omitted (not git-kit): %s\n", strings.Join(ev.Plan.Omitted, ", "))
+					}
+				}
 			}
 		}
 	}
@@ -93,4 +112,27 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 	for _, note := range report.Notes {
 		fmt.Fprintf(w, "note: %s\n", note)
 	}
+}
+
+// sessionBatchPlanWire renders a synthesized plan in the exact git-kit batch
+// --plan wire shape ({"steps":[{"args":[...]}]}), dropping the audit-only From
+// and Omitted fields so the line is copy-paste runnable.
+func sessionBatchPlanWire(plan *sessionaudit.BatchPlan) string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return ""
+	}
+	type step struct {
+		Args []string `json:"args"`
+	}
+	wire := struct {
+		Steps []step `json:"steps"`
+	}{}
+	for _, s := range plan.Steps {
+		wire.Steps = append(wire.Steps, step{Args: s.Args})
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

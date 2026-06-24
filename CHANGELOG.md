@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.0] - 2026-06-24
+
 ### Added
 
 - **`gk promote`·`gk land`에 `--autostash`를 추가한다 — 부모(받는) worktree가 dirty여도 통합을 진행한다.** worktree에서 작업한 브랜치를 부모로 통합할 때, 부모 브랜치가 다른 worktree에 체크아웃돼 있고 거기 저장 안 한 변경이 있으면 종전엔 `working tree has tracked changes`로 막혔다(promote/land엔 우회 플래그가 없었다). 이제 `gk promote --autostash` / `gk land --autostash`는 내부 `gk merge --into` 단계로 `--autostash`를 전달해, 받는 worktree의 변경을 머지 전에 stash했다가 머지 후 pop으로 되돌린다. 받는 worktree는 남이 작업 중인 상태일 수 있어 **기본이 아닌 명시적 옵트인**이다. 더불어 dirty-receiver 거부 메시지가 이제 `rerun with --autostash …`로 한-플래그 해결책을 안내한다(종전엔 `cd <path>`만).

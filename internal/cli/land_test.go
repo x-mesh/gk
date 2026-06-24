@@ -54,6 +54,7 @@ func setupLandTest(t *testing.T, dir string) (*cobra.Command, *landRecorder, *by
 	cmd.Flags().String("promote", "", "")
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.Flags().Bool("no-promote", false, "")
+	cmd.Flags().Bool("autostash", false, "")
 	cmd.SetContext(context.Background())
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	cmd.SetOut(stdout)
@@ -254,6 +255,31 @@ func TestLand_ToParentTargetsParent(t *testing.T) {
 	}
 	if strings.Contains(got, "--into main") {
 		t.Errorf("--to parent must not jump to the trunk: %q", got)
+	}
+}
+
+// TestLand_ToAutostashForwardsToMerge: --autostash threads into the --to merge
+// hop so a dirty receiver worktree (the parent checkout) is stashed around the
+// merge instead of blocking land.
+func TestLand_ToAutostashForwardsToMerge(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "develop")
+	repo.RunGit("checkout", "-b", "feat")
+	repo.RunGit("config", "branch.feat.gk-parent", "develop")
+
+	cmd, rec, _, _ := setupLandTest(t, repo.Dir)
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Flags().Set("to", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("autostash", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("land --to parent --autostash: %v", err)
+	}
+	if got := landCallNames(rec); !strings.Contains(got, "merge feat --into develop --no-ai --autostash") {
+		t.Errorf("--autostash must reach the merge hop: %q", got)
 	}
 }
 

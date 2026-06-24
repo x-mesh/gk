@@ -17,6 +17,7 @@ type Config struct {
 	Preflight  PreflightConfig `mapstructure:"preflight"   yaml:"preflight"`
 	Ship       ShipConfig      `mapstructure:"ship"        yaml:"ship"`
 	Land       LandConfig      `mapstructure:"land"        yaml:"land"`
+	Promote    PromoteConfig   `mapstructure:"promote"     yaml:"promote"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
@@ -351,9 +352,17 @@ type ForgetConfig struct {
 // branch (e.g. main) from its remote — no checkout involved, strictly
 // FF-only, ambiguous states are skipped with a note. Equivalent to
 // passing --with-base on each invocation.
+// Autostash (default true) lets a dirty working tree pull without an
+// interactive gate: tracked changes are stashed before integration and
+// popped after, so the common no-conflict case flows through with only a
+// status line. The pop is the one place a real conflict with local edits
+// surfaces — and the one place pull still stops. Set false (or pass
+// --no-autostash) to restore the old behaviour: prompt on a TTY, refuse on
+// a non-TTY. GK_PULL_AUTOSTASH overrides per environment.
 type PullConfig struct {
-	Strategy string `mapstructure:"strategy" yaml:"strategy"`
-	WithBase bool   `mapstructure:"with_base" yaml:"with_base"`
+	Strategy  string `mapstructure:"strategy" yaml:"strategy"`
+	WithBase  bool   `mapstructure:"with_base" yaml:"with_base"`
+	Autostash bool   `mapstructure:"autostash" yaml:"autostash"`
 }
 
 // ShipConfig extends gk ship beyond the shared preflight steps with
@@ -425,8 +434,23 @@ type VersionFile struct {
 //
 // An explicit --promote flag always wins over config; --no-promote skips
 // the step for one invocation.
+//
+// Autostash (default false) makes the --to / promote merge step stash a
+// dirty receiver worktree (the parent checkout someone left mid-edit)
+// around the merge and pop it after, as if every invocation passed
+// --autostash. An explicit --autostash / --autostash=false flag wins.
 type LandConfig struct {
-	Promote string `mapstructure:"promote" yaml:"promote"`
+	Promote   string `mapstructure:"promote"   yaml:"promote"`
+	Autostash bool   `mapstructure:"autostash" yaml:"autostash"`
+}
+
+// PromoteConfig controls gk promote. Autostash (default false) makes every
+// hop's merge stash a dirty receiver worktree around the merge and pop it
+// after, as if --autostash were passed — for worktree flows where the
+// parent checkout is routinely dirty. An explicit --autostash /
+// --autostash=false flag overrides it for one run.
+type PromoteConfig struct {
+	Autostash bool `mapstructure:"autostash" yaml:"autostash"`
 }
 
 // SyncConfig controls gk sync behaviour. Strategy is the integration
@@ -655,6 +679,10 @@ func Defaults() Config {
 			// decide whether to refuse on diverged history. Pre-filling
 			// "rebase" here would mask that signal and silently auto-rebase.
 			Strategy: "",
+			// Auto-stash a dirty tree by default — the interactive gate
+			// stopped pull before knowing whether stash→integrate→pop would
+			// even conflict, which it almost never does.
+			Autostash: true,
 		},
 		Forget: ForgetConfig{
 			Engine: "native",

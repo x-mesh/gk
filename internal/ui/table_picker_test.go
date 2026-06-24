@@ -467,3 +467,130 @@ func strIdx(haystack, needle string) int {
 	}
 	return -1
 }
+
+// newResponsiveModelForTest builds a multi-column model wired for the
+// responsive-drop path: ASCII-only cells keep content widths predictable so
+// the WindowSizeMsg thresholds are deterministic.
+func newResponsiveModelForTest(items []PickerItem, headers []string, prio map[string]int) tablePickerModel {
+	colCount := len(headers)
+	cols := make([]table.Column, colCount)
+	for i := range cols {
+		cols[i] = table.Column{Title: headers[i], Width: 8}
+	}
+	tbl := table.New(
+		table.WithColumns(cols),
+		table.WithFocused(true),
+		table.WithHeight(len(items)+1),
+	)
+	filter := textinput.New()
+	filter.Prompt = ""
+	return tablePickerModel{
+		t: tbl, items: items, all: items, chosen: -1, filterInput: filter,
+		headers: headers, priorityByHeader: prio, visibleCols: identityCols(colCount),
+	}
+}
+
+// TestFitColumns_DropsLowestPriorityUntilFit pins the responsive-layout
+// core: drop the lowest-weight column (rightmost on a tie) until the rest
+// fit, never below one column; nil priority disables dropping.
+func TestFitColumns_DropsLowestPriorityUntilFit(t *testing.T) {
+	// Visible widths + padding(2): BRANCH 10, UPSTREAM 10, HASH 6, AGE 6 → 40.
+	widths := []int{10, 10, 6, 6}
+	prio := []int{100, 40, 10, 80} // BRANCH, UPSTREAM, HASH, AGE
+
+	cases := []struct {
+		name  string
+		prio  []int
+		total int
+		want  []int
+	}{
+		{"wide keeps all", prio, 100, []int{0, 1, 2, 3}},
+		{"drop HASH first", prio, 34, []int{0, 1, 3}},
+		{"drop down to BRANCH+AGE", prio, 28, []int{0, 3}},
+		{"tiny keeps BRANCH only", prio, 12, []int{0}},
+		{"nil priority never drops", nil, 4, []int{0, 1, 2, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fitColumns(widths, tc.prio, tc.total); !equalInts(got, tc.want) {
+				t.Errorf("fitColumns(total=%d) = %v, want %v", tc.total, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFitColumns_TieDropsRightmost: equal priority → the rightmost column is
+// sacrificed first, so the layout collapses from the right.
+func TestFitColumns_TieDropsRightmost(t *testing.T) {
+	widths := []int{10, 10, 10} // each 12 with padding
+	prio := []int{50, 50, 50}
+	if got := fitColumns(widths, prio, 24); !equalInts(got, []int{0, 1}) {
+		t.Errorf("total=24 got %v, want [0 1] (drop rightmost)", got)
+	}
+	if got := fitColumns(widths, prio, 12); !equalInts(got, []int{0}) {
+		t.Errorf("total=12 got %v, want [0]", got)
+	}
+}
+
+// TestTablePicker_ResponsiveDropsAndRestores drives WindowSizeMsg through the
+// model: AGE outranks UPSTREAM/HASH so it survives a narrow width, and
+// widening restores every column.
+func TestTablePicker_ResponsiveDropsAndRestores(t *testing.T) {
+	items := []PickerItem{
+		{Key: "develop", Cells: []string{"branchAAAA", "upstreamBB", "hashCC", "age"}},
+		{Key: "main", Cells: []string{"branchDDDD", "upstreamEE", "hashFF", "age"}},
+	}
+	headers := []string{"BRANCH", "UPSTREAM", "HASH", "AGE"}
+	prio := map[string]int{"BRANCH": 100, "UPSTREAM": 40, "HASH": 10, "AGE": 80}
+	m := newResponsiveModelForTest(items, headers, prio)
+
+	// Wide: every column visible, nothing hidden.
+	got, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	m = got.(tablePickerModel)
+	if !equalInts(m.visibleCols, []int{0, 1, 2, 3}) || m.hiddenCols != 0 {
+		t.Fatalf("wide: visibleCols=%v hidden=%d, want all visible", m.visibleCols, m.hiddenCols)
+	}
+
+	// One column over budget → HASH (lowest weight) drops, AGE stays.
+	got, _ = m.Update(tea.WindowSizeMsg{Width: 34, Height: 20})
+	m = got.(tablePickerModel)
+	if !equalInts(m.visibleCols, []int{0, 1, 3}) {
+		t.Fatalf("medium: visibleCols=%v, want [0 1 3] (HASH dropped, AGE kept)", m.visibleCols)
+	}
+	if m.hiddenCols != 1 {
+		t.Errorf("medium: hiddenCols=%d, want 1", m.hiddenCols)
+	}
+
+	// Narrow → collapse to BRANCH + AGE.
+	got, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 20})
+	m = got.(tablePickerModel)
+	if !equalInts(m.visibleCols, []int{0, 3}) {
+		t.Fatalf("narrow: visibleCols=%v, want [0 3] (BRANCH+AGE)", m.visibleCols)
+	}
+	if m.hiddenCols != 2 {
+		t.Errorf("narrow: hiddenCols=%d, want 2", m.hiddenCols)
+	}
+	// The hidden-column note renders beside the (absent) subtitle.
+	if strIdx(m.View(), "+2 cols") < 0 {
+		t.Errorf("narrow view missing hidden-cols note:\n%s", m.View())
+	}
+
+	// Widen back → all columns restored, note gone.
+	got, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	m = got.(tablePickerModel)
+	if !equalInts(m.visibleCols, []int{0, 1, 2, 3}) || m.hiddenCols != 0 {
+		t.Fatalf("re-widen: visibleCols=%v hidden=%d, want all restored", m.visibleCols, m.hiddenCols)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

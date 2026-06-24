@@ -183,6 +183,8 @@ func TestRunMergeIntoMergesCurrentBranchInReceiverWorktree(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD": {Stdout: "ship\n"},
 		"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n\nworktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		// ship is NOT an ancestor of main → a real merge is expected.
+		"merge-base --is-ancestor ship main": {ExitCode: 1},
 	}}
 	targetFake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":        {Stdout: "main\n"},
@@ -221,6 +223,39 @@ func TestRunMergeIntoMergesCurrentBranchInReceiverWorktree(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "merged ship into main") {
 		t.Fatalf("expected direction-aware summary, got:\n%s", errOut.String())
+	}
+}
+
+// TestRunMergeIntoWorktreeAlreadyMergedNoOp: when the source is already an
+// ancestor of the receiver, `--into` must report a no-op and NEVER route into
+// the receiver's worktree — otherwise that worktree's unrelated dirty state
+// (which a no-op never touches) would wrongly block the merge. This is the
+// bug `gk promote` hit when the parent checkout was dirty.
+func TestRunMergeIntoWorktreeAlreadyMergedNoOp(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD": {Stdout: "ship\n"},
+		// receiver `main` is checked out in a worktree, so we take the
+		// worktree path (not the bare path).
+		"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+		// source worktree is clean, so no WIP commit advances it.
+		"status --porcelain=v1 -uno": {Stdout: ""},
+		// ship is already an ancestor of main → already merged.
+		"merge-base --is-ancestor ship main": {Stdout: ""},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeInto(context.Background(), mergeDeps{
+		Runner: sourceRunner,
+		ErrOut: &errOut,
+	}, nil, mergeFlags{into: "main", noAI: true}, func(path string) git.Runner {
+		t.Fatalf("must not route into receiver worktree %q on an already-merged no-op", path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runMergeInto: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "main already contains ship") {
+		t.Fatalf("expected already-up-to-date no-op summary, got:\n%s", errOut.String())
 	}
 }
 
@@ -529,7 +564,8 @@ func TestRunMergeIntoExplicitCurrentSourceRejectsDirtySource(t *testing.T) {
 
 func TestRunMergeIntoReceiverDirtyHintMentionsWorktree(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+		"worktree list --porcelain":          {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+		"merge-base --is-ancestor ship main": {ExitCode: 1},
 	}}
 	targetRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":        {Stdout: "main\n"},
@@ -555,8 +591,9 @@ func TestRunMergeIntoReceiverDirtyHintMentionsWorktree(t *testing.T) {
 
 func TestRunMergeIntoConflictHintMentionsReceiverWorktree(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"symbolic-ref --short HEAD": {Stdout: "other\n"},
-		"worktree list --porcelain": {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+		"symbolic-ref --short HEAD":          {Stdout: "other\n"},
+		"worktree list --porcelain":          {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+		"merge-base --is-ancestor ship main": {ExitCode: 1},
 	}}
 	targetRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":        {Stdout: "main\n"},

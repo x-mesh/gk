@@ -12,6 +12,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -198,6 +199,45 @@ func TestRunPull_DirtyNoAutostash(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uncommitted") {
 		t.Errorf("expected 'uncommitted' in error, got: %v", err)
+	}
+}
+
+// TestResolvePullAutostash pins the precedence: --no-autostash (force off) >
+// --autostash (force on) > pull.autostash config (default true).
+func TestResolvePullAutostash(t *testing.T) {
+	mk := func(set func(*cobra.Command)) *cobra.Command {
+		c := &cobra.Command{Use: "pull"}
+		c.Flags().Bool("autostash", false, "")
+		c.Flags().Bool("no-autostash", false, "")
+		if set != nil {
+			set(c)
+		}
+		return c
+	}
+	cfgOn := &config.Config{Pull: config.PullConfig{Autostash: true}}
+	cfgOff := &config.Config{Pull: config.PullConfig{Autostash: false}}
+
+	cases := []struct {
+		name string
+		set  func(*cobra.Command)
+		cfg  *config.Config
+		want bool
+	}{
+		{"default follows config-on", nil, cfgOn, true},
+		{"default follows config-off", nil, cfgOff, false},
+		{"--no-autostash forces off over config-on", func(c *cobra.Command) { _ = c.Flags().Set("no-autostash", "true") }, cfgOn, false},
+		{"--autostash forces on over config-off", func(c *cobra.Command) { _ = c.Flags().Set("autostash", "true") }, cfgOff, true},
+		{"--no-autostash wins when both set", func(c *cobra.Command) {
+			_ = c.Flags().Set("autostash", "true")
+			_ = c.Flags().Set("no-autostash", "true")
+		}, cfgOn, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolvePullAutostash(mk(tc.set), tc.cfg); got != tc.want {
+				t.Errorf("resolvePullAutostash = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

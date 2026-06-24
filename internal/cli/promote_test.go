@@ -37,6 +37,7 @@ func setupPromoteTest(t *testing.T, dir string, args ...string) (*cobra.Command,
 
 	cmd := &cobra.Command{Use: "promote", Args: cobra.MaximumNArgs(1), RunE: runPromote, SilenceUsage: true, SilenceErrors: true}
 	cmd.Flags().Bool("push", false, "")
+	cmd.Flags().Bool("autostash", false, "")
 	cmd.SetArgs(args)
 	cmd.SetContext(context.Background())
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -93,6 +94,50 @@ func TestPromote_PushOptIn(t *testing.T) {
 	want := "merge feature --into main --no-ai | push --from main"
 	if got := landCallNames(rec); got != want {
 		t.Errorf("steps = %q, want %q", got, want)
+	}
+}
+
+// TestResolveAutostashFlag pins precedence: an explicit --autostash (either
+// polarity) wins; otherwise the per-command config default decides.
+func TestResolveAutostashFlag(t *testing.T) {
+	mk := func(set func(*cobra.Command)) *cobra.Command {
+		c := &cobra.Command{Use: "x"}
+		c.Flags().Bool("autostash", false, "")
+		if set != nil {
+			set(c)
+		}
+		return c
+	}
+	on := func(c *cobra.Command) { _ = c.Flags().Set("autostash", "true") }
+	off := func(c *cobra.Command) { _ = c.Flags().Set("autostash", "false") }
+
+	if resolveAutostashFlag(mk(nil), false) {
+		t.Error("no flag + config false → false")
+	}
+	if !resolveAutostashFlag(mk(nil), true) {
+		t.Error("no flag + config true → true")
+	}
+	if !resolveAutostashFlag(mk(on), false) {
+		t.Error("--autostash must override config false")
+	}
+	if resolveAutostashFlag(mk(off), true) {
+		t.Error("--autostash=false must override config true")
+	}
+}
+
+// --autostash forwards to each merge hop so a dirty receiver worktree (the
+// parent checkout) is stashed around the merge instead of blocking promote.
+func TestPromote_AutostashForwardsToMerge(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.RunGit("checkout", "-b", "feature")
+
+	cmd, rec, _, _ := setupPromoteTest(t, repo.Dir, "--autostash")
+	t.Setenv("GK_BASE_BRANCH", "main")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("promote --autostash: %v", err)
+	}
+	if got := landCallNames(rec); got != "merge feature --into main --no-ai --autostash" {
+		t.Errorf("steps = %q, want the merge hop to carry --autostash", got)
 	}
 }
 

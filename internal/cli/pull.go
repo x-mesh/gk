@@ -130,7 +130,17 @@ With-base sync:
   the local base branch (e.g. main) to its remote tip after the fetch — no
   checkout involved. Strictly FF-only: a diverged base, a base checked out in
   another worktree, or a missing local base is skipped with a NOTE instead of
-  being resolved automatically. Skipped under --fetch-only.`,
+  being resolved automatically. Skipped under --fetch-only.
+
+Dirty working tree (autostash, default on):
+  Uncommitted tracked changes are stashed before integration and popped after,
+  so the common no-conflict case flows straight through with a "stashed N /
+  restored N" status line instead of an interactive prompt — and a non-TTY
+  (CI) run no longer refuses. The pop is the one place a real conflict with
+  your local edits surfaces, and the one place pull still stops (non-zero, the
+  stash preserved). Turn it off with --no-autostash (or pull.autostash: false /
+  GK_PULL_AUTOSTASH=0) to restore the old gate: prompt on a TTY, refuse on a
+  non-TTY. --autostash forces it on for one run even when config disabled it.`,
 		RunE: runPull,
 	}
 	cmd.Flags().String("base", "", "base branch (auto-detect if empty)")
@@ -141,7 +151,8 @@ With-base sync:
 	cmd.Flags().String("from", "", "pull from a specific remote instead of the upstream: <remote> (same-name branch) or <remote>/<branch>")
 	cmd.Flags().Bool("fetch-only", false, "fetch only, do not integrate")
 	cmd.Flags().Bool("no-rebase", false, "deprecated alias for --fetch-only")
-	cmd.Flags().Bool("autostash", false, "stash dirty changes before integration and pop after")
+	cmd.Flags().Bool("autostash", false, "force-stash a dirty tree even when pull.autostash is off (default: on — auto-stash, integrate, pop)")
+	cmd.Flags().Bool("no-autostash", false, "do not auto-stash a dirty tree: prompt on a TTY, refuse on a non-TTY (restores the pre-autostash gate)")
 	cmd.Flags().Bool("ai", false, "on conflict, resolve with AI and continue the integration (drives `gk resolve --ai` + `gk continue`)")
 	cmd.Flags().CountVarP(&pullVerbose, "verbose", "v", "show upstream, strategy, and integration details; repeat for diagnostics")
 	rootCmd.AddCommand(cmd)
@@ -273,7 +284,7 @@ func runPullCore(cmd *cobra.Command) error {
 	mergeFlag, _ := cmd.Flags().GetBool("merge")
 	fetchOnly, _ := cmd.Flags().GetBool("fetch-only")
 	noRebase, _ := cmd.Flags().GetBool("no-rebase")
-	autostash, _ := cmd.Flags().GetBool("autostash")
+	autostash := resolvePullAutostash(cmd, cfg)
 	aiFlag, _ := cmd.Flags().GetBool("ai")
 
 	// --with-base: config supplies the default, an explicit flag (either
@@ -454,9 +465,14 @@ func runPullCore(cmd *cobra.Command) error {
 	Dbg("pull: dirty=%v autostash=%v", dirty, autostash)
 
 	var stashed bool
+	// stashedFiles records how many tracked changes the default auto-stash
+	// pocketed, and doubles as the gate for the "stashed/restored N change"
+	// status lines: it stays 0 on the --no-autostash prompt path, which is
+	// already interactive and needs no extra narration.
+	var stashedFiles int
 	if dirty {
-		switch {
-		case autostash:
+		if autostash {
+			stashedFiles = countTrackedDirty(ctx, runner)
 			created, sErr := stashIfChanged(ctx, runner, "push", "-m", "gk pull autostash")
 			if sErr != nil {
 				return WithHint(
@@ -465,32 +481,47 @@ func runPullCore(cmd *cobra.Command) error {
 				)
 			}
 			if !created {
+				// Dirty-but-not-stashable (mode bits, submodule pointer): git
+				// reported a diff stash silently skips, so nothing was pocketed.
 				hint := describeDirtyButNotStashed(ctx, runner)
 				if hint == "" {
 					hint = "stash push reported success but produced no entry"
 				}
-				Dbg("pull: --autostash created no stash entry — %s", hint)
+				Dbg("pull: autostash created no stash entry — %s", hint)
+				stashedFiles = 0
 			}
 			stashed = created
-			Dbg("pull: autostashed working tree (--autostash) stashed=%v", stashed)
-		case ui.IsTerminal():
-			ok, perr := promptStashDirty(ctx, runner, "gk pull autostash")
-			if perr != nil {
-				if errors.Is(perr, errSkipDirty) {
-					return WithHint(
-						errors.New("working tree has uncommitted changes"),
-						hintCommand("gk pull --autostash"),
-					)
-				}
-				return perr
+			if stashed {
+				lbl := branchLabeler(stashBranchLabel(current))
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s%s\n",
+					lbl(stashBranchLabel(current)),
+					color.New(color.Faint).Sprintf("stashed %d local change%s — restoring after integration",
+						stashedFiles, plural(stashedFiles)))
 			}
-			stashed = ok
-			Dbg("pull: autostashed working tree (interactive prompt)")
-		default:
-			return WithHint(
-				errors.New("working tree has uncommitted changes"),
-				hintCommand("gk pull --autostash"),
-			)
+			Dbg("pull: autostashed working tree (default) stashed=%v files=%d", stashed, stashedFiles)
+		} else {
+			// --no-autostash / pull.autostash:false — keep the explicit gate:
+			// prompt on a TTY, refuse on a non-TTY.
+			switch {
+			case ui.IsTerminal():
+				ok, perr := promptStashDirty(ctx, runner, "gk pull autostash")
+				if perr != nil {
+					if errors.Is(perr, errSkipDirty) {
+						return WithHint(
+							errors.New("working tree has uncommitted changes"),
+							hintCommand("gk pull --autostash"),
+						)
+					}
+					return perr
+				}
+				stashed = ok
+				Dbg("pull: autostashed working tree (interactive prompt)")
+			default:
+				return WithHint(
+					errors.New("working tree has uncommitted changes"),
+					hintCommand("gk pull --autostash"),
+				)
+			}
 		}
 	}
 
@@ -561,6 +592,7 @@ func runPullCore(cmd *cobra.Command) error {
 			})
 		}
 		renderFetchOnlySummary(cmd, runner, upstream)
+		announceStashRestored(cmd.ErrOrStderr(), labeler, branchLabel, stashedFiles)
 		emitPullJSON(cmd, pullResultJSON{Result: "fetch-only", Branch: current, Upstream: upstream, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
@@ -584,6 +616,7 @@ func runPullCore(cmd *cobra.Command) error {
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "%sAlready up to date  %s\n", labeler(branchLabel), tipSuffix(ctx, runner, preHEAD))
+		announceStashRestored(cmd.ErrOrStderr(), labeler, branchLabel, stashedFiles)
 		emitPullJSON(cmd, pullResultJSON{Result: "up-to-date", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
@@ -599,6 +632,7 @@ func runPullCore(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"%sno upstream changes — ahead by %d commit%s, nothing to pull\n",
 			labeler(branchLabel), ahead, plural(ahead))
+		announceStashRestored(cmd.ErrOrStderr(), labeler, branchLabel, stashedFiles)
 		emitPullJSON(cmd, pullResultJSON{Result: "ahead-only", Branch: current, Upstream: upstream, Pre: preHEAD, Post: preHEAD, Ahead: ahead, Base: baseOutcomes, Autostash: autostashJSON(stashed)})
 		return nil
 	}
@@ -701,16 +735,80 @@ func runPullCore(cmd *cobra.Command) error {
 	// 9) pop stash — BEFORE the success JSON: a pop conflict means the
 	// session is not cleanly updated, and a script that already read
 	// result:"updated" would never notice the non-zero exit that follows.
+	// This is the one place a dirty-tree pull still stops: the integrated
+	// commits touch the same lines as the stashed local edits. The stash
+	// stays on the stack so nothing is lost.
 	if stashed {
 		if err := popStash(ctx, runner); err != nil {
-			return fmt.Errorf("stash pop failed: %w", err)
+			return WithHint(
+				fmt.Errorf("stash pop conflict: local changes clash with the pulled commits: %w", err),
+				"resolve the conflict markers, then `git stash drop` (the stash is preserved — list it with `gk stash`)",
+			)
 		}
 	}
+	announceStashRestored(cmd.ErrOrStderr(), labeler, branchLabel, stashedFiles)
 	emitPullJSON(cmd, pullResultJSON{
 		Result: "updated", Branch: current, Upstream: upstream, Strategy: strategy,
 		Pre: preHEAD, Post: postHEAD, Ahead: ahead, Behind: behind, Base: baseOutcomes, Autostash: autostashJSON(stashed),
 	})
 	return nil
+}
+
+// resolvePullAutostash decides whether a dirty tree is auto-stashed.
+// Precedence: --no-autostash (force off) > --autostash (force on) >
+// pull.autostash config (default true, env GK_PULL_AUTOSTASH). The default
+// flips the old gate around: rather than ask before integrating, pull
+// stashes, integrates, and pops — stopping only if the pop conflicts.
+func resolvePullAutostash(cmd *cobra.Command, cfg *config.Config) bool {
+	if cmd.Flags().Changed("no-autostash") {
+		if no, _ := cmd.Flags().GetBool("no-autostash"); no {
+			return false
+		}
+	}
+	if cmd.Flags().Changed("autostash") {
+		v, _ := cmd.Flags().GetBool("autostash")
+		return v
+	}
+	return cfg.Pull.Autostash
+}
+
+// stashBranchLabel returns the branch name to head the auto-stash status
+// line with, falling back to "HEAD" on a detached checkout — matching the
+// branchLabel the post-fetch summary lines use.
+func stashBranchLabel(current string) string {
+	if current == "" {
+		return "HEAD"
+	}
+	return current
+}
+
+// countTrackedDirty counts the tracked files that `git stash push` (without
+// --include-untracked) will pocket — the same -uno scope IsDirty uses, so
+// the "stashed N change" line matches what actually goes into the stash.
+func countTrackedDirty(ctx context.Context, r git.Runner) int {
+	out, _, err := r.Run(ctx, "status", "--porcelain=v1", "-uno")
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// announceStashRestored prints the "restored N local change" line after a
+// clean auto-stash pop. n is 0 on the --no-autostash prompt path (already
+// interactive) and on the dirty-but-not-stashable case, so the line is
+// emitted only when the default auto-stash actually pocketed something.
+func announceStashRestored(w io.Writer, label func(string) string, branchLabel string, n int) {
+	if n <= 0 {
+		return
+	}
+	fmt.Fprintf(w, "%s%s\n", label(branchLabel),
+		color.New(color.Faint).Sprintf("restored %d local change%s", n, plural(n)))
 }
 
 // headRev returns the current HEAD SHA or empty when it cannot be read

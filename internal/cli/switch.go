@@ -713,11 +713,12 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 			headers = []string{"BRANCH", "UPSTREAM", "WORKTREE", "HASH", "AGE"}
 		}
 		picker := &ui.TablePicker{
-			Headers:       headers,
-			Extras:        extras,
-			Subtitle:      subtitle,
-			FilterItems:   filterItems,
-			InitialFilter: currentFilter,
+			Headers:        headers,
+			Extras:         extras,
+			Subtitle:       subtitle,
+			FilterItems:    filterItems,
+			InitialFilter:  currentFilter,
+			ColumnPriority: switchColumnPriority(),
 		}
 		choice, err := picker.Pick(ctx, "switch", items)
 		if err != nil {
@@ -1136,6 +1137,24 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 // with no extra worktrees keeps the original four-column layout.
 func switchHasWorktreeCol(wt switchWorktreeMap) bool {
 	return len(wt.byBranch) > 0
+}
+
+// switchColumnPriority maps the switch picker's column titles to keep-weights.
+// When the terminal is too narrow for every column, TablePicker drops the
+// lowest-weight ones whole (see ui.TablePicker.ColumnPriority). BRANCH is the
+// identity column and must survive; AGE ranks just below it — it is short yet
+// the signal users most want at a glance — so HASH (a bare SHA) and then
+// UPSTREAM/WORKTREE give way first, leaving "BRANCH … AGE" at the narrowest
+// widths. Keyed by title, so it covers both the four- and five-column
+// (WORKTREE present) layouts with one map.
+func switchColumnPriority() map[string]int {
+	return map[string]int{
+		"BRANCH":   100,
+		"AGE":      80,
+		"UPSTREAM": 40,
+		"WORKTREE": 30,
+		"HASH":     10,
+	}
 }
 
 // switchDisplayRow formats the fallback (non-table) picker row, inserting

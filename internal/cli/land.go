@@ -102,6 +102,7 @@ moves to stderr so stdout stays parseable.`,
 	// A bare `--promote` (no value) resolves to the configured base branch.
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.Flags().Bool("no-promote", false, "skip the promote step for this run (overrides land.promote in config)")
+	cmd.Flags().Bool("autostash", false, "during the promote/--to merge, stash a dirty receiver worktree (the parent checkout) around the merge and pop it after, instead of refusing")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -119,6 +120,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 	to, _ := cmd.Flags().GetString("to")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	push := !noPush
+	autostash := resolveAutostashFlag(cmd, cfg.Land.Autostash)
 	jsonMode := JSONOut()
 
 	dirty, err := landTreeDirty(ctx, runner)
@@ -188,7 +190,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 		if currentBranch == promoteTarget {
 			steps = append(steps, landStep{name: "promote", skip: "already on " + promoteTarget})
 		} else {
-			steps = append(steps, promoteHopSteps(repo, jsonMode, promoteHops, push, rerun)...)
+			steps = append(steps, promoteHopSteps(repo, jsonMode, promoteHops, push, autostash, rerun)...)
 		}
 	}
 	if cleanup {
@@ -486,13 +488,33 @@ func childPausedOnConflict(err error) bool {
 // caller then reports the step as failed with the resume path. --no-ai
 // keeps the merge non-interactive (no plan summary) to match the
 // transaction flow. land always pushes; gk promote pushes only on --push.
-func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source, base string, push bool) error {
+// resolveAutostashFlag resolves the receiver-worktree autostash setting for
+// gk promote / gk land: an explicit --autostash (either polarity) wins,
+// otherwise the per-command config default (promote.autostash /
+// land.autostash, both false out of the box). Shared so both verbs read the
+// flag identically.
+func resolveAutostashFlag(cmd *cobra.Command, configDefault bool) bool {
+	if cmd.Flags().Changed("autostash") {
+		v, _ := cmd.Flags().GetBool("autostash")
+		return v
+	}
+	return configDefault
+}
+
+func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source, base string, push, autostash bool) error {
 	// The source is always passed explicitly: in a chain the second hop's
 	// source is the previous target (develop), not the checked-out branch
 	// (feat) — relying on `merge --into`'s current-branch default would
 	// silently merge feat straight into the trunk. merge treats an explicit
 	// source equal to the current branch identically to the default.
-	if err := landRunChild(ctx, gkPath, repo, jsonMode, "merge", source, "--into", base, "--no-ai"); err != nil {
+	mergeArgs := []string{"merge", source, "--into", base, "--no-ai"}
+	if autostash {
+		// Forward --autostash so a dirty receiver worktree (the parent
+		// checkout someone else left mid-edit) is stashed around the merge
+		// and popped after, instead of blocking the hop.
+		mergeArgs = append(mergeArgs, "--autostash")
+	}
+	if err := landRunChild(ctx, gkPath, repo, jsonMode, mergeArgs...); err != nil {
 		return fmt.Errorf("merge %s --into %s: %w", source, base, err)
 	}
 	if !push {
@@ -510,7 +532,7 @@ func landPromote(ctx context.Context, gkPath, repo string, jsonMode bool, source
 // failed_step names the exact boundary. Re-running after a mid-chain
 // conflict is naturally idempotent: merge --into is a no-op for an
 // already-merged source and push is a no-op when the remote is current.
-func promoteHopSteps(repo string, jsonMode bool, hops []landPromoteHop, push bool, rerun string) []landStep {
+func promoteHopSteps(repo string, jsonMode bool, hops []landPromoteHop, push, autostash bool, rerun string) []landStep {
 	steps := make([]landStep, 0, len(hops))
 	multi := len(hops) > 1
 	for _, hop := range hops {
@@ -529,7 +551,7 @@ func promoteHopSteps(repo string, jsonMode bool, hops []landPromoteHop, push boo
 				if err != nil {
 					return fmt.Errorf("locate gk binary: %w", err)
 				}
-				return landPromote(c, gkPath, repo, jsonMode, hop.source, hop.target, push)
+				return landPromote(c, gkPath, repo, jsonMode, hop.source, hop.target, push, autostash)
 			},
 			plan: plan,
 			// Only a conflict pause (child exit 3) has a resolve/continue

@@ -332,6 +332,22 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 	if entry == nil {
 		return runMergeIntoBare(ctx, deps, source, flags)
 	}
+	// Already integrated: when the source is an ancestor of the receiver, the
+	// merge is a no-op ("Already up to date"). Detect it BEFORE routing into
+	// the receiver's worktree — otherwise runMergeCore's dirty guard rejects an
+	// already-merged branch for the receiver worktree's *unrelated* uncommitted
+	// changes, a worktree a no-op never touches. This is the worktree-path
+	// counterpart of the base==sourceSHA short-circuit in runMergeIntoBare, and
+	// it is what lets `gk promote` / `gk land --to` report "nothing to promote"
+	// instead of failing when the parent checkout happens to be dirty. The
+	// source-dirty handling above already ran, so a WIP commit (if any) has
+	// advanced the source past the receiver and this check correctly skips.
+	if !flags.planOnly && isAncestor(ctx, deps.Runner, source, flags.into) {
+		if deps.ErrOut != nil {
+			fmt.Fprintf(deps.ErrOut, "Already up to date — %s already contains %s\n", flags.into, source)
+		}
+		return nil
+	}
 	if runnerForPath == nil {
 		runnerForPath = func(path string) git.Runner { return &git.ExecRunner{Dir: path} }
 	}
@@ -346,7 +362,14 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 		if errors.As(err, &ce) && ce.Dir == "" {
 			ce.Dir = entry.Path
 		}
-		return WithHint(err, "receiver worktree: cd "+entry.Path+" or pass `--repo "+entry.Path+"` to inspect/continue")
+		hint := "receiver worktree: cd " + entry.Path + " or pass `--repo " + entry.Path + "` to inspect/continue"
+		// A dirty receiver worktree is the common, recoverable case: point at
+		// --autostash (which `gk merge --into`, `gk promote`, and `gk land`
+		// all accept) so the user has a one-flag fix, not just a cd.
+		if !targetFlags.autostash && strings.Contains(err.Error(), "tracked changes") {
+			hint = "the receiver worktree (" + entry.Path + ") has uncommitted changes — rerun with --autostash to stash them around the merge, or commit/stash them there first"
+		}
+		return WithHint(err, hint)
 	}
 	if deps.ErrOut != nil {
 		renderMergeIntoNextHint(deps.ErrOut, source, flags.into)

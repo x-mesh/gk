@@ -1003,14 +1003,29 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 			return worktreeSourceLabel(m)
 		}
+		// ageFor reads the branch tip's commit age from the bulk-loaded meta
+		// (empty for detached worktrees and in global mode, where cross-project
+		// commit times aren't resolvable from this repo). hashFor takes the
+		// worktree's actual HEAD sha straight off the porcelain entry, so it
+		// works for detached and bare worktrees too.
+		ageFor := func(branch string) string {
+			return ifZeroTime(meta[branch].LastCommit)
+		}
+		hashFor := func(e WorktreeEntry) string {
+			return shortSHA(e.Head)
+		}
 		if global {
-			headers = []string{"PROJECT", "BRANCH", "PATH", "FLAGS"}
+			// No AGE column here: across projects the branch meta isn't loaded
+			// (commit times aren't resolvable from this repo), so the column
+			// would be uniformly empty — worse than absent. HASH still shows,
+			// straight off each entry's HEAD.
+			headers = []string{"PROJECT", "BRANCH", "HASH", "PATH", "FLAGS"}
 			items = make([]ui.PickerItem, 0, len(rs.entries)+1)
 			for _, e := range rs.entries {
 				branch, flagsPlain := worktreeRowPartsPlain(e)
 				items = append(items, ui.PickerItem{
 					Display: worktreeTUILabel(e, bold, faint),
-					Cells:   []string{rs.projectByPath[e.Path], appendDiff(branch), e.Path, flagsPlain},
+					Cells:   []string{rs.projectByPath[e.Path], appendDiff(branch), hashFor(e), e.Path, flagsPlain},
 					Key:     e.Path,
 				})
 			}
@@ -1024,7 +1039,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			})
 			return items, headers
 		}
-		headers = []string{"BRANCH", "SOURCE", "PATH", "FLAGS"}
+		headers = []string{"BRANCH", "SOURCE", "HASH", "AGE", "PATH", "FLAGS"}
 		items = make([]ui.PickerItem, 0, len(rs.entries)+2)
 		for _, e := range rs.entries {
 			branch, flagsPlain := worktreeRowPartsPlain(e)
@@ -1043,7 +1058,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				Cells:   []string{appendDiff(branch), source, e.Path, flagsPlain},
+				Cells:   []string{appendDiff(branch), source, hashFor(e), ageFor(e.Branch), e.Path, flagsPlain},
 				Key:     e.Path,
 			})
 		}
@@ -1070,7 +1085,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 
 		items, headers := buildItems(rs)
 		picker := &ui.TablePicker{
-			Headers: headers,
+			Headers:        headers,
+			ColumnPriority: worktreeColumnPriority(),
 			Extras: []ui.TablePickerExtraKey{{
 				Key:  "g",
 				Help: "g toggle global",
@@ -1237,6 +1253,25 @@ func worktreeRowParts(e WorktreeEntry) (branch, flags string) {
 	}
 	flags = strings.Join(parts, " ")
 	return branch, flags
+}
+
+// worktreeColumnPriority maps the worktree picker's column titles to
+// keep-weights for the responsive layout (see ui.TablePicker.ColumnPriority).
+// BRANCH is the identity column and survives; PROJECT (global view) ranks just
+// under it; AGE is the short, glanceable signal kept next, then PATH (where the
+// worktree lives), SOURCE, FLAGS, and finally HASH — a bare SHA — drops first.
+// Keyed by title so the one map serves both the local and global layouts, even
+// across a `g` toggle that reorders the columns.
+func worktreeColumnPriority() map[string]int {
+	return map[string]int{
+		"BRANCH":  100,
+		"PROJECT": 90,
+		"AGE":     80,
+		"PATH":    60,
+		"SOURCE":  40,
+		"FLAGS":   30,
+		"HASH":    10,
+	}
 }
 
 // worktreeRowPartsPlain returns the branch label and the flag suffix

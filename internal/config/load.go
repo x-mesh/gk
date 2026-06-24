@@ -87,6 +87,7 @@ var reservedConfigSections = map[string]bool{
 	"pull":      true,
 	"ship":      true,
 	"land":      true,
+	"promote":   true,
 	"sync":      true,
 	"refresh":   true,
 	"preflight": true,
@@ -164,6 +165,14 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("ship.auto_confirm", defaults.Ship.AutoConfirm)
 	v.SetDefault("ship.wait", defaults.Ship.Wait)
 	v.SetDefault("land.promote", defaults.Land.Promote)
+	// Registering the key (rather than relying on the struct default alone)
+	// lets AutomaticEnv + the "."→"_" replacer resolve GK_PULL_AUTOSTASH,
+	// the same mechanism that carries GK_LAND_PROMOTE / GK_SHIP_WAIT.
+	v.SetDefault("pull.autostash", defaults.Pull.Autostash)
+	// Same registration for promote.autostash / land.autostash → enables
+	// GK_PROMOTE_AUTOSTASH / GK_LAND_AUTOSTASH.
+	v.SetDefault("promote.autostash", defaults.Promote.Autostash)
+	v.SetDefault("land.autostash", defaults.Land.Autostash)
 
 	// --- 2. Global config: $XDG_CONFIG_HOME/gk/config.yaml ---
 	globalDir := xdgConfigDir()

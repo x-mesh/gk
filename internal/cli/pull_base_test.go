@@ -660,8 +660,8 @@ func TestIntegration_PullJSONAutostashPopConflict(t *testing.T) {
 	cmd.SetErr(stderr)
 
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "stash pop failed") {
-		t.Fatalf("want stash pop failure, got %v\nstderr:\n%s", err, stderr.String())
+	if err == nil || !strings.Contains(err.Error(), "stash pop conflict") {
+		t.Fatalf("want stash pop conflict, got %v\nstderr:\n%s", err, stderr.String())
 	}
 	if strings.Contains(stdout.String(), `"updated"`) {
 		t.Errorf("success JSON must not precede a pop failure:\n%s", stdout.String())
@@ -726,5 +726,93 @@ func TestIntegration_PullAutostashPreservesIndex(t *testing.T) {
 	}
 	if res.Autostash == nil || !res.Autostash.Stashed || !res.Autostash.StagingPreserved {
 		t.Fatalf("autostash json = %+v", res.Autostash)
+	}
+}
+
+// TestIntegration_PullAutostashDefault: a dirty tree pulls with NO --autostash
+// flag — autostash is on by default, so pull stashes the local edit, lands the
+// fast-forward, and restores the edit, narrating it with "stashed"/"restored"
+// status lines instead of stopping at a prompt.
+func TestIntegration_PullAutostashDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("shared.txt", "base\n")
+	upstream.Commit("seed: shared")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	down.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	// Upstream advances on an unrelated path → clean fast-forward.
+	upstream.WriteFile("other.txt", "v2\n")
+	upstream.Commit("feat: other")
+
+	// Local uncommitted edit on a different file → the pop applies cleanly.
+	down.WriteFile("shared.txt", "base\nwip\n")
+
+	cmd := pullCoreCmd(t, down.Dir) // deliberately no --autostash
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("default pull on a dirty tree should auto-stash, got %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	// The local edit survived the stash round-trip.
+	if got := down.RunGit("status", "--porcelain=v1", "--", "shared.txt"); !strings.HasPrefix(got, " M") {
+		t.Fatalf("shared.txt status = %q, want restored local edit (' M')", got)
+	}
+	if got := down.RunGit("show", "HEAD:other.txt"); strings.TrimSpace(got) != "v2" {
+		t.Fatalf("upstream commit did not land: other.txt = %q", got)
+	}
+	if !strings.Contains(stderr.String(), "stashed 1 local change") {
+		t.Errorf("missing auto-stash status line:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "restored 1 local change") {
+		t.Errorf("missing restore status line:\n%s", stderr.String())
+	}
+}
+
+// TestIntegration_PullNoAutostashRefusesNonTTY: --no-autostash restores the old
+// gate, so a dirty tree on a non-TTY refuses rather than stashing.
+func TestIntegration_PullNoAutostashRefusesNonTTY(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("shared.txt", "base\n")
+	upstream.Commit("seed: shared")
+
+	down := testutil.NewRepo(t)
+	down.AddRemote("origin", upstream.Dir)
+	down.RunGit("fetch", "origin")
+	down.SetRemoteHEAD("origin", "main")
+	down.RunGit("reset", "--hard", "origin/main")
+	down.RunGit("branch", "--set-upstream-to=origin/main", "main")
+
+	upstream.WriteFile("other.txt", "v2\n")
+	upstream.Commit("feat: other")
+	down.WriteFile("shared.txt", "base\nwip\n")
+
+	cmd := pullCoreCmd(t, down.Dir)
+	if err := cmd.Flags().Set("no-autostash", "true"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("--no-autostash on a non-TTY should refuse, got %v\nstderr:\n%s", err, stderr.String())
+	}
+	// Nothing was stashed.
+	if got := down.RunGit("stash", "list"); strings.TrimSpace(got) != "" {
+		t.Errorf("--no-autostash must not stash, but stash list = %q", got)
 	}
 }

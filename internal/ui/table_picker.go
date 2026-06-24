@@ -66,6 +66,18 @@ type TablePicker struct {
 	// that re-enter the picker in a loop use it to restore the residual
 	// filter recovered from the previous PickerItem.FilterValue.
 	InitialFilter string
+	// ColumnPriority assigns each column a keep-weight by its header title:
+	// when the terminal is too narrow to show every column, the lowest-
+	// weight columns are dropped *whole* (cleanly, never mid-character)
+	// until the rest fit. Higher weight = kept longer; headers absent from
+	// the map default to 0. At least the highest-weight column always
+	// survives. Keying on the title (not the index) keeps priorities correct
+	// when an ExtraKey toggle swaps the column layout — e.g. `gk wt`'s
+	// global view reorders BRANCH and inserts PROJECT. nil keeps the legacy
+	// behaviour — render every column and let the terminal hard-clip the
+	// right edge — so callers that don't opt in are unaffected. A faint
+	// "+N cols" note reports any drop.
+	ColumnPriority map[string]int
 }
 
 type tablePickerModel struct {
@@ -83,6 +95,15 @@ type tablePickerModel struct {
 	headers      []string
 	errMsg       string
 	subtitle     string
+	// priorityByHeader maps a header title to its keep-weight (see
+	// TablePicker.ColumnPriority). visibleCols holds the indices (into
+	// headers / item Cells) currently shown, in left-to-right order — the
+	// projection that lets a row drop a column without disturbing the
+	// underlying PickerItem data. hiddenCols counts how many were dropped,
+	// for the View() note.
+	priorityByHeader map[string]int
+	visibleCols      []int
+	hiddenCols       int
 }
 
 func (m tablePickerModel) Init() tea.Cmd { return textinput.Blink }
@@ -174,17 +195,14 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				m.all = items
 				if headers != nil {
+					// New column structure: re-fit it to the current width
+					// (reflow rebuilds rows too). With no size yet, width 0
+					// makes fitColumns keep every column.
 					m.headers = headers
-					cols := buildColumnsFromHeaders(items, headers)
-					// Keep total width pinned to the terminal so the
-					// table doesn't snap narrow when toggle callbacks
-					// rebuild from the (smaller) data set.
-					if m.width > 0 {
-						cols = distributeColumnWidths(cols, m.width)
-					}
-					m.t.SetColumns(cols)
+					m.reflowColumns(m.width)
+				} else {
+					m.applyFilter()
 				}
-				m.applyFilter()
 				return m, nil
 			}
 		}
@@ -197,7 +215,10 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 5
 		}
 		m.t.SetHeight(h)
-		m.t.SetColumns(distributeColumnWidths(m.t.Columns(), msg.Width))
+		// Re-derive columns from full content widths every resize: drop the
+		// lowest-priority columns that don't fit, then expand the survivors
+		// to fill. Widening restores dropped columns the same way.
+		m.reflowColumns(msg.Width)
 	}
 	var cmd tea.Cmd
 	m.t, cmd = m.t.Update(msg)
@@ -229,12 +250,15 @@ func (m *tablePickerModel) applyFilter() {
 		}
 		m.items = filtered
 	}
+	vc := m.visibleCols
+	if len(vc) == 0 {
+		vc = identityCols(len(m.t.Columns()))
+	}
 	rows := make([]table.Row, len(m.items))
-	colCount := len(m.t.Columns())
 	for i, it := range m.items {
-		row := make(table.Row, colCount)
-		for j := 0; j < colCount; j++ {
-			row[j] = pickerCell(it, j)
+		row := make(table.Row, len(vc))
+		for k, ci := range vc {
+			row[k] = pickerCell(it, ci)
 		}
 		rows[i] = row
 	}
@@ -283,6 +307,127 @@ func buildColumnsFromHeaders(items []PickerItem, headers []string) []table.Colum
 	return cols
 }
 
+// hiddenColsNote renders the "columns were dropped, widen to see them" hint
+// shown beside the subtitle when responsive dropping has hidden columns.
+func hiddenColsNote(n int) string {
+	unit := "col"
+	if n != 1 {
+		unit = "cols"
+	}
+	return fmt.Sprintf("+%d %s · widen", n, unit)
+}
+
+// identityCols returns [0,1,…,n-1] — the no-projection column mapping used
+// when responsive dropping is off or no width is known yet.
+func identityCols(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+// fitColumns decides which columns to show when the terminal can't hold
+// them all. Starting from every column it drops the lowest-priority one
+// (ties broken by dropping the rightmost) until the survivors — plus
+// per-cell padding — fit `total`, never going below a single column.
+//
+// widths must be the *allocation* widths the renderer assigns each column
+// (table.Column.Width). That is deliberately what bubbles/table pads every
+// cell out to on screen, so allocation width == on-screen occupancy — the
+// number that has to fit the terminal. Measuring instead by ANSI-stripped
+// visible width would under-count (colour escapes inflate allocation) and
+// fitColumns would keep columns the terminal then hard-clips anyway.
+//
+// priority[i] is column i's keep-weight (higher kept longer); indices past
+// the slice count as 0. It returns the kept indices in their original
+// left-to-right order. A nil priority disables dropping.
+func fitColumns(widths []int, priority []int, total int) []int {
+	keep := identityCols(len(widths))
+	if priority == nil || total <= 0 || len(widths) <= 1 {
+		return keep
+	}
+	const padding = 2
+	used := func(idxs []int) int {
+		s := 0
+		for _, i := range idxs {
+			s += widths[i] + padding
+		}
+		return s
+	}
+	prio := func(i int) int {
+		if i >= 0 && i < len(priority) {
+			return priority[i]
+		}
+		return 0
+	}
+	for len(keep) > 1 && used(keep) > total {
+		drop := 0
+		for k := 1; k < len(keep); k++ {
+			pk, pd := prio(keep[k]), prio(keep[drop])
+			// Lowest priority wins; on a tie the rightmost column goes first.
+			if pk < pd || (pk == pd && keep[k] > keep[drop]) {
+				drop = k
+			}
+		}
+		keep = append(keep[:drop], keep[drop+1:]...)
+	}
+	return keep
+}
+
+// colWidths extracts the allocation widths from a column slice — the input
+// fitColumns measures against.
+func colWidths(cols []table.Column) []int {
+	out := make([]int, len(cols))
+	for i, c := range cols {
+		out[i] = c.Width
+	}
+	return out
+}
+
+// resolvePriority projects priorityByHeader onto the current header order,
+// returning the per-index weight slice fitColumns consumes. Returns nil when
+// no priorities are configured, which leaves responsive dropping off.
+func (m *tablePickerModel) resolvePriority() []int {
+	if m.priorityByHeader == nil {
+		return nil
+	}
+	prio := make([]int, len(m.headers))
+	for i, h := range m.headers {
+		prio[i] = m.priorityByHeader[h]
+	}
+	return prio
+}
+
+// reflowColumns re-derives the displayed columns for a terminal width:
+// content-size every column from the full item set (so widths stay stable
+// across filtering), drop the lowest-priority ones that don't fit, expand
+// the survivors to fill, and rebuild the rows through the new projection.
+func (m *tablePickerModel) reflowColumns(width int) {
+	full := buildColumnsFromHeaders(m.all, m.headers)
+	// Fit by the allocation widths the renderer will actually use — those
+	// equal on-screen occupancy (bubbles pads each cell to col.Width).
+	// Resolve each column's weight from its header title so a layout swap
+	// (e.g. the global toggle) keeps priorities aligned to the right columns.
+	m.visibleCols = fitColumns(colWidths(full), m.resolvePriority(), width)
+	m.hiddenCols = len(full) - len(m.visibleCols)
+	shown := make([]table.Column, len(m.visibleCols))
+	for k, ci := range m.visibleCols {
+		shown[k] = full[ci]
+	}
+	if width > 0 {
+		shown = distributeColumnWidths(shown, width)
+	}
+	// Clear the rows before swapping columns: bubbles/table re-renders inside
+	// SetColumns, and renderRow indexes m.cols by each row cell — so a stale
+	// wide row against a freshly narrowed column set panics. Empty rows make
+	// the swap safe in both directions; applyFilter then repopulates them
+	// projected through the new visibleCols.
+	m.t.SetRows(nil)
+	m.t.SetColumns(shown)
+	m.applyFilter()
+}
+
 func itemMatchesFilter(it PickerItem, q string) bool {
 	if strings.Contains(strings.ToLower(it.Display), q) {
 		return true
@@ -323,8 +468,20 @@ func (m tablePickerModel) View() string {
 	}
 	help := hintStyle.Render(helpLine)
 	out := ""
-	if m.subtitle != "" {
-		out += subtitleStyle.Render("▸ "+m.subtitle) + "\n"
+	if m.subtitle != "" || m.hiddenCols > 0 {
+		var line string
+		if m.subtitle != "" {
+			line = subtitleStyle.Render("▸ " + m.subtitle)
+		}
+		if m.hiddenCols > 0 {
+			note := hintStyle.Render(hiddenColsNote(m.hiddenCols))
+			if line != "" {
+				line += "  " + note
+			} else {
+				line = note
+			}
+		}
+		out += line + "\n"
 	}
 	out += filterLine + "\n" + m.t.View() + "\n" + help
 	if m.errMsg != "" {
@@ -414,15 +571,19 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	filter.Width = 40
 
 	model := tablePickerModel{
-		t:           t,
-		items:       items,
-		all:         items,
-		filterOnly:  p.FilterItems,
-		chosen:      -1,
-		filterInput: filter,
-		extras:      p.Extras,
-		headers:     headers,
-		subtitle:    p.Subtitle,
+		t:                t,
+		items:            items,
+		all:              items,
+		filterOnly:       p.FilterItems,
+		chosen:           -1,
+		filterInput:      filter,
+		extras:           p.Extras,
+		headers:          headers,
+		subtitle:         p.Subtitle,
+		priorityByHeader: p.ColumnPriority,
+		// Start 1:1 (all columns); the first WindowSizeMsg reflows to the
+		// fitted set once the terminal width is known.
+		visibleCols: identityCols(colCount),
 	}
 	// Pre-seed the filter so the picker opens already narrowed, in nav
 	// mode (filterActive stays false) — the user can act on the filtered

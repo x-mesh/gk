@@ -810,3 +810,27 @@ func TestWorktreeDiffsFromBranches_EmptyInputs(t *testing.T) {
 		t.Errorf("empty branches should yield empty map, got %+v", got)
 	}
 }
+
+// TestWorktreeColumnPriority pins the responsive-drop intent for `gk wt`:
+// BRANCH is the identity column (highest weight), AGE outranks HASH so a
+// narrowing terminal sheds the bare SHA before the glanceable age, and HASH
+// is the first to go.
+func TestWorktreeColumnPriority(t *testing.T) {
+	p := worktreeColumnPriority()
+	if p["BRANCH"] <= p["AGE"] || p["AGE"] <= p["HASH"] {
+		t.Fatalf("want BRANCH > AGE > HASH, got BRANCH=%d AGE=%d HASH=%d",
+			p["BRANCH"], p["AGE"], p["HASH"])
+	}
+	// HASH must be the lowest of the data columns so it drops first.
+	for _, k := range []string{"BRANCH", "PROJECT", "AGE", "PATH", "SOURCE", "FLAGS"} {
+		if p[k] <= p["HASH"] {
+			t.Errorf("%s (%d) should outrank HASH (%d)", k, p[k], p["HASH"])
+		}
+	}
+	// BRANCH is the survivor of last resort.
+	for k, v := range p {
+		if k != "BRANCH" && v >= p["BRANCH"] {
+			t.Errorf("%s (%d) must rank below BRANCH (%d)", k, v, p["BRANCH"])
+		}
+	}
+}

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk promote`·`gk land`에 `--autostash`를 추가한다 — 부모(받는) worktree가 dirty여도 통합을 진행한다.** worktree에서 작업한 브랜치를 부모로 통합할 때, 부모 브랜치가 다른 worktree에 체크아웃돼 있고 거기 저장 안 한 변경이 있으면 종전엔 `working tree has tracked changes`로 막혔다(promote/land엔 우회 플래그가 없었다). 이제 `gk promote --autostash` / `gk land --autostash`는 내부 `gk merge --into` 단계로 `--autostash`를 전달해, 받는 worktree의 변경을 머지 전에 stash했다가 머지 후 pop으로 되돌린다. 받는 worktree는 남이 작업 중인 상태일 수 있어 **기본이 아닌 명시적 옵트인**이다. 더불어 dirty-receiver 거부 메시지가 이제 `rerun with --autostash …`로 한-플래그 해결책을 안내한다(종전엔 `cd <path>`만).
+
+- **`promote.autostash` / `land.autostash` config(및 `GK_PROMOTE_AUTOSTASH` / `GK_LAND_AUTOSTASH` env)를 추가한다 — 위 `--autostash`를 기본으로 켠다.** worktree 흐름에서 부모 체크아웃이 으레 dirty인 사용자를 위해, 매번 플래그를 붙이는 대신 `gk config set promote.autostash true`(또는 `land.autostash`)로 기본화한다. 해상도는 명시 플래그 > config > 기본(false): config로 켜둬도 `--autostash=false`로 이번 한 번만 끌 수 있다. `gk land --promote` 플래그와 새 `promote:` config 섹션의 이름 충돌은 `reservedConfigSections`에 `promote`를 더해 막았다(플래그는 그대로, config 섹션도 보존).
+
+### Changed
+
+- **`gk pull`이 저장 안 한 변경을 만나면 기본으로 자동 보관(autostash)하고, 인터랙티브 멈춤을 없앤다.** 종전엔 dirty 트리에서 `[s] stash & continue / [c] cancel` 프롬프트를 띄워 멈췄고(화면 없는 CI에선 아예 거부) — 정작 충돌 여부는 stash→통합→복원의 *복원* 단계에서야 갈리는데 그 *전에* 묻는 마찰이었다. 이제 추적 중인 변경을 합치기 전에 stash에 넣고 합친 뒤 되돌리며, 충돌만 없으면 묻지 않고 `stashed N / restored N` 한 줄로 흘려보낸다 — CI(비-TTY) 실행도 더 이상 멈추지 않는다. 복원 시 내 변경과 가져온 커밋이 같은 부분을 건드릴 때만 멈춘다(0이 아닌 종료, 보관함은 그대로 보존되고 명확한 해결 힌트를 단다). 끄려면 `--no-autostash`(또는 `pull.autostash: false` / `GK_PULL_AUTOSTASH=0`)로 예전 게이트를 되살린다(TTY 프롬프트, 비-TTY 거부). `--autostash`는 설정으로 꺼둬도 한 번은 강제로 켠다. `gk sync`의 같은 프롬프트는 이번 변경 범위 밖이다.
+
+- **`gk sw`·`gk wt`(및 모든 TablePicker)가 터미널이 좁아지면 우선순위가 낮은 컬럼을 통째로 떨어뜨려 중요한 컬럼을 지킨다.** 종전엔 컬럼이 화면 폭을 넘으면 bubbles/table이 *오른쪽 끝부터 글자 단위로* 잘라내, 폭은 짧지만 가치 높은 AGE가 가장 먼저 사라지고 UPSTREAM은 글자가 깨진 채 남았다. 이제 `TablePicker.ColumnPriority`(헤더 제목→keep-weight 맵)를 받아, 폭이 모자라면 화면 점유(렌더 할당 폭) 기준으로 가장 낮은 우선순위 컬럼부터 한 컬럼씩 깔끔하게 드롭하고(동률이면 오른쪽부터), 최소 한 컬럼은 남긴다. 드롭된 수는 부제 옆 `+N cols · widen` 노트로 알린다. 제목으로 키를 잡으므로 `gk wt`의 `g` 전역 토글처럼 컬럼 레이아웃이 바뀌어도 우선순위가 어긋나지 않는다. `gk sw`는 BRANCH(항상 유지) > AGE > UPSTREAM > WORKTREE > HASH 순, `ColumnPriority`가 nil인 기존 picker는 동작 그대로다. (참고: 셀에 색이 있으면 bubbles/table이 ANSI 포함 길이만큼 화면을 채우므로, 매우 좁은 폭에선 색칠된 BRANCH 셀이 화면을 다 먹어 AGE까지 떨어질 수 있다 — 이 경우 노트가 안내한다.)
+
+- **`gk wt`(인터랙티브 worktree picker)에 HASH·AGE 컬럼을 추가한다.** 종전엔 BRANCH·SOURCE·PATH·FLAGS(전역 모드는 PROJECT·BRANCH·PATH·FLAGS)만 보여 worktree가 가리키는 커밋과 마지막 작업 시점을 한눈에 알 수 없었다. 이제 로컬 모드는 `BRANCH·SOURCE·HASH·AGE·PATH·FLAGS`로, HASH는 각 worktree의 실제 HEAD(`WorktreeEntry.Head`, detached/bare 포함)에서, AGE는 브랜치 tip 커밋 시각에서 채운다. 위 반응형 드롭과 묶여 BRANCH > AGE > PATH > SOURCE > FLAGS > HASH 우선순위로, 좁아지면 HASH가 먼저 비켜나고 AGE는 끝까지 남는다. 전역(`g`) 모드는 다른 프로젝트의 커밋 시각을 이 repo에서 풀 수 없어 AGE 컬럼을 빼고(빈 컬럼 대신 생략) HASH만 보여준다.
+
+### Fixed
+
+- **이미 머지된 브랜치를 `gk merge --into`(및 그 위의 `gk promote`·`gk land --to`)할 때 받는 worktree가 dirty면 거부하던 버그를 고친다.** source가 이미 receiver의 조상(=통합 완료)이면 머지는 받는 worktree를 전혀 건드리지 않는 no-op인데, 종전 worktree 경로(`runMergeInto`→`runMergeCore`)는 그 판정 *전에* 받는 worktree의 dirty 체크를 먼저 해 `working tree has tracked changes`로 거부했다 — 부모 브랜치 체크아웃에 무관한 변경이 쌓여 있을 뿐인데 promote가 실패하는 혼란. 이제 받는 worktree로 라우팅하기 전에 `isAncestor(source, into)`를 먼저 검사해 `Already up to date — <into> already contains <source>`로 깔끔히 끝낸다(bare 경로는 `base==sourceSHA`로 이미 처리하던 것의 worktree 짝). 실제로 새 커밋이 있는 머지는 종전대로 dirty receiver를 막는다.
+
 ## [0.98.0] - 2026-06-24
 
 ### Added

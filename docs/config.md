@@ -466,6 +466,62 @@ See [`gk land`](commands.md#gk-land) for the full flag semantics.
 
 ---
 
+### `land.autostash`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `false` |
+| CLI flag | `--autostash` / `--autostash=false` (override) |
+| Env | `GK_LAND_AUTOSTASH` |
+
+Makes the `gk land --to` / promote merge step stash a dirty **receiver** worktree — the parent checkout someone left mid-edit — around the merge and pop it after, as if every run passed `--autostash`, instead of refusing with `working tree has tracked changes`. Resolution is explicit-flag > config > default `false`: with it on, `--autostash=false` opts out for one run. Set it from the environment with `GK_LAND_AUTOSTASH=1`.
+
+```yaml
+land:
+  autostash: true     # gk land --to never blocks on a dirty parent checkout
+```
+
+---
+
+### `promote.autostash`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `false` |
+| CLI flag | `--autostash` / `--autostash=false` (override) |
+| Env | `GK_PROMOTE_AUTOSTASH` |
+
+The `gk promote` counterpart of [`land.autostash`](#landautostash): stashes a dirty receiver worktree around each hop's merge and pops it after, for worktree flows where the parent checkout is routinely dirty. Resolution is explicit-flag > config > default `false`.
+
+```yaml
+promote:
+  autostash: true     # gk promote never blocks on a dirty parent checkout
+```
+
+See [`gk promote`](commands.md#gk-promote) for the full flag semantics.
+
+---
+
+### `pull.autostash`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `true` |
+| CLI flag | `--no-autostash` (off for one run) · `--autostash` (force on) |
+| Env | `GK_PULL_AUTOSTASH` |
+
+Controls whether `gk pull` auto-stashes a dirty (tracked) working tree around integration. **On by default**: pull stashes before integrating and pops after (with `--index`, so staged hunks stay staged), so the common no-conflict case flows through with a `stashed N / restored N` status line instead of an interactive prompt — and a non-TTY (CI) run no longer refuses. The pop is the one place a real conflict with local edits surfaces, and the one place pull then stops. Set `false` (or pass `--no-autostash`, or `GK_PULL_AUTOSTASH=0`) to restore the old gate: prompt for `stash & continue` on a TTY, refuse on a non-TTY.
+
+```yaml
+pull:
+  autostash: false    # restore the pre-autostash interactive gate
+```
+
+---
+
 ### `ship.auto_confirm`
 
 | | |

@@ -351,6 +351,7 @@ The session-closing compound verb: commit what's dirty (AI-grouped via `gk commi
 | `--no-push` | false | Local wrap-up: skip the push step **and** any integration push — commit + pull + local merge only. The folded form of the old local-promote flow (integrate now, publish later from the receiving branch). |
 | `--promote` | (off) | **DEPRECATED** alias for `--to` (kept one release; a soft stderr hint fires when used). Bare `--promote` = one hop to parent/base; `--promote=<branch>` = chain walk to `<branch>`. Existing flows and `land.promote` config keep working unchanged — prefer `--to parent\|base`, or `gk promote <branch>` for the multi-hop walk. |
 | `--no-promote` | false | Skip the promote step for this run — the per-invocation escape from a `land.promote` config default |
+| `--autostash` | false | During the `--to`/promote merge, stash a dirty **receiver** worktree (the parent checkout someone left mid-edit) around the merge and pop it after, instead of refusing with `working tree has tracked changes`. Forwarded to the underlying `gk merge --into`. Config default: `land.autostash: true`; `--autostash=false` opts out for one run. See [config: `land.autostash`](config.md#landautostash). |
 | `--cleanup` | false | After pushing, delete fully-merged branches and reclaim their worktrees (merged-only, protected branches excluded) |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout; step progress moves to stderr |
 
@@ -369,6 +370,7 @@ Bare `gk promote` climbs **one hop** — the same target resolution as `gk statu
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--push` | false | After each hop's merge, also publish the advanced branch (`push --from <target>`) |
+| `--autostash` | false | Stash a dirty **receiver** worktree (the parent checkout) around each hop's merge and pop it after, instead of refusing with `working tree has tracked changes`. Config default: `promote.autostash: true`; `--autostash=false` opts out for one run. See [config: `promote.autostash`](config.md#promoteautostash). |
 | `--json` (global) | false | Emit `{steps:[{name,result}], failed_step?, resume?}` on stdout (same contract as `gk land`); step progress moves to stderr |
 
 ## gk batch
@@ -522,7 +524,8 @@ gk pull [flags]
 | `--from <remote>[/<branch>]` | — | Pull from a specific remote instead of the upstream — a mirror or org fork the tracking chain never fetches. Branch defaults to the current branch's name; tracking config stays untouched. Unregistered remotes are rejected with the registered list |
 | `--fetch-only` | false | Fetch only, do not integrate |
 | `--no-rebase` | false | **Deprecated** alias for `--fetch-only` |
-| `--autostash` | false | Stash dirty changes before integration, then pop with index state preserved |
+| `--autostash` | **on** | Stash dirty (tracked) changes before integration, then pop with index state preserved — **the default**. Force it on for one run even when `pull.autostash` is off in config. |
+| `--no-autostash` | false | Restore the pre-autostash gate: prompt for `stash & continue` on a TTY, refuse on a non-TTY. Same as `pull.autostash: false` / `GK_PULL_AUTOSTASH=0` for one run. |
 | `--with-base` | false | Also fast-forward the local base branch (e.g. `main`) to its remote tip after the fetch — no checkout involved. Config default: `pull.with_base: true`; `--with-base=false` opts out for one run. Strictly FF-only: a diverged base, a base checked out in another worktree, or a missing local base is skipped with a NOTE. Base fetches use an explicit remote-tracking refspec, so narrow/single-branch fetch configs still refresh `origin/<base>` on the first run. Skipped under `--fetch-only` |
 | `--json` (global) | false | Emit the machine-readable result on stdout (`result`: `updated`/`up-to-date`/`ahead-only`/`fetch-only`/`conflict`, moved SHAs, `base` outcomes, conflict files + resume/abort commands). The human progress stream stays on stderr |
 | `-v`, `--verbose` | (count) | Show upstream, strategy, and integration details; repeat for diagnostics |
@@ -548,8 +551,8 @@ gk pull --base develop
 # Fetch only, skip rebase
 gk pull --no-rebase
 
-# Stash uncommitted changes, rebase, then restore
-gk pull --autostash
+# Restore the old gate: prompt on a TTY, refuse on a non-TTY
+gk pull --no-autostash
 
 # Morning multi-machine sync: pull develop AND fast-forward local main
 gk pull --with-base
@@ -560,7 +563,7 @@ gk pull --dry-run
 
 ### Notes
 
-- Requires a clean working tree unless `--autostash` is set. If the tree is dirty and `--autostash` is not set, gk exits with an error and prints guidance. Autostash restores with `--index`, so already-staged hunks stay staged when the pop succeeds.
+- A dirty (tracked) working tree is auto-stashed by default: gk stashes before integration and pops after, with `--index` so already-staged hunks stay staged when the pop succeeds — the common no-conflict case flows through with a `stashed N / restored N` status line and no prompt. The pop is the one place a real conflict with your local edits surfaces, and the one place pull then stops (non-zero, the stash preserved). Turn this off with `--no-autostash` (or `pull.autostash: false` / `GK_PULL_AUTOSTASH=0`) to restore the old gate: prompt for `stash & continue` on a TTY, refuse on a non-TTY.
 - Runs `git fetch <remote> <base>` then `git rebase origin/<base>`.
 - On conflict, gk pauses and prompts. Use `gk continue` or `gk abort` to resume.
 

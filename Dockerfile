@@ -25,8 +25,8 @@ COPY --from=build /out/gk /usr/local/bin/gk
 ENV GK_AGENT=1
 WORKDIR /repo
 
-# `docker run img` → `gk follow main`. Override the branch and hook at run time:
+# `docker run img` → `gk follow` (the current branch). Override the branch and
+# hook at run time:
 #   docker run --rm -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
-#     ghcr.io/x-mesh/gk-follow main -- make deploy
+#     ghcr.io/x-mesh/gk-follow release -- make deploy
 ENTRYPOINT ["gk", "follow"]
-CMD ["main"]

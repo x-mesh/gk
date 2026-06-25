@@ -1778,9 +1778,12 @@ Alias: `gk wt`.
 | *(none)* | Interactive TUI — list, add, remove, cd. See below. |
 | `list` | List worktrees (table or `--json`) |
 | `add <name\|path> [branch]` | Create a worktree (managed base for relative names, passthrough for absolute paths) |
+| `acquire <branch>` | Create or reuse an initialized worktree and print its path |
 | `remove <path>` | Remove a worktree |
 | `prune` | Prune worktree administrative records |
 | `run <branch> -- <cmd>` | Create (or reuse) a worktree, run a command in it, optionally reclaim it with `--cleanup` |
+| `finish` | Commit/promote the current worktree branch, optionally cleaning up the worktree |
+| `cleanup` | Bulk-remove safe, finished worktrees |
 
 ### Interactive mode (`gk wt`)
 
@@ -1820,6 +1823,28 @@ The success line names what landed where, so the base of a new branch is never a
 `--dry-run` describes the plan and touches nothing — no directory, no `git worktree add`, no init — printing `would add worktree at <path> …`. With `--json` it returns the same machine-readable result (`{path, branch, parent, created, managed, dry_run, init}`) the real run emits, so an agent reads `result.path` straight from the envelope instead of scraping the success line; under `--json` the init bootstrap runs silently (its link/copy/run log would otherwise corrupt the envelope) and reports only `init: done | skipped`.
 
 A newly created branch also records its fork parent (`branch.<name>.gk-parent = <base>`), the same metadata `gk branch set-parent` writes — creation is the only moment the parent is known for certain (git's own reflog only says "Created from HEAD"). `gk status`, the `SOURCE` column, and `gk land --to` then resolve against the real parent instead of the trunk. Recording is skipped when the base is not a local branch (detached HEAD, remote ref, raw SHA) and is undone with `gk branch unset-parent`.
+
+### gk worktree acquire
+
+Agent-friendly setup: create or reuse a managed worktree for `<branch>`, run
+`worktree.init` by default, and print the ready path.
+
+```bash
+gk worktree acquire feat/api --json
+gk worktree acquire feat/api --from develop --no-init
+```
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from <ref>` | HEAD | Base ref when creating a new branch |
+| `--init` | true | Run `worktree init` after create/reuse |
+| `--no-init` | false | Skip bootstrap |
+
+With `--json` (or `GK_AGENT=1`) the result is
+`{path, branch, parent, created, reused, init}` so an agent can set its next
+tool call's `workdir` directly from `result.path`.
 
 #### Managed base directory
 
@@ -1868,7 +1893,7 @@ Project layout on disk:
 
 ### gk worktree run
 
-Runs a command inside a worktree for `<branch>` — the CLI form of an isolated, parallel task (the single-shot sibling of the Workflow worktree-isolation pattern). If a worktree is already checked out on `<branch>` it is reused; otherwise gk creates one (managed-base layout, `gk-parent` recorded, `worktree.init` applied) before running. The command runs with the worktree as its working directory, and **gk exits with the command's exit code**.
+Runs a command inside a worktree for `<branch>` — the CLI form of an isolated, parallel task (the single-shot sibling of the Workflow worktree-isolation pattern). If a worktree is already checked out on `<branch>` it is reused; otherwise gk creates one (managed-base layout, `gk-parent` recorded) before running. Pass `--init` to run `worktree.init` for both newly created and reused worktrees. The command runs with the worktree as its working directory, and **gk exits with the command's exit code**.
 
 Everything after `--` is the command, run directly (not through a shell), so chain with an explicit shell when you need operators:
 
@@ -1884,10 +1909,57 @@ With `--cleanup`, a command that **succeeds** (exit 0) has its worktree removed 
 |------|---------|-------------|
 | `--from <ref>` | HEAD | Base ref when creating a new branch |
 | `--cleanup` | false | Remove the worktree when the command succeeds (and delete the branch if this call created it) |
-| `--init` | false | Force `worktree init` on create |
+| `--init` | false | Run `worktree init` before the command, including reused worktrees |
 | `--no-init` | false | Skip `worktree init` on create |
 
-With `--json` (or `GK_AGENT=1`) the result is `{path, branch, created, command, exit_code, removed}`; the command's own stdout moves to stderr so gk's stdout carries only the envelope.
+With `--json` (or `GK_AGENT=1`) the result is `{path, branch, created, init, command, exit_code, removed}`; the command's own stdout moves to stderr so gk's stdout carries only the envelope.
+
+### gk worktree finish
+
+Wraps up the branch checked out in the current worktree. By default it runs
+`gk promote` (commit, then merge one hop into `gk-parent` or the base) without
+pushing. With `--push`, it runs `gk land --to <target>` instead.
+
+```bash
+gk worktree finish --to parent --cleanup
+gk worktree finish --to base --push --cleanup --delete-branch
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--to <target>` | `parent` | `parent`, `base`, or a branch |
+| `--push` | false | Use `gk land --to <target>` instead of local `gk promote` |
+| `--cleanup` | false | Remove the current linked worktree after a successful finish |
+| `--delete-branch` | false | After `--cleanup`, delete the finished branch with `git branch -d` |
+| `--autostash` | false | Pass `--autostash` to `promote`/`land` |
+
+`--cleanup` refuses to remove the main worktree. With `--json` (or
+`GK_AGENT=1`) the result is `{mode, branch, to, path, cleanup, removed}` with
+`branch_deleted` when requested.
+
+### gk worktree cleanup
+
+Bulk reclaim safe, finished worktrees. Without `-y`, cleanup is a dry-run
+report. The safe default skips the current worktree, dirty worktrees, live
+locks, protected branches, detached/bare entries, and branches not merged into
+their `gk-parent` or base.
+
+```bash
+gk worktree cleanup --merged --stale 7d --json
+gk worktree cleanup --merged --stale 7d --delete-branches -y
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--merged` | true | Only remove branches merged into parent/base |
+| `--stale <age>` | — | Require branch tip older than an age (`7d`, `12h`, `30m`) |
+| `--delete-branches` | false | Delete the local branch after removing its worktree |
+| `-y, --yes` | false | Actually remove candidates |
+| `--force-stale-locks` | false | Unlock/remove stale locked worktrees |
+| `--discard-dirty` | false | Destructively remove dirty worktrees with `git worktree remove --force` |
+
+With `--json` (or `GK_AGENT=1`) the result is
+`{dry_run, candidates, removed, skipped, failed}`.
 
 ### List columns
 

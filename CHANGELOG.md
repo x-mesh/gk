@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent용 worktree lifecycle 명령을 추가한다: `gk wt acquire`, `gk wt finish`, `gk wt cleanup`.** `acquire`는 branch worktree를 만들거나 재사용하고 `worktree.init`을 기본 실행해 JSON `path`를 돌려준다. `finish`는 현재 worktree에서 `promote`(기본) 또는 `land --to`(`--push`)로 부모/base에 통합한 뒤 `--cleanup`/`--delete-branch`를 수행한다. `cleanup`은 기본 dry-run으로 완료된 worktree 후보를 찾고, `-y`에서만 current/dirty/live-lock/protected/unmerged 항목을 제외한 안전 후보를 제거한다.
+
 ### Changed
 
 - **`gk follow`가 branch 인자를 생략하면 현재 branch를 따른다.** `gk follow -- make test`처럼 hook만 넘기는 사용이 자연스럽게 current branch mirror로 동작하고, detached HEAD에서는 명시 branch를 요구한다. 컨테이너 기본 실행도 `main` 고정 대신 mounted repo의 current branch를 따르도록 맞췄다.
+- **agents 계약 v20에 worktree lifecycle 흐름을 반영한다.** `gk agents install`이 생성하는 CLAUDE.md/AGENTS.md 지시에 `worktree acquire`로 `result.path`를 얻어 cwd로 쓰고, `worktree finish --to parent --cleanup`으로 부모에 통합하며, `worktree cleanup --merged --stale 7d`로 완료 worktree를 일괄 정리하는 agent 표준 경로를 추가한다.
+- **`gk wt run`의 `worktree.init` 적용을 `--init` 옵트인으로 바꾼다 — 기본 실행에서는 더 이상 init하지 않는다(종전엔 worktree 생성 시 자동 실행).** 실행(`run`)과 setup(`acquire`)을 분리한다: 이제 `--init`을 줘야 worktree.init이 돌고, 그때는 새로 만든 worktree뿐 아니라 **재사용하는 worktree에도** bootstrap을 다시 적용한다. JSON 결과에 `init` 상태(`done`/`skipped`)를 포함한다.
 
 ## [0.99.0] - 2026-06-24
 

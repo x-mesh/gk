@@ -3176,8 +3176,11 @@ file-change feed.
 ### Synopsis
 
 ```
-gk follow <branch> [-- <hook> args...] [flags]
+gk follow [branch] [-- <hook> args...] [flags]
 ```
+
+If `branch` is omitted, `gk follow` uses the current branch. Detached HEAD
+requires an explicit branch.
 
 Each cycle: read the remote SHA with a cheap `git ls-remote` (no fetch unless it
 moved); if it changed, run the safety-gated mirror (backup → fetch →
@@ -3220,8 +3223,8 @@ verb that moves HEAD is:
 ### Examples
 
 ```
-# Mirror origin/main every 30s and re-run the test suite on each change
-gk follow main -- make test
+# Mirror the current branch every 30s and re-run the test suite on each change
+gk follow -- make test
 
 # Watch a release branch on a deploy box, redeploy on each push
 gk follow release --interval 15s -- ./deploy.sh
@@ -3243,7 +3246,7 @@ root `Dockerfile` that builds a minimal image (git + ssh + gk) with
 docker build -t gk-follow .
 docker run --rm --restart=always \
   -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
-  gk-follow main -- make deploy
+  gk-follow -- make deploy
 ```
 
 The base image is intentionally minimal; a hook that needs a toolchain

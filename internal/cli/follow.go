@@ -36,7 +36,7 @@ import (
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "follow <branch> [-- <hook> args...]",
+		Use:   "follow [branch] [-- <hook> args...]",
 		Short: "Watch a remote branch and mirror+run a hook each time it advances",
 		Long: `Foreground watcher that polls a REMOTE branch and, when it advances,
 hard-resets the local repo to the remote SHA and runs a hook command once
@@ -62,9 +62,12 @@ Hook command precedence: a trailing "-- <cmd> args..." wins over --run.
 With --run the string is executed via "sh -c". With neither, the cycle
 still mirrors but runs no hook.
 
+If branch is omitted, follow uses the current branch. Detached HEAD requires
+an explicit branch.
+
 Designed to be supervised: SIGINT/SIGTERM stop the loop cleanly (exit 0).
 Use --once to run exactly one cycle and exit (cron / tests).`,
-		Args: cobra.MinimumNArgs(1),
+		Args: cobra.ArbitraryArgs,
 		RunE: runFollow,
 	}
 	cmd.Flags().String("remote", "", "remote to watch (default: config remote, else origin)")
@@ -120,7 +123,12 @@ type followResult struct {
 }
 
 func runFollow(cmd *cobra.Command, args []string) error {
-	branch := args[0]
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+
+	branch, hookArgs, err := resolveFollowArgs(cmd.Context(), runner, cmd, args)
+	if err != nil {
+		return err
+	}
 	if err := guardRef(branch); err != nil {
 		return fmt.Errorf("invalid branch: %w", err)
 	}
@@ -146,13 +154,11 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	once, _ := cmd.Flags().GetBool("once")
 	runStr, _ := cmd.Flags().GetString("run")
 
-	runner := &git.ExecRunner{Dir: RepoFlag()}
-
 	// Hook precedence: a trailing `-- cmd args...` wins over --run. cobra
-	// hands us everything after `--` as args past the branch.
+	// hands us everything after `--` as args, and resolveFollowArgs splits it
+	// from the optional branch.
 	var hook func(ctx context.Context) (int, error)
-	if len(args) > 1 {
-		hookArgs := args[1:]
+	if len(hookArgs) > 0 {
 		hook = func(ctx context.Context) (int, error) {
 			return runHookExec(ctx, RepoFlag(), hookArgs[0], hookArgs[1:]...)
 		}
@@ -180,6 +186,49 @@ func runFollow(cmd *cobra.Command, args []string) error {
 		now:          time.Now,
 	}
 	return followLoop(ctx, runner, cmd.OutOrStdout(), opts)
+}
+
+func resolveFollowArgs(ctx context.Context, runner git.Runner, cmd *cobra.Command, args []string) (string, []string, error) {
+	branch, hookArgs, err := splitFollowArgs(cmd, args)
+	if err != nil {
+		return "", nil, err
+	}
+	if branch != "" {
+		return branch, hookArgs, nil
+	}
+
+	branch, err = git.NewClient(runner).CurrentBranch(ctx)
+	if err != nil {
+		if errors.Is(err, git.ErrDetachedHEAD) {
+			return "", nil, WithHint(
+				fmt.Errorf("follow: branch is required when HEAD is detached"),
+				"pass an explicit branch: gk follow <branch> [-- <hook> args...]",
+			)
+		}
+		return "", nil, fmt.Errorf("follow: determine current branch: %w", err)
+	}
+	return branch, hookArgs, nil
+}
+
+func splitFollowArgs(cmd *cobra.Command, args []string) (string, []string, error) {
+	if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+		if dash > len(args) {
+			dash = len(args)
+		}
+		if dash > 1 {
+			return "", nil, fmt.Errorf("follow: at most one branch may appear before '--'")
+		}
+		branch := ""
+		if dash == 1 {
+			branch = args[0]
+		}
+		return branch, append([]string(nil), args[dash:]...), nil
+	}
+
+	if len(args) == 0 {
+		return "", nil, nil
+	}
+	return args[0], append([]string(nil), args[1:]...), nil
 }
 
 // runHookExec runs <name args...> in dir, streaming stdout/stderr through to

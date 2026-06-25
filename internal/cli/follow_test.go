@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/x-mesh/gk/internal/git"
 )
 
@@ -109,6 +111,107 @@ func baseOpts(r *followRunner) followOpts {
 		interval: time.Millisecond,
 		once:     true,
 		now:      func() time.Time { return time.Unix(1700000000, 0) },
+	}
+}
+
+func executeFollowArgResolution(t *testing.T, runner git.Runner, argv ...string) (branch string, hookArgs []string, err error) {
+	t.Helper()
+	cmd := &cobra.Command{
+		Use:  "follow [branch] [-- <hook> args...]",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			branch, hookArgs, err = resolveFollowArgs(context.Background(), runner, cmd, args)
+			return err
+		},
+	}
+	cmd.SetArgs(argv)
+	execErr := cmd.Execute()
+	if err == nil {
+		err = execErr
+	}
+	return branch, hookArgs, err
+}
+
+func TestFollowArgs_DefaultsToCurrentBranch(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD": {Stdout: "feature/watch\n"},
+	}}
+
+	branch, hookArgs, err := executeFollowArgResolution(t, r)
+	if err != nil {
+		t.Fatalf("resolveFollowArgs returned error: %v", err)
+	}
+	if branch != "feature/watch" {
+		t.Fatalf("branch = %q, want current branch", branch)
+	}
+	if len(hookArgs) != 0 {
+		t.Fatalf("hookArgs = %v, want none", hookArgs)
+	}
+}
+
+func TestFollowArgs_DefaultBranchWithDashHook(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD": {Stdout: "feature/watch\n"},
+	}}
+
+	branch, hookArgs, err := executeFollowArgResolution(t, r, "--", "make", "test")
+	if err != nil {
+		t.Fatalf("resolveFollowArgs returned error: %v", err)
+	}
+	if branch != "feature/watch" {
+		t.Fatalf("branch = %q, want current branch", branch)
+	}
+	if got := strings.Join(hookArgs, " "); got != "make test" {
+		t.Fatalf("hookArgs = %q, want make test", got)
+	}
+}
+
+func TestFollowArgs_ExplicitBranchWithDashHook(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD": {Stdout: "feature/watch\n"},
+	}}
+
+	branch, hookArgs, err := executeFollowArgResolution(t, r, "release", "--", "make", "deploy")
+	if err != nil {
+		t.Fatalf("resolveFollowArgs returned error: %v", err)
+	}
+	if branch != "release" {
+		t.Fatalf("branch = %q, want explicit branch", branch)
+	}
+	if got := strings.Join(hookArgs, " "); got != "make deploy" {
+		t.Fatalf("hookArgs = %q, want make deploy", got)
+	}
+	if len(r.Calls) != 0 {
+		t.Fatalf("explicit branch should not read current branch, calls=%v", r.Calls)
+	}
+}
+
+func TestFollowArgs_RejectsMultipleBranchesBeforeDash(t *testing.T) {
+	r := &git.FakeRunner{}
+
+	_, _, err := executeFollowArgResolution(t, r, "main", "extra", "--", "make", "test")
+	if err == nil {
+		t.Fatal("expected an error for multiple branch args before '--'")
+	}
+	if !strings.Contains(err.Error(), "at most one branch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFollowArgs_DetachedHeadRequiresExplicitBranch(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD": {
+			ExitCode: 128,
+			Stderr:   "fatal: ref HEAD is not a symbolic ref",
+		},
+	}}
+
+	_, _, err := executeFollowArgResolution(t, r)
+	if err == nil {
+		t.Fatal("expected detached HEAD error")
+	}
+	if !strings.Contains(err.Error(), "branch is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

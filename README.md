@@ -239,7 +239,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 
 | Command | Alias | Description |
 |---|---|---|
-| `gk follow <branch> [-- <hook>...]` | | Foreground watcher that polls a **remote** branch and, each time it advances, hard-resets the local checkout to the remote tip (GitOps mirror) and runs a hook once. Zero-infra "git-sync + watchexec" for dev boxes, agent sandboxes, and single-container deploys — supervised externally (systemd/docker/k8s), no built-in daemon. A backup ref is written before every reset (recover with `git reset --hard <backup-ref>`); an uncommitted working tree is refused unless `--discard-dirty`. A non-zero hook exit backs the poll off exponentially. `--remote`, `--interval` (default 30s), `--run`, `--once`. Not to be confused with `gk status --watch` (local file-change feed). Ships as a container (`Dockerfile`). |
+| `gk follow [branch] [-- <hook>...]` | | Foreground watcher that polls a **remote** branch and, each time it advances, hard-resets the local checkout to the remote tip (GitOps mirror) and runs a hook once. Omit `branch` to follow the current branch. Zero-infra "git-sync + watchexec" for dev boxes, agent sandboxes, and single-container deploys — supervised externally (systemd/docker/k8s), no built-in daemon. A backup ref is written before every reset (recover with `git reset --hard <backup-ref>`); an uncommitted working tree is refused unless `--discard-dirty`. A non-zero hook exit backs the poll off exponentially. `--remote`, `--interval` (default 30s), `--run`, `--once`. Not to be confused with `gk status --watch` (local file-change feed). Ships as a container (`Dockerfile`). |
 
 ### AI
 | Command | Description |

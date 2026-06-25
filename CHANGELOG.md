@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk follow`가 branch 인자를 생략하면 현재 branch를 따른다.** `gk follow -- make test`처럼 hook만 넘기는 사용이 자연스럽게 current branch mirror로 동작하고, detached HEAD에서는 명시 branch를 요구한다. 컨테이너 기본 실행도 `main` 고정 대신 mounted repo의 current branch를 따르도록 맞췄다.
+
 ## [0.99.0] - 2026-06-24
 
 ### Added

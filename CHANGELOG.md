@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-06-25
+
 ### Added
 
 - **Agent용 worktree lifecycle 명령을 추가한다: `gk wt acquire`, `gk wt finish`, `gk wt cleanup`.** `acquire`는 branch worktree를 만들거나 재사용하고 `worktree.init`을 기본 실행해 JSON `path`를 돌려준다. `finish`는 현재 worktree에서 `promote`(기본) 또는 `land --to`(`--push`)로 부모/base에 통합한 뒤 `--cleanup`/`--delete-branch`를 수행한다. `cleanup`은 기본 dry-run으로 완료된 worktree 후보를 찾고, `-y`에서만 current/dirty/live-lock/protected/unmerged 항목을 제외한 안전 후보를 제거한다.

@@ -132,7 +132,12 @@ Examples:
 	// --dry-run is the inherited persistent flag (root.go) — reused here to
 	// preview link/copy/run without performing them.
 
-	wt.AddCommand(list, add, rm, prune, initc, newWorktreeRunCmd())
+	wt.AddCommand(list, add, rm, prune, initc,
+		newWorktreeAcquireCmd(),
+		newWorktreeRunCmd(),
+		newWorktreeFinishCmd(),
+		newWorktreeCleanupCmd(),
+	)
 	rootCmd.AddCommand(wt)
 }
 

@@ -24,6 +24,7 @@ type worktreeRunJSON struct {
 	Path     string   `json:"path"`
 	Branch   string   `json:"branch,omitempty"`
 	Created  bool     `json:"created"`
+	Init     string   `json:"init,omitempty"`
 	Command  []string `json:"command"`
 	ExitCode int      `json:"exit_code"`
 	Removed  bool     `json:"removed"`
@@ -41,9 +42,10 @@ func newWorktreeRunCmd() *cobra.Command {
 isolated, parallel task.
 
 If a worktree is already checked out on <branch>, it is reused; otherwise gk
-creates one (managed-base layout, gk-parent recorded, worktree.init applied)
-before running. The command runs with the worktree as its working directory,
-and gk exits with the command's exit code.
+creates one (managed-base layout, gk-parent recorded) before running. Pass
+--init to run worktree.init before the command, including reused worktrees.
+The command runs with the worktree as its working directory, and gk exits with
+the command's exit code.
 
 With --cleanup, a command that succeeds (exit 0) has its worktree removed —
 and, when this call created the branch, the branch deleted too. A failing
@@ -62,8 +64,8 @@ Examples:
 	}
 	c.Flags().String("from", "", "base ref when creating a new branch (default: HEAD)")
 	c.Flags().Bool("cleanup", false, "remove the worktree when the command succeeds (and delete the branch if this call created it)")
-	c.Flags().Bool("init", false, "force worktree init on create (link/copy/run from .gk.yaml)")
-	c.Flags().Bool("no-init", false, "skip worktree init on create")
+	c.Flags().Bool("init", false, "run worktree init before the command, including reused worktrees")
+	c.Flags().Bool("no-init", false, "skip worktree init")
 	return c
 }
 
@@ -94,7 +96,7 @@ func runWorktreeRun(cmd *cobra.Command, args []string) error {
 	w := cmd.OutOrStdout()
 	jsonMode := JSONOut()
 
-	wtPath, created, createdBranch, err := ensureRunWorktree(ctx, cmd, runner, cfg, ref, jsonMode, w)
+	wtPath, created, createdBranch, initStatus, err := ensureRunWorktree(ctx, cmd, runner, cfg, ref, jsonMode, w)
 	if err != nil {
 		return err
 	}
@@ -117,7 +119,7 @@ func runWorktreeRun(cmd *cobra.Command, args []string) error {
 
 	res := worktreeRunJSON{
 		Path: wtPath, Branch: ref, Created: created,
-		Command: command, ExitCode: exitCode, Removed: removed,
+		Init: initStatus, Command: command, ExitCode: exitCode, Removed: removed,
 	}
 	if jsonMode {
 		_ = emitAgentResult(w, res)
@@ -143,18 +145,22 @@ func runWorktreeRun(cmd *cobra.Command, args []string) error {
 // whether it also created the branch, so --cleanup knows whether to delete
 // the branch. Creation mirrors `gk worktree add`: managed-base layout,
 // gk-parent metadata, and worktree.init bootstrap.
-func ensureRunWorktree(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, cfg *config.Config, ref string, jsonMode bool, w io.Writer) (path string, created, createdBranch bool, err error) {
+func ensureRunWorktree(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, cfg *config.Config, ref string, jsonMode bool, w io.Writer) (path string, created, createdBranch bool, initStatus string, err error) {
+	doInit, _ := cmd.Flags().GetBool("init")
+	noInit, _ := cmd.Flags().GetBool("no-init")
+
 	if entry, ferr := findWorktreeForBranch(ctx, runner, ref); ferr == nil && entry != nil {
-		return entry.Path, false, false, nil
+		initStatus, err := bootstrapWorktreeForAgent(ctx, w, runner, cfg, entry.Path, jsonMode, doInit, noInit)
+		return entry.Path, false, false, initStatus, err
 	}
 
 	resolved, rerr := resolveWorktreePath(ctx, runner, cfg, ref)
 	if rerr != nil {
-		return "", false, false, rerr
+		return "", false, false, "", rerr
 	}
 	if resolved != ref {
 		if mkerr := os.MkdirAll(filepath.Dir(resolved), 0o755); mkerr != nil {
-			return "", false, false, fmt.Errorf("ensure worktree base: %w", mkerr)
+			return "", false, false, "", fmt.Errorf("ensure worktree base: %w", mkerr)
 		}
 	}
 
@@ -170,27 +176,38 @@ func ensureRunWorktree(ctx context.Context, cmd *cobra.Command, runner *git.Exec
 		gitArgs = append(gitArgs, resolved, ref)
 	}
 	if _, stderr, aerr := runner.Run(ctx, gitArgs...); aerr != nil {
-		return "", false, false, fmt.Errorf("worktree run: create: %s: %w", strings.TrimSpace(string(stderr)), aerr)
+		return "", false, false, "", fmt.Errorf("worktree run: create: %s: %w", strings.TrimSpace(string(stderr)), aerr)
 	}
 	if newBranch {
 		recordWorktreeParent(ctx, runner, ref, from)
 	}
 
-	// Bootstrap gitignored state unless suppressed. In JSON mode the init
-	// log is human prose that would corrupt the envelope, so route it away.
-	if noInit, _ := cmd.Flags().GetBool("no-init"); !noInit {
-		doInit, _ := cmd.Flags().GetBool("init")
-		initW := w
-		if jsonMode {
-			initW = io.Discard
-		}
-		_ = bootstrapWorktree(ctx, initW, runner, cfg, resolved, worktreeInitOpts{
-			explicitInit: doInit,
-			prompt:       false,
-			fromAdd:      true,
-		})
+	initStatus, err = bootstrapWorktreeForAgent(ctx, w, runner, cfg, resolved, jsonMode, doInit, noInit)
+	if err != nil {
+		return "", false, false, "", err
 	}
-	return resolved, true, newBranch, nil
+	return resolved, true, newBranch, initStatus, nil
+}
+
+func bootstrapWorktreeForAgent(ctx context.Context, w io.Writer, runner *git.ExecRunner, cfg *config.Config, path string, jsonMode, doInit, noInit bool) (string, error) {
+	if noInit {
+		return "skipped", nil
+	}
+	if !doInit {
+		return "skipped", nil
+	}
+	initW := w
+	if jsonMode {
+		initW = io.Discard
+	}
+	if err := bootstrapWorktree(ctx, initW, runner, cfg, path, worktreeInitOpts{
+		explicitInit: true,
+		prompt:       false,
+		fromAdd:      true,
+	}); err != nil {
+		return "", err
+	}
+	return "done", nil
 }
 
 // runInWorktree executes command with the worktree as its working directory,

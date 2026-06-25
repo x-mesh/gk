@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -73,7 +75,12 @@ func buildWorktreeCmd(repoDir string, sub string, extraArgs ...string) (*cobra.C
 	initc := &cobra.Command{Use: "init", Args: cobra.RangeArgs(0, 1), RunE: runWorktreeInit}
 	initc.Flags().Bool("save", false, "")
 
-	wt.AddCommand(list, add, rm, prune, initc, newWorktreeRunCmd())
+	wt.AddCommand(list, add, rm, prune, initc,
+		newWorktreeAcquireCmd(),
+		newWorktreeRunCmd(),
+		newWorktreeFinishCmd(),
+		newWorktreeCleanupCmd(),
+	)
 	testRoot.AddCommand(wt)
 
 	buf := &bytes.Buffer{}
@@ -288,7 +295,7 @@ func TestWorktreeRun_CreatesRunsCleansUp(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
 	}
-	if !res.Created || res.ExitCode != 0 || !res.Removed || res.Branch != "iso-task" {
+	if !res.Created || res.ExitCode != 0 || !res.Removed || res.Branch != "iso-task" || res.Init != "skipped" {
 		t.Errorf("unexpected result: %+v", res)
 	}
 	if _, err := os.Stat(res.Path); !os.IsNotExist(err) {
@@ -296,6 +303,454 @@ func TestWorktreeRun_CreatesRunsCleansUp(t *testing.T) {
 	}
 	if branchExists(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "iso-task") {
 		t.Error("cleanup left the created branch iso-task behind")
+	}
+}
+
+func TestWorktreeAcquire_CreatesInitializesAndReuses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	t.Setenv("GK_WORKTREE_BASE", filepath.Join(t.TempDir(), "wtbase"))
+	repo.WriteFile(".gk.yaml", "worktree:\n  init:\n    run:\n      - touch INIT_RAN\n")
+
+	root, buf := buildWorktreeCmd(repo.Dir, "acquire", "--json", "agent-task")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree acquire: %v\nout: %s", err, buf.String())
+	}
+	var first worktreeAcquireJSON
+	if err := json.Unmarshal(buf.Bytes(), &first); err != nil {
+		t.Fatalf("unmarshal first acquire: %v\nraw: %s", err, buf.String())
+	}
+	if !first.Created || first.Reused || first.Branch != "agent-task" || first.Init != "done" {
+		t.Fatalf("unexpected first acquire result: %+v", first)
+	}
+	if _, err := os.Stat(filepath.Join(first.Path, "INIT_RAN")); err != nil {
+		t.Fatalf("acquire did not run worktree.init in %s: %v", first.Path, err)
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "acquire", "--json", "agent-task")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree acquire reuse: %v\nout: %s", err, buf2.String())
+	}
+	var second worktreeAcquireJSON
+	if err := json.Unmarshal(buf2.Bytes(), &second); err != nil {
+		t.Fatalf("unmarshal second acquire: %v\nraw: %s", err, buf2.String())
+	}
+	if second.Created || !second.Reused || !sameDir(second.Path, first.Path) || second.Init != "done" {
+		t.Fatalf("unexpected second acquire result: %+v", second)
+	}
+}
+
+func TestWorktreeCleanup_DryRunAndApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "done-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "done")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add: %v\nout: %s", err, buf.String())
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "cleanup", "--json", "--delete-branches")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree cleanup dry-run: %v\nout: %s", err, buf2.String())
+	}
+	var dry worktreeCleanupJSON
+	if err := json.Unmarshal(buf2.Bytes(), &dry); err != nil {
+		t.Fatalf("unmarshal cleanup dry-run: %v\nraw: %s", err, buf2.String())
+	}
+	if !dry.DryRun || len(dry.Candidates) != 1 || dry.Candidates[0].Branch != "done" {
+		t.Fatalf("unexpected cleanup dry-run: %+v", dry)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry-run removed worktree: %v", err)
+	}
+
+	root3, buf3 := buildWorktreeCmd(repo.Dir, "cleanup", "--json", "--delete-branches", "-y")
+	if err := root3.Execute(); err != nil {
+		t.Fatalf("worktree cleanup apply: %v\nout: %s", err, buf3.String())
+	}
+	var applied worktreeCleanupJSON
+	if err := json.Unmarshal(buf3.Bytes(), &applied); err != nil {
+		t.Fatalf("unmarshal cleanup apply: %v\nraw: %s", err, buf3.String())
+	}
+	if applied.DryRun || len(applied.Removed) != 1 || !applied.Removed[0].BranchDeleted {
+		t.Fatalf("unexpected cleanup apply: %+v", applied)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("cleanup left worktree at %s (stat err=%v)", wtPath, err)
+	}
+	if branchExists(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "done") {
+		t.Fatal("cleanup left deleted branch behind")
+	}
+}
+
+func TestWorktreeFinishChildArgs(t *testing.T) {
+	r := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
+	}}
+	cfg := &config.Config{Remote: "origin"}
+
+	mode, args, to, err := finishChildArgs(context.Background(), r, cfg, "parent", false, true)
+	if err != nil {
+		t.Fatalf("finishChildArgs parent: %v", err)
+	}
+	if mode != "promote" || strings.Join(args, " ") != "promote --autostash" || to != "parent" {
+		t.Fatalf("unexpected parent args: mode=%s args=%v to=%s", mode, args, to)
+	}
+
+	mode, args, to, err = finishChildArgs(context.Background(), r, cfg, "base", false, false)
+	if err != nil {
+		t.Fatalf("finishChildArgs base: %v", err)
+	}
+	if mode != "promote" || strings.Join(args, " ") != "promote main" || to != "main" {
+		t.Fatalf("unexpected base args: mode=%s args=%v to=%s", mode, args, to)
+	}
+
+	mode, args, to, err = finishChildArgs(context.Background(), r, cfg, "parent", true, false)
+	if err != nil {
+		t.Fatalf("finishChildArgs push: %v", err)
+	}
+	if mode != "land" || strings.Join(args, " ") != "land --to parent" || to != "parent" {
+		t.Fatalf("unexpected push args: mode=%s args=%v to=%s", mode, args, to)
+	}
+}
+
+func TestParseWorktreeStale(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"7d", 7 * 24 * time.Hour, false},
+		{"12h", 12 * time.Hour, false},
+		{"", 0, false}, // not provided → filter disabled, no error
+		{"bad", 0, true},
+		{"7x", 0, true},
+		{"0d", 0, true},  // non-positive must error, not silently disable
+		{"-3d", 0, true}, // negative must error
+	}
+	for _, c := range cases {
+		got, err := parseWorktreeStale(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseWorktreeStale(%q): expected error, got %v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseWorktreeStale(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parseWorktreeStale(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// cleanupSkippedFor reports whether the report skipped <branch> for <reason>.
+func cleanupSkippedFor(rep worktreeCleanupJSON, branch, reason string) bool {
+	for _, s := range rep.Skipped {
+		if s.Branch != branch {
+			continue
+		}
+		for _, r := range s.Reasons {
+			if r == reason {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestCleanupFinishedWorktree_RemovesLinkedAndRefusesMain covers the
+// destructive finish-cleanup helper directly: it must refuse the main worktree
+// and remove a linked worktree (and its branch with --delete-branch).
+func TestCleanupFinishedWorktree_RemovesLinkedAndRefusesMain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	ctx := context.Background()
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	mainPath, err := mainWorktreePath(ctx, runner)
+	if err != nil {
+		t.Fatalf("main worktree path: %v", err)
+	}
+	if _, _, err := cleanupFinishedWorktree(ctx, runner, mainPath, "main", false); err == nil {
+		t.Fatal("expected refusal to remove the main worktree")
+	}
+	if _, statErr := os.Stat(mainPath); statErr != nil {
+		t.Fatalf("main worktree disappeared after refusal: %v", statErr)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "finish-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "feat-finish")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add: %v\nout: %s", err, buf.String())
+	}
+	removed, branchDeleted, err := cleanupFinishedWorktree(ctx, runner, wtPath, "feat-finish", true)
+	if err != nil {
+		t.Fatalf("cleanupFinishedWorktree: %v", err)
+	}
+	if !removed || !branchDeleted {
+		t.Fatalf("removed=%v branchDeleted=%v, want both true", removed, branchDeleted)
+	}
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("linked worktree not removed (stat err=%v)", statErr)
+	}
+	if branchExists(ctx, runner, "feat-finish") {
+		t.Fatal("branch feat-finish not deleted")
+	}
+}
+
+// TestWorktreeCleanup_SkipsDirtyAndUnmerged proves the two safety guards that
+// keep cleanup from reclaiming uncommitted or un-integrated work.
+func TestWorktreeCleanup_SkipsDirtyAndUnmerged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	// Dirty: a modified tracked file must keep the worktree out of candidates.
+	dirtyPath := filepath.Join(t.TempDir(), "dirty-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", dirtyPath, "dirty-wt")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add dirty worktree: %v\nout: %s", err, buf.String())
+	}
+	if err := os.WriteFile(filepath.Join(dirtyPath, ".gkkeep", "README"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("dirty the worktree: %v", err)
+	}
+
+	// Unmerged: a branch whose tip is ahead of base must be skipped under --merged.
+	repo.CreateBranch("ahead")
+	repo.WriteFile("ahead.txt", "x\n")
+	repo.Commit("ahead commit")
+	repo.Checkout("main")
+	aheadPath := filepath.Join(t.TempDir(), "ahead-wt")
+	rootA, bufA := buildWorktreeCmd(repo.Dir, "add", "--no-init", aheadPath, "ahead")
+	if err := rootA.Execute(); err != nil {
+		t.Fatalf("add ahead worktree: %v\nout: %s", err, bufA.String())
+	}
+
+	rootC, bufC := buildWorktreeCmd(repo.Dir, "cleanup", "--json")
+	if err := rootC.Execute(); err != nil {
+		t.Fatalf("cleanup: %v\nout: %s", err, bufC.String())
+	}
+	var rep worktreeCleanupJSON
+	if err := json.Unmarshal(bufC.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal cleanup: %v\nraw: %s", err, bufC.String())
+	}
+	if len(rep.Candidates) != 0 {
+		t.Fatalf("expected no candidates, got %+v", rep.Candidates)
+	}
+	if !cleanupSkippedFor(rep, "dirty-wt", "dirty") {
+		t.Errorf("dirty worktree not skipped for dirty: %+v", rep.Skipped)
+	}
+	if !cleanupSkippedFor(rep, "ahead", "unmerged") {
+		t.Errorf("ahead worktree not skipped for unmerged: %+v", rep.Skipped)
+	}
+}
+
+// TestWorktreeCleanup_SkipsProtected proves a config-protected branch is never
+// a removal candidate.
+func TestWorktreeCleanup_SkipsProtected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "branch:\n  protected:\n    - release\n")
+
+	relPath := filepath.Join(t.TempDir(), "release-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", relPath, "release")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add release worktree: %v\nout: %s", err, buf.String())
+	}
+	rootC, bufC := buildWorktreeCmd(repo.Dir, "cleanup", "--json")
+	if err := rootC.Execute(); err != nil {
+		t.Fatalf("cleanup: %v\nout: %s", err, bufC.String())
+	}
+	var rep worktreeCleanupJSON
+	if err := json.Unmarshal(bufC.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, bufC.String())
+	}
+	if !cleanupSkippedFor(rep, "release", "protected") {
+		t.Fatalf("protected branch not skipped: candidates=%+v skipped=%+v", rep.Candidates, rep.Skipped)
+	}
+}
+
+// TestWorktreeFinish_FullFlowWithFakeChild exercises the whole finish path —
+// child promote + linked-worktree removal + branch deletion — by faking the
+// promote/land child process (no real gk binary needed).
+func TestWorktreeFinish_FullFlowWithFakeChild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	ctx := context.Background()
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	wtPath := filepath.Join(t.TempDir(), "feat-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "feat-x")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add: %v\nout: %s", err, buf.String())
+	}
+
+	var childArgs [][]string
+	prev := landRunChild
+	landRunChild = func(_ context.Context, _, _ string, _ bool, args ...string) error {
+		childArgs = append(childArgs, args)
+		return nil
+	}
+	t.Cleanup(func() { landRunChild = prev })
+
+	// finish operates on the CURRENT worktree, so point --repo at the linked tree.
+	fin, finBuf := buildWorktreeCmd(wtPath, "finish", "--json", "--cleanup", "--delete-branch")
+	if err := fin.Execute(); err != nil {
+		t.Fatalf("worktree finish: %v\nout: %s", err, finBuf.String())
+	}
+	var res worktreeFinishJSON
+	if err := json.Unmarshal(finBuf.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal finish: %v\nraw: %s", err, finBuf.String())
+	}
+	if res.Mode != "promote" || res.To != "parent" || res.Branch != "feat-x" {
+		t.Fatalf("unexpected finish result: %+v", res)
+	}
+	if !res.Removed || !res.BranchDeleted {
+		t.Fatalf("finish did not clean up: %+v", res)
+	}
+	if len(childArgs) != 1 || len(childArgs[0]) == 0 || childArgs[0][0] != "promote" {
+		t.Fatalf("unexpected child invocations: %v", childArgs)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("finish left the worktree at %s (stat err=%v)", wtPath, err)
+	}
+	if branchExists(ctx, runner, "feat-x") {
+		t.Fatal("finish left branch feat-x behind")
+	}
+}
+
+// TestWorktreeCleanup_SkipsLockedLiveAndStale proves the lock guards: a
+// live-locked worktree and a stale-locked one (without --force-stale-locks)
+// are both kept out of the candidate set.
+func TestWorktreeCleanup_SkipsLockedLiveAndStale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	livePath := filepath.Join(t.TempDir(), "live-wt")
+	repo.RunGit("worktree", "add", livePath, "-b", "live")
+	repo.RunGit("worktree", "lock", "--reason", fmt.Sprintf("claude agent (pid %d)", os.Getpid()), livePath)
+
+	stalePath := filepath.Join(t.TempDir(), "stale-wt")
+	repo.RunGit("worktree", "add", stalePath, "-b", "stale")
+	repo.RunGit("worktree", "lock", "--reason", "claude agent (pid 999999)", stalePath)
+
+	root, buf := buildWorktreeCmd(repo.Dir, "cleanup", "--json")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("cleanup: %v\nout: %s", err, buf.String())
+	}
+	var rep worktreeCleanupJSON
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if !cleanupSkippedFor(rep, "live", "locked-live") {
+		t.Errorf("live-locked worktree not skipped: %+v", rep.Skipped)
+	}
+	if !cleanupSkippedFor(rep, "stale", "locked-stale") {
+		t.Errorf("stale-locked worktree not skipped: %+v", rep.Skipped)
+	}
+}
+
+// TestWorktreeFinish_ValidationAndDryRun covers the command-level guards that
+// run before any promote/land child process.
+func TestWorktreeFinish_ValidationAndDryRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	root, buf := buildWorktreeCmd(repo.Dir, "finish", "--delete-branch")
+	if err := root.Execute(); err == nil {
+		t.Fatalf("expected error for --delete-branch without --cleanup; out: %s", buf.String())
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "finish", "--json", "--dry-run")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("finish dry-run: %v\nout: %s", err, buf2.String())
+	}
+	var res worktreeFinishJSON
+	if err := json.Unmarshal(buf2.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal finish dry-run: %v\nraw: %s", err, buf2.String())
+	}
+	if !res.DryRun || res.Mode != "promote" || res.To != "parent" || res.Branch != "main" {
+		t.Fatalf("unexpected dry-run result: %+v", res)
+	}
+}
+
+// TestWorktreeRun_InitDefaultAndExplicit pins the changed `run --init`
+// semantics: no init by default, init on create with --init, and re-init on a
+// reused worktree.
+func TestWorktreeRun_InitDefaultAndExplicit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	t.Setenv("GK_WORKTREE_BASE", filepath.Join(t.TempDir(), "wtbase"))
+	repo.WriteFile(".gk.yaml", "worktree:\n  init:\n    run:\n      - touch INIT_RAN\n")
+
+	root, buf := buildWorktreeCmd(repo.Dir, "run", "--json", "no-init-task", "--", "true")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("run no-init: %v\nout: %s", err, buf.String())
+	}
+	var a worktreeRunJSON
+	if err := json.Unmarshal(buf.Bytes(), &a); err != nil {
+		t.Fatalf("unmarshal no-init: %v\nraw: %s", err, buf.String())
+	}
+	if a.Init != "skipped" {
+		t.Fatalf("run without --init: Init=%q, want skipped", a.Init)
+	}
+	if _, err := os.Stat(filepath.Join(a.Path, "INIT_RAN")); !os.IsNotExist(err) {
+		t.Fatalf("run without --init still bootstrapped (stat err=%v)", err)
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "run", "--json", "--init", "init-task", "--", "true")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("run --init: %v\nout: %s", err, buf2.String())
+	}
+	var b worktreeRunJSON
+	if err := json.Unmarshal(buf2.Bytes(), &b); err != nil {
+		t.Fatalf("unmarshal --init: %v\nraw: %s", err, buf2.String())
+	}
+	if b.Init != "done" {
+		t.Fatalf("run --init: Init=%q, want done", b.Init)
+	}
+	initFile := filepath.Join(b.Path, "INIT_RAN")
+	if _, err := os.Stat(initFile); err != nil {
+		t.Fatalf("run --init did not bootstrap: %v", err)
+	}
+
+	// Reuse: --init re-applies bootstrap to an existing worktree.
+	if err := os.Remove(initFile); err != nil {
+		t.Fatalf("remove init marker: %v", err)
+	}
+	root3, buf3 := buildWorktreeCmd(repo.Dir, "run", "--json", "--init", "init-task", "--", "true")
+	if err := root3.Execute(); err != nil {
+		t.Fatalf("run --init reuse: %v\nout: %s", err, buf3.String())
+	}
+	var c worktreeRunJSON
+	if err := json.Unmarshal(buf3.Bytes(), &c); err != nil {
+		t.Fatalf("unmarshal reuse: %v\nraw: %s", err, buf3.String())
+	}
+	if c.Created || c.Init != "done" {
+		t.Fatalf("run --init reuse: %+v, want created=false init=done", c)
+	}
+	if _, err := os.Stat(initFile); err != nil {
+		t.Fatalf("run --init did not re-bootstrap on reuse: %v", err)
 	}
 }
 

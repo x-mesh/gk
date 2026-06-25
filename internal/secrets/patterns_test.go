@@ -263,3 +263,99 @@ func TestCompilePatterns(t *testing.T) {
 		}
 	})
 }
+
+// TestScan_FixedPrefixPlaceholdersSuppressed covers the false-positive class
+// that hit a real repo: fixed-prefix tokens (github-token, openai-key) whose
+// value is a fixture, not a credential. Before the placeholder/low-entropy
+// filter was extended past generic-secret/aws-access-key, every one of these
+// blocked the push.
+func TestScan_FixedPrefixPlaceholdersSuppressed(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		// example/dummy word on the line — caught by isPlaceholder.
+		{"github example word", `gh = "ghp_ABCDEFGHIJ1234567890abcdefghij123456" // example token`},
+		{"openai dummy word", `key = "sk-dummyAAAAAAAAAAAAAAAAAAAAAAAA"`},
+		// monotonous value, no word — caught by isLowEntropySecret.
+		{"github all-zero", `gh = "ghp_000000000000000000000000000000000000"`},
+		{"openai single-char", `k = "sk-aaaaaaaaaaaaaaaaaaaaaa"`},
+	}
+	for _, c := range cases {
+		if f := Scan(c.line, nil); len(f) != 0 {
+			t.Errorf("%s: expected %q suppressed, got %v", c.name, c.line, f)
+		}
+	}
+}
+
+// TestScan_RealFixedPrefixTokensStillFlagged is the negative control for the
+// suppression above: a high-entropy token with no placeholder word must still
+// fire, or the filter would be hiding real leaks.
+func TestScan_RealFixedPrefixTokensStillFlagged(t *testing.T) {
+	cases := []struct {
+		line string
+		kind string
+	}{
+		{`let t = "ghp_abcdefghij1234567890ABCDEFGHIJ123456"`, "github-token"},
+		{`let k = "sk-Xy7Qp2Rt9Vw4Zb1Nm6Kc3"`, "openai-key"},
+	}
+	for _, c := range cases {
+		findings := Scan(c.line, nil)
+		found := false
+		for _, f := range findings {
+			if f.Kind == c.kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("real %s should still be flagged in %q, got %v", c.kind, c.line, findings)
+		}
+	}
+}
+
+// TestMaskLine checks the in-place line masking used for verbose context: a
+// clean line is untouched, a secret value is masked while its surrounding code
+// stays readable, and keyword=value kinds mask only the value.
+func TestMaskLine(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"empty", "", ""},
+		{"no secret", "    init();", "    init();"},
+		{
+			"github token value masked, code intact",
+			`    let gh = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";`,
+			`    let gh = "ghp_********";`,
+		},
+		{
+			"generic secret masks value not keyword",
+			`api_token = "Ab12Cd34Ef56Gh78Ij90Kl12Mn34"`,
+			`api_token = "Ab12********"`,
+		},
+	}
+	for _, tt := range tests {
+		if got := MaskLine(tt.in); got != tt.want {
+			t.Errorf("%s: MaskLine(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestIsLowEntropySecret pins the distinct-rune floor: short values are never
+// judged, monotonous long values are low-entropy, and a real base62 token is
+// not.
+func TestIsLowEntropySecret(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"short", false}, // below the 20-char floor
+		{"ghp_000000000000000000000000000000000000", true},  // 5 distinct
+		{"sk-aaaaaaaaaaaaaaaaaaaaaa", true},                 // 3 distinct
+		{"ghp_abcdefghij1234567890ABCDEFGHIJ123456", false}, // ~30 distinct
+	}
+	for _, tt := range tests {
+		if got := isLowEntropySecret(tt.value); got != tt.want {
+			t.Errorf("isLowEntropySecret(%q) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}

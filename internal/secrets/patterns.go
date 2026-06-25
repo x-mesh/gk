@@ -15,6 +15,14 @@ type Finding struct {
 	File     string // owning file path, recovered from PayloadFileHeader markers; "" when none present
 	FileLine int    // 1-based line within File; equals Line when no file header precedes the hit
 	Sample   string // a masked sample suitable for display
+	// LineText, ContextBefore, and ContextAfter back verbose ("show the
+	// surrounding source") output. They are populated only by diff-aware
+	// callers (the push/ship scanner) and are all secret-masked, so printing
+	// them never leaks an adjacent credential. Empty when not collected or at
+	// a hunk edge.
+	LineText      string `json:"line_text,omitempty"`
+	ContextBefore string `json:"context_before,omitempty"`
+	ContextAfter  string `json:"context_after,omitempty"`
 }
 
 // Location renders the finding's position for display: "file:line" when the
@@ -66,15 +74,21 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 		}
 		for _, p := range BuiltinPatterns {
 			if sm := p.Regex.FindStringSubmatch(line); sm != nil {
-				// Placeholder filter — apply to high-volume false-positive
-				// kinds. generic-secret is regex-broad; aws-access-key is
-				// fixed-shape but AWS docs themselves use AKIAIOSFODNN7EXAMPLE
-				// as the canonical sample, so any line containing
-				// "example"/"dummy"/etc. is overwhelmingly fixture data.
-				if (p.Kind == "generic-secret" || p.Kind == "aws-access-key") && isPlaceholder(line) {
+				val := secretValue(sm)
+				// Drop fixture/example credentials. Applied to every kind
+				// except private-key, whose PEM header is an unambiguous
+				// signature with no value to weigh. isPlaceholder catches a
+				// line carrying example/dummy/test words — AWS docs ship
+				// AKIAIOSFODNN7EXAMPLE, and a ghp_ token sitting next to
+				// "example" is fixture data; isLowEntropySecret catches
+				// monotonous fakes like ghp_0000…0000 that name no such word
+				// but cannot be a real high-entropy token. Without this, every
+				// fixed-prefix kind (github-token, openai-key, …) flagged its
+				// own placeholders.
+				if p.Kind != "private-key" && (isPlaceholder(line) || isLowEntropySecret(val)) {
 					continue
 				}
-				out = append(out, newFinding(p.Kind, i+1, header, curFile, secretValue(sm)))
+				out = append(out, newFinding(p.Kind, i+1, header, curFile, val))
 			}
 		}
 		for _, re := range extra {
@@ -136,8 +150,8 @@ var placeholderKeywords = []string{
 var placeholderSeps = strings.NewReplacer("-", "", "_", "")
 
 // isPlaceholder returns true when the line contains an example/placeholder
-// value. Only applied to high-false-positive kinds (generic-secret,
-// aws-access-key).
+// value (example/dummy/test/changeme/…). Applied to every kind except
+// private-key.
 func isPlaceholder(line string) bool {
 	norm := placeholderSeps.Replace(strings.ToLower(line))
 	for _, kw := range placeholderKeywords {
@@ -146,6 +160,24 @@ func isPlaceholder(line string) bool {
 		}
 	}
 	return false
+}
+
+// isLowEntropySecret reports whether a matched value is too monotonous to be a
+// real credential. Genuine tokens are near-random over a large alphabet
+// (base62 for github-token/openai-key); fixtures repeat a tiny one —
+// "ghp_0000…0000", "sk-aaaa…aaaa", "1234…". Only values of 20+ characters are
+// judged, so the distinct-rune floor never trips a real key: any real base62
+// token that long clears 8 distinct characters with overwhelming probability,
+// while reproduction-by-hand fakes do not.
+func isLowEntropySecret(value string) bool {
+	if len(value) < 20 {
+		return false
+	}
+	seen := make(map[rune]bool, len(value))
+	for _, r := range value {
+		seen[r] = true
+	}
+	return len(seen) < 8
 }
 
 // CompilePatterns compiles user-supplied regex strings.
@@ -160,6 +192,28 @@ func CompilePatterns(raw []string) (compiled []*regexp.Regexp, bad []string) {
 		compiled = append(compiled, re)
 	}
 	return
+}
+
+// MaskLine returns line with every built-in secret match masked in place. The
+// credential value is replaced by its mask() form while the surrounding code
+// (variable names, comments) stays intact, so verbose context output around a
+// hit reads naturally yet never exposes an adjacent secret. For keyword=value
+// kinds (generic-secret) only the value is masked, not the keyword.
+func MaskLine(line string) string {
+	if line == "" {
+		return ""
+	}
+	out := line
+	for _, p := range BuiltinPatterns {
+		out = p.Regex.ReplaceAllStringFunc(out, func(m string) string {
+			v := secretValue(p.Regex.FindStringSubmatch(m))
+			if v == "" || v == m {
+				return mask(m)
+			}
+			return strings.Replace(m, v, mask(v), 1)
+		})
+	}
+	return out
 }
 
 // mask replaces everything after the 4th character with up to 8 asterisks.

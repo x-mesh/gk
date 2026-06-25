@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,11 @@ func init() {
 	// is no clash. Both flags do the same thing: skip the secret scan.
 	cmd.Flags().BoolP("no-verify", "n", false, "skip the secret-pattern scan (same as --skip-scan; matches 'gk commit -n')")
 	cmd.Flags().Bool("yes", false, "skip interactive confirmations (for automation)")
+	// -v shows ±1 source line of masked context around each secret-scan hit
+	// (also enabled persistently via `gk config set push.scan_context true`).
+	// A local flag, mirroring pull/status, so it never clashes with the global
+	// persistent --verbose.
+	cmd.Flags().BoolP("verbose", "v", false, "show ±1 source line of context around each secret-scan hit")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -50,6 +56,11 @@ func runPush(cmd *cobra.Command, args []string) error {
 		skipScan = true
 	}
 	yes, _ := cmd.Flags().GetBool("yes")
+	// The local -v shadows the global persistent --verbose for this command, so
+	// fold both in: a user can write `gk push -v` or `gk --verbose push`, and
+	// the same signal drives the git-progress stream and the secret-scan context.
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	verbose = verbose || Verbose()
 
 	remote := cfg.Remote
 	if remote == "" {
@@ -105,10 +116,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 		Dbg("push: secret-scan — %d finding(s)", len(findings))
 		if len(findings) > 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "potential secrets detected:")
-			for _, f := range findings {
-				fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
-			}
+			renderScanFindings(cmd.ErrOrStderr(), findings, verbose || cfg.Push.ScanContext)
 			fmt.Fprintln(cmd.ErrOrStderr(), "  use --no-verify (or --skip-scan) to override (not recommended)")
 			return fmt.Errorf("aborting push")
 		}
@@ -136,7 +144,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	// --verbose mode streams git's progress (objects/deltas/refs) into a
 	// scrollable viewport so the user can watch the push proceed.
-	if Verbose() && ui.IsTerminal() {
+	if verbose && ui.IsTerminal() {
 		args := []string{}
 		if RepoFlag() != "" {
 			args = append(args, "-C", RepoFlag())
@@ -313,10 +321,50 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, remote, branch string)
 // runs secrets.Scan over the added content of each file, after dropping
 // test files. Returns findings whose Line refers to the relevant blob
 // position so existing renderers keep working.
+//
+// FileLine is corrected from the diff's hunk headers: secrets.Scan derives a
+// file-relative line by counting blob rows after a PayloadFileHeader, but a
+// diff only carries the changed slice of a file, so that count is the offset
+// within the diff — not the line in the post-image file. We track each hunk's
+// `@@ … +newStart,… @@` and overwrite FileLine with the true post-image line,
+// so output reads e.g. "src/foo.rs:218" instead of a meaningless diff offset.
 func scanDiffAdditions(diff string) []secrets.Finding {
 	var b strings.Builder
 	currentFile := ""
 	skip := false
+	// fileLineOf maps a 1-based blob line (what secrets.Scan reports as
+	// Finding.Line) to the real post-image file line, for added ('+') rows.
+	fileLineOf := map[int]int{}
+	blobLine := 0 // 1-based line of the blob handed to secrets.Scan
+	newLine := 0  // next post-image file line, from the active @@ hunk (0 = none)
+	write := func(s string) {
+		b.WriteString(s)
+		b.WriteString("\n")
+		blobLine++
+	}
+	// Verbose-context capture: for each scanned ('+') blob line, remember the
+	// source line itself plus the displayable line immediately above/below it
+	// in the post-image. "Displayable" = added or context rows; removals are
+	// skipped (absent from the post-image) and hunk/file boundaries reset the
+	// window so context never crosses a gap.
+	lineText := map[int]string{}
+	ctxBefore := map[int]string{}
+	ctxAfter := map[int]string{}
+	prevDisp := ""         // last displayed source line in the current hunk
+	var pendingAfter []int // added blob lines still awaiting their following line
+	resetCtx := func() { prevDisp = ""; pendingAfter = pendingAfter[:0] }
+	display := func(text string, addedBlob int) {
+		for _, bl := range pendingAfter {
+			ctxAfter[bl] = text
+		}
+		pendingAfter = pendingAfter[:0]
+		if addedBlob > 0 {
+			lineText[addedBlob] = text
+			ctxBefore[addedBlob] = prevDisp
+			pendingAfter = append(pendingAfter, addedBlob)
+		}
+		prevDisp = text
+	}
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
@@ -327,28 +375,101 @@ func scanDiffAdditions(diff string) []secrets.Finding {
 				currentFile = ""
 			}
 			skip = isTestFile(currentFile)
-			b.WriteString(secrets.PayloadFileHeader(currentFile) + "\n")
+			newLine = 0
+			resetCtx()
+			write(secrets.PayloadFileHeader(currentFile))
+		case strings.HasPrefix(line, "@@ "):
+			// "@@ -a,b +c,d @@" — c is the first post-image line of the hunk.
+			newLine = parseHunkNewStart(line)
+			resetCtx()
+			write("")
 		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "),
-			strings.HasPrefix(line, "@@ "), strings.HasPrefix(line, "index "),
+			strings.HasPrefix(line, "index "),
 			strings.HasPrefix(line, "new file mode"), strings.HasPrefix(line, "deleted file mode"),
 			strings.HasPrefix(line, "similarity index"), strings.HasPrefix(line, "rename "),
 			strings.HasPrefix(line, "Binary files"):
 			// Diff metadata — skip but keep blob in step.
-			b.WriteString("\n")
+			write("")
 		case strings.HasPrefix(line, "+"):
+			text := strings.TrimPrefix(line, "+")
 			if skip {
-				b.WriteString("\n")
-				continue
+				write("")
+			} else {
+				write(text)
+				if newLine > 0 {
+					fileLineOf[blobLine] = newLine
+				}
+				display(text, blobLine)
 			}
-			b.WriteString(strings.TrimPrefix(line, "+") + "\n")
+			if newLine > 0 {
+				newLine++ // an added line advances the post-image counter
+			}
+		case strings.HasPrefix(line, "-"):
+			// Removal: present in the pre-image only; the secret is not new
+			// content and does not advance the post-image counter.
+			write("")
 		default:
-			// Commit log header lines, removal lines (`-...`), context
-			// lines (` ...`), and blank separators all collapse to empty
-			// rows so secrets.Scan never sees them but blob line numbers
-			// still line up with `git log -p` output (handy for debugging
-			// regressions like the one this code path was added to fix).
-			b.WriteString("\n")
+			// Context lines (" ...") advance the post-image counter but are
+			// never scanned; commit-log headers and blank separators carry no
+			// leading space and collapse to empty rows. Blob line numbers
+			// still line up with `git log -p` output (handy for debugging).
+			write("")
+			if newLine > 0 && strings.HasPrefix(line, " ") {
+				display(strings.TrimPrefix(line, " "), 0)
+				newLine++
+			}
 		}
 	}
-	return secrets.Scan(b.String(), nil)
+	findings := secrets.Scan(b.String(), nil)
+	for i := range findings {
+		bl := findings[i].Line
+		if fl, ok := fileLineOf[bl]; ok {
+			findings[i].FileLine = fl
+		}
+		if t, ok := lineText[bl]; ok {
+			findings[i].LineText = secrets.MaskLine(t)
+			findings[i].ContextBefore = secrets.MaskLine(ctxBefore[bl])
+			findings[i].ContextAfter = secrets.MaskLine(ctxAfter[bl])
+		}
+	}
+	return findings
+}
+
+// renderScanFindings prints the "potential secrets detected" block shared by
+// push and ship. With verbose set, each hit is followed by its masked ±1 source
+// context (when the diff-aware scanner captured it) so a reviewer can judge a
+// false positive in place without leaving the terminal.
+func renderScanFindings(w io.Writer, findings []secrets.Finding, verbose bool) {
+	fmt.Fprintln(w, "potential secrets detected:")
+	for _, f := range findings {
+		fmt.Fprintf(w, "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
+		if verbose && f.LineText != "" {
+			if f.ContextBefore != "" {
+				fmt.Fprintf(w, "      %d │ %s\n", f.FileLine-1, f.ContextBefore)
+			}
+			fmt.Fprintf(w, "    > %d │ %s\n", f.FileLine, f.LineText)
+			if f.ContextAfter != "" {
+				fmt.Fprintf(w, "      %d │ %s\n", f.FileLine+1, f.ContextAfter)
+			}
+		}
+	}
+}
+
+// parseHunkNewStart extracts c from a "@@ -a,b +c,d @@" hunk header — the
+// 1-based first line of the hunk in the post-image (new) file. Returns 0 on a
+// malformed header, leaving the file-line mapping untouched for that hunk.
+func parseHunkNewStart(line string) int {
+	plus := strings.Index(line, "+")
+	if plus < 0 {
+		return 0
+	}
+	rest := line[plus+1:]
+	if end := strings.IndexAny(rest, ", @"); end >= 0 {
+		rest = rest[:end]
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0
+	}
+	return n
 }

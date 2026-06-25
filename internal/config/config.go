@@ -334,6 +334,11 @@ type PushConfig struct {
 	Protected      []string `mapstructure:"protected"       yaml:"protected"`
 	SecretPatterns []string `mapstructure:"secret_patterns" yaml:"secret_patterns"`
 	AllowForce     bool     `mapstructure:"allow_force"     yaml:"allow_force"`
+	// ScanContext shows ±1 surrounding source line (masked) around each
+	// secret-scan hit on push/ship, so a reviewer can judge a false positive
+	// in place. The global --verbose / `gk push -v` flag turns it on for a
+	// single invocation; this makes it the default.
+	ScanContext bool `mapstructure:"scan_context" yaml:"scan_context"`
 }
 
 // ForgetConfig controls gk forget behaviour.
@@ -671,6 +676,7 @@ func Defaults() Config {
 			Protected:      []string{"main", "master"},
 			SecretPatterns: nil, // user-added; built-ins live in internal/secrets
 			AllowForce:     false,
+			ScanContext:    false,
 		},
 		Pull: PullConfig{
 			// Empty by default. resolveIntegrationStrategy treats an unset

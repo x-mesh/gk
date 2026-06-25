@@ -655,3 +655,109 @@ index abc..def
 		t.Errorf("context line should not be flagged, got %+v", findings)
 	}
 }
+
+// TestScanDiffAdditions_FileLineFromHunkHeader guards the position bug where
+// FileLine reported the offset within the diff blob instead of the line in the
+// post-image file. The hunk starts at +215 with three context lines, so the
+// added token sits on file line 218 — not wherever it happens to land in the
+// accumulated diff.
+func TestScanDiffAdditions_FileLineFromHunkHeader(t *testing.T) {
+	diff := `commit deadbeef
+diff --git a/src/app.rs b/src/app.rs
+index abc..def 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -215,3 +215,4 @@ fn main() {
+ ctx a
+ ctx b
+ ctx c
++let gh = "ghp_abcdefghij1234567890ABCDEFGHIJ123456";
+`
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.Kind != "github-token" {
+		t.Errorf("Kind = %q, want github-token", f.Kind)
+	}
+	if f.FileLine != 218 {
+		t.Errorf("FileLine = %d, want 218 (hunk +215 + 3 context lines)", f.FileLine)
+	}
+	if f.Location() != "src/app.rs:218" {
+		t.Errorf("Location() = %q, want src/app.rs:218", f.Location())
+	}
+}
+
+// TestScanDiffAdditions_VerboseContext checks that the scanner captures the
+// masked ±1 source context around a hit: the line above, the hit itself, and
+// the line below — all secret-masked.
+func TestScanDiffAdditions_VerboseContext(t *testing.T) {
+	diff := "diff --git a/src/app.rs b/src/app.rs\n" +
+		"--- a/src/app.rs\n+++ b/src/app.rs\n" +
+		"@@ -10,3 +10,4 @@\n" +
+		" fn main() {\n" +
+		"+    let gh = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\";\n" +
+		"     init();\n"
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.ContextBefore != "fn main() {" {
+		t.Errorf("ContextBefore = %q, want %q", f.ContextBefore, "fn main() {")
+	}
+	if f.LineText != `    let gh = "ghp_********";` {
+		t.Errorf("LineText = %q, want masked token line", f.LineText)
+	}
+	if f.ContextAfter != "    init();" {
+		t.Errorf("ContextAfter = %q, want %q", f.ContextAfter, "    init();")
+	}
+}
+
+// TestScanDiffAdditions_ContextStopsAtHunkEdge confirms the context window does
+// not cross a hunk boundary: a hit on the first line of a hunk has no "before".
+func TestScanDiffAdditions_ContextStopsAtHunkEdge(t *testing.T) {
+	diff := "diff --git a/src/app.rs b/src/app.rs\n" +
+		"--- a/src/app.rs\n+++ b/src/app.rs\n" +
+		"@@ -5,1 +5,2 @@\n" +
+		"+gh = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"\n" +
+		" below\n"
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.ContextBefore != "" {
+		t.Errorf("ContextBefore = %q, want empty (hunk's first line)", f.ContextBefore)
+	}
+	if f.ContextAfter != "below" {
+		t.Errorf("ContextAfter = %q, want %q", f.ContextAfter, "below")
+	}
+}
+
+// TestScanDiffAdditions_FileLineAcrossMultipleHunks confirms the post-image
+// counter resets per hunk: a second hunk far down the file must report its own
+// line, not one accumulated from the first hunk's length.
+func TestScanDiffAdditions_FileLineAcrossMultipleHunks(t *testing.T) {
+	diff := `diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -3,2 +3,3 @@
+ ctx
++let early = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+@@ -400,1 +401,2 @@
+ ctx
++let late = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+`
+	findings := scanDiffAdditions(diff)
+	if len(findings) != 2 {
+		t.Fatalf("want 2 findings, got %d: %+v", len(findings), findings)
+	}
+	if got := findings[0].FileLine; got != 4 {
+		t.Errorf("first finding FileLine = %d, want 4 (hunk +3 + 1 context)", got)
+	}
+	if got := findings[1].FileLine; got != 402 {
+		t.Errorf("second finding FileLine = %d, want 402 (hunk +401 + 1 context)", got)
+	}
+}

@@ -19,7 +19,6 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitsafe"
-	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -69,6 +68,9 @@ The global --json flag with --dry-run emits the whole plan as JSON for tooling.`
 	cmd.Flags().Bool("wait", true, "run the post-tag watch/verify pipeline; --wait=false returns right after the push (config: ship.wait)")
 	cmd.Flags().Bool("dry-run", false, "print the ship plan without tagging or pushing")
 	cmd.Flags().Bool("no-fetch", false, "skip the up-front `git fetch --tags` (use a stale local view)")
+	// -v shows ±1 source line of masked context around each secret-scan hit
+	// (also via `gk config set push.scan_context true`). Local flag, like push.
+	cmd.Flags().BoolP("verbose", "v", false, "show ±1 source line of context around each secret-scan hit")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -100,6 +102,9 @@ type shipFlags struct {
 	// can't produce) but tolerates the IMPLIED one — streaming progress to
 	// stderr and emitting a result envelope to stdout instead of erroring.
 	jsonExplicit bool
+	// scanContext shows ±1 masked source line around each secret-scan hit,
+	// resolved from the global --verbose flag or push.scan_context config.
+	scanContext bool
 }
 
 type shipMode string
@@ -194,6 +199,9 @@ func readShipFlags(cmd *cobra.Command, args []string, cfg *config.Config) (shipF
 	f.noFetch, _ = cmd.Flags().GetBool("no-fetch")
 	f.jsonOut = JSONOut()
 	f.jsonExplicit = cmd.Flags().Changed("json")
+	// Local -v shadows the global --verbose for this command; fold both in.
+	shipVerbose, _ := cmd.Flags().GetBool("verbose")
+	f.scanContext = shipVerbose || Verbose() || cfg.Push.ScanContext
 	if DryRun() {
 		f.dryRun = true
 	}
@@ -901,7 +909,7 @@ func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan 
 			return fmt.Errorf("ship: secret scan: %w", err)
 		}
 		if len(findings) > 0 {
-			renderShipFindings(errOut, findings)
+			renderScanFindings(errOut, findings, flags.scanContext)
 			return fmt.Errorf("ship: aborting push due to %d secret finding(s); use --no-verify to override", len(findings))
 		}
 	}
@@ -1177,13 +1185,6 @@ func renderShipStatus(w io.Writer, plan shipPlan) {
 	}
 	if plan.Changelog != "" {
 		fmt.Fprintf(w, "  Changelog: %s\n", plan.Changelog)
-	}
-}
-
-func renderShipFindings(w io.Writer, findings []secrets.Finding) {
-	fmt.Fprintln(w, "potential secrets detected:")
-	for _, f := range findings {
-		fmt.Fprintf(w, "  [%s] %s: %s\n", f.Kind, f.Location(), f.Sample)
 	}
 }
 

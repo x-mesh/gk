@@ -365,7 +365,7 @@ diff --git a/hello.go b/hello.go
 		},
 	}
 
-	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "main")
+	findings, err := scanCommitsToPush(context.Background(), fake, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -392,7 +392,7 @@ diff --git a/config.go b/config.go
 		},
 	}
 
-	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "main")
+	findings, err := scanCommitsToPush(context.Background(), fake, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -414,6 +414,73 @@ diff --git a/config.go b/config.go
 	}
 	if !found {
 		t.Errorf("expected aws-access-key finding, got %v", findings)
+	}
+}
+
+func TestResolveScanCmp(t *testing.T) {
+	cmp := func(resp map[string]git.FakeResponse, base string) string {
+		return resolveScanCmp(context.Background(), &git.FakeRunner{Responses: resp}, "origin", "feat", base)
+	}
+	t.Run("upstream wins", func(t *testing.T) {
+		if got := cmp(map[string]git.FakeResponse{
+			"rev-parse --verify origin/feat^{commit}": {Stdout: "sha\n"},
+		}, "main"); got != "origin/feat" {
+			t.Errorf("got %q, want origin/feat", got)
+		}
+	})
+	t.Run("base remote fallback", func(t *testing.T) {
+		if got := cmp(map[string]git.FakeResponse{
+			"rev-parse --verify origin/feat^{commit}": {ExitCode: 128, Stderr: "x"},
+			"rev-parse --verify origin/main^{commit}": {Stdout: "sha\n"},
+		}, "main"); got != "origin/main" {
+			t.Errorf("got %q, want origin/main", got)
+		}
+	})
+	t.Run("local base fallback", func(t *testing.T) {
+		if got := cmp(map[string]git.FakeResponse{
+			"rev-parse --verify origin/feat^{commit}": {ExitCode: 128},
+			"rev-parse --verify origin/main^{commit}": {ExitCode: 128},
+			"rev-parse --verify main^{commit}":        {Stdout: "sha\n"},
+		}, "main"); got != "main" {
+			t.Errorf("got %q, want main", got)
+		}
+	})
+	t.Run("nothing resolvable", func(t *testing.T) {
+		resp := map[string]git.FakeResponse{
+			"rev-parse --verify origin/feat^{commit}": {ExitCode: 128},
+			"rev-parse --verify origin/main^{commit}": {ExitCode: 128},
+			"rev-parse --verify main^{commit}":        {ExitCode: 128},
+		}
+		if got := cmp(resp, "main"); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+		if got := cmp(resp, ""); got != "" {
+			t.Errorf("empty base: got %q, want empty", got)
+		}
+	})
+}
+
+// TestScanCommitsToPush_NetDiffFileLine is the regression guard for the
+// position bug: with a base, the scan uses a net 3-dot diff whose hunk header
+// (@@ +8) is anchored to the current HEAD file, so the token reports its real
+// line even when earlier commits introduced it before later inserts shifted it.
+func TestScanCommitsToPush_NetDiffFileLine(t *testing.T) {
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff --no-color origin/main...HEAD": {Stdout: "diff --git a/f.rs b/f.rs\n" +
+			"--- a/f.rs\n+++ b/f.rs\n" +
+			"@@ -3,2 +8,3 @@\n" +
+			" ctx\n" +
+			"+let gh = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\";\n"},
+	}}
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].FileLine != 9 {
+		t.Errorf("FileLine = %d, want 9 (hunk +8 + 1 context line)", findings[0].FileLine)
 	}
 }
 
@@ -441,7 +508,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	var findings []interface{} // just check we get an error
 
 	// scanCommitsToPush via real git
-	f, err := scanCommitsToPush(context.Background(), runner, "origin", "main")
+	f, err := scanCommitsToPush(context.Background(), runner, "")
 	if err != nil {
 		// "origin/main" doesn't exist → falls back to HEAD scan which is fine
 		// but if it's a different error, fail
@@ -471,7 +538,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	found, scanErr := scanCommitsToPush(ctx, fakeRunner, "origin", "main")
+	found, scanErr := scanCommitsToPush(ctx, fakeRunner, "")
 	if scanErr != nil {
 		t.Fatalf("scan error: %v", scanErr)
 	}
@@ -535,7 +602,7 @@ func TestPush_ProtectedBranchNoForce(t *testing.T) {
 	}
 
 	// Secret scan
-	findings, err := scanCommitsToPush(ctx, fake, "origin", "main")
+	findings, err := scanCommitsToPush(ctx, fake, "")
 	if err != nil {
 		t.Fatalf("scan error: %v", err)
 	}

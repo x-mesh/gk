@@ -103,6 +103,9 @@ moves to stderr so stdout stays parseable.`,
 	cmd.Flags().Lookup("promote").NoOptDefVal = landPromoteUseBase
 	cmd.Flags().Bool("no-promote", false, "skip the promote step for this run (overrides land.promote in config)")
 	cmd.Flags().Bool("autostash", false, "during the promote/--to merge, stash a dirty receiver worktree (the parent checkout) around the merge and pop it after, instead of refusing")
+	// -v forwards to the push step's secret-scan context (the ±1 source lines);
+	// local flag, like push/ship, so it never clashes with the global --verbose.
+	cmd.Flags().BoolP("verbose", "v", false, "show ±1 source line of context around each secret-scan hit (forwarded to the push step)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -170,6 +173,16 @@ func runLand(cmd *cobra.Command, args []string) error {
 	// from config, so omitting the flag would let config re-enable what
 	// `gk land --with-base=false` promised to skip.
 	pullArgs := []string{"pull", fmt.Sprintf("--with-base=%t", withBase)}
+	// Forward verbose (local -v or the global --verbose) to the child push as
+	// --scan-context, NOT --verbose: we want the ±1 secret-scan context but not
+	// push's git-progress streaming viewport, which would flash and vanish
+	// inside land's own step output.
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	verbose = verbose || Verbose()
+	pushArgs := []string{"push"}
+	if verbose {
+		pushArgs = append(pushArgs, "--scan-context")
+	}
 	steps := []landStep{
 		{
 			name: "commit", args: []string{"commit", "-f"},
@@ -181,7 +194,7 @@ func runLand(cmd *cobra.Command, args []string) error {
 			resume: "on conflict: gk resolve --ai && gk continue, then rerun: gk land",
 		},
 		{
-			name: "push", args: []string{"push"},
+			name: "push", args: pushArgs,
 			skip:   landSkipWhen(!push, "--no-push"),
 			resume: "fix the push (gk push), then rerun: gk land",
 		},

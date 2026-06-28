@@ -41,6 +41,12 @@ func init() {
 	// A local flag, mirroring pull/status, so it never clashes with the global
 	// persistent --verbose.
 	cmd.Flags().BoolP("verbose", "v", false, "show ±1 source line of context around each secret-scan hit")
+	// --scan-context is the verbose secret context WITHOUT the verbose
+	// git-progress stream. `gk land` forwards this (not --verbose) so a child
+	// push shows ±1 context but never opens the streaming TUI viewport, which
+	// would flash and vanish inside land's own step output.
+	cmd.Flags().Bool("scan-context", false, "show secret-scan context only, without the git-progress stream (used by gk land)")
+	_ = cmd.Flags().MarkHidden("scan-context")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -57,10 +63,14 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 	yes, _ := cmd.Flags().GetBool("yes")
 	// The local -v shadows the global persistent --verbose for this command, so
-	// fold both in: a user can write `gk push -v` or `gk --verbose push`, and
-	// the same signal drives the git-progress stream and the secret-scan context.
+	// fold both in: a user can write `gk push -v` or `gk --verbose push`. verbose
+	// drives BOTH the git-progress stream and the secret-scan context. The
+	// hidden --scan-context asks for the context ALONE (no stream) — gk land
+	// forwards it so a child push doesn't flash a streaming viewport.
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	verbose = verbose || Verbose()
+	scanCtx, _ := cmd.Flags().GetBool("scan-context")
+	showScanContext := verbose || scanCtx || cfg.Push.ScanContext
 
 	remote := cfg.Remote
 	if remote == "" {
@@ -110,13 +120,15 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	// Secret scan
 	if !skipScan {
-		findings, err := scanCommitsToPush(ctx, runner, remote, branch)
+		base := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
+		cmp := resolveScanCmp(ctx, runner, remote, branch, base)
+		findings, err := scanCommitsToPush(ctx, runner, cmp)
 		if err != nil {
 			return fmt.Errorf("secret scan: %w", err)
 		}
 		Dbg("push: secret-scan — %d finding(s)", len(findings))
 		if len(findings) > 0 {
-			renderScanFindings(cmd.ErrOrStderr(), findings, verbose || cfg.Push.ScanContext)
+			renderScanFindings(cmd.ErrOrStderr(), findings, showScanContext)
 			fmt.Fprintln(cmd.ErrOrStderr(), "  use --no-verify (or --skip-scan) to override (not recommended)")
 			return fmt.Errorf("aborting push")
 		}
@@ -294,8 +306,38 @@ func isProtected(branch string, list []string) bool {
 	return false
 }
 
-// scanCommitsToPush fetches the range "remote/branch..HEAD" diff and scans it.
-// If the upstream ref is missing, scans all commits reachable from HEAD.
+// resolveScanCmp picks the ref to diff HEAD against for the pre-push secret
+// scan: the branch's own upstream (remote/branch) when it exists, else the
+// base branch's remote ref, else a local base, else "" (no comparison point —
+// scan the whole history). Anchoring the scan to a real base does two things:
+// it scopes the scan to what THIS push adds (content already on the remote is
+// not re-flagged), and — because scanCommitsToPush diffs base...HEAD with a
+// 3-dot net diff — it numbers hunks against the current HEAD file, so reported
+// line numbers match what the user sees in their editor. (A plain
+// "remote/branch..HEAD" log -p numbered hunks per-commit, so a token added in
+// an early commit was reported at its line in THAT commit, drifting from the
+// final file once later commits inserted lines above it.)
+func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base string) string {
+	hasCommit := func(ref string) bool {
+		_, _, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
+		return err == nil
+	}
+	if up := remote + "/" + branch; hasCommit(up) {
+		return up
+	}
+	if base != "" {
+		if rb := remote + "/" + base; hasCommit(rb) {
+			return rb
+		}
+		if hasCommit(base) {
+			return base
+		}
+	}
+	return ""
+}
+
+// scanCommitsToPush scans the additions this push would publish. cmp is the ref
+// to compare HEAD against (from resolveScanCmp); "" means no base is known.
 //
 // Only added (`+`) lines from non-test files are scanned. This mirrors
 // what gitleaks-style scanners do — removals already exist in the base
@@ -303,16 +345,22 @@ func isProtected(branch string, list []string) bool {
 // contain intentional fake secrets used to verify detection logic.
 // Without these filters every fixture cleanup commit becomes a ship
 // blocker, which we hit immediately after tightening the privacy gate.
-func scanCommitsToPush(ctx context.Context, r git.Runner, remote, branch string) ([]secrets.Finding, error) {
-	ref := remote + "/" + branch
-	_, _, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
-	rng := "HEAD"
-	if err == nil {
-		rng = ref + "..HEAD"
+func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets.Finding, error) {
+	if cmp != "" {
+		// Net 3-dot diff: what HEAD adds over its merge-base with cmp, with
+		// hunk line numbers anchored to the current HEAD file.
+		stdout, stderr, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
+		}
+		return scanDiffAdditions(string(stdout)), nil
 	}
-	stdout, stderr, lerr := r.Run(ctx, "log", "-p", "--no-color", rng)
-	if lerr != nil {
-		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), lerr)
+	// No comparison point (first push of a brand-new history): scan the whole
+	// HEAD. log -p numbers hunks per-commit so lines may drift, but with no
+	// base there is nothing to anchor to.
+	stdout, stderr, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	return scanDiffAdditions(string(stdout)), nil
 }

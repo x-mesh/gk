@@ -2201,6 +2201,35 @@ gk continue
 
 ---
 
+## gk bisect
+
+Find the first commit where a regression appears by binary search between a known-good and known-bad ref. Unlike raw `git bisect` — which is stateful and checks out each candidate in your working tree, an easy place for an agent to get lost — `gk bisect` runs the search in a throwaway detached worktree, so your tree and HEAD are never touched.
+
+The command after `--` classifies each commit: exit 0 = good, non-zero = bad (exit 125 = skip, git's convention for "can't test this one").
+
+### Synopsis
+
+```
+gk bisect --good <ref> --bad <ref> -- <command>   # automatic
+gk bisect --good <ref> --bad <ref>                # manual: pause on each candidate
+gk bisect good | bad | skip                       # advance a manual bisect
+gk bisect reset                                    # end a manual bisect, remove its worktree
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--good <ref>` | — | A ref where the regression is absent (required) |
+| `--bad <ref>` | `HEAD` | A ref where the regression is present |
+
+### Modes
+
+- **Automatic** (`-- <command>`): delegates to `git bisect run` in the worktree and returns the culprit in one call: `{culprit:{sha,subject,author,date}, good, bad, tested}`.
+- **Manual** (no `--` command): starts a bisect and pauses with `state:"paused"` on the first candidate, reporting the worktree to test and `{current, remaining, resume}`. Test it, then `gk bisect good|bad|skip` to advance; the session persists in `<git-common-dir>/gk/bisect.json` across invocations until the culprit is found or `gk bisect reset` ends it. `gk context` shows an active bisect (a `bisect` field + next actions) and `gk fleet` flags the worktree's state as `bisect`.
+
+---
+
 ## gk continue
 
 Continue the current rebase, merge, or cherry-pick after resolving conflicts. `gk resolve` runs this step automatically — reach for `gk continue` after resolving conflicts by hand (manual edits + `git add`).

@@ -235,6 +235,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk edit-conflict` | `gk ec` | Open `$EDITOR` at the first `<<<<<<<` marker with editor-aware cursor jump |
 | `gk continue` | | Continue interrupted rebase/merge/cherry-pick |
 | `gk abort` | | Abort interrupted rebase/merge/cherry-pick |
+| `gk bisect` | | Find the commit that introduced a regression by binary search, run in a throwaway detached worktree so your tree/HEAD stay untouched. Automatic with `--good <ref> --bad <ref> -- <command>` (delegates to `git bisect run`, returns the culprit), or manual: omit `--` to pause on each candidate and step with `gk bisect good\|bad\|skip` (`reset` to end). `gk context`/`gk fleet` surface an active bisect. |
 | `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
 | `gk snapshot` / `gk snapshots` | | Non-destructive safety-net snapshot of the working tree to `refs/wip/<branch>` (untracked included, `.gitignore` respected); never touches HEAD/index, never pushes. `restore [n]` brings one back, auto-backing-up a dirty tree first. `-q` suits a Stop hook |
 

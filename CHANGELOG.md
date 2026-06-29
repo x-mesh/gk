@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk bisect` — 회귀를 처음 넣은 커밋을 이분 탐색으로 찾는다.** 표준 디버깅 도구인 `git bisect`는 상태 보존형·대화형이라 매 단계 작업 트리 HEAD를 체크아웃하며 휘젓는다 — 에이전트가 중간에 길을 잃기 가장 쉬운 git 시나리오이고 gk가 감싸지 않던 공백이었다. `gk bisect`는 탐색을 버려도 되는 detached worktree에서 돌려 **작업 트리와 HEAD를 건드리지 않는다**. 두 모드를 지원한다: 분류 명령을 `--`로 주면(`gk bisect --good v1.2 --bad HEAD -- go test ./...`) `git bisect run`을 위임해 완전 자동으로 범인 커밋을 `{culprit:{sha,subject,author,date}, good, bad, tested}` envelope으로 반환하고, 명령 없이 시작하면 후보 커밋마다 `state:"paused"`로 멈춰 `gk bisect good|bad|skip`으로 진행하며 `gk bisect reset`으로 끝낸다(rebase paused와 동형 계약, 세션은 `<git-common-dir>/gk/bisect.json`에 영속). 진행 중에는 `gk context`가 `bisect` 필드와 다음 동작을, `gk fleet`이 그 worktree를 `bisect` 상태로 표시한다.
+
 ## [0.102.0] - 2026-06-29
 
 ### Added

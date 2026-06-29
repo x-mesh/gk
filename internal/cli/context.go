@@ -36,6 +36,17 @@ type contextOpJSON struct {
 	Abort  string `json:"abort"`
 }
 
+// contextBisectJSON surfaces an in-progress `gk bisect` (manual mode). Bisect
+// runs in a side worktree, so it never appears as the main repo's in_progress —
+// this is how an agent learns a bisect is mid-flight and how to advance it.
+type contextBisectJSON struct {
+	Worktree string   `json:"worktree"`
+	Current  string   `json:"current,omitempty"`
+	Good     string   `json:"good"`
+	Bad      string   `json:"bad"`
+	Resume   []string `json:"resume"`
+}
+
 type contextBaseJSON struct {
 	Name string `json:"name"`
 	// BehindRemote counts commits origin/<base> has that the local base
@@ -67,6 +78,7 @@ type contextJSON struct {
 	Behind      int                   `json:"behind"`
 	Dirty       contextDirtyJSON      `json:"dirty"`
 	InProgress  *contextOpJSON        `json:"in_progress,omitempty"`
+	Bisect      *contextBisectJSON    `json:"bisect,omitempty"`
 	Base        *contextBaseJSON      `json:"base,omitempty"`
 	LatestTag   string                `json:"latest_tag,omitempty"`
 	Worktrees   []contextWorktreeJSON `json:"worktrees,omitempty"`
@@ -217,6 +229,21 @@ func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		}
 	}
 
+	// gk bisect (manual mode) runs in a side worktree, so it is invisible to the
+	// main-repo state probe above — surface it from the persisted session meta.
+	if mp := bisectMetaPath(ctx, runner); mp != "" {
+		if st, ok := loadBisectState(mp); ok {
+			b := &contextBisectJSON{
+				Worktree: st.Worktree, Good: st.Good, Bad: st.Bad,
+				Resume: []string{selfCmd("bisect good"), selfCmd("bisect bad"), selfCmd("bisect reset")},
+			}
+			if h, _, e := (&git.ExecRunner{Dir: st.Worktree}).Run(ctx, "rev-parse", "HEAD"); e == nil {
+				b.Current = strings.TrimSpace(string(h))
+			}
+			out.Bisect = b
+		}
+	}
+
 	out.Base = collectContextBase(ctx, runner, client, cfg, out.Branch)
 
 	if tagOut, _, terr := runner.Run(ctx, "describe", "--tags", "--abbrev=0"); terr == nil {
@@ -352,6 +379,10 @@ func parsePositiveInt(s string) (int, error) {
 // then local changes, then sync direction, then base drift.
 func contextNextActions(c contextJSON) []string {
 	var actions []string
+	// A mid-flight bisect is the most actionable signal — advance it first.
+	if c.Bisect != nil {
+		actions = append(actions, selfCmd("bisect good"), selfCmd("bisect bad"))
+	}
 	switch {
 	case c.InProgress != nil:
 		if c.Dirty.Conflicts > 0 {

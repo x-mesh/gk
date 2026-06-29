@@ -440,6 +440,8 @@ func fleetOperationLabel(st *gitstate.State) string {
 		return "cherry-pick"
 	case gitstate.StateRevert:
 		return "revert"
+	case gitstate.StateBisect:
+		return "bisect"
 	default:
 		return ""
 	}

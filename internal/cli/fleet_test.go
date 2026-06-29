@@ -69,7 +69,7 @@ func TestFleetOperationLabel(t *testing.T) {
 		{"cherry-pick", gitstate.State{Kind: gitstate.StateCherryPick}, "cherry-pick"},
 		{"revert", gitstate.State{Kind: gitstate.StateRevert}, "revert"},
 		{"none", gitstate.State{Kind: gitstate.StateNone}, ""},
-		{"bisect unhandled", gitstate.State{Kind: gitstate.StateBisect}, ""},
+		{"bisect", gitstate.State{Kind: gitstate.StateBisect}, "bisect"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

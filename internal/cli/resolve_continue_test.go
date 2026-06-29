@@ -144,10 +144,13 @@ func TestResolveNoContinue_StopsAfterResolving(t *testing.T) {
 	t.Setenv("GIT_EDITOR", "false")
 
 	var out bytes.Buffer
-	if err := runResolveCmd(t, r.Dir, &out, map[string]string{
+	// --no-continue intentionally stops at a paused rebase, which is now
+	// signalled as exit 3 (the paused contract) rather than a silent exit 0.
+	err := runResolveCmd(t, r.Dir, &out, map[string]string{
 		"strategy": "theirs", "no-continue": "true",
-	}); err != nil {
-		t.Fatalf("resolve --no-continue: %v", err)
+	})
+	if c, _ := ExitCodeFor(err); c != 3 {
+		t.Fatalf("resolve --no-continue should pause (exit 3), got err=%v (code %d)", err, c)
 	}
 
 	state, err := gitstate.Detect(context.Background(), r.Dir)

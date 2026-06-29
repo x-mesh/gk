@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-06-29
+
 ### Changed
 
 - **`gk push`·`gk ship`의 pre-push 시크릿 스캔이 보고하는 줄 번호를 현재 HEAD 파일 기준으로 맞춘다.** 종전엔 `remote/branch..HEAD`를 `git log -p`로 커밋별로 훑어, 이른 커밋에서 추가된 토큰이 *그 커밋 시점의* 줄 번호로 보고됐다 — 이후 커밋이 그 위에 줄을 끼워 넣으면 최종 파일에서의 실제 위치와 어긋났다. 이제 스캔 기준점(`resolveScanCmp`: 브랜치 upstream → base의 remote ref)을 정하고 그 base와의 net 3-dot diff(`base...HEAD`)로 hunk를 현재 HEAD 파일에 앵커링해, `src/foo.rs:218`처럼 편집기에서 보이는 줄과 일치하는 위치를 보고한다.

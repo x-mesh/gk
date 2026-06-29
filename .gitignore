@@ -57,3 +57,6 @@ __pycache__/
 *.coverage
 coverage/
 .tox/
+
+# Local agent/tool state (not project content)
+.antigravitycli/

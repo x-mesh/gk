@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk push`·`gk ship`의 pre-push 시크릿 스캔이 보고하는 줄 번호를 현재 HEAD 파일 기준으로 맞춘다.** 종전엔 `remote/branch..HEAD`를 `git log -p`로 커밋별로 훑어, 이른 커밋에서 추가된 토큰이 *그 커밋 시점의* 줄 번호로 보고됐다 — 이후 커밋이 그 위에 줄을 끼워 넣으면 최종 파일에서의 실제 위치와 어긋났다. 이제 스캔 기준점(`resolveScanCmp`: 브랜치 upstream → base의 remote ref)을 정하고 그 base와의 net 3-dot diff(`base...HEAD`)로 hunk를 현재 HEAD 파일에 앵커링해, `src/foo.rs:218`처럼 편집기에서 보이는 줄과 일치하는 위치를 보고한다.
+
+### Fixed
+
+- **pre-push 시크릿 스캔이 push 범위 안에서 한 커밋에 추가됐다가 다음 커밋에서 지워진 시크릿도 잡는다.** net 3-dot diff(`base...HEAD`)는 추가와 삭제가 상쇄돼 사라진 시크릿을 보지 못하지만, `git push`는 두 커밋을 모두 발행해 시크릿이 히스토리에 남는다 — 게이트가 정확히 막아야 할 "시크릿을 커밋한 뒤 다음 커밋에서 지우고 push" 경우가 조용히 통과됐다. 이제 `scanCommitsToPush`가 발행될 커밋 범위(`base..HEAD`)를 커밋별로 한 번 더 훑어 history-only 시크릿을 합치고(겹치면 net diff의 HEAD 기준 정확한 줄이 이긴다), `resolveScanCmp`는 리모트에 없는 로컬 base로 폴백하지 않는다 — 폴백하면 그 base 커밋들이 발행되면서도 스캔에서 빠졌기에, fresh/empty 리모트로의 첫 push는 전체 히스토리를 스캔한다.
+
 ## [0.100.0] - 2026-06-25
 
 ### Added

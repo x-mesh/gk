@@ -73,6 +73,15 @@ type batchResultJSON struct {
 	Resume     string         `json:"resume,omitempty"`
 }
 
+// agentState makes the envelope state "paused" when a step paused, so the state
+// matches the exit-3 the run also returns (a parent batch/land detects either).
+func (r batchResultJSON) agentState() string {
+	if r.Result == "paused" {
+		return envStatePaused
+	}
+	return ""
+}
+
 // batchMaxSteps caps plan size: a plan beyond this is almost certainly a
 // generated runaway, and each step is a child process.
 const batchMaxSteps = 20
@@ -218,6 +227,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		}
 
 		res.Result = "failed"
+		if stepResult == "paused" {
+			res.Result = "paused"
+		}
 		res.FailedStep = name
 		res.Resume = selfCmd("context")
 		// Skip-mark the rest so the caller sees the full plan accounted for.
@@ -231,6 +243,11 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		}
 		if jsonMode {
 			_ = emitAgentResult(cmd.OutOrStdout(), res)
+		}
+		if stepResult == "paused" {
+			// Propagate the pause as exit 3 so a parent batch/land detects it the
+			// same way this batch detected its own child. Output already rendered.
+			return &ExitError{Code: 3}
 		}
 		return WithRemedy(
 			fmt.Errorf("batch: step %q failed: %w", name, stepErr),

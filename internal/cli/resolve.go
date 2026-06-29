@@ -162,11 +162,18 @@ func runResolve(cmd *cobra.Command, args []string) error {
 
 	noContinue, _ := cmd.Flags().GetBool("no-continue")
 	if !canAutoContinue(ctx, runner, state, result, dryRun, noContinue) {
+		rep := plainResolveReport(result, state)
 		if JSONOut() && !dryRun {
-			return emitAgentResult(cmd.OutOrStdout(), plainResolveReport(result, state))
+			if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
+				return err
+			}
+		} else {
+			printResolveResult(cmd.OutOrStdout(), result, state.Kind != gitstate.StateNone)
 		}
-		printResolveResult(cmd.OutOrStdout(), result, state.Kind != gitstate.StateNone)
-		return nil
+		if dryRun {
+			return nil // a dry-run simulation never pauses the process
+		}
+		return pausedExitIf(rep)
 	}
 
 	if !JSONOut() {
@@ -177,9 +184,12 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if JSONOut() {
-		return emitAgentResult(cmd.OutOrStdout(), rep)
+		if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
+			return err
+		}
 	}
-	return nil
+	// A still-paused resolution (later pick needs hand-resolution) exits 3.
+	return pausedExitIf(rep)
 }
 
 // canAutoContinue gates the continue step: only after a full resolution

@@ -44,10 +44,19 @@ type landStepRun struct {
 // agent mode. Fields are append-only.
 type landResultJSON struct {
 	Schema     int           `json:"schema"`
-	Result     string        `json:"result"` // landed | failed | dry-run
+	Result     string        `json:"result"` // landed | failed | paused | dry-run
 	Steps      []landStepRun `json:"steps"`
 	FailedStep string        `json:"failed_step,omitempty"`
 	Resume     string        `json:"resume,omitempty"`
+}
+
+// agentState makes the envelope state "paused" when a step paused on a conflict,
+// so it matches the exit-3 the run also returns (a parent batch/land detects it).
+func (r landResultJSON) agentState() string {
+	if r.Result == "paused" {
+		return envStatePaused
+	}
+	return ""
 }
 
 func init() {
@@ -318,18 +327,35 @@ func runLandPipeline(cmd *cobra.Command, repo string, jsonMode bool, steps []lan
 			stepErr = landRunChild(ctx, gkPath, repo, jsonMode, s.args...)
 		}
 		if stepErr != nil {
+			paused := childPausedOnConflict(stepErr)
 			resume := s.resume
 			if s.resumeFn != nil {
 				if r := s.resumeFn(stepErr); r != "" {
 					resume = r
 				}
 			}
+			stepResult := "failed"
 			res.Result = "failed"
+			if paused {
+				stepResult = "paused"
+				res.Result = "paused"
+			}
 			res.FailedStep = s.name
 			res.Resume = selfRewrite(resume)
-			res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: "failed", Detail: stepErr.Error()})
+			res.Steps = append(res.Steps, landStepRun{Name: s.name, Result: stepResult, Detail: stepErr.Error()})
 			if jsonMode {
 				_ = emitAgentResult(cmd.OutOrStdout(), res)
+			}
+			if paused {
+				// Propagate the conflict pause as exit 3 so a parent batch/land
+				// detects it; the result document is already rendered. The hint/
+				// remedy is wrapped so HintFrom/RemediesFrom still surface the
+				// resolve/continue resume path.
+				return &ExitError{Code: 3, err: WithRemedy(
+					fmt.Errorf("%s: step %q paused: %w", opts.errPrefix, s.name, stepErr),
+					resume,
+					errRemedy{Command: opts.rerun, Safety: "safe"},
+				)}
 			}
 			return WithRemedy(
 				fmt.Errorf("%s: step %q failed: %w", opts.errPrefix, s.name, stepErr),

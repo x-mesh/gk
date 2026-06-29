@@ -375,10 +375,14 @@ func emitBisectPaused(cmd *cobra.Command, wt *git.ExecRunner, wtPath, bisectOut 
 	}
 	w := cmd.OutOrStdout()
 	if JSONOut() {
-		return emitAgentResult(w, p)
+		if err := emitAgentResult(w, p); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(w, "bisect paused — test %s\n  at %s %s\n  then: %s | %s | %s\n",
+			wtPath, shortSHA(cur.SHA), cur.Subject,
+			selfCmd("bisect good"), selfCmd("bisect bad"), selfCmd("bisect skip"))
 	}
-	fmt.Fprintf(w, "bisect paused — test %s\n  at %s %s\n  then: %s | %s | %s\n",
-		wtPath, shortSHA(cur.SHA), cur.Subject,
-		selfCmd("bisect good"), selfCmd("bisect bad"), selfCmd("bisect skip"))
-	return nil
+	// Paused is exit 3 (in both output modes) so batch/land detect the stop.
+	return pausedExitIf(p)
 }

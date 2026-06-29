@@ -88,15 +88,18 @@ func runContinue(cmd *cobra.Command, _ []string) error {
 	if after, err := gitstate.Detect(ctx, RepoFlag()); err == nil && after.Kind != gitstate.StateNone {
 		done = false
 	}
+	rep := continueReport{Action: sub, Done: done}
 	if JSONOut() {
-		return emitAgentResult(cmd.OutOrStdout(), continueReport{Action: sub, Done: done})
-	}
-	if done {
+		if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
+			return err
+		}
+	} else if done {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s %s complete\n", color.GreenString("✓"), sub)
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s %s continued — still in progress\n", color.GreenString("✓"), sub)
 	}
-	return nil
+	// Still in progress (an edit/break step) → exit 3 so batch/land see the pause.
+	return pausedExitIf(rep)
 }
 
 // stateSubcommand maps an in-progress state to the git subcommand that

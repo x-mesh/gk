@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk fleet`가 여러 저장소를 한 화면에서 감독한다(multi-repo).** 종전엔 `git worktree list` 한 번이라 한 저장소의 worktree 경계를 못 넘었다 — 에이전트가 서로 다른 repo(`~/work/project/agentic/{gk,aic-rust,…}`)에서 동시에 작업하면 한눈에 못 봤다. 이제 `--repos`/`--scan`/`--all`(또는 `fleet.repos`/`fleet.scan`/`fleet.depth`/`fleet.exclude` config)로 multi-repo 모드에 진입하면, 발견된 모든 repo의 worktree를 모아 TUI는 repo 그룹 헤더로 묶어 보여주고(`space`로 접기/펼치기, `w`로 선택 worktree의 `gk status --watch` change-feed로 들어갔다 복귀), `--json`은 flat 배열을 유지하되 각 항목에 `repo`/`repo_root`를 달아 `jq 'group_by(.repo_root)'`로 그룹핑할 수 있다. 발견은 `git rev-parse --git-common-dir`로 dedup해 symlink나 linked worktree로 같은 repo가 중복 집계되지 않고, gather에 실패하거나 3초 내 응답 못 한 repo는 조용히 사라지는 대신 `status:"error"` 항목으로 노출된다. fleet은 네트워크를 쓰지 않고(fetch 없음) 모든 probe를 `GIT_OPTIONAL_LOCKS=0`로 돌려 그 repo에서 편집 중인 에이전트의 `git add`와 `index.lock` 경합을 피한다. 저장소 안에서 인자 없이 실행한 `gk fleet`은 `fleet.*` config가 있어도 기존대로 single-repo로 남으며(config는 저장소 밖에서 실행할 때만 multi-repo를 자동 활성화), 저장소 안에서 강제하려면 `--all`을 쓴다.
+
 ## [0.101.1] - 2026-06-29
 
 ### Added

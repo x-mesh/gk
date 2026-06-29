@@ -2015,10 +2015,17 @@ Live multi-worktree supervision dashboard: every worktree at once — branch, ah
 
 The TUI polls `git worktree list` on an interval and renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `ahead` / `behind` / `diverged`). Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable snapshot of the same data — the contract a GUI/agent polls, with the TUI as its consumer.
 
+### Multi-repo mode
+
+By default `gk fleet` watches the current repo's worktrees. For supervising agents spread across **separate repositories** (e.g. `~/work/project/agentic/{gk,aic-rust,…}`), opt into multi-repo mode with `--repos`, `--scan`, or `--all`. The snapshot then spans every discovered repo; the TUI groups worktrees under a per-repo header you can fold/unfold, and `--json` stays a flat array — each entry tagged with `repo`/`repo_root` so a consumer groups with `jq 'group_by(.repo_root)'`.
+
+Discovery dedups by `git rev-parse --git-common-dir`, so a repo reached via a symlink or one of its linked worktrees collapses to a single entry. A repo that fails or times out (3s) becomes one synthetic `status:"error"` entry rather than silently vanishing. fleet stays local-only (never fetches) and runs its probes with `GIT_OPTIONAL_LOCKS=0` so it does not contend on `index.lock` with the agents editing those repos. A bare `gk fleet` inside a repo stays single-repo even if `fleet.repos`/`fleet.scan` are configured — config auto-activates multi-repo only when you run from outside any repo; use `--all` to force it from inside one.
+
 ### Synopsis
 
 ```
 gk fleet [--interval <seconds>]
+         [--repos <path,…>] [--scan <dir,…>] [--all] [--depth <n>]
 ```
 
 ### Flags
@@ -2026,12 +2033,27 @@ gk fleet [--interval <seconds>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--interval <seconds>` | `2` | Poll interval in TUI mode |
+| `--repos <path,…>` | — | Explicit repo paths to watch (enables multi-repo) |
+| `--scan <dir,…>` | — | Directory roots searched for git repos (enables multi-repo) |
+| `--all` | `false` | Watch sibling repos of the current repo; with no `--scan`/`--repos` it uses `fleet.repos`/`fleet.scan`, else scans the current repo's parent directory |
+| `--depth <n>` | `2` | Max scan recursion depth for `--scan` |
+
+### Config (`fleet.*`)
+
+```yaml
+fleet:
+  repos: [~/work/project/agentic/gk, ~/work/project/agentic/aic-rust]
+  scan:  [~/work/project/agentic]   # roots searched depth-deep for repos
+  depth: 2
+  exclude: ["node_modules", "vendor", ".archive"]   # dir-name globs skipped while scanning
+  interval: 2
+```
 
 ### Keys (TUI)
 
-`j`/`k` (or ↓/↑) move the cursor · `r` refreshes now · `q` (or esc) quits.
+`j`/`k` (or ↓/↑) move the cursor · `r` refreshes now · `q` (or esc) quits. In multi-repo mode: `space` (or `enter` on a header) folds/unfolds a repo group · `w` opens `gk status --watch` for the selected worktree (the live change-feed) and returns to fleet on exit.
 
-With `--json` / `GK_AGENT=1` the result is an array of `{path, branch, current, ahead, behind, dirty, status}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table instead of starting the interactive program.
+With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
 
 ---
 

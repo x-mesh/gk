@@ -436,13 +436,17 @@ func TestResolveScanCmp(t *testing.T) {
 			t.Errorf("got %q, want origin/main", got)
 		}
 	})
-	t.Run("local base fallback", func(t *testing.T) {
+	t.Run("local-only base is NOT used", func(t *testing.T) {
+		// The remote has neither origin/feat nor origin/main, but a local main
+		// exists. A local base tip would exclude commits the remote lacks, so
+		// pushing would publish them unscanned — resolveScanCmp must decline it
+		// and return "" (scan the whole history) rather than the local ref.
 		if got := cmp(map[string]git.FakeResponse{
 			"rev-parse --verify origin/feat^{commit}": {ExitCode: 128},
 			"rev-parse --verify origin/main^{commit}": {ExitCode: 128},
 			"rev-parse --verify main^{commit}":        {Stdout: "sha\n"},
-		}, "main"); got != "main" {
-			t.Errorf("got %q, want main", got)
+		}, "main"); got != "" {
+			t.Errorf("got %q, want empty (local-only base must not anchor the scan)", got)
 		}
 	})
 	t.Run("nothing resolvable", func(t *testing.T) {
@@ -481,6 +485,63 @@ func TestScanCommitsToPush_NetDiffFileLine(t *testing.T) {
 	}
 	if findings[0].FileLine != 9 {
 		t.Errorf("FileLine = %d, want 9 (hunk +8 + 1 context line)", findings[0].FileLine)
+	}
+}
+
+// TestScanCommitsToPush_AddThenRemoveInHistory guards the add-then-removed
+// bypass: the net 3-dot diff is empty because a secret added in one commit was
+// removed in a later one, yet `git push` still publishes both commits, leaving
+// the secret in history. The per-commit pass (log -p cmp..HEAD) must surface it.
+func TestScanCommitsToPush_AddThenRemoveInHistory(t *testing.T) {
+	const gh = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		// Net diff cancels out — nothing survives into HEAD.
+		"diff --no-color origin/main...HEAD": {Stdout: ""},
+		// But the add-commit's patch still exists in the pushed range.
+		"log -p --no-color origin/main..HEAD": {Stdout: "commit deadbeef\n" +
+			"diff --git a/app.go b/app.go\n" +
+			"--- a/app.go\n+++ b/app.go\n" +
+			"@@ -0,0 +1,1 @@\n" +
+			"+gh := \"" + gh + "\"\n"},
+	}}
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding from the history pass, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Kind != "github-token" {
+		t.Errorf("Kind = %q, want github-token", findings[0].Kind)
+	}
+}
+
+// TestScanCommitsToPush_MergesDuplicateAcrossPasses verifies a secret that
+// survives into HEAD — so it appears in BOTH the net diff (accurate line) and
+// the per-commit history pass (drifted line) — is reported once, taking the
+// net diff's HEAD-anchored line number.
+func TestScanCommitsToPush_MergesDuplicateAcrossPasses(t *testing.T) {
+	const gh = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff --no-color origin/main...HEAD": {Stdout: "diff --git a/f.go b/f.go\n" +
+			"--- a/f.go\n+++ b/f.go\n" +
+			"@@ -0,0 +42,1 @@\n" +
+			"+k := \"" + gh + "\"\n"},
+		"log -p --no-color origin/main..HEAD": {Stdout: "commit deadbeef\n" +
+			"diff --git a/f.go b/f.go\n" +
+			"--- a/f.go\n+++ b/f.go\n" +
+			"@@ -0,0 +5,1 @@\n" +
+			"+k := \"" + gh + "\"\n"},
+	}}
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 merged finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].FileLine != 42 {
+		t.Errorf("FileLine = %d, want 42 (net diff line wins over history's 5)", findings[0].FileLine)
 	}
 }
 

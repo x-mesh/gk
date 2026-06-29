@@ -308,15 +308,22 @@ func isProtected(branch string, list []string) bool {
 
 // resolveScanCmp picks the ref to diff HEAD against for the pre-push secret
 // scan: the branch's own upstream (remote/branch) when it exists, else the
-// base branch's remote ref, else a local base, else "" (no comparison point —
-// scan the whole history). Anchoring the scan to a real base does two things:
-// it scopes the scan to what THIS push adds (content already on the remote is
-// not re-flagged), and — because scanCommitsToPush diffs base...HEAD with a
-// 3-dot net diff — it numbers hunks against the current HEAD file, so reported
-// line numbers match what the user sees in their editor. (A plain
+// base branch's remote ref, else "" (no comparison point — scan the whole
+// history). Anchoring the scan to a real base does two things: it scopes the
+// scan to what THIS push adds (content already on the remote is not
+// re-flagged), and — because scanCommitsToPush diffs base...HEAD with a 3-dot
+// net diff — it numbers hunks against the current HEAD file, so reported line
+// numbers match what the user sees in their editor. (A plain
 // "remote/branch..HEAD" log -p numbered hunks per-commit, so a token added in
 // an early commit was reported at its line in THAT commit, drifting from the
 // final file once later commits inserted lines above it.)
+//
+// The comparison point must be a ref the remote ALREADY has — only then are the
+// commits it excludes guaranteed not to be published by this push. We therefore
+// never fall back to a purely-local base: if neither remote/branch nor
+// remote/base exists (a fresh/empty remote), a local base tip would exclude
+// commits the remote lacks, so `git push` would publish them unscanned. Return
+// "" in that case so scanCommitsToPush scans the whole reachable history.
 func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base string) string {
 	hasCommit := func(ref string) bool {
 		_, _, err := r.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
@@ -328,9 +335,6 @@ func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base stri
 	if base != "" {
 		if rb := remote + "/" + base; hasCommit(rb) {
 			return rb
-		}
-		if hasCommit(base) {
-			return base
 		}
 	}
 	return ""
@@ -346,23 +350,65 @@ func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base stri
 // Without these filters every fixture cleanup commit becomes a ship
 // blocker, which we hit immediately after tightening the privacy gate.
 func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets.Finding, error) {
-	if cmp != "" {
-		// Net 3-dot diff: what HEAD adds over its merge-base with cmp, with
-		// hunk line numbers anchored to the current HEAD file.
-		stdout, stderr, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
+	if cmp == "" {
+		// No comparison point (first push of a brand-new history): scan the
+		// whole HEAD. log -p numbers hunks per-commit so lines may drift, but
+		// with no base there is nothing to anchor to.
+		stdout, stderr, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
 		}
 		return scanDiffAdditions(string(stdout)), nil
 	}
-	// No comparison point (first push of a brand-new history): scan the whole
-	// HEAD. log -p numbers hunks per-commit so lines may drift, but with no
-	// base there is nothing to anchor to.
-	stdout, stderr, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
+
+	// Pass A — net 3-dot diff: what HEAD adds over its merge-base with cmp,
+	// with hunk line numbers anchored to the current HEAD file so a reported
+	// line matches what the user sees in their editor. This covers every
+	// secret that still survives in the final tree (the common case).
+	netOut, stderr, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	return scanDiffAdditions(string(stdout)), nil
+	findings := scanDiffAdditions(string(netOut))
+
+	// Pass B — per-commit patches across the published range (2-dot cmp..HEAD
+	// is exactly the set `git push` would publish). A secret added in one
+	// commit and removed in a later one cancels out of the net diff above, yet
+	// both commits are still pushed, leaving the secret recoverable from
+	// history — so the net diff alone would silently let it through. Pass B
+	// re-scans each commit's additions to catch those. Its hunk numbers are
+	// per-commit (the removed secret has no line in HEAD to anchor to anyway),
+	// so pass A's accurate lines win on overlap; mergeScanFindings keeps only
+	// the history-only hits.
+	histOut, stderr, err := r.Run(ctx, "log", "-p", "--no-color", cmp+"..HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+	return mergeScanFindings(findings, scanDiffAdditions(string(histOut))), nil
+}
+
+// mergeScanFindings returns primary plus any finding in extra that primary does
+// not already cover. Two findings are "the same" when their kind, file, and
+// masked sample match — so a secret seen in both the net diff (primary, with an
+// accurate HEAD line) and the per-commit history scan (extra, possibly a
+// drifted line) is reported once, from primary. Findings unique to extra are
+// the add-then-removed secrets the net diff cannot see; they are appended.
+func mergeScanFindings(primary, extra []secrets.Finding) []secrets.Finding {
+	key := func(f secrets.Finding) string {
+		return f.Kind + "\x00" + f.File + "\x00" + f.Sample
+	}
+	seen := make(map[string]bool, len(primary))
+	for _, f := range primary {
+		seen[key(f)] = true
+	}
+	out := primary
+	for _, f := range extra {
+		if k := key(f); !seen[k] {
+			seen[k] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // scanDiffAdditions parses a unified diff (e.g. `git log -p` output) and

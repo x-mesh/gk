@@ -14,13 +14,18 @@ func TestHint(t *testing.T) {
 		{"checkout branch", "git checkout -b feat/x", true, "raw-branch-switch"},
 		{"switch", "git switch main", true, "raw-branch-switch"},
 		{"worktree", "git worktree add ../wt feat", true, "raw-worktree"},
+		{"stash push", "git stash push -m wip", true, "raw-stash"},
+		{"stash bare", "git stash", true, "raw-stash"},
 		{"integration", "git rebase main", true, "raw-integration"},
 		{"gk short alias", "gk pull --with-base", true, "gk-short-alias"},
 		// Highest severity wins across a chain: conflict (high) over status (medium).
 		{"chain picks highest severity", "git diff --cc && git status", true, "raw-conflict-probes"},
-		// Not covered: plumbing, file-restore checkout, already git-kit, non-git.
+		// Not covered: plumbing, file-restore checkout, stash subcommands git-kit
+		// stash lacks, already git-kit, non-git.
 		{"plumbing", "git rev-parse HEAD", false, ""},
 		{"checkout restore", "git checkout -- app.go", false, ""},
+		{"stash show (no gk verb)", "git stash show -p", false, ""},
+		{"stash clear (no gk verb)", "git stash clear", false, ""},
 		{"already git-kit", "git-kit context --include=all", false, ""},
 		{"non-git", "ls -la", false, ""},
 	}

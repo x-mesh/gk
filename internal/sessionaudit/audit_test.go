@@ -199,6 +199,7 @@ func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
 	writeLines(t, path,
 		`{"payload":{"arguments":"{\"cmd\":\"git stash\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git stash pop\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git stash clear\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset --hard HEAD~1\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git apply fix.patch\"}"}}`,
 		// Suppressed: read-only plumbing and a diff flag variant must NOT be
@@ -219,24 +220,31 @@ func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
 	if f.Status != "gap" {
 		t.Errorf("status = %q, want gap", f.Status)
 	}
-	// stash x2 + reset x1 + apply x1 = 4; rev-parse and diff are suppressed.
-	if f.Count != 4 {
-		t.Errorf("gap count = %d, want 4 (subs %v)", f.Count, f.Subcommands)
+	// stash clear x1 + reset x1 + apply x1 = 3; `git stash` and `git stash pop`
+	// map to git-kit stash (covered), `git stash clear` does not, and
+	// rev-parse/diff are suppressed plumbing.
+	if f.Count != 3 {
+		t.Errorf("gap count = %d, want 3 (subs %v)", f.Count, f.Subcommands)
 	}
-	if f.Subcommands["stash"] != 2 {
-		t.Errorf("stash count = %d, want 2 (subs %v)", f.Subcommands["stash"], f.Subcommands)
+	// git stash clear has no git-kit verb, so it alone stays in the gap.
+	if f.Subcommands["stash"] != 1 {
+		t.Errorf("stash gap count = %d, want 1 (subs %v)", f.Subcommands["stash"], f.Subcommands)
 	}
-	for _, suppressed := range []string{"rev-parse", "diff"} {
-		if _, ok := f.Subcommands[suppressed]; ok {
-			t.Errorf("%q should be suppressed from the gap, got %v", suppressed, f.Subcommands)
+	for _, absent := range []string{"rev-parse", "diff"} {
+		if _, ok := f.Subcommands[absent]; ok {
+			t.Errorf("%q should not appear in the gap, got %v", absent, f.Subcommands)
 		}
 	}
-	if report.Adoption.UncoveredRawHits != 4 {
-		t.Errorf("UncoveredRawHits = %d, want 4", report.Adoption.UncoveredRawHits)
+	if report.Adoption.UncoveredRawHits != 3 {
+		t.Errorf("UncoveredRawHits = %d, want 3", report.Adoption.UncoveredRawHits)
 	}
-	// A pure gap session has no git-kit calls, so it must not inflate CoveredRawHits.
-	if report.Adoption.CoveredRawHits != 0 {
-		t.Errorf("CoveredRawHits = %d, want 0", report.Adoption.CoveredRawHits)
+	// git stash + git stash pop are covered raw git → they count toward CoveredRawHits.
+	if report.Adoption.CoveredRawHits != 2 {
+		t.Errorf("CoveredRawHits = %d, want 2", report.Adoption.CoveredRawHits)
+	}
+	// the supported stash subcommands surface as covered raw-stash, not a gap.
+	if s := findingByKind(report, "raw-stash"); s == nil || s.Count != 2 {
+		t.Fatalf("raw-stash = %+v, want count 2", s)
 	}
 }
 

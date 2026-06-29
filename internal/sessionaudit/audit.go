@@ -178,6 +178,18 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit diff --raw-patch --json for exact unified patch text, or git-kit diff --json for parsed hunks.",
 		coveredBy:      []string{"git-kit diff --raw-patch --json", "git-kit diff --json", "git-kit diff --digest"},
 	},
+	// git reset/restore are intentionally NOT mapped: gk reset means "reset to
+	// remote" and gk restore recovers dangling work, so neither matches the raw
+	// verbs' file/index semantics. stash maps only for the subcommands git-kit
+	// stash actually registers — gitKitStashCovers gates show/clear/branch/etc.
+	// back to a gap.
+	"raw-stash": {
+		kind:           "raw-stash",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit stash (push/list/pop/apply/drop) instead of raw git stash.",
+		coveredBy:      []string{"git-kit stash"},
+	},
 	"raw-diff-check": {
 		kind:           "raw-diff-check",
 		severity:       "low",
@@ -949,6 +961,25 @@ func isRawBranchSwitch(subcmd string, args []string) bool {
 
 func isRawWorktree(subcmd string) bool { return subcmd == "worktree" }
 
+// gitKitStashCovers reports whether `git stash <args>` maps to a git-kit stash
+// subcommand. git-kit stash registers push/list/pop/apply/drop (internal/cli/
+// stash.go) plus the bare interactive picker; show/clear/branch/create/store
+// have no git-kit verb and must stay a gap — mirroring the `checkout -- <file>`
+// exclusion in isRawBranchSwitch.
+func gitKitStashCovers(args []string) bool {
+	if len(args) == 0 {
+		return true // bare `git stash` → interactive picker / push
+	}
+	switch trimShellToken(args[0]) {
+	case "push", "list", "pop", "apply", "drop":
+		return true
+	case "show", "clear", "branch", "create", "store", "save":
+		return false // no git-kit stash verb — keep visible as a gap
+	default:
+		return true // a flag/message (-m, -p, -u): subcommand omitted == push
+	}
+}
+
 // gitSegmentFinding maps one raw-git segment to the covered finding kind it
 // triggers, or "" when the segment needs no git-kit nudge. It is the single
 // source of truth shared by the audit aggregation (addFindings) and the
@@ -969,6 +1000,8 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-branch-switch"
 	case isRawWorktree(subcmd):
 		return "raw-worktree"
+	case subcmd == "stash" && gitKitStashCovers(args):
+		return "raw-stash"
 	case subcmd == "diff" && hasArg(args, "--check"):
 		return "raw-diff-check"
 	case isRawFullDiff(subcmd, args):

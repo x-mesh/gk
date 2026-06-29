@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.103.1] - 2026-06-29
+
 ### Fixed
 
 - **paused 상태가 이제 종료 코드 3으로 끝나 `gk batch`·`gk land`가 멈춤을 감지한다.** 종전엔 충돌로 중단된 `gk continue`·`gk resolve`나 `gk bisect`의 수동 후보가 `state:"paused"` envelope을 내면서도 프로세스는 **exit 0**으로 끝났다 — 그래서 이들을 자식 프로세스로 실행하는 `gk batch`/`gk land`가 "멈춤"을 성공으로 오인해 다음 단계(예: `push`)로 그냥 넘어갔다(문서가 약속한 "exit 3" 계약과도 어긋났고, batch의 `exit==3` 감지 분기는 도달 불가능한 죽은 코드였다). 이제 paused 명령은 envelope 출력 모드(agent/human)와 무관한 별도 채널인 **종료 코드 3**을 내고(`cmd/gk/main.go`가 `ExitError`에서 코드를 뽑아 종료하되 이미 렌더된 결과 위에 에러를 덧쓰지 않는다), 완료(`done`)된 작업은 종전대로 exit 0이다. `gk batch`/`gk land`는 paused step을 만나면 그 step을 `paused`로 보고하고 나머지를 건너뛰며, 자신도 exit 3을 전파해 상위 batch/land가 중첩 멈춤을 똑같이 감지한다.

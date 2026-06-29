@@ -22,6 +22,21 @@ type Config struct {
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
+	Fleet      FleetConfig     `mapstructure:"fleet"       yaml:"fleet"`
+}
+
+// FleetConfig configures multi-repo `gk fleet`. Repos lists explicit repo paths;
+// Scan lists directory roots searched (Depth levels deep) for git repos; Exclude
+// are directory-name globs skipped while scanning; Interval is the TUI poll
+// interval in seconds. With every field empty, fleet stays single-repo unless
+// --repos/--scan/--all is passed — config alone never auto-switches a bare
+// `gk fleet` run from inside a repo.
+type FleetConfig struct {
+	Repos    []string `mapstructure:"repos"    yaml:"repos,omitempty"`
+	Scan     []string `mapstructure:"scan"     yaml:"scan,omitempty"`
+	Depth    int      `mapstructure:"depth"    yaml:"depth,omitempty"`
+	Exclude  []string `mapstructure:"exclude"  yaml:"exclude,omitempty"`
+	Interval int      `mapstructure:"interval" yaml:"interval,omitempty"`
 }
 
 // OutputConfig controls Easy Mode output behaviour.

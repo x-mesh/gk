@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
@@ -40,6 +42,10 @@ script can poll it directly.`,
 		RunE: runFleet,
 	}
 	cmd.Flags().Int("interval", 2, "poll interval in seconds (TUI mode)")
+	cmd.Flags().StringSlice("repos", nil, "explicit repo paths to watch (multi-repo)")
+	cmd.Flags().StringSlice("scan", nil, "directory roots to scan for git repos (multi-repo)")
+	cmd.Flags().Bool("all", false, "watch sibling repos of the current repo (multi-repo)")
+	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -73,17 +79,53 @@ type fleetEntryJSON struct {
 	ParentBehind int    `json:"parent_behind,omitempty"`
 	LandReady    bool   `json:"land_ready,omitempty"`
 
+	// Repo/RepoRoot identify which repository this worktree belongs to in
+	// multi-repo mode; filled in single-repo mode too so the JSON contract is
+	// uniform across modes (consumers group by repo_root). Error is set only on a
+	// synthetic entry standing in for a repo whose gather failed or timed out, so
+	// a slow repo never silently vanishes from the flat snapshot.
+	Repo     string `json:"repo,omitempty"`
+	RepoRoot string `json:"repo_root,omitempty"`
+	Error    string `json:"error,omitempty"`
+
 	// lastActive is the absolute timestamp behind ActiveAgoS. Unexported (never
 	// serialized) so the live TUI re-derives the relative age every clock tick
 	// instead of freezing it at poll time.
 	lastActive time.Time
 }
 
+const fleetRepoTimeout = 3 * time.Second
+
 func runFleet(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Multi-repo mode is opt-in (--repos / --scan / --all). The single-repo path
+	// below is untouched, so a bare `gk fleet` inside a repo behaves as before.
+	ids, multi, err := resolveFleetRepos(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	if multi {
+		sem := newFleetLimiter(fleetConcurrency())
+		entries := gatherFleetMulti(ctx, ids, sem, fleetRepoTimeout)
+		if JSONOut() {
+			return emitAgentResult(cmd.OutOrStdout(), entries)
+		}
+		// No TTY (pipe/redirect/CI): static grouped snapshot, all repos expanded.
+		if !ui.IsTerminal() {
+			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0))
+			return nil
+		}
+		interval, _ := cmd.Flags().GetInt("interval")
+		if interval < 1 {
+			interval = 2
+		}
+		return runFleetMultiTUI(ctx, ids, sem, entries, time.Duration(interval)*time.Second)
+	}
+
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 
 	entries, err := gatherFleet(ctx, runner)
@@ -116,6 +158,24 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 // holds no working state. Per-worktree enrichment runs concurrently: each entry
 // is independent, so a handful of worktrees stay snappy under a 2s poll.
 func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON, error) {
+	root := runner.Dir
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	if r, _, ok := repoRootAndCommonDir(ctx, root); ok {
+		root = r
+	}
+	sem := newFleetLimiter(fleetConcurrency())
+	return gatherFleetRepo(ctx, runner, filepath.Base(root), root, sem)
+}
+
+// gatherFleetRepo enriches one repo's worktrees, tagging every entry with the
+// repo label/root. sem bounds concurrent enrich goroutines; it is shared with
+// the repo-level fan-out in multi-repo mode so repo×worktree git subprocesses
+// cannot all run at once. The repo-level fan-out itself is NOT gated on sem —
+// gating both levels on one semaphore would deadlock (repos holding every slot
+// while their worktrees wait for one).
+func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root string, sem chan struct{}) ([]fleetEntryJSON, error) {
 	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("fleet: worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
@@ -140,7 +200,14 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON,
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			out[i] = enrichFleetEntry(ctx, live[i], meta, current, base, now)
+			if sem != nil {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
+			e := enrichFleetEntry(ctx, live[i], meta, current, base, now)
+			e.Repo = label
+			e.RepoRoot = root
+			out[i] = e
 		}(i)
 	}
 	wg.Wait()
@@ -154,6 +221,132 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON,
 		return out[i].Branch < out[j].Branch
 	})
 	return out, nil
+}
+
+// resolveFleetRepos returns the discovered repo set and whether multi-repo mode
+// is active. Multi-repo is opt-in via --repos, --scan, or --all; a bare call
+// stays single-repo (multi=false), preserving the legacy behaviour.
+func resolveFleetRepos(ctx context.Context, cmd *cobra.Command) ([]repoIdent, bool, error) {
+	reposFlag, _ := cmd.Flags().GetStringSlice("repos")
+	scanFlag, _ := cmd.Flags().GetStringSlice("scan")
+	all, _ := cmd.Flags().GetBool("all")
+	depth, _ := cmd.Flags().GetInt("depth")
+	depthSet := cmd.Flags().Changed("depth")
+
+	var fc config.FleetConfig
+	if cfg, err := config.Load(nil); err == nil && cfg != nil {
+		fc = cfg.Fleet
+	}
+	if !depthSet && fc.Depth > 0 {
+		depth = fc.Depth
+	}
+
+	flagMulti := len(reposFlag) > 0 || len(scanFlag) > 0 || all
+	var repos, scan []string
+	switch {
+	case flagMulti:
+		repos, scan = reposFlag, scanFlag
+		if all && len(repos) == 0 && len(scan) == 0 {
+			// --all with no explicit targets: prefer config, else scan the parent
+			// directory of the current repo so sibling projects show up (the common
+			// multi-agent layout).
+			if len(fc.Repos) > 0 || len(fc.Scan) > 0 {
+				repos, scan = fc.Repos, fc.Scan
+			} else if root := currentRepoRoot(ctx); root != "" {
+				scan = []string{filepath.Dir(root)}
+				if !depthSet && fc.Depth == 0 {
+					depth = 1
+				}
+			}
+		}
+	default:
+		// No multi flags: config opts in ONLY when not inside a repo, so a bare
+		// `gk fleet` in a repo stays single-repo (use --all to override).
+		if (len(fc.Repos) > 0 || len(fc.Scan) > 0) && currentRepoRoot(ctx) == "" {
+			repos, scan = fc.Repos, fc.Scan
+		} else {
+			return nil, false, nil
+		}
+	}
+
+	ids, err := discoverRepos(ctx, repos, scan, fc.Exclude, depth)
+	if err != nil {
+		return nil, true, err
+	}
+	if len(ids) == 0 {
+		return nil, true, fmt.Errorf("fleet: no git repositories found; pass --scan <dir> or --repos <path>")
+	}
+	return ids, true, nil
+}
+
+// currentRepoRoot returns the canonical root of the repo containing the current
+// directory (or --repo), or "" when not inside a repo.
+func currentRepoRoot(ctx context.Context) string {
+	cwd := RepoFlag()
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	if root, _, ok := repoRootAndCommonDir(ctx, cwd); ok {
+		return root
+	}
+	return ""
+}
+
+// gatherFleetMulti gathers several repos concurrently into one flat, sorted entry
+// list. Each repo is isolated by a timeout; a failed or timed-out repo becomes a
+// single synthetic status:"error" entry so it never silently vanishes from the
+// snapshot. GIT_OPTIONAL_LOCKS=0 keeps fleet's read-only probes from contending
+// on index.lock with the agents editing in those repos.
+func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{}, perRepo time.Duration) []fleetEntryJSON {
+	out := make([][]fleetEntryJSON, len(repos))
+	var wg sync.WaitGroup
+	for i := range repos {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := repos[i]
+			rctx, cancel := context.WithTimeout(ctx, perRepo)
+			defer cancel()
+			runner := &git.ExecRunner{Dir: id.Root, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
+			entries, err := gatherFleetRepo(rctx, runner, id.Label, id.Root, sem)
+			if err != nil {
+				out[i] = []fleetEntryJSON{{
+					Repo:     id.Label,
+					RepoRoot: id.Root,
+					Path:     id.Root,
+					Status:   "error",
+					Error:    fleetGatherErr(err),
+				}}
+				return
+			}
+			out[i] = entries
+		}(i)
+	}
+	wg.Wait()
+
+	var all []fleetEntryJSON
+	for _, e := range out {
+		all = append(all, e...)
+	}
+	// repo_root groups, then current-first / by-branch within each repo — stable
+	// so the cursor does not jump between polls.
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].RepoRoot != all[j].RepoRoot {
+			return all[i].RepoRoot < all[j].RepoRoot
+		}
+		if all[i].Current != all[j].Current {
+			return all[i].Current
+		}
+		return all[i].Branch < all[j].Branch
+	})
+	return all
+}
+
+func fleetGatherErr(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 // enrichFleetEntry turns one worktree porcelain record into the full fleet
@@ -596,6 +789,14 @@ type fleetModel struct {
 	detail   bool
 	lastErr  error
 	quitting bool
+
+	// multi-repo mode (set by runFleetMultiTUI). entries hold every repo's
+	// worktrees; rows is the flattened group view; collapsed maps repo_root→folded.
+	multi     bool
+	repos     []repoIdent
+	sem       chan struct{}
+	collapsed map[string]bool
+	rows      []fleetRow
 }
 
 func (m fleetModel) Init() tea.Cmd {
@@ -613,6 +814,11 @@ func (m fleetModel) clockTickCmd() tea.Cmd {
 }
 
 func (m fleetModel) pollCmd() tea.Cmd {
+	if m.multi {
+		return func() tea.Msg {
+			return fleetDataMsg{entries: gatherFleetMulti(m.ctx, m.repos, m.sem, fleetRepoTimeout)}
+		}
+	}
 	return func() tea.Msg {
 		entries, err := gatherFleet(m.ctx, m.runner)
 		return fleetDataMsg{entries: entries, err: err}
@@ -633,7 +839,9 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastErr = nil
 			m.entries = msg.entries
-			if m.cursor >= len(m.entries) {
+			if m.multi {
+				m.rebuildRows()
+			} else if m.cursor >= len(m.entries) {
 				m.cursor = max(0, len(m.entries)-1)
 			}
 		}
@@ -647,15 +855,35 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "j", "down":
-			if m.cursor < len(m.entries)-1 {
+			limit := len(m.entries)
+			if m.multi {
+				limit = len(m.rows)
+			}
+			if m.cursor < limit-1 {
 				m.cursor++
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
+		case " ":
+			if m.multi {
+				m.toggleCursorRepo()
+			}
+		case "w":
+			if m.multi {
+				if path := m.cursorWatchTarget(); path != "" {
+					return m, m.watchCmd(path)
+				}
+			}
 		case "enter", "tab":
-			m.detail = !m.detail
+			if m.multi {
+				// Multi-repo: enter folds/unfolds the repo (detail panel is
+				// single-repo only for now).
+				m.toggleCursorRepo()
+			} else {
+				m.detail = !m.detail
+			}
 		case "r":
 			return m, m.pollCmd() // manual refresh now
 		}
@@ -669,20 +897,26 @@ func (m fleetModel) View() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
-	b.WriteString(renderFleet(fleetView{
-		entries: m.entries,
-		cursor:  m.cursor,
-		now:     m.now,
-		width:   m.width,
-		detail:  m.detail,
-	}))
+	footer := "j/k move · enter detail · r refresh · q quit · polling every %s"
+	if m.multi {
+		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width))
+		footer = "j/k move · space fold · w watch · r refresh · q quit · polling every %s"
+	} else {
+		b.WriteString(renderFleet(fleetView{
+			entries: m.entries,
+			cursor:  m.cursor,
+			now:     m.now,
+			width:   m.width,
+			detail:  m.detail,
+		}))
+	}
 	b.WriteString("\n")
 	if m.lastErr != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
 			Render("refresh failed: " + m.lastErr.Error()))
 		b.WriteString("\n")
 	}
-	b.WriteString(dim.Render(fmt.Sprintf("j/k move · enter detail · r refresh · q quit · polling every %s", m.interval)))
+	b.WriteString(dim.Render(fmt.Sprintf(footer, m.interval)))
 	return b.String()
 }
 

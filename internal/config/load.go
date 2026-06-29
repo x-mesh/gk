@@ -95,6 +95,7 @@ var reservedConfigSections = map[string]bool{
 	"worktree":  true,
 	"ai":        true,
 	"output":    true,
+	"fleet":     true,
 	"lang":      true,
 }
 

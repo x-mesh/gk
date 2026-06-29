@@ -119,10 +119,7 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0))
 			return nil
 		}
-		interval, _ := cmd.Flags().GetInt("interval")
-		if interval < 1 {
-			interval = 2
-		}
+		interval := resolveFleetInterval(cmd)
 		return runFleetMultiTUI(ctx, ids, sem, entries, time.Duration(interval)*time.Second)
 	}
 
@@ -145,10 +142,7 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	interval, _ := cmd.Flags().GetInt("interval")
-	if interval < 1 {
-		interval = 2
-	}
+	interval := resolveFleetInterval(cmd)
 	return runFleetTUI(ctx, runner, entries, time.Duration(interval)*time.Second)
 }
 
@@ -170,11 +164,12 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON,
 }
 
 // gatherFleetRepo enriches one repo's worktrees, tagging every entry with the
-// repo label/root. sem bounds concurrent enrich goroutines; it is shared with
-// the repo-level fan-out in multi-repo mode so repo×worktree git subprocesses
-// cannot all run at once. The repo-level fan-out itself is NOT gated on sem —
-// gating both levels on one semaphore would deadlock (repos holding every slot
-// while their worktrees wait for one).
+// repo label/root. sem bounds the per-worktree enrich goroutines — the bulk of
+// the git subprocesses — across every repo, so multi-repo mode does not spawn
+// repo×worktree enrichers at once. The repo-level fan-out and each repo's
+// one-shot `worktree list`/meta queries run outside sem; gating the repo level
+// on the same semaphore would deadlock (repos holding every slot while their
+// worktrees wait for one).
 func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root string, sem chan struct{}) ([]fleetEntryJSON, error) {
 	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -290,6 +285,24 @@ func currentRepoRoot(ctx context.Context) string {
 		return root
 	}
 	return ""
+}
+
+// resolveFleetInterval is the TUI poll interval: the --interval flag when the
+// user set it, else fleet.interval from config, else the 2s default.
+func resolveFleetInterval(cmd *cobra.Command) int {
+	if cmd.Flags().Changed("interval") {
+		if n, _ := cmd.Flags().GetInt("interval"); n >= 1 {
+			return n
+		}
+		return 1
+	}
+	if cfg, err := config.Load(nil); err == nil && cfg != nil && cfg.Fleet.Interval > 0 {
+		return cfg.Fleet.Interval
+	}
+	if n, _ := cmd.Flags().GetInt("interval"); n >= 1 {
+		return n
+	}
+	return 2
 }
 
 // gatherFleetMulti gathers several repos concurrently into one flat, sorted entry
@@ -513,6 +526,8 @@ func fleetStatus(f fleetEntryJSON) string {
 
 func fleetStatusColor(status string) lipgloss.Color {
 	switch status {
+	case "error":
+		return lipgloss.Color("196") // bright red — unreachable repo
 	case "conflict":
 		return lipgloss.Color("203") // red
 	case "paused":

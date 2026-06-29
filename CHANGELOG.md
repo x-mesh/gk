@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk session audit`와 `gk agents` PreToolUse 훅이 raw `git stash`를 인식해 `git-kit stash`로 안내한다.** 종전엔 stash 분류기가 없어 `git stash`가 `uncovered-raw-git` 갭으로 잘못 집계됐고 block 훅도 그냥 통과시켰다. 이제 `gitSegmentFinding`이 stash를 `raw-stash`(covered)로 분류하며 — 분류기·audit·훅이 공유하는 단일 소스(`hint.go`)라 한 번의 추가로 셋이 함께 개선된다 — `gitKitStashCovers`가 인자를 보고 git-kit stash가 실제 등록한 서브명령(`push`/`list`/`pop`/`apply`/`drop`, 인자 없는 bare 포함)만 covered로 잡고, 대응 verb가 없는 `show`/`clear`/`branch`/`create`/`store`는 갭으로 남긴다(`git checkout -- <file>` 제외와 동형). `git reset`·`git restore`는 gk의 같은 이름 verb가 "리모트로 리셋"·"dangling 작업 복원"이라 의미가 달라 의도적으로 매핑하지 않는다.
+
 ## [0.101.0] - 2026-06-29
 
 ### Changed

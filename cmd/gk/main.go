@@ -34,16 +34,19 @@ func main() {
 	}
 
 	if err := cli.Execute(); err != nil {
-		// Agent mode (GK_AGENT=1): failures are a machine contract —
-		// {ok:false, error:{code, message, remedies}} on stderr — so agent
-		// tooling branches on error.code instead of parsing prose. The
-		// exit code is unchanged either way.
-		if cli.AgentOut() {
-			fmt.Fprintln(os.Stderr, cli.FormatErrorJSON(err))
-		} else {
-			fmt.Fprintln(os.Stderr, cli.FormatError(err))
+		// A command may request a specific exit code (e.g. exit 3 for a paused
+		// state) after already rendering its own output — in that case main must
+		// not print an error envelope/prose on top. Otherwise: agent mode emits a
+		// machine-readable {ok:false, error:{...}} envelope, human mode the prose.
+		code, rendered := cli.ExitCodeFor(err)
+		if !rendered {
+			if cli.AgentOut() {
+				fmt.Fprintln(os.Stderr, cli.FormatErrorJSON(err))
+			} else {
+				fmt.Fprintln(os.Stderr, cli.FormatError(err))
+			}
 		}
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 

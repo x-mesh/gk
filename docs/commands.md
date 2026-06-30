@@ -437,7 +437,7 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 
 With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
 
-`gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Two modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`) and **block** (`--mode block` — covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.)
+`gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Two modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`) and **block** (`--mode block` — covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.) Beyond the single-command mapping, the handler reads the live session transcript (Claude passes its path on stdin) and, when the pending command continues a recent same-group raw run, adds a real-time **collapse nudge** — fold it and the prior call(s) into one git-kit call — the prevention companion to [`gk session audit --metric=turns`](#turn-reduction-metric---metricturns).
 
 ## gk hint
 
@@ -499,6 +499,34 @@ hits that already have a git-kit path, i.e. pure habit leaks), and
 is not dragged down by plumbing that git-kit never intends to wrap). Rerun the
 audit over time and watch `rate` climb and `covered_raw_hits` fall to track
 whether guidance changes are landing.
+
+### Turn-reduction metric (`--metric=turns`)
+
+The occurrence counts above measure *how often* raw git appears; `--metric=turns`
+(or `both`) measures what git-kit actually exists for — *turns saved*. Turn
+reduction only happens when raw git is split across separate tool calls (turns):
+`git status`, then `git log`, then `git diff` in three turns collapses to one
+`gk context` (2 turns saved), whereas the same three in one `git status && git
+log && git diff` chain is already one turn (0 saved). The turn metric derives a
+real turn boundary per source — a Claude assistant message id, a Codex
+`function_call` batch (parallel calls share a turn) — then finds local
+`collapsible run`s of same-group raw git across adjacent turns and reports
+`estimated_turns_saved`, a per-gk-call breakdown, and `adoption`-style `rate`.
+Failed-then-retried calls (`is_error`), different repos, and the same verb aimed
+at different objects (`git show A` then `git show B` — paging) are not collapsed.
+
+```bash
+gk session audit --metric=turns          # add the turn view to the report
+gk session audit --metric=turns --viz    # draw collapsible runs as a turn-graph (●─●)
+gk session audit --metric=turns --record # append this run to ~/.gk/audit-history.jsonl
+gk session audit --trend                 # show the saved-turns trend (sparkline) from recorded runs
+```
+
+`--record` and `--trend` both imply `--metric=turns`. The metric is opt-in and
+additive: without `--metric` the occurrence output and JSON schema are
+unchanged. The same turn classification powers a real-time nudge in
+[`gk agents hook`](#gk-agents-hook): when a pending raw git command continues a
+recent raw run, the PreToolUse hook suggests folding them into one git-kit call.
 
 Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
 envelope.

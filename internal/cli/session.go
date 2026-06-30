@@ -50,7 +50,7 @@ standard machine-readable envelope.`,
 		RunE: runSessionAudit,
 	}
 	auditCmd.Flags().Int("max-files", 200, "maximum newest JSONL session files to scan")
-	auditCmd.Flags().String("metric", "occurrences", "metric to compute: occurrences | turns | both (turns is Claude-only)")
+	auditCmd.Flags().String("metric", "occurrences", "metric to compute: occurrences | turns | both (turns spans Claude + Codex sessions)")
 	auditCmd.Flags().Bool("viz", false, "with --metric=turns, draw an ASCII turn-graph of collapsible runs")
 	auditCmd.Flags().Bool("record", false, "append this run's turn-reduction metric to the history log (implies --metric=turns)")
 	auditCmd.Flags().Bool("trend", false, "show the turn-reduction trend from recorded runs (implies --metric=turns)")

@@ -178,8 +178,8 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 	}
 
 	if tm := report.Turns; tm != nil {
-		fmt.Fprintf(w, "turn reduction: ~%d of %d git turns saveable (%.1f%%) by collapsing raw runs into one gk call — Claude sessions\n",
-			tm.EstimatedTurnsSaved, tm.GitTurns, tm.Rate*100)
+		fmt.Fprintf(w, "turn reduction: ~%d of %d git turns saveable (%.1f%%) by collapsing raw runs into one gk call [%s]\n",
+			tm.EstimatedTurnsSaved, tm.GitTurns, tm.Rate*100, tm.Source)
 		if len(tm.ByGroup) > 0 {
 			fmt.Fprintf(w, "  most turns saved by: %s\n", formatSubcommandBreakdown(tm.ByGroup))
 		}

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +51,9 @@ standard machine-readable envelope.`,
 	}
 	auditCmd.Flags().Int("max-files", 200, "maximum newest JSONL session files to scan")
 	auditCmd.Flags().String("metric", "occurrences", "metric to compute: occurrences | turns | both (turns is Claude-only)")
+	auditCmd.Flags().Bool("viz", false, "with --metric=turns, draw an ASCII turn-graph of collapsible runs")
+	auditCmd.Flags().Bool("record", false, "append this run's turn-reduction metric to the history log (implies --metric=turns)")
+	auditCmd.Flags().Bool("trend", false, "show the turn-reduction trend from recorded runs (implies --metric=turns)")
 	sessionCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(sessionCmd)
 }
@@ -56,6 +61,14 @@ standard machine-readable envelope.`,
 func runSessionAudit(cmd *cobra.Command, args []string) error {
 	maxFiles, _ := cmd.Flags().GetInt("max-files")
 	metric, _ := cmd.Flags().GetString("metric")
+	record, _ := cmd.Flags().GetBool("record")
+	trend, _ := cmd.Flags().GetBool("trend")
+	viz, _ := cmd.Flags().GetBool("viz")
+	// Recording and the trend view both need the turn metric — opt in for the user.
+	if (record || trend) && metric != "turns" && metric != "both" {
+		metric = "turns"
+	}
+
 	report, err := sessionaudit.Audit(sessionaudit.Options{
 		Paths:    args,
 		MaxFiles: maxFiles,
@@ -64,11 +77,90 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	home, _ := os.UserHomeDir()
+	if record && report.Turns != nil && home != "" {
+		entry := sessionaudit.HistoryEntry{
+			Timestamp:           time.Now().UTC().Format(time.RFC3339),
+			Files:               report.Totals.Files,
+			GitTurns:            report.Turns.GitTurns,
+			EstimatedTurnsSaved: report.Turns.EstimatedTurnsSaved,
+			Rate:                report.Turns.Rate,
+			AdoptionRate:        report.Adoption.Rate,
+			ByGroup:             report.Turns.ByGroup,
+		}
+		if werr := sessionaudit.AppendHistory(sessionaudit.HistoryPath(home), entry); werr != nil {
+			report.Notes = append(report.Notes, fmt.Sprintf("record: %v", werr))
+		}
+	}
+
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), report)
 	}
 	renderSessionAudit(cmd.OutOrStdout(), report)
+	if viz && report.Turns != nil {
+		renderTurnGraph(cmd.OutOrStdout(), report.Turns.Runs)
+	}
+	if trend && home != "" {
+		entries, rerr := sessionaudit.ReadHistory(sessionaudit.HistoryPath(home))
+		if rerr != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "trend: %v\n", rerr)
+		} else {
+			renderTrend(cmd.OutOrStdout(), entries, 10)
+		}
+	}
 	return nil
+}
+
+// renderTrend prints the most recent recorded runs and a sparkline of saveable
+// turns, so a human can see whether turn-reduction adoption is improving.
+func renderTrend(w io.Writer, entries []sessionaudit.HistoryEntry, limit int) {
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "turn-reduction trend: no recorded runs yet (run with --record)")
+		return
+	}
+	if limit > 0 && len(entries) > limit {
+		entries = entries[len(entries)-limit:]
+	}
+	fmt.Fprintf(w, "turn-reduction trend (last %d run(s)):\n", len(entries))
+	saved := make([]float64, len(entries))
+	for i, e := range entries {
+		saved[i] = float64(e.EstimatedTurnsSaved)
+		fmt.Fprintf(w, "  %s  saved %d/%d (%.1f%%)  adoption %.1f%%\n",
+			e.Timestamp, e.EstimatedTurnsSaved, e.GitTurns, e.Rate*100, e.AdoptionRate*100)
+	}
+	fmt.Fprintf(w, "  saveable turns: %s\n", sessionaudit.Sparkline(saved))
+}
+
+// renderTurnGraph draws each collapsible run as a row of turn dots, so a human
+// can see at a glance which spans of raw git turns one git-kit call would
+// replace. Empty when no run actually saves a turn.
+func renderTurnGraph(w io.Writer, runs []sessionaudit.CollapsibleRun) {
+	groupW := 0
+	shown := 0
+	for _, r := range runs {
+		if r.TurnsSaved > 0 {
+			shown++
+			if len(r.Group) > groupW {
+				groupW = len(r.Group)
+			}
+		}
+	}
+	if shown == 0 {
+		return
+	}
+	fmt.Fprintln(w, "turn graph (collapsible runs, ● = one turn):")
+	for _, r := range runs {
+		if r.TurnsSaved <= 0 {
+			continue
+		}
+		dots := make([]string, len(r.Turns))
+		for i := range dots {
+			dots[i] = "●"
+		}
+		fmt.Fprintf(w, "  %-*s %s  turns %s → %s (saves %d)\n",
+			groupW, r.Group, strings.Join(dots, "─"), formatTurnList(r.Turns), r.GkCommand, r.TurnsSaved)
+	}
 }
 
 func renderSessionAudit(w io.Writer, report sessionaudit.Report) {

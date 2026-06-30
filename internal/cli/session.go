@@ -48,15 +48,18 @@ standard machine-readable envelope.`,
 		RunE: runSessionAudit,
 	}
 	auditCmd.Flags().Int("max-files", 200, "maximum newest JSONL session files to scan")
+	auditCmd.Flags().String("metric", "occurrences", "metric to compute: occurrences | turns | both (turns is Claude-only)")
 	sessionCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(sessionCmd)
 }
 
 func runSessionAudit(cmd *cobra.Command, args []string) error {
 	maxFiles, _ := cmd.Flags().GetInt("max-files")
+	metric, _ := cmd.Flags().GetString("metric")
 	report, err := sessionaudit.Audit(sessionaudit.Options{
 		Paths:    args,
 		MaxFiles: maxFiles,
+		Metric:   metric,
 	})
 	if err != nil {
 		return err
@@ -80,6 +83,22 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 			line += fmt.Sprintf("; %d had none (see uncovered-raw-git)", a.UncoveredRawHits)
 		}
 		fmt.Fprintln(w, line)
+	}
+
+	if tm := report.Turns; tm != nil {
+		fmt.Fprintf(w, "turn reduction: ~%d of %d git turns saveable (%.1f%%) by collapsing raw runs into one gk call — Claude sessions\n",
+			tm.EstimatedTurnsSaved, tm.GitTurns, tm.Rate*100)
+		if len(tm.ByGroup) > 0 {
+			fmt.Fprintf(w, "  most turns saved by: %s\n", formatSubcommandBreakdown(tm.ByGroup))
+		}
+		for _, r := range tm.Runs {
+			if r.TurnsSaved <= 0 {
+				continue
+			}
+			fmt.Fprintf(w, "  e.g. turns %s → %s (saves %d)\n",
+				formatTurnList(r.Turns), r.GkCommand, r.TurnsSaved)
+			break
+		}
 	}
 
 	if len(report.Findings) == 0 {
@@ -139,6 +158,15 @@ func formatSubcommandBreakdown(counts map[string]int) string {
 	parts := make([]string, len(subs))
 	for i, s := range subs {
 		parts[i] = fmt.Sprintf("%s x%d", s, counts[s])
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatTurnList renders a run's turn indices as "1, 2, 5".
+func formatTurnList(turns []int) string {
+	parts := make([]string, len(turns))
+	for i, t := range turns {
+		parts[i] = fmt.Sprintf("%d", t)
 	}
 	return strings.Join(parts, ", ")
 }

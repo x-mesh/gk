@@ -22,6 +22,10 @@ type Options struct {
 	Paths    []string
 	Home     string
 	MaxFiles int
+	// Metric selects which view to compute: "occurrences" (default) keeps the
+	// historical output; "turns" / "both" additionally compute the turn-reduction
+	// metric over Claude sessions. Unknown/empty == "occurrences".
+	Metric string
 }
 
 type Report struct {
@@ -30,7 +34,16 @@ type Report struct {
 	Totals   Totals       `json:"totals"`
 	Adoption Adoption     `json:"adoption"`
 	Findings []Finding    `json:"findings,omitempty"`
-	Notes    []string     `json:"notes,omitempty"`
+	// Turns is the turn-reduction metric, present only when Options.Metric
+	// requested it. Additive: existing consumers reading the fields above are
+	// unaffected.
+	Turns *TurnMetrics `json:"turns,omitempty"`
+	Notes []string     `json:"notes,omitempty"`
+}
+
+// turnsRequested reports whether the turn-reduction metric should be computed.
+func turnsRequested(metric string) bool {
+	return metric == "turns" || metric == "both"
 }
 
 // Adoption tracks how often agents reach for git-kit versus raw git across the
@@ -268,6 +281,14 @@ func Audit(opts Options) (Report, error) {
 	files, notes := collectFiles(expanded, opts.MaxFiles)
 	report := Report{Schema: 1, Notes: notes}
 	aggregate := map[string]*Finding{}
+
+	wantTurns := turnsRequested(opts.Metric)
+	var turns *TurnMetrics
+	skippedNonClaude := 0
+	if wantTurns {
+		turns = &TurnMetrics{Source: "claude", ByGroup: map[string]int{}}
+	}
+
 	for _, fc := range files {
 		fr, commands, err := auditFile(fc.path)
 		if err != nil {
@@ -283,9 +304,45 @@ func Audit(opts Options) (Report, error) {
 		report.Totals.GKShort += fr.GKShort
 		report.Totals.ShellChains += fr.ShellChains
 		addFindings(aggregate, fc.path, commands)
+
+		if wantTurns {
+			// Codex gate: the turn model needs the Claude message-id boundary and
+			// tool_use/tool_result join, so non-Claude sessions are excluded until
+			// a completion=turn adapter lands (plan v1.1 Phase 4).
+			if fr.Source != "claude" {
+				skippedNonClaude++
+				continue
+			}
+			data, rerr := os.ReadFile(fc.path)
+			if rerr != nil {
+				report.Notes = append(report.Notes, fmt.Sprintf("%s: %v", fc.path, rerr))
+				continue
+			}
+			gitTurns, runs := turnContribution(data)
+			turns.GitTurns += gitTurns
+			for _, r := range runs {
+				turns.EstimatedTurnsSaved += r.TurnsSaved
+				turns.ByGroup[r.Group] += r.TurnsSaved
+				turns.Runs = append(turns.Runs, r)
+			}
+		}
 	}
 	report.Findings = sortedFindings(aggregate)
 	report.Adoption = computeAdoption(report.Totals, report.Findings)
+
+	if wantTurns {
+		if turns.GitTurns > 0 {
+			turns.Rate = float64(turns.EstimatedTurnsSaved) / float64(turns.GitTurns)
+		}
+		sortRunsBySaved(turns.Runs)
+		if len(turns.Runs) > maxTurnRuns {
+			turns.Runs = turns.Runs[:maxTurnRuns]
+		}
+		if skippedNonClaude > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("turn metric: Claude sessions only (%d non-Claude session(s) excluded)", skippedNonClaude))
+		}
+		report.Turns = turns
+	}
 	return report, nil
 }
 

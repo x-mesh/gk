@@ -44,7 +44,7 @@ func TestSessionTurns_SequentialMessagesAreDistinctTurns(t *testing.T) {
 	if turns[0] == turns[1] || turns[1] == turns[2] || turns[0] == turns[2] {
 		t.Fatalf("sequential commands must be distinct turns, got %v", turns)
 	}
-	if !(turns[0] < turns[1] && turns[1] < turns[2]) {
+	if turns[0] >= turns[1] || turns[1] >= turns[2] {
 		t.Fatalf("turns must follow execution order, got %v", turns)
 	}
 }

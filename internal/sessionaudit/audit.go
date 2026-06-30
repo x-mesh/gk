@@ -210,6 +210,20 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit diff --check --json so whitespace/conflict-marker checks stay in the git-kit JSON contract.",
 		coveredBy:      []string{"git-kit diff --check", "git-kit diff --check --json"},
 	},
+	"raw-clone": {
+		kind:           "raw-clone",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit clone (short-form URL expansion) instead of raw git clone.",
+		coveredBy:      []string{"git-kit clone"},
+	},
+	"raw-forget": {
+		kind:           "raw-forget",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit forget to remove paths from history instead of raw git filter-repo.",
+		coveredBy:      []string{"git-kit forget"},
+	},
 	"gk-short-alias": {
 		kind:           "gk-short-alias",
 		severity:       "medium",
@@ -1062,6 +1076,10 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-branch-switch"
 	case isRawWorktree(subcmd):
 		return "raw-worktree"
+	case subcmd == "clone":
+		return "raw-clone"
+	case subcmd == "filter-repo":
+		return "raw-forget"
 	case subcmd == "stash" && gitKitStashCovers(args):
 		return "raw-stash"
 	case subcmd == "diff" && hasArg(args, "--check"):

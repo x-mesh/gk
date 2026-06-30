@@ -279,6 +279,38 @@ func TestAudit_PromotesBranchSwitchAndWorktree(t *testing.T) {
 	}
 }
 
+func TestAudit_CloneAndFilterRepoAreCovered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git clone https://github.com/x/y\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git filter-repo --path secrets.txt --invert-paths\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clone := findingByKind(report, "raw-clone")
+	if clone == nil || clone.Status != "covered" || !containsString(clone.CoveredBy, "git-kit clone") {
+		t.Fatalf("git clone should be covered by git-kit clone, got %+v", clone)
+	}
+	forget := findingByKind(report, "raw-forget")
+	if forget == nil || forget.Status != "covered" || !containsString(forget.CoveredBy, "git-kit forget") {
+		t.Fatalf("git filter-repo should be covered by git-kit forget, got %+v", forget)
+	}
+	// They must no longer pollute the uncovered-raw-git roadmap gap.
+	if gap := findingByKind(report, "uncovered-raw-git"); gap != nil {
+		if _, ok := gap.Subcommands["clone"]; ok {
+			t.Errorf("clone must not appear in the gap: %v", gap.Subcommands)
+		}
+		if _, ok := gap.Subcommands["filter-repo"]; ok {
+			t.Errorf("filter-repo must not appear in the gap: %v", gap.Subcommands)
+		}
+	}
+}
+
 func writeLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

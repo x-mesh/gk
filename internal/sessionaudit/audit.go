@@ -284,9 +284,9 @@ func Audit(opts Options) (Report, error) {
 
 	wantTurns := turnsRequested(opts.Metric)
 	var turns *TurnMetrics
-	skippedNonClaude := 0
+	skippedUnknown := 0
 	if wantTurns {
-		turns = &TurnMetrics{Source: "claude", ByGroup: map[string]int{}}
+		turns = &TurnMetrics{Source: "claude,codex", ByGroup: map[string]int{}}
 	}
 
 	for _, fc := range files {
@@ -306,19 +306,24 @@ func Audit(opts Options) (Report, error) {
 		addFindings(aggregate, fc.path, commands)
 
 		if wantTurns {
-			// Codex gate: the turn model needs the Claude message-id boundary and
-			// tool_use/tool_result join, so non-Claude sessions are excluded until
-			// a completion=turn adapter lands (plan v1.1 Phase 4).
-			if fr.Source != "claude" {
-				skippedNonClaude++
-				continue
-			}
+			// The turn model needs a per-source shape: Claude's message-id batch or
+			// Codex's function_call batch. Sources with neither are skipped.
 			data, rerr := os.ReadFile(fc.path)
 			if rerr != nil {
 				report.Notes = append(report.Notes, fmt.Sprintf("%s: %v", fc.path, rerr))
 				continue
 			}
-			gitTurns, runs := turnContribution(data)
+			var events []TurnEvent
+			switch fr.Source {
+			case "claude":
+				events = SessionTurns(data)
+			case "codex":
+				events = CodexSessionTurns(data)
+			default:
+				skippedUnknown++
+				continue
+			}
+			gitTurns, runs := turnEventsContribution(events)
 			turns.GitTurns += gitTurns
 			for _, r := range runs {
 				turns.EstimatedTurnsSaved += r.TurnsSaved
@@ -338,8 +343,8 @@ func Audit(opts Options) (Report, error) {
 		if len(turns.Runs) > maxTurnRuns {
 			turns.Runs = turns.Runs[:maxTurnRuns]
 		}
-		if skippedNonClaude > 0 {
-			report.Notes = append(report.Notes, fmt.Sprintf("turn metric: Claude sessions only (%d non-Claude session(s) excluded)", skippedNonClaude))
+		if skippedUnknown > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("turn metric: Claude + Codex sessions (%d session(s) of unknown shape excluded)", skippedUnknown))
 		}
 		report.Turns = turns
 	}

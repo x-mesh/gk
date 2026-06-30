@@ -3,6 +3,7 @@ package sessionaudit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -149,11 +150,56 @@ func TestCollapse_RepeatedIdenticalProbeCollapses(t *testing.T) {
 	}
 }
 
-// The turn metric is opt-in and additive: default Audit leaves Turns nil and
-// every occurrence field unchanged; --metric=turns adds the turn view.
-func TestAudit_TurnMetricOptInAndCodexGated(t *testing.T) {
+func TestCollapseNudgeFor(t *testing.T) {
+	recent := SessionTurns(session(
+		asst("m1", "t1", "git status"),
+		asst("m2", "t2", "git log --oneline -5"),
+	))
+	lookback := collapseMaxGap + 1
+
+	// Pending `git diff --stat` continues the context run → nudge to gk context.
+	if n := CollapseNudgeFor("git diff --stat", recent, lookback); n == nil || n.Group != "context" || n.GkCommand != "git-kit context" {
+		t.Fatalf("expected context nudge, got %+v", n)
+	}
+	// A pending non-git command does not nudge.
+	if n := CollapseNudgeFor("ls -la", recent, lookback); n != nil {
+		t.Fatalf("non-git must not nudge, got %+v", n)
+	}
+	// A different group (commit) with no recent commit turn does not nudge.
+	if n := CollapseNudgeFor("git commit -m x", recent, lookback); n != nil {
+		t.Fatalf("no recent commit run → no nudge, got %+v", n)
+	}
+}
+
+func TestCollapseNudgeFor_RepoAndPagingGuards(t *testing.T) {
+	lookback := collapseMaxGap + 1
+
+	// Different repo → no nudge.
+	recent := SessionTurns(session(asst("m1", "t1", "cd /a && git status")))
+	if n := CollapseNudgeFor("cd /b && git log", recent, lookback); n != nil {
+		t.Fatalf("cross-repo must not nudge, got %+v", n)
+	}
+	// Same verb, different target (paging) → no nudge.
+	recent = SessionTurns(session(asst("m1", "t1", "git show abc -- a.go")))
+	if n := CollapseNudgeFor("git show def -- b.go", recent, lookback); n != nil {
+		t.Fatalf("paging different targets must not nudge, got %+v", n)
+	}
+}
+
+func codexExec(callID, cmd string) string {
+	return `{"payload":{"type":"function_call","name":"exec_command","call_id":"` + callID +
+		`","arguments":"{\"cmd\":\"` + cmd + `\",\"workdir\":\"/w\"}"}}`
+}
+
+func codexOut(callID string) string {
+	return `{"payload":{"type":"function_call_output","call_id":"` + callID + `","output":"Process exited with code 0"}}`
+}
+
+// The turn metric is opt-in and additive (default Turns nil, occurrence fields
+// unchanged) and now spans both Claude and Codex sessions.
+func TestAudit_TurnMetricOptInAndBothSources(t *testing.T) {
 	dir := t.TempDir()
-	// The source classifier reads "claude" from a "/.claude/" path segment.
+	// The source classifier reads "claude"/"codex" from the path segment.
 	claudeDir := filepath.Join(dir, ".claude", "projects")
 	codexDir := filepath.Join(dir, ".codex", "sessions")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
@@ -170,9 +216,12 @@ func TestAudit_TurnMetricOptInAndCodexGated(t *testing.T) {
 	), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A Codex session must be excluded from the turn metric.
+	// Codex: two function_call batches, each a git status → 2 turns, collapse 1.
 	codex := filepath.Join(codexDir, "c.jsonl")
-	if err := os.WriteFile(codex, []byte(`{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(codex, []byte(strings.Join([]string{
+		codexExec("c1", "git status"), codexOut("c1"),
+		codexExec("c2", "git status"), codexOut("c2"),
+	}, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +234,6 @@ func TestAudit_TurnMetricOptInAndCodexGated(t *testing.T) {
 		t.Fatalf("default Audit must not compute Turns, got %+v", base.Turns)
 	}
 
-	// Opt-in: turn metric present, 3 context probes across 3 turns → 2 saved.
 	got, err := Audit(Options{Paths: []string{claude, codex}, Home: dir, MaxFiles: 10, Metric: "turns"})
 	if err != nil {
 		t.Fatal(err)
@@ -193,15 +241,49 @@ func TestAudit_TurnMetricOptInAndCodexGated(t *testing.T) {
 	if got.Turns == nil {
 		t.Fatal("--metric=turns must populate Turns")
 	}
-	if got.Turns.EstimatedTurnsSaved != 2 {
-		t.Fatalf("estimated turns saved = %d, want 2: %+v", got.Turns.EstimatedTurnsSaved, got.Turns)
+	// Claude 3-context run saves 2; Codex 2-turn status run saves 1.
+	if got.Turns.EstimatedTurnsSaved != 3 {
+		t.Fatalf("estimated turns saved = %d, want 3: %+v", got.Turns.EstimatedTurnsSaved, got.Turns)
 	}
-	if got.Turns.GitTurns != 3 {
-		t.Fatalf("git turns = %d, want 3 (Codex excluded)", got.Turns.GitTurns)
+	// 3 Claude git turns + 2 Codex git turns.
+	if got.Turns.GitTurns != 5 {
+		t.Fatalf("git turns = %d, want 5 (Claude 3 + Codex 2)", got.Turns.GitTurns)
 	}
 	// Occurrence fields must match the default run exactly (additive only).
 	if got.Adoption != base.Adoption || got.Totals != base.Totals {
 		t.Fatalf("turn metric changed occurrence output:\n base=%+v %+v\n got=%+v %+v", base.Adoption, base.Totals, got.Adoption, got.Totals)
+	}
+}
+
+// CodexSessionTurns: a function_call batch is one turn, parallel calls share it,
+// workdir is the repo, and the exit code in the output drives IsError.
+func TestCodexSessionTurns(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		codexExec("c1", "git status"), // batch 1
+		codexExec("c2", "git log"),    // same batch → same turn (no output yet)
+		codexOut("c1"), codexOut("c2"),
+		codexExec("c3", "git diff"), // batch 2 → new turn
+		`{"payload":{"type":"function_call_output","call_id":"c3","output":"Process exited with code 1"}}`,
+	}, "\n") + "\n")
+
+	events := CodexSessionTurns(data)
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %+v", len(events), events)
+	}
+	if events[0].Turn != events[1].Turn {
+		t.Errorf("calls in one batch must share a turn, got %d and %d", events[0].Turn, events[1].Turn)
+	}
+	if events[2].Turn == events[0].Turn {
+		t.Errorf("a new batch must be a new turn")
+	}
+	if events[0].Repo != "/w" {
+		t.Errorf("repo from workdir = %q, want /w", events[0].Repo)
+	}
+	if events[0].IsError {
+		t.Errorf("c1 exited 0, should not be error")
+	}
+	if !events[2].IsError {
+		t.Errorf("c3 exited 1, should be error")
 	}
 }
 

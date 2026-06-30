@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,6 +42,33 @@ func TestAgentsHookRun_Decisions(t *testing.T) {
 	}
 	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "git-kit commit") {
 		t.Errorf("warn context missing suggestion: %s", out)
+	}
+}
+
+func TestAgentsHookRun_CollapseNudge(t *testing.T) {
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	content := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}`,
+		`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git log --oneline -5"}}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(tp, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pending git diff --stat continues the recent context run → warn-mode defer
+	// carries the real-time collapse nudge alongside the single-command hint.
+	stdin := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git diff --stat"}}`, tp)
+	out := hookRunOutput(t, stdin, true)
+	ctx := gjson.Get(out, "hookSpecificOutput.additionalContext").String()
+	if !strings.Contains(ctx, "fold it and this one") || !strings.Contains(ctx, "git-kit context") {
+		t.Errorf("expected collapse nudge in additionalContext, got: %s", out)
+	}
+
+	// A command with no recent same-group turn gets no collapse nudge.
+	stdin = fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git worktree list"}}`, tp)
+	out = hookRunOutput(t, stdin, true)
+	if strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "fold it and this one") {
+		t.Errorf("unrelated command must not get a collapse nudge: %s", out)
 	}
 }
 

@@ -108,14 +108,83 @@ func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	res := sessionaudit.Hint(command)
+	nudge := collapseNudgeFromHook(data, command)
 	if !res.Covered {
+		// Not a single-command miss, but the command may still continue a recent
+		// raw run that one git-kit call would have folded — advisory only, never
+		// deny on a collapse signal alone.
+		if nudge != nil {
+			return emitHookDecision(cmd.OutOrStdout(), "defer", "", collapseMessage(nudge))
+		}
 		return nil // defer to the normal permission flow
 	}
 	msg := hookMessage(res)
+	if nudge != nil {
+		msg += " " + collapseMessage(nudge)
+	}
 	if warn {
 		return emitHookDecision(cmd.OutOrStdout(), "defer", "", msg)
 	}
 	return emitHookDecision(cmd.OutOrStdout(), "deny", msg, "")
+}
+
+// hookTranscriptTail bounds how much of the live transcript the nudge reads:
+// only the recent tail matters, and the hook fires on every Bash call, so it
+// must stay cheap on a multi-megabyte session log.
+const hookTranscriptTail = 256 * 1024
+
+// collapseNudgeFromHook reads the recent tail of the live session transcript
+// (Claude passes its path on stdin) and reports whether the pending command
+// continues a recent same-group raw run. Fail-open: any problem → no nudge.
+func collapseNudgeFromHook(stdin []byte, command string) *sessionaudit.CollapseNudge {
+	tp := strings.TrimSpace(gjson.GetBytes(stdin, "transcript_path").String())
+	if tp == "" {
+		return nil
+	}
+	tail, err := tailFile(tp, hookTranscriptTail)
+	if err != nil {
+		return nil
+	}
+	recent := sessionaudit.SessionTurns(tail)
+	return sessionaudit.CollapseNudgeFor(command, recent, sessionaudit.CollapseLookback)
+}
+
+// collapseMessage phrases the real-time nudge for the agent.
+func collapseMessage(n *sessionaudit.CollapseNudge) string {
+	turns := "the last turn"
+	if n.PriorTurns > 1 {
+		turns = fmt.Sprintf("the last %d turns", n.PriorTurns)
+	}
+	return fmt.Sprintf("You ran a raw %s command in %s — fold it and this one into a single %s call to save a turn.",
+		n.Group, turns, n.GkCommand)
+}
+
+// tailFile returns up to the last n bytes of a file, dropping a partial leading
+// line so the result is whole JSONL records.
+func tailFile(path string, n int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	start := int64(0)
+	if fi.Size() > n {
+		start = fi.Size() - n
+	}
+	buf := make([]byte, fi.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return nil, err
+	}
+	if start > 0 {
+		if i := strings.IndexByte(string(buf), '\n'); i >= 0 {
+			buf = buf[i+1:]
+		}
+	}
+	return buf, nil
 }
 
 func hookMessage(res sessionaudit.HintResult) string {

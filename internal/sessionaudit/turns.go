@@ -107,6 +107,98 @@ func SessionTurns(data []byte) []TurnEvent {
 	return events
 }
 
+// codexRecord is the minimal slice of a Codex rollout JSONL record the turn
+// model needs. Codex batches a model turn as consecutive function_call records
+// terminated by their function_call_output records — the same shape as a
+// Claude assistant message's parallel tool calls, so one batch is one turn.
+type codexRecord struct {
+	Payload struct {
+		Type      string `json:"type"`      // function_call | function_call_output | ...
+		Name      string `json:"name"`      // exec_command for shell calls
+		Arguments string `json:"arguments"` // JSON string: {"cmd","workdir",...}
+		CallID    string `json:"call_id"`
+		Output    string `json:"output"` // function_call_output text (carries exit code)
+	} `json:"payload"`
+}
+
+type codexArgs struct {
+	Cmd     string `json:"cmd"`
+	Workdir string `json:"workdir"`
+}
+
+// CodexSessionTurns parses one Codex rollout's JSONL into ordered shell-command
+// turn events. A turn is a maximal run of consecutive function_call records (one
+// model turn issues a batch, then all outputs return), so parallel calls share a
+// turn exactly like Claude's message-id grouping. workdir gives the repo scope
+// directly; the exit code embedded in the matching output gives IsError.
+func CodexSessionTurns(data []byte) []TurnEvent {
+	var records []codexRecord
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec codexRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		records = append(records, rec)
+	}
+
+	// Pass 1: join call_id -> did the command exit non-zero.
+	errByID := map[string]bool{}
+	for _, rec := range records {
+		if rec.Payload.Type == "function_call_output" && rec.Payload.CallID != "" {
+			errByID[rec.Payload.CallID] = codexOutputErrored(rec.Payload.Output)
+		}
+	}
+
+	// Pass 2: assign a turn per function_call batch.
+	var events []TurnEvent
+	turn := -1
+	inBatch := false
+	for _, rec := range records {
+		switch rec.Payload.Type {
+		case "function_call":
+			if !inBatch {
+				turn++
+				inBatch = true
+			}
+			if rec.Payload.Name != "exec_command" {
+				continue
+			}
+			var a codexArgs
+			if err := json.Unmarshal([]byte(rec.Payload.Arguments), &a); err != nil || strings.TrimSpace(a.Cmd) == "" {
+				continue
+			}
+			repo := a.Workdir
+			if repo == "" {
+				repo = repoScope(a.Cmd)
+			}
+			events = append(events, TurnEvent{
+				Cmd:       a.Cmd,
+				Turn:      turn,
+				ToolUseID: rec.Payload.CallID,
+				IsError:   errByID[rec.Payload.CallID],
+				Repo:      repo,
+			})
+		case "function_call_output":
+			inBatch = false
+		}
+	}
+	return events
+}
+
+// codexOutputErrored best-effort reads the exit code Codex embeds in a
+// function_call_output ("Process exited with code N"). Unknown → not errored.
+func codexOutputErrored(output string) bool {
+	_, rest, found := strings.Cut(output, "exited with code ")
+	if !found {
+		return false
+	}
+	return !strings.HasPrefix(rest, "0")
+}
+
 type toolUseBlock struct {
 	ID    string
 	Input json.RawMessage

@@ -12,6 +12,10 @@ import (
 // far-apart probes as separate (non-collapsible) uses.
 const collapseMaxGap = 1
 
+// CollapseLookback is the default number of recent distinct turns the real-time
+// nudge (CollapseNudgeFor) inspects — the same locality the batch detector uses.
+const CollapseLookback = collapseMaxGap + 1
+
 // collapseGroupForKind maps a covered finding kind to the single git-kit call
 // that absorbs a run of those raw commands. gitSegmentFinding stays the one
 // classifier; this is the thin projection from "what is it" to "what one gk
@@ -193,11 +197,11 @@ type TurnMetrics struct {
 	Runs                []CollapsibleRun `json:"runs,omitempty"`
 }
 
-// turnContribution computes one Claude session's distinct git-turn count and its
-// collapsible runs. Git turns are the denominator for the rate: a turn counts
-// once no matter how many git commands it ran.
-func turnContribution(data []byte) (gitTurns int, runs []CollapsibleRun) {
-	events := SessionTurns(data)
+// turnEventsContribution computes one session's distinct git-turn count and its
+// collapsible runs from already-parsed turn events. Git turns are the
+// denominator for the rate: a turn counts once no matter how many git commands
+// it ran.
+func turnEventsContribution(events []TurnEvent) (gitTurns int, runs []CollapsibleRun) {
 	seenTurn := map[int]bool{}
 	for _, ev := range events {
 		if seenTurn[ev.Turn] {
@@ -223,6 +227,89 @@ func sortRunsBySaved(runs []CollapsibleRun) {
 		}
 		return len(runs[i].Turns) > 0 && len(runs[j].Turns) > 0 && runs[i].Turns[0] < runs[j].Turns[0]
 	})
+}
+
+// CollapseNudge is a real-time opportunity: the pending command continues a
+// raw-git run the agent already started in a recent turn, so one git-kit call
+// would have covered both. It is what turns the audit's after-the-fact measure
+// into prevention at the PreToolUse hook.
+type CollapseNudge struct {
+	Group      string   // the collapse group both share, e.g. "context"
+	GkCommand  string   // the single git-kit call that covers the run
+	PriorTurns int      // how many recent turns already ran this group
+	Recent     []string // the recent commands, for the message
+}
+
+// CollapseNudgeFor reports whether running `current` continues a same-group raw
+// run from the last `lookback` distinct turns of recent — i.e. the agent could
+// have folded them into one git-kit call. recent is oldest→newest. It honors
+// the same repo and paging guards as the batch detector, so a different repo or
+// a different inspection target (git show A then B) does not nudge.
+func CollapseNudgeFor(current string, recent []TurnEvent, lookback int) *CollapseNudge {
+	curGroups := commandGroups(current)
+	if len(curGroups) == 0 || lookback <= 0 {
+		return nil
+	}
+	curRepo := repoScope(current)
+
+	// Walk recent newest→oldest, collecting the last `lookback` distinct turns
+	// and the groups/cmd/repo each carried (skipping failed calls).
+	type rt struct {
+		groups map[string]bool
+		repo   string
+		cmd    string
+	}
+	seen := map[int]bool{}
+	var order []int
+	info := map[int]*rt{}
+	for i := len(recent) - 1; i >= 0; i-- {
+		ev := recent[i]
+		if ev.IsError {
+			continue
+		}
+		if !seen[ev.Turn] {
+			if len(order) >= lookback {
+				break
+			}
+			seen[ev.Turn] = true
+			order = append(order, ev.Turn)
+			info[ev.Turn] = &rt{groups: map[string]bool{}, repo: ev.Repo, cmd: ev.Cmd}
+		}
+		for g := range commandGroups(ev.Cmd) {
+			info[ev.Turn].groups[g] = true
+		}
+	}
+
+	for _, g := range sortedGroupSet(curGroups) {
+		curSub, curTgt := groupTarget(current, g)
+		var prior []string
+		for _, tn := range order {
+			t := info[tn]
+			if !t.groups[g] {
+				continue
+			}
+			if curRepo != "" && t.repo != "" && curRepo != t.repo {
+				continue // different repo — not collapsible
+			}
+			if sub, tgt := groupTarget(t.cmd, g); sub == curSub && curTgt != "" && tgt != "" && curTgt != tgt {
+				continue // same verb, different target — paging, not a run
+			}
+			prior = append(prior, t.cmd)
+		}
+		if len(prior) > 0 {
+			return &CollapseNudge{Group: g, GkCommand: gkForGroup[g], PriorTurns: len(prior), Recent: prior}
+		}
+	}
+	return nil
+}
+
+func sortedGroupSet(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // splitRuns breaks an ordered slice of distinct-turn hits into maximal runs:

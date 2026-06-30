@@ -33,7 +33,9 @@ service-account*.json
 
 # IDE/Editor
 .cursor/
-.claude/
+# NOTE: .claude is handled above (.claude/* with a !.claude/skills/ exception).
+# Do NOT re-add a bare `.claude/` here — excluding the whole dir defeats the
+# skills negation and silently un-tracks shared skills like /release, /roadmap.
 *.swp
 Thumbs.db
 

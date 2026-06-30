@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-06-30
+
 ### Added
 
 - **`gk session audit`가 raw git "발생 횟수"를 넘어 "turn 절감"을 측정한다(`--metric=turns`).** gk의 목적은 에이전트가 여러 tool-call(=여러 turn)로 쪼개 실행한 raw git을 하나의 gk 호출로 접어 turn을 줄이는 것인데, 종전 audit은 raw git을 납작하게 세기만 해 `git status`(turn1)·`git log`(turn2)·`git diff`(turn3)처럼 **별도 turn으로 쪼개진** 경우(접으면 2 turn 절감)와 `git status && git log && git diff`처럼 **이미 한 turn**인 경우(절감 0)를 구분하지 못했다. 이제 `--metric=turns|both`로 켜면 Claude는 assistant message-id, Codex는 function_call 배치로 turn 경계를 잡아(병렬 호출은 같은 turn) 같은 그룹의 raw git이 인접한 여러 turn에 걸친 "collapsible run"을 찾아 `estimated_turns_saved`와 gk 호출별 절감 내역을 보고한다 — 실패-재시도(`is_error`), 다른 repo, 다른 객체를 보는 `git show A`/`B`(paging)는 접지 않는다. `--viz`는 collapsible run을 turn-graph(`●─●`)로 그리고, `--record`/`--trend`는 매 실행을 `~/.gk/audit-history.jsonl`에 적어 절감 추이를 sparkline으로 보여준다. 같은 분류기를 공유하는 `gk agents` PreToolUse 훅은 라이브 세션 transcript의 직전 turn을 읽어, 대기 중인 명령이 직전 raw git run을 이으면 둘을 gk 한 번으로 합쳐 turn을 아끼라고 실시간으로 안내한다. 옵트인이라 `--metric`을 주지 않으면 기존 occurrence 출력·스키마가 그대로 유지된다.

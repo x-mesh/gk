@@ -100,7 +100,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 	// Protected branch gate
 	if isProtected(branch, cfg.Push.Protected) && force {
 		if !cfg.Push.AllowForce {
-			if !yes && !ui.IsTerminal() {
+			if !yes && !promptAllowed() {
 				return fmt.Errorf("refusing to force-push to protected branch %q in non-interactive mode", branch)
 			}
 			if !yes {

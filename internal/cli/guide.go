@@ -37,7 +37,7 @@ func runGuide(cmd *cobra.Command, args []string) error {
 	}
 
 	// Non-TTY: print workflow list as plain text and exit.
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		printWorkflowListText(cmd)
 		return nil
 	}

@@ -179,19 +179,67 @@ func (r *Resolver) ResolveWithAI(
 		if r.Stderr != nil {
 			fmt.Fprintf(r.Stderr, "warning: gk resolve: AI analysis failed for %s: %v\n", cf.Path, err)
 		}
-		return nil, nil
+		return nil, err
 	}
 
-	// ConflictResolutionOutput → []HunkResolution 변환
-	resolutions := make([]HunkResolution, len(result.Resolutions))
-	for i, res := range result.Resolutions {
-		resolutions[i] = HunkResolution{
-			Strategy:      Strategy(res.Strategy),
-			ResolvedLines: res.Resolved,
-			Rationale:     res.Rationale,
+	resolutions, err := hunkResolutionsFromAI(result.Resolutions, len(hunks))
+	if err != nil {
+		if r.Stderr != nil {
+			fmt.Fprintf(r.Stderr, "warning: gk resolve: invalid AI resolution for %s: %v\n", cf.Path, err)
+		}
+		return nil, err
+	}
+	return resolutions, nil
+}
+
+// hunkResolutionsFromAI validates provider output before it is allowed to
+// rewrite files. The output must be exactly one selected resolution per input
+// hunk, keyed by the input hunk index.
+func hunkResolutionsFromAI(outputs []provider.ConflictResolutionOutput, hunkCount int) ([]HunkResolution, error) {
+	if len(outputs) != hunkCount {
+		return nil, fmt.Errorf("got %d resolution(s), want %d", len(outputs), hunkCount)
+	}
+	resolutions := make([]HunkResolution, hunkCount)
+	seen := make([]bool, hunkCount)
+	for _, out := range outputs {
+		if out.Index < 0 || out.Index >= hunkCount {
+			return nil, fmt.Errorf("resolution index %d out of range 0..%d", out.Index, hunkCount-1)
+		}
+		if seen[out.Index] {
+			return nil, fmt.Errorf("duplicate resolution index %d", out.Index)
+		}
+		strategy := Strategy(out.Strategy)
+		switch strategy {
+		case StrategyOurs, StrategyTheirs, StrategyMerged:
+		default:
+			return nil, fmt.Errorf("invalid strategy %q at index %d", out.Strategy, out.Index)
+		}
+		for _, line := range out.Resolved {
+			if looksLikeConflictMarker(line) {
+				return nil, fmt.Errorf("conflict marker left in AI resolution at index %d", out.Index)
+			}
+		}
+		seen[out.Index] = true
+		resolutions[out.Index] = HunkResolution{
+			Strategy:      strategy,
+			ResolvedLines: out.Resolved,
+			Rationale:     out.Rationale,
+		}
+	}
+	for i, ok := range seen {
+		if !ok {
+			return nil, fmt.Errorf("missing resolution index %d", i)
 		}
 	}
 	return resolutions, nil
+}
+
+func looksLikeConflictMarker(line string) bool {
+	s := strings.TrimSpace(line)
+	return strings.HasPrefix(s, "<<<<<<<") ||
+		strings.HasPrefix(s, "|||||||") ||
+		strings.HasPrefix(s, "=======") ||
+		strings.HasPrefix(s, ">>>>>>>")
 }
 
 // ApplyFileResolution은 하나의 파일에 해결을 적용한다.
@@ -314,10 +362,11 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		Total:   len(filesToProcess),
 	}
 
-	// 5. AI 사용 가능 여부 판단
-	aiAvailable := !opts.NoAI && r.Provider != nil
+	// 5. AI 사용 가능 여부 판단. Explicit mechanical strategies must stay
+	// deterministic: ours/theirs never consult an AI provider.
+	aiAvailable := !opts.NoAI && r.Provider != nil && opts.Strategy == "ai"
 	if aiAvailable {
-		if err := r.Provider.Available(ctx); err != nil {
+		if err := provider.ConflictResolverAvailable(ctx, r.Provider); err != nil {
 			aiAvailable = false
 		}
 	}
@@ -369,10 +418,13 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 
 		// AI 해결 시도
 		if aiAvailable {
-			aiRes, _ := r.ResolveWithAI(ctx, cf, opType, opts.Lang)
-			if aiRes != nil && len(aiRes) == hunkCount {
+			aiRes, aiErr := r.ResolveWithAI(ctx, cf, opType, opts.Lang)
+			if aiRes != nil {
 				resolutions = aiRes
 				result.AIUsed = true
+			} else if aiErr != nil && opts.Strategy == "ai" {
+				result.Failed[cf.Path] = aiErr
+				continue
 			}
 		}
 

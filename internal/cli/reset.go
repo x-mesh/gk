@@ -115,7 +115,7 @@ func runReset(cmd *cobra.Command, args []string) error {
 	}
 
 	if !yes {
-		if !ui.IsTerminal() {
+		if !promptAllowed() {
 			return WithHint(fmt.Errorf("refusing to reset without confirmation"),
 				"pass --yes to proceed non-interactively")
 		}

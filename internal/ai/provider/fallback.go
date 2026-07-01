@@ -141,6 +141,59 @@ func (fc *FallbackChain) Summarize(ctx context.Context, in SummarizeInput) (Summ
 	return SummarizeResult{}, lastErr
 }
 
+// ConflictResolverAvailable returns nil if any provider in the chain both
+// implements ConflictResolver and is currently available.
+func (fc *FallbackChain) ConflictResolverAvailable(ctx context.Context) error {
+	var lastErr error
+	tried := 0
+	for _, p := range fc.Providers {
+		if _, ok := p.(ConflictResolver); !ok {
+			continue
+		}
+		tried++
+		if err := p.Available(ctx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if tried == 0 {
+		return fmt.Errorf("fallback: no provider implements ConflictResolver")
+	}
+	return lastErr
+}
+
+// ResolveConflicts tries each provider that implements ConflictResolver in
+// order and returns the first success.
+func (fc *FallbackChain) ResolveConflicts(ctx context.Context, in ConflictResolutionInput) (ConflictResolutionResult, error) {
+	var lastErr error
+	tried := 0
+	for _, p := range fc.Providers {
+		r, ok := p.(ConflictResolver)
+		if !ok {
+			continue
+		}
+		tried++
+		res, err := r.ResolveConflicts(ctx, in)
+		if err == nil {
+			if res.Model == "" {
+				res.Model = p.Name()
+			}
+			return res, nil
+		}
+		fc.dbg("fallback: %s failed: %v", p.Name(), err)
+		if isConfigError(err) {
+			lastErr = err
+			continue
+		}
+		lastErr = err
+	}
+	if tried == 0 {
+		return ConflictResolutionResult{}, fmt.Errorf("fallback: no provider implements ConflictResolver")
+	}
+	return ConflictResolutionResult{}, lastErr
+}
+
 // isConfigError returns true for errors that indicate a setup problem
 // (missing binary, missing auth) rather than a transient runtime failure.
 // These providers are silently skipped in the fallback chain.
@@ -150,6 +203,7 @@ func isConfigError(err error) bool {
 
 // Compile-time interface checks.
 var (
-	_ Provider   = (*FallbackChain)(nil)
-	_ Summarizer = (*FallbackChain)(nil)
+	_ Provider         = (*FallbackChain)(nil)
+	_ Summarizer       = (*FallbackChain)(nil)
+	_ ConflictResolver = (*FallbackChain)(nil)
 )

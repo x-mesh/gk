@@ -18,13 +18,14 @@ import (
 //   - (false, errSkipDirty)    user cancelled / esc — caller should abort
 //   - (false, err)             unexpected error
 //
-// On non-TTY environments the call returns errSkipDirty so the caller
-// can fall back to its non-interactive hint path (e.g. "use --autostash").
+// When interactive prompts are disabled (non-TTY, --json, GK_AGENT, CI), the
+// call returns errSkipDirty so the caller can fall back to its non-interactive
+// hint path (e.g. "use --autostash").
 //
 // stashLabel is included in the stash message so users can identify
 // gk-created stashes in `gk stash`.
 func promptStashDirty(ctx context.Context, runner git.Runner, stashLabel string) (stashed bool, err error) {
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return false, errSkipDirty
 	}
 	statusOut, _, _ := runner.Run(ctx, "status", "--short")

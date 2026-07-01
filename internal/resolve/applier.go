@@ -25,6 +25,6 @@ func BackupOriginal(writeFn func(string, []byte, os.FileMode) error, path string
 
 // GitAdd는 해결된 파일을 git staging area에 추가한다.
 func GitAdd(ctx context.Context, runner git.Runner, path string) error {
-	_, _, err := runner.Run(ctx, "add", path)
+	_, _, err := runner.Run(ctx, "add", "--", path)
 	return err
 }

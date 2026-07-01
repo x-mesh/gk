@@ -236,7 +236,7 @@ func runSyncCore(cmd *cobra.Command) error {
 				Dbg("sync: --autostash created no stash entry — %s", hint)
 			}
 			stashed = created
-		case ui.IsTerminal():
+		case promptAllowed():
 			ok, perr := promptStashDirty(ctx, runner, "gk sync autostash")
 			if perr != nil {
 				if errors.Is(perr, errSkipDirty) {
@@ -592,7 +592,7 @@ func runSyncLegacy(cmd *cobra.Command) error {
 				Dbg("sync: --autostash created no stash entry — %s", hint)
 			}
 			stashed = created
-		case ui.IsTerminal():
+		case promptAllowed():
 			ok, perr := promptStashDirty(ctx, runner, "gk sync autostash")
 			if perr != nil {
 				if errors.Is(perr, errSkipDirty) {

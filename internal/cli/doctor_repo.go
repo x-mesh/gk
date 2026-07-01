@@ -393,10 +393,8 @@ func promptFixCommitGraph(ctx context.Context, cmd *cobra.Command, runner git.Ru
 // finding is acted on too — e.g. resolving conflicts unblocks the
 // stash step that follows.
 func runDoctorFix(ctx context.Context, cmd *cobra.Command, runner git.Runner, gitDir, remote string, _ []doctorCheck) error {
-	if !ui.IsTerminal() {
-		fmt.Fprintln(cmd.ErrOrStderr(), "doctor --fix needs a TTY")
-		return nil
-	}
+	// Callers (runDoctor) gate this behind promptAllowed(); this helper
+	// assumes an interactive terminal and opens repair TUIs directly.
 	if remote == "" {
 		remote = "origin"
 	}

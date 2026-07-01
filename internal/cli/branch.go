@@ -19,7 +19,6 @@ import (
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
-	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -293,7 +292,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	}
 
 	// TTY 감지: non-TTY + !yes + !force + !dryRun → 에러
-	isTTY := ui.IsTerminal()
+	isTTY := promptAllowed()
 	if !isTTY && !yes && !force && !dryRun {
 		return fmt.Errorf("gk branch clean: non-interactive mode requires --yes or --force")
 	}

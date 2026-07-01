@@ -150,23 +150,27 @@ func (r *Resolver) resolveDegenerateAI(
 		Lang:          opts.Lang,
 	}
 	res, err := resolver.ResolveConflicts(ctx, in)
-	if err != nil || len(res.Resolutions) == 0 {
+	aiResolutions, validationErr := hunkResolutionsFromAI(res.Resolutions, 1)
+	if err != nil || validationErr != nil {
 		if r.Stderr != nil {
+			if err == nil {
+				err = validationErr
+			}
 			fmt.Fprintf(r.Stderr, "warning: gk resolve: AI analysis failed for %s: %v\n", path, err)
 		}
 		return false, nil
 	}
 
-	out := res.Resolutions[0]
+	out := aiResolutions[0]
 	// 삭제는 "선택된 쪽이 파일을 지운 쪽"일 때만이다. ours/theirs 선택에서
 	// Resolved가 비는 것은 정상(그쪽 내용을 그대로 쓴다는 뜻)이므로 빈
 	// Resolved 자체를 삭제 신호로 읽으면 안 된다. merged인데 내용이 비면
 	// 한쪽이 삭제된 상황에서만 삭제로 해석한다(프롬프트 규약).
-	deleteFile := (out.Strategy == "ours" && !sp.Ours) ||
-		(out.Strategy == "theirs" && !sp.Theirs) ||
-		(out.Strategy == "merged" && len(out.Resolved) == 0 && (!sp.Ours || !sp.Theirs))
+	deleteFile := (out.Strategy == StrategyOurs && !sp.Ours) ||
+		(out.Strategy == StrategyTheirs && !sp.Theirs) ||
+		(out.Strategy == StrategyMerged && len(out.ResolvedLines) == 0 && (!sp.Ours || !sp.Theirs))
 	if r.Stdout != nil {
-		decision := out.Strategy
+		decision := string(out.Strategy)
 		if deleteFile {
 			decision += " (delete)"
 		}
@@ -183,9 +187,9 @@ func (r *Resolver) resolveDegenerateAI(
 		return true, nil
 	}
 
-	lines := out.Resolved
+	lines := out.ResolvedLines
 	if len(lines) == 0 {
-		if out.Strategy == "ours" {
+		if out.Strategy == StrategyOurs {
 			lines = contentLines(ours)
 		} else {
 			lines = contentLines(theirs)

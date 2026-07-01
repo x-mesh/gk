@@ -921,7 +921,7 @@ func runWorktreePrune(cmd *cobra.Command, args []string) error {
 // a caller can safely wrap the command in `$(gk wt)` and capture the
 // chosen path for a cd alias.
 func runWorktreeTUI(cmd *cobra.Command, args []string) error {
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return cmd.Help()
 	}
 
@@ -1633,7 +1633,7 @@ const (
 // to delete. On a non-TTY session this returns orphanCancel so callers
 // surface a clear error rather than guessing.
 func promptOrphanBranchResolution(name, tip string) (orphanResolution, error) {
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return orphanCancel, fmt.Errorf("branch %q already exists (orphan) — re-run interactively to resolve, or delete with `git branch -D %s`", name, name)
 	}
 	title := fmt.Sprintf("branch %q already exists (orphan — no worktree uses it)", name)

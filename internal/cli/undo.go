@@ -104,7 +104,7 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		}
 		target = reflog.Entry{NewSHA: sha, Ref: to, Summary: "(--to " + to + ")"}
 	} else {
-		if !ui.IsTerminal() && !yes {
+		if !promptAllowed() && !yes {
 			return errors.New("no TTY and --to not set; use --list or --to <ref>")
 		}
 		items := entriesToPickerItems(entries)
@@ -132,7 +132,7 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	}
 	stashed := false
 	if dirtyErr := rep.Err(); dirtyErr != nil {
-		if !ui.IsTerminal() || yes {
+		if !promptAllowed() || yes {
 			return WithHint(dirtyErr,
 				"stash or commit first, then re-run gk undo")
 		}
@@ -197,7 +197,7 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		mode = "hard"
 		modeNote = "(working tree DISCARDED — current edits gone, files restored to that state)"
 	}
-	if !yes && ui.IsTerminal() {
+	if !yes && promptAllowed() {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"will reset --%s HEAD to %s (%s).\n  %s\ncontinue? [y/N] ",
 			mode, shortSHA(target.NewSHA), target.Summary, modeNote)

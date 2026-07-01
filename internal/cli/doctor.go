@@ -81,6 +81,19 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	asJSON = asJSON || JSONOut()
 	fix, _ := cmd.Flags().GetBool("fix")
 
+	// --fix drives an interactive per-finding repair TUI; there is no
+	// batch/non-interactive fix path. Under --json/GK_AGENT/CI (or a
+	// non-TTY pipe) fail loudly *before* emitting the report, so an agent
+	// gets a machine-readable error envelope instead of a state=ok that
+	// silently ignored --fix and looks like a successful repair. The
+	// per-finding fixes are still available via `gk doctor --json`.
+	if fix && !promptAllowed() {
+		return WithHint(
+			fmt.Errorf("doctor --fix needs an interactive terminal (disabled under --json/GK_AGENT/CI)"),
+			"drop --fix and apply the per-finding fixes from `gk doctor --json`",
+		)
+	}
+
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	ctx := cmd.Context()
 	gitDir := resolveGitDir(ctx, runner)

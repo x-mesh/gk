@@ -206,7 +206,7 @@ func isBranchNotFound(err error) bool {
 func handleSwitchMiss(ctx context.Context, r git.Runner, w io.Writer, cfg *config.Config, name string, force, detach bool) error {
 	remote := configuredRemote(cfg)
 	if remoteHasBranch(ctx, r, remote, name) {
-		if !ui.IsTerminal() {
+		if !promptAllowed() {
 			return WithHint(fmt.Errorf("branch %q not found locally", name),
 				fmt.Sprintf("it exists on %s — run: gk sw --fetch %s", remote, name))
 		}
@@ -222,7 +222,7 @@ func handleSwitchMiss(ctx context.Context, r git.Runner, w io.Writer, cfg *confi
 		}
 		return doSwitchTrack(ctx, r, w, remote+"/"+name, force, detach)
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return WithHint(fmt.Errorf("branch %q not found", name),
 			fmt.Sprintf("create it with: gk sw -c %s", name))
 	}

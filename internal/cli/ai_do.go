@@ -202,7 +202,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 	}
 
 	// TTY detection.
-	isTTY := ui.IsTerminal()
+	isTTY := promptAllowed()
 
 	// CommandExecutor: preview + execute.
 	gkPath, _ := os.Executable()

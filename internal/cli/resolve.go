@@ -3,11 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
@@ -89,9 +87,15 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("gk resolve: load config: %w", err)
 	}
 
+	// Interactive mode may use AI for
+	// suggestions; explicit ours/theirs strategies must stay deterministic and
+	// therefore do not build or consult a provider.
+	interactive := promptAllowed()
+	needsAIProvider := cfg.AI.Enabled && !noAI && (strategy == "ai" || (strategy == "" && interactive))
+
 	// Build AI provider if enabled and not suppressed.
 	var prov provider.Provider
-	if cfg.AI.Enabled && !noAI {
+	if needsAIProvider {
 		if cfg.AI.Provider == "" {
 			fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 			if fcErr == nil {
@@ -103,24 +107,20 @@ func runResolve(cmd *cobra.Command, args []string) error {
 				prov = p
 			}
 		}
+		if err := ensureRemoteAllowed(prov, cfg.AI); err != nil {
+			return err
+		}
 	}
 
 	// Check AI availability for --strategy ai.
 	if strategy == "ai" {
-		aiOK := prov != nil
-		if aiOK {
-			if _, ok := prov.(provider.ConflictResolver); !ok {
-				aiOK = false
-			}
-		}
-		if !aiOK {
+		if err := provider.ConflictResolverAvailable(ctx, prov); err != nil {
 			return fmt.Errorf("gk resolve: --strategy ai requires an available AI provider with conflict resolution support")
 		}
 	}
 
 	// TTY check for interactive mode.
-	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
-	if strategy == "" && !isTTY {
+	if strategy == "" && !interactive {
 		return fmt.Errorf("gk resolve: --strategy is required in non-interactive mode")
 	}
 
@@ -143,7 +143,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	}
 
 	// Interactive TUI mode: TTY + no strategy.
-	if strategy == "" && isTTY {
+	if strategy == "" && interactive {
 		return runResolveInteractive(ctx, cmd, r, state, opts)
 	}
 

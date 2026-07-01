@@ -875,7 +875,7 @@ func confirmShip(deps shipDeps, plan shipPlan, flags shipFlags) error {
 	if flags.yes {
 		return nil
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return fmt.Errorf("ship: confirmation required in non-interactive mode; pass --yes or --dry-run")
 	}
 

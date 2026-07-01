@@ -24,7 +24,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 21
+const agentsContractVersion = 22
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -33,7 +33,22 @@ var (
 	agentsVersionRE   = regexp.MustCompile(`<!-- gk:agents:begin v(\d+)`)
 )
 
-const agentsContractBody = `## Git workflow (git-kit)
+const agentsCompactContractBody = `## Git workflow (git-kit)
+
+Use git-kit for git workflows whenever it has a path. In agent tool calls, run the full binary name with agent mode every time:
+` + "`GK_AGENT=1 git-kit ...`" + `
+` + "`gk`" + ` can be shell-aliased, and environment variables do not persist across calls.
+
+Minimum rules:
+- Orient with ` + "`git-kit context`" + ` before git work; add ` + "`--include=diff,log,precheck,remotes,release`" + ` instead of separate status/log/diff probes.
+- Prefer git-kit verbs over raw git: ` + "`commit`" + `, ` + "`land`" + `, ` + "`pull --with-base`" + `, ` + "`sync`" + `, ` + "`merge`" + `, ` + "`rebase --plan`" + `, ` + "`diff --digest`" + `, ` + "`diff --raw-patch --json`" + `, ` + "`worktree ...`" + `, ` + "`ship`" + `, ` + "`batch --plan -`" + `.
+- Keep read-only plumbing raw when needed: ` + "`git rev-parse`" + `, ` + "`git config --get`" + `, ` + "`git cat-file`" + `, ` + "`git ls-files`" + `.
+- For commit + pull + push, use ` + "`git-kit land`" + `; for local-only integration use ` + "`git-kit promote`" + `; for releases inspect ` + "`git-kit ship --dry-run --json`" + ` before ` + "`git-kit ship -y`" + `.
+- Agent-mode output is ` + "`{state, ok, result, error}`" + `. Branch on ` + "`state`" + `, not prose: ` + "`ok`" + `, ` + "`paused`" + `, ` + "`blocked`" + `, ` + "`error`" + `; ` + "`ok`" + ` is only ` + "`state==\"ok\"`" + `.
+- A paused merge/rebase/conflict is not done. Use the resume/abort command in the result. When explicitly asked to resolve conflicts, use ` + "`git-kit resolve`" + `; otherwise report the paused state and await direction.
+- On failure, run the first ` + "`error.remedies[]`" + ` command after checking its ` + "`safety`" + `; avoid retrying raw git variations.`
+
+const agentsFullContractBody = `## Git workflow (git-kit)
 
 ### Reach for git-kit first — raw git that has a git-kit path
 
@@ -67,14 +82,32 @@ This repository is driven with git-kit, an agent-native git CLI. Always invoke i
 - **Commit / push**: ` + "`git-kit commit -f`" + ` groups changes into conventional commits; ` + "`git-kit push`" + ` scans for secrets before pushing.
 - **Curated multi-commit**: when YOU decide the grouping instead of the AI, ` + "`git-kit commit --plan-template`" + ` emits the dirty files as a JSON draft; split it into ` + "`{\"commits\":[{\"message\":\"feat(x): ...\",\"files\":[...]}]}`" + ` and run ` + "`git-kit commit --plan -`" + ` — N curated commits in one deterministic call (no AI, secret scan included, backup ref behind ` + "`gk commit --abort`" + `). Duplicate/unknown files and malformed messages are rejected up front; files the plan does not cover stay dirty. Use this instead of chaining raw ` + "`git add`" + ` + ` + "`git commit`" + ` pairs.
 - **History editing**: never open ` + "`git rebase -i`" + ` (the editor session is unusable for you). Instead: ` + "`git-kit rebase --plan-template`" + ` emits the commit range as JSON (action/commit/subject/pushed), you decide each commit's fate (pick/squash/fixup/reword/drop), then ` + "`git-kit rebase --plan -`" + ` validates it (every commit addressed, pushed commits guarded) and drives git's own rebase with a backup ref.
-- **Conflicts**: ` + "`git-kit resolve --ai`" + ` (or ` + "`--strategy ours|theirs`" + `) resolves AND finishes the operation — it runs the continue step itself, re-resolves later picks that conflict with the same strategy, auto-skips picks the resolution emptied, and also handles delete/modify and markerless conflicts from the index stages (AI decides keep/delete/merge with a rationale); one call takes a paused rebase to done (` + "`--no-continue`" + ` to stop after resolving, ` + "`git-kit abort`" + ` to give up). ` + "`git-kit continue`" + ` remains for manually edited resolutions. A paused state is a result — ` + "`state:\"paused\"`" + `, ` + "`ok:false`" + `, exit 3 — not an error; resume or abort it rather than running an error remedy.
+- **Conflicts**: ` + "`git-kit resolve`" + ` is the conflict-resolution surface; use it only when the user explicitly asks you to resolve conflicts. Mechanical strategies (` + "`--strategy ours|theirs`" + `) resolve and continue the operation, re-resolve later picks with the same strategy, auto-skip emptied picks, and handle delete/modify plus markerless conflicts from index stages. ` + "`--no-continue`" + ` stops after resolving; ` + "`git-kit continue`" + ` remains for manually edited resolutions. A paused state is a result — ` + "`state:\"paused\"`" + `, ` + "`ok:false`" + `, exit 3 — not an error; resume or abort it rather than running an error remedy.
 - **Release**: read the plan first — ` + "`git-kit ship --dry-run --json`" + ` emits the full release plan (inferred version, CHANGELOG draft, the preflight/watch/verify step lists, and ` + "`merge_to_base`" + `). When it looks right, ` + "`git-kit ship -y`" + ` runs the whole pipeline — preflight (lint/test) → version/CHANGELOG → tag → push → CI watch → artifact verify — and works under GK_AGENT: human progress streams to stderr while stdout stays a clean result envelope ` + "`{tag, branch, base, merged_to_base, pushed, shipped_on}`" + ` (no ` + "`env -u GK_AGENT`" + ` dance needed). Preflight (lint/test) gates the release, so validate up front with ` + "`git-kit ship --preflight`" + ` (runs the configured checks on the working tree — dirty is fine — and never tags or pushes; ` + "`{result, steps, failed_step}`" + ` under GK_AGENT) and get them green before ` + "`-y`" + `; ` + "`git-kit commit`" + ` also warns on gofmt before it reaches preflight. From a non-base branch (e.g. develop) ship fast-forwards the base (main) and tags there; if history diverged it stops with ` + "`state:\"blocked\"`" + ` and the remedy ` + "`git-kit sync`" + ` (rebase the branch onto its base so base can fast-forward), then ship again. ` + "`--wait=false`" + ` (or ` + "`ship.wait`" + `) skips the CI watch; ` + "`ship.auto_confirm`" + ` makes ` + "`-y`" + ` the default. What's still unreleased: ` + "`git-kit context --include=release`" + `.
 - **Stuck repo** (stale index.lock, orphan merge, prunable worktrees, asymmetric push-only remotes whose merged work never comes down): ` + "`git-kit doctor --fix`" + `.
 - On any failure run the first entry of ` + "`error.remedies`" + ` (check ` + "`safety`" + ` first) instead of retrying variations.`
 
-// agentsContractBlock is the full fenced block as written to files.
+// agentsContractBlock is the compact fenced block written by default.
 func agentsContractBlock() string {
-	return agentsBeginMarker + "\n" + agentsContractBody + "\n" + agentsEndMarker
+	return agentsContractBlockFor(false)
+}
+
+// agentsFullContractBlock is the detailed fenced block for callers that opt in.
+func agentsFullContractBlock() string {
+	return agentsContractBlockFor(true)
+}
+
+func agentsContractBlockFor(full bool) string {
+	body := agentsCompactContractBody
+	if full {
+		body = agentsFullContractBody
+	}
+	return agentsBeginMarker + "\n" + body + "\n" + agentsEndMarker
+}
+
+func hasCurrentAgentsContractBlock(content string) bool {
+	return strings.Contains(content, agentsContractBlock()) ||
+		strings.Contains(content, agentsFullContractBlock())
 }
 
 var agentsTargetNames = []string{"CLAUDE.md", "AGENTS.md"}
@@ -141,29 +174,34 @@ Two scopes: the repo root (CLAUDE.md / AGENTS.md, the default) and the
 per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
 --global) that every project inherits.
 
-  gk agents print              print the contract block (paste it anywhere)
-  gk agents install            insert/refresh the block at the repo root
+  gk agents print              print the compact contract block (paste it anywhere)
+  gk agents print --full       print the detailed contract block
+  gk agents install            insert/refresh the compact block at the repo root
   gk agents install --global   insert/refresh ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
   gk agents check              report block status + version for local AND global
   gk agents hook install       register the Claude Code PreToolUse hook (enforcement)
   gk agents hook uninstall     remove that hook (revert)
   gk agents hook status        report hook install state`,
 	}
-	cmd.AddCommand(&cobra.Command{
+	print := &cobra.Command{
 		Use:   "print",
 		Short: "Print the contract block to stdout",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), agentsContractBlock())
+			full, _ := cmd.Flags().GetBool("full")
+			fmt.Fprintln(cmd.OutOrStdout(), agentsContractBlockFor(full))
 			return nil
 		},
-	})
+	}
+	print.Flags().Bool("full", false, "print the detailed contract block instead of the compact default")
+	cmd.AddCommand(print)
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Insert or refresh the contract block in CLAUDE.md and AGENTS.md",
+		Short: "Insert or refresh the compact contract block in CLAUDE.md and AGENTS.md",
 		RunE:  runAgentsInstall,
 	}
 	install.Flags().StringSlice("file", nil, "restrict to specific files (default: CLAUDE.md and AGENTS.md at the repo root)")
 	install.Flags().Bool("global", false, "install into the per-agent global files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) instead of the repo root")
+	install.Flags().Bool("full", false, "install the detailed contract block instead of the compact default")
 	cmd.AddCommand(install)
 	check := &cobra.Command{
 		Use:   "check",
@@ -283,13 +321,14 @@ func runAgentsInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	full, _ := cmd.Flags().GetBool("full")
 	w := cmd.OutOrStdout()
 	var res agentsInstallJSON
 	if JSONOut() {
 		res.Schema = 1
 	}
 	for _, t := range targets {
-		state, werr := installAgentsBlock(t.path)
+		state, werr := installAgentsBlockFor(t.path, full)
 		if werr != nil {
 			return werr
 		}
@@ -316,7 +355,11 @@ func runAgentsInstall(cmd *cobra.Command, args []string) error {
 // and file when absent). Returns the verb describing what happened:
 // created / updated / unchanged.
 func installAgentsBlock(path string) (string, error) {
-	block := agentsContractBlock()
+	return installAgentsBlockFor(path, false)
+}
+
+func installAgentsBlockFor(path string, full bool) (string, error) {
+	block := agentsContractBlockFor(full)
 	b, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
@@ -387,7 +430,7 @@ func inspectAgentsFile(path, label string) agentsFileStatusJSON {
 	case m == nil:
 		st.State = "absent"
 		st.Reason = "no-block"
-	case !strings.Contains(content, agentsContractBlock()):
+	case !hasCurrentAgentsContractBlock(content):
 		st.State = "stale"
 		st.Version = atoiDefault(m[1], 0)
 	default:

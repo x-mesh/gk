@@ -139,7 +139,7 @@ func renderFileDiff(f *diff.DiffFile, opts diff.RenderOptions, foldState map[int
 // viewport for the selected file's diff. Supports n/p navigation
 // between files and Tab to toggle hunk fold/unfold.
 func runDiffInteractive(result *diff.DiffResult, opts diff.RenderOptions, noPager bool) error {
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		// Non-TTY fallback: render all files to stdout.
 		var buf bytes.Buffer
 		if err := diff.Render(&buf, result, opts); err != nil {

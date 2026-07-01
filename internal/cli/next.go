@@ -104,7 +104,7 @@ func runRecommendedAction(ctx context.Context, cmd *cobra.Command, runner git.Ru
 			"review it and run it yourself",
 		)
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return WithHint(
 			errors.New("--run needs a terminal to confirm"),
 			"run it yourself: "+cmdline,

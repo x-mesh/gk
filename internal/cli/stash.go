@@ -139,7 +139,7 @@ func runStashDrop(cmd *cobra.Command, args []string) error {
 
 // runStashTUI is the no-subcommand entry — picker → action menu.
 func runStashTUI(cmd *cobra.Command, args []string) error {
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return cmd.Help()
 	}
 	runner := &git.ExecRunner{Dir: RepoFlag()}

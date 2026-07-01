@@ -116,7 +116,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	confirmed := true
 
 	// TTY 환경이고 dry-run이 아니면 TUI 표시
-	if ui.IsTerminal() && !dryRun {
+	if promptAllowed() && !dryRun {
 		var ok bool
 		plan, ok, err = RunInitTUI(result, plan)
 		if err != nil {

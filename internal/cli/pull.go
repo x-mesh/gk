@@ -503,7 +503,7 @@ func runPullCore(cmd *cobra.Command) error {
 			// --no-autostash / pull.autostash:false — keep the explicit gate:
 			// prompt on a TTY, refuse on a non-TTY.
 			switch {
-			case ui.IsTerminal():
+			case promptAllowed():
 				ok, perr := promptStashDirty(ctx, runner, "gk pull autostash")
 				if perr != nil {
 					if errors.Is(perr, errSkipDirty) {

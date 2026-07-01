@@ -84,7 +84,7 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 	keepAPI := false
 	if summary := existingAPISummary(cur); len(summary) > 0 && !apiFlagsGiven(cmd) {
 		keepAPI = true
-		if ui.IsTerminal() {
+		if promptAllowed() {
 			fmt.Fprintln(out, "현재 AI 설정:")
 			for _, line := range summary {
 				fmt.Fprintln(out, "  "+line)
@@ -208,7 +208,7 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "  %s = %s\n", k, display[k])
 	}
 
-	if yes, _ := cmd.Flags().GetBool("yes"); !yes && ui.IsTerminal() {
+	if yes, _ := cmd.Flags().GetBool("yes"); !yes && promptAllowed() {
 		ok, cerr := ui.ConfirmTUI(ctx, "저장할까요?", "", true)
 		if cerr != nil || !ok {
 			fmt.Fprintln(out, "취소했습니다.")
@@ -252,7 +252,7 @@ func wizardValue(cmd *cobra.Command, ctx context.Context, flag, title, placehold
 		v, _ := cmd.Flags().GetString(flag)
 		return v, true, nil
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return "", false, nil
 	}
 	v, err := ui.PromptTextTUI(ctx, title, placeholder, initial)
@@ -272,7 +272,7 @@ func wizardOptional(cmd *cobra.Command, ctx context.Context, flag, gateTitle, ga
 		v, _ := cmd.Flags().GetString(flag)
 		return v, true, nil
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return "", false, nil
 	}
 	want, err := ui.ConfirmTUI(ctx, gateTitle, gateDesc, initial != "")
@@ -292,7 +292,7 @@ func wizardBool(cmd *cobra.Command, ctx context.Context, flag, title string, ini
 		v, _ := cmd.Flags().GetBool(flag)
 		return v, true, nil
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return false, false, nil
 	}
 	v, err := ui.ConfirmTUI(ctx, title, "", initial)

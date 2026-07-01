@@ -76,9 +76,9 @@ func TestProperty2_ConflictResolutionResponseNormalization(t *testing.T) {
 	})
 }
 
-// ── Task 5.4 (continued): Invalid strategy defaults to "ours" ──
+// ── Task 5.4 (continued): Invalid strategy is rejected ──
 
-func TestProperty2_InvalidStrategyDefaultsToOurs(t *testing.T) {
+func TestProperty2_InvalidStrategyRejected(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate an invalid strategy value
 		invalidStrategy := rapid.StringMatching(`[a-z]{1,10}`).
@@ -99,14 +99,9 @@ func TestProperty2_InvalidStrategyDefaultsToOurs(t *testing.T) {
 			t.Fatalf("json.Marshal: %v", err)
 		}
 
-		result, err := parseConflictResolutionResponse(data)
-		if err != nil {
-			t.Fatalf("parseConflictResolutionResponse: %v", err)
-		}
-
-		if result.Resolutions[0].Strategy != "ours" {
-			t.Errorf("Strategy = %q, want %q for invalid input %q",
-				result.Resolutions[0].Strategy, "ours", invalidStrategy)
+		_, err = parseConflictResolutionResponse(data)
+		if !errors.Is(err, ErrProviderResponse) {
+			t.Fatalf("expected ErrProviderResponse for invalid strategy %q, got %v", invalidStrategy, err)
 		}
 	})
 }
@@ -226,6 +221,12 @@ func TestBuildConflictResolutionUserPrompt_ContainsInput(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "strategy") {
 		t.Error("prompt should contain strategy in schema")
+	}
+	if !strings.Contains(prompt, "one resolution per input hunk") {
+		t.Error("prompt should require one resolution per input hunk")
+	}
+	if strings.Contains(conflictResolutionSystemPrompt, "exactly 3 resolutions") {
+		t.Error("system prompt must not ask for three alternatives per hunk")
 	}
 }
 

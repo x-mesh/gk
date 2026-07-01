@@ -241,7 +241,7 @@ func runForget(cmd *cobra.Command, args []string) error {
 	}
 
 	if !yes {
-		if !ui.IsTerminal() {
+		if !promptAllowed() {
 			return WithHint(fmt.Errorf("refusing to rewrite history without confirmation"),
 				"pass --yes to proceed non-interactively")
 		}
@@ -469,7 +469,7 @@ func runAuditInteractive(cmd *cobra.Command, runner *git.ExecRunner, entries []f
 	if len(entries) == 0 {
 		return nil
 	}
-	if !ui.IsTerminal() {
+	if !promptAllowed() {
 		return WithHint(
 			fmt.Errorf("--interactive requires a TTY"),
 			"drop -i and rerun without it, or pipe paths to a separate `gk forget <path>` invocation",

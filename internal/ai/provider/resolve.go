@@ -16,6 +16,27 @@ type ConflictResolver interface {
 	ResolveConflicts(ctx context.Context, in ConflictResolutionInput) (ConflictResolutionResult, error)
 }
 
+type conflictResolverAvailability interface {
+	ConflictResolverAvailable(ctx context.Context) error
+}
+
+// ConflictResolverAvailable reports whether p can resolve conflicts now. A
+// fallback chain may contain providers that implement different optional
+// capabilities, so callers should use this helper instead of only checking
+// Provider.Available.
+func ConflictResolverAvailable(ctx context.Context, p Provider) error {
+	if p == nil {
+		return fmt.Errorf("no provider configured")
+	}
+	if checker, ok := p.(conflictResolverAvailability); ok {
+		return checker.ConflictResolverAvailable(ctx)
+	}
+	if _, ok := p.(ConflictResolver); !ok {
+		return fmt.Errorf("provider %q does not support conflict resolution", p.Name())
+	}
+	return p.Available(ctx)
+}
+
 // ConflictHunkInput은 AI에 전달할 하나의 충돌 영역 정보이다.
 type ConflictHunkInput struct {
 	Index         int      `json:"index"`
@@ -59,13 +80,15 @@ Your task is to analyze git merge conflicts and suggest resolutions.
 Rules:
 - Output ONLY valid JSON matching the schema in the user message; no prose,
   no Markdown fences, no explanations.
-- For each conflict hunk, provide exactly 3 resolutions:
+- For each input conflict hunk, provide exactly 1 selected resolution.
+- The output index must match the input hunk index; do not omit or duplicate indexes.
+- Strategy choices:
   "ours" — keep the local changes
-  "theirs" — accept the remote changes
+  "theirs" — accept the incoming changes
   "merged" — combine both changes into a coherent result
-- For "merged" resolution, produce code that preserves the intent of both sides.
+- For "merged", produce code that preserves the intent of both sides.
 - If both sides are semantically incompatible and cannot be merged,
-  set the merged rationale to explain why and recommend "ours" or "theirs".
+  choose "ours" or "theirs" and explain why in the rationale.
 - Provide a one-line rationale (max 120 chars) for each resolution.
 - The "resolved" field must contain the exact lines of code (no markers).
 - Preserve indentation and formatting of the original code.
@@ -85,6 +108,7 @@ func buildConflictResolutionUserPrompt(in ConflictResolutionInput) string {
 	sb.Write(data)
 	sb.WriteString("\n\nRespond with JSON matching this schema:\n")
 	sb.WriteString(`{"resolutions":[{"index":<int>,"strategy":"<ours|theirs|merged>","resolved":["<line>",...],"rationale":"<max 120 chars>"}]}`)
+	sb.WriteString("\nReturn one resolution per input hunk, with the same index and no duplicates.\n")
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -107,7 +131,7 @@ func parseConflictResolutionResponse(raw []byte) (ConflictResolutionResult, erro
 	for i := range result.Resolutions {
 		r := &result.Resolutions[i]
 		if !validStrategies[r.Strategy] {
-			r.Strategy = "ours" // 안전한 기본값
+			return ConflictResolutionResult{}, fmt.Errorf("%w: invalid conflict strategy %q", ErrProviderResponse, r.Strategy)
 		}
 		if len([]rune(r.Rationale)) > 120 {
 			r.Rationale = string([]rune(r.Rationale)[:120])

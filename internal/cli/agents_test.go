@@ -62,6 +62,47 @@ func TestInstallAgentsBlock_CreatesParentDir(t *testing.T) {
 	}
 }
 
+func TestAgentsContractBlock_CompactDefaultAndFullAccepted(t *testing.T) {
+	compact := agentsContractBlock()
+	full := agentsFullContractBlock()
+	if len(compact) >= len(full)/2 {
+		t.Fatalf("compact block is not meaningfully smaller: compact=%d full=%d", len(compact), len(full))
+	}
+	if !strings.Contains(compact, "Minimum rules:") || strings.Contains(compact, "### Detail") {
+		t.Fatalf("default block is not the compact contract:\n%s", compact)
+	}
+
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(path, []byte(full+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := inspectAgentsFile(path, "AGENTS.md")
+	if st.State != "ok" || st.Version != agentsContractVersion {
+		t.Fatalf("current full block should be accepted: %+v", st)
+	}
+}
+
+func TestInstallAgentsBlockFor_FullOptIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	state, err := installAgentsBlockFor(path, true)
+	if err != nil || state != "created" {
+		t.Fatalf("full install: state=%q err=%v", state, err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "### Detail") {
+		t.Fatalf("full install did not write the detailed block:\n%s", string(b))
+	}
+
+	state, err = installAgentsBlock(path)
+	if err != nil || state != "updated" {
+		t.Fatalf("compact reinstall: state=%q err=%v", state, err)
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "Minimum rules:") || strings.Contains(string(b), "### Detail") {
+		t.Fatalf("default reinstall did not replace with compact block:\n%s", string(b))
+	}
+}
+
 func TestAgentsGlobalFiles_EnvOverrideAndDefault(t *testing.T) {
 	// Explicit overrides win.
 	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/cc")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -162,6 +163,45 @@ func TestFallbackChain_SummarizeNoSummarizer(t *testing.T) {
 	}
 }
 
+func TestFallbackChain_ResolveConflictsSkipsNonResolvers(t *testing.T) {
+	nonResolver := &Fake{NameVal: "classify-only"}
+	resolver := &conflictResolverFake{
+		Fake: NewFake(),
+		res: ConflictResolutionResult{Resolutions: []ConflictResolutionOutput{{
+			Index: 0, Strategy: "merged", Resolved: []string{"ok"}, Rationale: "merged",
+		}}},
+	}
+	resolver.NameVal = "resolver"
+	fc := &FallbackChain{Providers: []Provider{nonResolver, resolver}}
+
+	res, err := fc.ResolveConflicts(context.Background(), ConflictResolutionInput{})
+	if err != nil {
+		t.Fatalf("ResolveConflicts: %v", err)
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
+	}
+	if len(res.Resolutions) != 1 || res.Resolutions[0].Resolved[0] != "ok" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if res.Model != "resolver" {
+		t.Errorf("Model = %q, want provider name fallback", res.Model)
+	}
+}
+
+func TestFallbackChain_ResolveConflictsNoResolver(t *testing.T) {
+	fc := &FallbackChain{Providers: []Provider{&Fake{NameVal: "classify-only"}}}
+
+	_, err := fc.ResolveConflicts(context.Background(), ConflictResolutionInput{})
+	if err == nil || !strings.Contains(err.Error(), "no provider implements ConflictResolver") {
+		t.Fatalf("expected no ConflictResolver error, got %v", err)
+	}
+	if err := fc.ConflictResolverAvailable(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "no provider implements ConflictResolver") {
+		t.Fatalf("expected availability error, got %v", err)
+	}
+}
+
 func TestFallbackChain_Name(t *testing.T) {
 	fc := &FallbackChain{Providers: []Provider{
 		&Fake{NameVal: "nvidia"},
@@ -211,6 +251,21 @@ func (n *nonSummarizerFake) Classify(_ context.Context, _ ClassifyInput) (Classi
 }
 func (n *nonSummarizerFake) Compose(_ context.Context, _ ComposeInput) (ComposeResult, error) {
 	return ComposeResult{}, errors.New("not implemented")
+}
+
+type conflictResolverFake struct {
+	*Fake
+	res   ConflictResolutionResult
+	err   error
+	calls int
+}
+
+func (f *conflictResolverFake) ResolveConflicts(_ context.Context, _ ConflictResolutionInput) (ConflictResolutionResult, error) {
+	f.calls++
+	if f.err != nil {
+		return ConflictResolutionResult{}, f.err
+	}
+	return f.res, nil
 }
 
 // ── Task 7.5: [PBT] Property 7 — Fallback Chain 순서 보장 및 단일 시도 ──

@@ -179,7 +179,7 @@ func TestPropertyAIFailureGracefulFallback(t *testing.T) {
 			"status --porcelain=v2": {Stdout: buildPorcelainV2(paths)},
 		}
 		for _, p := range paths {
-			responses["add "+p] = git.FakeResponse{}
+			responses["add -- "+p] = git.FakeResponse{}
 		}
 		runner := &git.FakeRunner{Responses: responses}
 
@@ -262,7 +262,7 @@ func TestPropertyFileFilteringAccuracy(t *testing.T) {
 			"status --porcelain=v2": {Stdout: buildPorcelainV2(allPaths)},
 		}
 		for _, p := range allPaths {
-			responses["add "+p] = git.FakeResponse{}
+			responses["add -- "+p] = git.FakeResponse{}
 		}
 		runner := &git.FakeRunner{Responses: responses}
 
@@ -331,4 +331,138 @@ func TestPropertyFileFilteringAccuracy(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestResolverStrategyOursDoesNotCallAI(t *testing.T) {
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2": {Stdout: buildPorcelainV2([]string{"file.go"})},
+			"add -- file.go":        {},
+		},
+	}
+	content := []byte("before\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> branch\nafter\n")
+	fp := &fakeResolveProvider{
+		resolveRes: provider.ConflictResolutionResult{Resolutions: []provider.ConflictResolutionOutput{{
+			Index: 0, Strategy: "theirs", Resolved: []string{"ai line"}, Rationale: "ai chose theirs",
+		}}},
+	}
+	var wrote []byte
+	resolver := &Resolver{
+		Runner:   runner,
+		Client:   git.NewClient(runner),
+		Provider: fp,
+		Stderr:   &bytes.Buffer{},
+		ReadFile: func(path string) ([]byte, error) {
+			return content, nil
+		},
+		WriteFile: func(path string, data []byte, perm os.FileMode) error {
+			wrote = append([]byte(nil), data...)
+			return nil
+		},
+	}
+
+	result, err := resolver.Run(context.Background(), &gitstate.State{Kind: gitstate.StateMerge}, ResolveOptions{
+		NoBackup: true,
+		Strategy: StrategyOurs,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fp.resolveCalls != 0 {
+		t.Fatalf("AI provider called %d time(s), want 0", fp.resolveCalls)
+	}
+	if result.AIUsed {
+		t.Fatal("AIUsed should be false for --strategy ours")
+	}
+	if got := string(wrote); !strings.Contains(got, "ours line") || strings.Contains(got, "ai line") {
+		t.Fatalf("resolved content = %q, want mechanical ours", got)
+	}
+}
+
+func TestResolverAIResolutionsUseIndexes(t *testing.T) {
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2": {Stdout: buildPorcelainV2([]string{"file.go"})},
+			"add -- file.go":        {},
+		},
+	}
+	content := []byte("before\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> branch\nmiddle\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> branch\nafter\n")
+	fp := &fakeResolveProvider{
+		resolveRes: provider.ConflictResolutionResult{Resolutions: []provider.ConflictResolutionOutput{
+			{Index: 1, Strategy: "merged", Resolved: []string{"resolved two"}, Rationale: "second hunk"},
+			{Index: 0, Strategy: "merged", Resolved: []string{"resolved one"}, Rationale: "first hunk"},
+		}},
+	}
+	var wrote []byte
+	resolver := &Resolver{
+		Runner:   runner,
+		Client:   git.NewClient(runner),
+		Provider: fp,
+		Stderr:   &bytes.Buffer{},
+		ReadFile: func(path string) ([]byte, error) {
+			return content, nil
+		},
+		WriteFile: func(path string, data []byte, perm os.FileMode) error {
+			wrote = append([]byte(nil), data...)
+			return nil
+		},
+	}
+
+	result, err := resolver.Run(context.Background(), &gitstate.State{Kind: gitstate.StateMerge}, ResolveOptions{
+		NoBackup: true,
+		Strategy: "ai",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Resolved) != 1 || !result.AIUsed {
+		t.Fatalf("result = %+v, want one AI-resolved file", result)
+	}
+	got := string(wrote)
+	if !strings.Contains(got, "before\nresolved one\nmiddle\nresolved two\nafter") {
+		t.Fatalf("resolved content used response order instead of indexes:\n%s", got)
+	}
+}
+
+func TestResolverAIRejectsDuplicateIndexWithoutWriting(t *testing.T) {
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2": {Stdout: buildPorcelainV2([]string{"file.go"})},
+		},
+	}
+	content := []byte("before\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> branch\nmiddle\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> branch\nafter\n")
+	fp := &fakeResolveProvider{
+		resolveRes: provider.ConflictResolutionResult{Resolutions: []provider.ConflictResolutionOutput{
+			{Index: 0, Strategy: "merged", Resolved: []string{"resolved one"}, Rationale: "first"},
+			{Index: 0, Strategy: "merged", Resolved: []string{"duplicate"}, Rationale: "duplicate"},
+		}},
+	}
+	writeCalls := 0
+	resolver := &Resolver{
+		Runner:   runner,
+		Client:   git.NewClient(runner),
+		Provider: fp,
+		Stderr:   &bytes.Buffer{},
+		ReadFile: func(path string) ([]byte, error) {
+			return content, nil
+		},
+		WriteFile: func(path string, data []byte, perm os.FileMode) error {
+			writeCalls++
+			return nil
+		},
+	}
+
+	result, err := resolver.Run(context.Background(), &gitstate.State{Kind: gitstate.StateMerge}, ResolveOptions{
+		NoBackup: true,
+		Strategy: "ai",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if writeCalls != 0 {
+		t.Fatalf("WriteFile called %d time(s), want 0", writeCalls)
+	}
+	if len(result.Failed) != 1 {
+		t.Fatalf("Failed = %v, want duplicate-index failure", result.Failed)
+	}
 }

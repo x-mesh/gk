@@ -216,7 +216,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		if useJSON {
 			return writeDiffJSON(cmd, result)
 		}
-		if diffFlagInteract && ui.IsTerminal() {
+		if diffFlagInteract && promptAllowed() {
 			return runDiffInteractive(result, opts, noPager)
 		}
 
@@ -326,7 +326,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// 6b. 인터랙티브 모드
 	if diffFlagInteract {
-		if !ui.IsTerminal() {
+		if !promptAllowed() {
 			// non-TTY에서는 일반 출력으로 폴백
 			fmt.Fprintln(cmd.ErrOrStderr(), "경고: TTY가 아닌 환경에서 인터랙티브 모드를 사용할 수 없습니다. 일반 출력으로 전환합니다.")
 		} else {

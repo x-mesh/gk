@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gk resolve` 경로를 더 보수적으로 다룬다.** agents compact 블록은 AI 충돌 해결 shortcut을 기본 행동으로 제안하지 않고, `resolve`도 명시 요청 시에만 쓰도록 제한한다. 코드 경로에서는 `--strategy ours|theirs`가 AI provider를 보지 않는 순수 기계적 전략으로 고정되고, `resolve --ai`는 hunk index/schema를 검증한 응답만 적용한다.
 - **agent/json/CI 모드에서는 TUI prompt를 열지 않는다.** TTY가 있어도 `GK_AGENT=1`, `--json`, `CI=true`인 실행은 interactive로 간주하지 않는다. `gk sync`의 dirty-tree stash prompt, `gk pull --no-autostash`, `gk resolve` interactive fallback, destructive confirmation prompt들이 이제 명시 플래그(`--autostash`, `--strategy`, `--yes` 등)를 요구하는 non-interactive 경로로 빠진다. `gk doctor --fix`는 배치 수정 경로가 없어(finding별 대화형 선택 전용) 비대화형에서 조용히 성공하는 대신 명확히 실패한다 — agent envelope에 `state=error`와 힌트(`gk doctor --json`의 finding별 fix를 직접 실행)를 실어, 에이전트가 no-op을 "복구됨"으로 오독하지 않게 한다.
 
+### Fixed
+
+- **`gk session audit`가 raw `git clone`·`git filter-repo`를 gk-covered로 분류한다.** 종전에는 두 명령이 uncovered로 남아 turn 절감 리포트에서 누락됐는데, 이제 `git clone`은 `git-kit clone`(short-form URL 확장), `git filter-repo`는 `git-kit forget`(history에서 경로 제거)으로 각각 대체 가능함을 인식하고 권고와 함께 집계한다.
+
 ## [0.104.0] - 2026-06-30
 
 ### Added

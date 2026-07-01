@@ -1951,6 +1951,7 @@ pushing. With `--push`, it runs `gk land --to <target>` instead.
 ```bash
 gk worktree finish --to parent --cleanup
 gk worktree finish --to base --push --cleanup --delete-branch
+gk worktree finish --to develop --gate "xm panel {patch} --json" --gate-phase before --cleanup
 ```
 
 | Flag | Default | Description |
@@ -1960,10 +1961,41 @@ gk worktree finish --to base --push --cleanup --delete-branch
 | `--cleanup` | false | Remove the current linked worktree after a successful finish |
 | `--delete-branch` | false | After `--cleanup`, delete the finished branch with `git branch -d` |
 | `--autostash` | false | Pass `--autostash` to `promote`/`land` |
+| `--gate <template>` | — | Quality-gate command run against the merge patch (whitespace-tokenized, no shell). e.g. `"xm panel {patch} --json"` |
+| `--gate-arg <token>` | — | Gate command as explicit argv tokens (repeatable); canonical alternative to `--gate` for precise quoting |
+| `--panel-review` | false | Alias for `--gate "xm panel {patch} --json"` |
+| `--gate-phase before\|after\|both` | `before` | When to run the gate relative to the merge |
+| `--gate-timeout <duration>` | `0` | Kill the gate command after this duration (e.g. `10m`); 0 = no timeout |
+| `--gate-keep-patch` | false | Keep the temporary gate patch file instead of deleting it |
+| `--resume-accept` | false | Accept a prior after-gate pause: skip merge/gate and run cleanup only |
 
 `--cleanup` refuses to remove the main worktree. With `--json` (or
 `GK_AGENT=1`) the result is `{mode, branch, to, path, cleanup, removed}` with
 `branch_deleted` when requested.
+
+#### Quality gate (`--gate`)
+
+A gate runs an external review command against the exact patch a worktree merge
+produces, and blocks/pauses the finish on failure. gk acquires the target lock
+first, pins the target tip under it, then builds the patch — so the patch the
+gate reviews is byte-for-byte what merges even when multiple worktrees finish in
+parallel. The command is tokenized and run with no shell; each `{token}`
+substitutes as a single argv element, so a value with spaces or shell
+metacharacters cannot inject. Available tokens: `{patch}`, `{source}`,
+`{target}`, `{base_sha}`, `{head_sha}`, `{target_before_sha}`,
+`{target_after_sha}`, `{phase}`.
+
+- **before** gate failure → nothing merges, `state:"blocked"` (target unchanged).
+- **after** gate failure → the merge stands, `state:"paused"` (exit 3), cleanup
+  is held, and `result.gate.recover` carries the resume/abort pair
+  (`--resume-accept` to accept, or a rewind command to abort). `--resume-accept`
+  only cleans up when the branch is actually merged into its target.
+- `--push` cannot combine with `--gate-phase after|both` — an after gate cannot
+  hold an integration that `--push` already published.
+
+The target lock lives at `<git-common-dir>/gk/locks/` and each gate run writes
+an audit record to `<git-common-dir>/gk/worktree-gate/<run-id>-<phase>.json`,
+both shared across linked worktrees.
 
 ### gk worktree cleanup
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.105.0] - 2026-07-01
+
 ### Changed
 
 - **`gk agents install`이 기본으로 compact 계약 블록을 설치한다.** 에이전트가 반드시 지켜야 할 최소 git-kit 라우팅 규칙만 instruction 파일에 넣어 세션 컨텍스트 비용을 줄이고, 상세 레퍼런스가 필요한 경우 `gk agents print --full` / `gk agents install --full`로 기존 긴 블록을 선택할 수 있다. 계약 버전은 v22로 올라가며, `gk agents check`는 같은 버전의 compact/full 블록을 모두 최신으로 인정한다.

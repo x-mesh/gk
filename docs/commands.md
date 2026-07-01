@@ -420,15 +420,15 @@ gk context --include=remotes --json         # per-remote drift + asymmetric push
 
 ## gk agents
 
-Manages the gk usage contract inside agent instruction files (`CLAUDE.md`, `AGENTS.md`). The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
+Manages the gk usage contract inside agent instruction files (`CLAUDE.md`, `AGENTS.md`). The default contract is compact and contains only the rules agents need to route git through git-kit correctly; `--full` keeps the longer reference block available. The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
 
 Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the **per-agent global files** that every project inherits — Claude's `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`) and Codex's `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), selected with `--global`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `gk agents print` | Print the contract block to stdout (paste anywhere) |
-| `gk agents install [--file <path>]` | Insert or refresh the block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent) |
-| `gk agents install --global` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
+| `gk agents print [--full]` | Print the compact contract block to stdout; `--full` prints the detailed reference block |
+| `gk agents install [--file <path>] [--full]` | Insert or refresh the compact block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent); `--full` installs the detailed block |
+| `gk agents install --global [--full]` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
 | `gk agents hook install [--mode block\|warn] [--global] [--dry-run]` | Register a Claude Code PreToolUse(Bash) hook in `settings.json` that steers raw git to git-kit at the moment a command runs (default `.claude/settings.json`; `--global` for `~/.claude/settings.json`) |
@@ -811,7 +811,7 @@ gk merge --into main
 gk merge feat/x --into main
 ```
 
-Automatic conflict correction is intentionally not part of the default path. A future `--ai-resolve` should require explicit opt-in because it mutates user code and can silently choose the wrong semantic side.
+Automatic conflict correction is intentionally not part of the default merge path. After a paused conflict, `gk resolve --ai` remains an explicit opt-in because it mutates user code and can silently choose the wrong semantic side.
 
 ---
 
@@ -852,7 +852,7 @@ Every rule exists to stop silent history mangling:
 
 ### Safety & failure
 
-A backup ref (`refs/gk/backup/<branch>/<ts>`) is written before anything moves. On conflict the standard paused contract applies: resolve (or `gk resolve --ai`), then `gk continue` / `gk abort` — exit 3, listed as a result under `--json`, not an error. A rebase/merge already in progress is refused up front.
+A backup ref (`refs/gk/backup/<branch>/<ts>`) is written before anything moves. On conflict the standard paused contract applies: report the paused state, then continue after manual resolution or an explicitly requested `gk resolve`; use `gk resolve --ai` only as AI conflict-resolution opt-in, preferably after `--dry-run`. A paused command exits 3 and is listed as a result under `--json`, not an error. A rebase/merge already in progress is refused up front.
 
 ```bash
 gk rebase --plan plan.json --json
@@ -2193,7 +2193,7 @@ gk resolve [files...] [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--strategy` | (interactive) | Apply one strategy to all conflicts: `ours`, `theirs`, `ai` |
-| `--ai` | false | Shortcut for `--strategy ai` (AI decides per hunk: ours / theirs / merged, with a rationale) |
+| `--ai` | false | Explicit opt-in shortcut for `--strategy ai` (AI decides per hunk: ours / theirs / merged, with a rationale) |
 | `--no-continue` | false | Stop after resolving; print the `gk continue` hint instead of running it |
 | `--dry-run` | false | Show the resolution diff without modifying files (never continues) |
 | `--no-backup` | false | Skip `.orig` backup file creation |
@@ -2205,11 +2205,11 @@ gk resolve [files...] [flags]
 # Take the incoming side everywhere and finish the whole rebase
 gk resolve --strategy theirs
 
-# AI-assisted: per-hunk semantic resolution, then continue to completion
-gk resolve --ai
-
 # Preview what the AI would do first
 gk resolve --ai --dry-run
+
+# AI-assisted: per-hunk semantic resolution, then continue to completion
+gk resolve --ai
 
 # Old two-step flow
 gk resolve --strategy theirs --no-continue
@@ -2219,7 +2219,7 @@ gk continue
 ### Notes
 
 - The continue step runs only after a **full** resolution: every conflicted path cleared, a real operation in progress, no `--dry-run`/`--no-continue`. A file-filtered run (`gk resolve a.go`) that leaves other paths unmerged never continues.
-- **Delete/modify and markerless conflicts** are handled from the index stages (`:1` base, `:2` ours, `:3` theirs), not from worktree text: `--strategy ours|theirs` restores the chosen side or deletes the file when that side removed it; `--ai` sends both sides (with deletion flags) to the provider, which decides keep / delete / merge and prints its rationale. Binary conflicts stay manual (`ours`/`theirs` only). A markerless file whose both stages exist is accepted as a manual resolution and staged as-is.
+- **Delete/modify and markerless conflicts** are handled from the index stages (`:1` base, `:2` ours, `:3` theirs), not from worktree text: `--strategy ours|theirs` restores the chosen side or deletes the file when that side removed it; explicit `--ai` sends both sides (with deletion flags) to the provider, which decides keep / delete / merge and prints its rationale. Binary conflicts stay manual (`ours`/`theirs` only). A markerless file whose both stages exist is accepted as a manual resolution and staged as-is.
 - All git calls and file IO are anchored at the worktree root — resolve works from a repo subdirectory and with `--repo <path>` from outside the repo.
 - A pick whose resolution becomes empty (its content already exists upstream — common with `--strategy ours`) is skipped via `git <op> --skip` instead of failing on the empty commit. Merges are never skipped — an empty merge commit still records the ancestry join.
 - Interactive (TUI) mode also continues after the session, but a *later* pick that conflicts goes back to you instead of looping — you already chose to decide hunk by hunk.

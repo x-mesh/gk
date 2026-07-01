@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk agents install`이 기본으로 compact 계약 블록을 설치한다.** 에이전트가 반드시 지켜야 할 최소 git-kit 라우팅 규칙만 instruction 파일에 넣어 세션 컨텍스트 비용을 줄이고, 상세 레퍼런스가 필요한 경우 `gk agents print --full` / `gk agents install --full`로 기존 긴 블록을 선택할 수 있다. 계약 버전은 v22로 올라가며, `gk agents check`는 같은 버전의 compact/full 블록을 모두 최신으로 인정한다.
+- **`gk resolve` 경로를 더 보수적으로 다룬다.** agents compact 블록은 AI 충돌 해결 shortcut을 기본 행동으로 제안하지 않고, `resolve`도 명시 요청 시에만 쓰도록 제한한다. 코드 경로에서는 `--strategy ours|theirs`가 AI provider를 보지 않는 순수 기계적 전략으로 고정되고, `resolve --ai`는 hunk index/schema를 검증한 응답만 적용한다.
+- **agent/json/CI 모드에서는 TUI prompt를 열지 않는다.** TTY가 있어도 `GK_AGENT=1`, `--json`, `CI=true`인 실행은 interactive로 간주하지 않는다. `gk sync`의 dirty-tree stash prompt, `gk pull --no-autostash`, `gk resolve` interactive fallback, destructive confirmation prompt들이 이제 명시 플래그(`--autostash`, `--strategy`, `--yes` 등)를 요구하는 non-interactive 경로로 빠진다. `gk doctor --fix`는 배치 수정 경로가 없어(finding별 대화형 선택 전용) 비대화형에서 조용히 성공하는 대신 명확히 실패한다 — agent envelope에 `state=error`와 힌트(`gk doctor --json`의 finding별 fix를 직접 실행)를 실어, 에이전트가 no-op을 "복구됨"으로 오독하지 않게 한다.
+
 ## [0.104.0] - 2026-06-30
 
 ### Added

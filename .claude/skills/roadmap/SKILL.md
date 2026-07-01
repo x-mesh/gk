@@ -1,6 +1,6 @@
 ---
 name: roadmap
-description: Find git-kit improvement points from local agent session evidence — runs `gk session audit`, interprets the signals (turn-reduction first, then coverage gaps and adoption leaks), and produces a prioritized, evidence-backed roadmap for gk itself. Use when the user asks "what should gk improve", "find improvement points", "dogfood the sessions", "what to build next", or "/roadmap". Finds and ranks; it does NOT implement.
+description: Find git-kit improvement points from local agent session evidence — runs `gk session audit`, reads the recorded adoption trend (`~/.gk/audit-history.jsonl`), interprets the signals (turn-reduction first, then coverage gaps, adoption leaks, and trend trajectory), and produces a prioritized, evidence-backed roadmap for gk itself. Use when the user asks "what should gk improve", "find improvement points", "dogfood the sessions", "what to build next", "is adoption actually improving", or "/roadmap". Finds and ranks; it does NOT implement.
 ---
 
 # roadmap — turn gk's own session audit into a prioritized improvement list
@@ -41,7 +41,36 @@ pass. Raise `--max-files` to cover the whole corpus (the run is local, read-only
 and cheap). Parse the `{state, ok, result}` envelope: `result.adoption`,
 `result.findings[]`, `result.turns`, `result.totals`, `result.notes`.
 
-## Phase 2 — INTERPRET (four signal classes)
+## Phase 1b — TREND (historical trajectory, read when available)
+
+`~/.gk/audit-history.jsonl` accumulates one line per `gk session audit --record`
+run (fields: `ts`, `files`, `git_turns`, `estimated_turns_saved`, `rate`,
+`adoption_rate`, `by_group`). Read it directly:
+
+```bash
+cat ~/.gk/audit-history.jsonl   # JSONL, oldest → newest
+```
+
+Don't rely on `gk session audit --trend --json` — `--trend` (like `--viz`) only
+renders in the human-text path; under `--json`/`GK_AGENT=1` the command returns
+the envelope before the trend branch runs, so combining the two flags silently
+drops the trend (`internal/cli/session.go`, the `JSONOut()` early-return precedes
+the `if trend` block). Parsing the JSONL file is the only reliable path today.
+
+- **< 2 entries**: no trend to report. Say so plainly. As a *report action* (not
+  a finding about gk itself), recommend seeding a cadence — `gk session audit
+  --record` on a weekly cron/launchd job — so the next roadmap run has something
+  to compare against.
+- **≥ 2 entries**: diff the oldest vs. newest `adoption_rate` (↑ = better) and
+  `rate` (= `estimated_turns_saved / git_turns`, the share of git-touching turns
+  still collapsible to raw git — ↓ = better). Don't read raw `estimated_turns_saved`
+  alone as a trend signal: it's an absolute count of remaining gap (class A: "how
+  many round-trips gk adoption would remove"), so it scales with corpus size — a
+  rise can mean more raw-git usage crept in, not less. Cross-reference entry `ts`
+  against `git log`/CHANGELOG dates for guidance fixes (hook installs,
+  CLAUDE.md/AGENTS.md contract edits) that landed inside that window.
+
+## Phase 2 — INTERPRET (five signal classes)
 
 Read each class and tag every item with a **type** and a **turn-impact**.
 
@@ -75,6 +104,20 @@ finding that also tops the turns-saved breakdown is the strongest adoption targe
 A `git … && git …` chain is already one turn, so `gk batch` saves 0 happy-path
 turns (only failure-recovery turns). Low turn-impact — note it, don't over-rank.
 
+### E. Trend — is the trajectory actually moving? (Phase 1b history)
+- Flat or rising `rate` across recorded runs **despite** a guidance/hook fix
+  landing in that window (regardless of what `adoption_rate` does) → the fix
+  isn't shrinking the remaining raw-git gap. The report's next move should
+  escalate the same lever (e.g. hook `--mode warn` → `--mode block`), not ship
+  another hint on top of an unproven one.
+- Rising `adoption_rate` **and** falling `rate`, correlated with a shipped
+  fix's timestamp → treat that fix's *approach* as validated; prefer repeating
+  the same pattern (classifier fix, hook, contract-block edit) for the next
+  `by_group` target over a novel approach. Don't use a rising raw
+  `estimated_turns_saved` alone as a validation signal — see 1b.
+- No history yet → don't fabricate a trend from one snapshot. That's a gap in
+  measurement cadence, not a gk capability gap — report it as such (see 1b).
+
 ## Phase 3 — REPORT (prioritized, evidence-backed)
 
 Rank by turn-impact, not count. Emit a table:
@@ -82,13 +125,20 @@ Rank by turn-impact, not count. Emit a table:
 | # | Improvement | Type | Turn-impact | Evidence (finding · count · sample) | Suggested action |
 |---|---|---|---|---|---|
 
+Where Phase 1b has ≥ 2 history entries, prepend a one-line trajectory note before
+the headline, e.g. `adoption 54%→61%, rate 8%→5% over 4 recorded runs (↑/↓, both
+good) since <fix>` or `adoption flat at ~56%, rate flat at ~8% across 5 runs
+despite <fix> — escalate`. If there's no history yet, note that instead of a
+trend line.
+
 Then one headline line: **highest-leverage next move** (usually either the top
 `by_group` adoption target, or a cheap classifier-gap that unblocks accurate
 measurement). Each row MUST cite a concrete finding + a sample command from the
 audit — no improvement without session evidence, no "missing" without a checked
-`gk --help`.
+`gk --help`. Trend claims (class E) cite the entry timestamps compared, not just
+the delta.
 
 ## Hard boundaries
 - **Find and rank only — do not implement.** Offer to build the top item; let the user choose.
 - Every claim is evidence-backed (audit finding + sample) and surface-checked (`gk --help`); flag uncertainty instead of asserting.
-- Distinguish the three states honestly: classifier-gap (fix audit), missing-command (build), adoption-gap (guidance/hook). Mislabeling a low-leverage 1:1 swap as a priority is the failure mode this skill exists to prevent.
+- Distinguish the states honestly: classifier-gap (fix audit), missing-command (build), adoption-gap (guidance/hook), trend-confirmed (a shipped fix already worked — repeat it) vs. trend-stalled (a shipped fix didn't move adoption — escalate it, don't pile on a new one). Mislabeling a low-leverage 1:1 swap as a priority is the failure mode this skill exists to prevent.

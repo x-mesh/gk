@@ -25,15 +25,28 @@ type worktreeAcquireJSON struct {
 }
 
 type worktreeFinishJSON struct {
-	Mode          string `json:"mode"`
-	Branch        string `json:"branch"`
-	To            string `json:"to"`
-	Path          string `json:"path"`
-	Cleanup       bool   `json:"cleanup"`
-	Removed       bool   `json:"removed"`
-	DeleteBranch  bool   `json:"delete_branch,omitempty"`
-	BranchDeleted bool   `json:"branch_deleted,omitempty"`
-	DryRun        bool   `json:"dry_run,omitempty"`
+	Mode          string                  `json:"mode"`
+	Branch        string                  `json:"branch"`
+	To            string                  `json:"to"`
+	Path          string                  `json:"path"`
+	Cleanup       bool                    `json:"cleanup"`
+	Removed       bool                    `json:"removed"`
+	DeleteBranch  bool                    `json:"delete_branch,omitempty"`
+	BranchDeleted bool                    `json:"branch_deleted,omitempty"`
+	DryRun        bool                    `json:"dry_run,omitempty"`
+	Gate          *worktreeGateResultJSON `json:"gate,omitempty"`
+}
+
+// agentState surfaces the envelope state "paused" when the after gate failed:
+// the merge succeeded but the finish is suspended awaiting an accept/revert
+// decision, so a parent agent branches on state and reads Gate.recover for the
+// resume/abort pair. Any other outcome stays "ok" (before-gate failure and a
+// live lock take the error path via WithBlocked instead).
+func (r worktreeFinishJSON) agentState() string {
+	if r.Gate != nil && r.Gate.Paused {
+		return envStatePaused
+	}
+	return ""
 }
 
 type worktreeCleanupJSON struct {
@@ -130,6 +143,13 @@ after the worktree is removed.`,
 	c.Flags().Bool("cleanup", false, "remove the current linked worktree after a successful finish")
 	c.Flags().Bool("delete-branch", false, "after --cleanup, delete the finished branch with git branch -d")
 	c.Flags().Bool("autostash", false, "pass --autostash to promote/land for dirty receiver worktrees")
+	c.Flags().String("gate", "", "quality-gate command template run against the merge patch (e.g. \"xm panel {patch} --json\"); whitespace-tokenized, no shell")
+	c.Flags().StringArray("gate-arg", nil, "gate command as explicit argv tokens (repeatable); the canonical alternative to --gate for precise quoting")
+	c.Flags().Bool("panel-review", false, "alias for --gate \"xm panel {patch} --json\"")
+	c.Flags().String("gate-phase", "before", "when to run the gate: before, after, or both")
+	c.Flags().Duration("gate-timeout", 0, "kill the gate command after this duration (e.g. 10m); 0 = no timeout")
+	c.Flags().Bool("gate-keep-patch", false, "keep the temporary gate patch file instead of deleting it after the gate")
+	c.Flags().Bool("resume-accept", false, "accept a prior after-gate pause: skip merge/gate and run cleanup only")
 	return c
 }
 
@@ -155,8 +175,27 @@ func runWorktreeFinish(cmd *cobra.Command, args []string) error {
 	cleanup, _ := cmd.Flags().GetBool("cleanup")
 	deleteBranch, _ := cmd.Flags().GetBool("delete-branch")
 	autostash, _ := cmd.Flags().GetBool("autostash")
+	resumeAccept, _ := cmd.Flags().GetBool("resume-accept")
 	if deleteBranch && !cleanup {
 		return fmt.Errorf("worktree finish: --delete-branch requires --cleanup")
+	}
+
+	gateStr, _ := cmd.Flags().GetString("gate")
+	gateArgs, _ := cmd.Flags().GetStringArray("gate-arg")
+	panelReview, _ := cmd.Flags().GetBool("panel-review")
+	gatePhase, _ := cmd.Flags().GetString("gate-phase")
+	gateTimeout, _ := cmd.Flags().GetDuration("gate-timeout")
+	gateKeepPatch, _ := cmd.Flags().GetBool("gate-keep-patch")
+	gate, gerr := parseGateSpec(gateStr, gateArgs, panelReview, gatePhase, gateTimeout, gateKeepPatch)
+	if gerr != nil {
+		return gerr
+	}
+	// An after gate reviews the integration AFTER it lands, but --push (land)
+	// publishes the target before the gate runs — a failing after gate could
+	// then only be undone with a force-push, which the paused abort does not do.
+	// Reject the combination so the gate is not silently defeated.
+	if gate != nil && push && gate.runsAfter() {
+		return fmt.Errorf("worktree finish: --gate-phase %s cannot combine with --push (the after gate reviews an integration that --push already published; gate before push, or drop --push)", gate.phase)
 	}
 
 	mode, childArgs, effectiveTo, err := finishChildArgs(ctx, runner, cfg, to, push, autostash)
@@ -167,12 +206,45 @@ func runWorktreeFinish(cmd *cobra.Command, args []string) error {
 		Mode: mode, Branch: branch, To: effectiveTo, Path: path,
 		Cleanup: cleanup, DeleteBranch: deleteBranch,
 	}
+
+	// --resume-accept resumes a prior run whose after gate merged then paused:
+	// accepting skips the merge/gate entirely and performs only the held-back
+	// cleanup, so the operator moves forward without re-merging.
+	if resumeAccept {
+		res.Mode = "resume-accept"
+		if cleanup {
+			// Data-loss guard: cleanup removes the worktree (and optionally deletes
+			// the branch), which is only safe if a prior run already merged the
+			// branch into its target. Without a completed merge there is nothing to
+			// accept — refuse rather than silently discard unmerged work.
+			acceptTarget, terr := resolveGateTarget(ctx, runner, cfg, effectiveTo, branch)
+			if terr != nil {
+				return terr
+			}
+			if !isAncestor(ctx, runner, branch, acceptTarget) {
+				return WithBlocked(
+					fmt.Errorf("worktree finish: --resume-accept but %q is not merged into %q", branch, acceptTarget),
+					"worktree_resume_not_merged",
+					"nothing to accept — run the gated finish first, or drop --resume-accept",
+				)
+			}
+			res.To = acceptTarget
+			if cerr := finishCleanup(ctx, runner, &res, path, branch, deleteBranch); cerr != nil {
+				return cerr
+			}
+		}
+		return finishEmitOK(cmd, res)
+	}
+
 	if DryRun() {
 		res.DryRun = true
 		if jsonMode {
 			return emitAgentResult(cmd.OutOrStdout(), res)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "would run: gk %s\n", strings.Join(childArgs, " "))
+		if gate != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "would run gate (%s): %s\n", gate.phase, gate.commandTemplate())
+		}
 		if cleanup {
 			fmt.Fprintf(cmd.OutOrStdout(), "would remove worktree %s\n", path)
 		}
@@ -183,35 +255,43 @@ func runWorktreeFinish(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("worktree finish: locate gk binary: %w", err)
 	}
-	if err := landRunChild(ctx, gkPath, path, jsonMode, childArgs...); err != nil {
-		return fmt.Errorf("worktree finish: %s failed: %w", mode, err)
+
+	if gate == nil {
+		// Unchanged (gate-free) path: byte-identical to pre-gate behavior.
+		if err := landRunChild(ctx, gkPath, path, jsonMode, childArgs...); err != nil {
+			return fmt.Errorf("worktree finish: %s failed: %w", mode, err)
+		}
+	} else {
+		gateTarget, terr := resolveGateTarget(ctx, runner, cfg, effectiveTo, branch)
+		if terr != nil {
+			return terr
+		}
+		res.To = gateTarget
+		gateRes, eerr := executeGatedFinish(ctx, runner, gate, gkPath, path, branch, gateTarget, mode, jsonMode, cleanup, deleteBranch, childArgs)
+		if gateRes != nil {
+			res.Gate = gateRes
+		}
+		if eerr != nil {
+			return eerr
+		}
+		if gateRes != nil && gateRes.Paused {
+			// After gate failed: the merge stands, cleanup is held. Emit the
+			// paused contract (result carries gate.recover[]) and exit 3.
+			if jsonMode {
+				_ = emitAgentResult(cmd.OutOrStdout(), res)
+			} else {
+				renderFinishPaused(cmd, res)
+			}
+			return pausedExitIf(res)
+		}
 	}
 
 	if cleanup {
-		removed, branchDeleted, cerr := cleanupFinishedWorktree(ctx, runner, path, branch, deleteBranch)
-		res.Removed = removed
-		res.BranchDeleted = branchDeleted
-		if cerr != nil {
-			// The integration (promote/land) already succeeded; if the worktree
-			// was removed but a later step (branch -d) failed, say so rather than
-			// surfacing it as if nothing happened.
-			if removed {
-				return fmt.Errorf("%w (worktree already removed at %s)", cerr, path)
-			}
+		if cerr := finishCleanup(ctx, runner, &res, path, branch, deleteBranch); cerr != nil {
 			return cerr
 		}
 	}
-	if jsonMode {
-		return emitAgentResult(cmd.OutOrStdout(), res)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "worktree finished: %s -> %s\n", branch, effectiveTo)
-	if res.Removed {
-		fmt.Fprintf(cmd.OutOrStdout(), "removed worktree %s\n", path)
-	}
-	if res.BranchDeleted {
-		fmt.Fprintf(cmd.OutOrStdout(), "deleted branch %s\n", branch)
-	}
-	return nil
+	return finishEmitOK(cmd, res)
 }
 
 func finishChildArgs(ctx context.Context, runner git.Runner, cfg *config.Config, to string, push, autostash bool) (mode string, args []string, effectiveTo string, err error) {

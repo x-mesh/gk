@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.106.0] - 2026-07-01
+
 ### Added
 
 - **`gk worktree finish`에 quality-gate 훅(`--gate`)이 붙어 merge 전후에 외부 리뷰 명령을 실행한다.** feature worktree를 부모/base로 합칠 때 `--gate "xm panel {patch} --json"`을 주면, gk가 target 브랜치 lock을 먼저 잡고 그 lock 하에서 target tip SHA를 고정한 뒤 정확히 merge될 patch를 생성해 gate 명령에 넘긴다 — gate가 승인한 patch와 실제 merge되는 patch가 병렬 finish 사이에서도 어긋나지 않는다. `--gate-phase before|after|both`로 실행 시점을 고르고(기본 before), before gate가 실패하면 merge 없이 `state:"blocked"`(target 무변경)로, after gate가 실패하면 merge는 유지한 채 `state:"paused"`(exit 3)로 멈춰 cleanup을 보류하고 resume/abort 복구 명령을 `result.gate.recover`에 싣는다(`--resume-accept`로 재개, 또는 pinned SHA로 rewind). gate 명령은 `strings.Fields`로 argv 토큰화 후 각 `{token}`(`{patch}`,`{source}`,`{target}`,`{base_sha}`,`{head_sha}`,`{target_before_sha}`,`{target_after_sha}`,`{phase}`)을 단일 argv 원소로 치환해 shell을 거치지 않으므로 injection 경로가 없다(정밀 제어는 반복형 `--gate-arg`, `xm panel` 축약은 `--panel-review`). target lock과 감사용 run-state 파일은 linked worktree 간 공유되도록 `<git-common-dir>/gk/locks/`·`<git-common-dir>/gk/worktree-gate/`에 두고(`--gate-phase both`는 before/after 기록을 각각 남긴다), `--gate-timeout`/`--gate-keep-patch`로 실행 한도와 patch 보존을 제어한다. `--resume-accept`는 브랜치가 실제로 target에 병합됐을 때만 cleanup을 수행하고(미병합이면 `blocked`로 거부해 미병합 작업 손실 방지), after gate는 이미 published된 통합을 되돌릴 수 없으므로 `--push`와 `--gate-phase after|both`의 조합은 거부한다. gate를 주지 않으면 기존 finish 동작과 byte-identical.

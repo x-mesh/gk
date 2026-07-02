@@ -89,6 +89,78 @@ func TestUnstage_NoCommitsYet(t *testing.T) {
 	}
 }
 
+// F2: staged, then edited again before the first commit — `git rm --cached`
+// without -f refuses here; unstage must still succeed and keep the newest
+// working-tree content.
+func TestUnstage_NoCommitsStagedThenModified(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "one")
+	repo.RunGit("add", "a.txt")
+	repo.WriteFile("a.txt", "one-edited-after-staging")
+	setRepoFlagForTest(t, repo.Dir)
+
+	cmd := newUnstageTestCmd()
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if staged := repo.RunGit("diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "" {
+		t.Errorf("index should be empty: %q", staged)
+	}
+	data, err := os.ReadFile(filepath.Join(repo.Dir, "a.txt"))
+	if err != nil || string(data) != "one-edited-after-staging" {
+		t.Errorf("newest working content must survive: %q err=%v", data, err)
+	}
+}
+
+// F3: no-HEAD, no-path unstage from a subdirectory must drop the FULL staged
+// set (`:/` pathspec), not just the cwd subtree.
+func TestUnstage_NoCommitsFromSubdirUnstagesWholeRepo(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("root.txt", "r")
+	repo.WriteFile("sub/inner.txt", "i")
+	repo.RunGit("add", ".")
+	setRepoFlagForTest(t, "") // no --repo: the runner resolves against cwd
+	t.Chdir(filepath.Join(repo.Dir, "sub"))
+
+	cmd := newUnstageTestCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if staged := repo.RunGit("diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "" {
+		t.Errorf("whole staged set should be dropped, left: %q", staged)
+	}
+}
+
+// F5: pathspecs that match nothing must not claim the whole index is clean.
+func TestUnstage_PathMatchesNothingMessage(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "one")
+	repo.Commit("init")
+	repo.WriteFile("a.txt", "two")
+	repo.RunGit("add", "a.txt")
+	setRepoFlagForTest(t, repo.Dir)
+
+	cmd := newUnstageTestCmd()
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"missing.txt"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "matching the given path(s)") {
+		t.Errorf("message should scope the no-op to the given paths: %q", out.String())
+	}
+	if staged := repo.RunGit("diff", "--cached", "--name-only"); !strings.Contains(staged, "a.txt") {
+		t.Errorf("a.txt must remain staged: %q", staged)
+	}
+}
+
 // A clean index is a reported no-op, not an error.
 func TestUnstage_NothingStaged(t *testing.T) {
 	repo := testutil.NewRepo(t)

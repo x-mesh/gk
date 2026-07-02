@@ -424,7 +424,9 @@ func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 		`{"payload":{"arguments":"{\"cmd\":\"git reset\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset -q HEAD .\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset HEAD -- a.go b.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD~1\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset --hard origin/main\"}"}}`,
 	)
 
@@ -434,15 +436,15 @@ func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 	}
 
 	unstage := findingByKind(report, "raw-unstage")
-	if unstage == nil || unstage.Count != 3 {
-		t.Fatalf("raw-unstage count = %+v, want 3", unstage)
+	if unstage == nil || unstage.Count != 4 {
+		t.Fatalf("raw-unstage count = %+v, want 4 (--mixed HEAD is index-only)", unstage)
 	}
 	if unstage.Status != "covered" || len(unstage.CoveredBy) == 0 {
 		t.Errorf("raw-unstage should be covered by git-kit unstage: %+v", unstage)
 	}
 	gap := findingByKind(report, "uncovered-raw-git")
-	if gap == nil || gap.Subcommands["reset"] != 2 {
-		t.Fatalf("history resets should stay in the gap (want reset x2): %+v", gap)
+	if gap == nil || gap.Subcommands["reset"] != 3 {
+		t.Fatalf("history resets should stay in the gap (want reset x3, incl --mixed HEAD~1): %+v", gap)
 	}
 }
 

@@ -57,18 +57,26 @@ func runUnstage(cmd *cobra.Command, args []string) error {
 		if JSONOut() {
 			return emitAgentResult(cmd.OutOrStdout(), unstageResultJSON{Schema: 1, Result: "ok", Unstaged: 0})
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "unstage: nothing staged")
+		if len(args) > 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "unstage: nothing staged matching the given path(s)")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "unstage: nothing staged")
+		}
 		return nil
 	}
 
 	// A repo with no commits has no HEAD to reset against — unstaging there
 	// is `git rm --cached` (drop from the index, keep the working file).
+	// -f: without it git refuses when the staged blob differs from the
+	// worktree (staged, then edited again) — --cached still never touches
+	// the file. `:/` addresses the whole repo regardless of the cwd, so the
+	// no-path form matches the full staged set the listing above reported.
 	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
-		rmArgs := []string{"rm", "--cached", "-q", "-r", "--"}
+		rmArgs := []string{"rm", "--cached", "-q", "-r", "-f", "--"}
 		if len(args) > 0 {
 			rmArgs = append(rmArgs, args...)
 		} else {
-			rmArgs = append(rmArgs, ".")
+			rmArgs = append(rmArgs, ":/")
 		}
 		if _, stderr, err := runner.Run(ctx, rmArgs...); err != nil {
 			return fmt.Errorf("unstage: %s", firstNonEmptyLine(string(stderr), err.Error()))

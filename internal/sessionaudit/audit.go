@@ -101,14 +101,16 @@ type FileReport struct {
 	ShellChains int    `json:"shell_chains"`
 }
 
-// ProjectAdoption is one project's share of the adoption picture. GitKit
-// includes the short gk alias; Rate is git-kit's share of all git-shaped
-// calls in that project's sessions.
+// ProjectAdoption is one project's share of the adoption picture. Rate uses
+// the same definition as the global Adoption.Rate: GitKit over ALL git-shaped
+// calls (raw + git-kit + short alias) — the discouraged short alias counts in
+// the denominator but never as adoption.
 type ProjectAdoption struct {
 	Project string  `json:"project"`
 	Files   int     `json:"files"`
 	RawGit  int     `json:"raw_git"`
 	GitKit  int     `json:"git_kit"`
+	GKShort int     `json:"gk_short,omitempty"`
 	Rate    float64 `json:"rate"`
 }
 
@@ -405,7 +407,8 @@ func Audit(opts Options) (Report, error) {
 		}
 		pa.Files++
 		pa.RawGit += o.fr.RawGit
-		pa.GitKit += o.fr.GitKit + o.fr.GKShort
+		pa.GitKit += o.fr.GitKit
+		pa.GKShort += o.fr.GKShort
 		addFindings(aggregate, files[i].path, o.commands)
 
 		if wantTurns {
@@ -1310,10 +1313,14 @@ func gitSegmentFinding(subcmd string, args []string) string {
 }
 
 // isRawUnstage matches the index-only `git reset` forms git-kit unstage
-// covers: no mode flag, no commit other than HEAD — `git reset`,
-// `git reset [-q] HEAD [paths]`, `git reset -- paths`. Forms that move the
-// branch (`--soft`/`--hard`/`--mixed` with a commit, `reset HEAD~1`, a sha)
-// stay in the uncovered gap: those are history operations, not staging ones.
+// covers: no branch-moving mode flag, no commit other than HEAD —
+// `git reset`, `git reset [-q] [--mixed] HEAD [paths]`, `git reset -- paths`.
+// `--mixed` with HEAD is still index-only; with any other commit
+// (`--soft/--hard/--mixed HEAD~1`, a sha) the branch moves and the form
+// stays in the uncovered gap. Known limit: the pathspec-only form
+// (`git reset a.go`) IS an unstage, but a bare token is indistinguishable
+// from a commit-ish (`git reset origin/main`) without repo state, so it is
+// deliberately left uncounted rather than misclassifying history resets.
 func isRawUnstage(subcmd string, args []string) bool {
 	if subcmd != "reset" {
 		return false
@@ -1324,10 +1331,11 @@ func isRawUnstage(subcmd string, args []string) bool {
 			break // everything after is pathspec
 		}
 		if strings.HasPrefix(a, "-") {
-			if a == "-q" || a == "--quiet" {
-				continue
+			switch a {
+			case "-q", "--quiet", "--mixed":
+				continue // --mixed is git's default: index-only when aimed at HEAD
 			}
-			return false // mode flag or unknown switch
+			return false // branch-moving mode flag or unknown switch
 		}
 		if !sawTarget {
 			if a != "HEAD" {
@@ -1435,7 +1443,7 @@ func sourceForPath(path string) string {
 func sortedProjects(projects map[string]*ProjectAdoption) []ProjectAdoption {
 	out := make([]ProjectAdoption, 0, len(projects))
 	for _, pa := range projects {
-		total := pa.RawGit + pa.GitKit
+		total := pa.RawGit + pa.GitKit + pa.GKShort
 		if total == 0 {
 			continue
 		}

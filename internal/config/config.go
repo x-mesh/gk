@@ -19,6 +19,7 @@ type Config struct {
 	Land       LandConfig      `mapstructure:"land"        yaml:"land"`
 	Promote    PromoteConfig   `mapstructure:"promote"     yaml:"promote"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
+	Init       InitConfig      `mapstructure:"init"        yaml:"init"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
@@ -529,6 +530,18 @@ type PreflightConfig struct {
 //   - PostActions: subcommands to run inside the freshly-cloned checkout.
 //     Supported values: "hooks-install" (invokes `gk hooks install --all`)
 //     and "doctor" (invokes `gk doctor`). Default empty — opt-in only.
+//
+// InitConfig controls `gk init` scaffolding.
+//
+//   - AIGitignore: make the opt-in `--ai-gitignore` augmentation the default —
+//     after the plan is confirmed, the configured AI provider is asked for
+//     extra project-specific .gitignore patterns. Off by default because it
+//     sends project metadata to a (possibly remote) provider; an explicit
+//     `--ai-gitignore[=false]` flag still wins for one run.
+type InitConfig struct {
+	AIGitignore bool `mapstructure:"ai_gitignore" yaml:"ai_gitignore"`
+}
+
 type CloneConfig struct {
 	DefaultProtocol string               `mapstructure:"default_protocol" yaml:"default_protocol"`
 	DefaultHost     string               `mapstructure:"default_host"     yaml:"default_host"`
@@ -764,6 +777,9 @@ func Defaults() Config {
 			Root:            "",
 			Hosts:           nil,
 			PostActions:     nil,
+		},
+		Init: InitConfig{
+			AIGitignore: false,
 		},
 		Worktree: WorktreeConfig{
 			Base:    "~/.gk/worktree",

@@ -138,13 +138,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	cfg, _ := config.Load(cmd.Flags())
+	// init.ai_gitignore가 켜져 있으면 --ai-gitignore가 기본이 된다.
+	// 명시 플래그(--ai-gitignore[=false])는 config보다 우선한다.
+	if !cmd.Flags().Changed("ai-gitignore") {
+		aiGitignore = cfg.Init.AIGitignore
+	}
+
 	// Remote 단계 계획 — 플래그 경로. 대화형(플래그 없음)은 TUI가 결정한다.
 	interactive := promptAllowed() && !dryRun
 	var rPlan *remotePlan
 	var cloneCfg config.CloneConfig
 	remoteEnabled := only == "" || only == "remote"
 	if remoteEnabled {
-		cfg, _ := config.Load(cmd.Flags())
 		cloneCfg = cfg.Clone
 		rPlan, err = planInitRemote(ctx, cloneCfg, dir, gitRunner, remoteSpec, nameFlag, forceSSH, forceHTTPS, interactive, only)
 		if err != nil {
@@ -197,6 +203,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	gitignoreApplied := plan.Gitignore != nil && plan.Gitignore.Action != initx.ActionSkip && !dryRun
 	if gitignoreApplied {
 		warnExistingGarbage(humanOut, result.Garbage)
+	}
+	// An AI provider is ready but the scaffold ran without --ai-gitignore:
+	// point at the option once — it is opt-in, so users who never see it
+	// never benefit from it.
+	if gitignoreApplied && !aiGitignore && cfg.AI.Enabled && (cfg.AI.Provider != "" || len(result.AIProviders) > 0) {
+		fmt.Fprintln(humanOut, "hint: an AI provider is configured — `gk init --ai-gitignore` asks it for extra project-specific ignore patterns (set init.ai_gitignore: true to make it the default)")
 	}
 	if jsonOut {
 		out := initResultJSON{

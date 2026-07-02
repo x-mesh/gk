@@ -199,6 +199,14 @@ clone:
   # never fail the clone itself. Default empty — opt-in only.
   # post_actions: [hooks-install, doctor]
 
+init:
+  # Ask the configured AI provider for extra project-specific .gitignore
+  # patterns whenever `gk init` scaffolds one — same as passing
+  # --ai-gitignore every time. Off by default because it sends project
+  # metadata to the provider; an explicit --ai-gitignore[=false] flag
+  # still wins for one run.
+  ai_gitignore: false
+
 worktree:
   # Managed base for relative worktree names. `gk worktree add <name>` drops
   # the checkout at <base>/<project>/<name>. Leading `~/` is expanded against

@@ -2,6 +2,7 @@ package aicommit
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -38,6 +39,57 @@ func TestHeuristicType(t *testing.T) {
 				t.Errorf("heuristicType(%s): want %q, got %q", tc.path, tc.want, got)
 			}
 		})
+	}
+}
+
+// The space-mesh incident guard: a huge working tree is classified in
+// disjoint chunks — each provider call sees at most classifyChunkSize
+// files — and same-typed groups merge back into one result that still
+// covers every file, with token usage summed across calls.
+func TestClassifyChunksLargeFileSets(t *testing.T) {
+	p := provider.NewFake()
+	var callSizes []int
+	p.OnClassify = func(in provider.ClassifyInput) {
+		callSizes = append(callSizes, len(in.Files))
+	}
+	total := classifyChunkSize*2 + 25 // → 3 chunks
+	files := make([]FileChange, total)
+	for i := range files {
+		files[i] = FileChange{Path: fmt.Sprintf("src/f%04d.go", i), Status: "modified"}
+	}
+	for start := 0; start < total; start += classifyChunkSize {
+		end := min(start+classifyChunkSize, total)
+		var paths []string
+		for _, f := range files[start:end] {
+			paths = append(paths, f.Path)
+		}
+		p.ClassifyResponses = append(p.ClassifyResponses, provider.ClassifyResult{
+			Groups:     []provider.Group{{Type: "feat", Files: paths, Rationale: "chunk"}},
+			Model:      "fake",
+			TokensUsed: 10,
+		})
+	}
+
+	res, err := Classify(context.Background(), p, files, ClassifyOptions{AllowedTypes: []string{"feat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := count(p.Calls, "Classify"); got != 3 {
+		t.Fatalf("provider calls = %d, want 3", got)
+	}
+	for i, n := range callSizes {
+		if n > classifyChunkSize {
+			t.Errorf("call %d saw %d files, exceeds chunk size %d", i, n, classifyChunkSize)
+		}
+	}
+	if len(res.Groups) != 1 {
+		t.Fatalf("groups = %d, want 1 merged feat group", len(res.Groups))
+	}
+	if len(res.Groups[0].Files) != total {
+		t.Errorf("merged group has %d files, want %d", len(res.Groups[0].Files), total)
+	}
+	if res.TokensUsed != 30 {
+		t.Errorf("tokens = %d, want summed 30", res.TokensUsed)
 	}
 }
 

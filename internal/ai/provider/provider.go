@@ -63,6 +63,20 @@ type ClassifyInput struct {
 	MaxTokens int
 }
 
+// classifyMaxTokens sizes the response-token cap for one Classify call.
+// The response must reference every file, so it scales with file count —
+// a provider's fixed default (often 4096) truncated large working trees
+// mid-JSON. ai.commit.max_tokens caps the INPUT payload and never
+// controlled this. The chunked classify path bounds per-call file count,
+// which keeps the result well under every provider's output ceiling.
+func classifyMaxTokens(nFiles int) int {
+	n := 2048 + 16*nFiles
+	if n < 4096 {
+		n = 4096
+	}
+	return n
+}
+
 // Group is one proposed commit: a set of files that belong together,
 // with the Conventional Commit type/scope the provider picked and a
 // short rationale for review.

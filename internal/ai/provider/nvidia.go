@@ -87,11 +87,11 @@ func (n *Nvidia) Available(_ context.Context) error {
 // Classify implements Provider.
 func (n *Nvidia) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	userPrompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, 0)
+	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, classifyMaxTokens(len(in.Files)))
 	if err != nil {
 		return ClassifyResult{}, err
 	}
-	res, err := parseClassifyResponse([]byte(content))
+	res, err := parseClassifyResponse([]byte(content), in.Files)
 	if err != nil {
 		return ClassifyResult{}, err
 	}

@@ -71,7 +71,7 @@ func (k *Kiro) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, 
 	if err != nil {
 		return ClassifyResult{}, err
 	}
-	return parseClassifyResponse(raw)
+	return parseClassifyResponse(raw, in.Files)
 }
 
 // Compose implements Provider.

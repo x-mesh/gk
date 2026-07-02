@@ -73,7 +73,7 @@ func (g *Gemini) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult
 	if err != nil {
 		return ClassifyResult{}, err
 	}
-	res, err := parseClassifyResponse(raw.responseText())
+	res, err := parseClassifyResponse(raw.responseText(), in.Files)
 	if err != nil {
 		return ClassifyResult{}, err
 	}

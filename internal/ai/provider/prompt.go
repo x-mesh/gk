@@ -30,16 +30,21 @@ func buildClassifyUserPrompt(in ClassifyInput, aggregateDiff string) string {
 	if len(in.AllowedScopes) > 0 {
 		fmt.Fprintf(&b, "Allowed scopes (pick from this list or omit): %s\n", strings.Join(in.AllowedScopes, ", "))
 	}
-	fmt.Fprintln(&b, "\nFiles:")
-	for _, f := range in.Files {
+	// Files are numbered and the response references the numbers: the
+	// response size stays proportional to the file COUNT, not to path
+	// lengths — deep paths (SwiftPM .build trees, monorepos) otherwise blow
+	// the response token cap by echoing every path back.
+	fmt.Fprintln(&b, "\nFiles (numbered — reference them by index):")
+	for i, f := range in.Files {
 		if f.OrigPath != "" {
-			fmt.Fprintf(&b, "- %s [%s from %s]\n", f.Path, f.Status, f.OrigPath)
+			fmt.Fprintf(&b, "%d. %s [%s from %s]\n", i+1, f.Path, f.Status, f.OrigPath)
 		} else {
-			fmt.Fprintf(&b, "- %s [%s]\n", f.Path, f.Status)
+			fmt.Fprintf(&b, "%d. %s [%s]\n", i+1, f.Path, f.Status)
 		}
 	}
 	fmt.Fprintln(&b, "\nRespond with JSON of the form:")
-	fmt.Fprintln(&b, `{"groups":[{"type":"feat","scope":"optional","files":["a.go","b.go"],"rationale":"..."}]}`)
+	fmt.Fprintln(&b, `{"groups":[{"type":"feat","scope":"optional","files":[1,2],"rationale":"..."}]}`)
+	fmt.Fprintln(&b, "Each files entry is the 1-based index from the list above.")
 	fmt.Fprintln(&b, "\n<DIFF>")
 	b.WriteString(aggregateDiff)
 	fmt.Fprintln(&b, "\n</DIFF>")

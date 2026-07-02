@@ -74,21 +74,45 @@ func Classify(
 		return provider.ClassifyResult{Groups: heuristic, Model: heuristicModel}, nil
 	}
 
-	// LLM path.
-	in := provider.ClassifyInput{
-		Files:         toProviderFiles(safe),
-		Lang:          opts.Lang,
-		AllowedTypes:  opts.AllowedTypes,
-		AllowedScopes: opts.AllowedScopes,
+	// LLM path — chunked: one call's response must reference every file, so
+	// beyond ~classifyChunkSize files even a scaled response cap is at risk
+	// (the space-mesh incident: 2,475 files → mid-JSON truncation). Chunks
+	// are disjoint, so classifying them independently is safe; the
+	// type/scope bucketing in overrideWithPathRules merges same-typed
+	// groups across chunks, and its coverage guard sweeps any file a chunk
+	// response dropped.
+	var groups []provider.Group
+	var model string
+	var tokens int
+	for start := 0; start < len(safe); start += classifyChunkSize {
+		end := min(start+classifyChunkSize, len(safe))
+		chunk := safe[start:end]
+		in := provider.ClassifyInput{
+			Files:         toProviderFiles(chunk),
+			Lang:          opts.Lang,
+			AllowedTypes:  opts.AllowedTypes,
+			AllowedScopes: opts.AllowedScopes,
+		}
+		res, err := p.Classify(ctx, in)
+		if err != nil {
+			return provider.ClassifyResult{}, err
+		}
+		groups = append(groups, res.Groups...)
+		model = res.Model
+		tokens += res.TokensUsed
 	}
-	res, err := p.Classify(ctx, in)
-	if err != nil {
-		return provider.ClassifyResult{}, err
-	}
-	// Keep the provider's Model/TokensUsed; only the groups are post-processed.
-	res.Groups = overrideWithPathRules(res.Groups, safe)
-	return res, nil
+	return provider.ClassifyResult{
+		Groups:     overrideWithPathRules(groups, safe),
+		Model:      model,
+		TokensUsed: tokens,
+	}, nil
 }
+
+// classifyChunkSize bounds how many files one provider Classify call sees.
+// It keeps the index-referencing response far below every provider's output
+// ceiling and the per-call diff payload inside ai.commit.max_tokens without
+// collapsing everything to a bare cluster summary.
+const classifyChunkSize = 150
 
 // filterSafe drops entries where DeniedBy is set.
 func filterSafe(in []FileChange) []FileChange {

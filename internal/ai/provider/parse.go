@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -13,11 +15,62 @@ import (
 // is still parseable — callers re-validate downstream.
 type classifyJSON struct {
 	Groups []struct {
-		Type      string   `json:"type"`
-		Scope     string   `json:"scope"`
-		Files     []string `json:"files"`
-		Rationale string   `json:"rationale"`
+		Type      string    `json:"type"`
+		Scope     string    `json:"scope"`
+		Files     []fileRef `json:"files"`
+		Rationale string    `json:"rationale"`
 	} `json:"groups"`
+}
+
+// fileRef accepts both wire forms for a group's files entry: the 1-based
+// index the prompt asks for (keeps the response size independent of path
+// length), and a bare path string — smaller models still echo paths, and
+// both must stay valid.
+type fileRef struct {
+	index int    // 1-based when > 0
+	path  string // set when the wire carried a non-numeric string
+}
+
+func (r *fileRef) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		r.path = s
+		// "3" — a stringified index; resolvePath prefers a literal file
+		// named "3" when one exists, so recording both is safe.
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			r.index = n
+		}
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	r.index = n
+	return nil
+}
+
+// resolvePath turns a wire fileRef into a real path from the classify
+// input, or "" when it cannot be resolved (invented paths and
+// out-of-range indexes are dropped, matching the historical behavior for
+// unknown paths).
+func (r fileRef) resolvePath(files []FileChange, known map[string]bool) string {
+	if r.path != "" && known[r.path] {
+		return r.path
+	}
+	if r.index >= 1 && r.index <= len(files) {
+		return files[r.index-1].Path
+	}
+	if r.path != "" {
+		// Unknown path string: return it unchanged — the caller's
+		// coverage guard decides, exactly as before the index protocol.
+		return r.path
+	}
+	return ""
 }
 
 // composeJSON is the schema for Compose responses.
@@ -40,27 +93,40 @@ type composeJSON struct {
 // Empty groups arrays surface as ErrProviderResponse — an "ok" parse
 // with no content is almost always a provider misfire worth retrying
 // at a higher level.
-func parseClassifyResponse(raw []byte) (ClassifyResult, error) {
+func parseClassifyResponse(raw []byte, files []FileChange) (ClassifyResult, error) {
 	trimmed := stripFences(strings.TrimSpace(string(raw)))
 	var parsed classifyJSON
 	if err := tryJSONDecode(trimmed, &parsed); err != nil {
 		if errors.Is(err, errTruncatedJSON) {
-			return ClassifyResult{}, fmt.Errorf("%w: the AI response was cut off mid-JSON — too many changed files for one classify, or ai.commit.max_tokens is too low. Split the change into smaller commits (git add a subset) or raise ai.commit.max_tokens", ErrProviderResponse)
+			return ClassifyResult{}, fmt.Errorf("%w: the AI response was cut off mid-JSON — the provider hit its response token limit. Retry (gk scales the response cap with file count), or split the change: stage a subset, or group it yourself with `gk commit --plan -`", ErrProviderResponse)
 		}
 		return ClassifyResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
 	}
 	if len(parsed.Groups) == 0 {
 		return ClassifyResult{}, fmt.Errorf("%w: empty groups", ErrProviderResponse)
 	}
+	known := make(map[string]bool, len(files))
+	for _, f := range files {
+		known[f.Path] = true
+	}
 	out := ClassifyResult{Groups: make([]Group, 0, len(parsed.Groups))}
 	for _, g := range parsed.Groups {
 		if g.Type == "" || len(g.Files) == 0 {
 			continue
 		}
+		paths := make([]string, 0, len(g.Files))
+		for _, ref := range g.Files {
+			if p := ref.resolvePath(files, known); p != "" {
+				paths = append(paths, p)
+			}
+		}
+		if len(paths) == 0 {
+			continue
+		}
 		out.Groups = append(out.Groups, Group{
 			Type:      g.Type,
 			Scope:     g.Scope,
-			Files:     append([]string(nil), g.Files...),
+			Files:     paths,
 			Rationale: g.Rationale,
 		})
 	}

@@ -66,11 +66,11 @@ func (a *Anthropic) Available(_ context.Context) error {
 
 func (a *Anthropic) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	userPrompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt, 0)
+	content, model, tokens, err := a.invoke(ctx, systemPrompt, userPrompt, classifyMaxTokens(len(in.Files)))
 	if err != nil {
 		return ClassifyResult{}, err
 	}
-	res, err := parseClassifyResponse([]byte(content))
+	res, err := parseClassifyResponse([]byte(content), in.Files)
 	if err != nil {
 		return ClassifyResult{}, err
 	}

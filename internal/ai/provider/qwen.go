@@ -78,7 +78,7 @@ func (q *Qwen) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, 
 	if err != nil {
 		return ClassifyResult{}, err
 	}
-	res, err := parseClassifyResponse([]byte(raw.text))
+	res, err := parseClassifyResponse([]byte(raw.text), in.Files)
 	if err != nil {
 		return ClassifyResult{}, err
 	}

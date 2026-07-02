@@ -51,11 +51,12 @@ run (fields: `ts`, `files`, `git_turns`, `estimated_turns_saved`, `rate`,
 cat ~/.gk/audit-history.jsonl   # JSONL, oldest → newest
 ```
 
-Don't rely on `gk session audit --trend --json` — `--trend` (like `--viz`) only
-renders in the human-text path; under `--json`/`GK_AGENT=1` the command returns
-the envelope before the trend branch runs, so combining the two flags silently
-drops the trend (`internal/cli/session.go`, the `JSONOut()` early-return precedes
-the `if trend` block). Parsing the JSONL file is the only reliable path today.
+`gk session audit --trend --json` also works: the envelope carries the recorded
+history as `result.trend[]` (same entry shape as the JSONL lines). Either path
+is fine — the file read is simplest when you only want the history; the flag
+fuses it into the same call as the audit. (`--viz` remains human-only by design:
+its turn graph is just an ASCII rendering of `result.turns.runs`, which the JSON
+already carries.)
 
 - **< 2 entries**: no trend to report. Say so plainly. As a *report action* (not
   a finding about gk itself), recommend seeding a cadence — `gk session audit

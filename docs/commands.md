@@ -473,8 +473,16 @@ read-only; it never sends session contents anywhere.
 ```bash
 gk session audit
 gk session audit --max-files 50
+gk session audit --since 30d         # only sessions modified in the last 30 days
 gk session audit ~/.codex/sessions/2026/06/22/session.jsonl --json
 ```
+
+`--since <window>` (`30d`, `12h`, …) keeps only session files modified inside
+the window, so the numbers describe *now* instead of averaging all history —
+without it, sessions that predate a guidance fix dilute the adoption rate and
+hide whether the fix is landing. The report echoes the cutoff in a top-level
+`since` field (and a `window:` line in the human output) plus a note counting
+the files the filter skipped.
 
 The JSON schema reports per-file counts, totals, and aggregated findings such
 as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
@@ -484,7 +492,7 @@ Each finding carries a `status`:
 
 - `covered`: git-kit already has a replacement; read `covered_by`.
 - `partial`: git-kit covers the common path, but the finding still names a remaining workflow gap.
-- `gap`: session evidence points to a missing git-kit feature; read `gap`. The `uncovered-raw-git` finding collects every raw-git subcommand with no recognized git-kit mapping (read-only plumbing excluded) and carries a `subcommands` breakdown (`{"stash":4,"apply":3,…}`) — the roadmap signal for which verbs to build or classify.
+- `gap`: session evidence points to a missing git-kit feature; read `gap`. The `uncovered-raw-git` finding collects every raw-git subcommand with no recognized git-kit mapping (read-only plumbing excluded) and carries a `subcommands` breakdown (`{"stash":4,"apply":3,…}`) — the roadmap signal for which verbs to build or classify. Its `evidence` keeps one sample per subcommand (rare subcommands are never starved by frequent ones), and `one_shot` lists the subcommands whose raw form is a single call — real coverage holes, but a gk verb there saves ~0 turns, so rank by what's *not* in `one_shot` before building.
 
 Each `shell-chain` finding's evidence carries a synthesized `plan`: a ready-to-run
 `git-kit batch --plan -` payload (`{"steps":[{"args":[...]}]}`) that replaces the
@@ -522,7 +530,9 @@ gk session audit --metric=turns --record # append this run to ~/.gk/audit-histor
 gk session audit --trend                 # show the saved-turns trend (sparkline) from recorded runs
 ```
 
-`--record` and `--trend` both imply `--metric=turns`. The metric is opt-in and
+`--record` and `--trend` both imply `--metric=turns`. With `--json` /
+`GK_AGENT=1`, `--trend` attaches the recorded history as a top-level `trend`
+array in the result instead of the sparkline. The metric is opt-in and
 additive: without `--metric` the occurrence output and JSON schema are
 unchanged. The same turn classification powers a real-time nudge in
 [`gk agents hook`](#gk-agents-hook): when a pending raw git command continues a

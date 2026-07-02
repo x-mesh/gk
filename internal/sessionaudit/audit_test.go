@@ -415,6 +415,78 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 	}
 }
 
+// Index-only `git reset` forms are covered by git-kit unstage; resets that
+// move the branch (--soft/--hard, HEAD~1) remain uncovered gap signals.
+func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset -q HEAD .\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset HEAD -- a.go b.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --hard origin/main\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unstage := findingByKind(report, "raw-unstage")
+	if unstage == nil || unstage.Count != 3 {
+		t.Fatalf("raw-unstage count = %+v, want 3", unstage)
+	}
+	if unstage.Status != "covered" || len(unstage.CoveredBy) == 0 {
+		t.Errorf("raw-unstage should be covered by git-kit unstage: %+v", unstage)
+	}
+	gap := findingByKind(report, "uncovered-raw-git")
+	if gap == nil || gap.Subcommands["reset"] != 2 {
+		t.Fatalf("history resets should stay in the gap (want reset x2): %+v", gap)
+	}
+}
+
+// Per-project rollup: Claude sessions attribute to their workspace
+// directory, Codex sessions pool under "codex-sessions", chat-only
+// sessions (no git) drop out, and ordering is most-raw-git-first.
+func TestAudit_ProjectsRollup(t *testing.T) {
+	dir := t.TempDir()
+	alpha := filepath.Join(dir, ".claude", "projects", "-work-alpha")
+	beta := filepath.Join(dir, ".claude", "projects", "-work-beta")
+	codex := filepath.Join(dir, ".codex", "sessions", "2026", "07", "02")
+	quiet := filepath.Join(dir, ".claude", "projects", "-work-quiet")
+	for _, d := range []string{alpha, beta, codex, quiet} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitLine := `{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`
+	gkLine := `{"payload":{"arguments":"{\"cmd\":\"git-kit context\"}"}}`
+	writeLines(t, filepath.Join(alpha, "s.jsonl"), gitLine, gitLine, gkLine)
+	writeLines(t, filepath.Join(beta, "s.jsonl"), gitLine)
+	writeLines(t, filepath.Join(codex, "s.jsonl"), gitLine)
+	writeLines(t, filepath.Join(quiet, "s.jsonl"), `{"payload":{"arguments":"{\"cmd\":\"ls -la\"}"}}`)
+
+	report, err := Audit(Options{Paths: []string{dir}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Projects) != 3 {
+		t.Fatalf("projects = %d, want 3 (chat-only session must drop out): %+v", len(report.Projects), report.Projects)
+	}
+	top := report.Projects[0]
+	if top.Project != "-work-alpha" || top.RawGit != 2 || top.GitKit != 1 {
+		t.Errorf("top project = %+v, want -work-alpha raw=2 gk=1", top)
+	}
+	if got := report.Projects[1].Project; got != "-work-beta" {
+		t.Errorf("projects[1] = %q, want -work-beta (tie broken by name)", got)
+	}
+	if got := report.Projects[2].Project; got != "codex-sessions" {
+		t.Errorf("projects[2] = %q, want codex-sessions", got)
+	}
+}
+
 func TestAudit_SinceFilterSkipsOldSessions(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := filepath.Join(dir, "old.jsonl")

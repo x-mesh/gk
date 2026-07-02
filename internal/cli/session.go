@@ -223,6 +223,14 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 		}
 		fmt.Fprintln(w, line)
 	}
+	if len(report.Projects) > 0 {
+		limit := min(len(report.Projects), 5)
+		fmt.Fprintln(w, "raw git by project (top — contract/hook install targets):")
+		for _, pr := range report.Projects[:limit] {
+			fmt.Fprintf(w, "  %s — raw %d · gk %d (%.1f%%) · %d file(s)\n",
+				pr.Project, pr.RawGit, pr.GitKit, pr.Rate*100, pr.Files)
+		}
+	}
 
 	if tm := report.Turns; tm != nil {
 		fmt.Fprintf(w, "turn reduction: ~%d of %d git turns saveable (%.1f%%) by collapsing raw runs into one gk call [%s]\n",

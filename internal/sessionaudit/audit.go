@@ -49,6 +49,11 @@ type Report struct {
 	Totals   Totals       `json:"totals"`
 	Adoption Adoption     `json:"adoption"`
 	Findings []Finding    `json:"findings,omitempty"`
+	// Projects rolls adoption up per project (most raw git first), so the
+	// global rate stops hiding WHERE agents leak raw git — the target list
+	// for contract/hook installs. Claude sessions carry their workspace in
+	// the parent directory name; Codex sessions aggregate as one bucket.
+	Projects []ProjectAdoption `json:"projects,omitempty"`
 	// Turns is the turn-reduction metric, present only when Options.Metric
 	// requested it. Additive: existing consumers reading the fields above are
 	// unaffected.
@@ -94,6 +99,17 @@ type FileReport struct {
 	GitKit      int    `json:"git_kit"`
 	GKShort     int    `json:"gk_short"`
 	ShellChains int    `json:"shell_chains"`
+}
+
+// ProjectAdoption is one project's share of the adoption picture. GitKit
+// includes the short gk alias; Rate is git-kit's share of all git-shaped
+// calls in that project's sessions.
+type ProjectAdoption struct {
+	Project string  `json:"project"`
+	Files   int     `json:"files"`
+	RawGit  int     `json:"raw_git"`
+	GitKit  int     `json:"git_kit"`
+	Rate    float64 `json:"rate"`
 }
 
 type Totals struct {
@@ -212,6 +228,13 @@ var findingSpecs = map[string]findingSpec{
 		status:         "covered",
 		recommendation: "Use git-kit worktree (add/list/run) so worktrees get gk-parent metadata and the gitignored-state bootstrap.",
 		coveredBy:      []string{"git-kit worktree"},
+	},
+	"raw-unstage": {
+		kind:           "raw-unstage",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit unstage [paths] — drops files from the staging area without touching their contents.",
+		coveredBy:      []string{"git-kit unstage"},
 	},
 	"raw-full-diff": {
 		kind:           "raw-full-diff",
@@ -360,6 +383,7 @@ func Audit(opts Options) (Report, error) {
 	}
 	_ = eg.Wait()
 
+	projects := map[string]*ProjectAdoption{}
 	for i := range outcomes {
 		o := &outcomes[i]
 		if o.err != nil {
@@ -373,6 +397,15 @@ func Audit(opts Options) (Report, error) {
 		report.Totals.GitKit += o.fr.GitKit
 		report.Totals.GKShort += o.fr.GKShort
 		report.Totals.ShellChains += o.fr.ShellChains
+		key := projectKeyForPath(files[i].path, o.fr.Source)
+		pa := projects[key]
+		if pa == nil {
+			pa = &ProjectAdoption{Project: key}
+			projects[key] = pa
+		}
+		pa.Files++
+		pa.RawGit += o.fr.RawGit
+		pa.GitKit += o.fr.GitKit + o.fr.GKShort
 		addFindings(aggregate, files[i].path, o.commands)
 
 		if wantTurns {
@@ -390,6 +423,7 @@ func Audit(opts Options) (Report, error) {
 	}
 	report.Findings = sortedFindings(aggregate)
 	report.Adoption = computeAdoption(report.Totals, report.Findings)
+	report.Projects = sortedProjects(projects)
 
 	if wantTurns {
 		if turns.GitTurns > 0 {
@@ -1264,6 +1298,8 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-forget"
 	case subcmd == "stash" && gitKitStashCovers(args):
 		return "raw-stash"
+	case isRawUnstage(subcmd, args):
+		return "raw-unstage"
 	case subcmd == "diff" && hasArg(args, "--check"):
 		return "raw-diff-check"
 	case isRawFullDiff(subcmd, args):
@@ -1271,6 +1307,38 @@ func gitSegmentFinding(subcmd string, args []string) string {
 	default:
 		return ""
 	}
+}
+
+// isRawUnstage matches the index-only `git reset` forms git-kit unstage
+// covers: no mode flag, no commit other than HEAD — `git reset`,
+// `git reset [-q] HEAD [paths]`, `git reset -- paths`. Forms that move the
+// branch (`--soft`/`--hard`/`--mixed` with a commit, `reset HEAD~1`, a sha)
+// stay in the uncovered gap: those are history operations, not staging ones.
+func isRawUnstage(subcmd string, args []string) bool {
+	if subcmd != "reset" {
+		return false
+	}
+	sawTarget := false
+	for _, a := range args {
+		if a == "--" {
+			break // everything after is pathspec
+		}
+		if strings.HasPrefix(a, "-") {
+			if a == "-q" || a == "--quiet" {
+				continue
+			}
+			return false // mode flag or unknown switch
+		}
+		if !sawTarget {
+			if a != "HEAD" {
+				return false // a commit-ish target — history rewrite, not unstage
+			}
+			sawTarget = true
+			continue
+		}
+		// tokens after HEAD are pathspecs — still an unstage.
+	}
+	return true
 }
 
 func isRawFullDiff(subcmd string, args []string) bool {
@@ -1358,6 +1426,41 @@ func sourceForPath(path string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// sortedProjects finalizes the per-project rollup: sessions with no
+// git-shaped calls at all drop out (chat-only sessions are not an adoption
+// signal), rates are computed, and the order is most-raw-git-first — the
+// contract/hook install priority list.
+func sortedProjects(projects map[string]*ProjectAdoption) []ProjectAdoption {
+	out := make([]ProjectAdoption, 0, len(projects))
+	for _, pa := range projects {
+		total := pa.RawGit + pa.GitKit
+		if total == 0 {
+			continue
+		}
+		pa.Rate = float64(pa.GitKit) / float64(total)
+		out = append(out, *pa)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RawGit != out[j].RawGit {
+			return out[i].RawGit > out[j].RawGit
+		}
+		return out[i].Project < out[j].Project
+	})
+	return out
+}
+
+// projectKeyForPath derives the per-project rollup key for one session file.
+// Claude keeps one directory per workspace (the slash-encoded path, e.g.
+// -Users-me-work-gk), so the parent directory name identifies the project.
+// Codex buckets sessions by date with no project marker — those aggregate
+// under one "codex-sessions" key rather than pretending to know.
+func projectKeyForPath(path, source string) string {
+	if source == "codex" {
+		return "codex-sessions"
+	}
+	return filepath.Base(filepath.Dir(path))
 }
 
 func expandHome(path, home string) string {

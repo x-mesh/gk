@@ -487,7 +487,7 @@ the files the filter skipped.
 The JSON schema reports per-file counts, totals, and aggregated findings such
 as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
 `raw-commit-sequence`, `raw-branch-switch`, `raw-worktree`, `raw-full-diff`,
-`raw-diff-check`, `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
+`raw-diff-check`, `raw-unstage`, `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
 Each finding carries a `status`:
 
 - `covered`: git-kit already has a replacement; read `covered_by`.
@@ -507,6 +507,13 @@ hits that already have a git-kit path, i.e. pure habit leaks), and
 is not dragged down by plumbing that git-kit never intends to wrap). Rerun the
 audit over time and watch `rate` climb and `covered_raw_hits` fall to track
 whether guidance changes are landing.
+
+A `projects` array breaks the same adoption numbers down per project —
+most raw git first, so the top entries are the contract/hook install
+targets (`gk agents install` / `gk agents hook install` there). Claude
+sessions attribute to their workspace directory name; Codex sessions have
+no project marker and pool under `codex-sessions`. The human output prints
+the top five as `raw git by project`.
 
 ### Turn-reduction metric (`--metric=turns`)
 
@@ -1721,6 +1728,27 @@ git switch other-branch
 gk switch -
 gk unwip              # restore the working tree
 ```
+
+---
+
+## gk unstage
+
+Drop files from the staging area without touching their working-tree
+contents — the safe, index-only `git reset [-q] HEAD -- <paths>` form. With
+no paths, everything staged is dropped. A clean index is a reported no-op.
+History-moving resets (`--soft`/`--hard`, `HEAD~1`) are deliberately out of
+scope: use `gk undo` (reflog restore with a backup ref) for those.
+
+### Synopsis
+
+```
+gk unstage [path...]
+```
+
+With `--json` / `GK_AGENT=1` the result reports `{unstaged, files[]}` —
+the exact set that left the index. `gk session audit` classifies the raw
+unstage forms as covered by this verb (`raw-unstage`); resets that move
+the branch stay in the `uncovered-raw-git` gap.
 
 ---
 

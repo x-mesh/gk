@@ -437,6 +437,38 @@ worktree:
       - uv venv && uv pip install -r requirements.txt
 ```
 
+### `clone.hosts`
+
+| | |
+|-|-|
+| Type | map of alias → `{host, protocol, owner, ssh_host}` |
+| Default | empty |
+| CLI flags | `--ssh` / `--https` (one-shot protocol override on `gk clone` and `gk init`) |
+
+Alias table for multi-host and multi-account users, shared by `gk clone` (shorthand expansion) and `gk init` (origin remote wiring). Each entry can carry:
+
+| Key | Meaning |
+|-----|---------|
+| `host` | Hostname inserted into the URL (falls back to `clone.default_host`) |
+| `protocol` | `ssh` or `https` (falls back to `clone.default_protocol`, then `ssh`) |
+| `owner` | Account/org name. Turns the alias into an **account profile**: `gk clone <alias>:repo` completes the owner, and `gk init` lists the alias in its remote picker |
+| `ssh_host` | An `~/.ssh/config` `Host` alias (e.g. `github.com-work`) swapped into **ssh URLs only** — the standard trick for a second account with its own key on the same host. https URLs and path layouts keep the canonical `host` |
+
+```yaml
+clone:
+  default_protocol: ssh
+  default_host: github.com
+  hosts:
+    personal: { host: github.com, owner: JINWOO-J }
+    work:     { host: github.com, owner: 42tape, protocol: https }
+    corp:     { host: github.com, owner: acme, ssh_host: github.com-acme }
+    gl:       { host: gitlab.com }   # host-only alias still works
+```
+
+Merging note: config layers combine **field by field** (deep merge), not entry by entry. A repo-local `.gk.yaml` that sets only `protocol` on the `work` alias inherits the global entry's `host` and `owner` — it does not redefine the alias from scratch. Aliases only present in one layer survive untouched.
+
+Aliases without `owner` behave exactly as before the field existed; `alias:repo` on such an alias fails with a "no owner configured" hint instead of guessing.
+
 ### `land.promote`
 
 | | |

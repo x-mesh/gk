@@ -877,7 +877,7 @@ gk inspects the first positional argument in this order and stops at the first m
 
 1. **Scheme URL** (`http://`, `https://`, `ssh://`, `git://`, `file://`) — handed to `git clone` unchanged.
 2. **SCP-style URL** (`user@host:path`) — handed to `git clone` unchanged.
-3. **Alias shorthand** (`alias:owner/repo` where `alias` is listed under `clone.hosts` in config) — expanded against the alias's host and protocol.
+3. **Alias shorthand** (`alias:owner/repo` where `alias` is listed under `clone.hosts` in config) — expanded against the alias's host and protocol. When the alias carries an `owner`, the shorter `alias:repo` also works — the owner is completed from the profile (an ownerless alias fails that form with a "no owner configured" hint).
 4. **Bare shorthand** (`owner/repo`) — expanded against `clone.default_host` and `clone.default_protocol`.
 
 A trailing `.git` on shorthands is tolerated and reattached by gk so the final URL is always canonical.
@@ -900,11 +900,13 @@ clone:
   hosts:
     gl: { host: gitlab.com, protocol: ssh }
     work: { host: git.company.internal, protocol: https }
+    personal: { host: github.com, owner: JINWOO-J }               # account profile
+    corp: { host: github.com, owner: acme, ssh_host: github.com-acme }
   post_actions: [hooks-install, doctor]
 ```
 
 - `root` — when set, bare `gk clone owner/repo` drops the checkout at `<root>/<host>/<owner>/<repo>` instead of the current directory. An explicit `[target]` positional always wins over this.
-- `hosts` — per-alias `host` + optional `protocol` (falls back to `default_protocol` when omitted). Unknown aliases are passed to `git` verbatim in case they encode something git already understands (e.g., `host:port/path`).
+- `hosts` — per-alias `host` + optional `protocol` (falls back to `default_protocol` when omitted). Unknown aliases are passed to `git` verbatim in case they encode something git already understands (e.g., `host:port/path`). Optional `owner` turns the alias into an account profile (`alias:repo` completes the owner; `gk init` lists it in the remote picker), and optional `ssh_host` swaps an `~/.ssh/config` Host alias into ssh URLs for multi-account key separation — see [`clone.hosts`](config.md#clonehosts).
 - `post_actions` — run gk subcommands inside the fresh checkout once the clone succeeds. Supported values: `hooks-install` (runs `gk hooks install --all`), `doctor` (runs `gk doctor`). Failures print a warning but do not fail the clone.
 
 ### Examples
@@ -913,6 +915,7 @@ clone:
 gk clone JINWOO-J/playground           # → git@github.com:JINWOO-J/playground.git
 gk clone --https JINWOO-J/playground   # → https://github.com/JINWOO-J/playground.git
 gk clone gl:group/service              # → git@gitlab.com:group/service.git (via alias)
+gk clone personal:playground           # → git@github.com:JINWOO-J/playground.git (owner from profile)
 gk clone git@host:team/proj.git        # SCP URL passes through unchanged
 gk clone https://example.com/x/y       # scheme URL passes through unchanged
 gk clone --dry-run foo/bar             # prints url + target, no network call
@@ -2972,6 +2975,7 @@ One-shot project bootstrap. Analyzes the repository (language stack, frameworks,
 1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when `--ai-gitignore` is passed.
 2. `.gk.yaml` — repo-local gk configuration with a sensible default `ai.commit.deny_paths` block.
 3. AI context files — `.kiro/steering/{product,tech,structure}.md` when `--kiro` is passed (`CLAUDE.md` / `AGENTS.md` are intentionally left to the assistants themselves).
+4. `origin` remote — when the repo has none, init offers to wire it from a [`clone.hosts` account profile](config.md#clonehosts), a direct `owner/repo`, or a URL (see [Remote connection](#remote-connection)).
 
 The default flow opens an interactive [huh](https://github.com/charmbracelet/huh) form that previews the analysis and the planned writes, then asks for confirmation. Non-TTY callers (CI, piped output) fall back to the plan-write path automatically; `--dry-run` previews the plan and exits without writing files or running `git init`.
 
@@ -2985,11 +2989,14 @@ gk init [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--force` | false | Overwrite existing files instead of merging or skipping |
+| `--force` | false | Overwrite existing files instead of merging or skipping. Never rewrites an existing remote |
 | `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
 | `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in |
-| `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, or `ai` |
-| `--dry-run` (global) | false | Print the plan without touching the filesystem |
+| `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, `ai`, or `remote` |
+| `--remote <spec>` | _(none)_ | Connect `origin` without prompting. Accepts a `clone.hosts` alias, `alias:repo`, `owner/repo`, or a full URL |
+| `--name <project>` | directory name | Project name for the origin URL when `--remote` names a bare alias. Defaults to the sanitized directory basename |
+| `--ssh` / `--https` | false | One-shot protocol override for the origin URL (mutually exclusive; wins over the profile and `clone.default_protocol`) |
+| `--dry-run` (global) | false | Print the plan — including the resolved remote URL — without touching the filesystem or git config |
 
 ### Generated files
 
@@ -3002,6 +3009,34 @@ gk init [flags]
 | `.kiro/steering/structure.md` | `--kiro` | Repository layout and import rules |
 
 `CLAUDE.md` and `AGENTS.md` are no longer scaffolded — Claude Code and Jules generate (and continually refresh) their own context files, so a static template would be stale before its first commit.
+
+### Remote connection
+
+When the repository has no `origin`, init adds one step before the final confirm. Register account profiles once in [`clone.hosts`](config.md#clonehosts) (an alias with an `owner` field) and the step becomes two keystrokes:
+
+```
+? connect origin to:
+  ❯ personal   git@github.com:JINWOO-J/<name>.git
+    work       https://github.com/42tape/<name>.git
+    direct…    (owner/repo or URL)
+    skip       (no remote)
+? project name: [my-service▌]        ← sanitized directory name, Enter to accept
+
+Remote:
+  • origin → git@github.com:JINWOO-J/my-service.git (add)
+? proceed with initialization? (y/N) ← the one confirm covers files and remote
+```
+
+Behaviour notes:
+
+- **Protocol is never asked.** It resolves profile `protocol` → `clone.default_protocol` → `ssh`, and each picker row previews the final URL. `--ssh` / `--https` override for one run.
+- **Existing `origin` short-circuits the step** — the summary shows `origin → <url> (existing)` and nothing is touched, `--force` included. Re-running init is idempotent.
+- With **no profiles registered**, the picker offers only `skip` (default) and `direct…`. After a direct entry is wired, init offers to save the account into the global `clone.hosts` so the next init is a pick.
+- **Esc at any step skips the remote step** — cancellation is never an error, and declining the final confirm skips the remote add along with the file writes.
+- After a successful add, init prints the `gh repo create <owner>/<name> --private --source . --push` follow-up for repos that do not exist on the host yet. Creating the remote repository stays out of scope.
+- **Unknown aliases are errors here**, not passthroughs like `gk clone` — `git remote add` would record a typo verbatim and it would only surface at the first pull. Full `scheme://` and `user@host:` URLs still pass through untouched.
+- Non-TTY / agent runs skip the step unless `--remote` is given; `--only=remote` without `--remote` in that mode returns `state:"blocked"` with the exact remedy. The JSON result carries `result.remote = {status, name, url, alias}` (`added` / `existing` / `skipped` / `dry-run` / `failed`).
+- Not to be confused with `gk worktree init`, which bootstraps a fresh worktree's gitignored state (`.env`, dependencies) and has nothing to do with remotes.
 
 ### Examples
 
@@ -3021,6 +3056,15 @@ gk init --ai-gitignore
 # CI / unattended use — preview, then force-write.
 gk init --dry-run
 gk init --force --only config
+
+# Wire origin from a clone.hosts profile, project name = directory name.
+gk init --remote personal
+
+# Same, but name the project explicitly and force https for this run.
+gk init --remote personal --name my-service --https
+
+# Add only the remote to an existing repo (owner/repo or URL also work).
+gk init --only remote --remote 42tape/service
 ```
 
 ### Backward compatibility

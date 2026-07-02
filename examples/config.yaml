@@ -86,12 +86,23 @@ clone:
   # the current directory. Leave empty for git's default `./repo`.
   # root: ~/work
 
-  # Alias table for multi-host users. `gk clone gl:group/svc` expands
-  # to the host + protocol listed here. Omit `protocol:` to fall back
-  # to default_protocol. Unknown aliases are passed to git verbatim.
+  # Alias table for multi-host / multi-account users. `gk clone
+  # gl:group/svc` expands to the host + protocol listed here; omit
+  # `protocol:` to fall back to default_protocol. Unknown aliases are
+  # passed to git verbatim.
+  #
+  # Add `owner:` to make an alias an account profile: `gk clone
+  # personal:repo` completes the owner, and `gk init` offers the alias
+  # when wiring the origin remote. `ssh_host:` swaps an ~/.ssh/config
+  # Host alias (second account, own key) into ssh URLs only.
+  #
+  # Config layers merge field-by-field: a repo-local .gk.yaml that sets
+  # only `protocol` on an alias inherits the global entry's host/owner.
   # hosts:
-  #   gl:   { host: gitlab.com, protocol: ssh }
-  #   work: { host: git.company.internal, protocol: https }
+  #   gl:       { host: gitlab.com, protocol: ssh }
+  #   work:     { host: git.company.internal, protocol: https }
+  #   personal: { host: github.com, owner: JINWOO-J }
+  #   corp:     { host: github.com, owner: acme, ssh_host: github.com-acme }
 
   # Run these gk subcommands inside the fresh checkout after clone
   # succeeds. Supported: "hooks-install", "doctor". Failures warn but

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -102,21 +103,39 @@ const untrackedNoiseThreshold = 30
 
 // checkUntrackedNoise flags repos with a *lot* of untracked files —
 // usually means a missing ignore rule (build dir, virtualenv, .DS_Store
-// soup). Soft warning; never FAIL.
+// soup). When the entries match known toolchain output (the same table
+// `gk commit` uses to shield its AI classify), the finding names the
+// dirs and points at the scaffolder — the space-mesh incident (2,475
+// SwiftPM files under app/.build) should be one doctor run away from its
+// fix, not a commit-time surprise. Soft warning; never FAIL.
 func checkUntrackedNoise(ctx context.Context, runner git.Runner) doctorCheck {
 	out, _, err := runner.Run(ctx, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		return doctorCheck{Name: "repo: untracked count", Status: statusPass, Detail: "—"}
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	count := 0
+	count, noise := 0, 0
+	noiseBy := map[string]int{}
 	for _, l := range lines {
-		if l != "" {
-			count++
+		if l == "" {
+			continue
+		}
+		count++
+		if label := noiseLabel(l); label != "" {
+			noise++
+			noiseBy[label]++
 		}
 	}
 	if count < untrackedNoiseThreshold {
 		return doctorCheck{Name: "repo: untracked count", Status: statusPass, Detail: fmt.Sprintf("%d untracked", count)}
+	}
+	if noise > 0 {
+		return doctorCheck{
+			Name:   "repo: untracked count",
+			Status: statusWarn,
+			Detail: fmt.Sprintf("%d untracked entries, %d look like toolchain output (%s)", count, noise, formatNoiseBreakdown(noiseBy)),
+			Fix:    "`gk init --only gitignore` scaffolds the detected languages' build-output patterns",
+		}
 	}
 	return doctorCheck{
 		Name:   "repo: untracked count",
@@ -124,6 +143,49 @@ func checkUntrackedNoise(ctx context.Context, runner git.Runner) doctorCheck {
 		Detail: fmt.Sprintf("%d untracked entries — likely missing .gitignore rules", count),
 		Fix:    "review with `git status` and add patterns to .gitignore",
 	}
+}
+
+// noiseLabel names the noise component of a path (the matching directory,
+// junk filename, or extension glob), or "" for a clean path. Same tables
+// as isNoisePath — one vocabulary for commit shielding and doctor.
+func noiseLabel(p string) string {
+	p = filepath.ToSlash(p)
+	for _, c := range strings.Split(p, "/") {
+		if noiseDirs[c] {
+			return c + "/"
+		}
+	}
+	base := filepath.Base(p)
+	if noiseNames[base] {
+		return base
+	}
+	if ext := strings.ToLower(filepath.Ext(base)); noiseExts[ext] {
+		return "*" + ext
+	}
+	return ""
+}
+
+// formatNoiseBreakdown renders the top three noise labels as
+// ".build/ x2465, .DS_Store x5" — most frequent first, ties by name.
+func formatNoiseBreakdown(by map[string]int) string {
+	labels := make([]string, 0, len(by))
+	for l := range by {
+		labels = append(labels, l)
+	}
+	sort.Slice(labels, func(i, j int) bool {
+		if by[labels[i]] != by[labels[j]] {
+			return by[labels[i]] > by[labels[j]]
+		}
+		return labels[i] < labels[j]
+	})
+	if len(labels) > 3 {
+		labels = labels[:3]
+	}
+	parts := make([]string, len(labels))
+	for i, l := range labels {
+		parts[i] = fmt.Sprintf("%s x%d", l, by[l])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // stashBacklogThreshold flags the user when stashes pile up — easy to

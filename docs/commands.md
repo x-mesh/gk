@@ -2071,9 +2071,21 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ## gk fleet
 
-Live multi-worktree supervision dashboard: every worktree at once — branch, ahead/behind, dirty/conflict state, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + per-path dirty probe).
+Live multi-worktree supervision dashboard: every worktree at once — branch, ahead/behind, dirty/conflict state, the last-changed file, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + a consolidated per-worktree change scan).
 
-The TUI polls `git worktree list` on an interval and renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `ahead` / `behind` / `diverged`). Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable snapshot of the same data — the contract a GUI/agent polls, with the TUI as its consumer.
+The TUI renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `paused` / `ahead` / `behind` / `diverged`). Below it a merged **change feed** streams which files changed in which worktree as they happen (`e` toggles; the startup dirty set is a silent baseline — only changes from then on are shown, ring-capped at 200). When filesystem watches can be established the dashboard reacts to edits instantly and the poll drops to a 12s heartbeat (N worktrees split one process descriptor budget; a worktree too big for its share rides the heartbeat); otherwise it polls on `--interval`. All probes run with `GIT_OPTIONAL_LOCKS=0` so they never contend on `index.lock` with the agents editing those trees.
+
+Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable snapshot of the same data — the contract a GUI/agent polls, with the TUI as its consumer. `--events` streams changes as NDJSON instead (see below).
+
+### Event stream (`--events`)
+
+For an orchestrator, polling `--json` snapshots and diffing them is busywork — `--events` does the diff server-side and streams one NDJSON event per line: `file-changed` (`file`, `note: new|re-touched|cleared`, `added`/`removed` with `--feed-stats`), `status-changed` (`from`/`to`), `op-start`/`op-end` (`operation`), and `land-ready`. Every event carries `ts`, `repo`, `branch`, and `path` (the worktree). Under `GK_AGENT=1` a single `{"schema":1,"state":"streaming","result":{"mode":"fleet-events"}}` header frame precedes the events so envelope consumers recognize the mode switch. Runs until interrupted; driven by filesystem events when available, with the same heartbeat fallback as the TUI.
+
+```
+GK_AGENT=1 gk fleet --events | while read -r ev; do …; done
+```
+
+The opt-in `fleet.notify` config maps a transition to a shell hook (`sh -c`, with `GK_FLEET_KIND/BRANCH/PATH/REPO/OPERATION` in the environment; output discarded). Keys: `conflict` (a worktree hit conflicts), `paused` (an operation stopped mid-way), `land_ready` (a branch became fully merged into base). Hooks fire from both the TUI and `--events`.
 
 ### Multi-repo mode
 
@@ -2084,7 +2096,7 @@ Discovery dedups by `git rev-parse --git-common-dir`, so a repo reached via a sy
 ### Synopsis
 
 ```
-gk fleet [--interval <seconds>]
+gk fleet [--interval <seconds>] [--feed-stats] [--events]
          [--repos <path,…>] [--scan <dir,…>] [--all] [--depth <n>]
 ```
 
@@ -2092,7 +2104,9 @@ gk fleet [--interval <seconds>]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--interval <seconds>` | `2` | Poll interval in TUI mode |
+| `--interval <seconds>` | `2` | Poll interval in TUI mode (demoted to a 12s heartbeat while filesystem watches are active) |
+| `--feed-stats` | `false` | Add +/− line counts to change-feed events (two extra `git diff --numstat` runs per dirty worktree per poll) |
+| `--events` | `false` | Stream fleet changes as NDJSON events instead of a dashboard (for orchestrators) |
 | `--repos <path,…>` | — | Explicit repo paths to watch (enables multi-repo) |
 | `--scan <dir,…>` | — | Directory roots searched for git repos (enables multi-repo) |
 | `--all` | `false` | Watch sibling repos of the current repo; with no `--scan`/`--repos` it uses `fleet.repos`/`fleet.scan`, else scans the current repo's parent directory |
@@ -2107,13 +2121,18 @@ fleet:
   depth: 2
   exclude: ["node_modules", "vendor", ".archive"]   # dir-name globs skipped while scanning
   interval: 2
+  feed_stats: false                 # +/- line counts on feed events (same as --feed-stats)
+  notify:                           # opt-in transition hooks (sh -c, GK_FLEET_* env)
+    conflict:   osascript -e 'display notification "conflict" with title "gk fleet"'
+    paused:     ~/bin/notify-stuck.sh
+    land_ready: ~/bin/reap-candidate.sh
 ```
 
 ### Keys (TUI)
 
-`j`/`k` (or ↓/↑) move the cursor · `r` refreshes now · `q` (or esc) quits. In multi-repo mode: `space` (or `enter` on a header) folds/unfolds a repo group · `w` opens `gk status --watch` for the selected worktree (the live change-feed) and returns to fleet on exit.
+`j`/`k` (or ↓/↑) move the cursor · `enter` toggles the detail panel (with the worktree's recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` opens `gk status --watch` for the selected worktree and returns to fleet on exit · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` (or `enter` on a header) folds/unfolds a repo group.
 
-With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
+With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, …}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
 
 ---
 

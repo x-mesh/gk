@@ -1,6 +1,7 @@
 ---
 name: release
 description: Release workflow for gk — thin layer over `gk ship`. Ship plans (--dry-run --json), the skill polishes CHANGELOG prose and docs, one confirm gate, then `gk ship -y` runs preflight/commit/tag/push/CI-watch/verify. Use when the user says "release", "cut a release", "ship v0.x", or "/release".
+model: sonnet
 ---
 
 # Release workflow for gk — thin layer over `gk ship`

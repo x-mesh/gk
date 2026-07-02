@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.107.0] - 2026-07-02
+
 ### Added
 
 - **`gk fleet`가 파일 수준 가시성을 갖췄다 — 병합 change feed, LAST CHANGE 컬럼, fsnotify 즉시 반응.** 대시보드 테이블에 worktree별 최근 변경 파일(LAST CHANGE) 컬럼이 붙고, 테이블 아래에는 어떤 worktree의 어떤 파일이 바뀌었는지 시간순으로 합쳐 보여주는 change feed pane이 흐른다(`e` 토글, 시작 시점의 dirty 파일은 baseline으로 조용히 넘기고 이후 변화만 기록, 200건 ring buffer). `--feed-stats`(또는 `fleet.feed_stats`)를 켜면 이벤트에 +/− 라인 수가 붙는다(worktree당 poll마다 `git diff --numstat` 2회 추가 비용이라 옵트인). 내부적으로 worktree당 2회 돌던 porcelain 스캔(dirty 카운트용 + mtime용)을 `--no-optional-locks` 단일 스캔으로 통합해 파일 가시성을 얹고도 poll 비용은 오히려 줄었고, single-repo 경로도 multi-repo처럼 `GIT_OPTIONAL_LOCKS=0`으로 실행해 에이전트의 `index.lock`과 경합하지 않는다. filesystem watch를 세울 수 있으면 편집에 즉시 반응하고 poll은 12s heartbeat로 강등된다(worktree N개가 프로세스 FD 예산을 나눠 쓰며, 예산 초과 worktree는 heartbeat로 degrade; 이벤트 폭주는 in-flight 1회로 coalesce). TUI 조작도 확장: `w`가 single-repo에서도 해당 worktree의 `gk status --watch`로 드릴다운하고, `f`/`s`가 view 필터(all→busy→stuck)와 정렬(default→activity→status)을 순환하며, detail 패널에 해당 worktree의 최근 이벤트 3건과 land-ready 브랜치의 다음 행동(`gk worktree remove <branch>`)이 표시된다.

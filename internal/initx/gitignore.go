@@ -11,6 +11,9 @@ var langIgnorePatterns = map[string][]string{
 	"java":   {"*.class", "build/", ".gradle/", "target/"},
 	"ruby":   {"vendor/bundle/", ".bundle/"},
 	"php":    {"vendor/", ".phpunit.result.cache"},
+	"swift":  {".build/", ".swiftpm/", "DerivedData/", "*.xcuserstate"},
+	"dart":   {".dart_tool/", "build/", ".packages"},
+	"cpp":    {"CMakeFiles/", "CMakeCache.txt", "cmake-build-*/", "build/"},
 }
 
 // langDisplayName은 내부 언어 키 → 표시 이름 매핑이다.
@@ -22,6 +25,9 @@ var langDisplayName = map[string]string{
 	"java":   "Java",
 	"ruby":   "Ruby",
 	"php":    "PHP",
+	"swift":  "Swift",
+	"dart":   "Dart",
+	"cpp":    "C/C++ (CMake)",
 }
 
 // SecurityPatterns는 공통 보안 관련 ignore 패턴이다.

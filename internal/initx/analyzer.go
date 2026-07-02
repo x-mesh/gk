@@ -16,7 +16,7 @@ import (
 
 // Language는 프로젝트에서 감지된 프로그래밍 언어를 나타낸다.
 type Language struct {
-	Name       string // "go", "node", "python", "rust", "java", "ruby", "php"
+	Name       string // "go", "node", "python", "rust", "java", "ruby", "php", "swift", "dart", "cpp"
 	MarkerFile string // 감지 근거 파일 (예: "go.mod")
 }
 
@@ -80,6 +80,9 @@ var markerToLang = map[string]string{
 	"build.gradle":     "java",
 	"Gemfile":          "ruby",
 	"composer.json":    "php",
+	"Package.swift":    "swift",
+	"pubspec.yaml":     "dart",
+	"CMakeLists.txt":   "cpp",
 }
 
 // MarkerFiles는 검색 대상 marker file 목록이다 (테스트에서도 참조).
@@ -88,6 +91,7 @@ var MarkerFiles = []string{
 	"requirements.txt", "pyproject.toml", "setup.py",
 	"Cargo.toml", "pom.xml", "build.gradle",
 	"Gemfile", "composer.json",
+	"Package.swift", "pubspec.yaml", "CMakeLists.txt",
 }
 
 // buildSystemFiles는 빌드 시스템 파일 → 이름 매핑이다.

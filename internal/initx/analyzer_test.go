@@ -139,6 +139,37 @@ func TestAnalyzeProjectDetectsNestedMarkers(t *testing.T) {
 	}
 }
 
+// A Swift package nested one level down (app/Package.swift) must be detected —
+// the space-mesh incident happened because Swift was absent from the marker
+// table entirely, so init scaffolded no .build/ ignore.
+func TestAnalyzeProjectDetectsNestedSwift(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app", "Package.swift"), []byte("// swift-tools-version:5.9"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte("[package]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AnalyzeProject(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, lang := range result.Languages {
+		got[lang.Name] = lang.MarkerFile
+	}
+	if got["swift"] != "app/Package.swift" {
+		t.Errorf("swift = %q, want app/Package.swift (all: %v)", got["swift"], got)
+	}
+	if got["rust"] != "Cargo.toml" {
+		t.Errorf("rust = %q, want Cargo.toml", got["rust"])
+	}
+}
+
 func TestDetectVersionFiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, f := range []string{"pyproject.toml", "VERSION", "go.mod"} {

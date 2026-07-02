@@ -91,6 +91,30 @@ func TestGenerateGitignore_MultipleLanguages(t *testing.T) {
 	}
 }
 
+// The space-mesh incident: a Swift package's app/.build (thousands of SwiftPM
+// artifacts) flooded `gk commit` because init neither detected Swift nor knew
+// its ignore patterns. Swift/Dart/C++ must produce their build-output patterns.
+func TestGenerateGitignore_SwiftDartCpp(t *testing.T) {
+	result := &AnalysisResult{
+		Languages: []Language{
+			{Name: "swift", MarkerFile: "app/Package.swift"},
+			{Name: "dart", MarkerFile: "pubspec.yaml"},
+			{Name: "cpp", MarkerFile: "CMakeLists.txt"},
+		},
+	}
+	got := GenerateGitignore(result)
+
+	for _, want := range []string{
+		"# Language: Swift", ".build/", ".swiftpm/", "DerivedData/",
+		"# Language: Dart", ".dart_tool/",
+		"# Language: C/C++ (CMake)", "CMakeFiles/", "cmake-build-*/",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in generated gitignore:\n%s", want, got)
+		}
+	}
+}
+
 func TestParseGitignore(t *testing.T) {
 	content := "# comment\nnode_modules/\n\n*.log\n# another comment\ndist/\n"
 	got := ParseGitignore(content)

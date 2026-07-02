@@ -18,6 +18,11 @@ func TestIsNoisePath(t *testing.T) {
 		".DS_Store", "sub/.DS_Store",
 		"node_modules/pkg/index.js",
 		".pytest_cache/v/cache",
+		// toolchain-owned dot dirs: SwiftPM / Dart
+		"app/.build/arm64-apple-macosx/debug/index/store/v5/records/Q2/vm_types.h-2LK",
+		".build/debug/MyApp",
+		".dart_tool/package_config.json",
+		"pkg/.swiftpm/xcode/xcshareddata/x.plist",
 	}
 	for _, p := range noise {
 		if !isNoisePath(p) {

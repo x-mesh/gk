@@ -20,7 +20,8 @@ import (
 // missing. Kept deliberately conservative: ambiguous names like build/,
 // dist/, target/, vendor/ are NOT included because they can be real source
 // directories in some projects, and the guard excludes files from the AI
-// classify scope.
+// classify scope. Dot-prefixed toolchain-owned dirs (.build = SwiftPM,
+// .dart_tool = Dart, .swiftpm = Xcode/SwiftPM) carry no such ambiguity.
 var noiseDirs = map[string]bool{
 	"node_modules":  true,
 	"__pycache__":   true,
@@ -30,6 +31,9 @@ var noiseDirs = map[string]bool{
 	".mypy_cache":   true,
 	".ruff_cache":   true,
 	".tox":          true,
+	".build":        true,
+	".dart_tool":    true,
+	".swiftpm":      true,
 }
 
 // noiseNames / noiseExts cover individual junk files regardless of location.

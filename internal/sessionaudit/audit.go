@@ -2,14 +2,20 @@ package sessionaudit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -26,10 +32,19 @@ type Options struct {
 	// historical output; "turns" / "both" additionally compute the turn-reduction
 	// metric over Claude sessions. Unknown/empty == "occurrences".
 	Metric string
+	// Since, when non-zero, keeps only session files modified at or after it.
+	// The caller computes the cutoff (time.Now()-window at the CLI) so this
+	// package stays deterministic. Without it the report aggregates the entire
+	// session history, which dilutes "is adoption improving now" with sessions
+	// that predate any guidance fix.
+	Since time.Time
 }
 
 type Report struct {
-	Schema   int          `json:"schema"`
+	Schema int `json:"schema"`
+	// Since echoes the Options.Since cutoff (RFC3339) when a time window was
+	// applied, so consumers know the numbers describe a window, not all history.
+	Since    string       `json:"since,omitempty"`
 	Files    []FileReport `json:"files"`
 	Totals   Totals       `json:"totals"`
 	Adoption Adoption     `json:"adoption"`
@@ -38,7 +53,12 @@ type Report struct {
 	// requested it. Additive: existing consumers reading the fields above are
 	// unaffected.
 	Turns *TurnMetrics `json:"turns,omitempty"`
-	Notes []string     `json:"notes,omitempty"`
+	// Trend carries the recorded run history when the CLI was asked for it
+	// (--trend). Populated by the CLI from the history log, not by Audit —
+	// present here so the agent envelope includes it instead of silently
+	// dropping the flag on the JSON path.
+	Trend []HistoryEntry `json:"trend,omitempty"`
+	Notes []string       `json:"notes,omitempty"`
 }
 
 // turnsRequested reports whether the turn-reduction metric should be computed.
@@ -97,7 +117,16 @@ type Finding struct {
 	// (e.g. {"stash":40,"reset":22}) — the roadmap signal for which verbs
 	// git-kit has no answer for. Empty for covered findings.
 	Subcommands map[string]int `json:"subcommands,omitempty"`
-	Evidence    []Evidence     `json:"evidence,omitempty"`
+	// OneShot names the gap subcommands whose raw form is a single call, so a
+	// gk verb would save ~0 turns. They are real coverage holes but low
+	// leverage — without the label, count-ranking promotes them over
+	// multi-turn workflow gaps (an apply/reset recovery arc).
+	OneShot  []string   `json:"one_shot,omitempty"`
+	Evidence []Evidence `json:"evidence,omitempty"`
+
+	// gapEvidenceSeen tracks which subcommands already carry an evidence
+	// sample (one each, so rare subcommands aren't starved by frequent ones).
+	gapEvidenceSeen map[string]bool
 }
 
 type Evidence struct {
@@ -253,11 +282,14 @@ var findingSpecs = map[string]findingSpec{
 }
 
 // rawGitNonGap lists raw-git subcommands that must NOT be reported as a coverage
-// gap: read-only plumbing an agent legitimately reaches for, plus the diff/show
+// gap: read-only plumbing an agent legitimately reaches for, the diff/show
 // family (a covered domain whose rarer flag forms — `--numstat`, `--raw`,
-// `--exit-code` — otherwise slip past the diff classifiers). Every other
-// unmatched raw-git subcommand is a genuine signal that git-kit has no verb for
-// it.
+// `--exit-code` — otherwise slip past the diff classifiers), and low-level
+// plumbing git-kit intentionally never wraps. Every other unmatched raw-git
+// subcommand is a genuine signal that git-kit has no verb for it. Subcommands
+// that mix read-only and mutating forms (`remote`, `submodule`) are not listed
+// here — their read-only invocations are suppressed by isRawReadOnlyForm so the
+// mutating forms still surface as signals.
 var rawGitNonGap = map[string]bool{
 	// diff/show domain — covered conceptually; guard against false gaps.
 	"diff": true, "show": true,
@@ -268,6 +300,14 @@ var rawGitNonGap = map[string]bool{
 	"var": true, "check-ignore": true, "check-attr": true, "describe": true,
 	"reflog": true, "blame": true, "grep": true, "shortlog": true,
 	"count-objects": true, "verify-commit": true, "verify-tag": true, "version": true,
+	"cherry": true,
+	// low-level plumbing git-kit never wraps (some mutates the index/object
+	// store, but none is a roadmap signal).
+	"merge-tree": true, "read-tree": true, "checkout-index": true,
+	"diff-tree": true, "update-index": true, "commit-graph": true,
+	// `git kit …` is not a git subcommand at all — dev sessions probing gk's
+	// own help (`git kit --help`) leave it behind; pure noise, never a gap.
+	"kit": true,
 }
 
 // Audit reads local Codex/Claude JSONL sessions and reports git usage patterns.
@@ -292,8 +332,11 @@ func Audit(opts Options) (Report, error) {
 		expanded = append(expanded, expandHome(p, opts.Home))
 	}
 
-	files, notes := collectFiles(expanded, opts.MaxFiles)
+	files, notes := collectFiles(expanded, opts.MaxFiles, opts.Since)
 	report := Report{Schema: 1, Notes: notes}
+	if !opts.Since.IsZero() {
+		report.Since = opts.Since.UTC().Format(time.RFC3339)
+	}
 	aggregate := map[string]*Finding{}
 
 	wantTurns := turnsRequested(opts.Metric)
@@ -303,43 +346,42 @@ func Audit(opts Options) (Report, error) {
 		turns = &TurnMetrics{Source: "claude,codex", ByGroup: map[string]int{}}
 	}
 
-	for _, fc := range files {
-		fr, commands, err := auditFile(fc.path)
-		if err != nil {
-			report.Notes = append(report.Notes, fmt.Sprintf("%s: %v", fc.path, err))
+	// Parse phase — each file's read + JSON/turn extraction is independent, so
+	// fan out across cores. The merge below stays sequential in collectFiles
+	// order, keeping the report deterministic regardless of finish order.
+	outcomes := make([]fileOutcome, len(files))
+	var eg errgroup.Group
+	eg.SetLimit(runtime.GOMAXPROCS(0))
+	for i, fc := range files {
+		eg.Go(func() error {
+			outcomes[i] = processFile(fc.path, wantTurns)
+			return nil
+		})
+	}
+	_ = eg.Wait()
+
+	for i := range outcomes {
+		o := &outcomes[i]
+		if o.err != nil {
+			report.Notes = append(report.Notes, fmt.Sprintf("%s: %v", files[i].path, o.err))
 			continue
 		}
-		fr.Source = sourceForPath(fc.path)
-		report.Files = append(report.Files, fr)
+		report.Files = append(report.Files, o.fr)
 		report.Totals.Files++
-		report.Totals.Commands += fr.Commands
-		report.Totals.RawGit += fr.RawGit
-		report.Totals.GitKit += fr.GitKit
-		report.Totals.GKShort += fr.GKShort
-		report.Totals.ShellChains += fr.ShellChains
-		addFindings(aggregate, fc.path, commands)
+		report.Totals.Commands += o.fr.Commands
+		report.Totals.RawGit += o.fr.RawGit
+		report.Totals.GitKit += o.fr.GitKit
+		report.Totals.GKShort += o.fr.GKShort
+		report.Totals.ShellChains += o.fr.ShellChains
+		addFindings(aggregate, files[i].path, o.commands)
 
 		if wantTurns {
-			// The turn model needs a per-source shape: Claude's message-id batch or
-			// Codex's function_call batch. Sources with neither are skipped.
-			data, rerr := os.ReadFile(fc.path)
-			if rerr != nil {
-				report.Notes = append(report.Notes, fmt.Sprintf("%s: %v", fc.path, rerr))
-				continue
-			}
-			var events []TurnEvent
-			switch fr.Source {
-			case "claude":
-				events = SessionTurns(data)
-			case "codex":
-				events = CodexSessionTurns(data)
-			default:
+			if o.unknownTurnSource {
 				skippedUnknown++
 				continue
 			}
-			gitTurns, runs := turnEventsContribution(events)
-			turns.GitTurns += gitTurns
-			for _, r := range runs {
+			turns.GitTurns += o.gitTurns
+			for _, r := range o.runs {
 				turns.EstimatedTurnsSaved += r.TurnsSaved
 				turns.ByGroup[r.Group] += r.TurnsSaved
 				turns.Runs = append(turns.Runs, r)
@@ -398,9 +440,19 @@ func DefaultPaths(home string) []string {
 	}
 }
 
-func collectFiles(paths []string, maxFiles int) ([]fileCandidate, []string) {
+func collectFiles(paths []string, maxFiles int, since time.Time) ([]fileCandidate, []string) {
 	var out []fileCandidate
 	var notes []string
+	skippedOld := 0
+	// Applies uniformly to walked directories AND explicitly passed files, so a
+	// window means the same thing regardless of how the corpus was named.
+	keep := func(info os.FileInfo) bool {
+		if !since.IsZero() && info.ModTime().Before(since) {
+			skippedOld++
+			return false
+		}
+		return true
+	}
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -410,7 +462,9 @@ func collectFiles(paths []string, maxFiles int) ([]fileCandidate, []string) {
 			continue
 		}
 		if !info.IsDir() {
-			out = append(out, fileCandidate{path: p, info: info})
+			if keep(info) {
+				out = append(out, fileCandidate{path: p, info: info})
+			}
 			continue
 		}
 		err = filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error {
@@ -429,12 +483,18 @@ func collectFiles(paths []string, maxFiles int) ([]fileCandidate, []string) {
 				notes = append(notes, fmt.Sprintf("%s: %v", path, ierr))
 				return nil
 			}
-			out = append(out, fileCandidate{path: path, info: info})
+			if keep(info) {
+				out = append(out, fileCandidate{path: path, info: info})
+			}
 			return nil
 		})
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("%s: %v", p, err))
 		}
+	}
+	if skippedOld > 0 {
+		notes = append(notes, fmt.Sprintf("since filter: skipped %d session file(s) modified before %s",
+			skippedOld, since.UTC().Format(time.RFC3339)))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].info.ModTime().After(out[j].info.ModTime())
@@ -444,6 +504,52 @@ func collectFiles(paths []string, maxFiles int) ([]fileCandidate, []string) {
 		out = out[:maxFiles]
 	}
 	return out, notes
+}
+
+// fileOutcome carries one session file's parsed artifacts out of the parallel
+// parse phase; merging into the report happens sequentially afterwards.
+type fileOutcome struct {
+	fr                FileReport
+	commands          []string
+	gitTurns          int
+	runs              []CollapsibleRun
+	unknownTurnSource bool
+	err               error
+}
+
+// processFile reads and classifies one session file. With the turn metric it
+// reads the bytes once and feeds both the occurrence classifier and the turn
+// extractor — the turn path used to re-read the same file from disk.
+func processFile(path string, wantTurns bool) fileOutcome {
+	if !wantTurns {
+		fr, commands, err := auditFile(path)
+		if err != nil {
+			return fileOutcome{err: err}
+		}
+		fr.Source = sourceForPath(path)
+		return fileOutcome{fr: fr, commands: commands}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fileOutcome{err: err}
+	}
+	fr, commands := auditData(path, data)
+	fr.Source = sourceForPath(path)
+	o := fileOutcome{fr: fr, commands: commands}
+	// The turn model needs a per-source shape: Claude's message-id batch or
+	// Codex's function_call batch. Sources with neither are skipped.
+	var events []TurnEvent
+	switch fr.Source {
+	case "claude":
+		events = SessionTurns(data)
+	case "codex":
+		events = CodexSessionTurns(data)
+	default:
+		o.unknownTurnSource = true
+		return o
+	}
+	o.gitTurns, o.runs = turnEventsContribution(events)
+	return o
 }
 
 func auditFile(path string) (FileReport, []string, error) {
@@ -459,17 +565,7 @@ func auditFile(path string) (FileReport, []string, error) {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			for _, cmd := range ExtractCommands(line) {
-				commands = append(commands, cmd)
-				class := classifyCommand(cmd)
-				fr.Commands++
-				fr.RawGit += class.RawGit
-				fr.GitKit += class.GitKit
-				fr.GKShort += class.GKShort
-				if class.ShellChain {
-					fr.ShellChains++
-				}
-			}
+			commands = auditLine(&fr, commands, line)
 		}
 		if err == nil {
 			continue
@@ -480,6 +576,40 @@ func auditFile(path string) (FileReport, []string, error) {
 		return fr, commands, err
 	}
 	return fr, commands, nil
+}
+
+// auditData is auditFile over bytes already in memory, so the turn-metric path
+// can share one read between the occurrence classifier and the turn extractor.
+func auditData(path string, data []byte) (FileReport, []string) {
+	fr := FileReport{Path: path}
+	var commands []string
+	for len(data) > 0 {
+		i := bytes.IndexByte(data, '\n')
+		var line []byte
+		if i < 0 {
+			line, data = data, nil
+		} else {
+			line, data = data[:i+1], data[i+1:]
+		}
+		commands = auditLine(&fr, commands, line)
+	}
+	return fr, commands
+}
+
+// auditLine folds one JSONL record's commands into the running file report.
+func auditLine(fr *FileReport, commands []string, line []byte) []string {
+	for _, cmd := range ExtractCommands(line) {
+		commands = append(commands, cmd)
+		class := classifyCommand(cmd)
+		fr.Commands++
+		fr.RawGit += class.RawGit
+		fr.GitKit += class.GitKit
+		fr.GKShort += class.GKShort
+		if class.ShellChain {
+			fr.ShellChains++
+		}
+	}
+	return commands
 }
 
 // ExtractCommands returns shell command strings from one JSONL record.
@@ -761,9 +891,10 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 					matched = true
 				}
 				// Anything left over is raw git the audit has no git-kit mapping
-				// for: a coverage gap or a missing verb. Plumbing/diff forms are
+				// for: a coverage gap or a missing verb. Plumbing/diff forms and
+				// the read-only invocations of mutation-capable subcommands are
 				// suppressed so the gap stays a real roadmap signal.
-				if !matched && !rawGitNonGap[subcmd] {
+				if !matched && !rawGitNonGap[subcmd] && !isRawReadOnlyForm(subcmd, args) {
 					addGapFinding(findings, file, subcmd, seg.Text)
 				}
 			case "gk":
@@ -910,9 +1041,28 @@ func addGapFinding(findings map[string]*Finding, file, subcmd, command string) {
 	}
 	f.Count++
 	f.Subcommands[subcmd]++
-	if len(f.Evidence) < maxEvidence {
+	// One sample per subcommand instead of a first-N-overall cap: under the cap
+	// the frequent subcommands claimed every slot and the rare ones shipped with
+	// no example at all, forcing a corpus re-grep to judge the gap.
+	if f.gapEvidenceSeen == nil {
+		f.gapEvidenceSeen = map[string]bool{}
+	}
+	if !f.gapEvidenceSeen[subcmd] {
+		f.gapEvidenceSeen[subcmd] = true
 		f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
 	}
+	if oneShotGapSubcommands[subcmd] && !slices.Contains(f.OneShot, subcmd) {
+		f.OneShot = append(f.OneShot, subcmd)
+		sort.Strings(f.OneShot)
+	}
+}
+
+// oneShotGapSubcommands are gap subcommands whose raw invocation is one call —
+// a gk replacement would be a 1:1 swap saving ~0 turns. Kept in the gap (the
+// coverage hole is real) but labeled so the roadmap reads turn leverage, not
+// raw counts.
+var oneShotGapSubcommands = map[string]bool{
+	"init": true, "clone": true, "mv": true, "rm": true, "archive": true, "clean": true,
 }
 
 func sortedFindings(findings map[string]*Finding) []Finding {
@@ -1015,6 +1165,38 @@ func isRawIntegration(subcmd string) bool {
 	switch subcmd {
 	case "pull", "fetch", "merge", "rebase", "cherry-pick":
 		return true
+	default:
+		return false
+	}
+}
+
+// isRawReadOnlyForm matches the read-only invocations of subcommands that mix
+// inspection with mutation (remote, submodule). An agent legitimately reaches
+// for these to orient, so they are not a coverage gap; the mutating forms
+// (`remote add`/`set-url`, `submodule update`/`add`) fall through and stay
+// reportable as genuine missing-verb signals.
+func isRawReadOnlyForm(subcmd string, args []string) bool {
+	switch subcmd {
+	case "remote":
+		// bare `git remote`, `-v`, `show`, `get-url` list/inspect; the rest mutate.
+		if len(args) == 0 {
+			return true
+		}
+		switch args[0] {
+		case "-v", "--verbose", "show", "get-url":
+			return true
+		}
+		return false
+	case "submodule":
+		// bare `git submodule`, `status`, `summary` inspect; the rest mutate.
+		if len(args) == 0 {
+			return true
+		}
+		switch args[0] {
+		case "status", "summary":
+			return true
+		}
+		return false
 	default:
 		return false
 	}

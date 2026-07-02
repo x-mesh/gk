@@ -50,6 +50,7 @@ standard machine-readable envelope.`,
 		RunE: runSessionAudit,
 	}
 	auditCmd.Flags().Int("max-files", 200, "maximum newest JSONL session files to scan")
+	auditCmd.Flags().String("since", "", "only scan session files modified within this window (e.g. 30d, 12h; empty = all history)")
 	auditCmd.Flags().String("metric", "occurrences", "metric to compute: occurrences | turns | both (turns spans Claude + Codex sessions)")
 	auditCmd.Flags().Bool("viz", false, "with --metric=turns, draw an ASCII turn-graph of collapsible runs")
 	auditCmd.Flags().Bool("record", false, "append this run's turn-reduction metric to the history log (implies --metric=turns)")
@@ -64,16 +65,25 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 	record, _ := cmd.Flags().GetBool("record")
 	trend, _ := cmd.Flags().GetBool("trend")
 	viz, _ := cmd.Flags().GetBool("viz")
+	sinceRaw, _ := cmd.Flags().GetString("since")
 	// Recording and the trend view both need the turn metric — opt in for the user.
 	if (record || trend) && metric != "turns" && metric != "both" {
 		metric = "turns"
 	}
+	window, err := parseSinceWindow(sinceRaw)
+	if err != nil {
+		return err
+	}
 
-	report, err := sessionaudit.Audit(sessionaudit.Options{
+	opts := sessionaudit.Options{
 		Paths:    args,
 		MaxFiles: maxFiles,
 		Metric:   metric,
-	})
+	}
+	if window > 0 {
+		opts.Since = time.Now().Add(-window)
+	}
+	report, err := sessionaudit.Audit(opts)
 	if err != nil {
 		return err
 	}
@@ -94,6 +104,17 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Read the trend BEFORE the JSON early-return so --trend --json carries the
+	// history in the envelope instead of silently dropping the flag.
+	if trend && home != "" {
+		entries, rerr := sessionaudit.ReadHistory(sessionaudit.HistoryPath(home))
+		if rerr != nil {
+			report.Notes = append(report.Notes, fmt.Sprintf("trend: %v", rerr))
+		} else {
+			report.Trend = entries
+		}
+	}
+
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), report)
 	}
@@ -101,15 +122,38 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 	if viz && report.Turns != nil {
 		renderTurnGraph(cmd.OutOrStdout(), report.Turns.Runs)
 	}
-	if trend && home != "" {
-		entries, rerr := sessionaudit.ReadHistory(sessionaudit.HistoryPath(home))
-		if rerr != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "trend: %v\n", rerr)
-		} else {
-			renderTrend(cmd.OutOrStdout(), entries, 10)
-		}
+	if trend {
+		renderTrend(cmd.OutOrStdout(), report.Trend, 10)
 	}
 	return nil
+}
+
+// parseSinceWindow parses the --since window ("30d", "12h"). A "d" suffix means
+// days — time.ParseDuration alone stops at hours. Mirrors parseWorktreeStale so
+// windows read the same across gk flags. Empty means no window.
+func parseSinceWindow(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	var d time.Duration
+	if days, ok := strings.CutSuffix(raw, "d"); ok {
+		hours, err := time.ParseDuration(days + "h")
+		if err != nil {
+			return 0, fmt.Errorf("invalid --since %q", raw)
+		}
+		d = hours * 24
+	} else {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, fmt.Errorf("invalid --since %q", raw)
+		}
+		d = parsed
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid --since %q: must be positive", raw)
+	}
+	return d, nil
 }
 
 // renderTrend prints the most recent recorded runs and a sparkline of saveable
@@ -166,6 +210,9 @@ func renderTurnGraph(w io.Writer, runs []sessionaudit.CollapsibleRun) {
 func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 	fmt.Fprintf(w, "session audit: %d files, %d shell command(s)\n",
 		report.Totals.Files, report.Totals.Commands)
+	if report.Since != "" {
+		fmt.Fprintf(w, "window: sessions modified since %s\n", report.Since)
+	}
 	fmt.Fprintf(w, "usage: raw git %d, git-kit %d, gk(short) %d, shell chains %d\n",
 		report.Totals.RawGit, report.Totals.GitKit, report.Totals.GKShort, report.Totals.ShellChains)
 	if a := report.Adoption; a.GitInvocations > 0 {
@@ -212,6 +259,9 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 			}
 			if len(f.Subcommands) > 0 {
 				fmt.Fprintf(w, "    subcommands: %s\n", formatSubcommandBreakdown(f.Subcommands))
+			}
+			if len(f.OneShot) > 0 {
+				fmt.Fprintf(w, "    one-shot (low turn leverage): %s\n", strings.Join(f.OneShot, ", "))
 			}
 			if len(f.Evidence) > 0 {
 				ev := f.Evidence[0]

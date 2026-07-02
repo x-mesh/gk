@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExtractCommands_CodexArgumentsAndClaudeCommand(t *testing.T) {
@@ -308,6 +309,168 @@ func TestAudit_CloneAndFilterRepoAreCovered(t *testing.T) {
 		if _, ok := gap.Subcommands["filter-repo"]; ok {
 			t.Errorf("filter-repo must not appear in the gap: %v", gap.Subcommands)
 		}
+	}
+}
+
+func TestAudit_SuppressesPlumbingAndReadOnlyNonGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		// Low-level plumbing git-kit never wraps — must not pollute the gap.
+		`{"payload":{"arguments":"{\"cmd\":\"git merge-tree base a b\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git read-tree HEAD\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git commit-graph write\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git diff-tree --no-commit-id HEAD\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git checkout-index -a\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git update-index --refresh\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git cherry main\"}"}}`,
+		// Dev-session probe of gk's own help — not a git subcommand, never a gap.
+		`{"payload":{"arguments":"{\"cmd\":\"git kit --help\"}"}}`,
+		// Read-only forms of mutation-capable subcommands — orientation, not a gap.
+		`{"payload":{"arguments":"{\"cmd\":\"git remote -v\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git remote show origin\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git remote get-url origin\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git submodule status\"}"}}`,
+		// Mutating forms — these MUST stay reportable as genuine missing-verb signals.
+		`{"payload":{"arguments":"{\"cmd\":\"git remote add up https://example.com/x\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git submodule update --init\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gap := findingByKind(report, "uncovered-raw-git")
+	if gap == nil {
+		t.Fatalf("missing uncovered-raw-git finding in %+v", report.Findings)
+	}
+	// Only the two mutating forms remain in the gap.
+	if gap.Count != 2 {
+		t.Errorf("gap count = %d, want 2 (subs %v)", gap.Count, gap.Subcommands)
+	}
+	if gap.Subcommands["remote"] != 1 {
+		t.Errorf("remote add should stay a gap: %v", gap.Subcommands)
+	}
+	if gap.Subcommands["submodule"] != 1 {
+		t.Errorf("submodule update should stay a gap: %v", gap.Subcommands)
+	}
+	for _, absent := range []string{
+		"merge-tree", "read-tree", "commit-graph", "diff-tree",
+		"checkout-index", "update-index", "cherry", "kit",
+	} {
+		if _, ok := gap.Subcommands[absent]; ok {
+			t.Errorf("plumbing %q should not appear in the gap: %v", absent, gap.Subcommands)
+		}
+	}
+}
+
+func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		// Six apply hits — under a first-N cap these would claim every slot.
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a1.patch\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a2.patch\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a3.patch\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a4.patch\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a5.patch\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a6.patch\"}"}}`,
+		// Rarer subcommands must still get a sample each.
+		`{"payload":{"arguments":"{\"cmd\":\"git init\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git mv old.go new.go\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap := findingByKind(report, "uncovered-raw-git")
+	if gap == nil {
+		t.Fatalf("missing uncovered-raw-git finding in %+v", report.Findings)
+	}
+
+	if len(gap.Evidence) != 3 {
+		t.Errorf("evidence = %d entries, want 3 (one per subcommand): %+v", len(gap.Evidence), gap.Evidence)
+	}
+	prefixes := map[string]bool{}
+	for _, ev := range gap.Evidence {
+		for _, sub := range []string{"apply", "init", "mv"} {
+			if strings.HasPrefix(ev.Command, "git "+sub) {
+				prefixes[sub] = true
+			}
+		}
+	}
+	for _, sub := range []string{"apply", "init", "mv"} {
+		if !prefixes[sub] {
+			t.Errorf("no evidence sample for %q: %+v", sub, gap.Evidence)
+		}
+	}
+
+	// init and mv are one-call ops (~0 turn leverage); apply is not labeled —
+	// its cost shows up in multi-turn recovery arcs.
+	want := []string{"init", "mv"}
+	if len(gap.OneShot) != len(want) || gap.OneShot[0] != want[0] || gap.OneShot[1] != want[1] {
+		t.Errorf("one_shot = %v, want %v", gap.OneShot, want)
+	}
+}
+
+func TestAudit_SinceFilterSkipsOldSessions(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	newPath := filepath.Join(dir, "new.jsonl")
+	line := `{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`
+	writeLines(t, oldPath, line)
+	writeLines(t, newPath, line)
+	cutoff := time.Now().Add(-24 * time.Hour)
+	stale := cutoff.Add(-time.Hour)
+	if err := os.Chtimes(oldPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Audit(Options{Paths: []string{dir}, Home: dir, MaxFiles: 10, Since: cutoff})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Totals.Files != 1 {
+		t.Fatalf("files = %d, want 1 (old session should be windowed out): %+v", report.Totals.Files, report.Files)
+	}
+	if report.Files[0].Path != newPath {
+		t.Errorf("scanned %s, want %s", report.Files[0].Path, newPath)
+	}
+	if report.Since == "" {
+		t.Error("report.Since should echo the window cutoff")
+	}
+	foundNote := false
+	for _, n := range report.Notes {
+		if strings.Contains(n, "since filter") {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Errorf("missing since-filter note in %v", report.Notes)
+	}
+}
+
+func TestAudit_ZeroSinceScansAllSessions(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	writeLines(t, oldPath, `{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`)
+	stale := time.Now().Add(-365 * 24 * time.Hour)
+	if err := os.Chtimes(oldPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Audit(Options{Paths: []string{dir}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Files != 1 {
+		t.Fatalf("files = %d, want 1 (no window = all history)", report.Totals.Files)
+	}
+	if report.Since != "" {
+		t.Errorf("report.Since = %q, want empty without a window", report.Since)
 	}
 }
 

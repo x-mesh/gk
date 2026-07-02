@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk session audit`가 "전체 역사"가 아니라 "지금"을 측정한다 — `--since` 윈도우, 1-read 병렬 스캔, turn-가중 gap 신호.** `--since 30d`(또는 `12h` 등)는 세션 파일 mtime으로 코퍼스를 잘라, 가이던스 수정 **이전** 세션이 adoption rate를 희석해 "지금 개선되고 있는가"를 가리던 문제를 없앤다 — 리포트에 cutoff가 `since` 필드(human 출력은 `window:` 라인)로 박히고, 걸러낸 파일 수는 note로 남는다. `--trend --json` 조합은 종전에 JSON 조기 반환에 막혀 trend를 무음 탈락시켰는데, 이제 기록된 히스토리를 envelope의 `result.trend[]`로 싣는다. 스캔은 파일 단위로 병렬화되고 `--metric=turns` 경로의 파일 이중 읽기(occurrence 분류와 turn 추출이 각자 읽던 것)를 1회 읽기 공유로 바꿔, 1,300여 파일 기준 wall ~7.3s → ~1.0s — 병합은 수집 순서 그대로 순차라 출력은 결정적으로 동일하다. gap 신호도 로드맵답게 다듬었다: `uncovered-raw-git`의 evidence를 전역 5개 캡 대신 **서브커맨드당 1개씩** 보존하고(희귀 서브커맨드가 예시 없이 보고되던 문제 해소), 원시 형태가 단일 호출이라 gk verb로 바꿔도 turn 절감이 ~0인 서브커맨드(`init`,`clone`,`mv`,`rm`,`archive`,`clean`)는 `one_shot` 라벨로 표시해 count 랭킹이 다중-turn 워크플로 gap(apply/reset 복구 arc) 위로 올라오지 않게 했다. 저수준 plumbing(`merge-tree`,`read-tree`,`checkout-index`,`diff-tree`,`update-index`,`commit-graph`,`cherry`)과 `git kit …` help 잔여물, `remote`/`submodule`의 read-only 형태(`remote -v`/`show`/`get-url`, `submodule status`/`summary`)는 gap에서 제외하되, 변경형(`remote add`/`set-url`, `submodule update`/`add`)은 missing-verb 신호로 유지한다.
+- **`clone.hosts`가 계정 프로필이 되고, `gk init`이 그 프로필로 origin을 연결한다.** alias에 `owner`를 주면 `alias:repo` 단축이 owner를 프로필에서 완성하고(`gk clone personal:playground`), `ssh_host`는 `~/.ssh/config`의 Host alias를 ssh URL에 심어 다중 계정 키 분리를 지원한다. origin이 없는 repo에서 `gk init`은 remote 연결 단계를 하나 얹는다: 등록된 계정 프로필을 **config 선언 순서 그대로** 피커에 나열해 두 키 입력으로 연결하고, 프로필이 없으면 direct 입력(owner/repo 또는 URL) 후 그 계정을 글로벌 `clone.hosts`에 저장할지 제안한다. 비대화형은 `--remote <alias|alias:repo|owner/repo|URL>`(+`--name`, `--ssh`/`--https` 프로토콜 오버라이드)로 프롬프트 없이 연결하고, JSON 결과에 `result.remote = {status, name, url, alias}`가 실린다. `gk clone`과 달리 여기서 알 수 없는 alias는 에러다 — `git remote add`는 오타를 그대로 기록해 첫 pull에서야 터지기 때문. Esc는 언제든 remote 단계만 건너뛰며, 연결 후에는 원격 저장소가 아직 없을 때를 위한 `gh repo create` 후속 명령을 안내한다.
+
 ## [0.107.0] - 2026-07-02
 
 ### Added

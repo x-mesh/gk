@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk commit`의 AI classify가 대형 작업 트리에서도 mid-JSON 절단 없이 동작한다 — 응답 인덱스 프로토콜, 파일 청크 분할, 응답 토큰 캡 배선.** 종전에는 파일 목록을 프롬프트 그대로 응답에 재나열시켜, 파일이 수천 개면 응답 JSON 자체가 프로바이더의 출력 한도를 넘어 잘렸다(`ai.commit.max_tokens`는 입력 절단 예산일 뿐이라 이 실패를 전혀 제어하지 못했는데, 에러 힌트는 그 값을 올리라고 안내하고 있었다). 이제 프롬프트는 파일을 번호로 나열하고 모델은 번호만 참조해 응답 크기가 경로 길이와 무관해지며, 150개씩 청크로 나눠 호출한 뒤(각 호출의 응답 캡을 파일 수에 비례해 배선) 같은 타입 그룹을 병합하고 커버리지 가드로 누락 파일을 쓸어 담는다 — 5개 어댑터(anthropic/openai 호환/gemini/qwen/kiro) 전부. 에러 힌트도 실제로 듣는 노브(재시도·`--plan` 경로·부분 스테이징)를 가리키도록 고쳤다.
+- **`gk init`이 Swift/Dart/C++ 프로젝트를 인식하고, `.gitignore`에 반영 안 된 대형 untracked 트리를 `gk doctor`가 선제 경고한다.** marker 파일 테이블에 `Package.swift`/`pubspec.yaml`/`CMakeLists.txt`가 빠져 있던 탓에, SwiftPM `.build/` 산출물 수천 개가 언어 미탐지 상태로 `gk commit`의 AI classify 페이로드까지 흘러드는 사고가 있었다 — 이제 세 언어 모두 감지되고 각자의 빌드 산출물 패턴(`.build/`·`.swiftpm/`·`DerivedData/`, `.dart_tool/`, `CMakeFiles/`·`cmake-build-*/`)이 스캐폴딩된다. `gk commit`의 2차 방어선(noise 분류)도 `.build`/`.dart_tool`/`.swiftpm`을 인지해 init을 거치지 않은 기존 repo도 보호한다. `gk doctor`의 untracked 검사는 이제 항목이 알려진 toolchain 산출물과 매치되면 그 사실과 함께 `gk init --only gitignore` 조치를 제시한다. AI gitignore 보강(`--ai-gitignore`)은 `init.ai_gitignore: true`로 기본값을 만들 수 있고, provider가 설정된 채로 옵션이 꺼져 있으면 스캐폴드 후 한 줄 힌트가 뜬다.
+- **`gk session audit`가 어답션을 프로젝트별로 분해하고, `gk unstage`가 새로 생겼다.** 글로벌 adoption rate 하나로는 "어느 repo에 계약/훅을 깔아야 하는가"를 답할 수 없었다 — 이제 `projects[]`가 raw git 많은 순으로 프로젝트별 adoption을 나열한다(Claude 세션은 워크스페이스 디렉터리로, Codex 세션은 프로젝트 마커가 없어 한 버킷으로 집계). 새 `gk unstage [path...]`는 인덱스만 내리고 워킹트리 내용은 건드리지 않는 안전한 `git reset [-q] HEAD -- <paths>` 형태를 감싸며, audit·hint도 이 형태를 `raw-unstage`(covered)로 인식한다 — 브랜치를 움직이는 reset(`--soft`/`--hard`, `HEAD~1`)은 여전히 `gk undo`의 영역이라 gap으로 남는다.
+
+### Fixed
+
+- **`gk session audit`의 `--since` 시간 윈도우, `--trend --json` 무음 탈락, 순차 스캔 속도.** `--since 30d`(또는 `12h` 등)로 세션 파일을 mtime 기준으로 잘라, 가이던스 수정 이전 세션이 adoption rate를 희석해 "지금 개선되고 있는가"를 가리던 문제를 없앴다. `--trend --json` 조합은 JSON 조기 반환에 막혀 trend를 무음 탈락시켰는데, 이제 기록된 히스토리를 `result.trend[]`로 싣는다. 스캔은 파일 단위로 병렬화되고 `--metric=turns` 경로의 이중 읽기(occurrence 분류와 turn 추출이 파일을 각자 읽던 것)를 1회 읽기 공유로 바꿔, 1,300여 파일 기준 wall ~7.3s → ~1.0s로 줄었다.
+
 ## [0.108.0] - 2026-07-02
 
 ### Added

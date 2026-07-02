@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -194,6 +196,71 @@ func TestResolveURL_SSHHost(t *testing.T) {
 	}
 	if got != "git@github.com-acme:other/repo.git" {
 		t.Errorf("ssh_host with explicit owner = %q", got)
+	}
+}
+
+func TestCloneHostsOrder(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "config.yaml")
+	local := filepath.Join(dir, ".gk.yaml")
+
+	// Deliberately non-alphabetical, with mixed case; the local file
+	// overrides one alias (must keep its global position) and adds one.
+	if err := os.WriteFile(global, []byte(
+		"clone:\n  hosts:\n    zeta: { host: z.example }\n    Alpha: { host: a.example }\n    mid: { host: m.example }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(
+		"clone:\n  hosts:\n    alpha: { protocol: https }\n    beta: { host: b.example }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := cloneHostsOrder(global, local)
+	want := []string{"zeta", "alpha", "mid", "beta"}
+	if len(got) != len(want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+
+	// Missing / malformed files contribute nothing, never error.
+	if got := cloneHostsOrder(filepath.Join(dir, "nope.yaml")); got != nil {
+		t.Errorf("missing file order = %v, want nil", got)
+	}
+	broken := filepath.Join(dir, "broken.yaml")
+	os.WriteFile(broken, []byte(":\t not yaml ["), 0o644)
+	if got := cloneHostsOrder(broken); got != nil {
+		t.Errorf("broken file order = %v, want nil", got)
+	}
+	// hosts absent → nil.
+	nohosts := filepath.Join(dir, "nohosts.yaml")
+	os.WriteFile(nohosts, []byte("clone:\n  default_protocol: ssh\n"), 0o644)
+	if got := cloneHostsOrder(nohosts); got != nil {
+		t.Errorf("no-hosts order = %v, want nil", got)
+	}
+}
+
+func TestLoad_PopulatesHostsOrder(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "gk")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "clone:\n  hosts:\n    work:     { host: github.com, owner: acme }\n    personal: { host: github.com, owner: me }\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Clone.HostsOrder) < 2 || cfg.Clone.HostsOrder[0] != "work" || cfg.Clone.HostsOrder[1] != "personal" {
+		t.Errorf("HostsOrder = %v, want [work personal ...]", cfg.Clone.HostsOrder)
 	}
 }
 

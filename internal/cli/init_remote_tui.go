@@ -40,21 +40,16 @@ type remoteTUIInput struct {
 }
 
 // remoteAccountItems builds the account-picker rows: one per
-// owner-bearing clone.hosts profile (alphabetical, with a resolved URL
-// preview), then "direct…" and "skip". With no usable profiles the
-// order flips so "skip" sits under the cursor and a bare Enter is a
-// no-op — existing users who never registered profiles pay one
-// keystroke, not a detour. Ownerless aliases are host shorthands, not
-// account profiles, so they are omitted (direct input still covers
-// them). Pure — safe to unit test without a TTY.
+// owner-bearing clone.hosts profile (in the order the user declared
+// them in config, with a resolved URL preview), then "direct…" and
+// "skip". With no usable profiles the order flips so "skip" sits under
+// the cursor and a bare Enter is a no-op — existing users who never
+// registered profiles pay one keystroke, not a detour. Ownerless
+// aliases are host shorthands, not account profiles, so they are
+// omitted (direct input still covers them). Pure — safe to unit test
+// without a TTY.
 func remoteAccountItems(cfg config.CloneConfig, forceSSH, forceHTTPS bool) []ui.PickerItem {
-	aliases := make([]string, 0, len(cfg.Hosts))
-	for name, alias := range cfg.Hosts {
-		if alias.Owner != "" {
-			aliases = append(aliases, name)
-		}
-	}
-	sort.Strings(aliases)
+	aliases := orderedProfileAliases(cfg)
 
 	items := make([]ui.PickerItem, 0, len(aliases)+2)
 	for _, name := range aliases {
@@ -84,6 +79,35 @@ func remoteAccountItems(cfg config.CloneConfig, forceSSH, forceHTTPS bool) []ui.
 		return []ui.PickerItem{skip, direct}
 	}
 	return append(items, direct, skip)
+}
+
+// orderedProfileAliases returns the owner-bearing clone.hosts aliases in
+// presentation order: config declaration order first (cfg.HostsOrder),
+// then any stragglers the order list does not know about (aliases from
+// env/git-config layers, or an unreadable file) alphabetically.
+func orderedProfileAliases(cfg config.CloneConfig) []string {
+	isProfile := func(name string) bool {
+		a, ok := cfg.Hosts[name]
+		return ok && a.Owner != ""
+	}
+
+	seen := map[string]bool{}
+	aliases := make([]string, 0, len(cfg.Hosts))
+	for _, name := range cfg.HostsOrder {
+		if isProfile(name) && !seen[name] {
+			seen[name] = true
+			aliases = append(aliases, name)
+		}
+	}
+
+	var rest []string
+	for name := range cfg.Hosts {
+		if isProfile(name) && !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	return append(aliases, rest...)
 }
 
 // promptRemoteTUI runs the interactive account + name steps and returns

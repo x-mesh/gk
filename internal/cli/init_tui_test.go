@@ -41,6 +41,27 @@ func TestRemoteAccountItems_ProfilesSortedWithPreviews(t *testing.T) {
 	}
 }
 
+func TestRemoteAccountItems_FollowConfigOrder(t *testing.T) {
+	// HostsOrder (the YAML declaration order) wins over the alphabetical
+	// fallback; owner-less entries in the order list are skipped; known
+	// profiles missing from the list trail alphabetically.
+	cfg := remoteTestCfg()
+	cfg.Hosts["zz-extra"] = config.HostAlias{Host: "github.com", Owner: "extra"}
+	cfg.HostsOrder = []string{"work", "legacy", "personal"} // legacy has no owner; zz-extra unknown to the list
+
+	items := remoteAccountItems(cfg, false, false)
+	gotOrder := []string{items[0].Key, items[1].Key, items[2].Key}
+	wantOrder := []string{"work", "personal", "zz-extra"}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("picker order = %v, want %v", gotOrder, wantOrder)
+		}
+	}
+	if items[3].Key != remotePickDirect || items[4].Key != remotePickSkip {
+		t.Errorf("direct/skip should trail: %+v", items[3:])
+	}
+}
+
 func TestRemoteAccountItems_NoProfilesSkipFirst(t *testing.T) {
 	cfg := config.CloneConfig{DefaultProtocol: "ssh", DefaultHost: "github.com"}
 	items := remoteAccountItems(cfg, false, false)

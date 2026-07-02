@@ -535,6 +535,14 @@ type CloneConfig struct {
 	Root            string               `mapstructure:"root"             yaml:"root"`
 	Hosts           map[string]HostAlias `mapstructure:"hosts"            yaml:"hosts"`
 	PostActions     []string             `mapstructure:"post_actions"     yaml:"post_actions"`
+
+	// HostsOrder lists the Hosts keys in the order the user wrote them
+	// (global config first, repo-local additions appended). Derived by
+	// Load from the YAML files — not a config key itself — because the
+	// decoded map cannot carry document order. Consumers presenting
+	// aliases to a human (e.g. gk init's account picker) should follow
+	// it; aliases missing from it (env/git-config layers) sort after.
+	HostsOrder []string `mapstructure:"-" yaml:"-"`
 }
 
 // HostAlias names a custom clone shorthand like `gl:` or `work:`.

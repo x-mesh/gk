@@ -3030,6 +3030,7 @@ Remote:
 Behaviour notes:
 
 - **Protocol is never asked.** It resolves profile `protocol` → `clone.default_protocol` → `ssh`, and each picker row previews the final URL. `--ssh` / `--https` override for one run.
+- **Picker rows follow your config's declaration order** (global file first, repo-local additions after), so the profile you list first is the default under the cursor.
 - **Existing `origin` short-circuits the step** — the summary shows `origin → <url> (existing)` and nothing is touched, `--force` included. Re-running init is idempotent.
 - With **no profiles registered**, the picker offers only `skip` (default) and `direct…`. After a direct entry is wired, init offers to save the account into the global `clone.hosts` so the next init is a pick.
 - **Esc at any step skips the remote step** — cancellation is never an error, and declining the final confirm skips the remote add along with the file writes.

@@ -467,6 +467,8 @@ clone:
 
 Merging note: config layers combine **field by field** (deep merge), not entry by entry. A repo-local `.gk.yaml` that sets only `protocol` on the `work` alias inherits the global entry's `host` and `owner` — it does not redefine the alias from scratch. Aliases only present in one layer survive untouched.
 
+Ordering: wherever gk presents aliases to pick from (e.g. `gk init`'s account picker), they appear in **declaration order** — the global file's order first, then repo-local additions. Put your most-used account at the top of `hosts:` and it sits under the cursor.
+
 Aliases without `owner` behave exactly as before the field existed; `alias:repo` on such an alias fails with a "no owner configured" hint instead of guessing.
 
 ### `land.promote`

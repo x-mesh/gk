@@ -3,7 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // cloneURLSchemes lists the URL prefixes that mark a spec as fully
@@ -106,6 +109,64 @@ func (c CloneConfig) ResolveURL(spec string, forceSSH, forceHTTPS bool) (string,
 		host = "github.com"
 	}
 	return buildCloneURL(proto, host, owner, repo), CloneMeta{Host: host, Owner: owner, Repo: repo}, nil
+}
+
+// cloneHostsOrder extracts the clone.hosts alias names from the given
+// YAML files in document order — earlier files win position, later files
+// only append new names. Load uses it to reconstruct the order viper's
+// map decoding discards, so pickers can present profiles the way the
+// user wrote them. Keys are lowercased to match viper's case-folded map
+// keys. Order is advisory: unreadable or malformed files contribute
+// nothing, never an error.
+func cloneHostsOrder(paths ...string) []string {
+	seen := map[string]bool{}
+	var order []string
+	for _, p := range paths {
+		for _, k := range yamlMappingKeys(p, "clone", "hosts") {
+			k = strings.ToLower(k)
+			if !seen[k] {
+				seen[k] = true
+				order = append(order, k)
+			}
+		}
+	}
+	return order
+}
+
+// yamlMappingKeys returns the keys of the mapping reached by walking
+// `path` from the document root of the YAML file, in document order.
+// Any miss (missing file, parse error, non-mapping node) yields nil.
+func yamlMappingKeys(file string, path ...string) []string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	node := doc.Content[0]
+	for _, seg := range path {
+		if node == nil || node.Kind != yaml.MappingNode {
+			return nil
+		}
+		var next *yaml.Node
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == seg {
+				next = node.Content[i+1]
+				break
+			}
+		}
+		node = next
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	keys := make([]string, 0, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keys = append(keys, node.Content[i].Value)
+	}
+	return keys
 }
 
 // splitOwnerRepo validates `owner/repo` shape. `.git` suffix is tolerated

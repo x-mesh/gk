@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`init.ai_gitignore`는 global config에서만 존중된다.** 이 키는 `gk init` 시 원격 AI 호출을 켜는 스위치라서, clone해 온(신뢰할 수 없는) 저장소의 repo-local `.gk.yaml`이 이를 심어두면 그 안에서 `gk init`을 실행한 사람의 프로젝트 메타데이터가 플래그 없이 프로바이더로 나갈 수 있었다 — cross-vendor 리뷰의 쟁점 finding(F6)을 하드닝으로 수용한 것. 이제 `$XDG_CONFIG_HOME/gk/config.yaml`의 값만 읽고 repo-local 레이어는 이 키에 한해 무시하며, 명시 `--ai-gitignore[=false]` 플래그는 여전히 우선한다.
+
 ## [0.109.0] - 2026-07-03
 
 ### Added

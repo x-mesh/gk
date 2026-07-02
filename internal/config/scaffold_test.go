@@ -117,3 +117,26 @@ func TestEnsureGlobalConfigRespectsOptOut(t *testing.T) {
 		t.Errorf("file should NOT exist with opt-out: err=%v", err)
 	}
 }
+
+// F6 hardening: init.ai_gitignore is honored from the GLOBAL config file
+// only — a repo-local .gk.yaml in an untrusted checkout must not be able to
+// enable the remote AI call without an explicit flag.
+func TestGlobalInitAIGitignore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	if config.GlobalInitAIGitignore() {
+		t.Fatal("missing global config must read as false")
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gk", "config.yaml"),
+		[]byte("init:\n  ai_gitignore: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !config.GlobalInitAIGitignore() {
+		t.Fatal("global init.ai_gitignore: true must read as true")
+	}
+}

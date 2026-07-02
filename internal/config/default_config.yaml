@@ -204,7 +204,9 @@ init:
   # patterns whenever `gk init` scaffolds one — same as passing
   # --ai-gitignore every time. Off by default because it sends project
   # metadata to the provider; an explicit --ai-gitignore[=false] flag
-  # still wins for one run.
+  # still wins for one run. Honored from THIS global file only — a
+  # repo-local .gk.yaml cannot enable it (an untrusted checkout must not
+  # be able to trigger a remote AI call silently).
   ai_gitignore: false
 
 worktree:

@@ -481,6 +481,8 @@ Aliases without `owner` behave exactly as before the field existed; `alias:repo`
 
 Makes `gk init`'s opt-in AI gitignore augmentation the default: whenever init scaffolds a `.gitignore`, the configured AI provider is asked for extra project-specific ignore patterns after the plan is confirmed. Off by default because the call sends project metadata (detected languages, file names) to the provider. The structural scaffold — language detection via marker files (`go.mod`, `Cargo.toml`, `Package.swift`, `pubspec.yaml`, `CMakeLists.txt`, …) plus security/IDE/compiled-artifact patterns — always runs and needs no AI. When a provider is configured but neither the flag nor this key is set, init prints a one-line hint pointing at the option.
 
+**Global config only.** Unlike other keys, this one is read exclusively from `$XDG_CONFIG_HOME/gk/config.yaml` — a repo-local `.gk.yaml` setting it is ignored. The key triggers a remote AI call, so a cloned (potentially untrusted) repository must not be able to switch it on for anyone who runs `gk init` inside it; only your own global config or an explicit `--ai-gitignore` may.
+
 ```yaml
 init:
   ai_gitignore: true

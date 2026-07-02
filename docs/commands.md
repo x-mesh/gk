@@ -3029,7 +3029,7 @@ gk init [flags]
 |------|---------|-------------|
 | `--force` | false | Overwrite existing files instead of merging or skipping. Never rewrites an existing remote |
 | `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
-| `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in — set [`init.ai_gitignore: true`](config.md#initai_gitignore) to make it the default (an explicit `--ai-gitignore[=false]` still wins). When a provider is available but the option is off, init prints a one-line hint after scaffolding |
+| `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in — set [`init.ai_gitignore: true`](config.md#initai_gitignore) in the **global** config to make it the default (repo-local `.gk.yaml` is ignored for this key, so an untrusted checkout can't enable the remote call; an explicit `--ai-gitignore[=false]` still wins). When a provider is available but the option is off, init prints a one-line hint after scaffolding |
 | `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, `ai`, or `remote` |
 | `--remote <spec>` | _(none)_ | Connect `origin` without prompting. Accepts a `clone.hosts` alias, `alias:repo`, `owner/repo`, or a full URL |
 | `--name <project>` | directory name | Project name for the origin URL when `--remote` names a bare alias. Defaults to the sanitized directory basename |

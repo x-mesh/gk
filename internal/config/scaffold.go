@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/spf13/viper"
 )
 
 //go:embed default_config.yaml
@@ -30,6 +32,25 @@ func GlobalConfigPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "gk", "config.yaml")
+}
+
+// GlobalInitAIGitignore reports whether the GLOBAL config file turns on
+// init.ai_gitignore. `gk init` consults this instead of the layered value:
+// the key enables a remote AI call, so a repo-local .gk.yaml inside an
+// untrusted checkout must not be able to switch it on silently — only the
+// user's own global config (or an explicit --ai-gitignore flag) may.
+func GlobalInitAIGitignore() bool {
+	path := GlobalConfigPath()
+	if path == "" {
+		return false
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return false
+	}
+	return v.GetBool("init.ai_gitignore")
 }
 
 // WriteDefaultConfig creates the commented YAML template at path.

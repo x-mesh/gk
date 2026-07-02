@@ -139,10 +139,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg, _ := config.Load(cmd.Flags())
-	// init.ai_gitignore가 켜져 있으면 --ai-gitignore가 기본이 된다.
-	// 명시 플래그(--ai-gitignore[=false])는 config보다 우선한다.
+	// init.ai_gitignore는 GLOBAL config에서만 존중한다 — 이 키는 원격 AI
+	// 호출을 켜므로, 신뢰할 수 없는 checkout의 repo-local .gk.yaml이 플래그
+	// 없이 이를 켤 수 있으면 안 된다 (cross-vendor review F6 하드닝).
+	// 명시 플래그(--ai-gitignore[=false])는 언제나 우선한다.
 	if !cmd.Flags().Changed("ai-gitignore") {
-		aiGitignore = cfg.Init.AIGitignore
+		aiGitignore = config.GlobalInitAIGitignore()
 	}
 
 	// Remote 단계 계획 — 플래그 경로. 대화형(플래그 없음)은 TUI가 결정한다.

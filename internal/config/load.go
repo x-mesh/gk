@@ -306,6 +306,15 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		cfg.AI.Lang = cfg.Output.Lang
 	}
 
+	// Reconstruct the clone.hosts declaration order the map decode above
+	// discarded — global file first, repo-local additions after — so
+	// pickers can present profiles the way the user wrote them.
+	orderPaths := []string{filepath.Join(globalDir, "config.yaml")}
+	if repoRoot != "" {
+		orderPaths = append(orderPaths, filepath.Join(repoRoot, ".gk.yaml"))
+	}
+	cfg.Clone.HostsOrder = cloneHostsOrder(orderPaths...)
+
 	return &cfg, nil
 }
 

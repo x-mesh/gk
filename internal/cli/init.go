@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,18 @@ var validOnlyValues = map[string]bool{
 	"gitignore": true,
 	"config":    true,
 	"ai":        true,
+	"remote":    true,
+}
+
+// validOnlyList renders the accepted --only values for error messages,
+// derived from the map so the two can never drift apart.
+func validOnlyList() string {
+	keys := make([]string, 0, len(validOnlyValues))
+	for k := range validOnlyValues {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 func init() {
@@ -39,10 +53,14 @@ AGENTS.md are managed separately by gk agents install.
 	`,
 		RunE: runInit,
 	}
-	initCmd.Flags().String("only", "", "generate only the specified target (gitignore, config, ai)")
+	initCmd.Flags().String("only", "", "generate only the specified target (gitignore, config, ai, remote)")
 	initCmd.Flags().Bool("force", false, "overwrite existing files instead of merging")
 	initCmd.Flags().Bool("kiro", false, "also scaffold .kiro/steering/ documents")
 	initCmd.Flags().Bool("ai-gitignore", false, "ask the configured AI provider for extra .gitignore patterns after confirmation")
+	initCmd.Flags().String("remote", "", "connect origin to a clone.hosts alias, owner/repo, or URL")
+	initCmd.Flags().String("name", "", "project name for the origin URL (default: sanitized directory name)")
+	initCmd.Flags().Bool("ssh", false, "force ssh URL for the origin remote (overrides profile/config protocol)")
+	initCmd.Flags().Bool("https", false, "force https URL for the origin remote (overrides profile/config protocol)")
 
 	// deprecated alias: gk init ai
 	initCmd.AddCommand(&cobra.Command{
@@ -71,6 +89,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 	kiro, _ := cmd.Flags().GetBool("kiro")
 	aiGitignore, _ := cmd.Flags().GetBool("ai-gitignore")
+	remoteSpec, _ := cmd.Flags().GetString("remote")
+	nameFlag, _ := cmd.Flags().GetString("name")
+	forceSSH, _ := cmd.Flags().GetBool("ssh")
+	forceHTTPS, _ := cmd.Flags().GetBool("https")
+	if forceSSH && forceHTTPS {
+		return errors.New("--ssh and --https are mutually exclusive")
+	}
 	dryRun, _ := cmd.Root().PersistentFlags().GetBool("dry-run")
 	jsonOut := JSONOut()
 	humanOut := cmd.OutOrStdout()
@@ -93,7 +118,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// --only 유효성 검사
 	if only != "" && !validOnlyValues[only] {
-		return fmt.Errorf("gk init: invalid --only value %q (valid: gitignore, config, ai)", only)
+		return fmt.Errorf("gk init: invalid --only value %q (valid: %s)", only, validOnlyList())
 	}
 
 	dir, gitRunner, gitInitState, err := prepareInitGit(ctx, dir, dryRun, humanOut)
@@ -113,12 +138,30 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Remote 단계 계획 — 플래그 경로. 대화형(플래그 없음)은 TUI가 결정한다.
+	interactive := promptAllowed() && !dryRun
+	var rPlan *remotePlan
+	var cloneCfg config.CloneConfig
+	remoteEnabled := only == "" || only == "remote"
+	if remoteEnabled {
+		cfg, _ := config.Load(cmd.Flags())
+		cloneCfg = cfg.Clone
+		rPlan, err = planInitRemote(ctx, cloneCfg, dir, gitRunner, remoteSpec, nameFlag, forceSSH, forceHTTPS, interactive, only)
+		if err != nil {
+			return err
+		}
+	}
+
 	confirmed := true
 
 	// TTY 환경이고 dry-run이 아니면 TUI 표시
-	if promptAllowed() && !dryRun {
+	if interactive {
+		var remoteIn *remoteTUIInput
+		if remoteEnabled {
+			remoteIn = &remoteTUIInput{Cfg: cloneCfg, Dir: dir, Plan: rPlan, ForceSSH: forceSSH, ForceHTTPS: forceHTTPS}
+		}
 		var ok bool
-		plan, ok, err = RunInitTUI(result, plan)
+		plan, rPlan, ok, err = RunInitTUI(result, plan, remoteIn)
 		if err != nil {
 			return fmt.Errorf("gk init: tui: %w", err)
 		}
@@ -139,6 +182,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Remote 연결은 파일 계획과 별개의 git 부작용 — 파일이 모두 쓰인 뒤
+	// 실행하고, 실패해도 scaffold 결과는 유지한다 (경고 + 재시도 힌트).
+	remoteResult := executeRemotePlan(ctx, humanOut, gitRunner, rPlan, confirmed, dryRun)
+
+	// TUI에서 direct로 입력한 계정은 다음 init부터 선택만 하면 되도록
+	// global config 프로필 저장을 1회 제안한다 (실패해도 경고만).
+	if interactive && remoteResult != nil && remoteResult.Status == "added" {
+		offerProfileSave(ctx, cmd, cloneCfg, rPlan, humanOut)
+	}
+
 	// 컴파일 산출물 경고 — .gitignore 추가만으로는 이미 tracked된 파일을
 	// 제거하지 못하므로 사용자에게 git rm 가이드를 보여준다.
 	gitignoreApplied := plan.Gitignore != nil && plan.Gitignore.Action != initx.ActionSkip && !dryRun
@@ -153,6 +206,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			Dir:     dir,
 			GitInit: gitInitState,
 			Files:   files,
+			Remote:  remoteResult,
 		}
 		if gitignoreApplied && len(result.Garbage) > 0 {
 			out.Garbage = result.Garbage
@@ -169,6 +223,7 @@ type initResultJSON struct {
 	Dir     string                   `json:"dir"`
 	GitInit string                   `json:"git_init"`
 	Files   []initx.FileResult       `json:"files"`
+	Remote  *remoteResultJSON        `json:"remote,omitempty"`
 	Garbage []initx.GarbageDetection `json:"garbage,omitempty"`
 }
 

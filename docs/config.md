@@ -471,6 +471,21 @@ Ordering: wherever gk presents aliases to pick from (e.g. `gk init`'s account pi
 
 Aliases without `owner` behave exactly as before the field existed; `alias:repo` on such an alias fails with a "no owner configured" hint instead of guessing.
 
+### `init.ai_gitignore`
+
+| | |
+|-|-|
+| Type | bool |
+| Default | `false` |
+| CLI flag | `--ai-gitignore` (an explicit `--ai-gitignore[=false]` wins for one run) |
+
+Makes `gk init`'s opt-in AI gitignore augmentation the default: whenever init scaffolds a `.gitignore`, the configured AI provider is asked for extra project-specific ignore patterns after the plan is confirmed. Off by default because the call sends project metadata (detected languages, file names) to the provider. The structural scaffold — language detection via marker files (`go.mod`, `Cargo.toml`, `Package.swift`, `pubspec.yaml`, `CMakeLists.txt`, …) plus security/IDE/compiled-artifact patterns — always runs and needs no AI. When a provider is configured but neither the flag nor this key is set, init prints a one-line hint pointing at the option.
+
+```yaml
+init:
+  ai_gitignore: true
+```
+
 ### `land.promote`
 
 | | |

@@ -2982,7 +2982,7 @@ gk guide undo           # recovery flow
 
 One-shot project bootstrap. Analyzes the repository (language stack, frameworks, build tools, CI configs) and scaffolds the artifacts a new repo usually needs:
 
-1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when `--ai-gitignore` is passed.
+1. `.gitignore` — language/IDE/security baseline, optionally augmented by AI-suggested project-specific patterns when `--ai-gitignore` is passed (or [`init.ai_gitignore: true`](config.md#initai_gitignore) makes that the default). Languages are detected from marker files up to three directories deep — `go.mod`, `package.json`, `requirements.txt`/`pyproject.toml`/`setup.py`, `Cargo.toml`, `pom.xml`/`build.gradle`, `Gemfile`, `composer.json`, `Package.swift`, `pubspec.yaml`, `CMakeLists.txt` — each contributing its build-output patterns (Swift's `.build/`/`.swiftpm/`, Dart's `.dart_tool/`, CMake's `CMakeFiles/`, …).
 2. `.gk.yaml` — repo-local gk configuration with a sensible default `ai.commit.deny_paths` block.
 3. AI context files — `.kiro/steering/{product,tech,structure}.md` when `--kiro` is passed (`CLAUDE.md` / `AGENTS.md` are intentionally left to the assistants themselves).
 4. `origin` remote — when the repo has none, init offers to wire it from a [`clone.hosts` account profile](config.md#clonehosts), a direct `owner/repo`, or a URL (see [Remote connection](#remote-connection)).
@@ -3001,7 +3001,7 @@ gk init [flags]
 |------|---------|-------------|
 | `--force` | false | Overwrite existing files instead of merging or skipping. Never rewrites an existing remote |
 | `--kiro` | false | Also scaffold `.kiro/steering/product.md`, `tech.md`, and `structure.md` for Kiro-compatible assistants |
-| `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in |
+| `--ai-gitignore` | false | After confirmation, ask the configured AI provider for extra `.gitignore` patterns. This sends bounded project metadata, so it is opt-in — set [`init.ai_gitignore: true`](config.md#initai_gitignore) to make it the default (an explicit `--ai-gitignore[=false]` still wins). When a provider is available but the option is off, init prints a one-line hint after scaffolding |
 | `--only <target>` | _(all)_ | Generate only one target. Accepts `gitignore`, `config`, `ai`, or `remote` |
 | `--remote <spec>` | _(none)_ | Connect `origin` without prompting. Accepts a `clone.hosts` alias, `alias:repo`, `owner/repo`, or a full URL |
 | `--name <project>` | directory name | Project name for the origin URL when `--remote` names a bare alias. Defaults to the sanitized directory basename |

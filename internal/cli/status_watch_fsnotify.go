@@ -63,13 +63,19 @@ type fsWatcher struct {
 	ctx    context.Context
 }
 
-// newFSWatcher sets up a watcher over the repo's working tree. Returns
-// (nil, false) when fsnotify is unusable (the caller then polls): an unsupported
-// platform, a setup error, or a tree exceeding fsWatchMaxDirs.
-func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Duration) (*fsWatcher, bool) {
+// newFSWatcher sets up a watcher over the repo's working tree. dirCap bounds
+// how many directories this watcher may register — pass fsWatchMaxDirs for a
+// solo watcher, or a share of it when several watchers split one process's
+// descriptor budget (gk fleet runs one per worktree). Returns (nil, false)
+// when fsnotify is unusable (the caller then polls): an unsupported platform,
+// a setup error, or a tree exceeding dirCap.
+func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Duration, dirCap int) (*fsWatcher, bool) {
 	root := repoToplevel(ctx, runner)
 	if root == "" {
 		return nil, false
+	}
+	if dirCap <= 0 {
+		dirCap = fsWatchMaxDirs
 	}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -91,7 +97,7 @@ func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Dur
 			return nil // best-effort per directory
 		}
 		count++
-		if count > fsWatchMaxDirs {
+		if count > dirCap {
 			return errTooManyDirs
 		}
 		return nil

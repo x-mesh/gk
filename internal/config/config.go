@@ -37,6 +37,12 @@ type FleetConfig struct {
 	Depth    int      `mapstructure:"depth"    yaml:"depth,omitempty"`
 	Exclude  []string `mapstructure:"exclude"  yaml:"exclude,omitempty"`
 	Interval int      `mapstructure:"interval" yaml:"interval,omitempty"`
+	// FeedStats opts the change feed into +/- line counts (extra `git diff
+	// --numstat` calls per dirty worktree per poll). Same as --feed-stats.
+	FeedStats bool `mapstructure:"feed_stats" yaml:"feed_stats,omitempty"`
+	// Notify maps a fleet transition to a shell command (`sh -c`), run with
+	// GK_FLEET_* context env. Keys: conflict, paused, land_ready. Opt-in.
+	Notify map[string]string `mapstructure:"notify" yaml:"notify,omitempty"`
 }
 
 // OutputConfig controls Easy Mode output behaviour.

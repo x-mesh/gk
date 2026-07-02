@@ -234,7 +234,7 @@ func runChangeWatch(cmd *cobra.Command) error {
 	}
 
 	// fsnotify is the primary trigger when available; polling is the fallback.
-	fs, _ := newFSWatcher(cmd.Context(), runner, fsWatchDebounce)
+	fs, _ := newFSWatcher(cmd.Context(), runner, fsWatchDebounce, fsWatchMaxDirs)
 	if fs != nil {
 		defer fs.Close()
 	}

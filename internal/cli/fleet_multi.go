@@ -164,10 +164,11 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int) s
 			if e.Operation != "" {
 				branch += " ⏸"
 			}
-			line = fmt.Sprintf("%s    %s %-21s  %-8s  %-11s  %s",
+			line = fmt.Sprintf("%s    %s %-21s  %-8s  %-11s  %-14s  %s",
 				caret, dot, branch,
 				fleetDiffLabel(e.Ahead, e.Behind),
 				fleetDirtyLabel(e.Dirty),
+				fleetLastChangeLabel(e.LastChange),
 				fleetActiveLabel(e, now))
 		}
 		if i == cursor {
@@ -189,7 +190,7 @@ func (m *fleetModel) rebuildRows() {
 	if m.cursor >= 0 && m.cursor < len(m.rows) {
 		key = fleetRowKeyOf(m.rows[m.cursor])
 	}
-	m.rows = buildFleetRows(m.entries, m.collapsed)
+	m.rows = buildFleetRows(m.viewEntries(), m.collapsed)
 	if key != (fleetRowKey{}) {
 		for i, r := range m.rows {
 			if fleetRowKeyOf(r) == key {
@@ -262,7 +263,7 @@ func (m *fleetModel) toggleCursorRepo() {
 
 // runFleetMultiTUI runs the grouped multi-repo dashboard. It reuses fleetModel
 // with multi=true; polling calls gatherFleetMulti over the discovered repo set.
-func runFleetMultiTUI(ctx context.Context, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration) error {
+func runFleetMultiTUI(ctx context.Context, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
 	m := fleetModel{
 		ctx:       ctx,
 		interval:  interval,
@@ -272,7 +273,14 @@ func runFleetMultiTUI(ctx context.Context, repos []repoIdent, sem chan struct{},
 		repos:     repos,
 		sem:       sem,
 		collapsed: map[string]bool{},
+		showFeed:  true,
+		feedStats: feedStats,
+		prevSigs:  map[string]map[string]fileSig{},
+		ws:        newFleetWatchSet(ctx, initial),
+		notify:    fleetNotifyConfig(),
 	}
+	defer m.ws.Close()
+	m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, initial, nil, m.now)
 	m.rebuildRows()
 	prog := tea.NewProgram(
 		m,

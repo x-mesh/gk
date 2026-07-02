@@ -27,17 +27,24 @@ func init() {
 		Use:   "fleet",
 		Short: "Live multi-worktree supervision dashboard",
 		Long: `Watch every worktree at once: branch, ahead/behind, dirty/conflict state,
-last activity, any paused operation, and which one is current. Built for
-supervising parallel work (e.g. several AI agents each in their own worktree) —
-answers "who is dirty / stuck / stale / ready to land" without a per-worktree
-status probe.
+the last-changed file, last activity, any paused operation, and which one is
+current. Built for supervising parallel work (e.g. several AI agents each in
+their own worktree) — answers "who is dirty / stuck / stale / ready to land"
+without a per-worktree status probe.
 
-The TUI polls 'git worktree list' on an interval; a live wall-clock in the
-header (and a per-worktree "active N ago") ticks every second so you can tell
-the dashboard is alive between polls. j/k move, enter toggles the detail panel,
-r refreshes, q quits. Under --json (or GK_AGENT) it instead emits a one-shot
-machine-readable snapshot — the same data the TUI renders — so an agent or
-script can poll it directly.`,
+A merged change feed below the table shows which files changed in which
+worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts).
+When filesystem watches can be established the dashboard reacts to edits
+instantly and the poll drops to a slow heartbeat; otherwise it polls on
+--interval. j/k move, enter toggles the detail panel, w drills into that
+worktree's 'gk status --watch', f/s cycle the view filter (all→busy→stuck)
+and sort (default→activity→status), r refreshes, q quits.
+
+Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
+snapshot. --events streams fleet changes as NDJSON instead — file-changed /
+status-changed / op-start / op-end / land-ready events an orchestrator can
+subscribe to rather than polling; fleet.notify config maps conflict / paused /
+land_ready transitions to a shell hook.`,
 		Args: cobra.NoArgs,
 		RunE: runFleet,
 	}
@@ -46,6 +53,8 @@ script can poll it directly.`,
 	cmd.Flags().StringSlice("scan", nil, "directory roots to scan for git repos (multi-repo)")
 	cmd.Flags().Bool("all", false, "watch sibling repos of the current repo (multi-repo)")
 	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
+	cmd.Flags().Bool("feed-stats", false, "show +/- line counts in the change feed (extra git diff calls per poll)")
+	cmd.Flags().Bool("events", false, "stream fleet changes as NDJSON events instead of a dashboard (for orchestrators)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -78,6 +87,9 @@ type fleetEntryJSON struct {
 	Parent       string `json:"parent,omitempty"`
 	ParentBehind int    `json:"parent_behind,omitempty"`
 	LandReady    bool   `json:"land_ready,omitempty"`
+	// LastChange is the most recently modified changed file (repo-relative) —
+	// "what did the agent just touch", where ActiveAgoS only says when.
+	LastChange string `json:"last_change,omitempty"`
 
 	// Repo/RepoRoot identify which repository this worktree belongs to in
 	// multi-repo mode; filled in single-repo mode too so the JSON contract is
@@ -92,6 +104,10 @@ type fleetEntryJSON struct {
 	// serialized) so the live TUI re-derives the relative age every clock tick
 	// instead of freezing it at poll time.
 	lastActive time.Time
+	// sigs is the per-path change signature set from the consolidated scan —
+	// the feed's diff input. Unexported: the JSON contract carries events, not
+	// raw signatures.
+	sigs map[string]fileSig
 }
 
 const fleetRepoTimeout = 3 * time.Second
@@ -108,9 +124,18 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	feedStats := resolveFleetFeedStats(cmd)
+	streamEvents, _ := cmd.Flags().GetBool("events")
 	if multi {
 		sem := newFleetLimiter(fleetConcurrency())
-		entries := gatherFleetMulti(ctx, ids, sem, fleetRepoTimeout)
+		if streamEvents {
+			gather := func(gctx context.Context) ([]fleetEntryJSON, error) {
+				return gatherFleetMulti(gctx, ids, sem, fleetRepoTimeout, feedStats), nil
+			}
+			return runFleetEvents(ctx, cmd, gather,
+				time.Duration(resolveFleetInterval(cmd))*time.Second, fleetNotifyConfig())
+		}
+		entries := gatherFleetMulti(ctx, ids, sem, fleetRepoTimeout, feedStats)
 		if JSONOut() {
 			return emitAgentResult(cmd.OutOrStdout(), entries)
 		}
@@ -120,12 +145,23 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 		interval := resolveFleetInterval(cmd)
-		return runFleetMultiTUI(ctx, ids, sem, entries, time.Duration(interval)*time.Second)
+		return runFleetMultiTUI(ctx, ids, sem, entries, time.Duration(interval)*time.Second, feedStats)
 	}
 
-	runner := &git.ExecRunner{Dir: RepoFlag()}
+	// GIT_OPTIONAL_LOCKS=0 for every probe: fleet polls while agents commit in
+	// those very worktrees — an optional-lock status would contend on their
+	// .git/index.lock (multi-repo mode already runs this way).
+	runner := &git.ExecRunner{Dir: RepoFlag(), ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
 
-	entries, err := gatherFleet(ctx, runner)
+	if streamEvents {
+		gather := func(gctx context.Context) ([]fleetEntryJSON, error) {
+			return gatherFleet(gctx, runner, feedStats)
+		}
+		return runFleetEvents(ctx, cmd, gather,
+			time.Duration(resolveFleetInterval(cmd))*time.Second, fleetNotifyConfig())
+	}
+
+	entries, err := gatherFleet(ctx, runner, feedStats)
 	if err != nil {
 		return err
 	}
@@ -143,7 +179,30 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 	}
 
 	interval := resolveFleetInterval(cmd)
-	return runFleetTUI(ctx, runner, entries, time.Duration(interval)*time.Second)
+	return runFleetTUI(ctx, runner, entries, time.Duration(interval)*time.Second, feedStats)
+}
+
+// fleetNotifyConfig loads the opt-in fleet.notify hook map (transition kind →
+// shell command). Empty when unconfigured or config is unreadable.
+func fleetNotifyConfig() map[string]string {
+	if cfg, err := config.Load(nil); err == nil && cfg != nil {
+		return cfg.Fleet.Notify
+	}
+	return nil
+}
+
+// resolveFleetFeedStats: the --feed-stats flag when set, else fleet.feed_stats
+// from config. Off by default — stats cost two extra `git diff --numstat`
+// runs per dirty worktree per poll.
+func resolveFleetFeedStats(cmd *cobra.Command) bool {
+	if cmd.Flags().Changed("feed-stats") {
+		on, _ := cmd.Flags().GetBool("feed-stats")
+		return on
+	}
+	if cfg, err := config.Load(nil); err == nil && cfg != nil {
+		return cfg.Fleet.FeedStats
+	}
+	return false
 }
 
 // gatherFleet builds the fleet snapshot, reusing the same worktree enrichment
@@ -151,7 +210,7 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 // dirty probe) plus the supervision fields. The bare worktree is skipped — it
 // holds no working state. Per-worktree enrichment runs concurrently: each entry
 // is independent, so a handful of worktrees stay snappy under a 2s poll.
-func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON, error) {
+func gatherFleet(ctx context.Context, runner *git.ExecRunner, withStats bool) ([]fleetEntryJSON, error) {
 	root := runner.Dir
 	if root == "" {
 		root, _ = os.Getwd()
@@ -160,7 +219,7 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON,
 		root = r
 	}
 	sem := newFleetLimiter(fleetConcurrency())
-	return gatherFleetRepo(ctx, runner, filepath.Base(root), root, sem)
+	return gatherFleetRepo(ctx, runner, filepath.Base(root), root, sem, withStats)
 }
 
 // gatherFleetRepo enriches one repo's worktrees, tagging every entry with the
@@ -170,7 +229,7 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner) ([]fleetEntryJSON,
 // one-shot `worktree list`/meta queries run outside sem; gating the repo level
 // on the same semaphore would deadlock (repos holding every slot while their
 // worktrees wait for one).
-func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root string, sem chan struct{}) ([]fleetEntryJSON, error) {
+func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root string, sem chan struct{}, withStats bool) ([]fleetEntryJSON, error) {
 	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("fleet: worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
@@ -199,7 +258,7 @@ func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root st
 				sem <- struct{}{}
 				defer func() { <-sem }()
 			}
-			e := enrichFleetEntry(ctx, live[i], meta, current, base, now)
+			e := enrichFleetEntry(ctx, live[i], meta, current, base, now, withStats)
 			e.Repo = label
 			e.RepoRoot = root
 			out[i] = e
@@ -310,7 +369,7 @@ func resolveFleetInterval(cmd *cobra.Command) int {
 // single synthetic status:"error" entry so it never silently vanishes from the
 // snapshot. GIT_OPTIONAL_LOCKS=0 keeps fleet's read-only probes from contending
 // on index.lock with the agents editing in those repos.
-func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{}, perRepo time.Duration) []fleetEntryJSON {
+func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{}, perRepo time.Duration, withStats bool) []fleetEntryJSON {
 	out := make([][]fleetEntryJSON, len(repos))
 	var wg sync.WaitGroup
 	for i := range repos {
@@ -321,7 +380,7 @@ func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{},
 			rctx, cancel := context.WithTimeout(ctx, perRepo)
 			defer cancel()
 			runner := &git.ExecRunner{Dir: id.Root, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
-			entries, err := gatherFleetRepo(rctx, runner, id.Label, id.Root, sem)
+			entries, err := gatherFleetRepo(rctx, runner, id.Label, id.Root, sem, withStats)
 			if err != nil {
 				out[i] = []fleetEntryJSON{{
 					Repo:     id.Label,
@@ -366,7 +425,7 @@ func fleetGatherErr(err error) string {
 // entry: dirty roll-up, paused-op detection, activity staleness, and
 // parent/land-readiness. Every probe is best-effort — a failure degrades the
 // affected field, never the whole entry.
-func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]worktreeBranchMeta, current, base string, now time.Time) fleetEntryJSON {
+func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]worktreeBranchMeta, current, base string, now time.Time, withStats bool) fleetEntryJSON {
 	f := fleetEntryJSON{
 		Path:    e.Path,
 		Branch:  e.Branch,
@@ -380,9 +439,16 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 		f.Ahead, f.Behind = m.Ahead, m.Behind
 		f.Parent = m.ForkBranch
 	}
-	f.Dirty = worktreeDirtyAt(ctx, e.Path)
-
 	wr := &git.ExecRunner{Dir: e.Path}
+
+	// One consolidated scan replaces the former dirty-count + newest-mtime
+	// pair of porcelain runs: counts, per-path signatures (the feed's diff
+	// input), and the most recently touched file all come from a single
+	// --no-optional-locks pass.
+	scan := scanWorktreeChanges(ctx, wr, e.Path, withStats)
+	f.Dirty = dirtyPtrIfAny(scan.dirty)
+	f.sigs = scan.sigs
+	f.LastChange = scan.newestPath
 
 	// Paused operation — the "who is stuck" signal a dirty count alone misses.
 	if st, derr := gitstate.Detect(ctx, e.Path); derr == nil && st != nil {
@@ -393,13 +459,10 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 	}
 
 	// Activity: HEAD commit time, advanced to the newest changed-file mtime so
-	// an agent mid-edit (no commit yet) still reads "now". Statting changed
-	// files is only paid when the worktree is dirty.
+	// an agent mid-edit (no commit yet) still reads "now".
 	active := m.LastCommit // zero when meta missing
-	if f.Dirty != nil {
-		if mt := worktreeNewestChangeMtime(ctx, wr, e.Path); mt.After(active) {
-			active = mt
-		}
+	if scan.newestMtime.After(active) {
+		active = scan.newestMtime
 	}
 	if !active.IsZero() {
 		f.lastActive = active
@@ -445,45 +508,6 @@ func fleetOperationLabel(st *gitstate.State) string {
 	default:
 		return ""
 	}
-}
-
-// worktreeNewestChangeMtime returns the newest filesystem mtime among the
-// worktree's changed (tracked + untracked) files — the freshest "an agent
-// touched this" signal. Best-effort: an unscannable path yields the zero time.
-func worktreeNewestChangeMtime(ctx context.Context, runner *git.ExecRunner, path string) time.Time {
-	out, _, err := runner.Run(ctx, "status", "--porcelain", "-z")
-	if err != nil {
-		return time.Time{}
-	}
-	var newest time.Time
-	for _, name := range parsePorcelainZPaths(string(out)) {
-		if info, e := os.Stat(filepath.Join(path, name)); e == nil {
-			if mt := info.ModTime(); mt.After(newest) {
-				newest = mt
-			}
-		}
-	}
-	return newest
-}
-
-// parsePorcelainZPaths extracts the changed paths from `git status --porcelain
-// -z` output. Records are NUL-separated "XY <path>"; a rename/copy record is
-// followed by its source path as the next NUL token, which we skip.
-func parsePorcelainZPaths(raw string) []string {
-	toks := strings.Split(raw, "\x00")
-	var paths []string
-	for i := 0; i < len(toks); i++ {
-		t := toks[i]
-		if len(t) < 4 { // "XY p" minimum; trailing empty token after final NUL
-			continue
-		}
-		x, y := t[0], t[1]
-		paths = append(paths, t[3:])
-		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
-			i++ // consume the rename/copy source path token
-		}
-	}
-	return paths
 }
 
 // revListCount returns `git rev-list --count <range>`; ok is false on any error
@@ -583,6 +607,15 @@ func fleetDirtyLabel(d *contextDirtyJSON) string {
 	return strings.Join(parts, " ")
 }
 
+// fleetLastChangeLabel renders the last-changed-file column: the basename
+// (clipped) so the column stays narrow — the detail panel shows the full path.
+func fleetLastChangeLabel(path string) string {
+	if path == "" {
+		return "·"
+	}
+	return clip(filepath.Base(path), 14)
+}
+
 // fleetActiveLabel renders the staleness column. With a live clock (now set)
 // it re-derives the age from the absolute lastActive so it ticks up between
 // polls; the static/JSON path falls back to the ActiveAgoS snapshot.
@@ -622,6 +655,8 @@ type fleetView struct {
 	now     time.Time
 	width   int
 	detail  bool
+	// feed feeds the detail panel's per-worktree event tail (may be nil).
+	feed []fleetFeedEvent
 }
 
 // renderFleet draws the worktree dashboard: a full-width header (count + live
@@ -648,7 +683,8 @@ func renderFleet(v fleetView) string {
 	// Master-detail: place the detail panel beside the table when there's room.
 	// Below ~64 cols the panel is dropped so the table stays readable.
 	if v.detail && v.cursor >= 0 && v.cursor < len(v.entries) && width >= 64 {
-		panel := renderFleetDetail(v.entries[v.cursor], v.now)
+		e := v.entries[v.cursor]
+		panel := renderFleetDetail(e, v.now, fleetEventTail(v.feed, e.Path, 3))
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
 		return b.String()
 	}
@@ -679,8 +715,8 @@ func renderFleetHeader(entries []fleetEntryJSON, now time.Time, width int, dim l
 }
 
 // renderFleetTable draws one line per worktree: status dot, branch (with a `*`
-// current marker and a `⏸` paused marker), sync, dirty, and the staleness age.
-// The cursor row is marked and bolded.
+// current marker and a `⏸` paused marker), sync, dirty, the last-changed file,
+// and the staleness age. The cursor row is marked and bolded.
 func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) string {
 	const branchW = 20
 	var b strings.Builder
@@ -697,10 +733,11 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) strin
 		if e.Operation != "" {
 			branch += " ⏸"
 		}
-		row := fmt.Sprintf("%s%s %-*s  %-8s  %-11s  %s",
+		row := fmt.Sprintf("%s%s %-*s  %-8s  %-11s  %-14s  %s",
 			caret, dot, branchW+3, branch,
 			fleetDiffLabel(e.Ahead, e.Behind),
 			fleetDirtyLabel(e.Dirty),
+			fleetLastChangeLabel(e.LastChange),
 			fleetActiveLabel(e, now),
 		)
 		if i == cursor {
@@ -714,10 +751,27 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) strin
 	return b.String()
 }
 
+// fleetEventTail returns the newest n feed events for one worktree, oldest
+// first — the detail panel's "what just happened here".
+func fleetEventTail(feed []fleetFeedEvent, wtPath string, n int) []fleetFeedEvent {
+	var tail []fleetFeedEvent
+	for i := len(feed) - 1; i >= 0 && len(tail) < n; i-- {
+		if feed[i].wt == wtPath {
+			tail = append(tail, feed[i])
+		}
+	}
+	// collected newest-first; reverse to render oldest-first
+	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
+		tail[i], tail[j] = tail[j], tail[i]
+	}
+	return tail
+}
+
 // renderFleetDetail is the master-detail panel: the full field set for the
-// cursor row in a bordered box, including the parent/land-readiness and paused
-// resume hint that the compact table cannot fit.
-func renderFleetDetail(e fleetEntryJSON, now time.Time) string {
+// cursor row in a bordered box, including the parent/land-readiness, paused
+// resume hint, and the worktree's recent change events that the compact table
+// cannot fit.
+func renderFleetDetail(e fleetEntryJSON, now time.Time, tail []fleetFeedEvent) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	row := func(k, val string) string { return dim.Render(fmt.Sprintf("%-7s", k)) + " " + val }
 
@@ -738,6 +792,9 @@ func renderFleetDetail(e fleetEntryJSON, now time.Time) string {
 		lines = append(lines, row("parent", pv))
 	}
 	lines = append(lines, row("active", fleetActiveDetail(e, now)))
+	if e.LastChange != "" {
+		lines = append(lines, row("change", clip(e.LastChange, 32)))
+	}
 
 	op := "—"
 	if e.Operation != "" {
@@ -752,7 +809,16 @@ func renderFleetDetail(e fleetEntryJSON, now time.Time) string {
 	if e.LandReady {
 		land = "merged ✓ (reap-safe)"
 	}
-	lines = append(lines, row("land", land), dim.Render(clip(e.Path, 40)))
+	lines = append(lines, row("land", land))
+	if e.LandReady && e.Branch != "" {
+		// The one next action the dashboard can suggest: the branch is fully
+		// in base, so the worktree can be reaped.
+		lines = append(lines, row("next", selfCmd("worktree remove "+e.Branch)))
+	}
+	for _, ev := range tail {
+		lines = append(lines, dim.Render(ev.ts.Format("15:04:05"))+" "+ev.glyph+" "+clip(ev.path, 30))
+	}
+	lines = append(lines, dim.Render(clip(e.Path, 40)))
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -787,7 +853,11 @@ type fleetDataMsg struct {
 	err     error
 }
 
-type fleetRepollMsg struct{}
+// fleetRepollMsg carries the tick generation that scheduled it: every data
+// receipt bumps tickSeq and arms a fresh timer, so a stale timer from a
+// superseded chain (an fsnotify-triggered poll landed in between) is ignored
+// instead of doubling the poll cadence.
+type fleetRepollMsg struct{ seq int }
 
 // fleetClockMsg fires every second to refresh the header's live wall-clock and
 // the per-worktree staleness ages — render-only, no git/fs work — so the UI
@@ -814,16 +884,50 @@ type fleetModel struct {
 	sem       chan struct{}
 	collapsed map[string]bool
 	rows      []fleetRow
+
+	// change feed: prevSigs is the per-worktree signature state from the last
+	// poll; feed is the merged event timeline (ring-capped); showFeed toggles
+	// the pane ('e'); feedStats opts into +/- counts on events.
+	prevSigs  map[string]map[string]fileSig
+	feed      []fleetFeedEvent
+	showFeed  bool
+	feedStats bool
+
+	// fsnotify upgrade: ws is nil when no worktree could be watched (pure
+	// polling). polling/fsPending implement the one-in-flight backpressure;
+	// tickSeq invalidates superseded heartbeat timers (see fleetRepollMsg).
+	ws        *fleetWatchSet
+	polling   bool
+	fsPending bool
+	tickSeq   int
+
+	// notify is the opt-in fleet.notify hook map — transitions detected
+	// between polls fire it from the dashboard too, not just --events.
+	notify map[string]string
+
+	// view controls: filter ('f' cycle: all→busy→stuck) and sort ('s' cycle:
+	// default→activity→status) apply to the rendered view only — entries and
+	// the JSON contract stay in gather order.
+	filter   int
+	sortMode int
+}
+
+// viewEntries is the filtered+sorted slice the TUI renders and the cursor
+// indexes into. Entries itself is never reordered — a filter change is a view
+// change, not a data change.
+func (m fleetModel) viewEntries() []fleetEntryJSON {
+	return fleetSortEntries(fleetFilterEntries(m.entries, m.filter), m.sortMode)
 }
 
 func (m fleetModel) Init() tea.Cmd {
-	// First snapshot is already rendered from runFleet; schedule the data poll
-	// and the once-a-second clock heartbeat.
-	return tea.Batch(m.tickCmd(), m.clockTickCmd())
+	// First snapshot is already rendered from runFleet; schedule the data poll,
+	// the once-a-second clock heartbeat, and (when available) the fs listener.
+	return tea.Batch(m.tickCmd(), m.clockTickCmd(), waitFleetFSCmd(m.ws))
 }
 
 func (m fleetModel) tickCmd() tea.Cmd {
-	return tea.Tick(m.interval, func(time.Time) tea.Msg { return fleetRepollMsg{} })
+	seq := m.tickSeq
+	return tea.Tick(fleetTickInterval(m.interval, m.ws), func(time.Time) tea.Msg { return fleetRepollMsg{seq} })
 }
 
 func (m fleetModel) clockTickCmd() tea.Cmd {
@@ -833,11 +937,11 @@ func (m fleetModel) clockTickCmd() tea.Cmd {
 func (m fleetModel) pollCmd() tea.Cmd {
 	if m.multi {
 		return func() tea.Msg {
-			return fleetDataMsg{entries: gatherFleetMulti(m.ctx, m.repos, m.sem, fleetRepoTimeout)}
+			return fleetDataMsg{entries: gatherFleetMulti(m.ctx, m.repos, m.sem, fleetRepoTimeout, m.feedStats)}
 		}
 	}
 	return func() tea.Msg {
-		entries, err := gatherFleet(m.ctx, m.runner)
+		entries, err := gatherFleet(m.ctx, m.runner, m.feedStats)
 		return fleetDataMsg{entries: entries, err: err}
 	}
 }
@@ -845,24 +949,57 @@ func (m fleetModel) pollCmd() tea.Cmd {
 func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case fleetRepollMsg:
+		if msg.seq != m.tickSeq || m.polling {
+			// Stale timer from a superseded chain, or a poll is already in
+			// flight (fs-triggered/manual) — starting a second would diff the
+			// same prevSigs twice and duplicate feed/notify events.
+			return m, nil
+		}
+		m.polling = true
 		return m, m.pollCmd()
+	case fleetFSMsg:
+		// A worktree changed on disk. One poll in flight at a time: bursts
+		// collapse into a single queued re-poll (fsPending) — the panel's
+		// backpressure requirement. Always re-arm the listener.
+		if m.polling {
+			m.fsPending = true
+			return m, waitFleetFSCmd(m.ws)
+		}
+		m.polling = true
+		return m, tea.Batch(m.pollCmd(), waitFleetFSCmd(m.ws))
 	case fleetClockMsg:
 		// Render-only heartbeat: advance the clock and re-arm. No git/fs work.
 		m.now = time.Time(msg)
 		return m, m.clockTickCmd()
 	case fleetDataMsg:
+		m.polling = false
 		if msg.err != nil {
 			m.lastErr = msg.err
 		} else {
 			m.lastErr = nil
+			if len(m.notify) > 0 {
+				for _, ev := range fleetTransitions(m.entries, msg.entries, m.now) {
+					fireFleetNotify(m.ctx, m.notify, ev)
+				}
+			}
 			m.entries = msg.entries
+			m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, m.entries, m.feed, m.now)
 			if m.multi {
 				m.rebuildRows()
-			} else if m.cursor >= len(m.entries) {
-				m.cursor = max(0, len(m.entries)-1)
+			} else if n := len(m.viewEntries()); m.cursor >= n {
+				m.cursor = max(0, n-1)
 			}
 		}
-		return m, m.tickCmd()
+		m.tickSeq++ // invalidate any timer armed before this receipt
+		cmds := []tea.Cmd{fleetSyncWatchersCmd(m.ctx, m.ws, m.entries)}
+		if m.fsPending {
+			m.fsPending = false
+			m.polling = true
+			cmds = append(cmds, m.pollCmd())
+		} else {
+			cmds = append(cmds, m.tickCmd())
+		}
+		return m, tea.Batch(cmds...)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -870,9 +1007,10 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			m.quitting = true
+			m.ws.Close()
 			return m, tea.Quit
 		case "j", "down":
-			limit := len(m.entries)
+			limit := len(m.viewEntries())
 			if m.multi {
 				limit = len(m.rows)
 			}
@@ -888,10 +1026,17 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toggleCursorRepo()
 			}
 		case "w":
+			// Drill into the live change feed for the cursor's worktree —
+			// single-repo picks the cursor entry directly; multi resolves
+			// through the grouped rows (headers → the repo's current worktree).
+			var path string
 			if m.multi {
-				if path := m.cursorWatchTarget(); path != "" {
-					return m, m.watchCmd(path)
-				}
+				path = m.cursorWatchTarget()
+			} else if view := m.viewEntries(); m.cursor >= 0 && m.cursor < len(view) && view[m.cursor].Status != "error" {
+				path = view[m.cursor].Path
+			}
+			if path != "" {
+				return m, m.watchCmd(path)
 			}
 		case "enter", "tab":
 			if m.multi {
@@ -901,7 +1046,25 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.detail = !m.detail
 			}
+		case "e":
+			m.showFeed = !m.showFeed
+		case "f":
+			m.filter = (m.filter + 1) % fleetFilterModes
+			m.cursor = 0
+			if m.multi {
+				m.rebuildRows()
+			}
+		case "s":
+			m.sortMode = (m.sortMode + 1) % fleetSortModes
+			m.cursor = 0
+			if m.multi {
+				m.rebuildRows()
+			}
 		case "r":
+			if m.polling {
+				return m, nil // refresh already under way
+			}
+			m.polling = true
 			return m, m.pollCmd() // manual refresh now
 		}
 	}
@@ -914,18 +1077,24 @@ func (m fleetModel) View() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
-	footer := "j/k move · enter detail · r refresh · q quit · polling every %s"
+	footer := "j/k move · enter detail · w watch · e feed · f/s view · r refresh · q quit · %s"
 	if m.multi {
 		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width))
-		footer = "j/k move · space fold · w watch · r refresh · q quit · polling every %s"
+		footer = "j/k move · space fold · w watch · e feed · f/s view · r refresh · q quit · %s"
 	} else {
 		b.WriteString(renderFleet(fleetView{
-			entries: m.entries,
+			entries: m.viewEntries(),
 			cursor:  m.cursor,
 			now:     m.now,
 			width:   m.width,
 			detail:  m.detail,
+			feed:    m.feed,
 		}))
+	}
+	if m.showFeed {
+		if pane := renderFleetFeed(m.feed, m.width, m.feedPaneLines(), m.multi); pane != "" {
+			b.WriteString("\n" + pane)
+		}
 	}
 	b.WriteString("\n")
 	if m.lastErr != nil {
@@ -933,19 +1102,56 @@ func (m fleetModel) View() string {
 			Render("refresh failed: " + m.lastErr.Error()))
 		b.WriteString("\n")
 	}
-	b.WriteString(dim.Render(fmt.Sprintf(footer, m.interval)))
+	cadence := fmt.Sprintf("polling every %s", m.interval)
+	if m.ws != nil {
+		cadence = fmt.Sprintf("fs events · heartbeat %s", fleetTickInterval(m.interval, m.ws))
+	}
+	if m.filter != fleetFilterAll || m.sortMode != fleetSortDefault {
+		cadence += fmt.Sprintf(" · filter:%s sort:%s", fleetFilterName(m.filter), fleetSortName(m.sortMode))
+	}
+	b.WriteString(dim.Render(fmt.Sprintf(footer, cadence)))
 	return b.String()
 }
 
-func runFleetTUI(ctx context.Context, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration) error {
-	m := fleetModel{
-		ctx:      ctx,
-		runner:   runner,
-		interval: interval,
-		entries:  initial,
-		now:      time.Now(),
-		detail:   true,
+// feedPaneLines sizes the feed pane: enough to be useful, never so tall it
+// pushes the table off a small terminal. Height 0 (unknown) gets the default.
+func (m fleetModel) feedPaneLines() int {
+	const want = 8
+	rows := len(m.viewEntries()) // size against what is actually drawn (filter-aware)
+	if m.multi {
+		rows = len(m.rows)
 	}
+	if m.height <= 0 {
+		return want
+	}
+	free := m.height - rows - 5 // header(2) + footer(1) + rule(1) + slack(1)
+	if free < 2 {
+		return 0
+	}
+	if free < want {
+		return free
+	}
+	return want
+}
+
+func runFleetTUI(ctx context.Context, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
+	m := fleetModel{
+		ctx:       ctx,
+		runner:    runner,
+		interval:  interval,
+		entries:   initial,
+		now:       time.Now(),
+		detail:    true,
+		showFeed:  true,
+		feedStats: feedStats,
+		prevSigs:  map[string]map[string]fileSig{},
+		// Synchronous setup: the walk is bounded by the per-worktree dir
+		// budget and fleets are small; nil (nothing watchable) → pure polling.
+		ws:     newFleetWatchSet(ctx, initial),
+		notify: fleetNotifyConfig(),
+	}
+	defer m.ws.Close()
+	m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, initial, nil, m.now)
 	prog := tea.NewProgram(
 		m,
 		tea.WithContext(ctx),

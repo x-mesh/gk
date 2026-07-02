@@ -20,7 +20,7 @@ func TestFSWatcher_FiresOnChange(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	runner := &git.ExecRunner{Dir: repo.Dir}
 
-	fw, ok := newFSWatcher(context.Background(), runner, 50*time.Millisecond)
+	fw, ok := newFSWatcher(context.Background(), runner, 50*time.Millisecond, fsWatchMaxDirs)
 	if !ok {
 		t.Skip("fsnotify unavailable in this environment")
 	}
@@ -45,7 +45,7 @@ func TestFSWatcher_NewDirIsWatched(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	runner := &git.ExecRunner{Dir: repo.Dir}
 
-	fw, ok := newFSWatcher(context.Background(), runner, 50*time.Millisecond)
+	fw, ok := newFSWatcher(context.Background(), runner, 50*time.Millisecond, fsWatchMaxDirs)
 	if !ok {
 		t.Skip("fsnotify unavailable in this environment")
 	}
@@ -80,7 +80,7 @@ func TestFSWatcher_CloseIdempotent(t *testing.T) {
 		t.Skip("integration test skipped in short mode")
 	}
 	repo := testutil.NewRepo(t)
-	fw, ok := newFSWatcher(context.Background(), &git.ExecRunner{Dir: repo.Dir}, 50*time.Millisecond)
+	fw, ok := newFSWatcher(context.Background(), &git.ExecRunner{Dir: repo.Dir}, 50*time.Millisecond, fsWatchMaxDirs)
 	if !ok {
 		t.Skip("fsnotify unavailable in this environment")
 	}

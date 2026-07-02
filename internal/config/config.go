@@ -518,9 +518,14 @@ type PreflightConfig struct {
 //     `gk clone owner/repo` places the checkout at
 //     `<root>/<host>/<owner>/<repo>` unless an explicit target is passed.
 //     Empty means "let git pick a directory in cwd" (the standard default).
-//   - Hosts: alias table for multi-host users. `gk clone gl:group/repo`
-//     looks up `gl` here, using the per-alias host + protocol (falling
-//     back to DefaultProtocol when the alias omits it).
+//   - Hosts: alias table for multi-host / multi-account users. `gk clone
+//     gl:group/repo` looks up `gl` here, using the per-alias host +
+//     protocol (falling back to DefaultProtocol when the alias omits it).
+//     An alias with `owner` set doubles as an account profile: `gk clone
+//     gl:repo` completes the owner, and `gk init` offers the alias when
+//     wiring the origin remote. Layers merge field-by-field (viper deep
+//     merge), so a repo-local `.gk.yaml` that sets only `protocol` on an
+//     alias inherits the global entry's host/owner.
 //   - PostActions: subcommands to run inside the freshly-cloned checkout.
 //     Supported values: "hooks-install" (invokes `gk hooks install --all`)
 //     and "doctor" (invokes `gk doctor`). Default empty — opt-in only.
@@ -534,9 +539,19 @@ type CloneConfig struct {
 
 // HostAlias names a custom clone shorthand like `gl:` or `work:`.
 // Protocol is optional; when empty, CloneConfig.DefaultProtocol wins.
+//
+// Owner turns the alias into an account profile: `alias:repo` (no slash)
+// expands to `owner/repo`, and `gk init` lists the alias as a remote
+// candidate. SSHHost swaps a `~/.ssh/config` Host alias (e.g.
+// `github.com-work`, carrying the right key for a second account on the
+// same host) into ssh URLs; https URLs and structured metadata keep the
+// canonical Host. Both fields are optional — aliases without them behave
+// exactly as before.
 type HostAlias struct {
 	Host     string `mapstructure:"host"     yaml:"host"`
 	Protocol string `mapstructure:"protocol" yaml:"protocol"`
+	Owner    string `mapstructure:"owner"    yaml:"owner,omitempty"`
+	SSHHost  string `mapstructure:"ssh_host" yaml:"ssh_host,omitempty"`
 }
 
 // WorktreeConfig controls how `gk worktree add <name>` maps a relative

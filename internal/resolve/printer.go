@@ -16,26 +16,28 @@ func Print(cf ConflictFile) []byte {
 
 	for _, seg := range cf.Segments {
 		if seg.Hunk != nil {
-			h := seg.Hunk
-			// <<<<<<< label
-			allLines = append(allLines, formatMarker(markerOurs, h.OursLabel))
-			allLines = append(allLines, h.Ours...)
-			// optional diff3 base
-			if h.Base != nil {
-				allLines = append(allLines, formatMarker(markerBase, h.BaseLabel))
-				allLines = append(allLines, h.Base...)
-			}
-			// =======
-			allLines = append(allLines, markerSep)
-			allLines = append(allLines, h.Theirs...)
-			// >>>>>>> label
-			allLines = append(allLines, formatMarker(markerTheirs, h.TheirsLabel))
+			allLines = append(allLines, hunkMarkerLines(seg.Hunk)...)
 		} else {
 			allLines = append(allLines, seg.Context...)
 		}
 	}
 
 	return []byte(strings.Join(allLines, "\n"))
+}
+
+// hunkMarkerLines re-emits one conflict hunk verbatim, markers included.
+func hunkMarkerLines(h *ConflictHunk) []string {
+	var out []string
+	out = append(out, formatMarker(markerOurs, h.OursLabel))
+	out = append(out, h.Ours...)
+	if h.Base != nil {
+		out = append(out, formatMarker(markerBase, h.BaseLabel))
+		out = append(out, h.Base...)
+	}
+	out = append(out, markerSep)
+	out = append(out, h.Theirs...)
+	out = append(out, formatMarker(markerTheirs, h.TheirsLabel))
+	return out
 }
 
 // formatMarker builds a marker line like "<<<<<<< HEAD" or "<<<<<<< " (empty label → no trailing space).
@@ -64,7 +66,13 @@ func ApplyResolutions(cf ConflictFile, resolutions []HunkResolution) ([]byte, er
 	ri := 0
 	for _, seg := range cf.Segments {
 		if seg.Hunk != nil {
-			allLines = append(allLines, resolutions[ri].ResolvedLines...)
+			if resolutions[ri].Strategy == StrategyUnresolved {
+				// The confidence gate kept this hunk — re-emit its markers
+				// verbatim so the file stays honestly conflicted there.
+				allLines = append(allLines, hunkMarkerLines(seg.Hunk)...)
+			} else {
+				allLines = append(allLines, resolutions[ri].ResolvedLines...)
+			}
 			ri++
 		} else {
 			allLines = append(allLines, seg.Context...)

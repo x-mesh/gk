@@ -7,6 +7,10 @@ const (
 	StrategyOurs   Strategy = "ours"
 	StrategyTheirs Strategy = "theirs"
 	StrategyMerged Strategy = "merged"
+	// StrategyUnresolved marks a hunk deliberately left conflicted —
+	// ApplyResolutions re-emits its original markers verbatim. Used by the
+	// confidence gate for partial file resolution.
+	StrategyUnresolved Strategy = "unresolved"
 )
 
 // ConflictHunk는 하나의 충돌 영역이다.
@@ -36,6 +40,20 @@ type HunkResolution struct {
 	Strategy      Strategy
 	ResolvedLines []string // 해결된 코드 라인
 	Rationale     string   // AI 선택 근거 (최대 120자)
+	// Confidence는 AI가 보고한 확신도(0.0~1.0). 0 = 미보고.
+	Confidence float64
+}
+
+// HunkProposal is an AI resolution that was NOT applied — its confidence sat
+// below resolve.min_confidence — carried in the paused report so an agent can
+// review and act without another "resolve it for me" round-trip.
+type HunkProposal struct {
+	File       string   `json:"file"`
+	Hunk       int      `json:"hunk"` // 1-based conflict-hunk index within the file
+	Strategy   string   `json:"strategy"`
+	Confidence float64  `json:"confidence"`
+	Rationale  string   `json:"rationale,omitempty"`
+	Resolved   []string `json:"resolved"`
 }
 
 // FileResolution은 하나의 파일에 대한 전체 해결 결과이다.
@@ -55,6 +73,11 @@ type ResolveOptions struct {
 	// UnionFiles overrides the basenames resolved by union merge in the
 	// mechanical tier (nil = DefaultUnionFiles).
 	UnionFiles []string
+	// MinConfidence gates AI resolutions per hunk: below it, the hunk keeps
+	// its conflict markers and the AI's answer ships as a proposal instead.
+	// 0 disables the gate (an unreported confidence then passes through);
+	// with a positive gate, unreported counts as below.
+	MinConfidence float64
 	// DeferStage: write resolved contents but do NOT `git add` them —
 	// the caller stages after its verification gate passes, and can restore
 	// the conflict (`git checkout -m`) on failure because the unmerged
@@ -85,4 +108,9 @@ type ResolveResult struct {
 	// rolled back: gk did not write them, so restoring markers would
 	// destroy the user's manual resolution.
 	PendingAccept []string
+	// Proposals carries the AI resolutions the confidence gate did NOT
+	// apply — their hunks stay conflicted (partially resolved files land in
+	// Remaining). An agent reads these from the paused envelope and either
+	// applies them by hand or re-runs after review.
+	Proposals []HunkProposal
 }

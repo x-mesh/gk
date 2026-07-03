@@ -135,6 +135,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("init.ai_gitignore", defaults.Init.AIGitignore)
 	v.SetDefault("resolve.rerere", defaults.Resolve.Rerere)
 	v.SetDefault("resolve.union_files", defaults.Resolve.UnionFiles)
+	v.SetDefault("resolve.min_confidence", defaults.Resolve.MinConfidence)
 	v.SetDefault("worktree.base", defaults.Worktree.Base)
 	v.SetDefault("ai.enabled", defaults.AI.Enabled)
 	v.SetDefault("ai.provider", defaults.AI.Provider)

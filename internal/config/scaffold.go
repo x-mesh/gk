@@ -78,6 +78,30 @@ func GlobalResolveSettings() (verify []string, unionFiles []string, unionSet boo
 	return verify, nil, false
 }
 
+// GlobalResolveMinConfidence reads resolve.min_confidence from the GLOBAL
+// config file only — a repo-local .gk.yaml lowering the gate would widen
+// what gets auto-applied inside an untrusted checkout.
+func GlobalResolveMinConfidence() float64 {
+	path := GlobalConfigPath()
+	if path == "" {
+		return 0
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return 0
+	}
+	f := v.GetFloat64("resolve.min_confidence")
+	if f < 0 {
+		return 0
+	}
+	if f > 1 {
+		return 1
+	}
+	return f
+}
+
 // WriteDefaultConfig creates the commented YAML template at path.
 //
 // Behaviour:

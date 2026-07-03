@@ -549,6 +549,11 @@ type ResolveConfig struct {
 	Rerere     bool     `mapstructure:"rerere"      yaml:"rerere"`
 	Verify     []string `mapstructure:"verify"      yaml:"verify,omitempty"`
 	UnionFiles []string `mapstructure:"union_files" yaml:"union_files,omitempty"`
+	// MinConfidence gates AI hunk resolutions: below it, the hunk keeps its
+	// markers and the answer ships as a proposal in the paused report.
+	// 0 (default) disables the gate. Honored from the GLOBAL config only —
+	// a repo-local .gk.yaml lowering it would widen auto-apply.
+	MinConfidence float64 `mapstructure:"min_confidence" yaml:"min_confidence,omitempty"`
 }
 
 // InitConfig controls `gk init` scaffolding.
@@ -802,9 +807,10 @@ func Defaults() Config {
 			AIGitignore: false,
 		},
 		Resolve: ResolveConfig{
-			Rerere:     true,
-			Verify:     nil,
-			UnionFiles: []string{"CHANGELOG.md", "go.sum"},
+			Rerere:        true,
+			Verify:        nil,
+			UnionFiles:    []string{"CHANGELOG.md", "go.sum"},
+			MinConfidence: 0,
 		},
 		Worktree: WorktreeConfig{
 			Base:    "~/.gk/worktree",

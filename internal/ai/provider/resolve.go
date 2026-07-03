@@ -65,6 +65,10 @@ type ConflictResolutionOutput struct {
 	Strategy  string   `json:"strategy"`  // "ours", "theirs", "merged"
 	Resolved  []string `json:"resolved"`  // 해결된 코드 라인
 	Rationale string   `json:"rationale"` // 선택 근거 (최대 120자)
+	// Confidence는 이 해결에 대한 모델의 확신도(0.0~1.0). resolve.min_confidence
+	// 게이트가 이 값 미만의 hunk를 적용하지 않고 제안으로만 남긴다. 0은
+	// "미보고"로 취급된다(구형 응답 하위호환).
+	Confidence float64 `json:"confidence"`
 }
 
 // ConflictResolutionResult는 ConflictResolver.ResolveConflicts의 출력이다.
@@ -90,6 +94,9 @@ Rules:
 - If both sides are semantically incompatible and cannot be merged,
   choose "ours" or "theirs" and explain why in the rationale.
 - Provide a one-line rationale (max 120 chars) for each resolution.
+- Provide a "confidence" between 0.0 and 1.0 for each resolution: how sure
+  you are the resolution preserves both sides' intent. Be honest — a merged
+  resolution of semantically entangled edits deserves a LOW confidence.
 - The "resolved" field must contain the exact lines of code (no markers).
 - Preserve indentation and formatting of the original code.
 - A hunk may carry "ours_deleted" or "theirs_deleted": that side deleted
@@ -107,7 +114,7 @@ func buildConflictResolutionUserPrompt(in ConflictResolutionInput) string {
 	sb.WriteString("Input:\n")
 	sb.Write(data)
 	sb.WriteString("\n\nRespond with JSON matching this schema:\n")
-	sb.WriteString(`{"resolutions":[{"index":<int>,"strategy":"<ours|theirs|merged>","resolved":["<line>",...],"rationale":"<max 120 chars>"}]}`)
+	sb.WriteString(`{"resolutions":[{"index":<int>,"strategy":"<ours|theirs|merged>","resolved":["<line>",...],"rationale":"<max 120 chars>","confidence":<0.0-1.0>}]}`)
 	sb.WriteString("\nReturn one resolution per input hunk, with the same index and no duplicates.\n")
 	sb.WriteString("\n")
 	return sb.String()
@@ -132,6 +139,11 @@ func parseConflictResolutionResponse(raw []byte) (ConflictResolutionResult, erro
 		r := &result.Resolutions[i]
 		if !validStrategies[r.Strategy] {
 			return ConflictResolutionResult{}, fmt.Errorf("%w: invalid conflict strategy %q", ErrProviderResponse, r.Strategy)
+		}
+		if r.Confidence < 0 {
+			r.Confidence = 0
+		} else if r.Confidence > 1 {
+			r.Confidence = 1
 		}
 		if len([]rune(r.Rationale)) > 120 {
 			r.Rationale = string([]rune(r.Rationale)[:120])

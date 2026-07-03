@@ -160,13 +160,14 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := resolve.ResolveOptions{
-		DryRun:     dryRun,
-		NoAI:       noAI,
-		NoBackup:   noBackup,
-		Strategy:   resolve.Strategy(strategy),
-		Files:      args,
-		Lang:       cfg.AI.Lang,
-		UnionFiles: unionFiles,
+		DryRun:        dryRun,
+		NoAI:          noAI,
+		NoBackup:      noBackup,
+		Strategy:      resolve.Strategy(strategy),
+		Files:         args,
+		Lang:          cfg.AI.Lang,
+		UnionFiles:    unionFiles,
+		MinConfidence: config.GlobalResolveMinConfidence(),
 	}
 
 	r := &resolve.Resolver{
@@ -240,6 +241,12 @@ func runResolve(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			printResolveResult(cmd.OutOrStdout(), result, state.Kind != gitstate.StateNone)
+			if len(result.Proposals) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "%d hunk(s) held below confidence %.2f — kept conflicted, AI proposals attached (--json carries full lines):\n", len(result.Proposals), opts.MinConfidence)
+				for _, pr := range result.Proposals {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s#%d  %s (%.2f)  %s\n", pr.File, pr.Hunk, pr.Strategy, pr.Confidence, pr.Rationale)
+				}
+			}
 		}
 		if dryRun {
 			return nil // a dry-run simulation never pauses the process
@@ -310,6 +317,7 @@ func plainResolveReport(result *resolve.ResolveResult, state *gitstate.State) *r
 		rep.Total = result.Total
 		rep.Mechanical = append([]string{}, result.Mechanical...)
 		rep.Remaining = append([]string{}, result.Remaining...)
+		rep.Proposals = append([]resolve.HunkProposal{}, result.Proposals...)
 	}
 	if sub, err := stateSubcommand(state.Kind); err == nil {
 		rep.State = sub

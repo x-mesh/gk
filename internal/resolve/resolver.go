@@ -232,6 +232,7 @@ func hunkResolutionsFromAI(outputs []provider.ConflictResolutionOutput, hunkCoun
 			Strategy:      strategy,
 			ResolvedLines: out.Resolved,
 			Rationale:     out.Rationale,
+			Confidence:    out.Confidence,
 		}
 	}
 	for i, ok := range seen {
@@ -466,6 +467,52 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 				result.AIUsed = true
 			} else if aiErr != nil && opts.Strategy == "ai" {
 				result.Failed[cf.Path] = aiErr
+				continue
+			}
+		}
+
+		// Confidence gate — hunks the model itself is unsure about are NOT
+		// applied: they keep their markers, the file is written partially
+		// resolved (never staged), and the withheld answers ship as
+		// proposals in the paused report. With a positive gate, an
+		// unreported confidence counts as below it.
+		if resolutions != nil && opts.Strategy == "ai" && opts.MinConfidence > 0 {
+			low := 0
+			hunkIdx := 0
+			for i := range resolutions {
+				hunkIdx++
+				if resolutions[i].Confidence < opts.MinConfidence {
+					result.Proposals = append(result.Proposals, HunkProposal{
+						File:       cf.Path,
+						Hunk:       hunkIdx,
+						Strategy:   string(resolutions[i].Strategy),
+						Confidence: resolutions[i].Confidence,
+						Rationale:  resolutions[i].Rationale,
+						Resolved:   append([]string{}, resolutions[i].ResolvedLines...),
+					})
+					resolutions[i] = HunkResolution{Strategy: StrategyUnresolved}
+					low++
+				}
+			}
+			if low > 0 {
+				if !opts.DryRun {
+					mixed, merr := ApplyResolutions(cf, resolutions)
+					if merr != nil {
+						result.Failed[cf.Path] = merr
+						continue
+					}
+					if !opts.NoBackup {
+						if orig, rerr := r.readFile(r.absPath(cf.Path)); rerr == nil {
+							if berr := BackupOriginal(r.WriteFile, r.absPath(cf.Path), orig); berr != nil && r.Stderr != nil {
+								fmt.Fprintf(r.Stderr, "warning: gk resolve: backup %s.orig: %v\n", cf.Path, berr)
+							}
+						}
+					}
+					if err := WriteResolved(r.WriteFile, r.absPath(cf.Path), mixed); err != nil {
+						return nil, fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
+					}
+				}
+				result.Remaining = append(result.Remaining, cf.Path)
 				continue
 			}
 		}

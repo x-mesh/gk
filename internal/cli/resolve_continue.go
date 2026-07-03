@@ -182,6 +182,10 @@ type resolveReport struct {
 	// VerifyFailed carries the failing verify command (resolve.verify) when
 	// the gate rolled the resolution back to its conflicted state.
 	VerifyFailed string `json:"verify_failed,omitempty"`
+	// Proposals carries AI resolutions withheld by resolve.min_confidence —
+	// their hunks stay conflicted; an agent can review and apply them
+	// without another resolve round-trip.
+	Proposals []resolve.HunkProposal `json:"proposals,omitempty"`
 }
 
 // agentState reports paused when resolution stopped with the operation still
@@ -207,9 +211,10 @@ func autoContinueBatch(
 	verifyCmds []string,
 ) (*resolveReport, error) {
 	rep := &resolveReport{
-		Resolved: append([]string{}, first.Resolved...),
-		Total:    first.Total,
-		Rounds:   1,
+		Resolved:  append([]string{}, first.Resolved...),
+		Total:     first.Total,
+		Rounds:    1,
+		Proposals: append([]resolve.HunkProposal{}, first.Proposals...),
 	}
 	reResolve := func(conflicts []string) (bool, error) {
 		if !JSONOut() {
@@ -225,6 +230,7 @@ func autoContinueBatch(
 			return false, rerr
 		}
 		rep.Total += res.Total
+		rep.Proposals = append(rep.Proposals, res.Proposals...)
 		// Later rounds run under the same DeferStage contract — the gate
 		// must pass (and stage) here too, or the continue loop would spin
 		// on written-but-unstaged resolutions.

@@ -224,6 +224,12 @@ resolve:
   # Basenames the mechanical tier resolves by keeping both sides.
   # union_files: [CHANGELOG.md, go.sum]
 
+  # Per-hunk confidence gate for AI resolutions: below this, the hunk keeps
+  # its conflict markers and the AI's answer is attached to the paused
+  # report as a proposal instead of being applied. 0 disables the gate.
+  # Honored from THIS global file only.
+  # min_confidence: 0.8
+
 worktree:
   # Managed base for relative worktree names. `gk worktree add <name>` drops
   # the checkout at <base>/<project>/<name>. Leading `~/` is expanded against

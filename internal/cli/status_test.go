@@ -628,7 +628,7 @@ func TestRenderStatusTree_Output(t *testing.T) {
 		{Path: "README.md", XY: "??", Kind: git.KindUntracked},
 	}
 	buf := &bytes.Buffer{}
-	renderStatusTree(buf, entries, nil)
+	renderStatusTree(buf, entries, nil, nil)
 	out := buf.String()
 	for _, want := range []string{"src/", "api/", "user.ts", "foo.ts", "README.md", "├─", "└─"} {
 		if !strings.Contains(out, want) {
@@ -871,7 +871,7 @@ func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
 
 	t.Run("narrow mode uses 2-cell glyphs", func(t *testing.T) {
 		buf := &bytes.Buffer{}
-		writeChildren(buf, root, "", faint, nil, true, false)
+		writeChildren(buf, root, "", faint, nil, nil, true, false)
 		out := buf.String()
 		// Narrow glyphs: ├ and └ without the trailing ─ bar.
 		if strings.Contains(out, "├─") || strings.Contains(out, "└─") {
@@ -884,7 +884,7 @@ func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
 
 	t.Run("dropBadge suppresses (N) subtree count", func(t *testing.T) {
 		buf := &bytes.Buffer{}
-		writeChildren(buf, root, "", faint, nil, true, true)
+		writeChildren(buf, root, "", faint, nil, nil, true, true)
 		out := buf.String()
 		if strings.Contains(out, "(") && strings.Contains(out, ")") {
 			t.Errorf("dropBadge should omit (N) badge, got:\n%s", out)
@@ -893,7 +893,7 @@ func TestWriteChildren_NarrowTTYCompression(t *testing.T) {
 
 	t.Run("normal mode keeps 3-cell glyphs and badge", func(t *testing.T) {
 		buf := &bytes.Buffer{}
-		writeChildren(buf, root, "", faint, nil, false, false)
+		writeChildren(buf, root, "", faint, nil, nil, false, false)
 		out := buf.String()
 		if !strings.Contains(out, "├─") && !strings.Contains(out, "└─") {
 			t.Errorf("normal mode should emit 3-cell glyphs, got:\n%s", out)

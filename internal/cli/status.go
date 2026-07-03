@@ -786,6 +786,7 @@ func renderStatusLegend(w io.Writer, vis []string) {
 		sec("--vis staleness")
 		fmt.Fprintln(w, "  · last commit Nd <sha>  — only shown when HEAD is ≥1 day old (sha = HEAD's short SHA)")
 		fmt.Fprintln(w, "  (Nd old)          — per-untracked mtime, only shown when ≥1 day old")
+		fmt.Fprintln(w, "  · 12m             — per changed file: last write (mtime) as relative age; 'now' under a minute")
 	}
 	if enabled("heatmap") {
 		sec("--vis heatmap — 2-D density (rows=dir, cols=C/S/M/?)")
@@ -1378,12 +1379,16 @@ type statusJSONCounts struct {
 }
 
 type statusJSONEntry struct {
-	Path        string `json:"path"`
-	Orig        string `json:"orig,omitempty"`
-	XY          string `json:"xy"`
-	Sub         string `json:"sub,omitempty"`
-	State       string `json:"state"`
-	Detail      string `json:"detail,omitempty"`
+	Path   string `json:"path"`
+	Orig   string `json:"orig,omitempty"`
+	XY     string `json:"xy"`
+	Sub    string `json:"sub,omitempty"`
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+	// ModifiedAt is the entry's filesystem mtime (RFC3339) — "last touched",
+	// not authorship; absent for deleted paths. Lets agents order dirty files
+	// by recency and spot stale leftovers without extra probes.
+	ModifiedAt  string `json:"modified_at,omitempty"`
 	Committable bool   `json:"committable"`
 }
 
@@ -1423,6 +1428,7 @@ func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []g
 			Sub:         e.Sub,
 			State:       statusEntryState(e),
 			Detail:      strings.Join(submoduleEntryDetails(e), "; "),
+			ModifiedAt:  entryModifiedAt(RepoFlag(), e.Path),
 			Committable: true,
 		})
 	}
@@ -1864,9 +1870,13 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 			fmt.Fprintln(w, line)
 		}
 	}
+	var entryAges map[string]string
+	if statusVisEnabled("staleness") && len(listEntries) > 0 {
+		entryAges = fetchEntryAges(runner.Dir, listEntries)
+	}
 	if statusVisEnabled("tree") && len(listEntries) > 0 {
 		stats := fetchDiffStats(cmd.Context(), runner)
-		renderStatusTree(w, listEntries, stats)
+		renderStatusTree(w, listEntries, stats, entryAges)
 	} else {
 		useGlyphs := statusVisEnabled("glyphs")
 		if len(grouped.Unmerged) > 0 {
@@ -1885,7 +1895,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		if len(grouped.Staged) > 0 {
 			fmt.Fprintln(w, color.GreenString("staged:"))
 			for _, e := range grouped.Staged {
-				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), displayPath(e), renderEntryDetail(e))
+				fmt.Fprintf(w, "  %s%s %s%s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), displayPath(e), renderEntryDetail(e), ageSuffix(entryAges, e.Path, faint))
 			}
 		}
 		if len(grouped.Modified) > 0 {
@@ -1903,6 +1913,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 						parts[0] = fmt.Sprintf("  %s%s %s %s%s", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), marker, displayPath(e), renderEntryDetail(e))
 					}
 				}
+				parts[0] += ageSuffix(entryAges, e.Path, faint)
 				if showChurn {
 					if sl := fileChurnSparkline(cmd.Context(), runner, e.Path, 8); sl != "" {
 						parts = append(parts, faint(sl))
@@ -2886,7 +2897,7 @@ func subtreeCount(n *treeNode) int {
 // Under a narrow TTY (<60 cols) the 3-cell indent (`│  `) compresses to 2
 // cells (`│ `) so deeply-nested paths still fit. Very narrow TTYs (<40) also
 // suppress the subtree `(N)` badge which is the least load-bearing glyph.
-func renderStatusTree(w io.Writer, entries []git.StatusEntry, stats map[string]diffStat) {
+func renderStatusTree(w io.Writer, entries []git.StatusEntry, stats map[string]diffStat, ages map[string]string) {
 	root := buildStatusTree(entries)
 	faint := color.New(color.Faint).SprintFunc()
 	narrow, dropBadge := false, false
@@ -2894,10 +2905,31 @@ func renderStatusTree(w io.Writer, entries []git.StatusEntry, stats map[string]d
 		narrow = ttyW < 60
 		dropBadge = ttyW < 40
 	}
-	writeChildren(w, root, "", faint, stats, narrow, dropBadge)
+	writeChildren(w, root, "", faint, stats, ages, narrow, dropBadge)
 }
 
-func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string, stats map[string]diffStat, narrow, dropBadge bool) {
+// fetchEntryAges lstat's each entry once and returns path → relative age
+// label. Nil when the staleness vis is off — renderers treat nil as "no
+// age column".
+func fetchEntryAges(repoDir string, entries []git.StatusEntry) map[string]string {
+	ages := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if a := entryAge(repoDir, e.Path); a != "" {
+			ages[e.Path] = a
+		}
+	}
+	return ages
+}
+
+// ageSuffix renders " · 12m" for a path with a known age, "" otherwise.
+func ageSuffix(ages map[string]string, path string, faint func(...interface{}) string) string {
+	if a := ages[path]; a != "" {
+		return "  " + faint("· "+a)
+	}
+	return ""
+}
+
+func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interface{}) string, stats map[string]diffStat, ages map[string]string, narrow, dropBadge bool) {
 	keys := make([]string, 0, len(n.children))
 	for k := range n.children {
 		keys = append(keys, k)
@@ -2926,7 +2958,7 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 		if child.entry != nil {
 			useGlyphs := statusVisEnabled("glyphs")
 			stat := formatDiffStat(stats, child.entry.Path)
-			fmt.Fprintf(w, "%s%s%s%s  %s%s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), renderEntryState(*child.entry, effectiveXYStyle), displayTreeName(child), renderEntryDetail(*child.entry), stat)
+			fmt.Fprintf(w, "%s%s%s%s  %s%s%s%s\n", prefix, faint(branch), glyphPrefix(child.entry.Path, useGlyphs), renderEntryState(*child.entry, effectiveXYStyle), displayTreeName(child), renderEntryDetail(*child.entry), stat, ageSuffix(ages, child.entry.Path, faint))
 		} else {
 			if dropBadge {
 				fmt.Fprintf(w, "%s%s%s/\n", prefix, faint(branch),
@@ -2938,7 +2970,7 @@ func writeChildren(w io.Writer, n *treeNode, prefix string, faint func(...interf
 					faint(fmt.Sprintf("(%d)", subtreeCount(child))),
 				)
 			}
-			writeChildren(w, child, prefix+faint(indent), faint, stats, narrow, dropBadge)
+			writeChildren(w, child, prefix+faint(indent), faint, stats, ages, narrow, dropBadge)
 		}
 	}
 }
@@ -3263,6 +3295,46 @@ func headCommitInfo(cmd *cobra.Command, runner *git.ExecRunner) (ago, fullSHA, s
 		subject = lines[2]
 	}
 	return ago, fullSHA, subject
+}
+
+// entryModifiedAt returns the entry's mtime as RFC3339, or "" when the
+// path cannot be stat'ed (deleted files).
+func entryModifiedAt(repoDir, path string) string {
+	p := path
+	if !filepath.IsAbs(p) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		p = filepath.Join(repoDir, path)
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return ""
+	}
+	return info.ModTime().UTC().Format(time.RFC3339)
+}
+
+// entryAge returns a short relative age of a dirty entry's last write —
+// "now" under a minute, then formatAge units. Empty when the path cannot
+// be stat'ed (deleted files). mtime is the filesystem write time: a
+// checkout or formatter refreshes it too, so read it as "last touched",
+// not authorship. Cost: one lstat per displayed entry, no git calls.
+func entryAge(repoDir, path string) string {
+	p := path
+	if !filepath.IsAbs(p) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		p = filepath.Join(repoDir, path)
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return ""
+	}
+	if age := time.Since(info.ModTime()); age >= time.Minute {
+		return formatAge(age)
+	}
+	return "now"
 }
 
 // untrackedAge returns a short relative age of an untracked file's mtime,

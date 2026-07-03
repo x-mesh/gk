@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk resolve`에 hunk별 confidence 게이트와 제안 동봉이 붙었다 — Phase 2.** AI가 모든 hunk 해결에 확신도(0.0~1.0)를 보고하고, global config의 `resolve.min_confidence`(기본 0 = off) 미만인 hunk는 **적용하지 않는다**: 파일은 확신 hunk만 치환되고 불확신 hunk는 마커 그대로인 부분 해결 상태로 쓰이며(stage 안 됨, `remaining`으로 보고), 보류된 답은 paused 리포트의 `proposals[]`(파일·hunk 번호·전략·확신도·rationale·해결 라인)로 동봉된다 — 에이전트가 "해결해줘"를 기다리는 대신 제안을 검토해 직접 적용하거나 재실행할 수 있다. 양의 게이트에서 확신도 미보고(구형 응답)는 미달로 취급해 옵트인한 게이트를 우회할 수 없고, multi-pick rebase의 후속 라운드 제안도 리포트에 누적된다. `min_confidence`는 `verify`/`union_files`와 같은 신뢰 경계로 global config 전용이다 — 해결 대상 repo가 기준을 낮출 수 없다.
+
 ## [0.111.0] - 2026-07-03
 
 ### Added

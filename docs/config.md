@@ -471,15 +471,20 @@ Ordering: wherever gk presents aliases to pick from (e.g. `gk init`'s account pi
 
 Aliases without `owner` behave exactly as before the field existed; `alias:repo` on such an alias fails with a "no owner configured" hint instead of guessing.
 
-### `resolve.rerere` / `resolve.verify` / `resolve.union_files`
+### `resolve.rerere` / `resolve.verify` / `resolve.union_files` / `resolve.min_confidence`
 
 | | |
 |-|-|
-| Type | bool / string list / string list |
-| Default | `true` / empty / `[CHANGELOG.md, go.sum]` |
+| Type | bool / string list / string list / float (0–1) |
+| Default | `true` / empty / `[CHANGELOG.md, go.sum]` / `0` (gate off) |
 | CLI flags | `--safe` (mechanical tier only), `--ai` |
 
-`rerere` enables git's rerere in the repo the first time `gk resolve` runs and applies recorded resolutions before anything else — repeated conflicts (long-lived branch rebases) resolve at zero AI cost (skipped for explicit `--strategy ours|theirs`). `verify` lists shell commands run from the repo root after conflicts are resolved but **before** they are staged/continued; any failure restores what gk wrote (`git checkout -m`) and pauses — a conflict-marker scan always runs even with an empty list. `union_files` names the basenames the mechanical tier resolves by keeping both sides when both are additions (go.sum additionally sorted/deduplicated, refusing conflicting hashes for one module@version); an explicit empty list disables union merging. **`verify` and `union_files` are read from this global file only** — a repo-local `.gk.yaml` cannot set them, so an untrusted checkout can neither execute commands nor widen the auto-merge surface.
+`rerere` enables git's rerere in the repo the first time `gk resolve` runs and applies recorded resolutions before anything else — repeated conflicts (long-lived branch rebases) resolve at zero AI cost (skipped for explicit `--strategy ours|theirs`). `verify` lists shell commands run from the repo root after conflicts are resolved but **before** they are staged/continued; any failure restores what gk wrote (`git checkout -m`) and pauses — a conflict-marker scan always runs even with an empty list. `union_files` names the basenames the mechanical tier resolves by keeping both sides when both are additions (go.sum additionally sorted/deduplicated, refusing conflicting hashes for one module@version); an explicit empty list disables union merging. `min_confidence` gates AI resolutions **per hunk**: the model reports a confidence (0.0–1.0) with every resolution, and a hunk below the gate keeps its conflict markers while the withheld answer ships in the paused report as a `proposals[]` entry (file, hunk, strategy, confidence, rationale, resolved lines) — an agent reviews and applies it without another resolve round-trip. The rest of the file is written partially resolved and stays unmerged. With a positive gate an unreported confidence counts as below it. **`verify`, `union_files`, and `min_confidence` are read from this global file only** — a repo-local `.gk.yaml` cannot set them, so an untrusted checkout can neither execute commands, widen the auto-merge surface, nor lower the confidence bar.
+
+```yaml
+resolve:
+  min_confidence: 0.8
+```
 
 ```yaml
 resolve:

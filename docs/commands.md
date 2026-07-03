@@ -2313,7 +2313,11 @@ gk continue
 
 Batch resolutions (`--strategy` / `--ai` / `--safe`) are **written but not staged** until a verification gate passes: a conflict-marker scan always runs, plus any `resolve.verify` commands (shell commands run at the repo root — e.g. `["go build ./..."]`). The gate also runs on every later-pick round of a multi-pick rebase. **`resolve.verify` and `resolve.union_files` are honored from the GLOBAL config only** — the repo being resolved must not be able to run shell commands or widen the auto-merge surface (same trust boundary as `init.ai_gitignore`); a repo-local attempt is ignored with a note. On failure, files gk wrote are restored exactly (`git checkout -m`, possible because the unmerged index stages were never cleared) — files whose existing markerless content was merely accepted are never touched, and delete/modify resolutions staged before the gate are reported as non-restorable. The operation stays paused with `verify_failed` in the JSON report — an auto-resolution attempt costs nothing when it's wrong.
 
-The mechanical tier also runs as a **pre-pass inside `--ai`**, so deterministic hunks never reach the provider; and with `resolve.rerere` (default on) git's rerere is enabled and recorded resolutions are applied first — repeat conflicts resolve at zero cost (skipped for explicit `--strategy ours|theirs`, which promise a pure side-take). See [`resolve.*` config](config.md#resolvererere).
+The mechanical tier also runs as a **pre-pass inside `--ai`**, so deterministic hunks never reach the provider; and with `resolve.rerere` (default on) git's rerere is enabled and recorded resolutions are applied first — repeat conflicts resolve at zero cost (skipped for explicit `--strategy ours|theirs`, which promise a pure side-take).
+
+### Confidence gate (`resolve.min_confidence`)
+
+With a positive `resolve.min_confidence` (global config only), every AI hunk resolution carries a model-reported confidence, and hunks below the gate are **not applied**: the file is written partially resolved — confident hunks replaced, unsure hunks keeping their original markers — never staged, and reported in `remaining`. The withheld answers ride along as `proposals[]` (file, 1-based hunk index, strategy, confidence, rationale, resolved lines) in the paused JSON report, so an agent can review and apply them directly instead of asking a human to "resolve it". An unreported confidence counts as below a positive gate. See [`resolve.*` config](config.md#resolvererere).
 
 ### Notes
 

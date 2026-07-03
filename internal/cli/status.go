@@ -3385,7 +3385,9 @@ func renderTypesChipWithWidth(entries []git.StatusEntry, ttyW int) string {
 		}
 		return list[i].k < list[j].k
 	})
+	capped := 0
 	if len(list) > 8 {
+		capped = len(list) - 8
 		list = list[:8]
 	}
 
@@ -3394,7 +3396,9 @@ func renderTypesChipWithWidth(entries []git.StatusEntry, ttyW int) string {
 	// Budget check: under a known narrow TTY, trim tail tokens and replace
 	// them with `+N more`. Width budget = ttyW - visibleWidth(prefix) - 1
 	// (the leading space after the prefix). When ttyW == 0 we keep the
-	// historical behavior (all 8 tokens).
+	// historical behavior (all 8 tokens). Types cut by the top-8 cap above
+	// count toward the same `+N more` tail so the chip never hides types
+	// silently.
 	budget := 0
 	if ttyW > 0 {
 		budget = ttyW - visibleWidth(prefix) - 1
@@ -3420,6 +3424,7 @@ func renderTypesChipWithWidth(entries []git.StatusEntry, ttyW int) string {
 		used += cost
 	}
 	joined := strings.Join(parts, " ")
+	truncated += capped
 	if truncated > 0 {
 		suffix := dim(fmt.Sprintf("+%d more", truncated))
 		// If even the shortest token didn't fit, still emit the suffix so

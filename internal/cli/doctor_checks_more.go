@@ -166,7 +166,8 @@ func noiseLabel(p string) string {
 }
 
 // formatNoiseBreakdown renders the top three noise labels as
-// ".build/ x2465, .DS_Store x5" — most frequent first, ties by name.
+// ".build/ x2465, .DS_Store x5" — most frequent first, ties by name —
+// with a "+N more" tail when further labels were cut.
 func formatNoiseBreakdown(by map[string]int) string {
 	labels := make([]string, 0, len(by))
 	for l := range by {
@@ -178,12 +179,17 @@ func formatNoiseBreakdown(by map[string]int) string {
 		}
 		return labels[i] < labels[j]
 	})
+	more := 0
 	if len(labels) > 3 {
+		more = len(labels) - 3
 		labels = labels[:3]
 	}
 	parts := make([]string, len(labels))
 	for i, l := range labels {
 		parts[i] = fmt.Sprintf("%s x%d", l, by[l])
+	}
+	if more > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", more))
 	}
 	return strings.Join(parts, ", ")
 }

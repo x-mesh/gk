@@ -438,3 +438,23 @@ func TestDoctorCmd_JSON(t *testing.T) {
 		t.Error("expected 'git version' row in JSON output")
 	}
 }
+
+// formatNoiseBreakdown caps at the top three labels; the tail must say
+// how many labels were cut instead of hiding them silently.
+func TestFormatNoiseBreakdown(t *testing.T) {
+	t.Run("three or fewer labels render fully", func(t *testing.T) {
+		got := formatNoiseBreakdown(map[string]int{".build/": 2465, ".DS_Store": 5})
+		if got != ".build/ x2465, .DS_Store x5" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("overflow labels collapse into +N more", func(t *testing.T) {
+		got := formatNoiseBreakdown(map[string]int{
+			".build/": 10, "node_modules/": 8, ".DS_Store": 5, "dist/": 2, "coverage/": 1,
+		})
+		if got != ".build/ x10, node_modules/ x8, .DS_Store x5, +2 more" {
+			t.Errorf("got %q", got)
+		}
+	})
+}

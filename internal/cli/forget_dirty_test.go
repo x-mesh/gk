@@ -76,6 +76,27 @@ func TestDirtyOutsideTargetsHandlesDeletes(t *testing.T) {
 	}
 }
 
+// formatDirtyPreview shows the real detected paths — the old "example:"
+// label read as a hypothetical, so lock in the exact rendering here.
+func TestFormatDirtyPreview(t *testing.T) {
+	cases := []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{"single path", []string{".gitignore"}, ".gitignore"},
+		{"five paths verbatim", []string{"a", "b", "c", "d", "e"}, "a, b, c, d, e"},
+		{"overflow gets more tail", []string{"a", "b", "c", "d", "e", "f", "g"}, "a, b, c, d, e (+2 more)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatDirtyPreview(tc.paths); got != tc.want {
+				t.Errorf("formatDirtyPreview(%v) = %q, want %q", tc.paths, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPathUnderAny(t *testing.T) {
 	cases := []struct {
 		name    string

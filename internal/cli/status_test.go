@@ -1011,6 +1011,19 @@ func TestRenderTypesChip(t *testing.T) {
 			t.Errorf("wide TTY should not truncate, got %q", got)
 		}
 	})
+
+	t.Run("top-8 cap surfaces as +N more", func(t *testing.T) {
+		// 10 distinct kinds: the chip renders 8 and must say the other
+		// 2 exist rather than dropping them silently, even on a wide TTY.
+		paths := make([]string, 0, 10)
+		for i := 0; i < 10; i++ {
+			paths = append(paths, fmt.Sprintf("f%d.e%d", i, i))
+		}
+		got := renderTypesChipWithWidth(mk(paths...), 500)
+		if !strings.Contains(got, "+2 more") {
+			t.Errorf("expected +2 more tail for capped kinds, got %q", got)
+		}
+	})
 }
 
 func TestRenderProgressMeter(t *testing.T) {

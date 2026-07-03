@@ -189,13 +189,9 @@ func runForget(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(outside) > 0 && !forceDirty {
-		preview := outside
-		if len(preview) > 5 {
-			preview = preview[:5]
-		}
 		return WithHint(
 			fmt.Errorf("working-tree changes outside forget targets (%d path(s)); filter-repo would reset them"+
-				"\n  example: %s", len(outside), strings.Join(preview, ", ")),
+				"\n  dirty: %s", len(outside), formatDirtyPreview(outside)),
 			"commit/stash those changes, narrow the forget targets, or pass --force-dirty if you accept the loss",
 		)
 	}
@@ -560,6 +556,24 @@ func dirtyOutsideTargets(ctx context.Context, r git.Runner, targets []string) ([
 		outside = append(outside, path)
 	}
 	return outside, nil
+}
+
+// formatDirtyPreview joins the actual dirty paths detected outside the
+// forget targets, capped at five with a "(+N more)" tail. These are the
+// real files at risk — the label in the caller must not read like a
+// hypothetical example.
+func formatDirtyPreview(outside []string) string {
+	preview := outside
+	more := 0
+	if len(preview) > 5 {
+		more = len(preview) - 5
+		preview = preview[:5]
+	}
+	out := strings.Join(preview, ", ")
+	if more > 0 {
+		out += fmt.Sprintf(" (+%d more)", more)
+	}
+	return out
 }
 
 // pathUnderAny reports whether path equals any target or sits under a

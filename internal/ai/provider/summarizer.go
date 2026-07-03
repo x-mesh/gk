@@ -13,7 +13,7 @@ type Summarizer interface {
 // SummarizeInput describes what to summarize and how.
 type SummarizeInput struct {
 	// Kind selects the prompt template. Known values:
-	//   "pr" | "review" | "changelog" | "merge-plan" | "status" |
+	//   "pr" | "review" | "changelog" | "merge-plan" | "status" | "log" |
 	//   "do" | "ask" | "explain" | "explain-last"
 	// Unknown kinds fall back to a generic summary.
 	Kind      string

@@ -155,6 +155,16 @@ func buildSummarizeUserPrompt(in SummarizeInput) string {
 		return b.String()
 	}
 
+	// "log" (gk log --ai) supplies its own role/instructions via SystemPrompt
+	// and its Diff field already carries the assembled <FACTS> data block —
+	// same shape as "status". Emit verbatim so the facts aren't re-wrapped in
+	// a generic "summarize the following changes" <DIFF> fence.
+	if in.Kind == "log" {
+		fmt.Fprintf(&b, "Respond in language: %s\n\n", lang)
+		b.WriteString(in.Diff)
+		return b.String()
+	}
+
 	switch in.Kind {
 	case "pr":
 		fmt.Fprintf(&b, "Task: write a Pull Request description in %s that helps a reviewer act.\n", lang)

@@ -55,6 +55,9 @@ func init() {
 	cmd.Flags().Bool("ahead", false, "show commits HEAD has that the upstream does not (=@{u}..HEAD; preview before `gk push`)")
 	cmd.Flags().Bool("base", false, "with --ahead/--behind, compare against the base branch instead of the upstream — lists the commits behind `gk status`'s \"ready to merge into <base>\" line")
 	cmd.Flags().Bool("fetch", false, "with --behind/--ahead, run `git fetch` first so the count reflects current origin state")
+	cmd.Flags().Bool("ai", false, "explain the shown commit range in plain language with AI (appended below the list; grounded in hotspot/WIP/breaking/CC signals)")
+	cmd.Flags().String("provider", "", "override ai.provider for --ai")
+	cmd.Flags().String("lang", "", "override AI log-summary language (en|ko|...)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -165,7 +168,11 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	if containsVis(effectiveLogVis, "lanes") && !JSONOut() {
-		return renderLanes(cmd, runner, since, limit, args)
+		if err := renderLanes(cmd, runner, since, limit, args); err != nil {
+			return err
+		}
+		maybeAppendLogAssist(cmd, runner, cfg, since, limit, args)
+		return nil
 	}
 
 	// When any per-commit visualization is enabled, we take over rendering
@@ -185,7 +192,11 @@ func runLog(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		return renderVizLog(cmd, runner, since, limit, args, viz, tagsRule, graph)
+		if err := renderVizLog(cmd, runner, since, limit, args, viz, tagsRule, graph); err != nil {
+			return err
+		}
+		maybeAppendLogAssist(cmd, runner, cfg, since, limit, args)
+		return nil
 	}
 
 	gitArgs := []string{"log"}
@@ -222,7 +233,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	if JSONOut() {
-		return writeJSONLog(cmd.OutOrStdout(), stdout)
+		return writeJSONLogWithAssist(cmd, runner, cfg, since, limit, args, stdout)
 	}
 	if (pulse || calendar) && !JSONOut() {
 		dates := fetchCommitDates(cmd.Context(), runner, since, args)
@@ -244,6 +255,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if len(stdout) > 0 && !strings.HasSuffix(string(stdout), "\n") {
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
+	maybeAppendLogAssist(cmd, runner, cfg, since, limit, args)
 	return nil
 }
 
@@ -1844,10 +1856,6 @@ type LogEntry struct {
 	Date     string `json:"date"`
 	Subject  string `json:"subject"`
 	Body     string `json:"body,omitempty"`
-}
-
-func writeJSONLog(w io.Writer, raw []byte) error {
-	return emitAgentResult(w, parseJSONLog(raw))
 }
 
 // parseJSONLog splits raw output on %x1e (record sep) and %x00 (field sep).

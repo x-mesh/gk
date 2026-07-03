@@ -75,7 +75,9 @@ func (s *Sandbox) Resolve(p string) (abs, rel string, err error) {
 	relSlash := filepath.ToSlash(relPath)
 
 	for _, comp := range strings.Split(relSlash, "/") {
-		if comp == ".git" {
+		// EqualFold: macOS/Windows filesystems are case-insensitive, so
+		// ".GIT/config" opens the same directory ".git" does.
+		if strings.EqualFold(comp, ".git") {
 			return "", "", fmt.Errorf("chat sandbox: %q reaches into .git", p)
 		}
 	}
@@ -94,16 +96,21 @@ func (s *Sandbox) Resolve(p string) (abs, rel string, err error) {
 	return resolved, relSlash, nil
 }
 
-// submoduleAncestor returns the first ancestor directory of rel (excluding
-// the repo root itself) that contains a .git entry, or "" when none does.
+// submoduleAncestor returns the first path component chain of rel
+// (excluding the repo root itself) that owns a .git entry, or "" when
+// none does. The FINAL component is included too: listing a submodule's
+// root is the same boundary crossing as reading inside it.
 func (s *Sandbox) submoduleAncestor(relSlash string) string {
 	if relSlash == "." {
 		return ""
 	}
 	comps := strings.Split(relSlash, "/")
 	dir := s.Root
-	for i := 0; i < len(comps)-1; i++ {
+	for i := 0; i < len(comps); i++ {
 		dir = filepath.Join(dir, comps[i])
+		if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+			return "" // leaf file (or missing) — nothing below to own a .git
+		}
 		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 			return filepath.ToSlash(filepath.Join(comps[:i+1]...))
 		}

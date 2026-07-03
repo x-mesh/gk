@@ -278,3 +278,70 @@ func TestRegistryDispatchGuards(t *testing.T) {
 		t.Error("canceled context must be IsError")
 	}
 }
+
+// Cross-vendor review regressions: the ref argument must never smuggle a
+// path (HEAD:.env is git's object-path syntax) and .git must be blocked
+// case-insensitively.
+func TestGitShowRefPathSmugglingBlocked(t *testing.T) {
+	r, _ := newTestGitTools(t)
+	for _, ref := range []string{"HEAD:.env", "HEAD~1:.env", "main:secrets/key"} {
+		res := dispatch(t, r, "git_show", `{"ref":"`+ref+`"}`)
+		if !res.IsError {
+			t.Errorf("git_show ref=%q must be rejected, got: %.80s", ref, res.Content)
+		}
+		if strings.Contains(res.Content, "hunter2") || strings.Contains(res.Content, "changed-secret") {
+			t.Errorf("rejection for %q leaked content", ref)
+		}
+	}
+}
+
+func TestSandboxBlocksGitDirCaseInsensitive(t *testing.T) {
+	sb, _, _ := sandboxFixture(t)
+	for _, p := range []string{".GIT/config", ".Git/HEAD", "sub/../.gIt/config"} {
+		if _, _, err := sb.Resolve(p); err == nil {
+			t.Errorf("Resolve(%q): want .git error, got nil", p)
+		}
+	}
+}
+
+// A denied DIRECTORY pattern must exclude the files beneath it from grep
+// matches (the "/**" spellings).
+func TestGitGrepExcludesDeniedDirContents(t *testing.T) {
+	runner, sb, root := gitRepoFixture(t)
+	deny := append(sb.DenyGlobs, "secretdir")
+	sb.DenyGlobs = deny
+	if err := os.MkdirAll(filepath.Join(root, "secretdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secretdir", "key.txt"), []byte("NEEDLE_XYZ=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	g := &GitTools{Runner: runner, Sandbox: sb, DenyGlobs: deny}
+	r := NewRegistry(nil, 0)
+	RegisterGitTools(r, g)
+	res := dispatch(t, r, "git_grep", `{"pattern":"NEEDLE_XYZ"}`)
+	if res.IsError {
+		t.Fatalf("git_grep: %s", res.Content)
+	}
+	if strings.Contains(res.Content, "NEEDLE_XYZ") {
+		t.Errorf("grep leaked denied-dir content: %s", res.Content)
+	}
+}
+
+// A panicking handler's message passes through redaction like any result.
+func TestRegistryPanicRedacted(t *testing.T) {
+	r := NewRegistry(func(s string) string { return strings.ReplaceAll(s, "hunter2", "[X]") }, 0)
+	r.Register(Tool{
+		Name: "boom", Schema: json.RawMessage(`{}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) { panic("secret hunter2 leaked") },
+	})
+	res := r.Dispatch(context.Background(), provider.ToolCall{Name: "boom"})
+	if !res.IsError || strings.Contains(res.Content, "hunter2") {
+		t.Errorf("panic content must be redacted: %+v", res)
+	}
+}

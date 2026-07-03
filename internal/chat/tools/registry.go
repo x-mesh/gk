@@ -81,7 +81,9 @@ func (r *Registry) Dispatch(ctx context.Context, call provider.ToolCall) (res pr
 	res.ToolCallID = call.ID
 	defer func() {
 		if p := recover(); p != nil {
-			res.Content = fmt.Sprintf("tool %s panicked: %v", call.Name, p)
+			// The panic payload can quote whatever the handler was holding
+			// — redact it like any other model-visible text.
+			res.Content = r.redact(fmt.Sprintf("tool %s panicked: %v", call.Name, p))
 			res.IsError = true
 		}
 	}()

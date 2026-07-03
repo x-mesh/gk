@@ -80,9 +80,18 @@ func (e *Engine) LoadHistory(msgs []provider.ChatMessage) {
 // command).
 func (e *Engine) History() []provider.ChatMessage { return e.history }
 
-// ClearHistory drops the in-memory conversation (the session file keeps
-// its record; new turns simply start from an empty context).
-func (e *Engine) ClearHistory() { e.history = nil }
+// ClearHistory drops the in-memory conversation and records a clear
+// marker so a later --continue replay starts from the same empty context
+// instead of resurrecting what the user explicitly cleared (the file
+// keeps the full record for audit; only replay semantics change).
+func (e *Engine) ClearHistory() {
+	e.history = nil
+	if e.Session != nil {
+		if err := e.Session.Append(SessionRecord{TS: time.Now().UTC(), Role: recordRoleClear}); err != nil {
+			e.dbg("chat: clear marker append failed: %v", err)
+		}
+	}
+}
 
 func (e *Engine) dbg(format string, args ...any) {
 	if e.Dbg != nil {
@@ -111,11 +120,27 @@ func (e *Engine) turnByteCap() int {
 	return defaultTurnByteCap
 }
 
-// RunTurn processes one user input to a final text answer. On error the
-// conversation state stays coherent (the user message and any completed
-// rounds are kept and persisted) so a failed turn never corrupts the
-// session — the caller reports the error and the REPL continues.
-func (e *Engine) RunTurn(ctx context.Context, userInput string) (*TurnResult, error) {
+// RunTurn processes one user input to a final text answer. On ANY error
+// the whole turn is rolled back — in memory by truncation, in the session
+// file by an "aborted" marker that Replay honors — because a partial turn
+// is not just untidy, it is POISON: Anthropic rejects two consecutive
+// user messages and every tool_use must be answered by a tool_result, so
+// a dangling user message or an unanswered tool call would wedge every
+// subsequent round of the session (three review vendors converged on
+// this). Roll back, report, and the next turn starts clean.
+func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, err error) {
+	turnStart := len(e.history)
+	defer func() {
+		if err != nil {
+			e.history = e.history[:turnStart]
+			if e.Session != nil {
+				if aErr := e.Session.Append(SessionRecord{TS: time.Now().UTC(), Role: recordRoleAborted}); aErr != nil {
+					e.dbg("chat: abort marker append failed: %v", aErr)
+				}
+			}
+		}
+	}()
+
 	e.appendAndPersist(provider.ChatMessage{Role: "user", Text: userInput}, SessionRecord{Role: "user", Text: userInput})
 
 	res := &TurnResult{}
@@ -123,8 +148,8 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (*TurnResult, er
 	turnBytes := 0
 
 	for round := 0; round < e.maxRounds(); round++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if cErr := ctx.Err(); cErr != nil {
+			return nil, cErr
 		}
 		res.Rounds = round + 1
 

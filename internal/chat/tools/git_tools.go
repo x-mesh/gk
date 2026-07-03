@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -27,14 +28,23 @@ type GitTools struct {
 
 const gitLogMaxCommits = 200
 
-// validateRef rejects revision arguments that could parse as flags or
-// inject extra arguments. Git itself validates ref syntax afterwards.
+// validateRef rejects revision arguments that could parse as flags,
+// inject extra arguments, or smuggle a path. The ':' rejection is
+// load-bearing: `git show HEAD:.env` is git's object-path syntax, and a
+// colon inside a model-supplied "ref" would fetch a denied file's content
+// while bypassing the sandbox entirely (cross-vendor review, 4 vendors).
+// Legitimate refs never need ':' — check-ref-format forbids it, and
+// ranges use '..'; the sanctioned ref:path form is constructed internally
+// AFTER the path clears the sandbox.
 func validateRef(ref string) error {
 	if ref == "" {
 		return nil
 	}
 	if strings.HasPrefix(ref, "-") {
 		return fmt.Errorf("invalid revision %q: may not start with '-'", ref)
+	}
+	if strings.Contains(ref, ":") {
+		return fmt.Errorf("invalid revision %q: ':' not allowed — pass the file via the path argument instead", ref)
 	}
 	if strings.ContainsAny(ref, " \t\n\x00") {
 		return fmt.Errorf("invalid revision %q: whitespace not allowed", ref)
@@ -63,9 +73,22 @@ func (g *GitTools) run(ctx context.Context, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("git %s: %s", args[0], msg)
+		return "", fmt.Errorf("git %s: %s", gitVerb(args), msg)
 	}
 	return string(stdout), nil
+}
+
+// gitVerb names the subcommand for error messages, skipping any leading
+// "-c key=val" config overrides.
+func gitVerb(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" {
+			i++
+			continue
+		}
+		return args[i]
+	}
+	return "git"
 }
 
 // ── git_log ───────────────────────────────────────────────────────────
@@ -136,8 +159,12 @@ func (g *GitTools) gitShow(ctx context.Context, raw json.RawMessage) (string, er
 		return g.run(ctx, "show", "--no-color", in.Ref+":"+rel)
 	}
 	// Whole commit: message + patch. The patch may touch denied files —
-	// drop those blocks before anything else sees the output.
-	out, err := g.run(ctx, "show", "--no-color", in.Ref)
+	// drop those blocks before anything else sees the output. The -c
+	// overrides pin the a/ b/ header prefixes FilterDiffByDeny parses:
+	// a repo-local diff.noprefix=true would otherwise blank the extracted
+	// paths and fail the filter open.
+	out, err := g.run(ctx, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "show", "--no-color", in.Ref)
 	if err != nil {
 		return "", err
 	}
@@ -164,7 +191,8 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 	if err := validateRef(in.Range); err != nil {
 		return "", err
 	}
-	args := []string{"diff", "--no-color"}
+	args := []string{"-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "diff", "--no-color"}
 	if in.Range != "" {
 		args = append(args, in.Range)
 	}
@@ -258,8 +286,12 @@ func (g *GitTools) gitGrep(ctx context.Context, raw json.RawMessage) (string, er
 		args = append(args, ".")
 	}
 	// Structural exclusion: denied files never enter the match set, so
-	// their content cannot appear as match lines. Both anchored and
-	// any-depth spellings cover basename globs like ".env".
+	// their content cannot appear as match lines. Four spellings per glob
+	// approximate matchDeny's three-tier semantics: anchored and any-depth
+	// forms for basename globs (".env"), plus "/**" suffixes so a denied
+	// DIRECTORY pattern also excludes the files beneath it — pathspec
+	// globs match the path string, and "**/secrets" alone would not
+	// exclude "a/secrets/key.txt".
 	for _, glob := range g.DenyGlobs {
 		if glob == "" {
 			continue
@@ -267,17 +299,27 @@ func (g *GitTools) gitGrep(ctx context.Context, raw json.RawMessage) (string, er
 		args = append(args,
 			":(exclude,glob)"+glob,
 			":(exclude,glob)**/"+glob,
+			":(exclude,glob)"+glob+"/**",
+			":(exclude,glob)**/"+glob+"/**",
 		)
 	}
-	out, err := g.run(ctx, args...)
+	stdout, stderr, err := g.Runner.Run(ctx, args...)
 	if err != nil {
-		// Exit 1 with empty output means "no matches" — normalize.
-		if strings.Contains(err.Error(), "git grep:") && strings.TrimSpace(out) == "" {
+		// Exit 1 with a quiet stderr is grep's "no matches". Anything
+		// else (bad regex exits 128 with a fatal: message) is a real
+		// error the model must see — reporting it as "no matches" would
+		// send the conversation down a false path.
+		var xe *git.ExitError
+		if errors.As(err, &xe) && xe.Code == 1 && strings.TrimSpace(string(stderr)) == "" {
 			return "(no matches)", nil
 		}
-		return "", err
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("git grep: %s", msg)
 	}
-	return out, nil
+	return string(stdout), nil
 }
 
 // appendDropNote tells the model that blocks were withheld — silence

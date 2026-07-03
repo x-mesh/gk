@@ -163,17 +163,18 @@ func TestEngineTurnByteCap(t *testing.T) {
 	}
 }
 
-// Provider errors abort the turn but keep history coherent (user message
-// retained) so the REPL can retry.
-func TestEngineProviderErrorKeepsState(t *testing.T) {
+// Provider errors abort the turn AND roll the history back to the
+// pre-turn state — a dangling user message would violate Anthropic's
+// role alternation and wedge every later round (see RunTurn's defer).
+func TestEngineProviderErrorRollsBack(t *testing.T) {
 	caller := &scriptedCaller{errs: []error{errors.New("boom")}}
 	e := &Engine{Caller: caller, Registry: echoRegistry("x")}
 	_, err := e.RunTurn(context.Background(), "q")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(e.History()) != 1 || e.History()[0].Role != "user" {
-		t.Errorf("history after failure: %+v", e.History())
+	if len(e.History()) != 0 {
+		t.Errorf("history after failure = %+v, want full rollback", e.History())
 	}
 }
 
@@ -262,5 +263,114 @@ func TestSystemPromptEscapesRepoContext(t *testing.T) {
 	easy := SystemPrompt("", "ko", true)
 	if !strings.Contains(easy, "NOT a developer") {
 		t.Error("easy mode line missing")
+	}
+}
+
+// A failed turn must roll history back to the pre-turn state — a dangling
+// user message (or an unanswered tool_use) breaks Anthropic's role rules
+// and would wedge every later round of the session.
+func TestEngineFailedTurnRollsBack(t *testing.T) {
+	caller := &scriptedCaller{
+		replies: []provider.ChatResult{
+			{Text: "answer one", StopReason: "end_turn"},
+			{ToolCalls: []provider.ToolCall{toolCall("c1", "echo", `{}`)}, StopReason: "tool_use"},
+		},
+		errs: []error{nil, nil, errors.New("boom mid-turn")},
+	}
+	e := &Engine{Caller: caller, Registry: echoRegistry("x")}
+	if _, err := e.RunTurn(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	complete := len(e.History())
+	if _, err := e.RunTurn(context.Background(), "second"); err == nil {
+		t.Fatal("second turn must fail")
+	}
+	if len(e.History()) != complete {
+		t.Errorf("history = %d messages after failed turn, want rollback to %d: %+v",
+			len(e.History()), complete, e.History())
+	}
+	// The next turn starts cleanly from the rolled-back state.
+	if _, err := e.RunTurn(context.Background(), "third"); err != nil {
+		t.Fatalf("post-rollback turn: %v", err)
+	}
+}
+
+// The aborted-turn marker makes --continue replay agree with the live
+// rollback, and the clear marker resets replay to empty.
+func TestSessionReplayHonorsMarkers(t *testing.T) {
+	runner, _ := sessionFixture(t)
+	ctx := context.Background()
+	s, err := NewSession(ctx, runner, "markers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendAll := func(recs ...SessionRecord) {
+		t.Helper()
+		for _, r := range recs {
+			if err := s.Append(r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	appendAll(
+		SessionRecord{Role: "user", Text: "q1"},
+		SessionRecord{Role: "assistant", Text: "a1"},
+		// aborted turn: dangling user + unanswered tool_call
+		SessionRecord{Role: "user", Text: "q2"},
+		SessionRecord{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "c", Name: "echo"}}},
+		SessionRecord{Role: recordRoleAborted},
+	)
+	msgs, _, err := s.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[1].Text != "a1" {
+		t.Fatalf("aborted marker must rewind to the completed turn: %+v", msgs)
+	}
+
+	appendAll(SessionRecord{Role: recordRoleClear}, SessionRecord{Role: "user", Text: "q3"})
+	msgs, _, err = s.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Text != "q3" {
+		t.Fatalf("clear marker must reset replay: %+v", msgs)
+	}
+}
+
+// ClearHistory writes the marker so live /clear and later --continue see
+// the same (empty) context.
+func TestClearHistoryWritesMarker(t *testing.T) {
+	runner, _ := sessionFixture(t)
+	ctx := context.Background()
+	s, err := NewSession(ctx, runner, "clear-marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Caller: &scriptedCaller{}, Registry: echoRegistry("x"), Session: s}
+	if _, err := e.RunTurn(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	e.ClearHistory()
+	msgs, _, err := s.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("replay after /clear = %+v, want empty", msgs)
+	}
+}
+
+// The off-by-one fix: dropping everything up to (and including) the turn
+// right before the in-flight one is allowed.
+func TestTrimHistoryDropsUpToLastTurn(t *testing.T) {
+	msgs := []provider.ChatMessage{
+		{Role: "user", Text: strings.Repeat("a", 800)},
+		{Role: "assistant", Text: strings.Repeat("b", 800)},
+		{Role: "user", Text: "in-flight"},
+	}
+	trimmed := trimHistory(msgs, 100)
+	if len(trimmed) != 1 || trimmed[0].Text != "in-flight" {
+		t.Errorf("want only the in-flight turn, got %+v", trimmed)
 	}
 }

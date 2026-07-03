@@ -3,6 +3,7 @@ package aicommit
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/diff"
@@ -241,18 +242,31 @@ func bareSymbolName(sig string) string {
 // removal of whole file blocks is the defense; line-level secret regexes
 // are the fallback, not the primary.
 func FilterDiffByDeny(diff string, denyGlobs []string) (string, []string) {
+	// Merge commits emit combined-diff blocks ("diff --cc <path>") that
+	// splitDiffByFile's "diff --git" marker misses — normalize by
+	// filtering those blocks first so `git show <merge>` cannot leak a
+	// denied file through the combined view.
+	diff, ccDropped := filterCombinedDiffByDeny(diff, denyGlobs)
+
 	files := splitDiffByFile(diff)
 	if files == nil {
-		return diff, nil
+		return diff, ccDropped
 	}
 	var b strings.Builder
 	if i := strings.Index(diff, "diff --git "); i > 0 {
 		b.WriteString(diff[:i])
 	}
-	var dropped []string
+	dropped := ccDropped
 	for _, f := range files {
-		p := diffBlockPath(f.body)
-		if p != "" && matchDeny(p, denyGlobs) != "" {
+		// A rename's PRE-image (a/) side counts too: "a/.env → b/kept.txt"
+		// still describes the denied file's history.
+		oldPath, newPath := diffBlockPaths(f.body)
+		if (newPath != "" && matchDeny(newPath, denyGlobs) != "") ||
+			(oldPath != "" && oldPath != newPath && matchDeny(oldPath, denyGlobs) != "") {
+			p := newPath
+			if p == "" {
+				p = oldPath
+			}
 			dropped = append(dropped, p)
 			continue
 		}
@@ -261,23 +275,87 @@ func FilterDiffByDeny(diff string, denyGlobs []string) (string, []string) {
 	return b.String(), dropped
 }
 
-// diffBlockPath extracts the path from a "diff --git a/X b/Y" header
-// line, preferring the post-image side. Quoted paths (core.quotePath)
-// keep their escaped form — deny globs match against that spelling, which
-// is an accepted approximation backed by the line-level redaction pass.
-func diffBlockPath(block string) string {
+// filterCombinedDiffByDeny removes "diff --cc <path>" blocks (merge
+// combined diffs) whose path matches a deny glob. Blocks end at the next
+// "diff --cc " or "diff --git " marker.
+func filterCombinedDiffByDeny(diff string, denyGlobs []string) (string, []string) {
+	const marker = "diff --cc "
+	if !strings.Contains(diff, marker) {
+		return diff, nil
+	}
+	var b strings.Builder
+	var dropped []string
+	rest := diff
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		block := rest[i:]
+		end := len(block)
+		for _, m := range []string{"\ndiff --cc ", "\ndiff --git "} {
+			if j := strings.Index(block[len(marker):], m); j >= 0 && j+len(marker)+1 < end {
+				end = j + len(marker) + 1
+			}
+		}
+		header := block
+		if nl := strings.IndexByte(block, '\n'); nl >= 0 {
+			header = block[:nl]
+		}
+		p := unquoteDiffPath(strings.TrimPrefix(header, marker))
+		if p != "" && matchDeny(p, denyGlobs) != "" {
+			dropped = append(dropped, p)
+		} else {
+			b.WriteString(block[:end])
+		}
+		rest = block[end:]
+	}
+	return b.String(), dropped
+}
+
+// diffBlockPaths extracts the pre- and post-image paths from a
+// "diff --git a/X b/Y" header line. Quoted paths (core.quotePath: spaces,
+// non-ASCII) are C-unquoted so deny globs match the real spelling.
+func diffBlockPaths(block string) (oldPath, newPath string) {
 	line := block
 	if i := strings.IndexByte(block, '\n'); i >= 0 {
 		line = block[:i]
 	}
 	line = strings.TrimPrefix(line, "diff --git ")
+
+	// Post-image (b/) side.
 	if i := strings.LastIndex(line, ` "b/`); i >= 0 {
-		return strings.TrimSuffix(line[i+4:], `"`)
+		newPath = unquoteDiffPath(`"` + line[i+4:])
+		line = line[:i]
+	} else if i := strings.LastIndex(line, " b/"); i >= 0 {
+		newPath = line[i+3:]
+		line = line[:i]
 	}
-	if i := strings.LastIndex(line, " b/"); i >= 0 {
-		return line[i+3:]
+	// Pre-image (a/) side — whatever remains.
+	if strings.HasPrefix(line, `"a/`) {
+		oldPath = unquoteDiffPath(`"` + strings.TrimPrefix(line, `"a/`))
+	} else if strings.HasPrefix(line, "a/") {
+		oldPath = strings.TrimPrefix(line, "a/")
 	}
-	return ""
+	return oldPath, newPath
+}
+
+// unquoteDiffPath undoes git's C-style path quoting when present. A path
+// that fails to unquote keeps its raw form (redaction still applies).
+func unquoteDiffPath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 && strings.HasPrefix(p, `"`) {
+		if !strings.HasSuffix(p, `"`) {
+			p += `"`
+		}
+		if u, err := strconv.Unquote(p); err == nil {
+			return strings.TrimPrefix(strings.TrimPrefix(u, "b/"), "a/")
+		}
+		return strings.Trim(p, `"`)
+	}
+	return p
 }
 
 // fileDiff is one "diff --git ..." block.

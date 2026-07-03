@@ -44,10 +44,12 @@ func trimHistory(msgs []provider.ChatMessage, budgetTokens int) []provider.ChatM
 		out[i].ToolResult = &stub
 	}
 
-	// Pass 2: drop whole leading turns.
+	// Pass 2: drop whole leading turns. cut == lastTurnStart is still
+	// valid (drops everything BEFORE the in-flight turn); only cutting
+	// INTO the last turn is off-limits.
 	for estimateTokens(out) > budgetTokens {
 		cut := firstTurnEnd(out)
-		if cut <= 0 || cut >= lastTurnStart(out) {
+		if cut <= 0 || cut > lastTurnStart(out) {
 			break // only the in-flight turn remains — keep it whole
 		}
 		out = out[cut:]

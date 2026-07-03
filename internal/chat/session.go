@@ -17,6 +17,20 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 )
 
+// Control-record roles: not conversation messages, but replay directives.
+// The session file is append-only, so state changes that would "remove"
+// history (a rolled-back turn, /clear) are recorded as markers and
+// applied at Replay time instead of rewriting the file.
+const (
+	// recordRoleAborted marks a rolled-back turn: everything after the
+	// last completed turn is discarded on replay, mirroring RunTurn's
+	// in-memory truncation.
+	recordRoleAborted = "turn_aborted"
+	// recordRoleClear marks a /clear: replay restarts from empty context
+	// (the file keeps the full record for audit).
+	recordRoleClear = "clear"
+)
+
 // SessionRecord is one persisted conversation event — one JSON object per
 // line (the aicommit audit-log shape). Tool results are stored
 // POST-redaction: what's on disk is exactly what the provider saw, so a
@@ -175,6 +189,14 @@ func (s *Session) Replay() ([]provider.ChatMessage, int, error) {
 			skipped++
 			continue
 		}
+		switch rec.Role {
+		case recordRoleAborted:
+			msgs = msgs[:lastCompletedTurnEnd(msgs)]
+			continue
+		case recordRoleClear:
+			msgs = nil
+			continue
+		}
 		msg, ok := rec.toMessage()
 		if !ok {
 			skipped++
@@ -186,6 +208,18 @@ func (s *Session) Replay() ([]provider.ChatMessage, int, error) {
 		return nil, 0, fmt.Errorf("chat session: read: %w", err)
 	}
 	return msgs, skipped, nil
+}
+
+// lastCompletedTurnEnd returns the index just past the last assistant
+// message that finished a turn (text, no tool calls) — the exact position
+// RunTurn's rollback truncates to, so replay and live memory agree.
+func lastCompletedTurnEnd(msgs []provider.ChatMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) == 0 {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // toMessage converts a persisted record back to the provider shape,

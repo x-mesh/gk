@@ -52,6 +52,14 @@ type ResolveOptions struct {
 	Strategy Strategy // 빈 문자열이면 TUI/interactive 모드
 	Files    []string // 빈 슬라이스면 모든 충돌 파일
 	Lang     string
+	// UnionFiles overrides the basenames resolved by union merge in the
+	// mechanical tier (nil = DefaultUnionFiles).
+	UnionFiles []string
+	// DeferStage: write resolved contents but do NOT `git add` them —
+	// the caller stages after its verification gate passes, and can restore
+	// the conflict (`git checkout -m`) on failure because the unmerged
+	// index stages are still intact.
+	DeferStage bool
 }
 
 // ResolveResult는 해결 실행 결과이다.
@@ -62,4 +70,13 @@ type ResolveResult struct {
 	Total    int              // 전체 충돌 파일 수
 	AIUsed   bool
 	AIModel  string
+	// Mechanical lists the Resolved subset handled by the deterministic
+	// tier (no AI involved).
+	Mechanical []string
+	// Remaining lists conflicts strategy "safe" deliberately left alone —
+	// they need AI or a human, and are still marked/unmerged.
+	Remaining []string
+	// PendingStage lists resolved paths written but not yet staged
+	// (DeferStage) — the caller stages them after verification.
+	PendingStage []string
 }

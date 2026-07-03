@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,8 +25,9 @@ func init() {
 	resolveCmd.Flags().Bool("dry-run", false, "show resolution diff without modifying files")
 	resolveCmd.Flags().Bool("no-ai", false, "disable AI analysis")
 	resolveCmd.Flags().Bool("no-backup", false, "skip .orig backup file creation")
-	resolveCmd.Flags().String("strategy", "", "apply strategy to all conflicts: ours, theirs, ai")
+	resolveCmd.Flags().String("strategy", "", "apply strategy to all conflicts: ours, theirs, ai, safe")
 	resolveCmd.Flags().Bool("ai", false, "shortcut for --strategy ai (resolve every conflict with AI)")
+	resolveCmd.Flags().Bool("safe", false, "shortcut for --strategy safe (deterministic tier only: identical/whitespace/one-side-changed/union; the rest stay conflicted)")
 	resolveCmd.Flags().Bool("no-continue", false, "stop after resolving; do not run the continue step")
 	rootCmd.AddCommand(resolveCmd)
 }
@@ -39,26 +41,38 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	strategy, _ := cmd.Flags().GetString("strategy")
 	aiShortcut, _ := cmd.Flags().GetBool("ai")
 
+	safeShortcut, _ := cmd.Flags().GetBool("safe")
+
 	// --ai is sugar for --strategy ai. Reject combinations that contradict it
 	// rather than silently picking a winner.
 	if aiShortcut {
 		if noAI {
 			return fmt.Errorf("gk resolve: --ai and --no-ai are mutually exclusive")
 		}
+		if safeShortcut {
+			return fmt.Errorf("gk resolve: --ai and --safe are mutually exclusive")
+		}
 		if strategy != "" && strategy != "ai" {
 			return fmt.Errorf("gk resolve: --ai conflicts with --strategy %s", strategy)
 		}
 		strategy = "ai"
 	}
+	// --safe is sugar for --strategy safe.
+	if safeShortcut {
+		if strategy != "" && strategy != string(resolve.StrategySafe) {
+			return fmt.Errorf("gk resolve: --safe conflicts with --strategy %s", strategy)
+		}
+		strategy = string(resolve.StrategySafe)
+	}
 
 	// Validate strategy value.
 	switch resolve.Strategy(strategy) {
-	case "", resolve.StrategyOurs, resolve.StrategyTheirs:
+	case "", resolve.StrategyOurs, resolve.StrategyTheirs, resolve.StrategySafe:
 		// ok
 	case "ai":
 		// ok — validated later against provider availability
 	default:
-		return fmt.Errorf("gk resolve: invalid strategy %q: must be ours, theirs, or ai", strategy)
+		return fmt.Errorf("gk resolve: invalid strategy %q: must be ours, theirs, ai, or safe", strategy)
 	}
 
 	// Detect git state.
@@ -124,13 +138,20 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("gk resolve: --strategy is required in non-interactive mode")
 	}
 
+	// rerere: reuse recorded resolutions before classifying anything —
+	// repeat conflicts (long-lived branch rebases) resolve at zero cost.
+	if cfg.Resolve.Rerere && !dryRun {
+		ensureRerere(ctx, runner, cmd.ErrOrStderr())
+	}
+
 	opts := resolve.ResolveOptions{
-		DryRun:   dryRun,
-		NoAI:     noAI,
-		NoBackup: noBackup,
-		Strategy: resolve.Strategy(strategy),
-		Files:    args,
-		Lang:     cfg.AI.Lang,
+		DryRun:     dryRun,
+		NoAI:       noAI,
+		NoBackup:   noBackup,
+		Strategy:   resolve.Strategy(strategy),
+		Files:      args,
+		Lang:       cfg.AI.Lang,
+		UnionFiles: cfg.Resolve.UnionFiles,
 	}
 
 	r := &resolve.Resolver{
@@ -147,6 +168,11 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return runResolveInteractive(ctx, cmd, r, state, opts)
 	}
 
+	// Batch mode defers staging so the verification gate below can restore
+	// the conflicted state (`git checkout -m`) — index stages stay intact
+	// until the gate passes.
+	opts.DeferStage = true
+
 	// Batch mode: --strategy provided. Only the `ai` strategy makes provider
 	// calls (ours/theirs are local), so spin just for that — this is the path
 	// `gk resolve --ai` and `gk pull --ai` actually take.
@@ -158,6 +184,35 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	stopSpin()
 	if err != nil {
 		return err
+	}
+
+	// Verification gate: marker scan (always) + resolve.verify commands.
+	// Pass → stage the deferred paths and proceed to continue as before.
+	// Fail → restore the conflicted state and report paused; the attempt
+	// cost nothing.
+	if !dryRun && len(result.PendingStage) > 0 {
+		if verr := runResolveVerifyGate(ctx, runner.Dir, cfg.Resolve.Verify, result.Resolved, cmd.ErrOrStderr()); verr != nil {
+			rollbackPendingResolutions(ctx, runner, result.PendingStage, cmd.ErrOrStderr())
+			rep := plainResolveReport(result, state)
+			rep.Resolved = nil // rolled back — nothing is actually resolved
+			rep.Mechanical = nil
+			var ve *resolveVerifyError
+			if errors.As(verr, &ve) {
+				rep.VerifyFailed = ve.Check
+			}
+			if JSONOut() {
+				fmt.Fprintf(cmd.ErrOrStderr(), "resolve: %v\n", verr)
+				if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "resolve: verification failed — conflicted state restored\n  %v\n", verr)
+			}
+			return pausedExitIf(rep)
+		}
+		if err := stagePendingResolutions(ctx, runner, result.PendingStage); err != nil {
+			return err
+		}
 	}
 
 	noContinue, _ := cmd.Flags().GetBool("no-continue")
@@ -222,6 +277,8 @@ func plainResolveReport(result *resolve.ResolveResult, state *gitstate.State) *r
 	if result != nil {
 		rep.Resolved = append([]string{}, result.Resolved...)
 		rep.Total = result.Total
+		rep.Mechanical = append([]string{}, result.Mechanical...)
+		rep.Remaining = append([]string{}, result.Remaining...)
 	}
 	if sub, err := stateSubcommand(state.Kind); err == nil {
 		rep.State = sub

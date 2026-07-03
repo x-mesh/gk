@@ -173,6 +173,14 @@ type resolveReport struct {
 	Done         bool     `json:"done"`                    // operation fully finished
 	State        string   `json:"state"`                   // none | rebase | merge | cherry-pick | revert
 	Resume       string   `json:"resume,omitempty"`        // next command when not done
+	// Mechanical lists the Resolved subset handled deterministically (no AI).
+	Mechanical []string `json:"mechanical,omitempty"`
+	// Remaining lists conflicts strategy "safe" left for AI or a human —
+	// still marked and unmerged.
+	Remaining []string `json:"remaining,omitempty"`
+	// VerifyFailed carries the failing verify command (resolve.verify) when
+	// the gate rolled the resolution back to its conflicted state.
+	VerifyFailed string `json:"verify_failed,omitempty"`
 }
 
 // agentState reports paused when resolution stopped with the operation still

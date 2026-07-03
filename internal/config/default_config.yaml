@@ -209,6 +209,21 @@ init:
   # be able to trigger a remote AI call silently).
   ai_gitignore: false
 
+resolve:
+  # Enable git rerere (reuse recorded conflict resolutions) the first time
+  # `gk resolve` runs in a repo, and apply recorded resolutions before
+  # anything else. Repeated conflicts resolve at zero AI cost.
+  rerere: true
+
+  # Shell commands run from the repo root after conflicts are resolved but
+  # BEFORE they are staged/continued. Any failure restores the conflicted
+  # state (git checkout -m) and reports — a conflict-marker scan always
+  # runs even when this list is empty.
+  # verify: ["go build ./...", "go test ./... -count=1 -run Fast"]
+
+  # Basenames the mechanical tier resolves by keeping both sides.
+  # union_files: [CHANGELOG.md, go.sum]
+
 worktree:
   # Managed base for relative worktree names. `gk worktree add <name>` drops
   # the checkout at <base>/<project>/<name>. Leading `~/` is expanded against

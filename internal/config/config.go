@@ -20,6 +20,7 @@ type Config struct {
 	Promote    PromoteConfig   `mapstructure:"promote"     yaml:"promote"`
 	Clone      CloneConfig     `mapstructure:"clone"       yaml:"clone"`
 	Init       InitConfig      `mapstructure:"init"        yaml:"init"`
+	Resolve    ResolveConfig   `mapstructure:"resolve"     yaml:"resolve"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
@@ -531,6 +532,25 @@ type PreflightConfig struct {
 //     Supported values: "hooks-install" (invokes `gk hooks install --all`)
 //     and "doctor" (invokes `gk doctor`). Default empty — opt-in only.
 //
+// ResolveConfig controls `gk resolve` behavior.
+//
+//   - Rerere: enable git's rerere (reuse recorded resolutions) in the repo the
+//     first time gk resolve runs, and apply any recorded resolutions before
+//     classifying — repeated conflicts (long-lived branch rebases) resolve at
+//     zero AI cost. Default true; set false to leave git config untouched.
+//   - Verify: shell commands run from the repo root AFTER conflicts are
+//     resolved but BEFORE they are staged/continued. Any failure rolls the
+//     files back to their conflicted state (`git checkout -m`) and reports —
+//     auto-resolution becomes a reversible attempt instead of a gamble.
+//     A conflict-marker scan always runs regardless of this list.
+//   - UnionFiles: basenames resolved by keeping both sides in the mechanical
+//     tier (default CHANGELOG.md, go.sum).
+type ResolveConfig struct {
+	Rerere     bool     `mapstructure:"rerere"      yaml:"rerere"`
+	Verify     []string `mapstructure:"verify"      yaml:"verify,omitempty"`
+	UnionFiles []string `mapstructure:"union_files" yaml:"union_files,omitempty"`
+}
+
 // InitConfig controls `gk init` scaffolding.
 //
 //   - AIGitignore: make the opt-in `--ai-gitignore` augmentation the default —
@@ -780,6 +800,11 @@ func Defaults() Config {
 		},
 		Init: InitConfig{
 			AIGitignore: false,
+		},
+		Resolve: ResolveConfig{
+			Rerere:     true,
+			Verify:     nil,
+			UnionFiles: []string{"CHANGELOG.md", "go.sum"},
 		},
 		Worktree: WorktreeConfig{
 			Base:    "~/.gk/worktree",

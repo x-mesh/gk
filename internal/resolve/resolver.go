@@ -36,6 +36,10 @@ type Resolver struct {
 	// (delete/modify 등)로 곧바로 재처리할 예정임을 표시한다 —
 	// ParseConflictFiles가 수동 해결 힌트를 찍지 않게 한다.
 	deferSkipped bool
+	// deferStage/pendingStage: ResolveOptions.DeferStage가 켜진 실행에서
+	// git add를 미루고 경로를 모은다 (검증 게이트 뒤에 caller가 stage).
+	deferStage   bool
+	pendingStage []string
 }
 
 // readFile은 ReadFile 필드가 nil이면 os.ReadFile을 사용한다.
@@ -278,6 +282,10 @@ func (r *Resolver) ApplyFileResolution(
 		return fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
 	}
 
+	if r.deferStage {
+		r.pendingStage = append(r.pendingStage, cf.Path)
+		return nil
+	}
 	if err := GitAdd(ctx, r.Runner, cf.Path); err != nil {
 		return fmt.Errorf("gk resolve: git add %s: %w", cf.Path, err)
 	}
@@ -301,6 +309,9 @@ func stateKindToOpType(kind gitstate.StateKind) string {
 
 // Run은 옵션에 따라 충돌 해결을 실행한다.
 func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveOptions) (*ResolveResult, error) {
+	r.deferStage = opts.DeferStage && !opts.DryRun
+	r.pendingStage = nil
+	defer func() { r.deferStage = false }()
 	// 1. 충돌 파일 수집 — state.Kind 가드보다 먼저 한다. git stash
 	// apply / git apply --3way / 일부 partial reset 경로는 in-progress
 	// op 마커를 남기지 않으면서 index에 unmerged stage만 남기는데,
@@ -405,7 +416,9 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			sp := stages[cf.Path]
 			if sp.Ours && sp.Theirs {
 				if !opts.DryRun {
-					if err := GitAdd(ctx, r.Runner, cf.Path); err != nil {
+					if r.deferStage {
+						r.pendingStage = append(r.pendingStage, cf.Path)
+					} else if err := GitAdd(ctx, r.Runner, cf.Path); err != nil {
 						return nil, fmt.Errorf("gk resolve: git add %s: %w", cf.Path, err)
 					}
 				}
@@ -414,6 +427,27 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 				degenerate = append(degenerate, cf.Path)
 			}
 			continue
+		}
+
+		// Mechanical pre-pass — deterministic tier before any AI. It is the
+		// whole of strategy "safe" and shrinks the AI surface for strategy
+		// "ai"; explicit ours/theirs keep their pure side-take promise and
+		// never enter here.
+		if opts.Strategy == StrategySafe || opts.Strategy == "ai" {
+			if mres, ok := mechanicalFileResolutions(cf, opts.UnionFiles); ok {
+				backup := !opts.NoBackup
+				if err := r.ApplyFileResolution(ctx, cf, mres, backup, opts.DryRun); err != nil {
+					return nil, err
+				}
+				result.Resolved = append(result.Resolved, cf.Path)
+				result.Mechanical = append(result.Mechanical, cf.Path)
+				continue
+			}
+			if opts.Strategy == StrategySafe {
+				// Needs judgment — safe mode leaves it marked and unmerged.
+				result.Remaining = append(result.Remaining, cf.Path)
+				continue
+			}
 		}
 
 		// AI 해결 시도
@@ -488,6 +522,14 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		// strategy 없는 호출 — 해결하지 못한 경로로 보고만 한다.
 		result.Skipped = append(result.Skipped, degenerate...)
 	}
+
+	// safe 모드에서 해결하지 못한 것은 전부 "판단이 필요해 남겨둔 것"이다 —
+	// skipped(파싱 불가)와 구분하지 않고 Remaining으로 합쳐 보고한다.
+	if opts.Strategy == StrategySafe && len(result.Skipped) > 0 {
+		result.Remaining = append(result.Remaining, result.Skipped...)
+		result.Skipped = nil
+	}
+	result.PendingStage = append([]string{}, r.pendingStage...)
 
 	return result, nil
 }

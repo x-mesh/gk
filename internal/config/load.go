@@ -93,6 +93,7 @@ var reservedConfigSections = map[string]bool{
 	"preflight": true,
 	"clone":     true,
 	"init":      true, // collides with `gk worktree run/acquire --init`
+	"resolve":   true,
 	"worktree":  true,
 	"ai":        true,
 	"output":    true,
@@ -132,6 +133,8 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("clone.default_protocol", defaults.Clone.DefaultProtocol)
 	v.SetDefault("clone.default_host", defaults.Clone.DefaultHost)
 	v.SetDefault("init.ai_gitignore", defaults.Init.AIGitignore)
+	v.SetDefault("resolve.rerere", defaults.Resolve.Rerere)
+	v.SetDefault("resolve.union_files", defaults.Resolve.UnionFiles)
 	v.SetDefault("worktree.base", defaults.Worktree.Base)
 	v.SetDefault("ai.enabled", defaults.AI.Enabled)
 	v.SetDefault("ai.provider", defaults.AI.Provider)

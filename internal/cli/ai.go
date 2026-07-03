@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -18,8 +19,24 @@ import (
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/ui"
 )
+
+// vendorSecretPatterns adapts the push scanner's high-signal vendor
+// patterns (ghp_/github_pat_, xox, sk-, AWS 40-char secret, PEM, generic
+// key=value) for the AI privacy gate. aicommit's own builtins cover only
+// five generic keyword shapes — a bare GitHub token on a line without
+// "token=" sailed through every AI surface until this wiring (gk chat
+// cross-vendor research finding; it applies to ask/do/status/log equally,
+// which is why it lives here rather than in the chat path).
+var vendorSecretPatterns = func() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, 0, len(secrets.BuiltinPatterns))
+	for _, p := range secrets.BuiltinPatterns {
+		out = append(out, p.Regex)
+	}
+	return out
+}()
 
 // aiAutoOrder is the canonical provider auto-detect order, shared by the
 // factory's AutoOrder default and buildFallbackChain so a single command
@@ -110,8 +127,9 @@ func applyPrivacyGate(cmd *cobra.Command, prov provider.Provider, payload string
 		}
 	}
 	return aicommit.Redact(payload, aicommit.PrivacyGateOptions{
-		DenyPaths:  cfg.Commit.DenyPaths,
-		MaxSecrets: max,
+		DenyPaths:      cfg.Commit.DenyPaths,
+		SecretPatterns: vendorSecretPatterns,
+		MaxSecrets:     max,
 	})
 }
 

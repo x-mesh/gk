@@ -41,10 +41,14 @@ type Resolver struct {
 	// stage). pendingStage는 gk가 내용을 쓴 파일(롤백 = checkout -m으로 충돌
 	// 복원 가능), pendingAccept는 사용자가 이미 정리해 둔 markerless 파일 —
 	// 내용을 건드린 적이 없으므로 롤백 시 절대 덮어쓰면 안 된다.
-	deferStage    bool
-	pendingStage  []string
-	pendingAccept []string
-	pendingDelete []string
+	deferStage     bool
+	pendingStage   []string
+	pendingAccept  []string
+	pendingDelete  []string
+	pendingPartial []string
+	// pendingProposals: degenerate(AI) 경로가 confidence 게이트로 보류한
+	// 제안 — Run 말미에 result.Proposals로 합쳐진다.
+	pendingProposals []HunkProposal
 
 	// RemoveFile은 워크트리 파일 삭제 함수. 테스트에서 override 가능.
 	// nil이면 os.Remove.
@@ -350,6 +354,7 @@ func (r *Resolver) writePartial(cf ConflictFile, resolutions []HunkResolution, o
 	if err := WriteResolved(r.WriteFile, r.absPath(cf.Path), mixed); err != nil {
 		return fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
 	}
+	r.pendingPartial = append(r.pendingPartial, cf.Path)
 	return nil
 }
 
@@ -373,6 +378,8 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 	r.pendingStage = nil
 	r.pendingAccept = nil
 	r.pendingDelete = nil
+	r.pendingPartial = nil
+	r.pendingProposals = nil
 	defer func() { r.deferStage = false }()
 	// 1. 충돌 파일 수집 — state.Kind 가드보다 먼저 한다. git stash
 	// apply / git apply --3way / 일부 partial reset 경로는 in-progress
@@ -500,9 +507,14 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		// never enter here. Conflicts without diff3 markers get their base
 		// reconstructed in memory from the index stages first — git's
 		// default conflict style otherwise disables the base-aware rules.
+		// ecf carries reconstructed diff3 base info for CLASSIFICATION and
+		// AI input only — anything re-emitted to the worktree (partial
+		// resolutions) uses the ORIGINAL cf so the user's conflict-marker
+		// style is preserved.
+		ecf := cf
 		if opts.Strategy == StrategySafe || opts.Strategy == "ai" {
-			cf = r.enrichWithBase(ctx, cf, stages[cf.Path])
-			if mres, ok := mechanicalFileResolutions(cf, opts.UnionFiles); ok {
+			ecf = r.enrichWithBase(ctx, cf, stages[cf.Path])
+			if mres, ok := mechanicalFileResolutions(ecf, opts.UnionFiles); ok {
 				backup := !opts.NoBackup
 				if err := r.ApplyFileResolution(ctx, cf, mres, backup, opts.DryRun); err != nil {
 					return nil, err
@@ -514,7 +526,7 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			if opts.Strategy == StrategySafe {
 				// Needs judgment — resolve the provable hunks, keep the rest
 				// marked, leave the file unmerged (never staged).
-				if partial, solved := mechanicalPartialResolutions(cf, opts.UnionFiles); solved > 0 {
+				if partial, solved := mechanicalPartialResolutions(ecf, opts.UnionFiles); solved > 0 {
 					if err := r.writePartial(cf, partial, opts); err != nil {
 						result.Failed[cf.Path] = err
 						continue
@@ -525,15 +537,32 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			}
 		}
 
-		// AI 해결 시도
+		// AI 해결 시도 — enriched 파싱(ecf)을 입력으로: 재구성된 base 블록이
+		// 모델에 그대로 전달된다.
 		if aiAvailable {
-			aiRes, aiErr := r.ResolveWithAI(ctx, cf, opType, opts.Lang)
+			aiRes, aiErr := r.ResolveWithAI(ctx, ecf, opType, opts.Lang)
 			if aiRes != nil {
 				resolutions = aiRes
 				result.AIUsed = true
 			} else if aiErr != nil && opts.Strategy == "ai" {
 				result.Failed[cf.Path] = aiErr
 				continue
+			}
+		}
+
+		// Mechanical overlay — hunks the deterministic tier can answer are
+		// never left hostage to the model's confidence: mechanical wins
+		// per hunk and is exempt from the gate below.
+		if resolutions != nil && (opts.Strategy == "ai") {
+			hi := 0
+			for _, seg := range ecf.Segments {
+				if seg.Hunk == nil {
+					continue
+				}
+				if hr, ok := mechanicalHunkResolution(ecf.Path, seg.Hunk, opts.UnionFiles); ok {
+					resolutions[hi] = hr
+				}
+				hi++
 			}
 		}
 
@@ -547,6 +576,9 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			hunkIdx := 0
 			for i := range resolutions {
 				hunkIdx++
+				if resolutions[i].Strategy == StrategyMechanical {
+					continue // deterministic — exempt from the gate
+				}
 				if resolutions[i].Confidence < opts.MinConfidence {
 					result.Proposals = append(result.Proposals, HunkProposal{
 						File:       cf.Path,
@@ -640,6 +672,8 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 	result.PendingStage = append([]string{}, r.pendingStage...)
 	result.PendingAccept = append([]string{}, r.pendingAccept...)
 	result.PendingDelete = append([]string{}, r.pendingDelete...)
+	result.PendingPartial = append([]string{}, r.pendingPartial...)
+	result.Proposals = append(result.Proposals, r.pendingProposals...)
 
 	return result, nil
 }

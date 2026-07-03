@@ -151,6 +151,9 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	// config only — the repo being resolved must not be able to run shell
 	// commands or widen the auto-merge surface (same trust boundary as
 	// init.ai_gitignore). A repo-local attempt is ignored with a note.
+	if herr := config.GlobalConfigHealthy(); herr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: gk resolve: %v — verify/union_files/min_confidence fall back to defaults\n", herr)
+	}
 	verifyCmds, unionFiles, unionSet := config.GlobalResolveSettings()
 	if !unionSet {
 		unionFiles = nil // nil → mechanical-tier defaults
@@ -217,7 +220,9 @@ func runResolve(cmd *cobra.Command, args []string) error {
 			rep.VerifyFailed = ve.Check
 			// Rolled-back and unstaged paths are conflicts again; only
 			// pre-gate staged resolutions (delete/modify) remain resolved.
-			rep.Remaining = append(append([]string{}, result.PendingStage...), result.PendingAccept...)
+			rep.Remaining = append(append(append(append([]string{},
+				result.PendingStage...), result.PendingAccept...),
+				result.PendingDelete...), result.PendingPartial...)
 			rep.Resolved = subtractPaths(result.Resolved, rep.Remaining)
 			rep.Mechanical = nil
 			if JSONOut() {

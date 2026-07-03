@@ -40,11 +40,24 @@ func applyResolveGate(ctx context.Context, runner git.Runner, repoRoot string, v
 	if result == nil || len(result.Resolved) == 0 {
 		return nil
 	}
-	if err := runResolveVerifyGate(ctx, repoRoot, verifyCmds, result, stderr); err != nil {
-		// Restore what gk wrote AND what it deleted — both keep their index
-		// stages until the gate passes, so checkout -m rebuilds the exact
-		// conflicted state (deleted worktree files reappear).
-		rollbackPendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingDelete...), stderr)
+	// With conflicts deliberately left in the tree (safe/confidence
+	// holdbacks), build/test verify commands would fail on the held
+	// markers and roll back the GOOD resolutions with them — the two
+	// features would defeat each other. Marker-scan still runs on the
+	// resolved set; command verification waits until the tree can pass.
+	cmds := verifyCmds
+	if len(result.Remaining) > 0 {
+		if len(cmds) > 0 && stderr != nil {
+			fmt.Fprintf(stderr, "note: gk resolve: %d file(s) still hold conflicts — resolve.verify commands skipped this round\n", len(result.Remaining))
+		}
+		cmds = nil
+	}
+	if err := runResolveVerifyGate(ctx, repoRoot, cmds, result, stderr); err != nil {
+		// Restore everything gk wrote or deleted — all of it keeps its
+		// index stages until the gate passes, so checkout -m rebuilds the
+		// exact conflicted state (partial writes and deleted files too).
+		restore := append(append(append([]string{}, result.PendingStage...), result.PendingDelete...), result.PendingPartial...)
+		rollbackPendingResolutions(ctx, runner, restore, stderr)
 		return err
 	}
 	if err := stagePendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingAccept...)); err != nil {

@@ -176,6 +176,23 @@ func (r *Resolver) resolveDegenerateAI(
 	}
 
 	out := aiResolutions[0]
+	// Confidence gate applies here too — a low-confidence DELETE/overwrite
+	// decision is the costliest kind to get wrong (cross-vendor review,
+	// 4 vendors). The withheld answer ships as a proposal like any other.
+	if opts.MinConfidence > 0 && out.Strategy != StrategyMechanical && out.Confidence < opts.MinConfidence {
+		r.pendingProposals = append(r.pendingProposals, HunkProposal{
+			File:       path,
+			Hunk:       1,
+			Strategy:   string(out.Strategy),
+			Confidence: out.Confidence,
+			Rationale:  out.Rationale,
+			Resolved:   append([]string{}, out.ResolvedLines...),
+		})
+		if r.Stderr != nil {
+			fmt.Fprintf(r.Stderr, "note: gk resolve: %s held below confidence %.2f — proposal attached\n", path, opts.MinConfidence)
+		}
+		return false, nil
+	}
 	// 삭제는 "선택된 쪽이 파일을 지운 쪽"일 때만이다. ours/theirs 선택에서
 	// Resolved가 비는 것은 정상(그쪽 내용을 그대로 쓴다는 뜻)이므로 빈
 	// Resolved 자체를 삭제 신호로 읽으면 안 된다. merged인데 내용이 비면
@@ -210,12 +227,22 @@ func (r *Resolver) resolveDegenerateAI(
 
 	// Side-picks use the stage content VERBATIM — same guard as the marker
 	// path: the model's claim of "ours"/"theirs" is trusted, its payload not.
+	// A merged answer with NO lines falls back to the surviving side — an
+	// empty file write here is data loss, not a resolution.
 	lines := out.ResolvedLines
 	switch out.Strategy {
 	case StrategyOurs:
 		lines = contentLines(ours)
 	case StrategyTheirs:
 		lines = contentLines(theirs)
+	case StrategyMerged:
+		if len(lines) == 0 {
+			if sp.Ours {
+				lines = contentLines(ours)
+			} else {
+				lines = contentLines(theirs)
+			}
+		}
 	}
 	content := []byte(strings.Join(lines, "\n") + "\n")
 	if !opts.NoBackup {

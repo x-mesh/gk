@@ -113,6 +113,10 @@ type ResolveResult struct {
 	// gate passes — the intact stages make `git checkout -m` restoration
 	// possible on failure.
 	PendingDelete []string
+	// PendingPartial lists partially resolved files gk WROTE (some hunks
+	// fixed, the rest keeping markers). Never staged; on gate failure they
+	// are restored with checkout -m like PendingStage.
+	PendingPartial []string
 	// Proposals carries the AI resolutions the confidence gate did NOT
 	// apply — their hunks stay conflicted (partially resolved files land in
 	// Remaining). An agent reads these from the paused envelope and either

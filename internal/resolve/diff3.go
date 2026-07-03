@@ -40,8 +40,12 @@ func (r *Resolver) enrichWithBase(ctx context.Context, cf ConflictFile, sp stage
 		return cf
 	}
 	current, err := r.readFile(r.absPath(cf.Path))
-	if err != nil || !bytes.Equal(bytes.TrimRight(current, "\n"), bytes.TrimRight(plain, "\n")) {
-		return cf // hand-edited (or style mismatch) — never second-guess the user
+	if err != nil || !bytes.Equal(chompOne(current), chompOne(plain)) {
+		// Hand-edited (or CRLF/style mismatch) — never second-guess the user.
+		// Only a single trailing-newline difference is tolerated; trimming
+		// ALL trailing newlines would let an EOF blank-line edit slip
+		// through as pristine (cross-vendor review, 3 vendors).
+		return cf
 	}
 
 	d3, ok := r.mergeFile(ctx, ours, base, theirs, labelOurs, labelTheirs, true)
@@ -53,6 +57,15 @@ func (r *Resolver) enrichWithBase(ctx context.Context, cf ConflictFile, sp stage
 		return cf
 	}
 	return enriched
+}
+
+// chompOne removes at most one trailing newline — the only byte-level
+// difference between merge-file output and a pristine worktree file.
+func chompOne(b []byte) []byte {
+	if len(b) > 0 && b[len(b)-1] == '\n' {
+		return b[:len(b)-1]
+	}
+	return b
 }
 
 // conflictLabels returns the marker labels of the first hunk so the

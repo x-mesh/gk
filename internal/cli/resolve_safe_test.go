@@ -239,3 +239,37 @@ func TestResolveVerifyGate_RestoresDeleteModify(t *testing.T) {
 		t.Errorf("f.txt must be unmerged again after rollback:\n%s", unmerged)
 	}
 }
+
+// L6: while conflicts deliberately remain (safe/confidence holdbacks), the
+// resolve.verify commands are skipped — otherwise the held markers would
+// fail the build check and roll back the GOOD resolutions with them.
+func TestResolveVerifySkippedWhileConflictsRemain(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	if err := os.MkdirAll(filepath.Join(xdg, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "gk", "config.yaml"),
+		[]byte("resolve:\n  verify: [\"false\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := conflictRepo(t,
+		map[string]string{"a.txt": "keep\n", "b.txt": "x = 0\n"},
+		map[string][2]string{
+			"a.txt": {"keep changed\n", "keep changed  \n"}, // mechanical (trailing WS)
+			"b.txt": {"x = 1\n", "x = 2\n"},                 // semantic — stays
+		},
+	)
+
+	err := runResolveFlags(t, map[string]string{"safe": "true"}, nil)
+	if err == nil {
+		t.Fatal("semantic remainder must leave the operation paused")
+	}
+	unmerged := repo.RunGit("ls-files", "-u")
+	if strings.Contains(unmerged, "a.txt") {
+		t.Errorf("mechanical file must be staged despite the failing verify command (skipped):\n%s", unmerged)
+	}
+	if !strings.Contains(unmerged, "b.txt") {
+		t.Errorf("semantic file must stay unmerged:\n%s", unmerged)
+	}
+}

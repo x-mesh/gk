@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -136,5 +137,36 @@ func TestResolveDegenerateAI_MergedContent(t *testing.T) {
 	}
 	if string(data) != "merged line\n" {
 		t.Errorf("f.txt = %q, want the AI-merged content", data)
+	}
+}
+
+// Confidence gate covers degenerate conflicts too: a low-confidence DELETE
+// decision — the costliest kind to get wrong — is withheld: file untouched,
+// stages intact, the answer attached as a proposal.
+func TestResolveDegenerateAI_ConfidenceGateWithholds(t *testing.T) {
+	repo, r, state := setupDeleteModify(t)
+	r.Provider = &fakeResolveProvider{
+		resolveRes: provider.ConflictResolutionResult{
+			Resolutions: []provider.ConflictResolutionOutput{
+				{Index: 0, Strategy: "ours", Rationale: "shaky guess", Confidence: 0.2},
+			},
+		},
+	}
+
+	res, err := r.Run(context.Background(), state, ResolveOptions{Strategy: "ai", MinConfidence: 0.8})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Resolved) != 0 {
+		t.Fatalf("low-confidence delete must be withheld: %+v", res.Resolved)
+	}
+	if len(res.Proposals) != 1 || res.Proposals[0].Confidence != 0.2 || res.Proposals[0].File != "f.txt" {
+		t.Fatalf("proposal expected: %+v", res.Proposals)
+	}
+	if _, serr := os.Stat(filepath.Join(repo.Dir, "f.txt")); serr != nil {
+		t.Errorf("f.txt must survive a withheld delete: %v", serr)
+	}
+	if out := repo.RunGit("diff", "--name-only", "--diff-filter=U"); !strings.Contains(out, "f.txt") {
+		t.Errorf("f.txt must stay unmerged: %q", out)
 	}
 }

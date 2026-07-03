@@ -215,6 +215,7 @@ func autoContinueBatch(
 		Total:     first.Total,
 		Rounds:    1,
 		Proposals: append([]resolve.HunkProposal{}, first.Proposals...),
+		Remaining: append([]string{}, first.Remaining...),
 	}
 	reResolve := func(conflicts []string) (bool, error) {
 		if !JSONOut() {
@@ -231,6 +232,7 @@ func autoContinueBatch(
 		}
 		rep.Total += res.Total
 		rep.Proposals = append(rep.Proposals, res.Proposals...)
+		rep.Remaining = append(rep.Remaining, res.Remaining...)
 		// Later rounds run under the same DeferStage contract — the gate
 		// must pass (and stage) here too, or the continue loop would spin
 		// on written-but-unstaged resolutions.

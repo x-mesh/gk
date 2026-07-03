@@ -78,6 +78,27 @@ func GlobalResolveSettings() (verify []string, unionFiles []string, unionSet boo
 	return verify, nil, false
 }
 
+// GlobalConfigHealthy reports a non-nil error when the global config file
+// EXISTS but cannot be parsed — the global-only resolve safety settings
+// (verify, union_files, min_confidence) silently fall back to their
+// defaults in that state, which callers should surface, not swallow.
+func GlobalConfigHealthy() error {
+	path := GlobalConfigPath()
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil // absent is a legitimate state, not a failure
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return fmt.Errorf("global config %s unreadable: %w", path, err)
+	}
+	return nil
+}
+
 // GlobalResolveMinConfidence reads resolve.min_confidence from the GLOBAL
 // config file only — a repo-local .gk.yaml lowering the gate would widen
 // what gets auto-applied inside an untrusted checkout.

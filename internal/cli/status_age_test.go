@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/testutil"
 )
 
 func TestEntryAgeAndModifiedAt(t *testing.T) {
@@ -47,6 +49,26 @@ func TestEntryAgeAndModifiedAt(t *testing.T) {
 	}
 	if d := parsed.Sub(stale); d > time.Second || d < -time.Second {
 		t.Errorf("modified_at %v drifts from mtime %v", parsed, stale)
+	}
+}
+
+// F1 regression: running from a subdirectory must still resolve ages —
+// porcelain paths are root-relative, so the probe dir must be the worktree
+// toplevel, not the cwd (joining them silently blanked every age).
+func TestStatusRepoDirResolvesToplevelFromSubdir(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("sub/inner.txt", "x")
+	repo.Commit("init")
+	t.Chdir(filepath.Join(repo.Dir, "sub"))
+
+	got := statusRepoDir(context.Background(), &git.ExecRunner{})
+	want, _ := filepath.EvalSymlinks(repo.Dir)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != want {
+		t.Fatalf("statusRepoDir = %q, want toplevel %q", gotResolved, want)
+	}
+	if a := entryAge(got, "sub/inner.txt"); a == "" {
+		t.Errorf("entryAge via resolved toplevel must find the root-relative path")
 	}
 }
 

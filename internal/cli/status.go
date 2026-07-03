@@ -785,8 +785,7 @@ func renderStatusLegend(w io.Writer, vis []string) {
 	if enabled("staleness") {
 		sec("--vis staleness")
 		fmt.Fprintln(w, "  · last commit Nd <sha>  — only shown when HEAD is ≥1 day old (sha = HEAD's short SHA)")
-		fmt.Fprintln(w, "  (Nd old)          — per-untracked mtime, only shown when ≥1 day old")
-		fmt.Fprintln(w, "  · 12m             — per changed file: last write (mtime) as relative age; 'now' under a minute")
+		fmt.Fprintln(w, "  · 12m             — per dirty entry (changed + untracked): last write (mtime) as relative age; 'now' under a minute")
 	}
 	if enabled("heatmap") {
 		sec("--vis heatmap — 2-D density (rows=dir, cols=C/S/M/?)")
@@ -1400,7 +1399,7 @@ type statusJSONModule struct {
 	Action string `json:"action,omitempty"`
 }
 
-func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []git.StatusEntry) error {
+func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []git.StatusEntry, repoDir string) error {
 	out := statusJSON{
 		Repo:     stripControlChars(repoDisplayPath()),
 		Branch:   stripControlChars(st.Branch),
@@ -1428,7 +1427,7 @@ func renderStatusJSON(w io.Writer, st *git.Status, g groupedEntries, entries []g
 			Sub:         e.Sub,
 			State:       statusEntryState(e),
 			Detail:      strings.Join(submoduleEntryDetails(e), "; "),
-			ModifiedAt:  entryModifiedAt(RepoFlag(), e.Path),
+			ModifiedAt:  entryModifiedAt(repoDir, e.Path),
 			Committable: true,
 		})
 	}
@@ -1555,7 +1554,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		if statusAssistExplicit(cmd) {
 			return exitCode, renderStatusAssistJSON(cmd.Context(), realW, runner, client, cfg, st, allGrouped)
 		}
-		return exitCode, renderStatusJSON(realW, st, allGrouped, listEntries)
+		return exitCode, renderStatusJSON(realW, st, allGrouped, listEntries, statusRepoDir(cmd.Context(), runner))
 	}
 	// Rich density wraps the normal-path output (branch + tree + footer)
 	// in square boxes plus a highlighted next-action strip. Fresh-repo
@@ -1872,7 +1871,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 	}
 	var entryAges map[string]string
 	if statusVisEnabled("staleness") && len(listEntries) > 0 {
-		entryAges = fetchEntryAges(runner.Dir, listEntries)
+		entryAges = fetchEntryAges(statusRepoDir(cmd.Context(), runner), listEntries)
 	}
 	if statusVisEnabled("tree") && len(listEntries) > 0 {
 		stats := fetchDiffStats(cmd.Context(), runner)
@@ -1889,7 +1888,7 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 						suffix = "  " + faint(s)
 					}
 				}
-				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s%s\n", glyphPrefix(e.Path, useGlyphs), renderEntryState(e, effectiveXYStyle), e.Path, suffix, ageSuffix(entryAges, e.Path, faint))
 			}
 		}
 		if len(grouped.Staged) > 0 {
@@ -1924,15 +1923,11 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 		}
 		if len(grouped.Untracked) > 0 {
 			fmt.Fprintln(w, color.New(color.FgHiBlack).Sprint("untracked:"))
-			showAge := statusVisEnabled("staleness")
+			// Same age vocabulary as staged/modified/tree rows — the flat
+			// view used to keep a separate ≥1-day "(Nd old)" format here,
+			// which meant the same file read differently per view.
 			for _, e := range grouped.Untracked {
-				suffix := ""
-				if showAge {
-					if age := untrackedAge(RepoFlag(), e.Path); age != "" {
-						suffix = "  " + faint("("+age+" old)")
-					}
-				}
-				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), color.New(color.FgHiBlack).Sprint("??"), e.Path, suffix)
+				fmt.Fprintf(w, "  %s%s %s%s\n", glyphPrefix(e.Path, useGlyphs), color.New(color.FgHiBlack).Sprint("??"), e.Path, ageSuffix(entryAges, e.Path, faint))
 			}
 		}
 	}
@@ -3297,6 +3292,24 @@ func headCommitInfo(cmd *cobra.Command, runner *git.ExecRunner) (ago, fullSHA, s
 	return ago, fullSHA, subject
 }
 
+// statusRepoDir resolves the directory dirty paths are relative to: the
+// worktree toplevel. Porcelain paths are root-relative, so joining them
+// to the cwd silently breaks every mtime probe when gk runs from a
+// subdirectory (the age just vanishes — cross-vendor review F1).
+func statusRepoDir(ctx context.Context, runner *git.ExecRunner) string {
+	out, _, err := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	if err == nil {
+		if top := strings.TrimSpace(string(out)); top != "" {
+			return top
+		}
+	}
+	if runner.Dir != "" {
+		return runner.Dir
+	}
+	wd, _ := os.Getwd()
+	return wd
+}
+
 // entryModifiedAt returns the entry's mtime as RFC3339, or "" when the
 // path cannot be stat'ed (deleted files).
 func entryModifiedAt(repoDir, path string) string {
@@ -3335,27 +3348,6 @@ func entryAge(repoDir, path string) string {
 		return formatAge(age)
 	}
 	return "now"
-}
-
-// untrackedAge returns a short relative age of an untracked file's mtime,
-// suppressed under 1 day so recent scratch files don't get annotated.
-func untrackedAge(repoDir, path string) string {
-	p := path
-	if !filepath.IsAbs(p) {
-		if repoDir == "" {
-			repoDir, _ = os.Getwd()
-		}
-		p = filepath.Join(repoDir, path)
-	}
-	info, err := os.Stat(p)
-	if err != nil {
-		return ""
-	}
-	age := time.Since(info.ModTime())
-	if age < 24*time.Hour {
-		return ""
-	}
-	return formatAge(age)
 }
 
 // formatAge collapses a duration into the largest unit with 1-3 significant

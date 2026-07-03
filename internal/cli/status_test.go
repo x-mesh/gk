@@ -835,7 +835,7 @@ func TestRenderStatusJSON(t *testing.T) {
 	}
 	g := groupEntries(st.Entries)
 	buf := &bytes.Buffer{}
-	if err := renderStatusJSON(buf, st, g, committableEntries(st.Entries)); err != nil {
+	if err := renderStatusJSON(buf, st, g, committableEntries(st.Entries), t.TempDir()); err != nil {
 		t.Fatalf("renderStatusJSON: %v", err)
 	}
 	var out statusJSON
@@ -922,7 +922,10 @@ func TestFormatAge(t *testing.T) {
 	}
 }
 
-func TestUntrackedAge(t *testing.T) {
+// Untracked entries share the entryAge vocabulary with changed files —
+// the old ≥1-day untrackedAge suppression is gone, so a recent scratch
+// file reads "now" instead of nothing.
+func TestUntrackedEntryAge(t *testing.T) {
 	dir := t.TempDir()
 	recent := filepath.Join(dir, "recent.txt")
 	old := filepath.Join(dir, "old.txt")
@@ -937,10 +940,10 @@ func TestUntrackedAge(t *testing.T) {
 	if err := os.Chtimes(old, past, past); err != nil {
 		t.Fatal(err)
 	}
-	if got := untrackedAge(dir, "recent.txt"); got != "" {
-		t.Errorf("recent file should report empty age, got %q", got)
+	if got := entryAge(dir, "recent.txt"); got != "now" {
+		t.Errorf("recent file age = %q, want now", got)
 	}
-	got := untrackedAge(dir, "old.txt")
+	got := entryAge(dir, "old.txt")
 	if !strings.HasSuffix(got, "d") && !strings.HasSuffix(got, "w") && !strings.HasSuffix(got, "mo") {
 		t.Errorf("old file should report day/week/month age, got %q", got)
 	}

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`gk status`가 변경 파일마다 "마지막으로 만진 시각"을 표시한다.** 상태 화면은 무엇이 바뀌었는지는 보여줘도 언제 바뀌었는지는 보여주지 않아서, dirty 파일 9개 중 방금 작업한 것과 사흘 전에 만지다 만 잔재물을 구분할 수 없었다. 이제 기본 vis(`staleness`)에서 트리·flat 목록의 각 항목 뒤에 mtime 기반 상대 시각이 붙고(`status.go +85 -13 · 1m`, 1분 미만은 `· now`), agent JSON에는 `entries[].modified_at`(RFC3339)으로 실린다 — 에이전트가 추가 프로브 없이 최근 변경 순 정렬이나 잔재물 판별을 할 수 있다. 비용은 표시되는 항목당 lstat 1회뿐이고 git 호출은 없다. mtime은 "마지막 쓰기" 시각이라 checkout·포맷터도 갱신한다는 한계는 그대로다 — 절대적 저작 시각이 아니라 "아, 최근에 바뀌었구나"의 신호로 읽는 것.
+- **`gk status`가 dirty 항목마다 "마지막으로 만진 시각"을 표시한다.** 상태 화면은 무엇이 바뀌었는지는 보여줘도 언제 바뀌었는지는 보여주지 않아서, dirty 파일 9개 중 방금 작업한 것과 사흘 전에 만지다 만 잔재물을 구분할 수 없었다. 이제 기본 vis(`staleness`)에서 트리·flat 목록의 변경·충돌·untracked 항목 뒤에 mtime 기반 상대 시각이 붙고(`status.go +85 -13 · 1m`, 1분 미만은 `· now` — untracked의 옛 `(Nd old)` 별도 표기는 이 어휘로 통일), agent JSON에는 `entries[].modified_at`(RFC3339)으로 실린다 — 에이전트가 추가 프로브 없이 최근 변경 순 정렬이나 잔재물 판별을 할 수 있다. 경로는 `rev-parse --show-toplevel`로 해석해 저장소 하위 디렉토리에서 실행해도 정확하며, 비용은 toplevel 조회 1회 + 표시 항목당 lstat 1회다. mtime은 "마지막 쓰기" 시각이라 checkout·포맷터도 갱신한다는 한계는 그대로다 — 절대적 저작 시각이 아니라 "아, 최근에 바뀌었구나"의 신호로 읽는 것. (5개 모델 cross-vendor 리뷰가 잡아낸 서브디렉토리 경로 결함·뷰 간 표기 불일치를 반영한 결과다.)
 
 ## [0.109.1] - 2026-07-03
 

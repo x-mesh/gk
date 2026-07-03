@@ -155,9 +155,18 @@ type AIAssistConfig struct {
 }
 
 // AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
-// `gk ask`). Timeout is a Go duration string for AI provider calls
-// (default "30s"). MaxTokens caps the response token budget (default
-// 4096).
+// `gk ask`, `gk chat`). Timeout is a Go duration string for AI provider
+// calls (default "30s"). MaxTokens caps the response token budget
+// (default 4096).
+//
+// MaxToolRounds, ToolResultCap, and DenyPaths tune `gk chat`'s agentic
+// tool loop. Like resolve.verify they are honored from the GLOBAL config
+// only (GlobalChatSettings) — a cloned repo's .gk.yaml raising the tool
+// budget or touching the deny list is the same attack shape as
+// init.ai_gitignore. The struct fields exist for defaults and scaffold
+// documentation; live reads go through the global-only path. Chat's
+// effective deny list is always a union with DefaultDenyPaths, so no
+// config layer can shrink it below the defaults.
 //
 // Dangerous `gk do` commands always require an extra confirmation (unless
 // --force); that gate is not configurable. A former `safety_confirm` field
@@ -165,6 +174,15 @@ type AIAssistConfig struct {
 type AIChatConfig struct {
 	Timeout   string `mapstructure:"timeout"    yaml:"timeout"`
 	MaxTokens int    `mapstructure:"max_tokens" yaml:"max_tokens"`
+	// MaxToolRounds bounds provider round-trips per gk chat turn
+	// (default 15). Global config only.
+	MaxToolRounds int `mapstructure:"max_tool_rounds" yaml:"max_tool_rounds,omitempty"`
+	// ToolResultCap bounds one tool result's bytes (default 32768).
+	// Global config only.
+	ToolResultCap int `mapstructure:"tool_result_cap" yaml:"tool_result_cap,omitempty"`
+	// DenyPaths adds chat-specific deny globs on top of the defaults and
+	// ai.commit.deny_paths. Global config only.
+	DenyPaths []string `mapstructure:"deny_paths" yaml:"deny_paths,omitempty"`
 }
 
 // AIAnthropicConfig controls the Claude provider. Empty fields fall
@@ -833,8 +851,10 @@ func Defaults() Config {
 				Cache:       true,
 			},
 			Chat: AIChatConfig{
-				Timeout:   "30s",
-				MaxTokens: 4096,
+				Timeout:       "30s",
+				MaxTokens:     4096,
+				MaxToolRounds: 15,
+				ToolResultCap: 32768,
 			},
 			Commit: AICommitConfig{
 				Mode:        "interactive",

@@ -147,6 +147,10 @@ type anthropicRequest struct {
 type anthropicContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// tool_use blocks (present only when the request carried tools).
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -160,11 +164,12 @@ type anthropicUsage struct {
 }
 
 type anthropicResponse struct {
-	Model   string                  `json:"model"`
-	Content []anthropicContentBlock `json:"content"`
-	Usage   anthropicUsage          `json:"usage"`
-	Type    string                  `json:"type"`
-	Error   *struct {
+	Model      string                  `json:"model"`
+	Content    []anthropicContentBlock `json:"content"`
+	Usage      anthropicUsage          `json:"usage"`
+	Type       string                  `json:"type"`
+	StopReason string                  `json:"stop_reason"`
+	Error      *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
@@ -191,13 +196,35 @@ func (a *Anthropic) invoke(ctx context.Context, sys, user string, maxTokens int)
 	if mErr != nil {
 		return "", "", 0, fmt.Errorf("anthropic: marshal request: %w", mErr)
 	}
+	parsed, err := a.post(ctx, body)
+	if err != nil {
+		return "", "", 0, err
+	}
+	var sb strings.Builder
+	for _, b := range parsed.Content {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+		}
+	}
+	text := strings.TrimSpace(sb.String())
+	if text == "" {
+		return "", "", 0, fmt.Errorf("%w: empty content", ErrProviderResponse)
+	}
+	return text, parsed.Model, parsed.Usage.total(), nil
+}
 
+// post sends one Messages API request body and returns the parsed
+// response, retrying 429/5xx with exponential backoff. Shared by invoke
+// (single-user-message capabilities) and ChatWithTools (multi-turn chat) so
+// both speak identical HTTP: same headers, retry policy, and error
+// classification.
+func (a *Anthropic) post(ctx context.Context, body []byte) (anthropicResponse, error) {
 	endpoint := a.endpoint()
 	maxRetry := a.maxRetry()
 	for attempt := 0; attempt <= maxRetry; attempt++ {
 		req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if rErr != nil {
-			return "", "", 0, fmt.Errorf("anthropic: build request: %w", rErr)
+			return anthropicResponse{}, fmt.Errorf("anthropic: build request: %w", rErr)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", a.apiKey())
@@ -208,7 +235,7 @@ func (a *Anthropic) invoke(ctx context.Context, sys, user string, maxTokens int)
 			if attempt < maxRetry && a.sleep(ctx, time.Duration(1<<uint(attempt))*time.Second) {
 				continue
 			}
-			return "", "", 0, fmt.Errorf("anthropic: http: %w", doErr)
+			return anthropicResponse{}, fmt.Errorf("anthropic: http: %w", doErr)
 		}
 		body2, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -218,33 +245,181 @@ func (a *Anthropic) invoke(ctx context.Context, sys, user string, maxTokens int)
 			if attempt < maxRetry && a.sleep(ctx, time.Duration(1<<uint(attempt))*time.Second) {
 				continue
 			}
-			return "", "", 0, fmt.Errorf("%w: anthropic %d: %s", ErrProviderResponse, resp.StatusCode, truncateBody(body2))
+			return anthropicResponse{}, fmt.Errorf("%w: anthropic %d: %s", ErrProviderResponse, resp.StatusCode, truncateBody(body2))
 		}
 		if resp.StatusCode >= 400 {
-			return "", "", 0, fmt.Errorf("%w: anthropic %d: %s", a.classifyStatus(resp.StatusCode), resp.StatusCode, truncateBody(body2))
+			return anthropicResponse{}, fmt.Errorf("%w: anthropic %d: %s", a.classifyStatus(resp.StatusCode), resp.StatusCode, truncateBody(body2))
 		}
 
 		var parsed anthropicResponse
 		if pErr := json.Unmarshal(body2, &parsed); pErr != nil {
-			return "", "", 0, fmt.Errorf("%w: decode: %v: %s", ErrProviderResponse, pErr, truncateBody(body2))
+			return anthropicResponse{}, fmt.Errorf("%w: decode: %v: %s", ErrProviderResponse, pErr, truncateBody(body2))
 		}
 		if parsed.Error != nil {
-			return "", "", 0, fmt.Errorf("%w: %s: %s", ErrProviderResponse, parsed.Error.Type, parsed.Error.Message)
+			return anthropicResponse{}, fmt.Errorf("%w: %s: %s", ErrProviderResponse, parsed.Error.Type, parsed.Error.Message)
 		}
-		var sb strings.Builder
-		for _, b := range parsed.Content {
-			if b.Type == "text" {
-				sb.WriteString(b.Text)
-			}
-		}
-		text := strings.TrimSpace(sb.String())
-		if text == "" {
-			return "", "", 0, fmt.Errorf("%w: empty content", ErrProviderResponse)
-		}
-		tokens := parsed.Usage.total()
-		return text, parsed.Model, tokens, nil
+		return parsed, nil
 	}
-	return "", "", 0, errors.New("anthropic: exhausted retries")
+	return anthropicResponse{}, errors.New("anthropic: exhausted retries")
+}
+
+// ── Tool-calling chat ─────────────────────────────────────────────────
+
+// anthropicToolDef is one entry in the request `tools` array.
+type anthropicToolDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// anthropicChatBlock is one typed content block in a chat message. Which
+// fields apply depends on Type: "text" uses Text, "tool_use" uses
+// ID/Name/Input, "tool_result" uses ToolUseID/Content/IsError.
+type anthropicChatBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// anthropicChatMessage carries structured content blocks — unlike
+// anthropicMessage (plain string content) it can hold tool_use and
+// tool_result blocks. The two request shapes coexist so the text-only
+// capabilities (Classify/Compose/Summarize) keep their proven wire format.
+type anthropicChatMessage struct {
+	Role    string               `json:"role"`
+	Content []anthropicChatBlock `json:"content"`
+}
+
+type anthropicChatRequest struct {
+	Model     string                 `json:"model"`
+	MaxTokens int                    `json:"max_tokens"`
+	System    []anthropicSystemBlock `json:"system,omitempty"`
+	Messages  []anthropicChatMessage `json:"messages"`
+	Tools     []anthropicToolDef     `json:"tools,omitempty"`
+}
+
+// ChatWithTools implements ToolCaller: one Messages API round-trip with
+// the full conversation and tool definitions. The caller owns the agentic
+// loop; this only translates shapes and sends.
+func (a *Anthropic) ChatWithTools(ctx context.Context, in ChatInput) (res ChatResult, err error) {
+	if HTTPHook != nil {
+		mdl := a.modelOrDefault()
+		start := time.Now()
+		defer func() { HTTPHook(a.Name(), mdl, time.Since(start), err) }()
+	}
+	if a.apiKey() == "" {
+		return ChatResult{}, fmt.Errorf("%w: ANTHROPIC_API_KEY not set", ErrUnauthenticated)
+	}
+	msgs, cErr := anthropicChatMessages(in.Messages)
+	if cErr != nil {
+		return ChatResult{}, cErr
+	}
+	tools := make([]anthropicToolDef, 0, len(in.Tools))
+	for _, t := range in.Tools {
+		tools = append(tools, anthropicToolDef{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+	}
+	body, mErr := json.Marshal(anthropicChatRequest{
+		Model:     a.modelOrDefault(),
+		MaxTokens: a.resolveMaxTokens(in.MaxTokens),
+		System:    systemBlocks(in.System),
+		Messages:  msgs,
+		Tools:     tools,
+	})
+	if mErr != nil {
+		return ChatResult{}, fmt.Errorf("anthropic: marshal chat request: %w", mErr)
+	}
+	parsed, pErr := a.post(ctx, body)
+	if pErr != nil {
+		return ChatResult{}, pErr
+	}
+	out := ChatResult{
+		Model:      parsed.Model,
+		TokensUsed: parsed.Usage.total(),
+		StopReason: normalizeAnthropicStop(parsed.StopReason),
+	}
+	var sb strings.Builder
+	for _, b := range parsed.Content {
+		switch b.Type {
+		case "text":
+			sb.WriteString(b.Text)
+		case "tool_use":
+			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.ID, Name: b.Name, Input: b.Input})
+		}
+	}
+	out.Text = strings.TrimSpace(sb.String())
+	if out.Text == "" && len(out.ToolCalls) == 0 {
+		return ChatResult{}, fmt.Errorf("%w: empty content", ErrProviderResponse)
+	}
+	return out, nil
+}
+
+// anthropicChatMessages converts the vendor-neutral history into Claude's
+// wire shape. Claude has no "tool" role: results travel in a user message
+// as tool_result blocks, and every result answering one assistant turn
+// must share a SINGLE user message — consecutive tool messages are
+// coalesced, or the API rejects the request.
+func anthropicChatMessages(history []ChatMessage) ([]anthropicChatMessage, error) {
+	out := make([]anthropicChatMessage, 0, len(history))
+	for _, m := range history {
+		switch m.Role {
+		case "user":
+			out = append(out, anthropicChatMessage{
+				Role:    "user",
+				Content: []anthropicChatBlock{{Type: "text", Text: m.Text}},
+			})
+		case "assistant":
+			blocks := make([]anthropicChatBlock, 0, 1+len(m.ToolCalls))
+			if m.Text != "" {
+				blocks = append(blocks, anthropicChatBlock{Type: "text", Text: m.Text})
+			}
+			for _, c := range m.ToolCalls {
+				input := c.Input
+				if len(input) == 0 {
+					input = json.RawMessage(`{}`)
+				}
+				blocks = append(blocks, anthropicChatBlock{Type: "tool_use", ID: c.ID, Name: c.Name, Input: input})
+			}
+			if len(blocks) == 0 {
+				return nil, fmt.Errorf("anthropic: assistant message with no content")
+			}
+			out = append(out, anthropicChatMessage{Role: "assistant", Content: blocks})
+		case "tool":
+			if m.ToolResult == nil {
+				return nil, fmt.Errorf("anthropic: tool message missing result")
+			}
+			block := anthropicChatBlock{
+				Type:      "tool_result",
+				ToolUseID: m.ToolResult.ToolCallID,
+				Content:   m.ToolResult.Content,
+				IsError:   m.ToolResult.IsError,
+			}
+			if n := len(out); n > 0 && out[n-1].Role == "user" &&
+				len(out[n-1].Content) > 0 && out[n-1].Content[0].Type == "tool_result" {
+				out[n-1].Content = append(out[n-1].Content, block)
+			} else {
+				out = append(out, anthropicChatMessage{Role: "user", Content: []anthropicChatBlock{block}})
+			}
+		default:
+			return nil, fmt.Errorf("anthropic: unknown chat role %q", m.Role)
+		}
+	}
+	return out, nil
+}
+
+// normalizeAnthropicStop maps Claude stop reasons onto the vendor-neutral
+// set. stop_sequence is a normal completion from the caller's perspective.
+func normalizeAnthropicStop(s string) string {
+	switch s {
+	case "stop_sequence":
+		return "end_turn"
+	default:
+		return s
+	}
 }
 
 // systemBlocks turns a plain system prompt into the structured `system`
@@ -349,4 +524,5 @@ var (
 	_ Provider           = (*Anthropic)(nil)
 	_ Summarizer         = (*Anthropic)(nil)
 	_ GitignoreSuggester = (*Anthropic)(nil)
+	_ ToolCaller         = (*Anthropic)(nil)
 )

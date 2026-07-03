@@ -99,6 +99,35 @@ func GlobalConfigHealthy() error {
 	return nil
 }
 
+// GlobalChatSettings reads gk chat's tool-loop knobs from the GLOBAL
+// config only (ai.chat.max_tool_rounds / tool_result_cap / deny_paths).
+// Same trust boundary as resolve.verify: a cloned repo's .gk.yaml must
+// not be able to raise the tool budget or alter the deny surface of a
+// chat session running inside it. Zero returns mean "unset — use the
+// caller's default"; denyExtra only ever ADDS globs (the caller unions
+// with DefaultDenyPaths, so no layer can shrink below the defaults).
+func GlobalChatSettings() (maxToolRounds, toolResultCap int, denyExtra []string) {
+	path := GlobalConfigPath()
+	if path == "" {
+		return 0, 0, nil
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return 0, 0, nil
+	}
+	maxToolRounds = v.GetInt("ai.chat.max_tool_rounds")
+	if maxToolRounds < 0 {
+		maxToolRounds = 0
+	}
+	toolResultCap = v.GetInt("ai.chat.tool_result_cap")
+	if toolResultCap < 0 {
+		toolResultCap = 0
+	}
+	return maxToolRounds, toolResultCap, v.GetStringSlice("ai.chat.deny_paths")
+}
+
 // GlobalResolveMinConfidence reads resolve.min_confidence from the GLOBAL
 // config file only — a repo-local .gk.yaml lowering the gate would widen
 // what gets auto-applied inside an untrusted checkout.

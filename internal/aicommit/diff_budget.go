@@ -227,6 +227,59 @@ func bareSymbolName(sig string) string {
 	return name
 }
 
+// FilterDiffByDeny removes per-file blocks whose path matches any deny
+// glob from a unified git diff, returning the filtered diff and the
+// dropped paths. Any prefix before the first "diff --git" marker (commit
+// headers from `git show`/`git log -p`) is preserved. Input without git
+// diff markers passes through unchanged — callers must not treat that as
+// "filtered".
+//
+// This exists because deny_paths historically applied only to the
+// working-tree file list: `git show <old-sha>` or `git log -p` would
+// happily print a denied file's HISTORIC content, bypassing the gate
+// entirely (gk chat cross-vendor research, Critical finding). Structural
+// removal of whole file blocks is the defense; line-level secret regexes
+// are the fallback, not the primary.
+func FilterDiffByDeny(diff string, denyGlobs []string) (string, []string) {
+	files := splitDiffByFile(diff)
+	if files == nil {
+		return diff, nil
+	}
+	var b strings.Builder
+	if i := strings.Index(diff, "diff --git "); i > 0 {
+		b.WriteString(diff[:i])
+	}
+	var dropped []string
+	for _, f := range files {
+		p := diffBlockPath(f.body)
+		if p != "" && matchDeny(p, denyGlobs) != "" {
+			dropped = append(dropped, p)
+			continue
+		}
+		b.WriteString(f.body)
+	}
+	return b.String(), dropped
+}
+
+// diffBlockPath extracts the path from a "diff --git a/X b/Y" header
+// line, preferring the post-image side. Quoted paths (core.quotePath)
+// keep their escaped form — deny globs match against that spelling, which
+// is an accepted approximation backed by the line-level redaction pass.
+func diffBlockPath(block string) string {
+	line := block
+	if i := strings.IndexByte(block, '\n'); i >= 0 {
+		line = block[:i]
+	}
+	line = strings.TrimPrefix(line, "diff --git ")
+	if i := strings.LastIndex(line, ` "b/`); i >= 0 {
+		return strings.TrimSuffix(line[i+4:], `"`)
+	}
+	if i := strings.LastIndex(line, " b/"); i >= 0 {
+		return line[i+3:]
+	}
+	return ""
+}
+
 // fileDiff is one "diff --git ..." block.
 type fileDiff struct {
 	header string // includes the "diff --git" line + index/mode/--- /+++ lines

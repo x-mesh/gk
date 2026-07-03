@@ -145,11 +145,44 @@ type chatRequest struct {
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	Temperature    float64         `json:"temperature,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Tools          []chatToolDef   `json:"tools,omitempty"`
 }
 
+// chatMessage covers every Chat Completions role. Content is omitempty so
+// an assistant turn that is pure tool_calls doesn't emit "content":"" —
+// some OpenAI-compatible servers reject that. The pre-existing
+// system/user paths always carry non-empty content, so the tag change is
+// invisible to them.
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// chatToolDef is one request `tools` entry (type "function").
+type chatToolDef struct {
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// chatToolCall is a model-requested invocation. Arguments is a
+// JSON-encoded STRING per the OpenAI spec, not a nested object.
+type chatToolCall struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function chatToolCallFunction `json:"function"`
+}
+
+type chatToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type responseFormat struct {
@@ -164,8 +197,9 @@ type chatResponse struct {
 }
 
 type chatChoice struct {
-	Index   int         `json:"index"`
-	Message chatMessage `json:"message"`
+	Index        int         `json:"index"`
+	Message      chatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 type chatUsage struct {
@@ -184,7 +218,6 @@ type chatUsage struct {
 // (used by Classify/Compose), false omits it (used by Summarize
 // which returns free-form text).
 func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonMode bool, maxTokens int) (content, model string, tokensUsed int, err error) {
-	endpoint := n.endpoint()
 	apiKey := n.apiKey()
 	mdl := n.model()
 
@@ -215,6 +248,30 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 		return "", "", 0, fmt.Errorf("%s: marshal request: %w", n.brand(), err)
 	}
 
+	parsed, err := n.send(ctx, bodyBytes)
+	if err != nil {
+		return "", "", 0, err
+	}
+	content = strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if content == "" {
+		return "", "", 0, fmt.Errorf("%w: empty content", ErrProviderResponse)
+	}
+	model = parsed.Model
+	if parsed.Usage != nil {
+		tokensUsed = parsed.Usage.TotalTokens
+	}
+	return content, model, tokensUsed, nil
+}
+
+// send posts one marshaled Chat Completions body with the full
+// retry/backoff policy (429 Retry-After, 5xx exponential, 4xx immediate)
+// and returns the parsed response with at least one choice. Shared by
+// invoke (text capabilities) and ChatWithTools so both speak identical
+// HTTP.
+func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, error) {
+	endpoint := n.endpoint()
+	apiKey := n.apiKey()
+
 	deadline := time.Now().Add(n.timeout())
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
@@ -226,14 +283,14 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 		// Check context before each attempt.
 		if ctx.Err() != nil {
 			if lastErr != nil {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
-			return "", "", 0, fmt.Errorf("%s: %w", n.brand(), ctx.Err())
+			return chatResponse{}, fmt.Errorf("%s: %w", n.brand(), ctx.Err())
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
-			return "", "", 0, fmt.Errorf("%s: build request: %w", n.brand(), err)
+			return chatResponse{}, fmt.Errorf("%s: build request: %w", n.brand(), err)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		req.Header.Set("Content-Type", "application/json")
@@ -243,18 +300,19 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 			lastErr = fmt.Errorf("%s: http call: %w", n.brand(), err)
 			// Network error on first attempt → no retry for non-server errors.
 			if attempt == maxRetry {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if !n.sleep(ctx, backoff) {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
 			continue
 		}
 
-		content, model, tokensUsed, lastErr = n.handleResponse(resp)
+		var parsed chatResponse
+		parsed, lastErr = n.parseResponse(resp)
 		if lastErr == nil {
-			return content, model, tokensUsed, nil
+			return parsed, nil
 		}
 
 		// Decide whether to retry based on status code.
@@ -264,63 +322,184 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 			// 429: wait Retry-After seconds then retry.
 			wait := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if !n.sleep(ctx, wait) {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
 			continue
 
 		case statusCode >= 500 && statusCode < 600:
 			// 5xx: exponential backoff (1s, 2s, 4s).
 			if attempt >= maxRetry {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if !n.sleep(ctx, backoff) {
-				return "", "", 0, lastErr
+				return chatResponse{}, lastErr
 			}
 			continue
 
 		default:
 			// 4xx (non-429): no retry.
-			return "", "", 0, lastErr
+			return chatResponse{}, lastErr
 		}
 	}
 
-	return "", "", 0, lastErr
+	return chatResponse{}, lastErr
 }
 
 // ── Response handling ────────────────────────────────────────────────
 
-// handleResponse reads and parses the HTTP response body.
-func (n *Nvidia) handleResponse(resp *http.Response) (content, model string, tokensUsed int, err error) {
+// parseResponse reads the HTTP response into a chatResponse, enforcing
+// status, JSON validity, and a non-empty choices array. Content-level
+// checks stay with the callers: invoke requires non-empty text, chat
+// accepts tool_calls without text.
+func (n *Nvidia) parseResponse(resp *http.Response) (chatResponse, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("%s: read body: %w", n.brand(), err)
+		return chatResponse{}, fmt.Errorf("%s: read body: %w", n.brand(), err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", 0, fmt.Errorf("%s: HTTP %d: %s", n.brand(), resp.StatusCode, truncateBody(body))
+		return chatResponse{}, fmt.Errorf("%s: HTTP %d: %s", n.brand(), resp.StatusCode, truncateBody(body))
 	}
 
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", "", 0, fmt.Errorf("%w: invalid JSON: %s", ErrProviderResponse, truncateBody(body))
+		return chatResponse{}, fmt.Errorf("%w: invalid JSON: %s", ErrProviderResponse, truncateBody(body))
 	}
 
 	if len(parsed.Choices) == 0 {
-		return "", "", 0, fmt.Errorf("%w: empty choices", ErrProviderResponse)
+		return chatResponse{}, fmt.Errorf("%w: empty choices", ErrProviderResponse)
 	}
+	return parsed, nil
+}
 
-	content = strings.TrimSpace(parsed.Choices[0].Message.Content)
-	if content == "" {
-		return "", "", 0, fmt.Errorf("%w: empty content", ErrProviderResponse)
+// ── Tool-calling chat ────────────────────────────────────────────────
+
+// ChatWithTools implements ToolCaller for every OpenAI-compatible
+// provider (nvidia, and openai/groq via delegation): one Chat Completions
+// round-trip carrying the running conversation and tool definitions.
+func (n *Nvidia) ChatWithTools(ctx context.Context, in ChatInput) (res ChatResult, err error) {
+	mdl := n.model()
+	if HTTPHook != nil {
+		start := time.Now()
+		defer func() { HTTPHook(n.brand(), mdl, time.Since(start), err) }()
 	}
-
-	model = parsed.Model
+	if n.apiKey() == "" {
+		return ChatResult{}, fmt.Errorf("%w: NVIDIA_API_KEY not set", ErrUnauthenticated)
+	}
+	msgs, cErr := openAIChatMessages(in.System, in.Messages)
+	if cErr != nil {
+		return ChatResult{}, cErr
+	}
+	tools := make([]chatToolDef, 0, len(in.Tools))
+	for _, t := range in.Tools {
+		params := t.InputSchema
+		if len(params) == 0 {
+			params = json.RawMessage(`{"type":"object"}`)
+		}
+		tools = append(tools, chatToolDef{
+			Type:     "function",
+			Function: chatToolFunction{Name: t.Name, Description: t.Description, Parameters: params},
+		})
+	}
+	bodyBytes, mErr := json.Marshal(chatRequest{
+		Model:     mdl,
+		Messages:  msgs,
+		MaxTokens: in.MaxTokens,
+		Tools:     tools,
+	})
+	if mErr != nil {
+		return ChatResult{}, fmt.Errorf("%s: marshal chat request: %w", n.brand(), mErr)
+	}
+	parsed, sErr := n.send(ctx, bodyBytes)
+	if sErr != nil {
+		return ChatResult{}, sErr
+	}
+	choice := parsed.Choices[0]
+	out := ChatResult{
+		Model:      parsed.Model,
+		StopReason: normalizeOpenAIStop(choice.FinishReason),
+		Text:       strings.TrimSpace(choice.Message.Content),
+	}
 	if parsed.Usage != nil {
-		tokensUsed = parsed.Usage.TotalTokens
+		out.TokensUsed = parsed.Usage.TotalTokens
 	}
-	return content, model, tokensUsed, nil
+	for _, tc := range choice.Message.ToolCalls {
+		input := json.RawMessage(tc.Function.Arguments)
+		if len(input) == 0 {
+			input = json.RawMessage(`{}`)
+		}
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Input: input})
+	}
+	if out.Text == "" && len(out.ToolCalls) == 0 {
+		return ChatResult{}, fmt.Errorf("%w: empty content", ErrProviderResponse)
+	}
+	return out, nil
+}
+
+// openAIChatMessages converts the vendor-neutral history into Chat
+// Completions shape. The system prompt leads as a system message; tool
+// results use the dedicated "tool" role keyed by tool_call_id. OpenAI has
+// no is_error flag — error text simply travels in content, which the
+// engine already prefixes.
+func openAIChatMessages(system string, history []ChatMessage) ([]chatMessage, error) {
+	out := make([]chatMessage, 0, len(history)+1)
+	if system != "" {
+		out = append(out, chatMessage{Role: "system", Content: system})
+	}
+	for _, m := range history {
+		switch m.Role {
+		case "user":
+			out = append(out, chatMessage{Role: "user", Content: m.Text})
+		case "assistant":
+			msg := chatMessage{Role: "assistant", Content: m.Text}
+			for _, c := range m.ToolCalls {
+				args := string(c.Input)
+				if args == "" {
+					args = "{}"
+				}
+				msg.ToolCalls = append(msg.ToolCalls, chatToolCall{
+					ID:       c.ID,
+					Type:     "function",
+					Function: chatToolCallFunction{Name: c.Name, Arguments: args},
+				})
+			}
+			if msg.Content == "" && len(msg.ToolCalls) == 0 {
+				return nil, fmt.Errorf("chat: assistant message with no content")
+			}
+			out = append(out, msg)
+		case "tool":
+			if m.ToolResult == nil {
+				return nil, fmt.Errorf("chat: tool message missing result")
+			}
+			content := m.ToolResult.Content
+			if content == "" {
+				// The tool role requires content; an empty result would be
+				// dropped by omitempty and rejected by the API.
+				content = "(empty result)"
+			}
+			out = append(out, chatMessage{Role: "tool", Content: content, ToolCallID: m.ToolResult.ToolCallID})
+		default:
+			return nil, fmt.Errorf("chat: unknown chat role %q", m.Role)
+		}
+	}
+	return out, nil
+}
+
+// normalizeOpenAIStop maps Chat Completions finish reasons onto the
+// vendor-neutral set shared with Anthropic.
+func normalizeOpenAIStop(s string) string {
+	switch s {
+	case "tool_calls":
+		return "tool_use"
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	default:
+		return s
+	}
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -445,4 +624,5 @@ var (
 	_ Summarizer       = (*Nvidia)(nil)
 	_ BranchAnalyzer   = (*Nvidia)(nil)
 	_ ConflictResolver = (*Nvidia)(nil)
+	_ ToolCaller       = (*Nvidia)(nil)
 )

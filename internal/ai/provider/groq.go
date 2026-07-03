@@ -75,6 +75,12 @@ func (g *Groq) SuggestGitignore(ctx context.Context, projectInfo string) ([]stri
 	return g.nv.SuggestGitignore(ctx, projectInfo)
 }
 
+// ChatWithTools implements ToolCaller by delegating to the wire-compatible
+// Nvidia adapter (same pattern as Summarize).
+func (g *Groq) ChatWithTools(ctx context.Context, in ChatInput) (ChatResult, error) {
+	return g.nv.ChatWithTools(ctx, in)
+}
+
 func (g *Groq) apiKey() string {
 	if g.APIKey != "" {
 		return g.APIKey
@@ -117,4 +123,5 @@ var (
 	_ Provider           = (*Groq)(nil)
 	_ Summarizer         = (*Groq)(nil)
 	_ GitignoreSuggester = (*Groq)(nil)
+	_ ToolCaller         = (*Groq)(nil)
 )

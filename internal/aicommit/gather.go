@@ -97,6 +97,15 @@ func (e FileChange) matchesScope(s Scope) bool {
 // Why (3) exists: filepath.Match has no doublestar; "__pycache__/*"
 // against "internal/foo/__pycache__/bar.pyc" fails. Without component
 // scanning, every nested cache directory leaks into the LLM payload.
+// MatchDeny reports the first deny glob matching a repo-relative,
+// slash-separated path (empty = no match). Exported for the chat tool
+// sandbox, which must apply the exact same deny semantics to model-driven
+// file access that this package applies to commit diffs — two divergent
+// matchers would eventually disagree on what ".env" means.
+func MatchDeny(path string, patterns []string) string {
+	return matchDeny(path, patterns)
+}
+
 func matchDeny(path string, patterns []string) string {
 	base := filepath.Base(path)
 	path = filepath.ToSlash(path)

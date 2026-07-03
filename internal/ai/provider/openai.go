@@ -76,6 +76,12 @@ func (o *OpenAI) SuggestGitignore(ctx context.Context, projectInfo string) ([]st
 	return o.nv.SuggestGitignore(ctx, projectInfo)
 }
 
+// ChatWithTools implements ToolCaller by delegating to the wire-compatible
+// Nvidia adapter (same pattern as Summarize).
+func (o *OpenAI) ChatWithTools(ctx context.Context, in ChatInput) (ChatResult, error) {
+	return o.nv.ChatWithTools(ctx, in)
+}
+
 func (o *OpenAI) apiKey() string {
 	if o.APIKey != "" {
 		return o.APIKey
@@ -118,4 +124,5 @@ var (
 	_ Provider           = (*OpenAI)(nil)
 	_ Summarizer         = (*OpenAI)(nil)
 	_ GitignoreSuggester = (*OpenAI)(nil)
+	_ ToolCaller         = (*OpenAI)(nil)
 )

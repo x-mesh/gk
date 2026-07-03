@@ -2284,8 +2284,9 @@ gk resolve [files...] [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--strategy` | (interactive) | Apply one strategy to all conflicts: `ours`, `theirs`, `ai` |
+| `--strategy` | (interactive) | Apply one strategy to all conflicts: `ours`, `theirs`, `ai`, `safe` |
 | `--ai` | false | Explicit opt-in shortcut for `--strategy ai` (AI decides per hunk: ours / theirs / merged, with a rationale) |
+| `--safe` | false | Shortcut for `--strategy safe` — the deterministic tier ONLY: hunks with a provably safe answer (identical sides, whitespace-only difference, one side unchanged from base under diff3 markers, union files like `CHANGELOG.md`/`go.sum`) are resolved; everything else stays marked and unmerged. No AI provider needed, nothing guessed |
 | `--no-continue` | false | Stop after resolving; print the `gk continue` hint instead of running it |
 | `--dry-run` | false | Show the resolution diff without modifying files (never continues) |
 | `--no-backup` | false | Skip `.orig` backup file creation |
@@ -2308,9 +2309,15 @@ gk resolve --strategy theirs --no-continue
 gk continue
 ```
 
+### Verification gate (batch mode)
+
+Batch resolutions (`--strategy` / `--ai` / `--safe`) are **written but not staged** until a verification gate passes: a conflict-marker scan always runs, plus any `resolve.verify` commands from config (shell commands run at the repo root — e.g. `["go build ./..."]`). On failure the conflicted state is restored exactly (`git checkout -m`, possible because the unmerged index stages were never cleared) and the operation stays paused with `verify_failed` in the JSON report — an auto-resolution attempt costs nothing when it's wrong.
+
+The mechanical tier also runs as a **pre-pass inside `--ai`**, so deterministic hunks never reach the provider; and with `resolve.rerere` (default on) git's rerere is enabled and recorded resolutions are applied first — repeat conflicts resolve at zero cost. See [`resolve.*` config](config.md#resolvererere).
+
 ### Notes
 
-- The continue step runs only after a **full** resolution: every conflicted path cleared, a real operation in progress, no `--dry-run`/`--no-continue`. A file-filtered run (`gk resolve a.go`) that leaves other paths unmerged never continues.
+- The continue step runs only after a **full** resolution: every conflicted path cleared, a real operation in progress, no `--dry-run`/`--no-continue`. A file-filtered run (`gk resolve a.go`) that leaves other paths unmerged never continues. A `--safe` run with remaining semantic conflicts reports them in `remaining` and pauses.
 - **Delete/modify and markerless conflicts** are handled from the index stages (`:1` base, `:2` ours, `:3` theirs), not from worktree text: `--strategy ours|theirs` restores the chosen side or deletes the file when that side removed it; explicit `--ai` sends both sides (with deletion flags) to the provider, which decides keep / delete / merge and prints its rationale. Binary conflicts stay manual (`ours`/`theirs` only). A markerless file whose both stages exist is accepted as a manual resolution and staged as-is.
 - All git calls and file IO are anchored at the worktree root — resolve works from a repo subdirectory and with `--repo <path>` from outside the repo.
 - A pick whose resolution becomes empty (its content already exists upstream — common with `--strategy ours`) is skipped via `git <op> --skip` instead of failing on the empty commit. Merges are never skipped — an empty merge commit still records the ancestry join.

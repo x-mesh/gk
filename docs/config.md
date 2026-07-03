@@ -471,6 +471,23 @@ Ordering: wherever gk presents aliases to pick from (e.g. `gk init`'s account pi
 
 Aliases without `owner` behave exactly as before the field existed; `alias:repo` on such an alias fails with a "no owner configured" hint instead of guessing.
 
+### `resolve.rerere` / `resolve.verify` / `resolve.union_files`
+
+| | |
+|-|-|
+| Type | bool / string list / string list |
+| Default | `true` / empty / `[CHANGELOG.md, go.sum]` |
+| CLI flags | `--safe` (mechanical tier only), `--ai` |
+
+`rerere` enables git's rerere in the repo the first time `gk resolve` runs and applies recorded resolutions before anything else — repeated conflicts (long-lived branch rebases) resolve at zero AI cost. `verify` lists shell commands run from the repo root after conflicts are resolved but **before** they are staged/continued; any failure restores the conflicted state (`git checkout -m`) and pauses — a conflict-marker scan always runs even with an empty list. `union_files` names the basenames the mechanical tier resolves by keeping both sides (go.sum additionally sorted/deduplicated).
+
+```yaml
+resolve:
+  rerere: true
+  verify: ["go build ./...", "go test ./internal/... -count=1"]
+  union_files: [CHANGELOG.md, go.sum]
+```
+
 ### `init.ai_gitignore`
 
 | | |

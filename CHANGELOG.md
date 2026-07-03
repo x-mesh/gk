@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk resolve`에 결정론 티어(`--safe`)·검증 게이트·rerere가 붙었다 — "자동 해결을 믿어도 되는 인프라"의 1단계.** 실전 충돌의 상당수는 판단이 필요 없다: 양쪽이 동일, 공백만 다름, (diff3 마커에서) 한쪽이 base 그대로라 반대쪽이 유일한 변경, `CHANGELOG.md`/`go.sum`처럼 양쪽을 다 살리는 게 정답인 union 파일(`resolve.union_files`). `--safe`는 이 티어만 해결하고 나머지는 마커째 남겨 `remaining`으로 보고하며 — 아무것도 추측하지 않는다 — 같은 분류기가 `--ai`의 pre-pass로도 돌아 AI에 가는 표면을 줄인다. batch 해결(`--strategy`/`--ai`/`--safe`)은 이제 **stage를 미룬다**: 충돌-마커 스캔(상시)과 `resolve.verify` 명령(예: `go build ./...`)이 통과해야 stage·continue가 진행되고, 실패하면 index의 unmerged stage가 그대로 남아 있는 덕에 `git checkout -m`으로 충돌 상태를 정확히 복원하고 `verify_failed`와 함께 paused로 보고한다 — 잘못된 자동 해결의 비용이 0이 된다. `resolve.rerere`(기본 on)는 첫 실행에서 git rerere를 켜고 기록된 해결을 먼저 적용해, 장수 브랜치의 반복 충돌을 AI 비용 없이 처리한다. 명시적 `--strategy ours|theirs`는 여전히 순수 기계적 side-take다.
+
 ## [0.110.0] - 2026-07-03
 
 ### Added

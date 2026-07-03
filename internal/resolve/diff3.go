@@ -24,7 +24,7 @@ func (r *Resolver) enrichWithBase(ctx context.Context, cf ConflictFile, sp stage
 			return cf // already has diff3 info
 		}
 	}
-	if !(sp.Base && sp.Ours && sp.Theirs) {
+	if !sp.Base || !sp.Ours || !sp.Theirs {
 		return cf // degenerate shapes are handled elsewhere
 	}
 	labelOurs, labelTheirs := conflictLabels(cf)
@@ -89,7 +89,7 @@ func (r *Resolver) mergeFile(ctx context.Context, ours, base, theirs []byte, lab
 	if err != nil {
 		return nil, false
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	paths := [3]string{filepath.Join(dir, "ours"), filepath.Join(dir, "base"), filepath.Join(dir, "theirs")}
 	for i, b := range [][]byte{ours, base, theirs} {

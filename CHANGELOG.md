@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.112.0] - 2026-07-03
+
 ### Added
 
 - **`gk log --ai`가 선택된 커밋 범위를 사용자 언어로 서술한다 — `gk changelog`와 달리 릴리스 노트가 아니라 읽기 동반자다.** `gk log`가 `--since`/`--limit`/pathspec/revision args로 이미 골라낸 범위를 대상으로, 커밋 제목만 모델에 던지는 대신 log.go가 `--hotspots`/`--wip`/`--breaking`/`--cc`에서 이미 계산하는 결정론적 신호(hotspot 파일, WIP 체인, breaking 표시, CC 타입 집계, base 대비 merged/unmerged)를 근거(facts) JSON으로 함께 넘겨 모델이 사실을 지어내지 않고 인용하게 한다. 기존 로그 목록은 그대로 두고 AI 요약은 그 아래에 추가되어 `--graph`/`--lanes`/`--json` 등 기존 옵션과 자연스럽게 합성된다. `--json`(--ai 없이)은 기존 배열 shape을 그대로 유지하고, `--json --ai`일 때만 `{entries, ai_summary}` 객체로 확장된다. 언어는 `output.lang`을 자동으로 따르고 `--lang`/`--provider`로 오버라이드 가능. 대형 범위는 150커밋으로 절단해 payload를 억제하되 집계 신호는 전체 범위에서 계산하며, `resolve.verify`류 원격 차단·프라이버시 게이트·콘텐츠 주소 캐시 등 기존 AI 파이프라인을 그대로 재사용한다. (5모델 cross-vendor 리뷰에서 pathspec 밖 hotspot 유출, remote-gate 순서, self-base 오신호 등 결함을 잡아 반영했다.)

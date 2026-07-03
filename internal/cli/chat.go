@@ -14,6 +14,8 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"golang.org/x/term"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/aichat"
@@ -126,11 +128,19 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 	repoRoot := strings.TrimSpace(string(topOut))
 
+	// One chat round carries tool definitions, repo context, accumulated
+	// tool results, AND the adapter's internal 5xx retries — a proxy that
+	// occasionally 500s needs ~3 attempts × response time + backoff, which
+	// blows the 30s single-shot budget do/ask use. round_timeout (120s
+	// default) is the chat-specific budget, and the provider's own HTTP
+	// deadline is raised to match so it never silently undercuts it.
+	roundTimeout := parseDurationOrDefault(ai.Chat.RoundTimeout, 120*time.Second)
+
 	// Provider is resolved ONCE and fixed for the whole session: tool-call
 	// IDs are vendor-specific, so mid-conversation failover would corrupt
 	// the history. No FallbackChain here — auto-detect picks the first
 	// ToolCaller-capable provider and stays on it.
-	prov, caller, pErr := resolveChatProvider(ctx, ai, flags.model)
+	prov, caller, pErr := resolveChatProvider(ctx, ai, flags.model, roundTimeout)
 	if pErr != nil {
 		return fmt.Errorf("chat: %w", pErr)
 	}
@@ -183,12 +193,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	engine := &chat.Engine{
-		Caller:        remoteGuardedCaller{inner: caller, prov: prov},
+		Caller:        remoteGuardedCaller{inner: caller, prov: prov, flags: cmd.Flags()},
 		Registry:      registry,
 		SystemPrompt:  chat.SystemPrompt(repoCtx, lang, EasyEngine().IsEnabled()),
 		MaxTokens:     aiChatMaxTokens(ai),
 		MaxToolRounds: maxRounds,
-		RoundTimeout:  parseDurationOrDefault(ai.Chat.Timeout, 60*time.Second),
+		RoundTimeout:  roundTimeout,
 		// History replay budget (~tokens). Provider windows comfortably
 		// exceed this; trimming protects cost, not correctness.
 		HistoryBudget: 32768,
@@ -234,10 +244,20 @@ func unionGlobs(lists ...[]string) []string {
 
 // resolveChatProvider picks the session's provider: the configured one
 // when set (and it must support tool calling), else the first available
-// ToolCaller in the auto-detect order.
-func resolveChatProvider(ctx context.Context, ai config.AIConfig, modelOverride string) (provider.Provider, provider.ToolCaller, error) {
+// ToolCaller in the auto-detect order. minTimeout raises the adapter's
+// HTTP deadline (its internal retry loop included) up to the chat round
+// budget — otherwise the adapter's 60s default would silently bind under
+// a 120s round_timeout.
+func resolveChatProvider(ctx context.Context, ai config.AIConfig, modelOverride string, minTimeout time.Duration) (provider.Provider, provider.ToolCaller, error) {
+	build := func(cfg config.AIConfig) (provider.Provider, error) {
+		opts := aiFactoryOptionsWithModel(cfg, modelOverride)
+		if opts.Timeout < minTimeout {
+			opts.Timeout = minTimeout
+		}
+		return provider.NewProvider(ctx, opts)
+	}
 	if ai.Provider != "" {
-		p, err := provider.NewProvider(ctx, aiFactoryOptionsWithModel(ai, modelOverride))
+		p, err := build(ai)
 		if err != nil {
 			return nil, nil, fmt.Errorf("provider: %w", err)
 		}
@@ -248,7 +268,9 @@ func resolveChatProvider(ctx context.Context, ai config.AIConfig, modelOverride 
 		return p, tc, nil
 	}
 	for _, name := range aiAutoOrder {
-		p, err := provider.Build(name, provider.ExecRunner{})
+		cfg := ai
+		cfg.Provider = name
+		p, err := build(cfg)
 		if err != nil {
 			continue
 		}
@@ -273,13 +295,23 @@ func resolveChatProvider(ctx context.Context, ai config.AIConfig, modelOverride 
 type remoteGuardedCaller struct {
 	inner provider.ToolCaller
 	prov  provider.Provider
+	// flags is the command's FlagSet from startup — the reload must see
+	// the SAME config the session started with (--repo included), not a
+	// flag-less view of the current working directory.
+	flags *pflag.FlagSet
 }
 
 func (r remoteGuardedCaller) ChatWithTools(ctx context.Context, in provider.ChatInput) (provider.ChatResult, error) {
-	if cfg, err := config.Load(nil); err == nil {
-		if gErr := ensureRemoteAllowed(r.prov, cfg.AI); gErr != nil {
-			return provider.ChatResult{}, gErr
-		}
+	// Fail CLOSED: a config that stops parsing mid-session must stop
+	// remote calls, not silently keep the last-known permission (the
+	// GlobalConfigHealthy lesson — safety settings never degrade to
+	// "allowed" on a broken file).
+	cfg, err := config.Load(r.flags)
+	if err != nil {
+		return provider.ChatResult{}, fmt.Errorf("remote policy re-check: config unreadable: %w", err)
+	}
+	if gErr := ensureRemoteAllowed(r.prov, cfg.AI); gErr != nil {
+		return provider.ChatResult{}, gErr
 	}
 	return r.inner.ChatWithTools(ctx, in)
 }
@@ -379,6 +411,9 @@ func runChatOneShot(cmd *cobra.Command, engine *chat.Engine, prov provider.Provi
 	turnUI := &chatTurnUI{out: cmd.OutOrStdout(), label: chatSpinnerMessage(lang, prov.Name())}
 	res, err := runChatTurn(cmd, engine, turnUI, question)
 	if err != nil {
+		if isDeadlineErr(err) {
+			fmt.Fprintln(cmd.ErrOrStderr(), stylizeHintLine("hint: 한 라운드가 ai.chat.round_timeout을 초과했습니다 — 값을 올리거나(global config) --model로 더 빠른 모델을 지정해 보세요"))
+		}
 		return fmt.Errorf("chat: %w", err)
 	}
 	if JSONOut() {
@@ -398,25 +433,67 @@ func runChatOneShot(cmd *cobra.Command, engine *chat.Engine, prov provider.Provi
 	return nil
 }
 
+// chatLineReader returns the REPL's line source. On a real terminal it
+// uses x/term's line editor, which gives shell-style history (↑/↓ walk
+// previous questions) and inline editing for free. Raw mode is entered
+// ONLY while reading a line and restored before the turn runs, so Ctrl-C
+// still raises SIGINT during provider calls (turn cancellation); at the
+// prompt the editor maps Ctrl-C and empty-line Ctrl-D to io.EOF, which
+// the loop treats as a graceful exit. Non-TTY stdin (tests, pipes) falls
+// back to a plain scanner.
+func chatLineReader(cmd *cobra.Command, prompt string) func() (string, error) {
+	stdin, okIn := cmd.InOrStdin().(*os.File)
+	if !okIn || !term.IsTerminal(int(stdin.Fd())) {
+		// ONE scanner for the whole loop — recreating it per prompt makes
+		// the buffered reader swallow the next line (ai_do.go's confirm).
+		scanner := bufio.NewScanner(cmd.InOrStdin())
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		out := cmd.OutOrStdout()
+		return func() (string, error) {
+			fmt.Fprint(out, prompt)
+			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					return "", err
+				}
+				return "", io.EOF
+			}
+			return scanner.Text(), nil
+		}
+	}
+	fd := int(stdin.Fd())
+	t := term.NewTerminal(struct {
+		io.Reader
+		io.Writer
+	}{stdin, cmd.OutOrStdout()}, prompt)
+	return func() (string, error) {
+		old, err := term.MakeRaw(fd)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = term.Restore(fd, old) }()
+		return t.ReadLine()
+	}
+}
+
 func runChatREPL(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider, sess *chat.Session, lang string) error {
 	out := cmd.OutOrStdout()
 	ko := isKoLang(lang)
 	printChatWelcome(out, prov, sess, ko)
 
-	// ONE scanner for the whole loop — recreating it per prompt makes the
-	// buffered reader swallow the next line (see ai_do.go's confirm).
-	scanner := bufio.NewScanner(cmd.InOrStdin())
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	prompt := color.New(color.Bold, color.FgCyan).Sprint("gk chat › ")
+	readLine := chatLineReader(cmd, prompt)
 
 	for {
-		fmt.Fprint(out, prompt)
-		if !scanner.Scan() { // Ctrl-D / EOF
+		input, rErr := readLine()
+		if rErr != nil { // Ctrl-D / Ctrl-C at prompt / EOF
+			if !errors.Is(rErr, io.EOF) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "chat: input: %v\n", rErr)
+			}
 			fmt.Fprintln(out)
 			printChatBye(out, sess, ko)
 			return nil
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(input)
 		switch {
 		case line == "":
 			continue
@@ -451,6 +528,9 @@ func runChatREPL(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider
 				fmt.Fprintln(out, color.YellowString("· 턴을 취소했습니다"))
 			case errors.Is(err, chat.ErrMaxRounds):
 				fmt.Fprintf(cmd.ErrOrStderr(), "chat: %v\n", err)
+			case isDeadlineErr(err):
+				fmt.Fprintf(cmd.ErrOrStderr(), "chat: %v\n", err)
+				fmt.Fprintln(cmd.ErrOrStderr(), stylizeHintLine("hint: 한 라운드가 ai.chat.round_timeout을 초과했습니다 — 프록시/모델이 느리거나 일시 오류를 재시도 중일 수 있습니다. 값을 올리거나(global config) --model로 더 빠른 모델을 지정해 보세요"))
 			default:
 				fmt.Fprintf(cmd.ErrOrStderr(), "chat: %v — 다시 시도하세요\n", err)
 			}
@@ -500,6 +580,14 @@ func printChatHelp(w io.Writer, ko bool) {
 		fmt.Fprintln(w, "Ctrl-C during a turn cancels that turn; at the prompt it exits.")
 		fmt.Fprintln(w, "tools: git log/show/diff/blame/grep + file read/list (all read-only)")
 	}
+}
+
+// isDeadlineErr matches a round timeout whether it surfaces as the
+// context error itself or wrapped in an adapter's message string (nvidia
+// wraps it as "openai: http call: … context deadline exceeded").
+func isDeadlineErr(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(err.Error(), "deadline exceeded")
 }
 
 // compactJSON renders tool input as a single trimmed line for the feed.

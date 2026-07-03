@@ -152,6 +152,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("ai.assist.cache", defaults.AI.Assist.Cache)
 	v.SetDefault("ai.chat.timeout", defaults.AI.Chat.Timeout)
 	v.SetDefault("ai.chat.max_tokens", defaults.AI.Chat.MaxTokens)
+	v.SetDefault("ai.chat.round_timeout", defaults.AI.Chat.RoundTimeout)
 	v.SetDefault("ai.chat.max_tool_rounds", defaults.AI.Chat.MaxToolRounds)
 	v.SetDefault("ai.chat.tool_result_cap", defaults.AI.Chat.ToolResultCap)
 	v.SetDefault("ai.commit.mode", defaults.AI.Commit.Mode)

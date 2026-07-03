@@ -174,6 +174,13 @@ type AIAssistConfig struct {
 type AIChatConfig struct {
 	Timeout   string `mapstructure:"timeout"    yaml:"timeout"`
 	MaxTokens int    `mapstructure:"max_tokens" yaml:"max_tokens"`
+	// RoundTimeout bounds ONE gk chat provider round-trip (default
+	// "120s"). Separate from Timeout (30s, sized for do/ask single
+	// shots): chat rounds carry tool definitions, repo context, and
+	// accumulated tool results, and the adapter's internal 5xx retries
+	// (backoff included) must fit inside this budget — a proxy that
+	// occasionally 500s needs ~3 attempts × response time + backoff.
+	RoundTimeout string `mapstructure:"round_timeout" yaml:"round_timeout,omitempty"`
 	// MaxToolRounds bounds provider round-trips per gk chat turn
 	// (default 15). Global config only.
 	MaxToolRounds int `mapstructure:"max_tool_rounds" yaml:"max_tool_rounds,omitempty"`
@@ -853,6 +860,7 @@ func Defaults() Config {
 			Chat: AIChatConfig{
 				Timeout:       "30s",
 				MaxTokens:     4096,
+				RoundTimeout:  "120s",
 				MaxToolRounds: 15,
 				ToolResultCap: 32768,
 			},

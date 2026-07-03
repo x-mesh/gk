@@ -53,6 +53,31 @@ func GlobalInitAIGitignore() bool {
 	return v.GetBool("init.ai_gitignore")
 }
 
+// GlobalResolveSettings reads resolve.verify and resolve.union_files from
+// the GLOBAL config file only. Both keys shape what `gk resolve` executes or
+// auto-merges, so a repo-local .gk.yaml inside an untrusted checkout must
+// not be able to widen them: verify runs arbitrary shell commands (the same
+// trust boundary as init.ai_gitignore), and union_files silently expands
+// the auto-merge surface. unionSet distinguishes "unset → defaults" from an
+// explicit empty list (= union merging disabled).
+func GlobalResolveSettings() (verify []string, unionFiles []string, unionSet bool) {
+	path := GlobalConfigPath()
+	if path == "" {
+		return nil, nil, false
+	}
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return nil, nil, false
+	}
+	verify = v.GetStringSlice("resolve.verify")
+	if v.IsSet("resolve.union_files") {
+		return verify, v.GetStringSlice("resolve.union_files"), true
+	}
+	return verify, nil, false
+}
+
 // WriteDefaultConfig creates the commented YAML template at path.
 //
 // Behaviour:

@@ -36,10 +36,14 @@ type Resolver struct {
 	// (delete/modify 등)로 곧바로 재처리할 예정임을 표시한다 —
 	// ParseConflictFiles가 수동 해결 힌트를 찍지 않게 한다.
 	deferSkipped bool
-	// deferStage/pendingStage: ResolveOptions.DeferStage가 켜진 실행에서
-	// git add를 미루고 경로를 모은다 (검증 게이트 뒤에 caller가 stage).
-	deferStage   bool
-	pendingStage []string
+	// deferStage/pendingStage/pendingAccept: ResolveOptions.DeferStage가 켜진
+	// 실행에서 git add를 미루고 경로를 모은다 (검증 게이트 뒤에 caller가
+	// stage). pendingStage는 gk가 내용을 쓴 파일(롤백 = checkout -m으로 충돌
+	// 복원 가능), pendingAccept는 사용자가 이미 정리해 둔 markerless 파일 —
+	// 내용을 건드린 적이 없으므로 롤백 시 절대 덮어쓰면 안 된다.
+	deferStage    bool
+	pendingStage  []string
+	pendingAccept []string
 }
 
 // readFile은 ReadFile 필드가 nil이면 os.ReadFile을 사용한다.
@@ -311,6 +315,7 @@ func stateKindToOpType(kind gitstate.StateKind) string {
 func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveOptions) (*ResolveResult, error) {
 	r.deferStage = opts.DeferStage && !opts.DryRun
 	r.pendingStage = nil
+	r.pendingAccept = nil
 	defer func() { r.deferStage = false }()
 	// 1. 충돌 파일 수집 — state.Kind 가드보다 먼저 한다. git stash
 	// apply / git apply --3way / 일부 partial reset 경로는 in-progress
@@ -417,7 +422,10 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 			if sp.Ours && sp.Theirs {
 				if !opts.DryRun {
 					if r.deferStage {
-						r.pendingStage = append(r.pendingStage, cf.Path)
+						// 사용자의 수동 해결 — stage만 미룬다. pendingStage가
+						// 아닌 이유: 롤백(checkout -m)이 이 내용을 마커로
+						// 덮어쓰면 사용자의 작업이 파괴된다.
+						r.pendingAccept = append(r.pendingAccept, cf.Path)
 					} else if err := GitAdd(ctx, r.Runner, cf.Path); err != nil {
 						return nil, fmt.Errorf("gk resolve: git add %s: %w", cf.Path, err)
 					}
@@ -530,6 +538,7 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		result.Skipped = nil
 	}
 	result.PendingStage = append([]string{}, r.pendingStage...)
+	result.PendingAccept = append([]string{}, r.pendingAccept...)
 
 	return result, nil
 }

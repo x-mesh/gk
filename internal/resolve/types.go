@@ -76,7 +76,13 @@ type ResolveResult struct {
 	// Remaining lists conflicts strategy "safe" deliberately left alone —
 	// they need AI or a human, and are still marked/unmerged.
 	Remaining []string
-	// PendingStage lists resolved paths written but not yet staged
-	// (DeferStage) — the caller stages them after verification.
+	// PendingStage lists resolved paths gk WROTE but did not stage
+	// (DeferStage) — the caller stages them after verification, and may
+	// restore their conflict with `git checkout -m` on failure.
 	PendingStage []string
+	// PendingAccept lists markerless files whose existing (user-authored)
+	// content was accepted — stage-deferred like PendingStage, but NEVER
+	// rolled back: gk did not write them, so restoring markers would
+	// destroy the user's manual resolution.
+	PendingAccept []string
 }

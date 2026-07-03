@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,14 +58,15 @@ func runResolveFlags(t *testing.T, flags map[string]string, args []string) error
 	return runResolveWithContext(t, cmd, args)
 }
 
-// --safe resolves a whitespace-only conflict deterministically and finishes
-// the merge — no AI provider, no human.
+// --safe resolves a trailing-whitespace-only conflict deterministically and
+// finishes the merge — no AI provider, no human. (Internal spacing and
+// indentation are meaningful and deliberately NOT in this tier.)
 func TestResolveSafe_WhitespaceConflictEndToEnd(t *testing.T) {
 	repo := conflictRepo(t,
 		map[string]string{"a.txt": "one\ntwo\nthree\n"},
 		map[string][2]string{"a.txt": {
-			"one\ntwo changed\nthree\n",  // ours
-			"one\ntwo  changed\nthree\n", // theirs — whitespace-only difference
+			"one\ntwo changed\nthree\n",   // ours
+			"one\ntwo changed  \nthree\n", // theirs — trailing whitespace only
 		}},
 	)
 
@@ -99,14 +102,23 @@ func TestResolveSafe_LeavesSemanticConflict(t *testing.T) {
 	}
 }
 
-// A failing resolve.verify command rolls the resolution back to the exact
-// conflicted state — markers restored, stages intact, operation paused.
+// A failing resolve.verify command (from the GLOBAL config — the only place
+// it is honored) rolls the resolution back to the exact conflicted state —
+// markers restored, stages intact, operation paused.
 func TestResolveVerifyGate_RollsBackOnFailure(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	if err := os.MkdirAll(filepath.Join(xdg, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "gk", "config.yaml"),
+		[]byte("resolve:\n  verify: [\"false\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	repo := conflictRepo(t,
 		map[string]string{"c.txt": "x = 0\n"},
 		map[string][2]string{"c.txt": {"x = 1\n", "x = 2\n"}},
 	)
-	repo.WriteFile(".gk.yaml", "resolve:\n  verify: [\"false\"]\n")
 
 	err := runResolveFlags(t, map[string]string{"strategy": "theirs"}, nil)
 	if err == nil {
@@ -118,5 +130,25 @@ func TestResolveVerifyGate_RollsBackOnFailure(t *testing.T) {
 	}
 	if unmerged := repo.RunGit("ls-files", "-u"); !strings.Contains(unmerged, "c.txt") {
 		t.Errorf("c.txt must be unmerged again after rollback:\n%s", unmerged)
+	}
+}
+
+// Repo-local .gk.yaml must NOT be able to run verify commands — an untrusted
+// checkout would gain arbitrary shell execution (cross-vendor review S1,
+// same trust boundary as init.ai_gitignore). The repo-local "false" here is
+// ignored, so the resolution completes.
+func TestResolveVerify_RepoLocalConfigIgnored(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // clean global config
+	repo := conflictRepo(t,
+		map[string]string{"d.txt": "x = 0\n"},
+		map[string][2]string{"d.txt": {"x = 1\n", "x = 2\n"}},
+	)
+	repo.WriteFile(".gk.yaml", "resolve:\n  verify: [\"false\"]\n")
+
+	if err := runResolveFlags(t, map[string]string{"strategy": "theirs"}, nil); err != nil {
+		t.Fatalf("repo-local verify must be ignored (merge should finish): %v", err)
+	}
+	if unmerged := repo.RunGit("ls-files", "-u"); strings.TrimSpace(unmerged) != "" {
+		t.Errorf("no unmerged entries expected:\n%s", unmerged)
 	}
 }

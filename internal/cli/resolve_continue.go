@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -203,6 +204,7 @@ func autoContinueBatch(
 	kind gitstate.StateKind,
 	opts resolve.ResolveOptions,
 	first *resolve.ResolveResult,
+	verifyCmds []string,
 ) (*resolveReport, error) {
 	rep := &resolveReport{
 		Resolved: append([]string{}, first.Resolved...),
@@ -223,6 +225,20 @@ func autoContinueBatch(
 			return false, rerr
 		}
 		rep.Total += res.Total
+		// Later rounds run under the same DeferStage contract — the gate
+		// must pass (and stage) here too, or the continue loop would spin
+		// on written-but-unstaged resolutions.
+		if gerr := applyResolveGate(ctx, r.Runner, r.Root, verifyCmds, res, cmd.ErrOrStderr()); gerr != nil {
+			var ve *resolveVerifyError
+			if !errors.As(gerr, &ve) {
+				return false, gerr
+			}
+			rep.VerifyFailed = ve.Check
+			if !JSONOut() {
+				fmt.Fprintf(cmd.OutOrStdout(), "resolve: verification failed this round — conflicted state restored\n  %v\n", gerr)
+			}
+			return false, nil
+		}
 		rep.Resolved = append(rep.Resolved, res.Resolved...)
 		if len(res.Resolved) != res.Total {
 			if !JSONOut() {

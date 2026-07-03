@@ -2286,7 +2286,7 @@ gk resolve [files...] [flags]
 |------|---------|-------------|
 | `--strategy` | (interactive) | Apply one strategy to all conflicts: `ours`, `theirs`, `ai`, `safe` |
 | `--ai` | false | Explicit opt-in shortcut for `--strategy ai` (AI decides per hunk: ours / theirs / merged, with a rationale) |
-| `--safe` | false | Shortcut for `--strategy safe` — the deterministic tier ONLY: hunks with a provably safe answer (identical sides, whitespace-only difference, one side unchanged from base under diff3 markers, union files like `CHANGELOG.md`/`go.sum`) are resolved; everything else stays marked and unmerged. No AI provider needed, nothing guessed |
+| `--safe` | false | Shortcut for `--strategy safe` — the deterministic tier ONLY: hunks with a provably safe answer are resolved (identical sides; trailing-whitespace/line-ending-only differences — internal spacing and indentation are meaningful and excluded; one side unchanged from base under diff3 markers; union files like `CHANGELOG.md`/`go.sum` when both sides are additions — go.sum refuses conflicting hashes for the same module@version); everything else stays marked and unmerged. No AI provider needed, nothing guessed |
 | `--no-continue` | false | Stop after resolving; print the `gk continue` hint instead of running it |
 | `--dry-run` | false | Show the resolution diff without modifying files (never continues) |
 | `--no-backup` | false | Skip `.orig` backup file creation |
@@ -2311,9 +2311,9 @@ gk continue
 
 ### Verification gate (batch mode)
 
-Batch resolutions (`--strategy` / `--ai` / `--safe`) are **written but not staged** until a verification gate passes: a conflict-marker scan always runs, plus any `resolve.verify` commands from config (shell commands run at the repo root — e.g. `["go build ./..."]`). On failure the conflicted state is restored exactly (`git checkout -m`, possible because the unmerged index stages were never cleared) and the operation stays paused with `verify_failed` in the JSON report — an auto-resolution attempt costs nothing when it's wrong.
+Batch resolutions (`--strategy` / `--ai` / `--safe`) are **written but not staged** until a verification gate passes: a conflict-marker scan always runs, plus any `resolve.verify` commands (shell commands run at the repo root — e.g. `["go build ./..."]`). The gate also runs on every later-pick round of a multi-pick rebase. **`resolve.verify` and `resolve.union_files` are honored from the GLOBAL config only** — the repo being resolved must not be able to run shell commands or widen the auto-merge surface (same trust boundary as `init.ai_gitignore`); a repo-local attempt is ignored with a note. On failure, files gk wrote are restored exactly (`git checkout -m`, possible because the unmerged index stages were never cleared) — files whose existing markerless content was merely accepted are never touched, and delete/modify resolutions staged before the gate are reported as non-restorable. The operation stays paused with `verify_failed` in the JSON report — an auto-resolution attempt costs nothing when it's wrong.
 
-The mechanical tier also runs as a **pre-pass inside `--ai`**, so deterministic hunks never reach the provider; and with `resolve.rerere` (default on) git's rerere is enabled and recorded resolutions are applied first — repeat conflicts resolve at zero cost. See [`resolve.*` config](config.md#resolvererere).
+The mechanical tier also runs as a **pre-pass inside `--ai`**, so deterministic hunks never reach the provider; and with `resolve.rerere` (default on) git's rerere is enabled and recorded resolutions are applied first — repeat conflicts resolve at zero cost (skipped for explicit `--strategy ours|theirs`, which promise a pure side-take). See [`resolve.*` config](config.md#resolvererere).
 
 ### Notes
 

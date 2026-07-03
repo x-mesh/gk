@@ -17,14 +17,67 @@ func TestMechanicalHunk_IdenticalSides(t *testing.T) {
 	}
 }
 
-func TestMechanicalHunk_WhitespaceOnly(t *testing.T) {
-	h := hunk([]string{"value = 1", "  done"}, []string{"value  =  1", "done", ""})
+func TestMechanicalHunk_TrailingWhitespaceOnly(t *testing.T) {
+	h := hunk([]string{"value = 1", "done\t"}, []string{"value = 1  ", "done\r"})
 	hr, ok := mechanicalHunkResolution("x.go", h, nil)
 	if !ok {
-		t.Fatal("whitespace-only difference must resolve")
+		t.Fatal("trailing-whitespace/CR difference must resolve")
 	}
-	if strings.Join(hr.ResolvedLines, "\n") != "value = 1\n  done" {
+	if strings.Join(hr.ResolvedLines, "\n") != "value = 1\ndone\t" {
 		t.Errorf("should take ours verbatim: %q", hr.ResolvedLines)
+	}
+}
+
+// Internal spacing and indentation carry meaning (string literals, Python,
+// Makefile) — the whitespace rule must NOT swallow them (cross-vendor
+// review: 2 vendors rated this Critical against the original loose rule).
+func TestMechanicalHunk_MeaningfulWhitespaceStays(t *testing.T) {
+	cases := [][2][]string{
+		{{`s := "a b"`}, {`s := "a  b"`}},  // string literal internal spacing
+		{{"    return x"}, {"  return x"}}, // indentation depth
+		{{"a", "", "b"}, {"a", "b"}},       // blank-line (paragraph) difference
+	}
+	for i, c := range cases {
+		if _, ok := mechanicalHunkResolution("x.py", hunk(c[0], c[1]), nil); ok {
+			t.Errorf("case %d: meaningful whitespace difference must NOT resolve: %q vs %q", i, c[0], c[1])
+		}
+	}
+}
+
+// An explicit empty union list disables union merging (nil keeps defaults).
+func TestMechanicalHunk_EmptyUnionListDisables(t *testing.T) {
+	h := hunk([]string{"- ours"}, []string{"- theirs"})
+	if _, ok := mechanicalHunkResolution("CHANGELOG.md", h, []string{}); ok {
+		t.Fatal("explicit empty union_files must disable union merging")
+	}
+}
+
+// go.sum union refuses when both sides carry different hashes for the same
+// module@version — that mismatch is go.sum's tampering signal.
+func TestMechanicalHunk_GoSumHashConflictRefused(t *testing.T) {
+	h := hunk(
+		[]string{"mod-a v1.0.0 h1:AAA"},
+		[]string{"mod-a v1.0.0 h1:BBB"},
+	)
+	if _, ok := mechanicalHunkResolution("go.sum", h, nil); ok {
+		t.Fatal("same module@version with different hashes must stay conflicted")
+	}
+}
+
+// Union merge requires provable additivity when diff3 base info exists: a
+// non-empty base block means a rewrite conflict, not two additions.
+func TestMechanicalHunk_UnionRequiresAdditiveBase(t *testing.T) {
+	h := &ConflictHunk{
+		Ours:   []string{"- rewritten ours"},
+		Theirs: []string{"- rewritten theirs"},
+		Base:   []string{"- original entry"},
+	}
+	if _, ok := mechanicalHunkResolution("CHANGELOG.md", h, nil); ok {
+		t.Fatal("union with non-empty base must stay conflicted")
+	}
+	h.Base = []string{}
+	if _, ok := mechanicalHunkResolution("CHANGELOG.md", h, nil); !ok {
+		t.Fatal("union with empty base (both added) must resolve")
 	}
 }
 

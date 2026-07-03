@@ -31,18 +31,46 @@ func (e *resolveVerifyError) Error() string {
 	return fmt.Sprintf("verify %q failed: %s", e.Check, e.Detail)
 }
 
+// applyResolveGate runs the verification gate over one Run result and, on
+// pass, stages every deferred path. On failure it restores only the files gk
+// WROTE (checkout -m from the intact index stages); user-accepted markerless
+// content is never touched, and delete/modify resolutions that were staged
+// before the gate are reported as non-restorable rather than reverted.
+func applyResolveGate(ctx context.Context, runner git.Runner, repoRoot string, verifyCmds []string, result *resolve.ResolveResult, stderr io.Writer) error {
+	if result == nil || len(result.Resolved) == 0 {
+		return nil
+	}
+	if err := runResolveVerifyGate(ctx, repoRoot, verifyCmds, result, stderr); err != nil {
+		rollbackPendingResolutions(ctx, runner, result.PendingStage, stderr)
+		if n := len(result.Resolved) - len(result.PendingStage) - len(result.PendingAccept); n > 0 && stderr != nil {
+			fmt.Fprintf(stderr, "warning: gk resolve: %d resolution(s) were staged before the gate (delete/modify paths) and were not restored\n", n)
+		}
+		return err
+	}
+	return stagePendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingAccept...))
+}
+
 // runResolveVerifyGate runs the always-on conflict-marker scan over the
 // resolved files, then each configured resolve.verify command from the repo
-// root. First failure wins.
-func runResolveVerifyGate(ctx context.Context, repoRoot string, verifyCmds []string, resolved []string, stderr io.Writer) error {
-	for _, p := range resolved {
+// root. First failure wins. A read error fails the gate — the only benign
+// absence is a path deleted by a degenerate resolution, i.e. one gk did not
+// write.
+func runResolveVerifyGate(ctx context.Context, repoRoot string, verifyCmds []string, result *resolve.ResolveResult, stderr io.Writer) error {
+	written := make(map[string]bool, len(result.PendingStage))
+	for _, p := range result.PendingStage {
+		written[p] = true
+	}
+	for _, p := range result.Resolved {
 		abs := p
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(repoRoot, p)
 		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
-			continue // deleted by resolution (degenerate) — nothing to scan
+			if os.IsNotExist(err) && !written[p] {
+				continue // deleted by a degenerate resolution — nothing to scan
+			}
+			return &resolveVerifyError{Check: "conflict-marker scan", Detail: p + ": " + err.Error()}
 		}
 		if hasConflictMarkers(data) {
 			return &resolveVerifyError{Check: "conflict-marker scan", Detail: p + " still contains conflict markers"}

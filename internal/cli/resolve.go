@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,7 +28,7 @@ func init() {
 	resolveCmd.Flags().Bool("no-backup", false, "skip .orig backup file creation")
 	resolveCmd.Flags().String("strategy", "", "apply strategy to all conflicts: ours, theirs, ai, safe")
 	resolveCmd.Flags().Bool("ai", false, "shortcut for --strategy ai (resolve every conflict with AI)")
-	resolveCmd.Flags().Bool("safe", false, "shortcut for --strategy safe (deterministic tier only: identical/whitespace/one-side-changed/union; the rest stay conflicted)")
+	resolveCmd.Flags().Bool("safe", false, "shortcut for --strategy safe (deterministic tier only: identical sides, trailing-whitespace/CRLF-only, one-side-unchanged-from-base, additive union files; the rest stay conflicted)")
 	resolveCmd.Flags().Bool("no-continue", false, "stop after resolving; do not run the continue step")
 	rootCmd.AddCommand(resolveCmd)
 }
@@ -140,8 +141,22 @@ func runResolve(cmd *cobra.Command, args []string) error {
 
 	// rerere: reuse recorded resolutions before classifying anything —
 	// repeat conflicts (long-lived branch rebases) resolve at zero cost.
-	if cfg.Resolve.Rerere && !dryRun {
+	// NOT for explicit ours/theirs: a recorded (possibly merged) resolution
+	// would pre-empt the promised pure side-take.
+	if cfg.Resolve.Rerere && !dryRun && (strategy == "ai" || strategy == string(resolve.StrategySafe) || strategy == "") {
 		ensureRerere(ctx, runner, cmd.ErrOrStderr())
+	}
+
+	// resolve.verify and resolve.union_files are honored from the GLOBAL
+	// config only — the repo being resolved must not be able to run shell
+	// commands or widen the auto-merge surface (same trust boundary as
+	// init.ai_gitignore). A repo-local attempt is ignored with a note.
+	verifyCmds, unionFiles, unionSet := config.GlobalResolveSettings()
+	if !unionSet {
+		unionFiles = nil // nil → mechanical-tier defaults
+	}
+	if len(cfg.Resolve.Verify) > 0 && !slices.Equal(cfg.Resolve.Verify, verifyCmds) {
+		fmt.Fprintln(cmd.ErrOrStderr(), "note: repo-local resolve.verify is ignored — set it in the global config ($XDG_CONFIG_HOME/gk/config.yaml)")
 	}
 
 	opts := resolve.ResolveOptions{
@@ -151,7 +166,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		Strategy:   resolve.Strategy(strategy),
 		Files:      args,
 		Lang:       cfg.AI.Lang,
-		UnionFiles: cfg.Resolve.UnionFiles,
+		UnionFiles: unionFiles,
 	}
 
 	r := &resolve.Resolver{
@@ -186,20 +201,24 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Verification gate: marker scan (always) + resolve.verify commands.
-	// Pass → stage the deferred paths and proceed to continue as before.
-	// Fail → restore the conflicted state and report paused; the attempt
-	// cost nothing.
-	if !dryRun && len(result.PendingStage) > 0 {
-		if verr := runResolveVerifyGate(ctx, runner.Dir, cfg.Resolve.Verify, result.Resolved, cmd.ErrOrStderr()); verr != nil {
-			rollbackPendingResolutions(ctx, runner, result.PendingStage, cmd.ErrOrStderr())
-			rep := plainResolveReport(result, state)
-			rep.Resolved = nil // rolled back — nothing is actually resolved
-			rep.Mechanical = nil
+	// Verification gate: marker scan (always) + global resolve.verify
+	// commands, for EVERY kind of resolution (deferred writes, accepted
+	// markerless content, degenerate paths). Pass → stage the deferred
+	// paths and proceed to continue as before. Fail → restore what gk
+	// wrote and report paused; the attempt cost nothing.
+	if !dryRun {
+		if verr := applyResolveGate(ctx, runner, runner.Dir, verifyCmds, result, cmd.ErrOrStderr()); verr != nil {
 			var ve *resolveVerifyError
-			if errors.As(verr, &ve) {
-				rep.VerifyFailed = ve.Check
+			if !errors.As(verr, &ve) {
+				return verr // staging failure, not a verification verdict
 			}
+			rep := plainResolveReport(result, state)
+			rep.VerifyFailed = ve.Check
+			// Rolled-back and unstaged paths are conflicts again; only
+			// pre-gate staged resolutions (delete/modify) remain resolved.
+			rep.Remaining = append(append([]string{}, result.PendingStage...), result.PendingAccept...)
+			rep.Resolved = subtractPaths(result.Resolved, rep.Remaining)
+			rep.Mechanical = nil
 			if JSONOut() {
 				fmt.Fprintf(cmd.ErrOrStderr(), "resolve: %v\n", verr)
 				if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
@@ -209,9 +228,6 @@ func runResolve(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(cmd.OutOrStdout(), "resolve: verification failed — conflicted state restored\n  %v\n", verr)
 			}
 			return pausedExitIf(rep)
-		}
-		if err := stagePendingResolutions(ctx, runner, result.PendingStage); err != nil {
-			return err
 		}
 	}
 
@@ -234,7 +250,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	if !JSONOut() {
 		printResolveResult(cmd.OutOrStdout(), result, false)
 	}
-	rep, err := autoContinueBatch(ctx, cmd, r, state.Kind, opts, result)
+	rep, err := autoContinueBatch(ctx, cmd, r, state.Kind, opts, result, verifyCmds)
 	if err != nil {
 		return err
 	}
@@ -245,6 +261,21 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	}
 	// A still-paused resolution (later pick needs hand-resolution) exits 3.
 	return pausedExitIf(rep)
+}
+
+// subtractPaths returns the entries of a not present in b, order preserved.
+func subtractPaths(a, b []string) []string {
+	drop := make(map[string]bool, len(b))
+	for _, p := range b {
+		drop[p] = true
+	}
+	var out []string
+	for _, p := range a {
+		if !drop[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // canAutoContinue gates the continue step: only after a full resolution

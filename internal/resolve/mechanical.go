@@ -51,19 +51,26 @@ func mechanicalFileResolutions(cf ConflictFile, unionFiles []string) ([]HunkReso
 // certainty:
 //
 //  1. identical sides — any answer is the same answer.
-//  2. whitespace-only difference — content is identical after collapsing
-//     runs of whitespace; take ours (the difference cannot change meaning).
+//  2. trailing-whitespace / line-ending difference only — same line count,
+//     every line equal after trimming trailing spaces/tabs/CR. This is the
+//     only whitespace class that is meaning-free in EVERY language; internal
+//     spacing (string literals) and indentation (Python, Makefile, YAML)
+//     carry meaning and stay out (cross-vendor review, 2 vendors).
 //  3. one side equals base (diff3 markers only) — the other side is the only
 //     real change; taking it is what the merge would have produced had the
 //     edits not been adjacent.
-//  4. union files — both sides' lines are kept (go.sum additionally sorted
-//     and deduplicated, matching its generated format).
+//  4. union files, only when provably additive: with diff3 info the base
+//     block must be empty (both sides ADDED lines); a non-empty base means a
+//     rewrite/delete conflict where concatenation is wrong. go.sum is
+//     additionally sorted/deduplicated, and refuses when both sides carry a
+//     DIFFERENT hash for the same module@version — that mismatch is the
+//     exact tampering signal go.sum exists to surface.
 func mechanicalHunkResolution(path string, h *ConflictHunk, unionFiles []string) (HunkResolution, bool) {
 	if equalLines(h.Ours, h.Theirs) {
 		return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: h.Ours, Rationale: "both sides identical"}, true
 	}
-	if equalLinesLoose(h.Ours, h.Theirs) {
-		return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: h.Ours, Rationale: "sides differ only in whitespace"}, true
+	if equalLinesTrailingWS(h.Ours, h.Theirs) {
+		return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: h.Ours, Rationale: "sides differ only in trailing whitespace / line endings"}, true
 	}
 	if h.Base != nil {
 		if equalLines(h.Ours, h.Base) {
@@ -73,18 +80,39 @@ func mechanicalHunkResolution(path string, h *ConflictHunk, unionFiles []string)
 			return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: h.Ours, Rationale: "theirs unchanged from base — ours is the only change"}, true
 		}
 	}
-	if isUnionFile(path, unionFiles) {
+	if isUnionFile(path, unionFiles) && unionAdditive(h) {
 		if filepath.Base(path) == "go.sum" {
-			return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: sortedUniqueUnion(h.Ours, h.Theirs), Rationale: "go.sum union — extra entries are harmless"}, true
+			lines, ok := goSumUnion(h.Ours, h.Theirs)
+			if !ok {
+				return HunkResolution{}, false // same module@version, different hash
+			}
+			return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: lines, Rationale: "go.sum union — extra entries are harmless"}, true
 		}
-		return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: append(append([]string{}, h.Ours...), h.Theirs...), Rationale: "union merge — append-both file"}, true
+		return HunkResolution{Strategy: StrategyMechanical, ResolvedLines: append(append([]string{}, h.Ours...), h.Theirs...), Rationale: "union merge — both sides added"}, true
 	}
 	return HunkResolution{}, false
 }
 
+// unionAdditive reports whether the hunk is safe to union: with diff3 base
+// info, both sides must be pure additions (empty base block). Without diff3
+// markers the base is unknown — union proceeds, a documented limitation.
+func unionAdditive(h *ConflictHunk) bool {
+	if h.Base == nil {
+		return true
+	}
+	for _, l := range h.Base {
+		if strings.TrimSpace(l) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // isUnionFile matches the path's basename against the configured union list.
+// nil means "use the defaults"; an explicit EMPTY list disables union merging
+// entirely (`resolve.union_files: []`).
 func isUnionFile(path string, unionFiles []string) bool {
-	if len(unionFiles) == 0 {
+	if unionFiles == nil {
 		unionFiles = DefaultUnionFiles
 	}
 	base := filepath.Base(path)
@@ -108,38 +136,44 @@ func equalLines(a, b []string) bool {
 	return true
 }
 
-// equalLinesLoose compares after collapsing all whitespace runs inside each
-// line and dropping blank lines — the strictest normalization that still
-// counts indentation-only and trailing-space-only edits as "the same".
-func equalLinesLoose(a, b []string) bool {
-	na, nb := normalizeLines(a), normalizeLines(b)
-	return equalLines(na, nb)
-}
-
-func normalizeLines(lines []string) []string {
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		n := strings.Join(strings.Fields(l), " ")
-		if n == "" {
-			continue
-		}
-		out = append(out, n)
+// equalLinesTrailingWS reports line-by-line equality after trimming ONLY
+// trailing spaces/tabs/CR. Line count must match — a blank-line difference
+// is a content difference (markdown paragraphs), not noise.
+func equalLinesTrailingWS(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return out
+	for i := range a {
+		if strings.TrimRight(a[i], " \t\r") != strings.TrimRight(b[i], " \t\r") {
+			return false
+		}
+	}
+	return true
 }
 
-// sortedUniqueUnion merges both sides as a sorted, deduplicated line set —
-// go.sum's own format, so the result reads as if `go mod tidy` had written it.
-func sortedUniqueUnion(a, b []string) []string {
+// goSumUnion merges both sides as a sorted, deduplicated line set — go.sum's
+// own format. It refuses (ok=false) when the two sides carry DIFFERENT
+// hashes for the same "module version" key: a checksum mismatch is the
+// tampering signal go.sum exists to raise, never something to merge away.
+func goSumUnion(a, b []string) ([]string, bool) {
+	byKey := map[string]string{}
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range append(append([]string{}, a...), b...) {
 		if l == "" || seen[l] {
 			continue
 		}
+		fields := strings.Fields(l)
+		if len(fields) >= 2 {
+			key := fields[0] + " " + fields[1]
+			if prev, dup := byKey[key]; dup && prev != l {
+				return nil, false
+			}
+			byKey[key] = l
+		}
 		seen[l] = true
 		out = append(out, l)
 	}
 	sort.Strings(out)
-	return out
+	return out, true
 }

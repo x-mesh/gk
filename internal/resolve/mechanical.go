@@ -47,6 +47,24 @@ func mechanicalFileResolutions(cf ConflictFile, unionFiles []string) ([]HunkReso
 	return out, true
 }
 
+// mechanicalPartialResolutions resolves every hunk it can and marks the rest
+// StrategyUnresolved (their markers are re-emitted verbatim). solved reports
+// how many hunks the mechanical tier actually answered.
+func mechanicalPartialResolutions(cf ConflictFile, unionFiles []string) (res []HunkResolution, solved int) {
+	for _, seg := range cf.Segments {
+		if seg.Hunk == nil {
+			continue
+		}
+		if hr, ok := mechanicalHunkResolution(cf.Path, seg.Hunk, unionFiles); ok {
+			res = append(res, hr)
+			solved++
+		} else {
+			res = append(res, HunkResolution{Strategy: StrategyUnresolved})
+		}
+	}
+	return res, solved
+}
+
 // mechanicalHunkResolution classifies one hunk. The rules, in order of
 // certainty:
 //

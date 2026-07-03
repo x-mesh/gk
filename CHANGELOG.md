@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gk resolve`의 한계 네 곳을 메꿨다 — base 재구성·부분 safe·완전한 롤백·side-take 원문 강제.** ① git 기본 conflict style은 diff3 base 블록을 남기지 않아 기계 티어의 base 기반 규칙(한쪽 무변경, union 추가성 검사)이 대부분의 repo에서 꺼져 있었다 — 이제 index stage(:1/:2/:3)에서 `git merge-file --diff3`로 base를 **메모리에서 재구성**해 모든 repo에서 작동하며, 워크트리가 pristine 재병합과 바이트 일치할 때만 사용해 손 편집을 절대 덮어쓰지 않는다. ② `--safe`가 파일 단위 all-or-nothing이던 것을 **hunk 단위 부분 해결**로: 증명 가능한 hunk만 고치고 나머지는 마커째 남긴다(파일은 unmerged 유지). ③ delete/modify 해결도 stage를 미룬다 — 워크트리 삭제는 즉시(verify가 진짜 결과를 보도록), index 삭제는 게이트 통과 뒤로 — 검증 실패 시 `checkout -m`이 삭제된 파일까지 복원해 롤백 사각지대가 사라졌다. ④ AI가 "ours/theirs"를 선택하면 그 side의 **원문을 그대로** 적용한다: side를 주장하며 변조된 텍스트를 내는 무음 손상 클래스는 confidence로 못 잡는 것이라 구조적으로 차단했다(marker 경로·degenerate 경로 모두).
 - **`gk resolve`에 hunk별 confidence 게이트와 제안 동봉이 붙었다 — Phase 2.** AI가 모든 hunk 해결에 확신도(0.0~1.0)를 보고하고, global config의 `resolve.min_confidence`(기본 0 = off) 미만인 hunk는 **적용하지 않는다**: 파일은 확신 hunk만 치환되고 불확신 hunk는 마커 그대로인 부분 해결 상태로 쓰이며(stage 안 됨, `remaining`으로 보고), 보류된 답은 paused 리포트의 `proposals[]`(파일·hunk 번호·전략·확신도·rationale·해결 라인)로 동봉된다 — 에이전트가 "해결해줘"를 기다리는 대신 제안을 검토해 직접 적용하거나 재실행할 수 있다. 양의 게이트에서 확신도 미보고(구형 응답)는 미달로 취급해 옵트인한 게이트를 우회할 수 없고, multi-pick rebase의 후속 라운드 제안도 리포트에 누적된다. `min_confidence`는 `verify`/`union_files`와 같은 신뢰 경계로 global config 전용이다 — 해결 대상 repo가 기준을 낮출 수 없다.
 
 ## [0.111.0] - 2026-07-03

@@ -152,3 +152,90 @@ func TestResolveVerify_RepoLocalConfigIgnored(t *testing.T) {
 		t.Errorf("no unmerged entries expected:\n%s", unmerged)
 	}
 }
+
+// A: base info is reconstructed in memory from the index stages (git's
+// default conflict style has no diff3 block). A CHANGELOG conflict where
+// both sides REWROTE an existing entry must be refused by --safe — union
+// would be wrong — which is only knowable with the reconstructed base.
+func TestResolveSafe_EnrichedBaseRefusesRewriteUnion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	repo := conflictRepo(t,
+		map[string]string{"CHANGELOG.md": "# log\n- original entry\n"},
+		map[string][2]string{"CHANGELOG.md": {
+			"# log\n- rewritten by ours\n",
+			"# log\n- rewritten by theirs\n",
+		}},
+	)
+
+	err := runResolveFlags(t, map[string]string{"safe": "true"}, nil)
+	if err == nil {
+		t.Fatal("rewrite conflict on a union file must stay paused under --safe")
+	}
+	if unmerged := repo.RunGit("ls-files", "-u"); !strings.Contains(unmerged, "CHANGELOG.md") {
+		t.Errorf("CHANGELOG.md must stay unmerged:\n%s", unmerged)
+	}
+}
+
+// A(counter): a genuine both-added CHANGELOG conflict still unions and the
+// merge completes — the reconstructed base block is empty there.
+func TestResolveSafe_EnrichedBaseAllowsAdditiveUnion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	repo := conflictRepo(t,
+		map[string]string{"CHANGELOG.md": "# log\n"},
+		map[string][2]string{"CHANGELOG.md": {
+			"# log\n- ours entry\n",
+			"# log\n- theirs entry\n",
+		}},
+	)
+
+	if err := runResolveFlags(t, map[string]string{"safe": "true"}, nil); err != nil {
+		t.Fatalf("both-added union file must resolve and finish the merge: %v", err)
+	}
+	merged := repo.RunGit("show", "HEAD:CHANGELOG.md")
+	if !strings.Contains(merged, "- ours entry") || !strings.Contains(merged, "- theirs entry") {
+		t.Errorf("union must keep both entries:\n%s", merged)
+	}
+	if unmerged := repo.RunGit("ls-files", "-u"); strings.TrimSpace(unmerged) != "" {
+		t.Errorf("no unmerged entries expected:\n%s", unmerged)
+	}
+}
+
+// C: a delete/modify resolution is deferred too — a failing verify gate
+// restores the conflicted state instead of leaving the deletion staged.
+func TestResolveVerifyGate_RestoresDeleteModify(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	if err := os.MkdirAll(filepath.Join(xdg, "gk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "gk", "config.yaml"),
+		[]byte("resolve:\n  verify: [\"false\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("f.txt", "original\n")
+	repo.Commit("base")
+	def := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	repo.RunGit("checkout", "-b", "side")
+	repo.WriteFile("f.txt", "modified by side\n")
+	repo.Commit("side modifies")
+	repo.RunGit("checkout", def)
+	repo.RunGit("rm", "-q", "f.txt")
+	repo.Commit("ours deletes")
+	if _, err := repo.TryGit("merge", "side"); err == nil {
+		t.Fatal("expected delete/modify conflict")
+	}
+	setRepoFlagForTest(t, repo.Dir)
+	t.Chdir(repo.Dir)
+
+	// ours = the deleting side → resolution removes the file, gate fails,
+	// rollback must bring the conflicted state back.
+	err := runResolveFlags(t, map[string]string{"strategy": "ours"}, nil)
+	if err == nil {
+		t.Fatal("failing verify must leave the operation paused")
+	}
+	if unmerged := repo.RunGit("ls-files", "-u"); !strings.Contains(unmerged, "f.txt") {
+		t.Errorf("f.txt must be unmerged again after rollback:\n%s", unmerged)
+	}
+}

@@ -108,6 +108,11 @@ type ResolveResult struct {
 	// rolled back: gk did not write them, so restoring markers would
 	// destroy the user's manual resolution.
 	PendingAccept []string
+	// PendingDelete lists delete/modify resolutions whose worktree file was
+	// removed but whose index deletion is deferred until the verification
+	// gate passes — the intact stages make `git checkout -m` restoration
+	// possible on failure.
+	PendingDelete []string
 	// Proposals carries the AI resolutions the confidence gate did NOT
 	// apply — their hunks stay conflicted (partially resolved files land in
 	// Remaining). An agent reads these from the paused envelope and either

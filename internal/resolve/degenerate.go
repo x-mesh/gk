@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -101,6 +102,15 @@ func (r *Resolver) takeSide(ctx context.Context, path string, sideExists bool, f
 		return nil
 	}
 	if !sideExists {
+		if r.deferStage {
+			// 워크트리에서만 지우고 index 삭제는 게이트 통과 뒤로 미룬다 —
+			// stage가 남아 있어야 실패 시 checkout -m으로 복원할 수 있다.
+			if err := r.removeFile(r.absPath(path)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("gk resolve: remove %s: %w", path, err)
+			}
+			r.pendingDelete = append(r.pendingDelete, path)
+			return nil
+		}
 		if _, stderr, err := r.Runner.Run(ctx, "rm", "-q", "-f", "--", path); err != nil {
 			return fmt.Errorf("gk resolve: git rm %s: %s: %w", path, strings.TrimSpace(string(stderr)), err)
 		}
@@ -108,6 +118,10 @@ func (r *Resolver) takeSide(ctx context.Context, path string, sideExists bool, f
 	}
 	if _, stderr, err := r.Runner.Run(ctx, "checkout", flag, "--", path); err != nil {
 		return fmt.Errorf("gk resolve: git checkout %s %s: %s: %w", flag, path, strings.TrimSpace(string(stderr)), err)
+	}
+	if r.deferStage {
+		r.pendingStage = append(r.pendingStage, path)
+		return nil
 	}
 	return GitAdd(ctx, r.Runner, path)
 }
@@ -181,19 +195,27 @@ func (r *Resolver) resolveDegenerateAI(
 	}
 
 	if deleteFile {
+		if r.deferStage {
+			if err := r.removeFile(r.absPath(path)); err != nil && !os.IsNotExist(err) {
+				return false, fmt.Errorf("gk resolve: remove %s: %w", path, err)
+			}
+			r.pendingDelete = append(r.pendingDelete, path)
+			return true, nil
+		}
 		if _, stderr, rmErr := r.Runner.Run(ctx, "rm", "-q", "-f", "--", path); rmErr != nil {
 			return false, fmt.Errorf("gk resolve: git rm %s: %s: %w", path, strings.TrimSpace(string(stderr)), rmErr)
 		}
 		return true, nil
 	}
 
+	// Side-picks use the stage content VERBATIM — same guard as the marker
+	// path: the model's claim of "ours"/"theirs" is trusted, its payload not.
 	lines := out.ResolvedLines
-	if len(lines) == 0 {
-		if out.Strategy == StrategyOurs {
-			lines = contentLines(ours)
-		} else {
-			lines = contentLines(theirs)
-		}
+	switch out.Strategy {
+	case StrategyOurs:
+		lines = contentLines(ours)
+	case StrategyTheirs:
+		lines = contentLines(theirs)
 	}
 	content := []byte(strings.Join(lines, "\n") + "\n")
 	if !opts.NoBackup {
@@ -205,6 +227,10 @@ func (r *Resolver) resolveDegenerateAI(
 	}
 	if err := WriteResolved(r.WriteFile, r.absPath(path), content); err != nil {
 		return false, fmt.Errorf("gk resolve: write %s: %w", path, err)
+	}
+	if r.deferStage {
+		r.pendingStage = append(r.pendingStage, path)
+		return true, nil
 	}
 	if err := GitAdd(ctx, r.Runner, path); err != nil {
 		return false, fmt.Errorf("gk resolve: git add %s: %w", path, err)

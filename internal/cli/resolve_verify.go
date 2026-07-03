@@ -41,13 +41,23 @@ func applyResolveGate(ctx context.Context, runner git.Runner, repoRoot string, v
 		return nil
 	}
 	if err := runResolveVerifyGate(ctx, repoRoot, verifyCmds, result, stderr); err != nil {
-		rollbackPendingResolutions(ctx, runner, result.PendingStage, stderr)
-		if n := len(result.Resolved) - len(result.PendingStage) - len(result.PendingAccept); n > 0 && stderr != nil {
-			fmt.Fprintf(stderr, "warning: gk resolve: %d resolution(s) were staged before the gate (delete/modify paths) and were not restored\n", n)
-		}
+		// Restore what gk wrote AND what it deleted — both keep their index
+		// stages until the gate passes, so checkout -m rebuilds the exact
+		// conflicted state (deleted worktree files reappear).
+		rollbackPendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingDelete...), stderr)
 		return err
 	}
-	return stagePendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingAccept...))
+	if err := stagePendingResolutions(ctx, runner, append(append([]string{}, result.PendingStage...), result.PendingAccept...)); err != nil {
+		return err
+	}
+	for _, p := range result.PendingDelete {
+		// The worktree file is already gone; record the deletion in the index
+		// (this also clears the unmerged stages).
+		if _, errOut, err := runner.Run(ctx, "rm", "-q", "--cached", "--ignore-unmatch", "--", p); err != nil {
+			return fmt.Errorf("gk resolve: git rm --cached %s: %s: %w", p, strings.TrimSpace(string(errOut)), err)
+		}
+	}
+	return nil
 }
 
 // runResolveVerifyGate runs the always-on conflict-marker scan over the

@@ -144,3 +144,77 @@ func TestRun_ConfidenceGateUnreportedCountsAsBelow(t *testing.T) {
 		t.Fatalf("unreported confidence must be withheld under a positive gate: %+v", res)
 	}
 }
+
+// Side-picks are canonical: a model that claims "ours" but returns edited
+// text must have its payload replaced with the hunk's actual ours lines.
+func TestRun_SideTakePayloadIsCanonical(t *testing.T) {
+	cf := makeConflictFile("s.go") // ours: "// ours change"
+	content := buildConflictContent(cf)
+	written := map[string][]byte{}
+
+	r := &Resolver{
+		Runner: &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2": {Stdout: buildPorcelainV2([]string{"s.go"})},
+		}},
+		Provider: &fakeResolveProvider{resolveRes: provider.ConflictResolutionResult{
+			Resolutions: []provider.ConflictResolutionOutput{
+				{Index: 0, Strategy: "ours", Resolved: []string{"// TAMPERED"}, Confidence: 0.99},
+			},
+		}},
+		ReadFile:  func(string) ([]byte, error) { return content, nil },
+		WriteFile: func(p string, d []byte, _ os.FileMode) error { written[p] = d; return nil },
+	}
+
+	_, err := r.Run(context.Background(), &gitstate.State{Kind: gitstate.StateMerge}, ResolveOptions{
+		Strategy: "ai", DeferStage: true, NoBackup: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(written["s.go"])
+	if strings.Contains(out, "TAMPERED") || !strings.Contains(out, "// ours change") {
+		t.Errorf("side-pick must use the hunk's verbatim ours lines:\n%s", out)
+	}
+}
+
+// --safe partial resolution: the provable hunk is fixed, the semantic hunk
+// keeps its markers, the file stays unmerged and is reported remaining.
+func TestRun_SafePartialMechanical(t *testing.T) {
+	cf := ConflictFile{
+		Path: "p.go",
+		Segments: []Segment{
+			{Hunk: &ConflictHunk{Ours: []string{"same "}, Theirs: []string{"same"}, OursLabel: "HEAD", TheirsLabel: "feat"}}, // trailing WS only
+			{Context: []string{"mid"}},
+			{Hunk: &ConflictHunk{Ours: []string{"x = 1"}, Theirs: []string{"x = 2"}, OursLabel: "HEAD", TheirsLabel: "feat"}},
+		},
+	}
+	content := buildConflictContent(cf)
+	written := map[string][]byte{}
+
+	r := &Resolver{
+		Runner: &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"status --porcelain=v2": {Stdout: buildPorcelainV2([]string{"p.go"})},
+		}},
+		ReadFile:  func(string) ([]byte, error) { return content, nil },
+		WriteFile: func(p string, d []byte, _ os.FileMode) error { written[p] = d; return nil },
+	}
+
+	res, err := r.Run(context.Background(), &gitstate.State{Kind: gitstate.StateMerge}, ResolveOptions{
+		Strategy: StrategySafe, DeferStage: true, NoBackup: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Remaining) != 1 || len(res.Resolved) != 0 || len(res.PendingStage) != 0 {
+		t.Fatalf("partial safe file must stay remaining/unstaged: %+v", res)
+	}
+	out := string(written["p.go"])
+	if !strings.HasPrefix(out, "same ") {
+		t.Errorf("trailing-WS hunk must be resolved to ours:\n%s", out)
+	}
+	for _, want := range []string{"<<<<<<< HEAD", "x = 1", "x = 2", ">>>>>>> feat"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("semantic hunk must keep markers (%q):\n%s", want, out)
+		}
+	}
+}

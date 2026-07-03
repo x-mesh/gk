@@ -44,6 +44,18 @@ type Resolver struct {
 	deferStage    bool
 	pendingStage  []string
 	pendingAccept []string
+	pendingDelete []string
+
+	// RemoveFile은 워크트리 파일 삭제 함수. 테스트에서 override 가능.
+	// nil이면 os.Remove.
+	RemoveFile func(path string) error
+}
+
+func (r *Resolver) removeFile(path string) error {
+	if r.RemoveFile != nil {
+		return r.RemoveFile(path)
+	}
+	return os.Remove(path)
 }
 
 // readFile은 ReadFile 필드가 nil이면 os.ReadFile을 사용한다.
@@ -197,6 +209,24 @@ func (r *Resolver) ResolveWithAI(
 		}
 		return nil, err
 	}
+
+	// Side-picks are applied VERBATIM from the hunk. A model that answers
+	// "ours"/"theirs" but returns edited text is a silent-corruption vector
+	// no confidence score can catch — the strategy is trusted, its payload
+	// is not. "merged" keeps the model's lines (that IS the payload there).
+	hi := 0
+	for _, seg := range cf.Segments {
+		if seg.Hunk == nil {
+			continue
+		}
+		switch resolutions[hi].Strategy {
+		case StrategyOurs:
+			resolutions[hi].ResolvedLines = append([]string{}, seg.Hunk.Ours...)
+		case StrategyTheirs:
+			resolutions[hi].ResolvedLines = append([]string{}, seg.Hunk.Theirs...)
+		}
+		hi++
+	}
 	return resolutions, nil
 }
 
@@ -298,6 +328,31 @@ func (r *Resolver) ApplyFileResolution(
 	return nil
 }
 
+// writePartial writes a partially resolved file: answered hunks replaced,
+// StrategyUnresolved hunks re-emitting their markers verbatim. The file is
+// NEVER staged — it stays unmerged for the next resolver (AI, human, or a
+// re-run) — so it also never enters the rollback set.
+func (r *Resolver) writePartial(cf ConflictFile, resolutions []HunkResolution, opts ResolveOptions) error {
+	if opts.DryRun {
+		return nil
+	}
+	mixed, err := ApplyResolutions(cf, resolutions)
+	if err != nil {
+		return err
+	}
+	if !opts.NoBackup {
+		if orig, rerr := r.readFile(r.absPath(cf.Path)); rerr == nil {
+			if berr := BackupOriginal(r.WriteFile, r.absPath(cf.Path), orig); berr != nil && r.Stderr != nil {
+				fmt.Fprintf(r.Stderr, "warning: gk resolve: backup %s.orig: %v\n", cf.Path, berr)
+			}
+		}
+	}
+	if err := WriteResolved(r.WriteFile, r.absPath(cf.Path), mixed); err != nil {
+		return fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
+	}
+	return nil
+}
+
 // stateKindToOpType은 gitstate.StateKind를 operation type 문자열로 변환한다.
 func stateKindToOpType(kind gitstate.StateKind) string {
 	switch kind {
@@ -317,6 +372,7 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 	r.deferStage = opts.DeferStage && !opts.DryRun
 	r.pendingStage = nil
 	r.pendingAccept = nil
+	r.pendingDelete = nil
 	defer func() { r.deferStage = false }()
 	// 1. 충돌 파일 수집 — state.Kind 가드보다 먼저 한다. git stash
 	// apply / git apply --3way / 일부 partial reset 경로는 in-progress
@@ -441,8 +497,11 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 		// Mechanical pre-pass — deterministic tier before any AI. It is the
 		// whole of strategy "safe" and shrinks the AI surface for strategy
 		// "ai"; explicit ours/theirs keep their pure side-take promise and
-		// never enter here.
+		// never enter here. Conflicts without diff3 markers get their base
+		// reconstructed in memory from the index stages first — git's
+		// default conflict style otherwise disables the base-aware rules.
 		if opts.Strategy == StrategySafe || opts.Strategy == "ai" {
+			cf = r.enrichWithBase(ctx, cf, stages[cf.Path])
 			if mres, ok := mechanicalFileResolutions(cf, opts.UnionFiles); ok {
 				backup := !opts.NoBackup
 				if err := r.ApplyFileResolution(ctx, cf, mres, backup, opts.DryRun); err != nil {
@@ -453,7 +512,14 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 				continue
 			}
 			if opts.Strategy == StrategySafe {
-				// Needs judgment — safe mode leaves it marked and unmerged.
+				// Needs judgment — resolve the provable hunks, keep the rest
+				// marked, leave the file unmerged (never staged).
+				if partial, solved := mechanicalPartialResolutions(cf, opts.UnionFiles); solved > 0 {
+					if err := r.writePartial(cf, partial, opts); err != nil {
+						result.Failed[cf.Path] = err
+						continue
+					}
+				}
 				result.Remaining = append(result.Remaining, cf.Path)
 				continue
 			}
@@ -495,22 +561,9 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 				}
 			}
 			if low > 0 {
-				if !opts.DryRun {
-					mixed, merr := ApplyResolutions(cf, resolutions)
-					if merr != nil {
-						result.Failed[cf.Path] = merr
-						continue
-					}
-					if !opts.NoBackup {
-						if orig, rerr := r.readFile(r.absPath(cf.Path)); rerr == nil {
-							if berr := BackupOriginal(r.WriteFile, r.absPath(cf.Path), orig); berr != nil && r.Stderr != nil {
-								fmt.Fprintf(r.Stderr, "warning: gk resolve: backup %s.orig: %v\n", cf.Path, berr)
-							}
-						}
-					}
-					if err := WriteResolved(r.WriteFile, r.absPath(cf.Path), mixed); err != nil {
-						return nil, fmt.Errorf("gk resolve: write %s: %w", cf.Path, err)
-					}
+				if err := r.writePartial(cf, resolutions, opts); err != nil {
+					result.Failed[cf.Path] = err
+					continue
 				}
 				result.Remaining = append(result.Remaining, cf.Path)
 				continue
@@ -586,6 +639,7 @@ func (r *Resolver) Run(ctx context.Context, state *gitstate.State, opts ResolveO
 	}
 	result.PendingStage = append([]string{}, r.pendingStage...)
 	result.PendingAccept = append([]string{}, r.pendingAccept...)
+	result.PendingDelete = append([]string{}, r.pendingDelete...)
 
 	return result, nil
 }

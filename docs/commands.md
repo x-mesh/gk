@@ -1104,12 +1104,19 @@ gk chat --continue         # resume the most recent session
 | `--lang <code>` | (`output.lang`) | Answer language (`en`, `ko`, …) |
 | `--continue` | false | Resume the last session from `.git/gk-chat/` — a missing or corrupt previous session degrades to a fresh one with a warning, never an error |
 
+One provider round is budgeted by `ai.chat.round_timeout` (default `120s`, distinct from `ai.chat.timeout`'s 30s single-shot budget): a chat round carries tool definitions, repo context, accumulated results, and the adapter's internal 5xx retries, so a proxy with occasional slow/500 responses needs the headroom. The provider's HTTP deadline is raised to match. On a timeout the error names the knob.
+
 ### REPL
 
-`/help` lists commands, `/clear` resets the conversation context (the
-session file keeps its record), `/exit` or Ctrl-D quits. Ctrl-C during a
+↑/↓ walk the session's question history (shell-style line editing on a
+real terminal). `/help` lists commands, `/clear` resets the conversation
+context — a marker is recorded so `--continue` sees the same empty
+context (the file keeps the full record for audit). `/exit` or Ctrl-D
+quits. Ctrl-C during a
 turn cancels **that turn only**; at the prompt it exits. A failed turn
-(provider error, timeout) never kills the session — retry or rephrase.
+(provider error, timeout) never kills the session — it is rolled back
+whole (and marked so `--continue` agrees), keeping the conversation
+valid for the vendor APIs; retry or rephrase.
 
 Sessions persist turn-by-turn as append-only JSONL under
 `.git/gk-chat/sessions/` (worktree-safe via `rev-parse --git-path`), so a

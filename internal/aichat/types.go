@@ -1,7 +1,10 @@
 // Package aichat implements `gk do`, `gk explain`, and `gk ask` —
 // AI-powered conversational commands that generate/execute git/gk
 // command sequences, diagnose errors, and answer repository-context
-// questions.
+// questions. All three are single-shot: one prompt, one answer. The
+// multi-turn, tool-calling `gk chat` lives in internal/chat instead —
+// its agentic loop is a different execution model — but reuses this
+// package's RepoContextCollector for its initial system context.
 package aichat
 
 import (

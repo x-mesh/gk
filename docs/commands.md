@@ -1077,6 +1077,81 @@ gk log --lanes                            # author swim-lanes instead of commit 
 
 ---
 
+## gk chat
+
+Talk to your repository. Unlike `gk ask` (one answer from pre-collected
+context), chat runs an **agentic loop**: the model calls read-only tools
+itself — `git_log`, `git_show`, `git_diff` (digest-first), `git_blame`,
+`git_grep`, `file_read`, `file_list` — to investigate before answering,
+and every tool call is shown as a one-line feed. Ask "when and why did
+this function change?" and it chains log → blame → file reads on its own,
+citing the SHAs and `file:line` evidence it actually saw.
+
+### Synopsis
+
+```
+gk chat                    # interactive REPL
+gk chat "<question>"       # one-shot answer
+gk chat --continue         # resume the most recent session
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--provider <name>` | (config `ai.provider`, else auto) | Tool-calling HTTP providers only: `anthropic`, `openai`, `groq`, `nvidia`. CLI-based providers (gemini/qwen/kiro) are not supported — use `gk ask` with those. The provider is fixed for the whole session (vendor tool-call IDs are not portable mid-conversation) |
+| `--model <name>` | | One-shot model override for this run |
+| `--lang <code>` | (`output.lang`) | Answer language (`en`, `ko`, …) |
+| `--continue` | false | Resume the last session from `.git/gk-chat/` — a missing or corrupt previous session degrades to a fresh one with a warning, never an error |
+
+### REPL
+
+`/help` lists commands, `/clear` resets the conversation context (the
+session file keeps its record), `/exit` or Ctrl-D quits. Ctrl-C during a
+turn cancels **that turn only**; at the prompt it exits. A failed turn
+(provider error, timeout) never kills the session — retry or rephrase.
+
+Sessions persist turn-by-turn as append-only JSONL under
+`.git/gk-chat/sessions/` (worktree-safe via `rev-parse --git-path`), so a
+crash costs at most the line being written.
+
+### Security model
+
+The sandbox — not the prompt — is the enforcement boundary:
+
+- **Read-only, repo-only.** File access resolves symlinks *before* the
+  containment check, blocks `.git/`, and refuses submodule/other-worktree
+  paths. Git subcommands are whitelisted (log/show/diff/blame/grep) with
+  execution-time argument validation (no flag injection via refs or
+  patterns).
+- **deny_paths applies to history too.** `git show`/`git diff` output is
+  split per file and blocks touching denied paths are withheld (with an
+  explicit note); `git grep` excludes them structurally via
+  `:(exclude,glob)` pathspecs. A denied file's content cannot reach the
+  provider through any tool, including historic commits.
+- **Redact-before-persist.** Every tool result passes secret redaction
+  (including vendor token patterns: `ghp_`, `xox`, `sk-`, AWS, PEM)
+  before it is sent to the provider *or* written to the session file.
+- **Limits are global-config-only.** `ai.chat.max_tool_rounds` (15),
+  `ai.chat.tool_result_cap` (32KB), and `ai.chat.deny_paths` are honored
+  from the global config only — a cloned repo's `.gk.yaml` cannot raise
+  chat's budget or touch its deny surface (same trust boundary as
+  `resolve.verify`). The effective deny list is always a union with the
+  built-in defaults. The remote policy (`ai.commit.allow_remote`) is
+  re-checked every round, so flipping it off mid-session takes effect
+  immediately.
+- Per turn: max 15 tool rounds, 192KB cumulative tool output, and
+  identical repeated calls are refused after 2 executions.
+
+### Agent mode
+
+The REPL requires an interactive terminal and is refused under
+`GK_AGENT`/`--json`/CI. One-shot works everywhere; under agent mode it
+returns `{answer, tool_calls[], provider, model, lang, session_id,
+rounds, tokens_used}` in the standard envelope.
+
+---
+
 ## gk status
 
 Show concise working tree status.

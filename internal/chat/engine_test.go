@@ -374,3 +374,44 @@ func TestTrimHistoryDropsUpToLastTurn(t *testing.T) {
 		t.Errorf("want only the in-flight turn, got %+v", trimmed)
 	}
 }
+
+// Rounds without provider usage fall back to the chars/4 estimate and
+// mark the total approximate; OnRound reports cumulative spend live.
+func TestEngineTokenAccounting(t *testing.T) {
+	caller := &scriptedCaller{replies: []provider.ChatResult{
+		{ToolCalls: []provider.ToolCall{toolCall("c1", "echo", `{}`)}, StopReason: "tool_use", TokensUsed: 100},
+		{Text: "done", StopReason: "end_turn"}, // no usage → estimated
+	}}
+	var reported []int
+	e := &Engine{
+		Caller:   caller,
+		Registry: echoRegistry("result"),
+		OnRound:  func(_, tok int, _ bool) { reported = append(reported, tok) },
+	}
+	res, err := e.RunTurn(context.Background(), "question")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.TokensApprox {
+		t.Error("a usage-less round must mark the total approximate")
+	}
+	if res.TokensUsed <= 100 {
+		t.Errorf("TokensUsed = %d, want 100 + a positive estimate", res.TokensUsed)
+	}
+	if len(reported) != 2 || reported[0] != 100 || reported[1] != res.TokensUsed {
+		t.Errorf("OnRound reports = %v, want [100, %d]", reported, res.TokensUsed)
+	}
+
+	// All-real usage stays exact.
+	caller2 := &scriptedCaller{replies: []provider.ChatResult{
+		{Text: "hi", StopReason: "end_turn", TokensUsed: 42},
+	}}
+	e2 := &Engine{Caller: caller2, Registry: echoRegistry("x")}
+	res2, err := e2.RunTurn(context.Background(), "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.TokensApprox || res2.TokensUsed != 42 {
+		t.Errorf("exact accounting broken: %+v", res2)
+	}
+}

@@ -54,9 +54,12 @@ type Engine struct {
 	// redaction — Registry redacts before results reach the engine).
 	Session *Session
 	// OnToolCall/OnToolResult are UI hooks for the one-line transparency
-	// display; nil-safe.
+	// display; nil-safe. OnRound fires after every provider reply with the
+	// turn's cumulative token count so a live spinner can show spend as it
+	// grows.
 	OnToolCall   func(call provider.ToolCall)
 	OnToolResult func(call provider.ToolCall, res provider.ToolResult)
+	OnRound      func(round, tokensSoFar int, approx bool)
 	Dbg          func(string, ...any)
 
 	history []provider.ChatMessage
@@ -64,11 +67,17 @@ type Engine struct {
 
 // TurnResult summarizes one completed turn.
 type TurnResult struct {
-	Text       string
-	Model      string
-	Rounds     int
-	ToolCalls  int
-	TokensUsed int
+	Text      string
+	Model     string
+	Rounds    int
+	ToolCalls int
+	// TokensUsed accumulates provider-reported usage across the turn's
+	// rounds. Rounds whose provider returned no usage (some proxies drop
+	// the field) are filled with the chars/4 estimate and flip
+	// TokensApprox — the number is then a floor-ish approximation, not
+	// billing truth.
+	TokensUsed   int
+	TokensApprox bool
 }
 
 // LoadHistory seeds the conversation (from Session.Replay for --continue).
@@ -170,7 +179,20 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 			return nil, err
 		}
 		res.Model = reply.Model
-		res.TokensUsed += reply.TokensUsed
+		if reply.TokensUsed > 0 {
+			res.TokensUsed += reply.TokensUsed
+		} else {
+			// Provider gave no usage (some proxies strip it) — estimate
+			// this round's request+response with the project-standard
+			// chars/4 heuristic. Each round re-sends the full history, so
+			// per-round input estimation mirrors real billing.
+			res.TokensUsed += estimateTokens(msgs) +
+				(len(e.SystemPrompt)+len(reply.Text))/charsPerToken
+			res.TokensApprox = true
+		}
+		if e.OnRound != nil {
+			e.OnRound(round+1, res.TokensUsed, res.TokensApprox)
+		}
 
 		if len(reply.ToolCalls) == 0 {
 			e.appendAndPersist(

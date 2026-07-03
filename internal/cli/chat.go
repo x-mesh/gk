@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -88,6 +89,10 @@ type chatJSONResult struct {
 	SessionID  string            `json:"session_id"`
 	Rounds     int               `json:"rounds"`
 	TokensUsed int               `json:"tokens_used,omitempty"`
+	// TokensApprox marks TokensUsed as a chars/4 estimate for rounds whose
+	// provider returned no usage field.
+	TokensApprox bool  `json:"tokens_approx,omitempty"`
+	DurationMS   int64 `json:"duration_ms"`
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
@@ -342,20 +347,47 @@ func openChatSession(ctx context.Context, runner git.Runner, cont bool) (*chat.S
 // ── turn execution (shared by REPL and one-shot) ─────────────────────
 
 // chatTurnUI prints the one-line tool transparency feed and manages the
-// thinking spinner around provider rounds.
+// thinking spinner around provider rounds. The spinner label is LIVE:
+// elapsed seconds tick every frame and the token counter updates as each
+// round's usage arrives (atomics — the label callback runs on the
+// spinner's render goroutine).
 type chatTurnUI struct {
 	out      io.Writer
 	spin     func()
 	spinning bool
 	label    string
 	calls    []chatToolCallLog
+	start    time.Time
+	tokens   atomic.Int64
+	rounds   atomic.Int64
+	approx   atomic.Bool
+}
+
+// onRound receives the engine's cumulative token count after each
+// provider reply.
+func (u *chatTurnUI) onRound(round, tokensSoFar int, approx bool) {
+	u.rounds.Store(int64(round))
+	u.tokens.Store(int64(tokensSoFar))
+	if approx {
+		u.approx.Store(true)
+	}
+}
+
+// liveLabel renders "chat - openai 탐색 중 · 12s · ~3.4k tok" for the
+// spinner. Tokens appear once the first round reports them.
+func (u *chatTurnUI) liveLabel() string {
+	s := fmt.Sprintf("%s · %ds", u.label, int(time.Since(u.start).Seconds()))
+	if t := u.tokens.Load(); t > 0 {
+		s += " · " + formatChatTokens(t, u.approx.Load()) + " tok"
+	}
+	return s
 }
 
 func (u *chatTurnUI) startSpin() {
 	if u.spinning || Debug() || JSONOut() {
 		return
 	}
-	u.spin = ui.StartBubbleSpinner(u.label)
+	u.spin = ui.StartBubbleSpinnerLive(u.liveLabel)
 	u.spinning = true
 }
 
@@ -402,9 +434,41 @@ func runChatTurn(cmd *cobra.Command, engine *chat.Engine, ui *chatTurnUI, input 
 
 	engine.OnToolCall = ui.onToolCall
 	engine.OnToolResult = ui.onToolResult
+	engine.OnRound = ui.onRound
+	ui.start = time.Now()
 	ui.startSpin()
 	defer ui.stopSpin()
 	return engine.RunTurn(ctx, input)
+}
+
+// turnStatsLine renders the completion footer: elapsed, tokens (with the
+// approx marker when any round lacked provider usage), rounds, tools.
+func turnStatsLine(u *chatTurnUI, res *chat.TurnResult) string {
+	elapsed := time.Since(u.start)
+	s := fmt.Sprintf("⏱ %.1fs", elapsed.Seconds())
+	if res.TokensUsed > 0 {
+		s += " · " + formatChatTokens(int64(res.TokensUsed), res.TokensApprox) + " tokens"
+	}
+	s += fmt.Sprintf(" · %d round(s)", res.Rounds)
+	if res.ToolCalls > 0 {
+		s += fmt.Sprintf(" · %d tool(s)", res.ToolCalls)
+	}
+	return s
+}
+
+// formatTokens renders a token count compactly ("342", "3.4k"), prefixing
+// "~" when the number contains estimated rounds.
+func formatChatTokens(n int64, approx bool) string {
+	var s string
+	if n >= 1000 {
+		s = fmt.Sprintf("%.1fk", float64(n)/1000)
+	} else {
+		s = fmt.Sprintf("%d", n)
+	}
+	if approx {
+		return "~" + s
+	}
+	return s
 }
 
 func runChatOneShot(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider, sess *chat.Session, lang, question string) error {
@@ -418,17 +482,20 @@ func runChatOneShot(cmd *cobra.Command, engine *chat.Engine, prov provider.Provi
 	}
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), chatJSONResult{
-			Answer:     res.Text,
-			ToolCalls:  turnUI.calls,
-			Provider:   prov.Name(),
-			Model:      res.Model,
-			Lang:       lang,
-			SessionID:  sess.ID,
-			Rounds:     res.Rounds,
-			TokensUsed: res.TokensUsed,
+			Answer:       res.Text,
+			ToolCalls:    turnUI.calls,
+			Provider:     prov.Name(),
+			Model:        res.Model,
+			Lang:         lang,
+			SessionID:    sess.ID,
+			Rounds:       res.Rounds,
+			TokensUsed:   res.TokensUsed,
+			TokensApprox: res.TokensApprox,
+			DurationMS:   time.Since(turnUI.start).Milliseconds(),
 		})
 	}
 	emitAIAdvice(cmd.OutOrStdout(), "gk chat", res.Text)
+	fmt.Fprintln(cmd.OutOrStdout(), color.New(color.Faint).Sprint(turnStatsLine(turnUI, res)))
 	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine("hint: gk chat --continue 로 이 대화를 이어갈 수 있습니다"))
 	return nil
 }
@@ -538,6 +605,7 @@ func runChatREPL(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider
 		}
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, res.Text)
+		fmt.Fprintln(out, color.New(color.Faint).Sprint(turnStatsLine(turnUI, res)))
 		fmt.Fprintln(out)
 	}
 }

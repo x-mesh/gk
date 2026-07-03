@@ -16,6 +16,11 @@ import (
 type bubbleSpinnerModel struct {
 	sp  spinner.Model
 	msg string
+	// labelFn, when set, supplies the label live on every frame instead of
+	// the static msg — for callers whose status (elapsed, tokens, rounds)
+	// changes while the spinner runs. Must be safe to call from the
+	// bubbletea render goroutine.
+	labelFn func() string
 	// start and budget drive the live "elapsed / budget" timer. budget == 0
 	// means no timer (the plain spinner): the elapsed clock is shown only when
 	// the caller hands over a deadline to count down against.
@@ -32,7 +37,11 @@ func (m bubbleSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m bubbleSpinnerModel) View() string {
-	s := m.sp.View() + " " + m.msg
+	label := m.msg
+	if m.labelFn != nil {
+		label = m.labelFn()
+	}
+	s := m.sp.View() + " " + label
 	if m.budget > 0 {
 		s += " · " + renderBudgetTimer(time.Since(m.start), m.budget)
 	}
@@ -83,6 +92,25 @@ func StartBubbleSpinnerWithBudget(msg string, budget time.Duration) (stop func()
 	return startBubbleSpinnerTo(os.Stderr, msg, budget)
 }
 
+// StartBubbleSpinnerLive is StartBubbleSpinner with a live label: the
+// callback is evaluated on every frame, so elapsed time, token counts, or
+// round numbers can tick while the spinner runs. The callback runs on the
+// bubbletea render goroutine — share state via atomics.
+func StartBubbleSpinnerLive(label func() string) (stop func()) {
+	return startBubbleSpinnerLiveTo(os.Stderr, label)
+}
+
+func startBubbleSpinnerLiveTo(w io.Writer, label func() string) (stop func()) {
+	if w == os.Stderr && !IsStderrTerminal() {
+		return func() {}
+	}
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	return runBubbleSpinner(w, bubbleSpinnerModel{sp: sp, labelFn: label, start: time.Now()}, func() int {
+		return len(label()) + 8
+	})
+}
+
 func startBubbleSpinnerTo(w io.Writer, msg string, budget time.Duration) (stop func()) {
 	if w == os.Stderr && !IsStderrTerminal() {
 		return func() {}
@@ -90,8 +118,22 @@ func startBubbleSpinnerTo(w io.Writer, msg string, budget time.Duration) (stop f
 
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	return runBubbleSpinner(w, bubbleSpinnerModel{sp: sp, msg: msg, start: time.Now(), budget: budget}, func() int {
+		padN := len(msg) + 4
+		if budget > 0 {
+			padN += 18 // room for the " · NNNs / NNNs" timer tail
+		}
+		return padN
+	})
+}
+
+// runBubbleSpinner owns the spinner program lifecycle shared by the
+// static-label and live-label variants: delayed first frame, idempotent
+// stop, and the belt-and-suspenders line clear (padFn sizes the overwrite
+// for terminals that don't parse `\x1b[2K`).
+func runBubbleSpinner(w io.Writer, model bubbleSpinnerModel, padFn func() int) (stop func()) {
 	prog := tea.NewProgram(
-		bubbleSpinnerModel{sp: sp, msg: msg, start: time.Now(), budget: budget},
+		model,
 		tea.WithOutput(w),
 		tea.WithInput(strings.NewReader("")),
 		tea.WithoutSignalHandler(),
@@ -116,15 +158,7 @@ func startBubbleSpinnerTo(w io.Writer, msg string, budget time.Duration) (stop f
 			close(done) // unblock the start-delay select
 			prog.Kill() // cancel ctx — graceful exit if prog.Run is in progress
 			<-stopped   // wait for the goroutine
-			// Belt-and-suspenders clear so legacy terminals that don't
-			// parse `\x1b[2K` (serial consoles, some CI log viewers)
-			// still end clean: overwrite with spaces first, then emit
-			// the erase.
-			padN := len(msg) + 4
-			if budget > 0 {
-				padN += 18 // room for the " · NNNs / NNNs" timer tail
-			}
-			fmt.Fprint(w, "\r"+strings.Repeat(" ", padN)+"\r\x1b[2K")
+			fmt.Fprint(w, "\r"+strings.Repeat(" ", padFn())+"\r\x1b[2K")
 		})
 	}
 }

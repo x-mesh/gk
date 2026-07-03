@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.111.0] - 2026-07-03
+
 ### Added
 
 - **`gk resolve`에 결정론 티어(`--safe`)·검증 게이트·rerere가 붙었다 — "자동 해결을 믿어도 되는 인프라"의 1단계.** 실전 충돌의 상당수는 판단이 필요 없다: 양쪽이 동일, trailing whitespace·줄 끝(CRLF)만 다름(내부 공백·들여쓰기는 문자열 리터럴·Python·Makefile에서 의미를 가지므로 이 티어에 넣지 않는다), (diff3 마커에서) 한쪽이 base 그대로라 반대쪽이 유일한 변경, 그리고 양쪽이 **추가**일 때의 union 파일(`CHANGELOG.md`/`go.sum` — go.sum은 같은 module@version에 다른 해시가 오면 변조 신호이므로 병합을 거부한다). `--safe`는 이 티어만 해결하고 나머지는 마커째 남겨 `remaining`으로 보고하며 — 아무것도 추측하지 않는다 — 같은 분류기가 `--ai`의 pre-pass로도 돌아 AI에 가는 표면을 줄인다. batch 해결(`--strategy`/`--ai`/`--safe`)은 이제 **stage를 미룬다**: 충돌-마커 스캔(상시)과 `resolve.verify` 명령(예: `go build ./...`)이 통과해야 stage·continue가 진행되고 — multi-pick rebase의 후속 라운드에도 같은 게이트가 걸린다 — 실패하면 index의 unmerged stage가 그대로 남아 있는 덕에 gk가 **쓴** 파일만 `git checkout -m`으로 정확히 복원하고(사용자가 이미 손으로 정리한 markerless 파일은 절대 덮어쓰지 않는다) `verify_failed`와 함께 paused로 보고한다 — 잘못된 자동 해결의 비용이 0이 된다. `resolve.verify`·`resolve.union_files`는 **global config에서만** 읽는다: 해결 대상 repo의 `.gk.yaml`이 셸 명령을 심거나 자동 병합 표면을 넓힐 수 없다(`init.ai_gitignore`와 같은 신뢰 경계). `resolve.rerere`(기본 on)는 첫 실행에서 git rerere를 켜고 기록된 해결을 먼저 적용해, 장수 브랜치의 반복 충돌을 AI 비용 없이 처리한다 — 순수 side-take를 약속하는 명시적 `--strategy ours|theirs`에서는 rerere도 건너뛴다. (이 항목의 안전 주장 자체를 5개 모델 cross-vendor 리뷰로 반박시켜 Critical 2건 — 느슨한 공백 규칙, markerless 롤백 파괴 — 을 포함해 11건을 반영한 결과다.)

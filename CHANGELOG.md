@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.113.0] - 2026-07-04
+
 ### Added
 
 - **`gk chat` — 저장소와 대화한다.** `gk ask`가 미리 모은 컨텍스트로 한 번 답하는 것과 달리, chat은 모델이 읽기 전용 도구 7종(git log/show/diff(digest-first)/blame/grep + 파일 읽기/목록)을 **스스로 호출해 근거를 찾아가며** 답하는 에이전틱 루프다. "이 함수 언제 왜 바뀌었지?"라고 물으면 log → blame → 파일 읽기를 알아서 연쇄하고, 실제로 본 SHA와 파일:라인을 인용한다. 모든 도구 호출은 한 줄씩 화면에 표시된다. REPL(`gk chat`) · one-shot(`gk chat "질문"`) · `--continue`(턴마다 append-only JSONL로 `.git/gk-chat/`에 저장, 손상 세션은 경고 후 새로 시작) 세 진입점을 제공하며, REPL에서 Ctrl-C는 현재 턴만 취소하고 턴 실패는 세션을 죽이지 않는다. provider 계층에는 `ToolCaller` capability가 신설됐다(Anthropic tool_use blocks + OpenAI 호환 tool_calls — openai/groq는 nvidia 위임으로 자동 지원, CLI형 gemini/qwen/kiro는 미지원으로 `gk ask` 안내). 보안은 프롬프트가 아니라 코드가 강제한다: repo-root 샌드박스(symlink 해석 후 containment, .git/submodule/타 worktree 차단), 실행 시점 인자 재검증(flag injection 차단), **deny_paths가 과거 커밋 내용에도 적용**(`git show`/`diff` 출력을 파일 단위로 분할해 차단 블록 제거, `git grep`은 `:(exclude,glob)`로 구조적 배제), redact-before-persist(도구 결과가 provider와 세션 파일에 닿기 전 시크릿 제거), 상한(턴당 15라운드·누적 192KB·동일 호출 반복 거부)과 deny 목록은 global config 전용(`ai.chat.max_tool_rounds`/`tool_result_cap`/`deny_paths` — 클론한 repo의 `.gk.yaml`이 예산이나 차단 표면을 못 건드림), remote 정책은 라운드마다 재확인. GK_AGENT에서 REPL은 차단되고 one-shot은 `{answer, tool_calls[], session_id, ...}` envelope을 반환한다. REPL 입력은 x/term 라인 에디터라 ↑/↓로 이전 질문을 오가며 편집할 수 있고, 라운드 예산은 `ai.chat.round_timeout`(기본 120s — 프록시의 간헐 500 재시도까지 수용, 실측 기반)이 지배한다. 출시 전 5모델×2렌즈 cross-vendor 리뷰로 ref 경로 밀반입(`HEAD:.env`)·.git 대소문자 우회·merge commit diff --cc 우회·rename/quoted path 미검사·실패 턴의 세션 오염(Anthropic 역할 교대 위반) 등 15건을 수정했다.

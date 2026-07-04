@@ -662,6 +662,37 @@ ai:
     include_diff: false
 ```
 
+### `ai.chat`
+
+| | |
+|-|-|
+| Type | object |
+| Default | `timeout: 30s`, `round_timeout: 120s`, `max_tool_rounds: 15`, `tool_result_cap: 32768` |
+| Scope | `round_timeout`/`max_tool_rounds`/`tool_result_cap`/`deny_paths` are read from the **global** config only |
+
+Tunes `gk chat`'s agentic tool loop. `timeout` is the shared chat-command
+call timeout (also used by `gk do`/`gk ask`/`gk explain`); `round_timeout`
+is chat-specific and bounds one provider round-trip including the adapter's
+internal retries, so a proxy with occasional slow/500 responses does not
+trip the smaller single-shot budget.
+
+`max_tool_rounds` (provider round-trips per turn), `tool_result_cap` (bytes
+per tool result), and `deny_paths` (extra paths the chat tools may never
+read) are honored from the **global** config only — a cloned repo's
+`.gk.yaml` cannot raise chat's budget or shrink its deny surface (same
+trust boundary as `resolve.verify`). `deny_paths` is always applied as a
+union with the built-in defaults and `ai.commit.deny_paths`.
+
+```yaml
+ai:
+  chat:
+    round_timeout: 120s
+    max_tool_rounds: 15
+    tool_result_cap: 32768
+    deny_paths:
+      - "secrets/**"
+```
+
 ### `ai.nvidia.model`
 
 | | |

@@ -109,6 +109,20 @@ func maybeCreateRemoteAndRetry(cmd *cobra.Command, runner git.Runner, remote, br
 	return true, nil
 }
 
+// unbornHEADPushError returns a clear "nothing to push" error when the
+// repo has no commits yet (unborn HEAD), else nil. Extracted so the guard
+// is unit-testable without a full cobra command.
+func unbornHEADPushError(ctx context.Context, runner git.Runner, branch string) error {
+	if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+		return WithRemedy(
+			fmt.Errorf("nothing to push: %q has no commits yet", branch),
+			"commit your work first, then push",
+			errRemedy{Command: "gk commit", Safety: "safe"},
+		)
+	}
+	return nil
+}
+
 // isRepoNotFoundErr recognizes the git/gh failure modes that mean "the
 // remote repository doesn't exist" across GitHub's SSH and HTTPS transports.
 func isRepoNotFoundErr(stderr string) bool {

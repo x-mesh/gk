@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
 )
 
 func TestIsRepoNotFoundErr(t *testing.T) {
@@ -80,5 +83,32 @@ func TestIsYesAndPublicSuffix(t *testing.T) {
 	}
 	if publicFlagSuffix(true) != " --public" || publicFlagSuffix(false) != "" {
 		t.Error("publicFlagSuffix wrong")
+	}
+}
+
+// gk push on an unborn HEAD (no commits) must fail with a clear "nothing
+// to push" message and a `gk commit` remedy — not git's cryptic
+// "src refspec ... does not match any", and never reaching the push.
+func TestPushUnbornHEADGuard(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --verify --quiet HEAD^{commit}": {ExitCode: 128, Stderr: ""},
+		},
+	}
+	err := unbornHEADPushError(context.Background(), fake, "main")
+	if err == nil {
+		t.Fatal("want an error on unborn HEAD")
+	}
+	if !strings.Contains(err.Error(), "nothing to push") {
+		t.Errorf("err = %q, want a 'nothing to push' message", err.Error())
+	}
+	rem := RemediesFrom(err)
+	if len(rem) == 0 || rem[0].Command != "gk commit" {
+		t.Errorf("remedy = %+v, want gk commit", rem)
+	}
+	for _, c := range fake.Calls {
+		if len(c.Args) > 0 && c.Args[0] == "push" {
+			t.Error("must NOT attempt git push on an unborn HEAD")
+		}
 	}
 }

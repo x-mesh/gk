@@ -99,6 +99,14 @@ func runPush(cmd *cobra.Command, args []string) error {
 		branch = b
 	}
 
+	// Nothing to push on an unborn HEAD (a fresh repo whose files were
+	// never committed). git would fail with the cryptic "src refspec
+	// <branch> does not match any"; say plainly what's wrong and point at
+	// the fix so the user doesn't chase a phantom remote/auth problem.
+	if err := unbornHEADPushError(ctx, runner, branch); err != nil {
+		return err
+	}
+
 	// Protected branch gate
 	if isProtected(branch, cfg.Push.Protected) && force {
 		if !cfg.Push.AllowForce {

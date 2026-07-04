@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk push`가 커밋 없는 저장소에서 무슨 일인지 분명히 말한다.** 첫 커밋 전 `gk push`는 secret scan을 건너뛴 뒤 git의 알쏭달쏭한 `src refspec main does not match any`로 실패했다(0.113.0에서 스캔 크래시는 고쳤지만 push 자체 메시지는 여전히 불친절했다). 이제 push 진입부에서 unborn HEAD를 감지해 `nothing to push: "main" has no commits yet` + `gk commit` remedy로 안내한다.
+
 ## [0.114.1] - 2026-07-09
 
 ### Fixed

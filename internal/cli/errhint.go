@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -273,6 +274,17 @@ func translateErrorBody(eng *easy.Engine, s string) string {
 // When several markers appear, the earliest-opening "to EOS" span subsumes the
 // rest, so the function returns at most one open-ended span plus any bounded
 // "exit code" spans that precede it.
+// exitErrorEchoRE captures the git.ExitError command echo — "git <args>:
+// exit code N:" (or "exit status N:") — so protectedSpans can shield the
+// literal command from term translation. The "git " must open the string
+// or follow ": " so a bare "git" word in prose can't trigger a false
+// match, and `.*?` is non-greedy on a single line (no newline without the
+// `s` flag).
+// The trailing ": " is captured so the echo span abuts the exit-code
+// tail span and mergeSpans fuses them into one clean protected region
+// (git.ExitError always emits "exit code N: " with that separator).
+var exitErrorEchoRE = regexp.MustCompile(`(?:^|: )(git .*?: exit (?:code|status) \d+: )`)
+
 func protectedSpans(s string) [][2]int {
 	// Earliest position where an open-ended (to-EOS) protected region starts.
 	eos := -1
@@ -300,6 +312,17 @@ func protectedSpans(s string) [][2]int {
 	}
 	if eos >= 0 {
 		spans = append(spans, [2]int{eos, len(s)})
+	}
+
+	// git.ExitError's command echo ("git <args>: exit code N:") is a literal
+	// command, not prose: the args carry git terms (HEAD, upstream, the
+	// subcommand itself) that must survive verbatim. Without this, a failing
+	// `git push --set-upstream origin main` renders as
+	// `git push --set-원격 기준점 (upstream) origin main`, making it look as
+	// if gk passed Korean to git. `.` excludes newlines (no `s` flag), so the
+	// non-greedy match stays on the single command-echo line.
+	for _, m := range exitErrorEchoRE.FindAllStringSubmatchIndex(s, -1) {
+		spans = append(spans, [2]int{m[2], m[3]})
 	}
 
 	// Merge / drop overlaps so the spans are clean and ascending.
@@ -354,12 +377,12 @@ func mergeSpans(spans [][2]int) [][2]int {
 	out := spans[:1]
 	for _, sp := range spans[1:] {
 		last := &out[len(out)-1]
-		// Merge only on a strict overlap (start strictly inside the previous
-		// span). Abutting spans (sp[0] == last[1]) are kept separate — they
-		// are distinct quoted regions (e.g. an "exit code" tail immediately
-		// followed by a "(stderr=…)" quote) and masking them independently is
-		// correct; fusing them would just be cosmetic.
-		if sp[0] < last[1] {
+		// Merge on overlap OR abutment (sp[0] <= last[1]). Adjacent protected
+		// regions — the git.ExitError command echo, its "exit code N:" tail,
+		// and a trailing "(stderr=…)" quote — cover a contiguous run of
+		// verbatim machine output, so fusing them into one span is both
+		// correct (the restored bytes are identical either way) and cleaner.
+		if sp[0] <= last[1] {
 			if sp[1] > last[1] {
 				last[1] = sp[1]
 			}

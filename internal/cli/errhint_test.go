@@ -254,6 +254,23 @@ func TestTranslateErrorBody(t *testing.T) {
 			wantContains:    []string{"커밋 재정렬 (rebase) failed", "(stderr=could not apply commit abc123)"},
 			wantNotContains: []string{"apply 변경사항 저장 (commit) abc123"},
 		},
+		{
+			// The git.ExitError command echo ("git <args>: exit code N:") must
+			// stay verbatim — the args carry HEAD/upstream/subcommand terms that
+			// would otherwise render as if gk passed Korean to git.
+			name:            "exit-error-command-echo",
+			in:              "secret scan: git log -p --no-color HEAD: exit code 128: fatal: ambiguous argument 'HEAD'",
+			wantContains:    []string{"git log -p --no-color HEAD: exit code 128"},
+			wantNotContains: []string{"현재 위치 (HEAD)"},
+		},
+		{
+			// The push --set-upstream echo: "push" and "upstream" in the echo
+			// stay raw so the printed command is runnable.
+			name:            "push-upstream-echo",
+			in:              "git push --set-upstream origin main: exit code 128: ERROR: Repository not found.",
+			wantContains:    []string{"git push --set-upstream origin main"},
+			wantNotContains: []string{"원격 기준점 (upstream)", "서버에 올리기 (push)"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -291,13 +308,22 @@ func TestProtectedSpans(t *testing.T) {
 		{"stderr", "x failed (stderr=oops)", []string{" (stderr=oops)"}},
 		{"stdout", "x failed (stdout=hi)", []string{" (stdout=hi)"}},
 		{"both-one-paren", "x (stderr=a stdout=b)", []string{" (stderr=a stdout=b)"}},
-		{"exit-code", "git x: exit code 2: bad", []string{"bad"}},
-		{"exit-status", `step "s": exit status 1: out`, []string{"out"}},
 		{
-			// exit code tail bounded by a trailing stderr quote.
+			// git.ExitError: the command echo AND the tail are one protected
+			// span now (the whole line is machine output).
+			"exit-code", "git x: exit code 2: bad", []string{"git x: exit code 2: bad"},
+		},
+		{
+			// No "git " command echo (a preflight step), so only the tail is
+			// protected — the echo-shielding regexp does not fire.
+			"exit-status", `step "s": exit status 1: out`, []string{"out"},
+		},
+		{
+			// Command echo + exit-code tail + trailing stderr quote all fuse
+			// into a single span.
 			"exit-code-then-stderr",
 			"git x: exit code 1: tail (stderr=more)",
-			[]string{"tail", " (stderr=more)"},
+			[]string{"git x: exit code 1: tail (stderr=more)"},
 		},
 	}
 	for _, tc := range cases {

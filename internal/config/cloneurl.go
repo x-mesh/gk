@@ -206,6 +206,19 @@ func buildCloneURL(protocol, host, owner, repo string) string {
 	}
 }
 
+// ParseRemoteMeta extracts host/owner/repo from a git remote URL in either
+// scheme form (https://host/owner/repo) or SCP form (user@host:owner/repo),
+// returning a zero CloneMeta when it does not resolve to owner/repo. Used
+// by `gk push` to derive the `gh repo create` target from an existing
+// origin URL.
+func ParseRemoteMeta(u string) CloneMeta {
+	u = strings.TrimSpace(u)
+	if m := parseCloneMetaFromURL(u); m.Owner != "" && m.Repo != "" {
+		return m
+	}
+	return parseCloneMetaFromSCP(u)
+}
+
 // parseCloneMetaFromURL pulls host/owner/repo out of `https://host/owner/repo(.git)?`
 // so clone.root and post-actions can operate on the structured view.
 // Returns a zero value when the path does not look like `/owner/repo`.

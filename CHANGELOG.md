@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk push`가 GitHub repo가 없으면 만들어 준다.** `gk init`은 origin URL만 등록하고 GitHub repo는 생성하지 않아, 첫 push가 "Repository not found"로 실패하곤 했다. 이제 push가 그 이유로 실패하면 origin URL에서 owner/repo를 파싱해 `gh repo create`로 생성한 뒤 재시도한다. GitHub repo 생성은 외부로 나가는 되돌리기 어려운 동작이라 무음 생성은 하지 않는다 — 대화형 터미널에서는 "create it as private and push? [y/N]" 확인을 받고, 비대화형(agent/CI)에서는 `--create-remote` 플래그를 명시했을 때만 생성하며 그렇지 않으면 정확한 `gh repo create` remedy를 안내한다. 기본은 private, `--public`으로 공개 repo. gh가 없거나 origin이 GitHub owner/repo로 해석되지 않으면 기존 git 에러를 그대로 보여준다.
+
 ### Fixed
 
 - **`gk push`가 커밋 없는 새 저장소에서 깨끗하게 처리된다.** 첫 커밋 전 `gk push`는 시크릿 스캔이 `git log -p HEAD`를 돌리다 "ambiguous argument 'HEAD'"로 실패했다. unborn HEAD를 감지해 스캔을 건너뛰므로, 이제 git이 직접 "nothing to push"류 메시지를 준다.

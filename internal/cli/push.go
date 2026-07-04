@@ -47,6 +47,8 @@ func init() {
 	// would flash and vanish inside land's own step output.
 	cmd.Flags().Bool("scan-context", false, "show secret-scan context only, without the git-progress stream (used by gk land)")
 	_ = cmd.Flags().MarkHidden("scan-context")
+	cmd.Flags().Bool("create-remote", false, "if the push fails because the GitHub repo does not exist, create it with `gh` and retry (private by default). Works non-interactively; without it, an interactive terminal is prompted")
+	cmd.Flags().Bool("public", false, "with --create-remote (or the create prompt), make the new repo public instead of private")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -173,6 +175,13 @@ func runPush(cmd *cobra.Command, args []string) error {
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	stop()
 	if err != nil {
+		// The remote repo may simply not exist yet (a fresh `gk init` adds
+		// the origin URL but never creates the GitHub repo). When that's the
+		// failure, offer to create it with `gh` and retry rather than making
+		// the user drop to the shell.
+		if retried, rErr := maybeCreateRemoteAndRetry(cmd, runner, remote, branch, string(stderr), gitArgs); retried {
+			return rErr
+		}
 		fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
 		return err
 	}

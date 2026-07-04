@@ -208,7 +208,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 ### Safety
 | Command | Description |
 |---|---|
-| `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease`; `-n`/`--skip-scan` skips the secret scan |
+| `gk push` | Guarded push: secret scan + protected-branch enforcement; `--force` routes through `--force-with-lease`; `-n`/`--skip-scan` skips the secret scan. When the push fails because the GitHub repo doesn't exist yet, `--create-remote` (or the interactive prompt) creates it with `gh` — private by default, `--public` to override — and retries; secret scan is also skipped cleanly on an unborn HEAD |
 | `gk ship` | Release pipeline: status/dry-run/squash modes, SemVer inference (0.x keeps breaking at minor), version/CHANGELOG release commit (drafts the section from commits when [Unreleased] is empty), guarded branch/tag push, then config-driven `ship.watch` (CI tracking) and `ship.verify` (artifact checks). `--dry-run --json` emits the machine-readable plan; `--preflight` runs just the checks (validate before a real ship) |
 | `gk precheck <target>` | Dry-run merge conflict scan via `git merge-tree`; exit 3 on conflicts; `--json` for CI |
 | `gk preflight` | Run configured check sequence (`commit-lint`, `branch-check`, `no-conflict`, or shell commands) |

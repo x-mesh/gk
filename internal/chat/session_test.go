@@ -81,7 +81,13 @@ func TestSessionReplayTolerantOfCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A COMPLETE turn — replay's structural sanitizer strips trailing
+	// incomplete turns, so the survivable prefix must end on an assistant
+	// answer.
 	if err := s.Append(SessionRecord{Role: "user", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(SessionRecord{Role: "assistant", Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate a crash mid-write: torn JSON tail.
@@ -99,8 +105,8 @@ func TestSessionReplayTolerantOfCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Replay must tolerate torn tail: %v", err)
 	}
-	if len(msgs) != 1 || skipped != 1 {
-		t.Errorf("msgs=%d skipped=%d, want 1/1", len(msgs), skipped)
+	if len(msgs) != 2 || skipped != 1 {
+		t.Errorf("msgs=%d skipped=%d, want 2/1", len(msgs), skipped)
 	}
 }
 

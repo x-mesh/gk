@@ -460,9 +460,12 @@ func turnStatsLine(u *chatTurnUI, res *chat.TurnResult) string {
 // "~" when the number contains estimated rounds.
 func formatChatTokens(n int64, approx bool) string {
 	var s string
-	if n >= 1000 {
+	switch {
+	case n >= 999_950: // %.1fk would round to "1000.0k"
+		s = fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
 		s = fmt.Sprintf("%.1fk", float64(n)/1000)
-	} else {
+	default:
 		s = fmt.Sprintf("%d", n)
 	}
 	if approx {
@@ -568,7 +571,9 @@ func runChatREPL(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider
 			printChatBye(out, sess, ko)
 			return nil
 		case line == "/clear":
-			engine.ClearHistory()
+			if cErr := engine.ClearHistory(); cErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "%v\n", cErr)
+			}
 			if ko {
 				fmt.Fprintln(out, "대화 맥락을 비웠습니다 (세션 파일은 유지).")
 			} else {

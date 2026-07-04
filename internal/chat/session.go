@@ -207,6 +207,12 @@ func (s *Session) Replay() ([]provider.ChatMessage, int, error) {
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("chat session: read: %w", err)
 	}
+	// Structural safety net: even if a rollback's turn_aborted marker was
+	// never written (crash between the turn's records and the marker, or
+	// the marker append itself failed), a replayed history must not end
+	// mid-turn — a trailing dangling user message or unanswered tool_use
+	// wedges the provider on the very first --continue round.
+	msgs = msgs[:lastCompletedTurnEnd(msgs)]
 	return msgs, skipped, nil
 }
 

@@ -261,13 +261,14 @@ func FilterDiffByDeny(diff string, denyGlobs []string) (string, []string) {
 		// A rename's PRE-image (a/) side counts too: "a/.env → b/kept.txt"
 		// still describes the denied file's history.
 		oldPath, newPath := diffBlockPaths(f.body)
-		if (newPath != "" && matchDeny(newPath, denyGlobs) != "") ||
-			(oldPath != "" && oldPath != newPath && matchDeny(oldPath, denyGlobs) != "") {
-			p := newPath
-			if p == "" {
-				p = oldPath
-			}
-			dropped = append(dropped, p)
+		matched := ""
+		if newPath != "" && matchDeny(newPath, denyGlobs) != "" {
+			matched = newPath
+		} else if oldPath != "" && oldPath != newPath && matchDeny(oldPath, denyGlobs) != "" {
+			matched = oldPath // report the path that actually tripped the deny
+		}
+		if matched != "" {
+			dropped = append(dropped, matched)
 			continue
 		}
 		b.WriteString(f.body)
@@ -351,7 +352,11 @@ func unquoteDiffPath(p string) string {
 			p += `"`
 		}
 		if u, err := strconv.Unquote(p); err == nil {
-			return strings.TrimPrefix(strings.TrimPrefix(u, "b/"), "a/")
+			// No prefix stripping here: every caller passes a path with
+			// its a// b/ prefix already consumed, and a REAL directory
+			// named "a" or "b" must keep its name or full-path deny globs
+			// miss it.
+			return u
 		}
 		return strings.Trim(p, `"`)
 	}

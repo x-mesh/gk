@@ -321,7 +321,7 @@ func (a *Anthropic) ChatWithTools(ctx context.Context, in ChatInput) (res ChatRe
 	}
 	tools := make([]anthropicToolDef, 0, len(in.Tools))
 	for _, t := range in.Tools {
-		tools = append(tools, anthropicToolDef{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		tools = append(tools, anthropicToolDef(t))
 	}
 	body, mErr := json.Marshal(anthropicChatRequest{
 		Model:     a.modelOrDefault(),

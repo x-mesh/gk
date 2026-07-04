@@ -328,13 +328,28 @@ func TestSessionReplayHonorsMarkers(t *testing.T) {
 		t.Fatalf("aborted marker must rewind to the completed turn: %+v", msgs)
 	}
 
-	appendAll(SessionRecord{Role: recordRoleClear}, SessionRecord{Role: "user", Text: "q3"})
+	appendAll(
+		SessionRecord{Role: recordRoleClear},
+		SessionRecord{Role: "user", Text: "q3"},
+		SessionRecord{Role: "assistant", Text: "a3"},
+	)
 	msgs, _, err = s.Replay()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 1 || msgs[0].Text != "q3" {
+	if len(msgs) != 2 || msgs[0].Text != "q3" {
 		t.Fatalf("clear marker must reset replay: %+v", msgs)
+	}
+
+	// A trailing incomplete turn (dangling user, no abort marker — e.g. a
+	// crash before the marker landed) is stripped structurally.
+	appendAll(SessionRecord{Role: "user", Text: "q4-dangling"})
+	msgs, _, err = s.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[len(msgs)-1].Text != "a3" {
+		t.Fatalf("dangling trailing turn must be stripped: %+v", msgs)
 	}
 }
 

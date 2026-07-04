@@ -163,8 +163,13 @@ func (g *GitTools) gitShow(ctx context.Context, raw json.RawMessage) (string, er
 	// overrides pin the a/ b/ header prefixes FilterDiffByDeny parses:
 	// a repo-local diff.noprefix=true would otherwise blank the extracted
 	// paths and fail the filter open.
+	// --no-ext-diff / --no-textconv: a configured external diff driver or
+	// textconv filter would both EXECUTE code on `git show` and rewrite
+	// the output FilterDiffByDeny parses — neither may run under a
+	// model-driven tool.
 	out, err := g.run(ctx, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
-		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "show", "--no-color", in.Ref)
+		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/",
+		"show", "--no-color", "--no-ext-diff", "--no-textconv", in.Ref)
 	if err != nil {
 		return "", err
 	}
@@ -192,7 +197,8 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 		return "", err
 	}
 	args := []string{"-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
-		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "diff", "--no-color"}
+		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/",
+		"diff", "--no-color", "--no-ext-diff", "--no-textconv"}
 	if in.Range != "" {
 		args = append(args, in.Range)
 	}

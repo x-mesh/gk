@@ -92,14 +92,19 @@ func (e *Engine) History() []provider.ChatMessage { return e.history }
 // ClearHistory drops the in-memory conversation and records a clear
 // marker so a later --continue replay starts from the same empty context
 // instead of resurrecting what the user explicitly cleared (the file
-// keeps the full record for audit; only replay semantics change).
-func (e *Engine) ClearHistory() {
+// keeps the full record for audit; only replay semantics change). The
+// returned error means the marker did NOT land — live memory is cleared
+// but a future --continue would restore the pre-clear context, which the
+// caller should tell the user instead of hiding.
+func (e *Engine) ClearHistory() error {
 	e.history = nil
-	if e.Session != nil {
-		if err := e.Session.Append(SessionRecord{TS: time.Now().UTC(), Role: recordRoleClear}); err != nil {
-			e.dbg("chat: clear marker append failed: %v", err)
-		}
+	if e.Session == nil {
+		return nil
 	}
+	if err := e.Session.Append(SessionRecord{TS: time.Now().UTC(), Role: recordRoleClear}); err != nil {
+		return fmt.Errorf("chat: clear marker not persisted (--continue would restore the cleared context): %w", err)
+	}
+	return nil
 }
 
 func (e *Engine) dbg(format string, args ...any) {

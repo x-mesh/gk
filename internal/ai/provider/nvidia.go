@@ -304,7 +304,7 @@ func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, erro
 			}
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if !n.sleep(ctx, backoff) {
-				return chatResponse{}, lastErr
+				return chatResponse{}, sleepAbortErr(ctx, n.brand(), lastErr)
 			}
 			continue
 		}
@@ -322,7 +322,7 @@ func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, erro
 			// 429: wait Retry-After seconds then retry.
 			wait := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if !n.sleep(ctx, wait) {
-				return chatResponse{}, lastErr
+				return chatResponse{}, sleepAbortErr(ctx, n.brand(), lastErr)
 			}
 			continue
 
@@ -333,7 +333,7 @@ func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, erro
 			}
 			backoff := time.Duration(1<<uint(attempt)) * time.Second
 			if !n.sleep(ctx, backoff) {
-				return chatResponse{}, lastErr
+				return chatResponse{}, sleepAbortErr(ctx, n.brand(), lastErr)
 			}
 			continue
 
@@ -344,6 +344,18 @@ func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, erro
 	}
 
 	return chatResponse{}, lastErr
+}
+
+// sleepAbortErr wraps the last transport error with the context error that
+// interrupted a retry backoff. Without the wrap, a round deadline expiring
+// mid-backoff surfaces as the previous HTTP failure (e.g. a 500) and
+// callers matching context.DeadlineExceeded — like gk chat's timeout hint
+// — never fire.
+func sleepAbortErr(ctx context.Context, brand string, lastErr error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%s: %w (last error before deadline: %v)", brand, ctxErr, lastErr)
+	}
+	return lastErr
 }
 
 // ── Response handling ────────────────────────────────────────────────

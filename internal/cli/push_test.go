@@ -374,6 +374,30 @@ diff --git a/hello.go b/hello.go
 	}
 }
 
+// A brand-new repo with no commits (unborn HEAD) must scan clean instead
+// of running `git log HEAD` and surfacing "ambiguous argument 'HEAD'".
+func TestScanCommitsToPush_UnbornHEAD(t *testing.T) {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse --verify --quiet HEAD^{commit}": {ExitCode: 128, Stderr: ""},
+			// If the guard fails, this is what would run and error.
+			"log -p --no-color HEAD": {ExitCode: 128, Stderr: "fatal: ambiguous argument 'HEAD'"},
+		},
+	}
+	findings, err := scanCommitsToPush(context.Background(), fake, "")
+	if err != nil {
+		t.Fatalf("unborn HEAD must scan clean, got: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected no findings, got %v", findings)
+	}
+	for _, c := range fake.Calls {
+		if strings.Join(c.Args, " ") == "log -p --no-color HEAD" {
+			t.Error("must NOT run `git log HEAD` on an unborn HEAD")
+		}
+	}
+}
+
 func TestScanCommitsToPush_Finds(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

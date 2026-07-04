@@ -351,12 +351,23 @@ func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base stri
 // blocker, which we hit immediately after tightening the privacy gate.
 func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets.Finding, error) {
 	if cmp == "" {
+		// Unborn HEAD (a brand-new repo before its first commit): there is
+		// nothing published to scan, and `git log HEAD` would fail with
+		// "ambiguous argument 'HEAD'" — the confusing error a fresh
+		// `gk push` used to surface. Skip cleanly; git push itself will
+		// then report there is nothing to push.
+		if _, _, err := r.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+			return nil, nil
+		}
 		// No comparison point (first push of a brand-new history): scan the
 		// whole HEAD. log -p numbers hunks per-commit so lines may drift, but
-		// with no base there is nothing to anchor to.
-		stdout, stderr, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
+		// with no base there is nothing to anchor to. The ExitError already
+		// carries the command echo and stderr, so wrap it without splicing
+		// stderr again (the double-splice let Easy Mode translate git terms
+		// in the un-shielded prose copy).
+		stdout, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
+			return nil, err
 		}
 		return scanDiffAdditions(string(stdout)), nil
 	}
@@ -365,9 +376,9 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets
 	// with hunk line numbers anchored to the current HEAD file so a reported
 	// line matches what the user sees in their editor. This covers every
 	// secret that still survives in the final tree (the common case).
-	netOut, stderr, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
+	netOut, _, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
+		return nil, err
 	}
 	findings := scanDiffAdditions(string(netOut))
 
@@ -380,9 +391,9 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets
 	// per-commit (the removed secret has no line in HEAD to anchor to anyway),
 	// so pass A's accurate lines win on overlap; mergeScanFindings keeps only
 	// the history-only hits.
-	histOut, stderr, err := r.Run(ctx, "log", "-p", "--no-color", cmp+"..HEAD")
+	histOut, _, err := r.Run(ctx, "log", "-p", "--no-color", cmp+"..HEAD")
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(stderr)), err)
+		return nil, err
 	}
 	return mergeScanFindings(findings, scanDiffAdditions(string(histOut))), nil
 }

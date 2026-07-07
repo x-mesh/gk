@@ -121,6 +121,16 @@ worktree:
   # clones share the same basename (e.g. work vs personal).
   # project: work-gk
 
+# snapshot controls the refs/wip/* safety-net snapshots (`gk snapshot`).
+snapshot:
+  # Retention window in days for snapshot reflog entries. 0 (default) never
+  # auto-prunes; > 0 makes every `gk snapshot` save quietly expire this
+  # branch's entries older than the window (best-effort — a failed expire
+  # never fails the save) and becomes the default for `gk snapshot prune`.
+  # Recommended when the Claude Code Stop hook (`gk snapshot hook install`)
+  # generates snapshots every AI turn.
+  # retention_days: 7
+
 # output controls Easy Mode — beginner-friendly translation of git
 # terminology, emoji-prefixed status sections, and contextual next-step
 # hints in the configured language. Disabled by default; flip `easy` to

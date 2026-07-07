@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **snapshot 안전망이 진짜 "자동"이 됐다 — Phase 2 완성.** Phase 1은 `gk snapshot` 명령만 제공해 안전망이 수동이었다([설계 문서](docs/design-snapshot-safety-net.md) §4가 트리거·보존·비교를 Phase 2로 예약). 이번에 세 축을 모두 구현했다. ① **트리거**: `gk snapshot hook install|status|uninstall`이 Claude Code **Stop hook**(`gk snapshot -q`)을 설정 JSON에 설치해, AI가 한 턴을 마칠 때마다 작업트리가 `refs/wip/<branch>`에 체크포인트된다 — 브랜치 히스토리 오염 없이. 설치는 append-only(기존 훅·설정 키 보존)·멱등이고, 숫자는 `json.Number`로 보존해 재직렬화가 `timeout: 30`을 float로 바꾸지 않으며, 파싱 불가 파일은 **덮어쓰지 않고 거부**한다. 기본 대상은 `~/.claude/settings.json`, `--project`는 repo의 `.claude/settings.json`. ② **보존**: `gk snapshot prune [--keep-days N] [--all]` + `snapshot.retention_days` config(기본 0 = off — 업그레이드가 기존 스냅샷을 조용히 지우면 안전망의 계약 위반이라 opt-in). retention이 켜져 있으면 저장 때마다 best-effort로 조용히 expire하고 — 실패해도 저장은 성공한다, 스냅샷 자체가 안전망이므로 — 전부 만료된 ref는 삭제해 `@{n}` 접근이 안 되는 유령 ref를 남기지 않는다. ③ **비교**: `gk snapshot diff [n] [--stat]`가 복원이 적용할 방향 그대로 스냅샷 ↔ 작업트리 차이를 보여준다. ([docs/phase2-improvements.md](docs/phase2-improvements.md))
+- **브랜치 부모를 설정 없이 추론한다 — branchparent Phase 2.** `gk branch set-parent`를 쓰지 않아도, 브랜치의 생성 지점(가장 오래된 reflog 항목)을 `for-each-ref --contains`로 조회해 그 커밋을 포함하는 로컬 브랜치가 **정확히 하나**면 그것을 부모로 쓴다(source: `inferred`) — stacked 브랜치의 `gk status`가 트렁크 대신 진짜 부모 기준으로 비교된다. 후보가 0개/여러 개(main·develop이 둘 다 포함하는 공유 트렁크 repo의 일상)면 추론을 포기하고 기존 base 폴백을 쓰므로 절대 추측하지 않고, reflog가 없는 환경(bare/CI)은 에러 없이 강등된다. **머지 대상은 예외로 못박았다**: 신설한 `Resolver.ExplicitOnly()`로 `land`/`promote`의 hop 대상 결정에는 추론이 아예 관여하지 못한다 — 머지 목적지는 명시적 `gk-parent` 또는 트렁크 폴백에서만 나온다.
+
 ## [0.113.0] - 2026-07-04
 
 ### Added

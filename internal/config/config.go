@@ -22,6 +22,7 @@ type Config struct {
 	Init       InitConfig      `mapstructure:"init"        yaml:"init"`
 	Resolve    ResolveConfig   `mapstructure:"resolve"     yaml:"resolve"`
 	Worktree   WorktreeConfig  `mapstructure:"worktree"    yaml:"worktree"`
+	Snapshot   SnapshotConfig  `mapstructure:"snapshot"    yaml:"snapshot"`
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
 	Fleet      FleetConfig     `mapstructure:"fleet"       yaml:"fleet"`
@@ -45,6 +46,16 @@ type FleetConfig struct {
 	// Notify maps a fleet transition to a shell command (`sh -c`), run with
 	// GK_FLEET_* context env. Keys: conflict, paused, land_ready. Opt-in.
 	Notify map[string]string `mapstructure:"notify" yaml:"notify,omitempty"`
+}
+
+// SnapshotConfig controls the refs/wip/* safety-net snapshots.
+//   - RetentionDays: when > 0, every `gk snapshot` save also expires this
+//     branch's snapshot reflog entries older than that many days
+//     (best-effort and quiet, mirroring `gk snapshot prune --keep-days N`).
+//     0 (the default) never auto-prunes — snapshots accumulate until a
+//     manual `gk snapshot prune`.
+type SnapshotConfig struct {
+	RetentionDays int `mapstructure:"retention_days" yaml:"retention_days"`
 }
 
 // OutputConfig controls Easy Mode output behaviour.
@@ -840,6 +851,9 @@ func Defaults() Config {
 		Worktree: WorktreeConfig{
 			Base:    "~/.gk/worktree",
 			Project: "",
+		},
+		Snapshot: SnapshotConfig{
+			RetentionDays: 0,
 		},
 		AI: AIConfig{
 			Enabled:  true,

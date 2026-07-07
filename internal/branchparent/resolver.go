@@ -2,6 +2,7 @@ package branchparent
 
 import (
 	"context"
+	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -15,8 +16,10 @@ type Source string
 const (
 	// SourceExplicit means the parent came from `branch.<name>.gk-parent`.
 	SourceExplicit Source = "explicit"
-	// SourceInferred means the parent was deduced from git history.
-	// Reserved for Phase 2; the Phase 1 inferrer always returns "".
+	// SourceInferred means the parent was deduced from git history: the
+	// branch's creation point (oldest reflog entry) is contained by exactly
+	// one other local branch. Only unambiguous single-candidate results are
+	// ever inferred; anything else falls back.
 	SourceInferred Source = "inferred"
 )
 
@@ -28,10 +31,25 @@ const (
 // It only reads and decides.
 type Resolver struct {
 	c *git.Client
+
+	// explicitOnly disables reflog inference so only `gk-parent` config is
+	// consulted. Write paths (land/promote hop targets) set this: a merge
+	// destination must never come from a heuristic, only from explicit
+	// metadata or the caller's trunk fallback. Display paths (status,
+	// worktree base comparison) keep inference on.
+	explicitOnly bool
 }
 
-// NewResolver wraps a *git.Client.
+// NewResolver wraps a *git.Client. Inference is enabled; callers that feed
+// resolved parents into merges should chain ExplicitOnly().
 func NewResolver(c *git.Client) *Resolver { return &Resolver{c: c} }
+
+// ExplicitOnly returns the resolver restricted to explicit `gk-parent`
+// config, with history inference switched off.
+func (r *Resolver) ExplicitOnly() *Resolver {
+	r.explicitOnly = true
+	return r
+}
 
 // ResolveParent attempts to find the parent of branch. Returns
 // (parent, source, ok). ok=false means no parent is configured AND no
@@ -39,7 +57,7 @@ func NewResolver(c *git.Client) *Resolver { return &Resolver{c: c} }
 //
 // Resolution order:
 //  1. `branch.<branch>.gk-parent` (explicit)
-//  2. inferParent (Phase 2 — currently a stub returning "")
+//  2. inferParent (reflog branchpoint containment; skipped on ExplicitOnly)
 //
 // When the explicit value names a ref that does not exist locally,
 // ResolveParent returns ("", "", false) so callers fall back. The caller
@@ -159,18 +177,50 @@ func (r *Resolver) parentRefExists(ctx context.Context, parent string) bool {
 	return git.RefExists(ctx, r.c.Raw(), "refs/heads/"+parent)
 }
 
-// inferParent is the Phase 2 hook. Phase 1 ships a stub so the Resolver
-// API is final and callers don't change shape when inference lands.
+// inferParent deduces a parent from git history (Phase 2 of the
+// branchparent design): the oldest reflog entry for the branch is its
+// branchpoint commit — where the branch was created — and any local
+// branch whose tip contains that commit is a candidate parent. A single
+// candidate wins; zero or multiple → ambiguous → "". The deliberate
+// conservatism means shared-trunk repos (where main AND develop both
+// contain the branchpoint) simply stay un-inferred rather than guessing.
 //
-// When implemented, the algorithm reads the oldest reflog entry for the
-// branch (its branchpoint commit), then queries `for-each-ref --contains`
-// to find local branch tips that point to or descend from that commit.
-// A single candidate wins; zero or multiple → ambiguous → "".
+// Every failure path returns "" — a missing reflog (bare/CI clones with
+// core.logAllRefUpdates off, expired reflogs) degrades to "no inference",
+// never to an error, because callers treat inference as best-effort.
 func (r *Resolver) inferParent(ctx context.Context, branch string) string {
-	// Phase 1: no inference. Reserved for Phase 2.
-	_ = ctx
-	_ = branch
-	return ""
+	if r.explicitOnly {
+		return ""
+	}
+	out, _, err := r.c.Raw().Run(ctx, "log", "-g", "--format=%H", "refs/heads/"+branch)
+	if err != nil {
+		return ""
+	}
+	branchpoint := ""
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			branchpoint = ln // last non-empty line = oldest entry
+		}
+	}
+	if branchpoint == "" {
+		return ""
+	}
+	out, _, err = r.c.Raw().Run(ctx, "for-each-ref", "--format=%(refname:short)", "--contains", branchpoint, "refs/heads/")
+	if err != nil {
+		return ""
+	}
+	candidate := ""
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name := strings.TrimSpace(ln)
+		if name == "" || name == branch {
+			continue
+		}
+		if candidate != "" {
+			return "" // second candidate → ambiguous
+		}
+		candidate = name
+	}
+	return candidate
 }
 
 // String makes Source play nicely with fmt %s.

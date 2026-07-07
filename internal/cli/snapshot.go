@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
 
@@ -34,7 +35,10 @@ from a Claude Code Stop hook: 'gk snapshot -q').
   gk snapshot                # save the current working tree
   gk snapshot list           # list snapshots for this branch
   gk snapshot restore        # restore the latest snapshot
-  gk snapshot restore 2      # restore an older one`,
+  gk snapshot restore 2      # restore an older one
+  gk snapshot diff 2         # what changed since snapshot @{2}
+  gk snapshot prune          # expire old snapshot entries
+  gk snapshot hook install   # auto-snapshot after every Claude Code turn`,
 		Args: cobra.NoArgs,
 		RunE: runSnapshotSave,
 	}
@@ -64,6 +68,36 @@ from the snapshot are left untouched.`,
 	restore.Flags().StringP("message", "m", "", "note for the auto-backup snapshot taken when the tree is dirty")
 	snapshot.AddCommand(restore)
 
+	diff := &cobra.Command{
+		Use:   "diff [n]",
+		Short: "Diff snapshot n (default 0, the latest) against the working tree",
+		Long: `Shows what changed between snapshot <n> (default 0, the latest) and the
+current working tree — the same direction a restore would apply, so added
+lines are what restore would bring back.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runSnapshotDiff,
+	}
+	diff.Flags().Bool("stat", false, "show a diffstat instead of the full patch")
+	snapshot.AddCommand(diff)
+
+	prune := &cobra.Command{
+		Use:   "prune",
+		Short: "Expire snapshot entries older than a retention window",
+		Long: `Expires reflog entries under refs/wip/ older than the retention window and
+deletes a branch's snapshot ref when every entry expired. The window comes
+from --keep-days, falling back to snapshot.retention_days in .gk.yaml, then 7.
+
+Set snapshot.retention_days > 0 to also run this automatically (quietly,
+best-effort) after every 'gk snapshot' save.`,
+		Args: cobra.NoArgs,
+		RunE: runSnapshotPrune,
+	}
+	prune.Flags().Int("keep-days", 7, "expire snapshot entries older than this many days")
+	prune.Flags().Bool("all", false, "prune snapshots for every branch, not just the current one")
+	snapshot.AddCommand(prune)
+
+	snapshot.AddCommand(newSnapshotHookCmd())
+
 	// Top-level convenience alias for `gk snapshot list`.
 	snapshots := &cobra.Command{
 		Use:   "snapshots",
@@ -82,6 +116,13 @@ func runSnapshotSave(cmd *cobra.Command, _ []string) error {
 	ref, sha, created, err := createWorkingTreeSnapshot(cmd.Context(), runner, note)
 	if err != nil {
 		return err
+	}
+	if created {
+		// Retention is best-effort by design: a failed expire must never
+		// fail the save — the snapshot IS the safety net.
+		if cfg, cfgErr := config.Load(nil); cfgErr == nil && cfg.Snapshot.RetentionDays > 0 {
+			expireSnapshotEntries(cmd.Context(), runner, ref, cfg.Snapshot.RetentionDays)
+		}
 	}
 	if quiet {
 		return nil
@@ -270,6 +311,167 @@ func runSnapshotRestore(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(w, successLinef("restored", "snapshot @{%d}", n))
 	return nil
+}
+
+func runSnapshotDiff(cmd *cobra.Command, args []string) error {
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	ctx := cmd.Context()
+	w := cmd.OutOrStdout()
+
+	n := 0
+	if len(args) == 1 {
+		v, err := strconv.Atoi(strings.Trim(args[0], "@{}"))
+		if err != nil || v < 0 {
+			return WithHint(fmt.Errorf("invalid snapshot index %q", args[0]),
+				"use a number like: gk snapshot diff 2")
+		}
+		n = v
+	}
+
+	branch, err := snapshotBranch(ctx, runner)
+	if err != nil {
+		return err
+	}
+	ref := snapshotRefPrefix + branch
+	if !refExists(ctx, runner, ref) {
+		return WithHint(fmt.Errorf("no snapshots for %s", branch),
+			"save one first: gk snapshot")
+	}
+	out, _, e := runner.Run(ctx, "rev-parse", "--verify", "--quiet", fmt.Sprintf("%s@{%d}^{commit}", ref, n))
+	if e != nil {
+		return WithHint(fmt.Errorf("snapshot @{%d} does not exist", n),
+			"list with: gk snapshots")
+	}
+	targetSHA := strings.TrimSpace(string(out))
+
+	// Capture the current tree the same way a save would (throwaway index,
+	// untracked included) and diff tree-to-tree. A plain `git diff <sha>`
+	// against the working tree would report snapshot-captured untracked
+	// files as "deleted" even though they still sit on disk, because diff
+	// only sees index-tracked paths.
+	nowTree, err := snapshotTree(ctx, runner)
+	if err != nil {
+		return err
+	}
+
+	gitArgs := []string{"diff"}
+	if logUseColor() {
+		gitArgs = append(gitArgs, "--color=always")
+	} else {
+		gitArgs = append(gitArgs, "--color=never")
+	}
+	if stat, _ := cmd.Flags().GetBool("stat"); stat {
+		gitArgs = append(gitArgs, "--stat")
+	}
+	gitArgs = append(gitArgs, targetSHA, nowTree)
+
+	out, stderr, e := runner.Run(ctx, gitArgs...)
+	if e != nil {
+		return fmt.Errorf("diff snapshot: %s: %w", strings.TrimSpace(string(stderr)), e)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		fmt.Fprintf(w, "no differences between snapshot @{%d} and the working tree\n", n)
+		return nil
+	}
+	fmt.Fprint(w, string(out))
+	return nil
+}
+
+func runSnapshotPrune(cmd *cobra.Command, _ []string) error {
+	runner := &git.ExecRunner{Dir: RepoFlag()}
+	ctx := cmd.Context()
+	w := cmd.OutOrStdout()
+
+	days, _ := cmd.Flags().GetInt("keep-days")
+	if !cmd.Flags().Changed("keep-days") {
+		if cfg, err := config.Load(nil); err == nil && cfg.Snapshot.RetentionDays > 0 {
+			days = cfg.Snapshot.RetentionDays
+		}
+	}
+	if days <= 0 {
+		return WithHint(fmt.Errorf("invalid retention window %d", days),
+			"pass a positive number: gk snapshot prune --keep-days 7")
+	}
+
+	var refs []string
+	if all, _ := cmd.Flags().GetBool("all"); all {
+		out, _, err := runner.Run(ctx, "for-each-ref", "--format=%(refname)", snapshotRefPrefix)
+		if err != nil {
+			return fmt.Errorf("list snapshot refs: %w", err)
+		}
+		for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if ln = strings.TrimSpace(ln); ln != "" {
+				refs = append(refs, ln)
+			}
+		}
+	} else {
+		branch, err := snapshotBranch(ctx, runner)
+		if err != nil {
+			return err
+		}
+		if ref := snapshotRefPrefix + branch; refExists(ctx, runner, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		fmt.Fprintln(w, "no snapshot refs to prune")
+		return nil
+	}
+
+	expired, deleted := 0, 0
+	for _, ref := range refs {
+		before := snapshotEntryCount(ctx, runner, ref)
+		if err := expireSnapshotEntries(ctx, runner, ref, days); err != nil {
+			return err
+		}
+		after := snapshotEntryCount(ctx, runner, ref)
+		expired += before - after
+		// An emptied reflog leaves a ref that lists nothing and cannot be
+		// addressed as @{n} — remove it so `gk snapshots` reports a clean
+		// "no snapshots yet" instead of a ghost.
+		if after == 0 {
+			if _, stderr, err := runner.Run(ctx, "update-ref", "-d", ref); err != nil {
+				return fmt.Errorf("delete emptied %s: %s: %w", ref, strings.TrimSpace(string(stderr)), err)
+			}
+			deleted++
+		}
+	}
+	if expired == 0 && deleted == 0 {
+		fmt.Fprintf(w, "nothing to prune — no snapshot entries older than %d days\n", days)
+		return nil
+	}
+	msg := fmt.Sprintf("%d %s older than %d days", expired, pluralize(expired, "entry", "entries"), days)
+	if deleted > 0 {
+		msg += fmt.Sprintf(", %d emptied ref%s removed", deleted, pluralS(deleted))
+	}
+	fmt.Fprintln(w, successLinef("pruned", "%s", msg))
+	return nil
+}
+
+// expireSnapshotEntries drops reflog entries older than days from ref. Used
+// by both the prune command and the post-save auto-retention hook.
+func expireSnapshotEntries(ctx context.Context, runner git.Runner, ref string, days int) error {
+	expiry := fmt.Sprintf("--expire=%d.days.ago", days)
+	if _, stderr, err := runner.Run(ctx, "reflog", "expire", expiry, ref); err != nil {
+		return fmt.Errorf("reflog expire %s: %s: %w", ref, strings.TrimSpace(string(stderr)), err)
+	}
+	return nil
+}
+
+// snapshotEntryCount reports how many reflog entries ref currently has.
+// Errors (no reflog at all) count as zero.
+func snapshotEntryCount(ctx context.Context, runner git.Runner, ref string) int {
+	out, _, err := runner.Run(ctx, "log", "-g", "--format=%H", ref)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(ln) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // --- small git helpers -----------------------------------------------------

@@ -437,6 +437,23 @@ worktree:
       - uv venv && uv pip install -r requirements.txt
 ```
 
+### `snapshot.retention_days`
+
+| | |
+|-|-|
+| Type | int (days) |
+| Default | `0` (no auto-prune) |
+| CLI flags | `gk snapshot prune --keep-days <n>` (one-shot override) |
+
+Retention window for the `refs/wip/<branch>` safety-net snapshots. When set above `0`, every `gk snapshot` save also expires that branch's snapshot reflog entries older than this many days — quiet and best-effort, so a failed expire never fails the save. It also becomes the default window for `gk snapshot prune` when `--keep-days` is not passed (which otherwise falls back to `7`).
+
+Leave at `0` if snapshots should accumulate until an explicit `gk snapshot prune`. A hook-driven setup (`gk snapshot hook install`) generates snapshots every AI turn, so a small window like `7` keeps the reflog from growing unbounded.
+
+```yaml
+snapshot:
+  retention_days: 7
+```
+
 ### `clone.hosts`
 
 | | |

@@ -137,6 +137,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("resolve.union_files", defaults.Resolve.UnionFiles)
 	v.SetDefault("resolve.min_confidence", defaults.Resolve.MinConfidence)
 	v.SetDefault("worktree.base", defaults.Worktree.Base)
+	v.SetDefault("snapshot.retention_days", defaults.Snapshot.RetentionDays)
 	v.SetDefault("ai.enabled", defaults.AI.Enabled)
 	v.SetDefault("ai.provider", defaults.AI.Provider)
 	// ai.lang is intentionally NOT given a viper default: that would make

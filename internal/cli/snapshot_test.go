@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -27,6 +29,17 @@ func buildSnapshotCmd(repoDir string, args ...string) (*cobra.Command, *bytes.Bu
 	restore := &cobra.Command{Use: "restore", Args: cobra.MaximumNArgs(1), RunE: runSnapshotRestore}
 	restore.Flags().StringP("message", "m", "", "")
 	snap.AddCommand(restore)
+
+	diff := &cobra.Command{Use: "diff", Args: cobra.MaximumNArgs(1), RunE: runSnapshotDiff}
+	diff.Flags().Bool("stat", false, "")
+	snap.AddCommand(diff)
+
+	prune := &cobra.Command{Use: "prune", Args: cobra.NoArgs, RunE: runSnapshotPrune}
+	prune.Flags().Int("keep-days", 7, "")
+	prune.Flags().Bool("all", false, "")
+	snap.AddCommand(prune)
+
+	snap.AddCommand(newSnapshotHookCmd())
 
 	root.AddCommand(snap)
 
@@ -164,6 +177,122 @@ func TestSnapshot_RestoreBacksUpDirtyTree(t *testing.T) {
 	backup := repo.RunGit("show", "refs/wip/main@{0}:a.txt")
 	if backup != "uncommitted-edit" {
 		t.Fatalf("dirty edit not backed up, got %q", backup)
+	}
+}
+
+// TestSnapshot_DiffShowsChanges verifies `snapshot diff` reports drift
+// between a snapshot and the working tree, and stays quiet when identical.
+func TestSnapshot_DiffShowsChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "one\n")
+	repo.RunGit("add", "a.txt")
+	repo.RunGit("commit", "-m", "seed")
+
+	repo.WriteFile("a.txt", "one-edited\n")
+	runSnap(t, repo.Dir, "snapshot")
+
+	// Tree identical to the snapshot → no differences.
+	out := runSnap(t, repo.Dir, "snapshot", "diff")
+	if !strings.Contains(out, "no differences") {
+		t.Fatalf("expected no-diff message right after save, got: %s", out)
+	}
+
+	// Drift the tree away from the snapshot → the patch shows both sides.
+	repo.WriteFile("a.txt", "two\n")
+	out = runSnap(t, repo.Dir, "snapshot", "diff")
+	if !strings.Contains(out, "-one-edited") || !strings.Contains(out, "+two") {
+		t.Fatalf("diff should show snapshot→tree change, got: %s", out)
+	}
+
+	// --stat renders a summary, not a patch.
+	out = runSnap(t, repo.Dir, "snapshot", "diff", "--stat")
+	if !strings.Contains(out, "a.txt") || strings.Contains(out, "+two") {
+		t.Fatalf("--stat should summarize without patch body, got: %s", out)
+	}
+
+	// A non-existent index errors with a hint.
+	root, buf := buildSnapshotCmd(repo.Dir, "snapshot", "diff", "9")
+	if err := root.Execute(); err == nil {
+		t.Fatalf("expected error for missing @{9}, out: %s", buf.String())
+	}
+}
+
+// TestSnapshot_PruneExpiresOldEntries backdates a snapshot beyond the
+// retention window and confirms prune drops it while keeping fresh ones.
+func TestSnapshot_PruneExpiresOldEntries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	// Snapshot @{1}: recorded 30 days in the past via committer-date env.
+	t.Setenv("GIT_COMMITTER_DATE", time.Now().Add(-30*24*time.Hour).Format(time.RFC3339))
+	repo.WriteFile("a.txt", "old\n")
+	runSnap(t, repo.Dir, "snapshot", "-m", "ancient")
+
+	// Snapshot @{0}: recorded now.
+	t.Setenv("GIT_COMMITTER_DATE", "")
+	os.Unsetenv("GIT_COMMITTER_DATE")
+	repo.WriteFile("a.txt", "new\n")
+	runSnap(t, repo.Dir, "snapshot", "-m", "fresh")
+
+	out := runSnap(t, repo.Dir, "snapshot", "prune", "--keep-days", "7")
+	if !strings.Contains(out, "pruned") {
+		t.Fatalf("expected prune summary, got: %s", out)
+	}
+
+	list := runSnap(t, repo.Dir, "snapshot", "list")
+	if !strings.Contains(list, "fresh") || strings.Contains(list, "ancient") {
+		t.Fatalf("prune should keep fresh and drop ancient, got: %s", list)
+	}
+}
+
+// TestSnapshot_PruneRemovesEmptiedRef verifies that expiring every entry
+// deletes the refs/wip ref so list reports a clean slate.
+func TestSnapshot_PruneRemovesEmptiedRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	t.Setenv("GIT_COMMITTER_DATE", time.Now().Add(-30*24*time.Hour).Format(time.RFC3339))
+	repo.WriteFile("a.txt", "old\n")
+	runSnap(t, repo.Dir, "snapshot")
+	t.Setenv("GIT_COMMITTER_DATE", "")
+	os.Unsetenv("GIT_COMMITTER_DATE")
+
+	out := runSnap(t, repo.Dir, "snapshot", "prune", "--keep-days", "7")
+	if !strings.Contains(out, "ref") {
+		t.Fatalf("expected emptied-ref removal note, got: %s", out)
+	}
+	if _, err := repo.TryGit("rev-parse", "--verify", "--quiet", "refs/wip/main"); err == nil {
+		t.Fatal("fully-expired refs/wip/main should be deleted")
+	}
+	if list := runSnap(t, repo.Dir, "snapshot", "list"); !strings.Contains(list, "no snapshots") {
+		t.Fatalf("list should be empty after full prune, got: %s", list)
+	}
+}
+
+// TestSnapshot_PruneNothingToDo covers the clean-repo and fresh-only paths.
+func TestSnapshot_PruneNothingToDo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	out := runSnap(t, repo.Dir, "snapshot", "prune")
+	if !strings.Contains(out, "no snapshot refs") {
+		t.Fatalf("expected no-refs message, got: %s", out)
+	}
+
+	repo.WriteFile("a.txt", "fresh\n")
+	runSnap(t, repo.Dir, "snapshot")
+	out = runSnap(t, repo.Dir, "snapshot", "prune", "--keep-days", "7")
+	if !strings.Contains(out, "nothing to prune") {
+		t.Fatalf("fresh snapshot must survive, got: %s", out)
 	}
 }
 

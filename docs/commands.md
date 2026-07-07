@@ -1565,6 +1565,8 @@ gk branch pick
 
 Record the fork-parent of the current branch in `branch.<current>.gk-parent`. Once set, `gk status` compares divergence against the parent instead of the repository's mainline — useful for stacked workflows where a feature branch is forked off another feature branch rather than from `main`.
 
+When no parent is recorded, display surfaces (`gk status`, the worktree base comparison) also try to **infer** one from history: the branch's creation point (its oldest reflog entry) is looked up with `for-each-ref --contains`, and if exactly one other local branch contains it, that branch is used as the parent (source: `inferred`). Zero or multiple candidates — the normal case in shared-trunk repos where `main` and `develop` both contain the branchpoint — fall back to the configured base, so inference never guesses. Merge destinations are exempt by design: `gk land` / `gk promote` hop targets only ever come from explicit `gk-parent` metadata or the trunk fallback, never from inference.
+
 #### Synopsis
 
 ```
@@ -1892,6 +1894,9 @@ Save a non-destructive safety-net snapshot of the working tree to `refs/wip/<bra
 gk snapshot [-m <note>] [-q]
 gk snapshot list            # alias: gk snapshots
 gk snapshot restore [n] [-m <note>]
+gk snapshot diff [n] [--stat]
+gk snapshot prune [--keep-days <n>] [--all]
+gk snapshot hook install|status|uninstall [--project] [--settings <path>]
 ```
 
 ### Flags
@@ -1912,6 +1917,22 @@ Unlike `gk wip`, nothing is committed to your branch. The shadow ref never appea
 
 `gk snapshot restore [n]` restores snapshot `n` (default `0`, the latest) into the working tree and index. If the tree is dirty, the current state is first saved as a fresh snapshot so nothing is lost. Files present now but absent from the snapshot are left untouched.
 
+### Diff
+
+`gk snapshot diff [n]` shows what changed between snapshot `n` (default `0`) and the current working tree — the same direction a restore would apply, so added lines are what a restore would bring back. `--stat` renders a summary instead of the full patch.
+
+### Prune / retention
+
+`gk snapshot prune` expires snapshot reflog entries older than the retention window and deletes a branch's `refs/wip/<branch>` ref when every entry expired. The window resolves `--keep-days` → `snapshot.retention_days` in `.gk.yaml` → `7`. `--all` prunes every branch's snapshots instead of just the current one.
+
+Setting `snapshot.retention_days: <days>` (default `0` = off) also auto-expires quietly after every `gk snapshot` save, so hook-driven snapshots don't accumulate forever. Auto-retention is best-effort — a failed expire never fails the save.
+
+### Trigger automation (Claude Code Stop hook)
+
+`gk snapshot hook install` writes a Claude Code **Stop hook** running `gk snapshot -q` into `~/.claude/settings.json`, so every finished AI turn checkpoints the working tree. `--project` targets this repository's `.claude/settings.json` instead; `--settings <path>` overrides the file entirely.
+
+The installer only ever **appends** — existing Stop hooks and unrelated settings keys are preserved byte-meaning-for-byte-meaning, install is idempotent, and a settings file that fails to parse is refused rather than rewritten. `gk snapshot hook status` reports the current state; `uninstall` removes only the gk-managed entry (dropping a matcher group only when the removal leaves it empty).
+
 ### Examples
 
 ```bash
@@ -1920,11 +1941,14 @@ gk snapshot -m "before refactor" # save with a note
 gk snapshots                     # list snapshots for this branch
 gk snapshot restore              # restore the latest
 gk snapshot restore 2            # restore an older one
+gk snapshot diff                 # what changed since the latest snapshot
+gk snapshot prune --keep-days 14 # expire entries older than two weeks
+gk snapshot hook install         # auto-snapshot after every Claude Code turn
 ```
 
 ### Notes
 
-- Designed as an automatic safety net: wire `gk snapshot -q` into a Claude Code Stop hook or a periodic job so work is captured without manual effort.
+- Designed as an automatic safety net: `gk snapshot hook install` wires the Claude Code Stop hook for you; any other trigger can call `gk snapshot -q` directly.
 - The snapshot lives outside `refs/heads`, so it is purely local and never interferes with push, rebase, or `git branch`.
 
 ---

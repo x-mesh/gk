@@ -41,16 +41,106 @@ func TestResolver_ExplicitParentMissing(t *testing.T) {
 }
 
 func TestResolver_NoExplicitNoInference(t *testing.T) {
-	// No config, no inference (Phase 1 stub) → ok=false.
+	// No config and an empty reflog (no branchpoint) → ok=false.
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"config --get branch.feat/x.gk-parent": {ExitCode: 1},
+			"log -g --format=%H refs/heads/feat/x": {Stdout: ""},
 		},
 	}
 	res := newResolverWithRunner(r)
 	_, _, ok := res.ResolveParent(context.Background(), "feat/x")
 	if ok {
-		t.Fatal("Phase 1 stub must return ok=false when no explicit value")
+		t.Fatal("must return ok=false when no explicit value and nothing to infer")
+	}
+}
+
+func TestResolver_InfersSingleCandidate(t *testing.T) {
+	// Branchpoint (oldest reflog entry) is contained by exactly one other
+	// local branch → that branch is the inferred parent.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent":                               {ExitCode: 1},
+			"log -g --format=%H refs/heads/feat/x":                               {Stdout: "cccc\nbbbb\naaaa\n"},
+			"for-each-ref --format=%(refname:short) --contains aaaa refs/heads/": {Stdout: "feat/x\nmain\n"},
+			"rev-parse --verify --quiet refs/heads/main":                         {Stdout: "abc\n"},
+		},
+	}
+	res := newResolverWithRunner(r)
+	parent, source, ok := res.ResolveParent(context.Background(), "feat/x")
+	if !ok || parent != "main" || source != SourceInferred {
+		t.Fatalf("want main/inferred/true, got %s/%s/%v", parent, source, ok)
+	}
+}
+
+func TestResolver_InferenceAmbiguousMultipleCandidates(t *testing.T) {
+	// Two candidate parents contain the branchpoint → ambiguous → no
+	// inference, ok=false.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent":                               {ExitCode: 1},
+			"log -g --format=%H refs/heads/feat/x":                               {Stdout: "bbbb\naaaa\n"},
+			"for-each-ref --format=%(refname:short) --contains aaaa refs/heads/": {Stdout: "develop\nfeat/x\nmain\n"},
+		},
+	}
+	res := newResolverWithRunner(r)
+	_, _, ok := res.ResolveParent(context.Background(), "feat/x")
+	if ok {
+		t.Fatal("multiple candidates must be ambiguous → ok=false")
+	}
+}
+
+func TestResolver_InferenceSkipsMissingReflog(t *testing.T) {
+	// Reflog read failing (expired/absent) degrades to "no inference",
+	// never an error surfaced to the caller.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent": {ExitCode: 1},
+			"log -g --format=%H refs/heads/feat/x": {ExitCode: 128, Stderr: "fatal: no reflog"},
+		},
+	}
+	res := newResolverWithRunner(r)
+	_, _, ok := res.ResolveParent(context.Background(), "feat/x")
+	if ok {
+		t.Fatal("missing reflog must return ok=false")
+	}
+}
+
+func TestResolver_ExplicitOnlySkipsInference(t *testing.T) {
+	// ExplicitOnly (the land/promote mode) must not touch the reflog at
+	// all — merge destinations never come from a heuristic.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent": {ExitCode: 1},
+		},
+	}
+	res := newResolverWithRunner(r).ExplicitOnly()
+	_, _, ok := res.ResolveParent(context.Background(), "feat/x")
+	if ok {
+		t.Fatal("ExplicitOnly must return ok=false without explicit config")
+	}
+	for _, call := range r.Calls {
+		if len(call.Args) > 0 && call.Args[0] == "log" {
+			t.Fatal("ExplicitOnly must not read the reflog")
+		}
+	}
+}
+
+func TestResolver_InferredParentMustExist(t *testing.T) {
+	// Inference names a branch whose ref then fails verification (racy
+	// delete) → fall back to ok=false rather than returning a dead ref.
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"config --get branch.feat/x.gk-parent":                               {ExitCode: 1},
+			"log -g --format=%H refs/heads/feat/x":                               {Stdout: "aaaa\n"},
+			"for-each-ref --format=%(refname:short) --contains aaaa refs/heads/": {Stdout: "feat/x\ngone\n"},
+			"rev-parse --verify --quiet refs/heads/gone":                         {ExitCode: 1},
+		},
+	}
+	res := newResolverWithRunner(r)
+	_, _, ok := res.ResolveParent(context.Background(), "feat/x")
+	if ok {
+		t.Fatal("inferred parent whose ref vanished must return ok=false")
 	}
 }
 

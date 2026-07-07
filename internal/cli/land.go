@@ -637,7 +637,10 @@ func resolvePromoteHops(ctx context.Context, errW io.Writer, runner *git.ExecRun
 		return "", "", nil, fmt.Errorf("promote: resolve current branch: %w", err)
 	}
 	current = strings.TrimSpace(cb)
-	resolver := branchparent.NewResolver(client)
+	// Explicit-only: promote hops are merge destinations, so reflog
+	// inference must not pick them — only gk-parent config or the trunk
+	// fallback below may.
+	resolver := branchparent.NewResolver(client).ExplicitOnly()
 	trunk := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
 
 	if spec == landPromoteUseBase {

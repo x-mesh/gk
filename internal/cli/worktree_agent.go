@@ -557,7 +557,12 @@ func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git
 }
 
 func cleanupMergeTarget(ctx context.Context, runner git.Runner, base, branch string) string {
-	return branchparent.NewResolver(git.NewClient(runner)).ResolveBase(ctx, branch, base)
+	// ExplicitOnly: branch deletion is destructive, so the merge target must
+	// come from an explicit gk-parent or the trunk fallback — never a heuristic
+	// inference. Otherwise a branch forked off a single non-trunk sibling would
+	// be judged "merged" into that guess and deleted despite never reaching the
+	// real trunk (same guard land.go applies to its hop targets).
+	return branchparent.NewResolver(git.NewClient(runner)).ExplicitOnly().ResolveBase(ctx, branch, base)
 }
 
 func applyWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, candidates []worktreeCleanupEntry) (removed, failed []worktreeCleanupEntry) {

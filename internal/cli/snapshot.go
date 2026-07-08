@@ -72,8 +72,10 @@ from the snapshot are left untouched.`,
 		Use:   "diff [n]",
 		Short: "Diff snapshot n (default 0, the latest) against the working tree",
 		Long: `Shows what changed between snapshot <n> (default 0, the latest) and the
-current working tree — the same direction a restore would apply, so added
-lines are what restore would bring back.`,
+current working tree (diff is snapshot → working tree). A restore replays the
+opposite direction, so removed (-) lines are the snapshot content a restore
+would bring back, and added (+) lines are your current work a restore would
+discard.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runSnapshotDiff,
 	}
@@ -120,7 +122,7 @@ func runSnapshotSave(cmd *cobra.Command, _ []string) error {
 	if created {
 		// Retention is best-effort by design: a failed expire must never
 		// fail the save — the snapshot IS the safety net.
-		if cfg, cfgErr := config.Load(nil); cfgErr == nil && cfg.Snapshot.RetentionDays > 0 {
+		if cfg, cfgErr := config.Load(cmd.Flags()); cfgErr == nil && cfg.Snapshot.RetentionDays > 0 {
 			_ = expireSnapshotEntries(cmd.Context(), runner, ref, cfg.Snapshot.RetentionDays)
 		}
 	}
@@ -384,7 +386,7 @@ func runSnapshotPrune(cmd *cobra.Command, _ []string) error {
 
 	days, _ := cmd.Flags().GetInt("keep-days")
 	if !cmd.Flags().Changed("keep-days") {
-		if cfg, err := config.Load(nil); err == nil && cfg.Snapshot.RetentionDays > 0 {
+		if cfg, err := config.Load(cmd.Flags()); err == nil && cfg.Snapshot.RetentionDays > 0 {
 			days = cfg.Snapshot.RetentionDays
 		}
 	}

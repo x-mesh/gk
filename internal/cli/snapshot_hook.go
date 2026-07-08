@@ -76,6 +76,13 @@ func snapshotHookSettingsPath(cmd *cobra.Command) (string, error) {
 		}
 		return filepath.Join(strings.TrimSpace(string(out)), ".claude", "settings.json"), nil
 	}
+	// Honor $CLAUDE_CONFIG_DIR (same as `gk agents hook`, claudeSettingsPath) —
+	// a user who relocated their Claude config would otherwise get the hook
+	// written to ~/.claude/settings.json, a file Claude Code never reads, so
+	// auto-snapshot would silently never fire.
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "settings.json"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locate home directory: %w", err)
@@ -109,15 +116,26 @@ func loadHookSettings(path string) (map[string]any, error) {
 	return settings, nil
 }
 
+// saveHookSettings writes the updated settings back, preserving the existing
+// file's permission bits and backing it up to <path>.bak first — the same
+// safety agents_hook.go's writeSettings gives — so a shared settings.json is
+// never silently reduced to 0o644 or lost on a bad write.
 func saveHookSettings(path string, settings map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode settings: %w", err)
 	}
-	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if fi, statErr := os.Stat(path); statErr == nil {
+		perm = fi.Mode().Perm()
+		if existing, rerr := os.ReadFile(path); rerr == nil {
+			_ = os.WriteFile(path+".bak", existing, perm)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), perm); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
@@ -146,7 +164,11 @@ func snapshotHookOwned(entry any) bool {
 		return false
 	}
 	cmdStr, _ := m["command"].(string)
-	return strings.HasPrefix(strings.TrimSpace(cmdStr), "gk snapshot")
+	// Match the managed command itself (and user-tuned variants like
+	// "gk snapshot -q -m note"), but NOT unrelated snapshot commands such as
+	// "gk snapshots" or "gk snapshot list" — those would make install a no-op
+	// and uninstall delete a hook we never owned.
+	return strings.HasPrefix(strings.TrimSpace(cmdStr), snapshotHookCommand)
 }
 
 func snapshotHookInstalled(settings map[string]any) bool {

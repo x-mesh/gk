@@ -121,7 +121,7 @@ func runSnapshotSave(cmd *cobra.Command, _ []string) error {
 		// Retention is best-effort by design: a failed expire must never
 		// fail the save — the snapshot IS the safety net.
 		if cfg, cfgErr := config.Load(nil); cfgErr == nil && cfg.Snapshot.RetentionDays > 0 {
-			expireSnapshotEntries(cmd.Context(), runner, ref, cfg.Snapshot.RetentionDays)
+			_ = expireSnapshotEntries(cmd.Context(), runner, ref, cfg.Snapshot.RetentionDays)
 		}
 	}
 	if quiet {

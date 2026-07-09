@@ -203,12 +203,15 @@ base.
 
 ### Base branch auto-detection
 
-When `--base` is not set and `base_branch` is not configured, gk probes:
+When `--base` is not set, gk resolves the base in priority order:
 
-1. `origin/HEAD` (remote default branch)
-2. `develop`
-3. `main`
-4. `master`
+1. recorded `gk-parent` — the branch this one forked from (`gk wt add` records it
+   automatically; `gk branch set-parent` sets it manually). Only an explicit
+   `gk-parent` is used here — sync never adopts a reflog-inferred parent as a
+   rebase target. A branch cut from `develop` therefore syncs onto `develop`.
+2. `base_branch` config
+3. `origin/HEAD` (remote default branch)
+4. `develop` → `main` → `master` fallback
 
 ### Examples
 

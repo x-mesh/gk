@@ -546,6 +546,120 @@ func TestNvidiaEmptyResponseBody(t *testing.T) {
 	}
 }
 
+// TestNvidiaClassifyRetriesOnMalformedContent verifies a Classify call
+// whose first response is plain prose (no JSON at all — the ai-mesh
+// gateway misfire this retry was added for) is retried once and
+// succeeds on a well-formed second response.
+func TestNvidiaClassifyRetriesOnMalformedContent(t *testing.T) {
+	client := &FakeHTTPClient{
+		Responses: []*http.Response{
+			okResponse(chatResponse{
+				Model:   "test-model",
+				Choices: []chatChoice{{Message: chatMessage{Content: "I'm sorry, I can't help with that."}}},
+			}),
+			okResponse(chatResponse{
+				Model:   "test-model",
+				Choices: []chatChoice{{Message: chatMessage{Content: validClassifyContent()}}},
+			}),
+		},
+	}
+	nv := newTestNvidia(client, "test-key")
+
+	res, err := nv.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "added", DiffHint: "+pkg\n"}},
+		AllowedTypes: []string{"feat"},
+	})
+	if err != nil {
+		t.Fatalf("Classify() after retry: %v", err)
+	}
+	if len(res.Groups) != 1 {
+		t.Errorf("Groups = %d, want 1", len(res.Groups))
+	}
+	if len(client.Calls) != 2 {
+		t.Errorf("HTTP calls = %d, want 2 (one content retry)", len(client.Calls))
+	}
+}
+
+// TestNvidiaClassifyExhaustsContentRetries verifies the retry budget is
+// bounded — once maxContentRetry re-requests are spent, the last error
+// surfaces instead of retrying forever.
+func TestNvidiaClassifyExhaustsContentRetries(t *testing.T) {
+	badResp := func() *http.Response {
+		return okResponse(chatResponse{
+			Model:   "test-model",
+			Choices: []chatChoice{{Message: chatMessage{Content: "I'm sorry, I can't help with that."}}},
+		})
+	}
+	client := &FakeHTTPClient{Responses: []*http.Response{badResp(), badResp(), badResp()}}
+	nv := newTestNvidia(client, "test-key")
+
+	_, err := nv.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "added", DiffHint: "+pkg\n"}},
+		AllowedTypes: []string{"feat"},
+	})
+	if !errors.Is(err, ErrProviderResponse) {
+		t.Errorf("got %v, want ErrProviderResponse", err)
+	}
+	if len(client.Calls) != maxContentRetry+1 {
+		t.Errorf("HTTP calls = %d, want %d (retry budget exhausted, no more)", len(client.Calls), maxContentRetry+1)
+	}
+}
+
+// TestNvidiaClassifyNoRetryOnTruncatedJSON verifies a response cut off
+// mid-JSON is NOT retried — the same token budget would almost always
+// truncate again, so the actionable "cut off mid-JSON" message should
+// surface immediately instead of burning a retry.
+func TestNvidiaClassifyNoRetryOnTruncatedJSON(t *testing.T) {
+	client := &FakeHTTPClient{
+		Responses: []*http.Response{okResponse(chatResponse{
+			Model:   "test-model",
+			Choices: []chatChoice{{Message: chatMessage{Content: `{"groups":[{"type":"feat","files":["a.go"]`}}},
+		})},
+	}
+	nv := newTestNvidia(client, "test-key")
+
+	_, err := nv.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "added", DiffHint: "+pkg\n"}},
+		AllowedTypes: []string{"feat"},
+	})
+	if !errors.Is(err, ErrProviderResponse) {
+		t.Errorf("got %v, want ErrProviderResponse", err)
+	}
+	if len(client.Calls) != 1 {
+		t.Errorf("HTTP calls = %d, want 1 (no retry on truncation)", len(client.Calls))
+	}
+}
+
+// TestNvidiaComposeRetriesOnMalformedContent mirrors the Classify retry
+// but for Compose: valid JSON missing the required "subject" field is a
+// content-shape failure, not a transport one, so it should be retried.
+func TestNvidiaComposeRetriesOnMalformedContent(t *testing.T) {
+	client := &FakeHTTPClient{
+		Responses: []*http.Response{
+			okResponse(chatResponse{
+				Model:   "test-model",
+				Choices: []chatChoice{{Message: chatMessage{Content: `{"unexpected":"shape"}`}}},
+			}),
+			okResponse(chatResponse{
+				Model:   "test-model",
+				Choices: []chatChoice{{Message: chatMessage{Content: validComposeContent()}}},
+			}),
+		},
+	}
+	nv := newTestNvidia(client, "test-key")
+
+	res, err := nv.Compose(context.Background(), ComposeInput{})
+	if err != nil {
+		t.Fatalf("Compose() after retry: %v", err)
+	}
+	if res.Subject != "add feature" {
+		t.Errorf("Subject = %q, want %q", res.Subject, "add feature")
+	}
+	if len(client.Calls) != 2 {
+		t.Errorf("HTTP calls = %d, want 2 (one content retry)", len(client.Calls))
+	}
+}
+
 // TestInvokeFiresHTTPHook verifies the debug HTTPHook is invoked once per
 // provider call with the brand, the *requested* model, and the final
 // error — the signal the `-d` debug log surfaces for `--ai` round-trips.

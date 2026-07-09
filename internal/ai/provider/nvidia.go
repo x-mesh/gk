@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -87,33 +88,62 @@ func (n *Nvidia) Available(_ context.Context) error {
 // Classify implements Provider.
 func (n *Nvidia) Classify(ctx context.Context, in ClassifyInput) (ClassifyResult, error) {
 	userPrompt := buildClassifyUserPrompt(in, string(concatFileDiffs(in.Files)))
-	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, classifyMaxTokens(len(in.Files)))
-	if err != nil {
-		return ClassifyResult{}, err
+	var lastErr error
+	for attempt := 0; attempt <= maxContentRetry; attempt++ {
+		content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, classifyMaxTokens(len(in.Files)))
+		if err != nil {
+			return ClassifyResult{}, err
+		}
+		res, err := parseClassifyResponse([]byte(content), in.Files)
+		if err == nil {
+			res.Model = model
+			res.TokensUsed = tokens
+			return res, nil
+		}
+		lastErr = err
+		if !isRetryableContentErr(err) || attempt == maxContentRetry {
+			return ClassifyResult{}, err
+		}
 	}
-	res, err := parseClassifyResponse([]byte(content), in.Files)
-	if err != nil {
-		return ClassifyResult{}, err
-	}
-	res.Model = model
-	res.TokensUsed = tokens
-	return res, nil
+	return ClassifyResult{}, lastErr
 }
 
 // Compose implements Provider.
 func (n *Nvidia) Compose(ctx context.Context, in ComposeInput) (ComposeResult, error) {
 	userPrompt := buildComposeUserPrompt(in)
-	content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, 0)
-	if err != nil {
-		return ComposeResult{}, err
+	var lastErr error
+	for attempt := 0; attempt <= maxContentRetry; attempt++ {
+		content, model, tokens, err := n.invoke(ctx, systemPrompt, userPrompt, true, 0)
+		if err != nil {
+			return ComposeResult{}, err
+		}
+		res, err := parseComposeResponse([]byte(content))
+		if err == nil {
+			res.Model = model
+			res.TokensUsed = tokens
+			return res, nil
+		}
+		lastErr = err
+		if !isRetryableContentErr(err) || attempt == maxContentRetry {
+			return ComposeResult{}, err
+		}
 	}
-	res, err := parseComposeResponse([]byte(content))
-	if err != nil {
-		return ComposeResult{}, err
-	}
-	res.Model = model
-	res.TokensUsed = tokens
-	return res, nil
+	return ComposeResult{}, lastErr
+}
+
+// maxContentRetry caps re-requests when the HTTP call succeeds but the
+// model's content doesn't parse as the requested JSON shape (e.g. prose
+// instead of JSON). This is a content-quality retry, distinct from
+// send()'s transport-level 429/5xx retries — a re-roll of the same
+// prompt often yields valid JSON on the next attempt.
+const maxContentRetry = 1
+
+// isRetryableContentErr reports whether a Classify/Compose parse failure
+// is worth re-requesting. Truncated JSON is excluded: retrying with the
+// same token budget almost always truncates again, so that case surfaces
+// its actionable message (fewer files / gk commit --plan -) instead.
+func isRetryableContentErr(err error) bool {
+	return errors.Is(err, ErrProviderResponse) && !errors.Is(err, errTruncatedJSON)
 }
 
 // Summarize implements Summarizer. Unlike Classify/Compose the output

@@ -98,7 +98,7 @@ func parseClassifyResponse(raw []byte, files []FileChange) (ClassifyResult, erro
 	var parsed classifyJSON
 	if err := tryJSONDecode(trimmed, &parsed); err != nil {
 		if errors.Is(err, errTruncatedJSON) {
-			return ClassifyResult{}, fmt.Errorf("%w: the AI response was cut off mid-JSON — the provider hit its response token limit. Retry (gk scales the response cap with file count), or split the change: stage a subset, or group it yourself with `gk commit --plan -`", ErrProviderResponse)
+			return ClassifyResult{}, fmt.Errorf("%w: %w: the AI response was cut off mid-JSON — the provider hit its response token limit. Retry (gk scales the response cap with file count), or split the change: stage a subset, or group it yourself with `gk commit --plan -`", ErrProviderResponse, errTruncatedJSON)
 		}
 		return ClassifyResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
 	}

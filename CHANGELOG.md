@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.114.1] - 2026-07-09
+
 ### Fixed
 
 - **`gk commit`이 provider의 JSON 대신 prose 응답에 재시도한다.** OpenAI 호환 게이트웨이가 `response_format=json_object`를 무시하고 `"I'm sorry, …"` 같은 산문을 뱉으면 classify가 `provider returned malformed response: invalid character 'I'`로 즉사했다 — HTTP는 200이라 기존 429/5xx 전송 재시도 경로를 타지 않았기 때문이다. 이제 classify/compose는 HTTP는 성공했지만 콘텐츠가 요청한 JSON 모양이 아닌 경우를 별도로 감지해 같은 요청을 1회 재발송한다(`maxContentRetry`). 응답이 토큰 한도로 잘린 경우(`errTruncatedJSON`)는 재시도해도 또 잘리므로 제외하고 기존의 "파일 수를 줄이거나 `gk commit --plan -`" 안내를 그대로 띄운다. openai·groq는 nvidia 어댑터 위임으로 자동 적용된다. 5모델×2렌즈 cross-vendor 리뷰가 compose 쪽 갭을 잡아냈다: compose의 plain-text fallback이 prose 첫 줄을 커밋 subject로 받아들여 재시도를 건너뛰던 문제를, json_object 모드 전용 strict 파서(`parseComposeJSON`, fallback 없음)를 분리해 막았다 — prose는 이제 compose에서도 재시도되고 소진되면 쓰레기 subject 대신 명확한 에러로 실패한다. CLI 어댑터(gemini/qwen/kiro)는 markdown을 정상 반환하므로 lenient fallback을 유지한다.

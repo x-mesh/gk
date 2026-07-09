@@ -11,6 +11,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
@@ -110,6 +111,11 @@ func runSyncCore(cmd *cobra.Command) error {
 	}
 
 	base, _ := cmd.Flags().GetString("base")
+	// An explicitly empty --base ("") is treated as unset, not as an override:
+	// it falls through to the config base below AND must not suppress the
+	// gk-parent resolution — otherwise `--base ""` would silently pin to
+	// config/origin, contradicting the empty-means-auto-detect intent.
+	baseExplicit := cmd.Flags().Changed("base") && base != ""
 	if base == "" {
 		base = cfg.BaseBranch
 	}
@@ -152,6 +158,27 @@ func runSyncCore(cmd *cobra.Command) error {
 		remote = "origin"
 	}
 
+	currentBranch, err := client.CurrentBranch(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot determine current branch: %w", err)
+	}
+
+	// Base resolution priority: explicit --base > recorded gk-parent >
+	// config base > origin/HEAD. The gk-parent (the branch this one forked
+	// from) is a more specific base than the repo-wide default, so a worktree
+	// cut from develop syncs onto develop rather than main — matching how
+	// status picks its comparison base (status_branch.go). Resolving the
+	// parent before the DefaultBranch lookup also lets a branch with a
+	// recorded parent sync in a repo that has no remote configured.
+	//
+	// ExplicitOnly: sync rebases onto the base, so — like land's merge
+	// destination — the target must come from an explicit gk-parent, never a
+	// reflog heuristic. An unset parent falls through to origin/HEAD.
+	if !baseExplicit {
+		if parent, _, ok := branchparent.NewResolver(client).ExplicitOnly().ResolveParent(ctx, currentBranch); ok {
+			base = parent
+		}
+	}
 	if base == "" {
 		detected, err := client.DefaultBranch(ctx, remote)
 		if err != nil {
@@ -159,13 +186,9 @@ func runSyncCore(cmd *cobra.Command) error {
 		}
 		base = detected
 	}
+
 	if err := client.CheckRefFormat(ctx, base); err != nil {
 		return fmt.Errorf("invalid base branch %q: %w", base, err)
-	}
-
-	currentBranch, err := client.CurrentBranch(ctx)
-	if err != nil {
-		return fmt.Errorf("cannot determine current branch: %w", err)
 	}
 	if currentBranch == base {
 		return fmt.Errorf("current branch is the base branch (%s); nothing to sync", base)

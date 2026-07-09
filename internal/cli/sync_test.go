@@ -532,3 +532,125 @@ func TestSyncCmd_LocalBaseMissing(t *testing.T) {
 		t.Errorf("expected 'local main does not exist' in error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Scenario — fork-parent base resolution
+// ---------------------------------------------------------------------------
+
+// setupForkedFromDevelop builds a downstream where origin/HEAD points at main
+// but the branch feat/x was forked from a local develop that is ahead of main,
+// with `branch.feat/x.gk-parent = develop` recorded (as `gk wt add` would).
+func setupForkedFromDevelop(t *testing.T) *testutil.Repo {
+	t.Helper()
+	upstream := testutil.NewRepo(t)
+	upstream.WriteFile("a.txt", "hello\n")
+	upstream.Commit("init")
+
+	downstream := testutil.NewRepo(t)
+	downstream.AddRemote("origin", upstream.Dir)
+	downstream.RunGit("fetch", "origin")
+	downstream.SetRemoteHEAD("origin", "main") // DefaultBranch → main
+	downstream.RunGit("branch", "--set-upstream-to=origin/main", "main")
+	downstream.RunGit("reset", "--hard", "origin/main")
+
+	// develop forks from main and advances one commit.
+	downstream.CreateBranch("develop")
+	downstream.Checkout("develop")
+	downstream.WriteFile("b.txt", "dev\n")
+	downstream.Commit("develop ahead")
+
+	// feat/x forks from develop; record the parent metadata gk wt add writes.
+	downstream.CreateBranch("feat/x")
+	downstream.Checkout("feat/x")
+	downstream.RunGit("config", "branch.feat/x.gk-parent", "develop")
+	return downstream
+}
+
+// TestSyncCmd_ForkParentOverridesDefault proves the reported bug is fixed: a
+// worktree cut from develop must sync onto develop, not the repo-wide
+// origin/HEAD (main). renderSyncSummary names the integration base, so the
+// "Already up to date with <base>" line is the observable signal.
+func TestSyncCmd_ForkParentOverridesDefault(t *testing.T) {
+	downstream := setupForkedFromDevelop(t)
+
+	root, buf := buildSyncCmd(downstream.Dir) // no --base
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "up to date with develop") {
+		t.Errorf("expected sync to integrate develop (the gk-parent), got:\n%s", out)
+	}
+	if strings.Contains(out, "with main") {
+		t.Errorf("sync used main despite gk-parent=develop:\n%s", out)
+	}
+}
+
+// TestSyncCmd_ExplicitBaseBeatsForkParent confirms an explicit --base still
+// wins over the recorded gk-parent: the user's invocation-time choice is
+// authoritative. feat/x contains main (develop ⊇ main), so the summary reads
+// "up to date with main".
+func TestSyncCmd_ExplicitBaseBeatsForkParent(t *testing.T) {
+	downstream := setupForkedFromDevelop(t)
+
+	root, buf := buildSyncCmd(downstream.Dir, "--base", "main")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync --base main failed: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "up to date with main") {
+		t.Errorf("expected explicit --base main to win over gk-parent, got:\n%s", out)
+	}
+}
+
+// TestSyncCmd_IgnoresInferredParent locks the ExplicitOnly() guarantee: sync
+// must NOT adopt a reflog-inferred parent as its rebase target — only an
+// explicit gk-parent. feat/x forks from develop (so branchparent inference
+// would name develop) but records NO gk-parent, so sync must fall through to
+// origin/HEAD (main). Removing `.ExplicitOnly()` from runSyncCore makes this
+// test fail (base becomes the inferred develop) — that is the point.
+func TestSyncCmd_IgnoresInferredParent(t *testing.T) {
+	downstream := setupForkedFromDevelop(t)
+	// Drop the explicit metadata; leave the develop branchpoint intact so
+	// inference *would* fire if it were consulted.
+	downstream.RunGit("config", "--unset", "branch.feat/x.gk-parent")
+
+	root, buf := buildSyncCmd(downstream.Dir) // no --base
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "up to date with main") {
+		t.Errorf("sync adopted an inferred parent; ExplicitOnly should pin origin/HEAD (main), got:\n%s", out)
+	}
+	if strings.Contains(out, "with develop") {
+		t.Errorf("sync used the inferred develop parent despite ExplicitOnly:\n%s", out)
+	}
+}
+
+// TestSyncCmd_ForkParentNoRemote proves the resolution order (gk-parent before
+// DefaultBranch): a repo with NO remote — where origin/HEAD cannot be resolved
+// — still syncs onto the recorded gk-parent instead of failing with "could not
+// determine base branch". Guards the ordering that the parent lookup precedes
+// the DefaultBranch call.
+func TestSyncCmd_ForkParentNoRemote(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hello\n")
+	repo.Commit("init")
+	repo.CreateBranch("develop")
+	repo.Checkout("develop")
+	repo.WriteFile("b.txt", "dev\n")
+	repo.Commit("develop ahead")
+	repo.CreateBranch("feat/x")
+	repo.Checkout("feat/x")
+	repo.RunGit("config", "branch.feat/x.gk-parent", "develop")
+
+	root, buf := buildSyncCmd(repo.Dir) // no remote, no --base
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed in remote-less repo with gk-parent: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "up to date with develop") {
+		t.Errorf("expected sync onto gk-parent develop without a remote, got:\n%s", out)
+	}
+}

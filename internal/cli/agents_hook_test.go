@@ -10,12 +10,27 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tidwall/gjson"
+
+	"github.com/x-mesh/gk/internal/sessionaudit"
 )
 
 func hookRunOutput(t *testing.T, stdin string, warn bool) string {
 	t.Helper()
 	cmd := &cobra.Command{}
 	cmd.Flags().Bool("warn", warn, "")
+	cmd.SetIn(strings.NewReader(stdin))
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runAgentsHookRun(cmd, nil); err != nil {
+		t.Fatalf("runAgentsHookRun: %v", err)
+	}
+	return buf.String()
+}
+
+func hookRunOutputMode(t *testing.T, stdin, mode string) string {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.Flags().String("mode", mode, "")
 	cmd.SetIn(strings.NewReader(stdin))
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -69,6 +84,85 @@ func TestAgentsHookRun_CollapseNudge(t *testing.T) {
 	out = hookRunOutput(t, stdin, true)
 	if strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "fold it and this one") {
 		t.Errorf("unrelated command must not get a collapse nudge: %s", out)
+	}
+}
+
+func TestHookDecide(t *testing.T) {
+	covered := sessionaudit.HintResult{
+		Covered: true, CoveredBy: []string{"git-kit context"},
+		Suggestion: "Use git-kit context …", Matched: "git status",
+	}
+	uncovered := sessionaudit.HintResult{}
+	nudge := &sessionaudit.CollapseNudge{
+		Group: "context", GkCommand: "git-kit context", PriorTurns: 1,
+		Recent: []string{"git status"},
+	}
+
+	cases := []struct {
+		name         string
+		mode         string
+		res          sessionaudit.HintResult
+		nudge        *sessionaudit.CollapseNudge
+		wantDecision string
+	}{
+		{"warn/single", hookModeWarn, covered, nil, "defer"},
+		{"warn/reprobe", hookModeWarn, covered, nudge, "defer"},
+		{"collapse/single-advisory", hookModeCollapse, covered, nil, "defer"},
+		{"collapse/reprobe-denied", hookModeCollapse, covered, nudge, "deny"},
+		{"block/single-denied", hookModeBlock, covered, nil, "deny"},
+		{"block/reprobe-denied", hookModeBlock, covered, nudge, "deny"},
+		{"any/nothing", hookModeBlock, uncovered, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, reason, addl := hookDecide(tc.mode, tc.res, tc.nudge)
+			if decision != tc.wantDecision {
+				t.Fatalf("decision = %q, want %q", decision, tc.wantDecision)
+			}
+			switch decision {
+			case "deny":
+				if reason == "" || addl != "" {
+					t.Errorf("deny must carry reason, no additionalContext: reason=%q addl=%q", reason, addl)
+				}
+			case "defer":
+				if addl == "" || reason != "" {
+					t.Errorf("defer must carry additionalContext, no reason: reason=%q addl=%q", reason, addl)
+				}
+			case "":
+				if reason != "" || addl != "" {
+					t.Errorf("no-op must be empty: reason=%q addl=%q", reason, addl)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentsHookRun_CollapseModeDeniesReprobe(t *testing.T) {
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	content := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}`,
+		`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git log --oneline -5"}}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(tp, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A lone covered command in collapse mode is advisory (defer), not blocked —
+	// a one-off `git status` must stay cheap.
+	single := `{"tool_name":"Bash","tool_input":{"command":"git status --short"}}`
+	if out := hookRunOutputMode(t, single, hookModeCollapse); gjson.Get(out, "hookSpecificOutput.permissionDecision").String() != "defer" {
+		t.Errorf("collapse mode, lone command should defer, got: %s", out)
+	}
+
+	// The second same-group probe (pending git diff --stat continues the context
+	// run) is the wasteful pattern — collapse mode denies it.
+	reprobe := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git diff --stat"}}`, tp)
+	out := hookRunOutputMode(t, reprobe, hookModeCollapse)
+	if gjson.Get(out, "hookSpecificOutput.permissionDecision").String() != "deny" {
+		t.Fatalf("collapse mode, re-probe should deny, got: %s", out)
+	}
+	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.permissionDecisionReason").String(), "git-kit context") {
+		t.Errorf("deny reason should point to git-kit context: %s", out)
 	}
 }
 

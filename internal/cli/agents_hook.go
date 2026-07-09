@@ -22,6 +22,21 @@ import (
 // the user's other hooks.
 const gkHookMarker = "agents hook run"
 
+// Hook enforcement levels, from least to most strict:
+//
+//	warn     — never deny; surface an advisory note the agent may ignore.
+//	collapse — deny only a confirmed re-probe (a second same-group raw-git
+//	           command that git-kit context/… would have folded into one call),
+//	           but keep a lone covered command advisory. The targeted lever for
+//	           the biggest turn sink (repeated orientation probes) without
+//	           blocking a legitimate one-off `git status`.
+//	block    — deny any covered raw-git command (and any re-probe).
+const (
+	hookModeWarn     = "warn"
+	hookModeCollapse = "collapse"
+	hookModeBlock    = "block"
+)
+
 // newAgentsHookCmd builds `gk agents hook`, the Claude Code enforcement lever
 // that complements the `gk agents install` instruction block: it registers a
 // PreToolUse(Bash) hook which routes raw git through git-kit at the point of
@@ -36,13 +51,17 @@ raw git toward git-kit at the moment a command runs — the enforcement companio
 to the instruction block from ` + "`gk agents install`" + `.
 
 The hook invokes ` + "`gk agents hook run`" + ` (this binary), which classifies the
-pending command with the same mapping ` + "`gk session audit`" + ` uses. Two modes:
-warn (default — the tool still runs, a note is surfaced to the agent) and block
-(the raw-git call is denied so the agent retries with git-kit). Read-only
-plumbing (rev-parse, config, …) and commands already on git-kit pass through.
+pending command with the same mapping ` + "`gk session audit`" + ` uses. Three modes:
+warn (default — the tool still runs, a note is surfaced to the agent), collapse
+(a lone covered command is only advised, but a second same-group probe — the
+repeated orientation the audit shows is the biggest turn sink — is denied so the
+agent folds it into one git-kit call), and block (any covered raw-git call is
+denied). Read-only plumbing (rev-parse, config, …) and commands already on
+git-kit pass through.
 
   gk agents hook install                 register in the repo's .claude/settings.json (warn)
-  gk agents hook install --mode block    deny covered raw git instead of warning
+  gk agents hook install --mode collapse deny only a repeated same-group probe
+  gk agents hook install --mode block    deny every covered raw git
   gk agents hook install --global        register in ~/.claude/settings.json (all projects)
   gk agents hook uninstall               remove the gk-managed hook (revert)
   gk agents hook status                  report install state for local + global
@@ -59,6 +78,7 @@ is written first, and --dry-run previews without writing.`,
 		RunE:   runAgentsHookRun,
 	}
 	run.Flags().Bool("warn", false, "warn instead of block (surface a note but let the command run)")
+	run.Flags().String("mode", "", "block | collapse | warn — enforcement level (overrides --warn)")
 	hook.AddCommand(run)
 
 	install := &cobra.Command{
@@ -67,7 +87,7 @@ is written first, and --dry-run previews without writing.`,
 		RunE:  runAgentsHookInstall,
 	}
 	install.Flags().Bool("global", false, "install into ~/.claude/settings.json instead of the repo's .claude/settings.json")
-	install.Flags().String("mode", "warn", "block | warn — deny covered raw git, or just surface a note")
+	install.Flags().String("mode", "warn", "block | collapse | warn — deny all covered raw git, deny only a repeated probe, or just surface a note")
 	install.Flags().Bool("dry-run", false, "preview the change without writing")
 	hook.AddCommand(install)
 
@@ -95,7 +115,7 @@ is written first, and --dry-run previews without writing.`,
 // tool, empty command, command git-kit does not cover) emits nothing and exits
 // 0, so it never blocks real work.
 func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
-	warn, _ := cmd.Flags().GetBool("warn")
+	mode := hookRunMode(cmd)
 	data, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
 		return nil
@@ -109,23 +129,56 @@ func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
 	}
 	res := sessionaudit.Hint(command)
 	nudge := collapseNudgeFromHook(data, command)
-	if !res.Covered {
-		// Not a single-command miss, but the command may still continue a recent
-		// raw run that one git-kit call would have folded — advisory only, never
-		// deny on a collapse signal alone.
-		if nudge != nil {
-			return emitHookDecision(cmd.OutOrStdout(), "defer", "", collapseMessage(nudge))
-		}
-		return nil // defer to the normal permission flow
+	decision, reason, addl := hookDecide(mode, res, nudge)
+	if decision == "" {
+		return nil // nothing to say → defer to the normal permission flow
 	}
-	msg := hookMessage(res)
+	return emitHookDecision(cmd.OutOrStdout(), decision, reason, addl)
+}
+
+// hookRunMode resolves the enforcement level from the stored hook command.
+// --mode wins; a legacy --warn maps to warn; a bare invocation defaults to
+// block (the pre-mode behavior). Reading an undefined flag is harmless — it
+// yields the zero value, so callers that only wire --warn still work.
+func hookRunMode(cmd *cobra.Command) string {
+	if m, _ := cmd.Flags().GetString("mode"); m != "" {
+		return m
+	}
+	if warn, _ := cmd.Flags().GetBool("warn"); warn {
+		return hookModeWarn
+	}
+	return hookModeBlock
+}
+
+// hookDecide computes the PreToolUse decision for a resolved mode given the
+// single-command hint and the optional real-time collapse signal. It is the one
+// place the three modes' semantics live, kept pure so it is unit-testable
+// without stdin/transcript plumbing. Returns ("","","") when there is nothing to
+// emit (fail-open: the command is fine, or needs no nudge).
+func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge) (decision, reason, additionalContext string) {
+	denyCollapse := nudge != nil && (mode == hookModeCollapse || mode == hookModeBlock)
+	denySingle := res.Covered && mode == hookModeBlock
+	if denyCollapse || denySingle {
+		return "deny", hookNoteText(res, nudge), ""
+	}
+	if res.Covered || nudge != nil {
+		return "defer", "", hookNoteText(res, nudge)
+	}
+	return "", "", ""
+}
+
+// hookNoteText joins the single-command hint and the collapse nudge into one
+// message (either may be empty), shared by the deny reason and the advisory
+// additionalContext so both modes phrase it identically.
+func hookNoteText(res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge) string {
+	var parts []string
+	if res.Covered {
+		parts = append(parts, hookMessage(res))
+	}
 	if nudge != nil {
-		msg += " " + collapseMessage(nudge)
+		parts = append(parts, collapseMessage(nudge))
 	}
-	if warn {
-		return emitHookDecision(cmd.OutOrStdout(), "defer", "", msg)
-	}
-	return emitHookDecision(cmd.OutOrStdout(), "deny", msg, "")
+	return strings.Join(parts, " ")
 }
 
 // hookTranscriptTail bounds how much of the live transcript the nudge reads:
@@ -231,8 +284,8 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 	global, _ := cmd.Flags().GetBool("global")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	mode, _ := cmd.Flags().GetString("mode")
-	if mode != "block" && mode != "warn" {
-		return fmt.Errorf("gk agents hook install: --mode must be block or warn, got %q", mode)
+	if mode != hookModeBlock && mode != hookModeCollapse && mode != hookModeWarn {
+		return fmt.Errorf("gk agents hook install: --mode must be block, collapse, or warn, got %q", mode)
 	}
 
 	path, scope, err := claudeSettingsPath(cmd, global)
@@ -244,7 +297,7 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	hookCmd := hookCommandString(mode == "warn")
+	hookCmd := hookCommandString(mode)
 	stripped, existed := stripGKHookEntries(data)
 	entry := map[string]any{
 		"matcher": "Bash",
@@ -465,10 +518,14 @@ func gkHookState(data []byte) (installed bool, mode string) {
 			return true
 		})
 		if found != "" {
-			if strings.Contains(found, "--warn") {
-				return true, "warn"
+			switch {
+			case strings.Contains(found, "--mode "+hookModeCollapse):
+				return true, hookModeCollapse
+			case strings.Contains(found, "--mode "+hookModeWarn), strings.Contains(found, "--warn"):
+				return true, hookModeWarn
+			default: // "--mode block" or a legacy bare install
+				return true, hookModeBlock
 			}
-			return true, "block"
 		}
 	}
 	return false, ""
@@ -476,17 +533,18 @@ func gkHookState(data []byte) (installed bool, mode string) {
 
 // hookCommandString is the settings.json command that invokes this binary's
 // handler. The absolute path (os.Executable) makes it robust to PATH/aliases;
-// it falls back to the bare name only if the path cannot be resolved.
-func hookCommandString(warn bool) string {
+// it falls back to the bare name only if the path cannot be resolved. The mode
+// is written as an explicit --mode flag so status readback (gkHookState) can
+// report it and a re-install can round-trip it.
+func hookCommandString(mode string) string {
 	self, err := os.Executable()
 	if err != nil || self == "" {
 		self = "git-kit"
 	}
-	cmd := fmt.Sprintf("%q agents hook run", self)
-	if warn {
-		cmd += " --warn"
+	if mode == "" {
+		mode = hookModeBlock
 	}
-	return cmd
+	return fmt.Sprintf("%q agents hook run --mode %s", self, mode)
 }
 
 func scopeLabel(scope string) string {

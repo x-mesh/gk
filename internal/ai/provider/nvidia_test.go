@@ -625,20 +625,29 @@ func TestNvidiaClassifyNoRetryOnTruncatedJSON(t *testing.T) {
 	if !errors.Is(err, ErrProviderResponse) {
 		t.Errorf("got %v, want ErrProviderResponse", err)
 	}
+	// The no-retry decision hinges on the errTruncatedJSON sentinel being
+	// wrapped into the chain (isRetryableContentErr excludes it). Assert the
+	// wrap directly so a regression in parse.go's double-%w surfaces here,
+	// not just as a silent extra HTTP call.
+	if !errors.Is(err, errTruncatedJSON) {
+		t.Errorf("got %v, want wrapped errTruncatedJSON", err)
+	}
 	if len(client.Calls) != 1 {
 		t.Errorf("HTTP calls = %d, want 1 (no retry on truncation)", len(client.Calls))
 	}
 }
 
-// TestNvidiaComposeRetriesOnMalformedContent mirrors the Classify retry
-// but for Compose: valid JSON missing the required "subject" field is a
-// content-shape failure, not a transport one, so it should be retried.
-func TestNvidiaComposeRetriesOnMalformedContent(t *testing.T) {
+// TestNvidiaComposeRetriesOnProse is the Compose counterpart to the
+// Classify prose retry: a prose reply ("I'm sorry, …") must be retried,
+// NOT silently accepted as a one-line subject. This is the gap the strict
+// parseComposeJSON path closes — the lenient parseComposeResponse would
+// return the prose as the commit subject and never consume the retry.
+func TestNvidiaComposeRetriesOnProse(t *testing.T) {
 	client := &FakeHTTPClient{
 		Responses: []*http.Response{
 			okResponse(chatResponse{
 				Model:   "test-model",
-				Choices: []chatChoice{{Message: chatMessage{Content: `{"unexpected":"shape"}`}}},
+				Choices: []chatChoice{{Message: chatMessage{Content: "I'm sorry, I can't help with that."}}},
 			}),
 			okResponse(chatResponse{
 				Model:   "test-model",
@@ -653,10 +662,33 @@ func TestNvidiaComposeRetriesOnMalformedContent(t *testing.T) {
 		t.Fatalf("Compose() after retry: %v", err)
 	}
 	if res.Subject != "add feature" {
-		t.Errorf("Subject = %q, want %q", res.Subject, "add feature")
+		t.Errorf("Subject = %q, want %q (prose must not leak through as subject)", res.Subject, "add feature")
 	}
 	if len(client.Calls) != 2 {
 		t.Errorf("HTTP calls = %d, want 2 (one content retry)", len(client.Calls))
+	}
+}
+
+// TestNvidiaComposeExhaustsContentRetries verifies prose that never
+// resolves surfaces ErrProviderResponse after the bounded retries — it
+// does NOT degrade to a prose subject on this JSON-mode path (contrast
+// with the lenient CLI-adapter parseComposeResponse fallback).
+func TestNvidiaComposeExhaustsContentRetries(t *testing.T) {
+	prose := func() *http.Response {
+		return okResponse(chatResponse{
+			Model:   "test-model",
+			Choices: []chatChoice{{Message: chatMessage{Content: "I'm sorry, I can't help with that."}}},
+		})
+	}
+	client := &FakeHTTPClient{Responses: []*http.Response{prose(), prose(), prose()}}
+	nv := newTestNvidia(client, "test-key")
+
+	_, err := nv.Compose(context.Background(), ComposeInput{})
+	if !errors.Is(err, ErrProviderResponse) {
+		t.Errorf("got %v, want ErrProviderResponse (prose must not become the subject)", err)
+	}
+	if len(client.Calls) != maxContentRetry+1 {
+		t.Errorf("HTTP calls = %d, want %d (retry budget exhausted)", len(client.Calls), maxContentRetry+1)
 	}
 }
 

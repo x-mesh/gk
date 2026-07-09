@@ -117,7 +117,13 @@ func (n *Nvidia) Compose(ctx context.Context, in ComposeInput) (ComposeResult, e
 		if err != nil {
 			return ComposeResult{}, err
 		}
-		res, err := parseComposeResponse([]byte(content))
+		// Strict JSON parse (no plain-text fallback): this path requests
+		// response_format=json_object, so a prose reply is a provider misfire
+		// worth retrying. parseComposeResponse's lenient fallback would
+		// instead accept the prose's first line as a "valid" subject and
+		// never consume the retry — the exact gap for the reported
+		// "invalid character 'I'" failure on the Compose side.
+		res, err := parseComposeJSON([]byte(content))
 		if err == nil {
 			res.Model = model
 			res.TokensUsed = tokens

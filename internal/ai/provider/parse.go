@@ -136,20 +136,46 @@ func parseClassifyResponse(raw []byte, files []FileChange) (ClassifyResult, erro
 	return out, nil
 }
 
-// parseComposeResponse extracts a ComposeResult from raw bytes.
+// parseComposeResponse extracts a ComposeResult from raw bytes, falling
+// back to a plain-text interpretation (first non-empty line = subject,
+// rest = body) when the payload is not JSON. CLI adapters (gemini / qwen /
+// kiro) that emit markdown or prose by default rely on this fallback.
+//
+// JSON-mode HTTP providers must NOT use this — see parseComposeJSON: the
+// plain-text fallback would accept a prose misfire ("I'm sorry, …") as a
+// one-line subject, masking a broken response that should be retried.
 func parseComposeResponse(raw []byte) (ComposeResult, error) {
 	trimmed := stripFences(strings.TrimSpace(string(raw)))
 	var parsed composeJSON
 	if err := tryJSONDecode(trimmed, &parsed); err != nil {
-		// Second-chance: plain-text fallback — treat the first non-empty
-		// line as the subject, rest as body. Adapters that can't emit
-		// JSON (or return markdown by default) lean on this.
+		// Second-chance: plain-text fallback.
 		subject, body := splitSubjectBody(strings.TrimSpace(string(raw)))
 		if subject == "" {
 			return ComposeResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
 		}
 		return ComposeResult{Subject: subject, Body: body}, nil
 	}
+	return composeFromJSON(parsed)
+}
+
+// parseComposeJSON parses the strict JSON compose shape with NO plain-text
+// fallback: any non-JSON payload (or JSON with an empty subject) is an
+// ErrProviderResponse. Providers that request response_format=json_object
+// (nvidia / openai / groq) use this so a prose reply is retryable instead
+// of being silently accepted as a subject by parseComposeResponse.
+func parseComposeJSON(raw []byte) (ComposeResult, error) {
+	trimmed := stripFences(strings.TrimSpace(string(raw)))
+	var parsed composeJSON
+	if err := tryJSONDecode(trimmed, &parsed); err != nil {
+		return ComposeResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
+	}
+	return composeFromJSON(parsed)
+}
+
+// composeFromJSON validates a decoded composeJSON and projects it onto a
+// ComposeResult. Shared by parseComposeResponse and parseComposeJSON so
+// the empty-subject check and footer filtering stay identical.
+func composeFromJSON(parsed composeJSON) (ComposeResult, error) {
 	if parsed.Subject == "" {
 		return ComposeResult{}, fmt.Errorf("%w: empty subject", ErrProviderResponse)
 	}

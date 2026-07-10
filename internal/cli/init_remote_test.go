@@ -503,3 +503,38 @@ func TestAddRemote(t *testing.T) {
 		t.Errorf("origin url after failed add = %q", got)
 	}
 }
+
+// TestPrintGHCreateHint_NoSourceCollision pins the fix for the origin-add
+// collision: init has already registered the remote, so the follow-up hint
+// must NOT tell the user to run `gh repo create --source . --push` (which
+// makes gh add its own origin and fail "Unable to add remote origin",
+// aborting the push). It must create the bare repo, then push over the
+// remote init set up.
+func TestPrintGHCreateHint_NoSourceCollision(t *testing.T) {
+	var buf bytes.Buffer
+	plan := &remotePlan{
+		RemoteName: "origin",
+		Meta:       config.CloneMeta{Host: "github.com", Owner: "x-mesh", Repo: "dbops"},
+	}
+	printGHCreateHint(&buf, plan)
+	out := buf.String()
+
+	if strings.Contains(out, "--source") || strings.Contains(out, "--push") {
+		t.Errorf("hint still suggests --source/--push (collides with init's origin):\n%s", out)
+	}
+	if !strings.Contains(out, "gh repo create x-mesh/dbops --private") {
+		t.Errorf("hint must create the bare repo:\n%s", out)
+	}
+	if !strings.Contains(out, "git push -u origin HEAD") {
+		t.Errorf("hint must push over the already-registered remote:\n%s", out)
+	}
+}
+
+// An empty owner/repo prints nothing (no host metadata to build a hint).
+func TestPrintGHCreateHint_EmptyMetaSilent(t *testing.T) {
+	var buf bytes.Buffer
+	printGHCreateHint(&buf, &remotePlan{RemoteName: "origin"})
+	if buf.Len() != 0 {
+		t.Errorf("no owner/repo → no hint, got: %q", buf.String())
+	}
+}

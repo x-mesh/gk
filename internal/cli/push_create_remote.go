@@ -69,10 +69,14 @@ func maybeCreateRemoteAndRetry(cmd *cobra.Command, runner git.Runner, remote, br
 		sc := bufio.NewScanner(cmd.InOrStdin())
 		if !sc.Scan() || !isYes(sc.Text()) {
 			// User declined — surface the original failure with the manual path.
+			// No `--source . --push`: origin is already configured (that's what
+			// this very push targets), so gh's own remote-add would collide with
+			// it. Create the bare repo, then push over the existing origin — the
+			// same split ghRepoCreate uses below.
 			fmt.Fprint(cmd.ErrOrStderr(), stderr)
 			return true, WithHint(
 				fmt.Errorf("push failed: remote repository %s does not exist", slug),
-				fmt.Sprintf("create it yourself: gh repo create %s --%s --source . --push", slug, vis),
+				fmt.Sprintf("create it yourself: gh repo create %s --%s && git push -u origin HEAD", slug, vis),
 			)
 		}
 	default:
@@ -81,7 +85,7 @@ func maybeCreateRemoteAndRetry(cmd *cobra.Command, runner git.Runner, remote, br
 		fmt.Fprint(cmd.ErrOrStderr(), stderr)
 		return true, WithRemedy(
 			fmt.Errorf("push failed: remote repository %s does not exist", slug),
-			fmt.Sprintf("pass --create-remote to create it, or run: gh repo create %s --%s --source . --push", slug, vis),
+			fmt.Sprintf("pass --create-remote to create it, or run: gh repo create %s --%s && git push -u origin HEAD", slug, vis),
 			errRemedy{Command: fmt.Sprintf("gk push --create-remote%s", publicFlagSuffix(public)), Safety: "safe"},
 		)
 	}

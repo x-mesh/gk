@@ -279,12 +279,22 @@ func executeRemotePlan(ctx context.Context, w io.Writer, gitRunner initx.GitRunn
 // not exist on the host yet. Informational only — creating the remote
 // repository is out of scope for init (network, auth, and visibility
 // decisions belong to the user / gh CLI).
+//
+// The hint deliberately does NOT use `gh repo create --source . --push`:
+// init has already registered the remote (plan.RemoteName), and
+// `--source .` makes gh try to add its own `origin`, which fails with
+// "Unable to add remote origin" the instant a remote of that name exists —
+// aborting the push it was supposed to do. So we split it: create the bare
+// repo, then push over the remote init already set up. (push_create_remote's
+// own ghRepoCreate takes the same --private-only approach for the same
+// reason.)
 func printGHCreateHint(w io.Writer, plan *remotePlan) {
 	if plan.Meta.Owner == "" || plan.Meta.Repo == "" {
 		return
 	}
 	fmt.Fprintf(w, "\nIf the repository does not exist on %s yet:\n", plan.Meta.Host)
-	fmt.Fprintf(w, "  gh repo create %s/%s --private --source . --push\n", plan.Meta.Owner, plan.Meta.Repo)
+	fmt.Fprintf(w, "  gh repo create %s/%s --private\n", plan.Meta.Owner, plan.Meta.Repo)
+	fmt.Fprintf(w, "  git push -u %s HEAD\n", plan.RemoteName)
 }
 
 // validProfileAlias reports whether name is safe as a clone.hosts key.

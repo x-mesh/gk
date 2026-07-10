@@ -192,7 +192,7 @@ func leanSessionReport(report sessionaudit.Report, withFiles bool) sessionAuditL
 			r.Commands = leanRunCommands(r.Commands)
 			tm.Runs[i] = r
 		}
-		lean.Report.Turns = &tm
+		lean.Turns = &tm
 	}
 	if len(report.Findings) > 0 {
 		findings := make([]sessionaudit.Finding, len(report.Findings))
@@ -200,7 +200,7 @@ func leanSessionReport(report sessionaudit.Report, withFiles bool) sessionAuditL
 			f.Evidence = leanEvidence(f.Evidence)
 			findings[i] = f
 		}
-		lean.Report.Findings = findings
+		lean.Findings = findings
 	}
 	return lean
 }

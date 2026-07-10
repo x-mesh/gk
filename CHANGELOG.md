@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk apply` — 실패하면 스스로 전략을 바꿔 재시도하는 패치 적용.** 에이전트가 raw `git apply` 주위에서 가장 많이 낭비하는 건 재시도 churn이다: `--check`로 찔러보고, 실패하면 `--recount`·`--unidiff-zero`·`--3way`를 손으로 순열 조합해 하나가 붙을 때까지 돌린다. `gk apply <patch-file>...`는 그 루프를 한 번의 호출로 접는다 — 각 패치가 `plain → --recount(헤더 줄 수 어긋남) → --recount --unidiff-zero(컨텍스트 0줄 패치) → --3way(컨텍스트 어긋난 패치의 3-way 병합)` 고정 사다리를 걷고, 어느 rung으로 적용됐는지 결과에 패치별로 기록한다. 패치를 여러 개 주면 전부-또는-전무다 — 하나라도 모든 전략이 실패하면 이미 적용된 패치까지 되돌린 뒤 실패를 보고한다. `--staged`/`--cached`는 워킹트리를 두고 인덱스에만 적용하고(`git apply --cached`), `--check`(및 전역 `--dry-run`)는 아무것도 바꾸지 않고 성공할 전략만 검사하되 3-way가 남길 충돌까지 예측하며 JSON 결과의 `result` 필드로 `applied`/`check`/`dry-run`을 구분한다. `--reverse`로 패치를 되돌리고, 정방향 적용이 실패했지만 역방향이 깨끗이 붙으면 "이미 적용됨"으로 판정해 `--reverse` remedy를 안내한다. git 2.35 미만은 `--cached`+`--3way` 조합을 모르므로 `--staged` 모드에선 3-way rung을 플래그 에러 대신 조용히 건너뛴다.
+- **`gk undo --soft` — HEAD만 옮기는 uncommit.** 종전 `gk undo`는 `--mixed`(기본, 워킹트리 보존)와 `--hard`(워킹트리까지 되돌림) 둘뿐이었다. `--soft`는 HEAD만 옮기고 인덱스와 워킹트리를 그대로 둔다 — 되돌린 커밋의 변경분이 staged 상태로 남으므로 squash 직전이나 커밋 메시지 재작성에 쓴다. `--mixed`/`--hard`와 똑같이 자동 백업 ref를 남기고, 비대화형 실행(`--json`/`GK_AGENT`/no-TTY)에서 `--to` 없는 맨 `gk undo --soft`는 "마지막 커밋 uncommit"인 `HEAD~1`을 기본 타깃으로 쓴다(대화형은 여전히 picker를 띄운다). `--soft`와 `--hard`는 상호배타다.
+- **`gk undo`가 모든 reset 모드에서 기계 판독용 결과를 낸다.** `--json`/`GK_AGENT`에서 `gk undo`는 이제 `{schema, result, from, to, backup_ref, mode}` 봉투를 반환한다 — `--list`와 빈 reflog 경로까지 포함해 성공 exit에 맨 산문을 흘리지 않으며, `mode`로 soft/mixed/hard를 구분한다.
+- **`gk session digest` — 한 세션의 git 활동을 이어받기용 ~1 KB 블록으로 압축.** 재개하거나 인계받은 에이전트가 status/log/diff 오리엔테이션 프로브를 다시 돌리는 대신 읽도록, 한 개의 Claude/Codex 세션 트랜스크립트에서 만진 repo·생성/전환한 브랜치·커밋 제목·통합 시도(및 에러 여부)·미완료 작업 신호·한 번의 gk 호출로 접힐 재프로브 그룹을 뽑아 짧은 블록으로 압축한다. `--last[=N]`은 기본 세션 루트(감사와 같은 루트)에서 N번째 최신 세션 파일을 고른다 — 맨 `--last`는 최신, `--last=2`는 직전 세션(살아 있는 에이전트 세션 안에서 부르면 최신 파일이 그 세션 자신의 트랜스크립트라 직전 인계는 `--last=2`). 로컬·읽기 전용이고 `--json`/`GK_AGENT`에서 표준 봉투를 낸다.
+- **`gk session audit`의 JSON/agent 출력이 기본적으로 토큰 절약형이다.** 전체 코퍼스 페이로드는 에이전트가 결정 시점에 쓰지 않는 필드가 지배한다(`files[]`가 바이트의 대부분, `runs[].commands`·`findings[].evidence`는 거의 같은 셸 줄의 반복). 이제 기본 JSON은 `files[]`를 생략하고(`--files`로 복원), `runs[].commands`를 3개×120자로 캡한 뒤 나머지를 `(+N more)` 마커로 접고, `findings[].evidence`는 2개로 캡한다. `--full`은 종전의 정확한 페이로드(files + 무캡 run 커맨드·evidence)를 복원하고, `--summary`는 결정에 필요한 부분집합만 낸다(`--full`과 상호배타). 16 KiB를 넘는 session-audit JSON은 들여쓰기 없이 compact로 내보낸다.
+- **`gk session audit`가 `git restore --staged`와 `git apply`를 매핑한다.** `git restore --staged`는 covered raw-unstage 소견(git-kit unstage)으로 잡히고, `git apply`는 새 raw-apply 소견(git-kit apply가 커버)으로 분류된다 — raw-apply는 자체 `apply` collapse 그룹과 훅 힌트를 갖는다.
+- **`gk agents install --tuned` / `print --tuned` — compact 계약 블록 + 데이터 기반 한 줄.** compact 블록 아래에 `~/.gk/audit-history.jsonl`에서 뽑은, 이 환경에서 가장 큰 raw-git turn leak를 지목하는 한 줄을 붙인다. fence 마커는 `v22+tuned` 접미사를 얻고 `gk agents check`는 이를 (정확한 본문 비교가 아니라) 마커 버전만으로 수용한다. 기록된 history가 없으면 경고 후 맨 compact 블록으로 폴백한다. compact 블록 위에 얹는 것이라 `--full`과는 조합할 수 없다.
+
+### Fixed
+
+- **PreToolUse 훅 조언이 세션·소견 종류당 한 번만 주입된다.** 훅이 같은 조언을 매 턴 되풀이해 노이즈가 됐다 — 이제 트랜스크립트 꼬리 기반의 무상태 dedupe로 소견 종류당 세션당 한 번만 조언을 낸다(collapse 넛지는 절대 dedupe하지 않고, 트랜스크립트를 못 읽으면 옛 동작을 유지한다). collapse/block deny 사유도 대체 명령을 지목하는 한 줄로 짧아졌다.
+- **turn 추정기의 과다 귀속을 바로잡았다.** 각 턴은 정확히 하나의 collapse 그룹에만 귀속되고(write가 read를 이김), 변경형 턴은 그 앞의 context/diff 프로브 run을 끊으며, sha-archaeology 프로브는 제외되고, git 페이로드가 아닌 턴은 세지 않는다 — `estimated_turns_saved`/`by_group`이 더는 이중 계산되지 않는다. PreToolUse collapse 넛지도 commit-flow 중간에 `gk context`를 제안하지 않고 실제 turn 거리를 측정한다.
+- **`git diff --name-only --diff-filter=U`가 conflict 프로브로 분류된다.** 종전에는 context로 잡혔다 — 소견·힌트·batch 계획 전반에서 conflict 프로브로 바로잡았다.
+- **heredoc 본문을 셸 명령으로 파싱하지 않는다.** CRLF 종결자와 `<<-` 탭 스트리핑을 포함해 heredoc 본문은 더는 명령으로 오인되지 않으며(셸 산술 `<<`는 heredoc이 아니다), git 서브커맨드 토큰은 ASCII kebab-case로 검증한다.
+
+### Changed
+
+- **`git init`/`help`/`gc`/`archive`/`commit-tree`가 uncovered-raw-git gap에서 빠졌다.** gk verb로 바꿔도 turn 절감이 없거나 gap 신호로 부적절한 형태라 더는 표면화하지 않는다.
+
 ## [0.115.1] - 2026-07-10
 
 ### Fixed

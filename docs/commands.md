@@ -426,8 +426,8 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 
 | Subcommand | Description |
 |------------|-------------|
-| `gk agents print [--full]` | Print the compact contract block to stdout; `--full` prints the detailed reference block |
-| `gk agents install [--file <path>] [--full]` | Insert or refresh the compact block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent); `--full` installs the detailed block |
+| `gk agents print [--full] [--tuned]` | Print the compact contract block to stdout; `--full` prints the detailed reference block, `--tuned` appends one data-backed line naming your top raw-git turn leak |
+| `gk agents install [--file <path>] [--full] [--tuned]` | Insert or refresh the compact block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent); `--full` installs the detailed block, `--tuned` adds the data-backed leak line |
 | `gk agents install --global [--full]` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
@@ -437,7 +437,9 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 
 With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
 
-`gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Three modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`), **collapse** (`--mode collapse` — a lone covered command is still only advised, but a second same-group probe is *denied*: the repeated orientation the audit shows is the biggest turn sink is blocked so the agent folds it into one git-kit call, while a one-off `git status` stays cheap), and **block** (`--mode block` — every covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.) Beyond the single-command mapping, the handler reads the live session transcript (Claude passes its path on stdin) and, when the pending command continues a recent same-group raw run, adds a real-time **collapse nudge** — fold it and the prior call(s) into one git-kit call — the prevention companion to [`gk session audit --metric=turns`](#turn-reduction-metric---metricturns).
+`--tuned` (on `print` and `install`) composes the compact block plus one data-backed guidance line naming the top raw-git turn leak recorded in `~/.gk/audit-history.jsonl`, so the contract points at the specific habit this environment leaks most. The tuned block carries a `v22+tuned` fence marker that `gk agents check` accepts by marker version alone (not exact content), so a tuned block never reads as drift. With no recorded history, `--tuned` warns and falls back to the plain compact block; because it composes the compact block, it cannot be combined with `--full`.
+
+`gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Three modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`), **collapse** (`--mode collapse` — a lone covered command is still only advised, but a second same-group probe is *denied*: the repeated orientation the audit shows is the biggest turn sink is blocked so the agent folds it into one git-kit call, while a one-off `git status` stays cheap), and **block** (`--mode block` — every covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.) Beyond the single-command mapping, the handler reads the live session transcript (Claude passes its path on stdin) and, when the pending command continues a recent same-group raw run, adds a real-time **collapse nudge** — fold it and the prior call(s) into one git-kit call — the prevention companion to [`gk session audit --metric=turns`](#turn-reduction-metric---metricturns). Advisories are deduped per session: a given finding kind is injected at most once per session (a stateless transcript-tail check), so a repeated raw command doesn't repeat the same note — the collapse nudge is never deduped, and a missing/unreadable transcript keeps the old always-advise behavior. In `collapse`/`block` mode a deny's reason is a single line naming the replacement command.
 
 ## gk hint
 
@@ -487,7 +489,8 @@ the files the filter skipped.
 The JSON schema reports per-file counts, totals, and aggregated findings such
 as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
 `raw-commit-sequence`, `raw-branch-switch`, `raw-worktree`, `raw-full-diff`,
-`raw-diff-check`, `raw-unstage`, `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
+`raw-diff-check`, `raw-unstage`, `raw-apply` (covered by git-kit apply, collapse
+group `apply`), `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
 Each finding carries a `status`:
 
 - `covered`: git-kit already has a replacement; read `covered_by`.
@@ -514,6 +517,21 @@ targets (`gk agents install` / `gk agents hook install` there). Claude
 sessions attribute to their workspace directory name; Codex sessions have
 no project marker and pool under `codex-sessions`. The human output prints
 the top five as `raw git by project`.
+
+### JSON output size (`--files` / `--full` / `--summary`)
+
+The JSON / agent payload is token-lean by default: `files[]` (the per-file
+breakdown) is omitted, `runs[].commands` are capped at 3 entries × 120 chars
+with the remainder folded into a `(+N more)` marker, and `findings[].evidence`
+is capped at 2 samples. These caps apply **only to the JSON/agent output** —
+the human report and the recorded `--trend` history always see the full data.
+
+- `--files` restores the per-file `files[]` breakdown.
+- `--full` restores the previous exact payload: `files[]` plus uncapped run commands and evidence.
+- `--summary` emits only the decision-grade subset (totals, adoption, top projects, findings without evidence).
+
+`--full` and `--summary` are mutually exclusive. A session-audit JSON payload
+over 16 KiB is emitted compact (no indentation) to save bytes.
 
 ### Turn-reduction metric (`--metric=turns`)
 
@@ -547,6 +565,44 @@ recent raw run, the PreToolUse hook suggests folding them into one git-kit call.
 
 Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
 envelope.
+
+## gk session digest
+
+Compress a single agent session's git activity into a short resume/handoff
+block, so a resumed or handed-off agent reads it instead of re-running the
+status/log/diff orientation probes.
+
+### Synopsis
+
+```
+gk session digest [transcript-file] [--last[=N]]
+```
+
+Pass an explicit Claude/Codex JSONL transcript path, or `--last` to digest a
+session file under the default session roots (the same roots `gk session
+audit` scans).
+
+### `--last[=N]`
+
+`--last` (bare) digests the newest session file; `--last=N` digests the
+N-th-newest. **The value must use `=`** — `--last=2`, not `--last 2` (a
+space-separated `2` is read as the transcript-path argument).
+
+Run from **inside** a live agent session, the newest file is that session's own
+transcript (it is appended every turn), so use `--last=2` for the **previous**
+session's handoff.
+
+### Digest contents
+
+- repos touched (with per-repo command counts)
+- branches created / switched to
+- commit subjects (most recent last)
+- integration attempts, the verbs used, and whether any errored (with the last error)
+- an unfinished-work signal (the turn, command, and reason)
+- re-probed command groups, each with the single gk call that collapses them
+
+The command is local and read-only. With `--json` / `GK_AGENT=1` it emits the
+standard machine-readable envelope.
 
 ## gk pull
 
@@ -1868,6 +1924,69 @@ gk reset --yes --clean
 
 ---
 
+## gk undo
+
+Read git reflog, pick a past HEAD state, and reset to it after recording a
+backup ref at `refs/gk/undo-backup/<branch>/<unix>`. Undoing the undo is the
+same command run twice.
+
+### Synopsis
+
+```
+gk undo [--to <ref>] [--soft | --hard] [--list] [--limit N] [-y]
+```
+
+Without `--to`, an interactive picker lists recent reflog entries. `--to
+<ref>` (e.g. `HEAD@{3}`) skips the picker and resets straight there.
+
+### Reset modes
+
+| Mode | Flag | HEAD | Index | Working tree |
+|------|------|------|-------|--------------|
+| mixed (default) | — | moves | reset to target | preserved (your edits become unstaged) |
+| soft | `--soft` | moves | **untouched** | **untouched** |
+| hard | `--hard` | moves | reset to target | reset to target (**current edits gone**) |
+
+`--soft` is the uncommit move: HEAD rewinds but the undone commits' changes
+stay staged — use it before a squash or to rewrite a commit message. In a
+non-interactive run (`--json` / `GK_AGENT` / no TTY), a bare `gk undo --soft`
+with no `--to` defaults to `HEAD~1` — "uncommit the last commit"; interactive
+runs keep the picker so `--soft` stays a mode, not a separate flow. `--soft`
+and `--hard` are mutually exclusive, and all three modes write the same backup
+ref.
+
+### Agent mode
+
+With `--json` / `GK_AGENT=1` the reset emits `{schema, result, from, to,
+backup_ref, mode}` — `mode` is `"soft"`, `"mixed"`, or `"hard"`, so an agent
+can tell which reset ran. `--list` emits `{schema, entries[]}` instead, and an
+empty reflog is reported as `state:"blocked"` rather than bare prose on a
+success exit.
+
+### Examples
+
+```bash
+# Interactive picker over recent reflog entries
+gk undo
+
+# Uncommit the last commit, keeping its changes staged
+gk undo --soft
+
+# Rewind two commits, discarding working-tree changes
+gk undo --to 'HEAD@{2}' --hard --yes
+
+# Just print the reflog (no prompt, no reset)
+gk undo --list
+```
+
+### Notes
+
+- A dirty tree is not a hard stop in `--mixed`/`--hard`: gk offers to stash & auto-pop around the reset. `--soft` never stashes — a dirty tree is the point of uncommitting, and stashing would destroy exactly what you want kept.
+- An in-progress rebase/merge/cherry-pick always blocks; finish or `gk abort` first.
+- Recover from any undo with `git reset --hard <backup_ref>` (the command prints the ref).
+
+---
+
 ## gk wipe
 
 Discard ALL local changes AND untracked files. **Destructive — stronger than `gk reset`.**
@@ -1961,6 +2080,94 @@ With `--json` / `GK_AGENT=1` the result reports `{unstaged, files[]}` —
 the exact set that left the index. `gk session audit` classifies the raw
 unstage forms as covered by this verb (`raw-unstage`); resets that move
 the branch stay in the `uncovered-raw-git` gap.
+
+---
+
+## gk apply
+
+Apply patch files, retrying with progressively looser strategies when a plain
+apply fails — so you don't hand-cycle `git apply` flags.
+
+### Synopsis
+
+```
+gk apply <patch-file>... [--staged | --cached] [--check] [--reverse]
+```
+
+### Remediation ladder
+
+Each patch walks a fixed strategy ladder and stops at the first rung that
+applies; the result records which rung succeeded (`plain`, `recount`,
+`recount+unidiff-zero`, `3way`):
+
+1. **plain** — `git apply` as-is.
+2. **recount** (`--recount`) — hunk header line counts are off.
+3. **recount + unidiff-zero** (`--recount --unidiff-zero`) — zero-context patch.
+4. **3way** (`--3way`) — fall back to a 3-way merge against the blobs the patch names.
+
+In `--staged` mode on git < 2.35 (which can't combine `--cached` with
+`--3way`), the 3-way rung is skipped rather than surfaced as a bogus flag error.
+
+### Modes and flags
+
+| Flag | Effect |
+|------|--------|
+| `--staged` / `--cached` | Apply to the index only, leaving the working tree untouched (`git apply --cached`) |
+| `--check` | Probe without applying: report which strategy *would* apply each patch. Also predicts 3-way conflicts — a would-conflict 3-way check is normalized to a failure so `--check` matches the real outcome |
+| `--reverse` | Apply the patch backwards (undo an applied patch) |
+
+The global `--dry-run` maps onto `--check`. Both probe each patch against the
+**current** tree independently, while a real multi-patch run applies patches
+sequentially — so a stacked series can fail the probe yet apply for real.
+
+### Atomic multi-patch
+
+Multiple patches are all-or-nothing: if any patch exhausts the ladder, the run
+rolls back every already-applied patch (the index and, in worktree mode, the
+touched files restored from a pre-run snapshot) before reporting the failure.
+A patch that reverse-applies cleanly is reported as **already applied**, with a
+`--reverse` remedy instead of a generic context-mismatch error.
+
+### Agent mode
+
+With `--json` / `GK_AGENT=1` the result is:
+
+```json
+{
+  "schema": 1,
+  "result": "applied",
+  "applied": [{"patch": "/abs/fix.patch", "strategy": "recount"}],
+  "failed": null,
+  "rolled_back": false
+}
+```
+
+`result` distinguishes a real run (`applied`) from a `--check` probe (`check`)
+and a global-`--dry-run` probe (`dry-run`), following the land/rebase
+convention. `failed` is `null` when every patch applied, or `{patch, error}`
+for the one that exhausted the ladder; `rolled_back` reports whether the
+atomic rollback of the earlier patches succeeded.
+
+### Examples
+
+```bash
+# Apply to the working tree (plain git apply scope)
+gk apply fix.patch
+
+# Apply to the index only
+gk apply --staged fix.patch
+
+# Probe without applying — which strategy would each patch need?
+gk apply --check a.patch b.patch
+
+# Undo an applied patch
+gk apply --reverse fix.patch
+```
+
+### Notes
+
+- The worktree rollback snapshot honours `.gitignore` (same as `gk snapshot`), so a patch that touched an ignored untracked file is not restored.
+- `gk session audit` classifies raw `git apply` as covered by this verb (`raw-apply`, collapse group `apply`).
 
 ---
 

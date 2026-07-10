@@ -33,11 +33,14 @@ Every `gk ...` below means `./bin/gk ...`.
 ## Phase 1 — RUN
 
 ```bash
-./bin/gk session audit --metric=both --json --max-files 2339 > /tmp/audit.json
+./bin/gk session audit --metric=both --full --json --max-files 2339 > /tmp/audit.json
 ```
 
 `--metric=both` gives the occurrence findings AND the turn-reduction view in one
-pass. Raise `--max-files` to cover the whole corpus (the run is local, read-only,
+pass. `--full` is required here: the default JSON is token-lean and caps
+`result.turns.runs[].commands` and `result.findings[].evidence` (the very
+samples this skill cites as evidence) — `--full` restores the uncapped payload.
+Raise `--max-files` to cover the whole corpus (the run is local, read-only,
 and cheap). Parse the `{state, ok, result}` envelope: `result.adoption`,
 `result.findings[]`, `result.turns`, `result.totals`, `result.notes`.
 
@@ -69,7 +72,11 @@ already carries.)
   many round-trips gk adoption would remove"), so it scales with corpus size — a
   rise can mean more raw-git usage crept in, not less. Cross-reference entry `ts`
   against `git log`/CHANGELOG dates for guidance fixes (hook installs,
-  CLAUDE.md/AGENTS.md contract edits) that landed inside that window.
+  CLAUDE.md/AGENTS.md contract edits) that landed inside that window. One
+  caveat: entries recorded before vs. after the 2026-07 turn-estimator accuracy
+  fix are different baselines (the fix stopped double-counting turns), so expect
+  a one-time step drop in `estimated_turns_saved`/`rate` across that boundary —
+  do not read that step as an adoption regression.
 
 ## Phase 2 — INTERPRET (five signal classes)
 

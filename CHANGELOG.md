@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.116.0] - 2026-07-11
+
 ### Added
 
 - **`gk apply` — 실패하면 스스로 전략을 바꿔 재시도하는 패치 적용.** 에이전트가 raw `git apply` 주위에서 가장 많이 낭비하는 건 재시도 churn이다: `--check`로 찔러보고, 실패하면 `--recount`·`--unidiff-zero`·`--3way`를 손으로 순열 조합해 하나가 붙을 때까지 돌린다. `gk apply <patch-file>...`는 그 루프를 한 번의 호출로 접는다 — 각 패치가 `plain → --recount(헤더 줄 수 어긋남) → --recount --unidiff-zero(컨텍스트 0줄 패치) → --3way(컨텍스트 어긋난 패치의 3-way 병합)` 고정 사다리를 걷고, 어느 rung으로 적용됐는지 결과에 패치별로 기록한다. 패치를 여러 개 주면 전부-또는-전무다 — 하나라도 모든 전략이 실패하면 이미 적용된 패치까지 되돌린 뒤 실패를 보고한다. `--staged`/`--cached`는 워킹트리를 두고 인덱스에만 적용하고(`git apply --cached`), `--check`(및 전역 `--dry-run`)는 아무것도 바꾸지 않고 성공할 전략만 검사하되 3-way가 남길 충돌까지 예측하며 JSON 결과의 `result` 필드로 `applied`/`check`/`dry-run`을 구분한다. `--reverse`로 패치를 되돌리고, 정방향 적용이 실패했지만 역방향이 깨끗이 붙으면 "이미 적용됨"으로 판정해 `--reverse` remedy를 안내한다. git 2.35 미만은 `--cached`+`--3way` 조합을 모르므로 `--staged` 모드에선 3-way rung을 플래그 에러 대신 조용히 건너뛴다.

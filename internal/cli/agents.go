@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/sessionaudit"
 )
 
 // gk agents manages the gk usage contract inside agent instruction files
@@ -28,9 +30,14 @@ const agentsContractVersion = 22
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
-	agentsEndMarker   = "<!-- gk:agents:end -->"
-	agentsBlockRE     = regexp.MustCompile(`(?s)<!-- gk:agents:begin[^>]*-->.*?<!-- gk:agents:end -->`)
-	agentsVersionRE   = regexp.MustCompile(`<!-- gk:agents:begin v(\d+)`)
+	// The tuned variant carries a "+tuned" version suffix so `gk agents check`
+	// can accept it by marker version alone: its leak line embeds audit
+	// numbers that change between runs, so content-exact comparison would
+	// report permanent drift.
+	agentsTunedBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d+tuned — managed by `gk agents install --tuned`; edit outside this block -->", agentsContractVersion)
+	agentsEndMarker        = "<!-- gk:agents:end -->"
+	agentsBlockRE          = regexp.MustCompile(`(?s)<!-- gk:agents:begin[^>]*-->.*?<!-- gk:agents:end -->`)
+	agentsVersionRE        = regexp.MustCompile(`<!-- gk:agents:begin v(\d+)`)
 )
 
 const agentsCompactContractBody = `## Git workflow (git-kit)
@@ -105,9 +112,99 @@ func agentsContractBlockFor(full bool) string {
 	return agentsBeginMarker + "\n" + body + "\n" + agentsEndMarker
 }
 
+// agentsTunedContractBlock fences the compact body plus the one data-backed
+// leak line, under the "+tuned" begin marker.
+func agentsTunedContractBlock(leakLine string) string {
+	return agentsTunedBeginMarker + "\n" + agentsCompactContractBody + "\n" + leakLine + "\n" + agentsEndMarker
+}
+
+// agentsLeakPhrase maps an audit collapse group (mirrors the unexported
+// gkForGroup in internal/sessionaudit/collapse.go) to the prose of the tuned
+// block's observed-leak line: what the repeated raw turns are, and the one
+// git-kit call that folds them.
+var agentsLeakPhrase = map[string]struct{ what, fix string }{
+	"context":     {"repeated context probes", "orient with ONE `git-kit context --include=diff,log,precheck,remotes,release` call instead"},
+	"commit":      {"raw add/commit sequences", "fold each into one `git-kit commit` call instead"},
+	"integration": {"raw pull/fetch/merge sequences", "fold each into one `git-kit pull --with-base` call instead"},
+	"switch":      {"repeated raw branch switches", "use `git-kit switch` instead"},
+	"worktree":    {"raw worktree calls", "use `git-kit worktree ...` instead"},
+	"diff":        {"repeated diff probes", "fold each into one `git-kit diff --digest` call instead"},
+	"stash":       {"raw stash sequences", "use `git-kit stash` instead"},
+	"apply":       {"raw apply retry churn", "use `git-kit apply` (automatic recount/3way ladder) instead"},
+}
+
+// agentsLeakGroupRE bounds what an UNKNOWN group key may look like before it
+// is echoed into an instruction file. ~/.gk/audit-history.jsonl is data — a
+// key carrying newlines, backticks, or markup ("<!-- gk:agents:end -->")
+// would otherwise be rendered verbatim inside the managed CLAUDE.md block and
+// could break out of the fence. Known groups bypass it (fixed prose).
+var agentsLeakGroupRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// agentsLeakLineFor renders the observed-leak line from one recorded run's
+// per-group turn counts. ok=false when no group has a positive count.
+func agentsLeakLineFor(byGroup map[string]int) (string, bool) {
+	top, topN, total := "", 0, 0
+	for g, n := range byGroup {
+		if _, known := agentsLeakPhrase[g]; !known && !agentsLeakGroupRE.MatchString(g) {
+			continue // never echo arbitrary history-file content into an instruction file
+		}
+		total += n
+		if n > topN || (n == topN && top != "" && g < top) {
+			top, topN = g, n
+		}
+	}
+	if topN <= 0 {
+		return "", false
+	}
+	p, known := agentsLeakPhrase[top]
+	if !known {
+		// A group this binary doesn't know yet (newer audit) still gets a
+		// usable line instead of dropping the data.
+		p.what = fmt.Sprintf("repeated raw `%s` turns", top)
+		p.fix = "fold each run into one git-kit call instead"
+	}
+	return fmt.Sprintf("- Observed leak: most raw-git turns here are %s (%d of %d grouped) — %s.", p.what, topN, total, p.fix), true
+}
+
+// agentsTunedLeakLine reads the newest recorded audit run that carries
+// per-group turn counts (~/.gk/audit-history.jsonl) and renders the leak line
+// from it. The returned error means "no usable data" — callers fall back to
+// the plain compact block instead of failing.
+func agentsTunedLeakLine() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve home directory: %w", err)
+	}
+	entries, err := sessionaudit.ReadHistory(sessionaudit.HistoryPath(home))
+	if err != nil {
+		return "", fmt.Errorf("read audit history: %w", err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if line, ok := agentsLeakLineFor(entries[i].ByGroup); ok {
+			return line, nil
+		}
+	}
+	return "", errors.New("no recorded audit history with per-group turn data")
+}
+
+// agentsTunedBlockOrFallback composes the tuned block; when there is no
+// usable audit history it warns on w and falls back to the plain compact
+// block (non-fatal by design — a fresh machine has no history yet).
+func agentsTunedBlockOrFallback(w io.Writer) string {
+	line, err := agentsTunedLeakLine()
+	if err != nil {
+		fmt.Fprintf(w, "gk agents: %v — falling back to the plain compact block (run %s to collect data)\n", err, "`gk session audit --record`")
+		return agentsContractBlock()
+	}
+	return agentsTunedContractBlock(line)
+}
+
 func hasCurrentAgentsContractBlock(content string) bool {
+	// The tuned variant is accepted by its current-version marker alone —
+	// see agentsTunedBeginMarker for why it is not compared content-exact.
 	return strings.Contains(content, agentsContractBlock()) ||
-		strings.Contains(content, agentsFullContractBlock())
+		strings.Contains(content, agentsFullContractBlock()) ||
+		strings.Contains(content, agentsTunedBeginMarker)
 }
 
 var agentsTargetNames = []string{"CLAUDE.md", "AGENTS.md"}
@@ -176,8 +273,11 @@ per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
 
   gk agents print              print the compact contract block (paste it anywhere)
   gk agents print --full       print the detailed contract block
+  gk agents print --tuned      compact block + your top observed raw-git leak
   gk agents install            insert/refresh the compact block at the repo root
   gk agents install --global   insert/refresh ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
+  gk agents install --tuned    compact block + one guidance line naming the top
+                               raw-git leak recorded by gk session audit --record
   gk agents check              report block status + version for local AND global
   gk agents hook install       register the Claude Code PreToolUse hook (enforcement)
   gk agents hook uninstall     remove that hook (revert)
@@ -186,13 +286,10 @@ per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
 	print := &cobra.Command{
 		Use:   "print",
 		Short: "Print the contract block to stdout",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			full, _ := cmd.Flags().GetBool("full")
-			fmt.Fprintln(cmd.OutOrStdout(), agentsContractBlockFor(full))
-			return nil
-		},
+		RunE:  runAgentsPrint,
 	}
 	print.Flags().Bool("full", false, "print the detailed contract block instead of the compact default")
+	print.Flags().Bool("tuned", false, "print the compact block plus one data-backed guidance line from the recorded audit history")
 	cmd.AddCommand(print)
 	install := &cobra.Command{
 		Use:   "install",
@@ -202,6 +299,7 @@ per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
 	install.Flags().StringSlice("file", nil, "restrict to specific files (default: CLAUDE.md and AGENTS.md at the repo root)")
 	install.Flags().Bool("global", false, "install into the per-agent global files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) instead of the repo root")
 	install.Flags().Bool("full", false, "install the detailed contract block instead of the compact default")
+	install.Flags().Bool("tuned", false, "install the compact block plus one guidance line naming the top raw-git leak from ~/.gk/audit-history.jsonl; reinstalling without --tuned reverts to the plain compact block")
 	cmd.AddCommand(install)
 	check := &cobra.Command{
 		Use:   "check",
@@ -316,19 +414,43 @@ func agentsCheckTargets(cmd *cobra.Command) ([]agentsFile, error) {
 	return append(out, g...), nil
 }
 
+// runAgentsPrint prints the selected contract block variant. --tuned with no
+// usable audit history warns on stderr and prints the plain compact block.
+func runAgentsPrint(cmd *cobra.Command, args []string) error {
+	full, _ := cmd.Flags().GetBool("full")
+	tuned, _ := cmd.Flags().GetBool("tuned")
+	if full && tuned {
+		return fmt.Errorf("gk agents: --tuned composes the compact block — it cannot be combined with --full")
+	}
+	block := agentsContractBlockFor(full)
+	if tuned {
+		block = agentsTunedBlockOrFallback(cmd.ErrOrStderr())
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), block)
+	return nil
+}
+
 func runAgentsInstall(cmd *cobra.Command, args []string) error {
 	targets, err := agentsInstallTargets(cmd)
 	if err != nil {
 		return err
 	}
 	full, _ := cmd.Flags().GetBool("full")
+	tuned, _ := cmd.Flags().GetBool("tuned")
+	if full && tuned {
+		return fmt.Errorf("gk agents: --tuned composes the compact block — it cannot be combined with --full")
+	}
+	block := agentsContractBlockFor(full)
+	if tuned {
+		block = agentsTunedBlockOrFallback(cmd.ErrOrStderr())
+	}
 	w := cmd.OutOrStdout()
 	var res agentsInstallJSON
 	if JSONOut() {
 		res.Schema = 1
 	}
 	for _, t := range targets {
-		state, werr := installAgentsBlockFor(t.path, full)
+		state, werr := installAgentsBlockContent(t.path, block)
 		if werr != nil {
 			return werr
 		}
@@ -359,7 +481,10 @@ func installAgentsBlock(path string) (string, error) {
 }
 
 func installAgentsBlockFor(path string, full bool) (string, error) {
-	block := agentsContractBlockFor(full)
+	return installAgentsBlockContent(path, agentsContractBlockFor(full))
+}
+
+func installAgentsBlockContent(path, block string) (string, error) {
 	b, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):

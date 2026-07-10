@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -128,8 +129,10 @@ func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	res := sessionaudit.Hint(command)
-	nudge := collapseNudgeFromHook(data, command)
-	decision, reason, addl := hookDecide(mode, res, nudge)
+	tail := hookTranscriptTail(data)
+	nudge := collapseNudgeFromTail(tail, command)
+	hintSeen := res.Covered && len(tail) > 0 && bytes.Contains(tail, []byte(hookHintMarker(res)))
+	decision, reason, addl := hookDecide(mode, res, nudge, hintSeen)
 	if decision == "" {
 		return nil // nothing to say → defer to the normal permission flow
 	}
@@ -151,20 +154,44 @@ func hookRunMode(cmd *cobra.Command) string {
 }
 
 // hookDecide computes the PreToolUse decision for a resolved mode given the
-// single-command hint and the optional real-time collapse signal. It is the one
-// place the three modes' semantics live, kept pure so it is unit-testable
-// without stdin/transcript plumbing. Returns ("","","") when there is nothing to
-// emit (fail-open: the command is fine, or needs no nudge).
-func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge) (decision, reason, additionalContext string) {
+// single-command hint, the optional real-time collapse signal, and whether this
+// kind's guidance is already in the session transcript (hintSeen). It is the
+// one place the three modes' semantics live, kept pure so it is unit-testable
+// without stdin/transcript plumbing. Returns ("","","") when there is nothing
+// to emit (fail-open: the command is fine, or needs no nudge).
+//
+// hintSeen suppresses only the hint-only advisory — the same kind was already
+// nudged once this session, so repeating the identical text just burns context
+// tokens. A collapse nudge is turn-local and actionable, so it is never
+// deduped; deny decisions are enforcement, not advice, so they always carry a
+// reason.
+func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge, hintSeen bool) (decision, reason, additionalContext string) {
 	denyCollapse := nudge != nil && (mode == hookModeCollapse || mode == hookModeBlock)
 	denySingle := res.Covered && mode == hookModeBlock
 	if denyCollapse || denySingle {
-		return "deny", hookNoteText(res, nudge), ""
+		return "deny", hookDenyReason(res, nudge), ""
 	}
-	if res.Covered || nudge != nil {
+	if nudge != nil {
 		return "defer", "", hookNoteText(res, nudge)
 	}
+	if res.Covered && !hintSeen {
+		return "defer", "", hookNoteText(res, nil)
+	}
 	return "", "", ""
+}
+
+// hookDenyReason is the short permissionDecisionReason for a deny. Unlike the
+// advisory (which teaches), a deny only needs to name the replacement — the
+// full hookNoteText would be re-injected on every blocked retry, so keep it
+// tight (~120 B).
+func hookDenyReason(res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge) string {
+	if nudge != nil {
+		return fmt.Sprintf("Blocked repeated %s probe — run %s instead.", nudge.Group, nudge.GkCommand)
+	}
+	if len(res.CoveredBy) > 0 {
+		return fmt.Sprintf("Blocked covered raw git — run %s instead.", res.CoveredBy[0])
+	}
+	return "Blocked covered raw git — use git-kit instead."
 }
 
 // hookNoteText joins the single-command hint and the collapse nudge into one
@@ -181,25 +208,37 @@ func hookNoteText(res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge
 	return strings.Join(parts, " ")
 }
 
-// hookTranscriptTail bounds how much of the live transcript the nudge reads:
-// only the recent tail matters, and the hook fires on every Bash call, so it
-// must stay cheap on a multi-megabyte session log.
-const hookTranscriptTail = 256 * 1024
+// hookTranscriptTailBytes bounds how much of the live transcript the hook
+// reads: only the recent tail matters, and the hook fires on every Bash call,
+// so it must stay cheap on a multi-megabyte session log.
+const hookTranscriptTailBytes = 256 * 1024
 
-// collapseNudgeFromHook reads the recent tail of the live session transcript
-// (Claude passes its path on stdin) and reports whether the pending command
-// continues a recent same-group raw run. Fail-open: any problem → no nudge.
-func collapseNudgeFromHook(stdin []byte, command string) *sessionaudit.CollapseNudge {
+// hookTranscriptTail reads the recent tail of the live session transcript
+// (Claude passes its path on stdin) exactly once per fire — both the collapse
+// nudge and the advisory dedupe share it. Fail-open: absent path or read error
+// → nil (no nudge, no dedupe).
+func hookTranscriptTail(stdin []byte) []byte {
 	tp := strings.TrimSpace(gjson.GetBytes(stdin, "transcript_path").String())
 	if tp == "" {
 		return nil
 	}
-	tail, err := tailFile(tp, hookTranscriptTail)
+	tail, err := tailFile(tp, hookTranscriptTailBytes)
 	if err != nil {
 		return nil
 	}
-	recent := sessionaudit.SessionTurns(tail)
-	return sessionaudit.CollapseNudgeFor(command, recent, sessionaudit.CollapseLookback)
+	return tail
+}
+
+// collapseNudgeFromTail reports whether the pending command continues a recent
+// same-group raw run recorded in the transcript tail. The last allocated turn
+// rides along so the nudge honors real turn distance — probes separated by
+// Read/Edit turns (which emit no events) must not read as adjacent.
+func collapseNudgeFromTail(tail []byte, command string) *sessionaudit.CollapseNudge {
+	if len(tail) == 0 {
+		return nil
+	}
+	recent, lastTurn := sessionaudit.SessionTurnsWithLast(tail)
+	return sessionaudit.CollapseNudgeFor(command, recent, lastTurn, sessionaudit.CollapseLookback)
 }
 
 // collapseMessage phrases the real-time nudge for the agent.
@@ -241,11 +280,22 @@ func tailFile(path string, n int64) ([]byte, error) {
 }
 
 func hookMessage(res sessionaudit.HintResult) string {
-	m := fmt.Sprintf("git-kit covers %q — use %s instead of raw git.", res.Matched, strings.Join(res.CoveredBy, " / "))
+	m := fmt.Sprintf("git-kit covers %q — %s", res.Matched, hookHintMarker(res))
 	if res.Suggestion != "" {
 		m += " " + res.Suggestion
 	}
 	return m
+}
+
+// hookHintMarker is the kind-stable sentence of hookMessage (CoveredBy comes
+// from the kind's finding spec, unlike Matched which varies per command). Once
+// an advisory is injected, this sentence is recorded in the transcript, so a
+// plain substring probe over the tail detects "this kind was already nudged
+// this session" without any state file. It deliberately contains no
+// double-quote characters, so JSONL escaping in the transcript cannot break
+// the match.
+func hookHintMarker(res sessionaudit.HintResult) string {
+	return fmt.Sprintf("use %s instead of raw git.", strings.Join(res.CoveredBy, " / "))
 }
 
 // emitHookDecision writes the Claude Code PreToolUse decision JSON to stdout.

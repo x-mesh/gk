@@ -103,19 +103,26 @@ func TestHookDecide(t *testing.T) {
 		mode         string
 		res          sessionaudit.HintResult
 		nudge        *sessionaudit.CollapseNudge
+		hintSeen     bool
 		wantDecision string
 	}{
-		{"warn/single", hookModeWarn, covered, nil, "defer"},
-		{"warn/reprobe", hookModeWarn, covered, nudge, "defer"},
-		{"collapse/single-advisory", hookModeCollapse, covered, nil, "defer"},
-		{"collapse/reprobe-denied", hookModeCollapse, covered, nudge, "deny"},
-		{"block/single-denied", hookModeBlock, covered, nil, "deny"},
-		{"block/reprobe-denied", hookModeBlock, covered, nudge, "deny"},
-		{"any/nothing", hookModeBlock, uncovered, nil, ""},
+		{"warn/single", hookModeWarn, covered, nil, false, "defer"},
+		{"warn/reprobe", hookModeWarn, covered, nudge, false, "defer"},
+		{"collapse/single-advisory", hookModeCollapse, covered, nil, false, "defer"},
+		{"collapse/reprobe-denied", hookModeCollapse, covered, nudge, false, "deny"},
+		{"block/single-denied", hookModeBlock, covered, nil, false, "deny"},
+		{"block/reprobe-denied", hookModeBlock, covered, nudge, false, "deny"},
+		{"any/nothing", hookModeBlock, uncovered, nil, false, ""},
+		// hintSeen dedupes only the hint-only advisory; nudges and denies are
+		// unaffected.
+		{"warn/hint-seen-silent", hookModeWarn, covered, nil, true, ""},
+		{"warn/hint-seen-nudge-still-fires", hookModeWarn, covered, nudge, true, "defer"},
+		{"collapse/hint-seen-silent", hookModeCollapse, covered, nil, true, ""},
+		{"block/hint-seen-still-denies", hookModeBlock, covered, nil, true, "deny"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			decision, reason, addl := hookDecide(tc.mode, tc.res, tc.nudge)
+			decision, reason, addl := hookDecide(tc.mode, tc.res, tc.nudge, tc.hintSeen)
 			if decision != tc.wantDecision {
 				t.Fatalf("decision = %q, want %q", decision, tc.wantDecision)
 			}
@@ -163,6 +170,99 @@ func TestAgentsHookRun_CollapseModeDeniesReprobe(t *testing.T) {
 	}
 	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.permissionDecisionReason").String(), "git-kit context") {
 		t.Errorf("deny reason should point to git-kit context: %s", out)
+	}
+}
+
+// hookDedupeTranscript fabricates a transcript line carrying the injected
+// advisory for `cmd`'s kind — the shape the dedupe probes for. extra lines are
+// appended verbatim (e.g. tool_use turns to also trigger a collapse nudge).
+func hookDedupeTranscript(t *testing.T, cmd string, extra ...string) string {
+	t.Helper()
+	res := sessionaudit.Hint(cmd)
+	if !res.Covered {
+		t.Fatalf("fixture command %q is not covered", cmd)
+	}
+	lines := append([]string{
+		fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"%s"}]}}`, hookHintMarker(res)),
+	}, extra...)
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(tp, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return tp
+}
+
+func TestAgentsHookRun_AdvisoryDedupe(t *testing.T) {
+	tp := hookDedupeTranscript(t, "git status --short")
+
+	// Second same-kind fire: the kind's guidance is already in the transcript
+	// tail → emit nothing, like an uncovered command.
+	stdin := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git status --short"}}`, tp)
+	if out := hookRunOutput(t, stdin, true); strings.TrimSpace(out) != "" {
+		t.Errorf("same-kind advisory should be deduped, got: %q", out)
+	}
+
+	// A different kind has no marker in the tail → advisory still emitted.
+	stdin = fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git add ."}}`, tp)
+	out := hookRunOutput(t, stdin, true)
+	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "git-kit commit") {
+		t.Errorf("different kind must still emit its advisory, got: %q", out)
+	}
+
+	// Unreadable transcript → fail-open to today's behavior (advisory emitted).
+	stdin = fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git status --short"}}`,
+		filepath.Join(t.TempDir(), "missing.jsonl"))
+	out = hookRunOutput(t, stdin, true)
+	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "git-kit context") {
+		t.Errorf("missing transcript must fail open to the advisory, got: %q", out)
+	}
+
+	// Block mode still denies even when the hint was already seen — dedupe is
+	// advisory-only.
+	stdin = fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git status --short"}}`, tp)
+	if out := hookRunOutput(t, stdin, false); gjson.Get(out, "hookSpecificOutput.permissionDecision").String() != "deny" {
+		t.Errorf("block mode must keep denying regardless of dedupe, got: %q", out)
+	}
+}
+
+func TestAgentsHookRun_CollapseNudgeNotDeduped(t *testing.T) {
+	// Tail carries both the already-injected context hint AND a recent
+	// same-group probe run — the turn-local collapse nudge must still fire.
+	tp := hookDedupeTranscript(t, "git status --short",
+		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}`,
+		`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git log --oneline -5"}}]}}`,
+	)
+	stdin := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git diff --stat"}}`, tp)
+	out := hookRunOutput(t, stdin, true)
+	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "fold it and this one") {
+		t.Errorf("collapse nudge must not be deduped, got: %q", out)
+	}
+}
+
+// maxDenyReasonBytes is the budget for the short deny form — the reason is
+// re-injected on every blocked retry, so it must stay far below the full
+// advisory text.
+const maxDenyReasonBytes = 200
+
+func TestHookDenyReason_ShortForm(t *testing.T) {
+	res := sessionaudit.Hint("git status --short")
+	nudge := &sessionaudit.CollapseNudge{Group: "context", GkCommand: "git-kit context", PriorTurns: 2}
+
+	got := hookDenyReason(res, nudge)
+	want := "Blocked repeated context probe — run git-kit context instead."
+	if got != want {
+		t.Errorf("collapse deny reason = %q, want %q", got, want)
+	}
+	if len(got) > maxDenyReasonBytes {
+		t.Errorf("collapse deny reason is %d bytes, want <= %d", len(got), maxDenyReasonBytes)
+	}
+
+	got = hookDenyReason(res, nil)
+	if !strings.HasPrefix(got, "Blocked covered raw git — run "+res.CoveredBy[0]) {
+		t.Errorf("single deny reason = %q, want CoveredBy[0] short form", got)
+	}
+	if len(got) > maxDenyReasonBytes {
+		t.Errorf("single deny reason is %d bytes, want <= %d", len(got), maxDenyReasonBytes)
 	}
 }
 

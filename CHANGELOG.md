@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.115.1] - 2026-07-10
+
 ### Fixed
 
 - **`gk init`이 안내하는 `gh repo create` 힌트가 자기가 등록한 origin과 충돌하지 않는다.** `gk init`은 origin 리모트를 등록한 뒤 "저장소가 아직 없으면 `gh repo create <owner>/<repo> --private --source . --push`"를 안내했는데, `--source .`는 gh가 **자기 origin을 새로 추가**하게 만들어 이미 origin이 있으면 `Unable to add remote origin`으로 실패하고 그 뒤 `--push`까지 중단됐다(repo는 만들어졌지만 push가 안 됨). 정작 `gk push`의 자동 생성 경로(`ghRepoCreate`)는 이미 `--private`만 쓰며 origin을 건드리지 않는데, 사용자에게 주는 힌트만 실제 동작과 어긋나 있었다. 이제 `gk init`과 `gk push`의 세 힌트 모두 저장소만 만들고(`gh repo create <slug> --private`) 이미 등록된 origin으로 밀도록(`git push -u origin HEAD`) 안내한다.

@@ -28,9 +28,13 @@ Reset modes:
                     (your file edits become unstaged changes — no data loss)
   --hard           HEAD moves, index *and* working tree updated to that point
                     (file edits at that point are restored, current edits gone)
+  --soft           only HEAD moves — index and working tree untouched
+                    (uncommit: the undone commits' changes stay staged; use it
+                    before a squash or to rewrite a commit message)
 
 Use --hard when you really want to "go back to that exact moment"; the default
-errs on the safe side.`,
+errs on the safe side. In a non-interactive run (--json / GK_AGENT / no TTY),
+--soft without --to defaults to HEAD~1 — the "uncommit the last commit" move.`,
 		RunE: runUndo,
 	}
 	cmd.Flags().Bool("list", false, "print reflog entries only (don't prompt or reset)")
@@ -38,7 +42,52 @@ errs on the safe side.`,
 	cmd.Flags().Bool("yes", false, "skip confirmation prompt")
 	cmd.Flags().String("to", "", "undo directly to a ref (e.g. HEAD@{3}) without picker")
 	cmd.Flags().Bool("hard", false, "discard working-tree changes and restore the picked state exactly (DANGEROUS)")
+	cmd.Flags().Bool("soft", false, "move HEAD only — keep index and working tree untouched (uncommit: changes stay staged)")
 	rootCmd.AddCommand(cmd)
+}
+
+// undoSoftDefaultTarget is where a bare non-interactive `gk undo --soft`
+// resets to: the parent of HEAD, i.e. "uncommit the last commit".
+const undoSoftDefaultTarget = "HEAD~1"
+
+// undoResultJSON backs `GK_AGENT=1 gk undo` (and --json). It mirrors the
+// human output — undone-to SHA plus the recovery backup ref — with the reset
+// mode made explicit so agents can tell soft/mixed/hard apart.
+type undoResultJSON struct {
+	Schema    int    `json:"schema"`
+	Result    string `json:"result"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	BackupRef string `json:"backup_ref"`
+	Mode      string `json:"mode"`
+}
+
+// undoListJSON backs `gk undo --list` under --json/GK_AGENT (and, with zero
+// entries, the empty-reflog case) so agent mode never emits bare prose on a
+// success exit.
+type undoListJSON struct {
+	Schema  int             `json:"schema"`
+	Entries []undoEntryJSON `json:"entries"`
+}
+
+type undoEntryJSON struct {
+	SHA     string `json:"sha"`
+	Action  string `json:"action"`
+	Ref     string `json:"ref"`
+	Summary string `json:"summary"`
+	When    string `json:"when,omitempty"` // RFC3339; empty when unknown
+}
+
+func undoListPayload(entries []reflog.Entry) undoListJSON {
+	out := undoListJSON{Schema: 1, Entries: make([]undoEntryJSON, 0, len(entries))}
+	for _, e := range entries {
+		je := undoEntryJSON{SHA: e.NewSHA, Action: string(e.Action), Ref: e.Ref, Summary: e.Summary}
+		if !e.When.IsZero() {
+			je.When = e.When.UTC().Format(time.RFC3339)
+		}
+		out.Entries = append(out.Entries, je)
+	}
+	return out
 }
 
 // undoDeps groups injectable dependencies for testability.
@@ -76,6 +125,19 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	yes, _ := cmd.Flags().GetBool("yes")
 	to, _ := cmd.Flags().GetString("to")
 	hard, _ := cmd.Flags().GetBool("hard")
+	soft, _ := cmd.Flags().GetBool("soft")
+
+	if soft && hard {
+		return errors.New("--soft and --hard are mutually exclusive")
+	}
+	// Bare --soft in a non-interactive run defaults to HEAD~1 — the dominant
+	// "uncommit the last commit" move. Interactive runs keep the picker so
+	// --soft stays a mode, not a separate flow.
+	softDefaulted := false
+	if soft && to == "" && !promptAllowed() {
+		to = undoSoftDefaultTarget
+		softDefaulted = true
+	}
 
 	if limit <= 0 {
 		limit = 20
@@ -85,22 +147,43 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	if err != nil {
 		return fmt.Errorf("read reflog: %w", err)
 	}
-	if len(entries) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no reflog entries available")
-		return nil
-	}
 
 	if listOnly {
+		if JSONOut() {
+			return emitAgentResult(cmd.OutOrStdout(), undoListPayload(entries))
+		}
+		if len(entries) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no reflog entries available")
+			return nil
+		}
 		printUndoList(cmd.OutOrStdout(), entries)
+		return nil
+	}
+	if len(entries) == 0 {
+		// In JSON/agent mode bare prose with exit 0 would break the envelope
+		// contract — surface the empty reflog as a blocked precondition.
+		if JSONOut() {
+			return WithBlocked(errors.New("undo: no reflog entries available"),
+				"no-reflog-entries",
+				"the reflog is empty (disabled or pruned) — there is no recorded state to undo to")
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "no reflog entries available")
 		return nil
 	}
 
 	var target reflog.Entry
 	if to != "" {
 		// user-specified ref; resolve to sha for consistency
-		sha, err := gitsafe.ResolveRef(ctx, d.Runner, to)
-		if err != nil {
-			return fmt.Errorf("resolve %q: %w", to, err)
+		sha, rerr := gitsafe.ResolveRef(ctx, d.Runner, to)
+		if rerr != nil {
+			err := fmt.Errorf("resolve %q: %w", to, rerr)
+			if softDefaulted {
+				// The implicit HEAD~1 target fails only when HEAD is the
+				// root commit — say so instead of a bare resolve error.
+				return WithHint(err,
+					"HEAD has no parent commit to uncommit to — a root-only branch has nothing for --soft to undo")
+			}
+			return err
 		}
 		target = reflog.Entry{NewSHA: sha, Ref: to, Summary: "(--to " + to + ")"}
 	} else {
@@ -129,6 +212,13 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 	rep, err := gitsafe.Check(ctx, d.Runner, gitsafe.WithWorkDir(d.WorkDir))
 	if err != nil {
 		return err
+	}
+	if soft {
+		// A soft reset never touches the index or working tree — a dirty
+		// tree is the point of uncommitting (staged changes must survive),
+		// and stashing here would destroy exactly what the user wants kept.
+		// Only an in-progress rebase/merge/cherry-pick still blocks.
+		rep = rep.AllowDirty()
 	}
 	stashed := false
 	if dirtyErr := rep.Err(); dirtyErr != nil {
@@ -193,9 +283,13 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 
 	mode := "mixed"
 	modeNote := "(working tree preserved — current edits become unstaged)"
-	if hard {
+	switch {
+	case hard:
 		mode = "hard"
 		modeNote = "(working tree DISCARDED — current edits gone, files restored to that state)"
+	case soft:
+		mode = "soft"
+		modeNote = "(index and working tree untouched — the undone commits' changes stay staged)"
 	}
 	if !yes && promptAllowed() {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -212,8 +306,11 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 
 	// Backup current HEAD + reset via gitsafe.Restorer (SHARED-04).
 	strategy := gitsafe.StrategyMixed
-	if hard {
+	switch {
+	case hard:
 		strategy = gitsafe.StrategyHard
+	case soft:
+		strategy = gitsafe.StrategySoft
 	}
 	branch, _ := d.Client.CurrentBranch(ctx) // may be detached; OK, SanitizeBranchSegment handles it
 	restorer := gitsafe.NewRestorer(d.Runner, d.Now, "undo")
@@ -224,6 +321,12 @@ func runUndoWith(cmd *cobra.Command, d *undoDeps) error {
 		return err
 	}
 
+	if JSONOut() {
+		return emitAgentResult(cmd.OutOrStdout(), undoResultJSON{
+			Schema: 1, Result: "ok",
+			From: res.From, To: res.To, BackupRef: res.BackupRef, Mode: mode,
+		})
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("undone", "to %s", shortSHA(res.To)))
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cellFaint("backup saved at"), res.BackupRef)
 	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf("hint: git reset --hard %s", res.BackupRef)))

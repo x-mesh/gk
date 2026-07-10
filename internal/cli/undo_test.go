@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,8 @@ func newUndoTestCmd(buf *bytes.Buffer, flags map[string]string) *cobra.Command {
 	cmd.Flags().Int("limit", 20, "")
 	cmd.Flags().Bool("yes", false, "")
 	cmd.Flags().String("to", "", "")
+	cmd.Flags().Bool("hard", false, "")
+	cmd.Flags().Bool("soft", false, "")
 	if buf != nil {
 		cmd.SetOut(buf)
 		cmd.SetErr(buf)
@@ -284,6 +287,352 @@ func TestUndo_To_RefusesInProgressRebase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "in-progress") {
 		t.Errorf("expected 'in-progress' in error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_Soft_PreservesIndexAndWorktree — soft reset moves HEAD only: the
+// index tree (git write-tree) and worktree files are byte-identical before and
+// after, staged extras stay staged, and the backup ref points at the old HEAD.
+// ---------------------------------------------------------------------------
+
+func TestUndo_Soft_PreservesIndexAndWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	sha1 := repo.Commit("commit 1")
+	repo.WriteFile("b.txt", "b")
+	sha2 := repo.Commit("commit 2")
+
+	// Stage an extra change — the tree is now dirty, which soft must tolerate
+	// (uncommitting with staged work is the whole point of --soft).
+	repo.WriteFile("c.txt", "staged extra")
+	repo.RunGit("add", "c.txt")
+
+	indexTreeBefore := repo.RunGit("write-tree")
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"to": "HEAD~1", "soft": "true", "yes": "true"})
+
+	r := &git.ExecRunner{Dir: repo.Dir}
+	deps := &undoDeps{
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
+	}
+
+	if err := runUndoWith(cmd, deps); err != nil {
+		t.Fatalf("runUndoWith: %v", err)
+	}
+
+	// HEAD moved back to commit 1.
+	if head := repo.RunGit("rev-parse", "HEAD"); head != sha1 {
+		t.Errorf("HEAD after undo --soft: got %s, want %s", head, sha1)
+	}
+
+	// Index untouched: the tree it would write is identical.
+	if indexTreeAfter := repo.RunGit("write-tree"); indexTreeAfter != indexTreeBefore {
+		t.Errorf("index tree changed by --soft: got %s, want %s", indexTreeAfter, indexTreeBefore)
+	}
+
+	// The staged extra is still staged (now alongside commit 2's changes).
+	staged := repo.RunGit("diff", "--cached", "--name-only")
+	for _, f := range []string{"b.txt", "c.txt"} {
+		if !strings.Contains(staged, f) {
+			t.Errorf("expected %s staged after undo --soft, staged set: %q", f, staged)
+		}
+	}
+
+	// Worktree untouched.
+	if got, err := os.ReadFile(filepath.Join(repo.Dir, "b.txt")); err != nil || string(got) != "b" {
+		t.Errorf("b.txt worktree content changed: %q, err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo.Dir, "c.txt")); err != nil || string(got) != "staged extra" {
+		t.Errorf("c.txt worktree content changed: %q, err=%v", got, err)
+	}
+
+	// Backup ref recorded the pre-undo HEAD.
+	backupRef := gitsafe.BackupRefName("undo", "main", fixedTime)
+	if backupSHA := repo.RunGit("rev-parse", backupRef); backupSHA != sha2 {
+		t.Errorf("backup ref %s: got %s, want %s", backupRef, backupSHA, sha2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_SoftHard_MutuallyExclusive — --soft + --hard must error before any
+// git activity.
+// ---------------------------------------------------------------------------
+
+func TestUndo_SoftHard_MutuallyExclusive(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"soft": "true", "hard": "true", "to": "HEAD~1"})
+
+	// FakeRunner with no responses: any git call would fail loudly, proving
+	// the validation fires first.
+	fake := &git.FakeRunner{}
+	deps := &undoDeps{
+		Runner: fake,
+		Client: git.NewClient(fake),
+		Picker: nil,
+		Now:    nowFixed,
+	}
+
+	err := runUndoWith(cmd, deps)
+	if err == nil {
+		t.Fatal("expected error for --soft --hard, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_Soft_DefaultsToParent — bare --soft (no --to) in a non-interactive
+// run (tests have no TTY) resets to HEAD~1.
+// ---------------------------------------------------------------------------
+
+func TestUndo_Soft_DefaultsToParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	sha1 := repo.Commit("commit 1")
+	repo.WriteFile("b.txt", "b")
+	repo.Commit("commit 2")
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"soft": "true"})
+
+	r := &git.ExecRunner{Dir: repo.Dir}
+	deps := &undoDeps{
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
+	}
+
+	if err := runUndoWith(cmd, deps); err != nil {
+		t.Fatalf("runUndoWith: %v", err)
+	}
+
+	if head := repo.RunGit("rev-parse", "HEAD"); head != sha1 {
+		t.Errorf("bare undo --soft should default to HEAD~1: HEAD got %s, want %s", head, sha1)
+	}
+	if out := buf.String(); !strings.Contains(out, "undone to") {
+		t.Errorf("expected 'undone to' in output, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_Soft_AgentEnvelope — GK_AGENT-mode JSON: {state:"ok", ok:true,
+// result:{from,to,backup_ref,mode:"soft"}}; bare --soft still defaults to
+// HEAD~1 under agent mode.
+// ---------------------------------------------------------------------------
+
+func TestUndo_Soft_AgentEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	prevA, prevJ := flagAgent, flagJSON
+	flagAgent, flagJSON = true, true
+	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	sha1 := repo.Commit("commit 1")
+	repo.WriteFile("b.txt", "b")
+	sha2 := repo.Commit("commit 2")
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"soft": "true"})
+
+	r := &git.ExecRunner{Dir: repo.Dir}
+	deps := &undoDeps{
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
+	}
+
+	if err := runUndoWith(cmd, deps); err != nil {
+		t.Fatalf("runUndoWith: %v", err)
+	}
+
+	var env struct {
+		Schema int    `json:"schema"`
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			Schema    int    `json:"schema"`
+			Result    string `json:"result"`
+			From      string `json:"from"`
+			To        string `json:"to"`
+			BackupRef string `json:"backup_ref"`
+			Mode      string `json:"mode"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v\noutput: %s", err, buf.String())
+	}
+	if env.State != "ok" || !env.OK {
+		t.Errorf("envelope state/ok: got %q/%v, want \"ok\"/true", env.State, env.OK)
+	}
+	if env.Result.Mode != "soft" {
+		t.Errorf("result.mode: got %q, want \"soft\"", env.Result.Mode)
+	}
+	if env.Result.From != sha2 {
+		t.Errorf("result.from: got %s, want %s", env.Result.From, sha2)
+	}
+	if env.Result.To != sha1 {
+		t.Errorf("result.to: got %s, want %s", env.Result.To, sha1)
+	}
+	if env.Result.BackupRef == "" {
+		t.Error("result.backup_ref is empty")
+	}
+	if head := repo.RunGit("rev-parse", "HEAD"); head != sha1 {
+		t.Errorf("HEAD after agent-mode undo --soft: got %s, want %s", head, sha1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_Soft_RootCommitErrors — bare --soft on a root-only commit (HEAD~1
+// unresolvable) must fail cleanly: an error naming HEAD~1 with a hint, HEAD
+// unmoved, and no backup ref written.
+// ---------------------------------------------------------------------------
+
+func TestUndo_Soft_RootCommitErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repo := testutil.NewRepo(t) // exactly the initial commit — HEAD is the root
+	headBefore := repo.RunGit("rev-parse", "HEAD")
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"soft": "true"})
+
+	r := &git.ExecRunner{Dir: repo.Dir}
+	deps := &undoDeps{
+		Runner:  r,
+		Client:  git.NewClient(r),
+		WorkDir: repo.Dir,
+		Picker:  nil,
+		Now:     nowFixed,
+	}
+
+	err := runUndoWith(cmd, deps)
+	if err == nil {
+		t.Fatal("expected an error: a root-only repo has nothing to uncommit")
+	}
+	if !strings.Contains(err.Error(), "HEAD~1") {
+		t.Errorf("error should name the implicit HEAD~1 target, got: %v", err)
+	}
+	if hint := HintFrom(err); !strings.Contains(hint, "parent") {
+		t.Errorf("error should carry a no-parent hint, got: %q", hint)
+	}
+	if head := repo.RunGit("rev-parse", "HEAD"); head != headBefore {
+		t.Errorf("HEAD must be unmoved: got %s, want %s", head, headBefore)
+	}
+	if refs := repo.RunGit("for-each-ref", "refs/gk/undo-backup"); strings.TrimSpace(refs) != "" {
+		t.Errorf("no backup ref may be written on a failed resolve, got: %q", refs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_List_AgentEnvelope — --list under --json/GK_AGENT emits a
+// structured entries[] envelope, never the human-formatted table.
+// ---------------------------------------------------------------------------
+
+func TestUndo_List_AgentEnvelope(t *testing.T) {
+	prevA, prevJ := flagAgent, flagJSON
+	flagAgent, flagJSON = true, true
+	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
+
+	fakeReflogOutput := "aabbccddee112233445566778899001122334455\x00" +
+		"aabbccdd\x00HEAD@{0}\x00commit: initial\x001700000000\x1e"
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"reflog show --format=%H%x00%h%x00%gD%x00%gs%x00%at%x1e HEAD -n 20": {
+				Stdout: fakeReflogOutput,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"list": "true"})
+	deps := &undoDeps{Runner: fake, Client: git.NewClient(fake), Picker: nil, Now: nowFixed}
+
+	if err := runUndoWith(cmd, deps); err != nil {
+		t.Fatalf("runUndoWith: %v", err)
+	}
+
+	var env struct {
+		State  string `json:"state"`
+		OK     bool   `json:"ok"`
+		Result struct {
+			Schema  int `json:"schema"`
+			Entries []struct {
+				SHA     string `json:"sha"`
+				Action  string `json:"action"`
+				Ref     string `json:"ref"`
+				Summary string `json:"summary"`
+			} `json:"entries"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("--list output is not a JSON envelope: %v\n%s", err, buf.String())
+	}
+	if env.State != "ok" || !env.OK {
+		t.Errorf("envelope state/ok = %q/%v, want ok/true", env.State, env.OK)
+	}
+	if len(env.Result.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1: %s", len(env.Result.Entries), buf.String())
+	}
+	e := env.Result.Entries[0]
+	if e.SHA != "aabbccddee112233445566778899001122334455" || e.Ref != "HEAD@{0}" || e.Action != "commit" {
+		t.Errorf("entry = %+v", e)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUndo_EmptyReflog_AgentBlocked — an empty reflog under --json/GK_AGENT is
+// a blocked error, not bare prose with a success exit.
+// ---------------------------------------------------------------------------
+
+func TestUndo_EmptyReflog_AgentBlocked(t *testing.T) {
+	prevA, prevJ := flagAgent, flagJSON
+	flagAgent, flagJSON = true, true
+	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
+
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"reflog show --format=%H%x00%h%x00%gD%x00%gs%x00%at%x1e HEAD -n 20": {Stdout: ""},
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newUndoTestCmd(&buf, map[string]string{"soft": "true"})
+	deps := &undoDeps{Runner: fake, Client: git.NewClient(fake), Picker: nil, Now: nowFixed}
+
+	err := runUndoWith(cmd, deps)
+	if err == nil {
+		t.Fatal("empty reflog in JSON mode must surface as an error, not prose + exit 0")
+	}
+	if !strings.Contains(err.Error(), "no reflog entries") {
+		t.Errorf("error = %v, want the empty-reflog message", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no prose may reach stdout in JSON mode, got: %q", buf.String())
 	}
 }
 

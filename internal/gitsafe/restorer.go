@@ -28,7 +28,8 @@ const (
 	StrategyHard
 
 	// StrategySoft maps to `git reset --soft` — only HEAD moves, staged
-	// changes remain staged. Reserved for future use.
+	// changes remain staged. Used by `gk undo --soft` to uncommit: HEAD
+	// rewinds while the index and working tree stay untouched.
 	StrategySoft
 
 	// StrategyKeep maps to `git reset --keep` — HEAD moves if the working

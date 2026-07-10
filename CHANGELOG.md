@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.115.0] - 2026-07-10
+
 ### Added
 
 - **`gk chat`가 여러 세션을 목록으로 관리한다 — `sessions`/`sessions prune`/`--session`/`/rename`.** 기존에는 `--continue` 하나뿐이라 세션이 여러 개 쌓이면 어떤 대화가 어디 있는지 알 방법이 없었고, 오래된 세션 JSONL이 무한히 늘어났다. `gk chat sessions`는 `.git/gk-chat/sessions/*.jsonl`을 스캔해 id·시작 시각·제목·턴 수를 나열하고(`*`가 `--continue` 대상을 표시, `--json`은 `{id, started_at, title, turns, current}[]`) — 별도 인덱스 파일 없이 디렉터리 스캔 + 경량 per-file pass다. REPL `/rename <제목>`으로 표시 제목을 지정할 수 있고(미지정 시 첫 사용자 메시지를 60자로 잘라 대체), `gk chat --session <id>`는 특정 세션을 재개한다(`--continue`와 상호배타, 재개한 세션이 그다음 `--continue`의 타깃이 된다). `gk chat sessions prune [--keep-days N]`은 마지막 활동(mtime) 기준으로 오래된 세션을 지우는데 — `gk snapshot prune`과 달리 아무것도 설정하지 않으면 진짜 no-op이다(대화 기록은 `refs/wip` 스냅샷 같은 안전망 자산이 아니라서 기본 삭제가 맞는 트레이드오프가 아니다) — `--keep-days`나 `ai.chat.session_retention_days`(기본 0) config로 옵트인하며, `--continue`가 재개할 세션은 보존 기간 밖이어도 절대 지워지지 않는다.

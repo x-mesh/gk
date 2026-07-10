@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 )
@@ -76,23 +77,60 @@ type agentError struct {
 	Remedies []errRemedy `json:"remedies,omitempty"`
 }
 
+// agentJSONIndent is the pretty-print indent every JSON emitter uses.
+const agentJSONIndent = "  "
+
+// agentCompactThresholdBytes is the compact-encoded size above which
+// size-aware emitters drop pretty-print indentation: on payloads this large
+// the indent is pure token overhead (~20% on the session-audit corpus) and
+// nobody eyeballs them anyway. Opt-in per command via
+// emitAgentResultCompactOver — the emitAgentResult default stays indented.
+const agentCompactThresholdBytes = 16 << 10
+
+// agentWrap wraps payload in the agent envelope when agent mode is on and
+// returns it bare otherwise — the one place the envelope state is derived.
+func agentWrap(payload any) any {
+	if !AgentOut() {
+		return payload
+	}
+	state := envStateOK
+	if s, ok := payload.(agentStater); ok {
+		if st := s.agentState(); agentStateValid(st) {
+			state = st
+		}
+	}
+	return agentEnvelope{Schema: 1, State: state, OK: state == envStateOK, Result: payload}
+}
+
 // emitAgentResult writes payload as indented JSON to w — wrapped in the
 // agent envelope when agent mode is on, bare otherwise. Every JSON-emitting
 // command routes through this so the envelope appears everywhere at once.
 func emitAgentResult(w io.Writer, payload any) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if AgentOut() {
-		state := envStateOK
-		if s, ok := payload.(agentStater); ok {
-			if st := s.agentState(); agentStateValid(st) {
-				state = st
-			}
-		}
-		return enc.Encode(agentEnvelope{Schema: 1, State: state, OK: state == envStateOK, Result: payload})
+	enc.SetIndent("", agentJSONIndent)
+	return enc.Encode(agentWrap(payload))
+}
+
+// emitAgentResultCompactOver behaves like emitAgentResult until the
+// compact-encoded output exceeds threshold bytes, then emits it compact
+// (no indentation). Small payloads stay pretty for eyeball-friendliness.
+func emitAgentResultCompactOver(w io.Writer, payload any, threshold int) error {
+	wrapped := agentWrap(payload)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(wrapped); err != nil {
+		return err
 	}
-	return enc.Encode(payload)
+	if buf.Len() > threshold {
+		_, err := w.Write(buf.Bytes())
+		return err
+	}
+	enc = json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", agentJSONIndent)
+	return enc.Encode(wrapped)
 }
 
 // FormatErrorJSON renders err as the failure envelope. main.go uses it in
@@ -128,7 +166,7 @@ func FormatErrorJSON(err error) string {
 		Hint:     selfRewrite(HintFrom(err)),
 		Remedies: remedies,
 	}}
-	b, merr := json.MarshalIndent(env, "", "  ")
+	b, merr := json.MarshalIndent(env, "", agentJSONIndent)
 	if merr != nil {
 		return FormatError(err)
 	}

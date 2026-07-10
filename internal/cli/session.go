@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -55,7 +56,11 @@ standard machine-readable envelope.`,
 	auditCmd.Flags().Bool("viz", false, "with --metric=turns, draw an ASCII turn-graph of collapsible runs")
 	auditCmd.Flags().Bool("record", false, "append this run's turn-reduction metric to the history log (implies --metric=turns)")
 	auditCmd.Flags().Bool("trend", false, "show the turn-reduction trend from recorded runs (implies --metric=turns)")
+	auditCmd.Flags().Bool("files", false, "include the per-file breakdown in JSON output (large; omitted by default)")
+	auditCmd.Flags().Bool("full", false, "emit the full JSON payload: files plus uncapped run commands and evidence")
+	auditCmd.Flags().Bool("summary", false, "emit only the decision-grade JSON subset (totals, adoption, top projects, findings sans evidence)")
 	sessionCmd.AddCommand(auditCmd)
+	sessionCmd.AddCommand(newSessionDigestCmd())
 	rootCmd.AddCommand(sessionCmd)
 }
 
@@ -66,6 +71,12 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 	trend, _ := cmd.Flags().GetBool("trend")
 	viz, _ := cmd.Flags().GetBool("viz")
 	sinceRaw, _ := cmd.Flags().GetString("since")
+	withFiles, _ := cmd.Flags().GetBool("files")
+	full, _ := cmd.Flags().GetBool("full")
+	summary, _ := cmd.Flags().GetBool("summary")
+	if full && summary {
+		return fmt.Errorf("--full and --summary are mutually exclusive")
+	}
 	// Recording and the trend view both need the turn metric — opt in for the user.
 	if (record || trend) && metric != "turns" && metric != "both" {
 		metric = "turns"
@@ -115,8 +126,20 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// JSON emission happens AFTER --record/--trend so history is always written
+	// from (and the trend attached to) the original full report; the lean/summary
+	// shaping below only touches what goes on the wire.
 	if JSONOut() {
-		return emitAgentResult(cmd.OutOrStdout(), report)
+		var payload any
+		switch {
+		case summary:
+			payload = summarizeSessionReport(report)
+		case full:
+			payload = report
+		default:
+			payload = leanSessionReport(report, withFiles)
+		}
+		return emitAgentResultCompactOver(cmd.OutOrStdout(), payload, agentCompactThresholdBytes)
 	}
 	renderSessionAudit(cmd.OutOrStdout(), report)
 	if viz && report.Turns != nil {
@@ -126,6 +149,172 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 		renderTrend(cmd.OutOrStdout(), report.Trend, 10)
 	}
 	return nil
+}
+
+// Lean JSON caps. The measured full-corpus payload is dominated by fields an
+// agent never needs at decision time: files[] is 67% of the bytes, and
+// runs[].commands / findings[].evidence repeat near-identical shell lines.
+const (
+	// sessionLeanCommandCap is how many runs[].commands entries the lean
+	// payload keeps; the rest collapse into one "(+N more)" marker entry.
+	sessionLeanCommandCap = 3
+	// sessionLeanEvidenceCap is how many evidence samples the lean payload
+	// keeps per finding.
+	sessionLeanEvidenceCap = 2
+	// sessionLeanTruncateLen is the byte budget per kept command string.
+	sessionLeanTruncateLen = 120
+	// sessionSummaryTopProjects mirrors the human renderer's top-5 project cut.
+	sessionSummaryTopProjects = 5
+)
+
+// sessionAuditLeanJSON is the default token-lean JSON payload: the full report
+// with files[] omitted unless --files, run commands capped, and evidence
+// capped. The shadowing Files field (depth 0 beats the embedded Report's)
+// turns the report's always-present "files" key into an opt-in one.
+type sessionAuditLeanJSON struct {
+	sessionaudit.Report
+	Files []sessionaudit.FileReport `json:"files,omitempty"`
+}
+
+// leanSessionReport shapes a report for the wire without mutating the
+// original: Turns.Runs and Findings are re-sliced copies, so --record/--trend
+// and the human renderer keep seeing the full data.
+func leanSessionReport(report sessionaudit.Report, withFiles bool) sessionAuditLeanJSON {
+	lean := sessionAuditLeanJSON{Report: report}
+	lean.Report.Files = nil // shadowed by the outer field; nil to make that explicit
+	if withFiles {
+		lean.Files = report.Files
+	}
+	if report.Turns != nil {
+		tm := *report.Turns
+		tm.Runs = make([]sessionaudit.CollapsibleRun, len(report.Turns.Runs))
+		for i, r := range report.Turns.Runs {
+			r.Commands = leanRunCommands(r.Commands)
+			tm.Runs[i] = r
+		}
+		lean.Report.Turns = &tm
+	}
+	if len(report.Findings) > 0 {
+		findings := make([]sessionaudit.Finding, len(report.Findings))
+		for i, f := range report.Findings {
+			f.Evidence = leanEvidence(f.Evidence)
+			findings[i] = f
+		}
+		lean.Report.Findings = findings
+	}
+	return lean
+}
+
+// leanRunCommands keeps the first sessionLeanCommandCap commands (each
+// truncated) and folds the remainder into a "(+N more)" marker entry.
+func leanRunCommands(cmds []string) []string {
+	n := min(len(cmds), sessionLeanCommandCap)
+	out := make([]string, 0, n+1)
+	for _, c := range cmds[:n] {
+		out = append(out, truncateLeanString(c))
+	}
+	if dropped := len(cmds) - n; dropped > 0 {
+		out = append(out, fmt.Sprintf("(+%d more)", dropped))
+	}
+	return out
+}
+
+// leanEvidence keeps the first sessionLeanEvidenceCap samples with their
+// commands truncated. Copies, never mutates, the input entries.
+func leanEvidence(ev []sessionaudit.Evidence) []sessionaudit.Evidence {
+	if len(ev) == 0 {
+		return ev
+	}
+	out := make([]sessionaudit.Evidence, min(len(ev), sessionLeanEvidenceCap))
+	for i := range out {
+		out[i] = ev[i]
+		out[i].Command = truncateLeanString(out[i].Command)
+	}
+	return out
+}
+
+// truncateLeanString cuts s to sessionLeanTruncateLen bytes with a "…" suffix,
+// backing up to a rune boundary so truncation never emits invalid UTF-8.
+func truncateLeanString(s string) string {
+	if len(s) <= sessionLeanTruncateLen {
+		return s
+	}
+	cut := sessionLeanTruncateLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// sessionAuditSummaryJSON is the --summary payload: only the decision-grade
+// subset, as a dedicated struct so the wire shape is explicit and pinned by
+// tests rather than inherited from the report.
+type sessionAuditSummaryJSON struct {
+	Schema   int                            `json:"schema"`
+	Totals   sessionaudit.Totals            `json:"totals"`
+	Adoption sessionaudit.Adoption          `json:"adoption"`
+	Projects []sessionaudit.ProjectAdoption `json:"projects,omitempty"`
+	Turns    *sessionAuditSummaryTurns      `json:"turns,omitempty"`
+	Findings []sessionAuditSummaryFinding   `json:"findings,omitempty"`
+	Notes    []string                       `json:"notes,omitempty"`
+	// Trend carries --trend's recorded history. The lean/full payloads embed
+	// the Report (which already has it); without this field --trend --summary
+	// --json would silently drop the flag.
+	Trend []sessionaudit.HistoryEntry `json:"trend,omitempty"`
+}
+
+// sessionAuditSummaryTurns is TurnMetrics without the runs[] evidence.
+type sessionAuditSummaryTurns struct {
+	Source              string         `json:"source"`
+	GitTurns            int            `json:"git_turns"`
+	EstimatedTurnsSaved int            `json:"estimated_turns_saved"`
+	Rate                float64        `json:"rate"`
+	ByGroup             map[string]int `json:"by_group,omitempty"`
+}
+
+// sessionAuditSummaryFinding is a Finding without the evidence[] samples.
+type sessionAuditSummaryFinding struct {
+	Kind           string         `json:"kind"`
+	Severity       string         `json:"severity"`
+	Status         string         `json:"status"`
+	Count          int            `json:"count"`
+	Recommendation string         `json:"recommendation"`
+	Gap            string         `json:"gap,omitempty"`
+	Subcommands    map[string]int `json:"subcommands,omitempty"`
+	OneShot        []string       `json:"one_shot,omitempty"`
+}
+
+func summarizeSessionReport(report sessionaudit.Report) sessionAuditSummaryJSON {
+	s := sessionAuditSummaryJSON{
+		Schema:   report.Schema,
+		Totals:   report.Totals,
+		Adoption: report.Adoption,
+		Projects: report.Projects[:min(len(report.Projects), sessionSummaryTopProjects)],
+		Notes:    report.Notes,
+		Trend:    report.Trend,
+	}
+	if tm := report.Turns; tm != nil {
+		s.Turns = &sessionAuditSummaryTurns{
+			Source:              tm.Source,
+			GitTurns:            tm.GitTurns,
+			EstimatedTurnsSaved: tm.EstimatedTurnsSaved,
+			Rate:                tm.Rate,
+			ByGroup:             tm.ByGroup,
+		}
+	}
+	for _, f := range report.Findings {
+		s.Findings = append(s.Findings, sessionAuditSummaryFinding{
+			Kind:           f.Kind,
+			Severity:       f.Severity,
+			Status:         f.Status,
+			Count:          f.Count,
+			Recommendation: f.Recommendation,
+			Gap:            f.Gap,
+			Subcommands:    f.Subcommands,
+			OneShot:        f.OneShot,
+		})
+	}
+	return s
 }
 
 // parseSinceWindow parses the --since window ("30d", "12h"). A "d" suffix means

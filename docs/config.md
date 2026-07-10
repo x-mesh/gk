@@ -684,14 +684,22 @@ ai:
 | | |
 |-|-|
 | Type | object |
-| Default | `timeout: 30s`, `round_timeout: 120s`, `max_tool_rounds: 15`, `tool_result_cap: 32768` |
-| Scope | `round_timeout`/`max_tool_rounds`/`tool_result_cap`/`deny_paths` are read from the **global** config only |
+| Default | `timeout: 30s`, `round_timeout: 120s`, `max_tool_rounds: 15`, `tool_result_cap: 32768`, `history_budget: 32768`, `session_retention_days: 0`, `auto_context: false` |
+| Scope | `round_timeout`/`max_tool_rounds`/`tool_result_cap`/`deny_paths` are read from the **global** config only; `history_budget`/`session_retention_days`/`auto_context` are normal merged fields |
 
 Tunes `gk chat`'s agentic tool loop. `timeout` is the shared chat-command
 call timeout (also used by `gk do`/`gk ask`/`gk explain`); `round_timeout`
 is chat-specific and bounds one provider round-trip including the adapter's
 internal retries, so a proxy with occasional slow/500 responses does not
-trip the smaller single-shot budget.
+trip the smaller single-shot budget. `round_timeout` is the floor for BOTH
+the per-attempt HTTP timeout and the retry-loop deadline: the per-attempt
+timeout includes reading the response body, and for a streaming reply that
+one read is the whole answer, so leaving it at the shorter `timeout`
+default would truncate answers that legitimately take longer than ~30s. A
+hung streaming attempt is stopped from eating the entire round by a
+separate, shorter sub-deadline placed on the streaming attempt alone (it
+gets a fraction of the remaining budget, leaving time for the non-stream
+fallback) — not by keeping the total attempt timeout artificially small.
 
 `max_tool_rounds` (provider round-trips per turn), `tool_result_cap` (bytes
 per tool result), and `deny_paths` (extra paths the chat tools may never
@@ -700,12 +708,50 @@ read) are honored from the **global** config only — a cloned repo's
 trust boundary as `resolve.verify`). `deny_paths` is always applied as a
 union with the built-in defaults and `ai.commit.deny_paths`.
 
+`history_budget` (default 32768) approximates the token budget for the
+conversation history replayed to the provider each round — trimming
+protects cost, not correctness, since provider context windows comfortably
+exceed this. `gk chat`'s `/tokens` REPL command reports usage against this
+budget and a turn's end auto-warns once usage crosses 80% of it; `/compact`
+folds older turns into a summary to bring usage back down. Like
+`round_timeout` this is a normal merged field, not global-only — it only
+trades off cost/context for a session already governed by the sandbox and
+deny list, it does not widen what the model can see or do.
+
+`session_retention_days` (default 0 = never auto-prune) sets the default
+`--keep-days` window for `gk chat sessions prune` when the flag is not
+passed. Unlike the global-only knobs above it is a normal merged field —
+it only controls how long local session JSONL files are kept on disk, not
+what the chat tools may see or do, so a repo-local override is not the
+`init.ai_gitignore` attack shape.
+
+`auto_context` (default false) injects a depth- and file-capped directory
+tree (built from `git ls-files`, 3 levels deep, 300 files max) into the
+system prompt as `REPO_MAP`, so "what does this project look like?"
+doesn't cost a `file_list`/`git_grep` tool round trip. Off by default
+because it spends prompt tokens on every session even when the question
+never touches repo layout. Same merged-config path as
+`session_retention_days`.
+
+`REPO_MAP` applies `deny_paths` before rendering: a tracked file matched
+by a deny glob never appears in the tree, and a directory whose only
+entries are denied does not appear either. That filter is load-bearing,
+not decorative — redaction scrubs secret *values* out of text, which does
+nothing for a listing whose leaked datum is the filename itself. The
+chat tools already hold the same line (`file_list` skips denied entries,
+`git_status` withholds denied paths *and* the dirty flags that would
+reveal them), so `REPO_MAP` must not become the one place that names
+them.
+
 ```yaml
 ai:
   chat:
     round_timeout: 120s
     max_tool_rounds: 15
     tool_result_cap: 32768
+    history_budget: 32768
+    session_retention_days: 30
+    auto_context: true
     deny_paths:
       - "secrets/**"
 ```

@@ -1082,10 +1082,21 @@ gk log --lanes                            # author swim-lanes instead of commit 
 Talk to your repository. Unlike `gk ask` (one answer from pre-collected
 context), chat runs an **agentic loop**: the model calls read-only tools
 itself — `git_log`, `git_show`, `git_diff` (digest-first), `git_blame`,
-`git_grep`, `file_read`, `file_list` — to investigate before answering,
-and every tool call is shown as a one-line feed. Ask "when and why did
-this function change?" and it chains log → blame → file reads on its own,
-citing the SHAs and `file:line` evidence it actually saw.
+`git_grep`, `file_read`, `file_list`, `git_status` (structured dirty/
+staged/conflict/stash/in-progress-op summary), `git_snapshot_list` /
+`git_snapshot_diff` (gk's `refs/wip` safety net — see `gk snapshot`, not
+`git stash`), and `git_context` (re-collects the same repo-orientation
+snapshot the system prompt starts with, for when state may have drifted
+mid-conversation) — to investigate before answering, and every tool call
+is shown as a one-line feed. Ask "when and why did this function
+change?" and it chains log → blame → file reads on its own, citing the
+SHAs and `file:line` evidence it actually saw.
+
+Text answers stream to the terminal token-by-token as the model writes
+them. A round that calls tools (there's no final text yet to stream)
+falls back to a normal non-stream request for that round; JSON/agent
+mode (`--json`/`GK_AGENT=1`) never streams, since the envelope needs the
+whole answer at once.
 
 ### Synopsis
 
@@ -1093,6 +1104,9 @@ citing the SHAs and `file:line` evidence it actually saw.
 gk chat                    # interactive REPL
 gk chat "<question>"       # one-shot answer
 gk chat --continue         # resume the most recent session
+gk chat --session <id>     # resume a specific session
+gk chat sessions           # list sessions (id, started, title, turns)
+gk chat sessions prune     # expire old session files (opt-in)
 ```
 
 ### Flags
@@ -1103,24 +1117,104 @@ gk chat --continue         # resume the most recent session
 | `--model <name>` | | One-shot model override for this run |
 | `--lang <code>` | (`output.lang`) | Answer language (`en`, `ko`, …) |
 | `--continue` | false | Resume the last session from `.git/gk-chat/` — a missing or corrupt previous session degrades to a fresh one with a warning, never an error |
+| `--session <id>` | | Resume a specific session by id (see `gk chat sessions` for ids). Mutually exclusive with `--continue`. Opening either target re-marks it as the `--continue` pointer, so resuming an older session here also makes it the next bare `--continue`'s target |
 
-One provider round is budgeted by `ai.chat.round_timeout` (default `120s`, distinct from `ai.chat.timeout`'s 30s single-shot budget): a chat round carries tool definitions, repo context, accumulated results, and the adapter's internal 5xx retries, so a proxy with occasional slow/500 responses needs the headroom. The provider's HTTP deadline is raised to match. On a timeout the error names the knob.
+One provider round is budgeted by `ai.chat.round_timeout` (default `120s`, distinct from `ai.chat.timeout`'s 30s single-shot budget): a chat round carries tool definitions, repo context, accumulated results, and the adapter's internal 5xx retries, so a proxy with occasional slow/500 responses needs the headroom. `round_timeout` only widens the provider's retry-*loop* deadline (`RetryBudget`) — each individual HTTP attempt keeps its own smaller, independent timeout, so one hung attempt can no longer eat the whole round budget and starve the retries it was meant to cover. On a timeout the error names the knob.
+
+A brand-new session's very first round may fail before any provider-specific state exists yet (no vendor tool-call IDs committed to history) — that one round is retried against the next tool-calling candidate in the provider chain before giving up. Once the session has any history (this turn or a resumed one), a failure is returned as-is instead: switching providers mid-conversation would corrupt the vendor's tool-call ID space. Separately, a reply that requests a tool call violating the tool's schema (unknown tool name, missing required argument) gets exactly one semantic reprompt — the model's own bad reply plus a synthetic error result are fed back once; a call that's still broken after that surfaces as a normal dispatch error on the next round.
 
 ### REPL
 
 ↑/↓ walk the session's question history (shell-style line editing on a
-real terminal). `/help` lists commands, `/clear` resets the conversation
-context — a marker is recorded so `--continue` sees the same empty
-context (the file keeps the full record for audit). `/exit` or Ctrl-D
-quits. Ctrl-C during a
-turn cancels **that turn only**; at the prompt it exits. A failed turn
-(provider error, timeout) never kills the session — it is rolled back
-whole (and marked so `--continue` agrees), keeping the conversation
-valid for the vendor APIs; retry or rephrase.
+real terminal) — `--continue`/`--session` seed this history from the
+resumed session's own prior user turns, so the arrow keys reach past
+questions from an earlier run too, not just this process's. Tab
+completes a `/` command once it uniquely matches a prefix (`/clear`,
+`/compact`, `/exit`, `/help`, `/quit`, `/rename`, `/tokens`).
+
+`/help` lists commands. `/clear` resets the conversation context — a
+marker is recorded so `--continue` sees the same empty context (the file
+keeps the full record for audit). `/rename <title>` sets the session's
+display title, used by `gk chat sessions` in place of the
+first-user-message fallback (a control record, like `/clear`'s marker —
+it costs one JSONL line and never touches prior history; renaming twice
+keeps the latest title). `/tokens` breaks the current context down into
+system prompt / history / tool-results (chars and an approximate token
+count) against `ai.chat.history_budget`, and the same 80%-of-budget
+check runs automatically after every turn once history gets that full.
+`/compact` asks the provider to summarize every turn except the most
+recent two into a single synthetic message — the two most recent turns
+are always kept verbatim, so the investigation state you're mid-way
+through is never paraphrased away — and records the fold in the session
+file so a later `--continue` replay sees the compacted history, not the
+original transcript; a provider without summarization support reports
+that plainly instead of attempting it. `/exit` or Ctrl-D quits. Ctrl-C
+during a turn cancels **that turn only**; at the prompt it exits. A
+failed turn (provider error, timeout) never kills the session — it is
+rolled back whole (and marked so `--continue` agrees), keeping the
+conversation valid for the vendor APIs; retry or rephrase.
 
 Sessions persist turn-by-turn as append-only JSONL under
 `.git/gk-chat/sessions/` (worktree-safe via `rev-parse --git-path`), so a
 crash costs at most the line being written.
+
+### `gk chat sessions`
+
+Lists every session under `.git/gk-chat/sessions/*.jsonl`, newest first —
+no separate index file, this is a directory scan plus a lightweight
+per-file pass. Each row shows the id, when it started, a title (an
+explicit `/rename`, else the first user message truncated to 60
+characters), and how many turns it holds; a `*` marks the session `gk chat
+--continue` would resume. Under `GK_AGENT=1`/`--json` it returns an array
+of `{id, started_at, title, turns, current}`. A session file predating
+`/rename` (no title record at all) lists fine — the fallback just applies.
+
+```
+gk chat sessions
+```
+
+#### `gk chat sessions prune`
+
+Deletes session files whose last activity (file mtime) is older than a
+retention window — **off by default**. Unlike `gk snapshot prune` (which
+falls back to a hardcoded 7-day window when neither a flag nor config is
+set), `gk chat sessions prune` with nothing configured is a genuine no-op:
+conversation history is not disk-safety-net material the way `refs/wip`
+snapshots are, so accidental deletion by default is the wrong tradeoff.
+Opt in with `--keep-days N` or `ai.chat.session_retention_days` in
+`.gk.yaml` (flag wins when both are set). The session `--continue` would
+resume is never pruned, even if it falls outside the window.
+
+```
+gk chat sessions prune --keep-days 30
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--keep-days <n>` | 0 (no pruning) | Expire sessions inactive for this many days. Falls back to `ai.chat.session_retention_days` when not passed |
+
+### System context
+
+Every session's system prompt carries a `REPO_CONTEXT` block collected
+once at session start: branch, detached-HEAD state, upstream,
+ahead/behind, a dirty summary (staged/unstaged/untracked/conflicts), any
+in-progress rebase/merge/cherry-pick/revert (with its resume/abort
+commands), base-branch drift, the latest tag, and how many linked
+worktrees exist — the same orientation `gk context` collects. In a
+long-running REPL conversation this can go stale (you start a rebase in
+another terminal, switch branches, …); the `git_context` tool lets the
+model re-collect the identical snapshot on demand instead of trusting a
+stale one or guessing.
+
+Setting `ai.chat.auto_context: true` additionally injects a `REPO_MAP`
+block — a directory tree of tracked files built from `git ls-files`,
+capped at 3 levels of nesting and 300 file lines (deeper subtrees
+collapse to `...`, an overflow past the file cap adds a trailing count)
+— so "what does this project look like?" doesn't cost a
+`file_list`/`git_grep` round trip. Off by default: it spends prompt
+tokens on every session even when the question never touches repo
+layout. `deny_paths` is applied to the tree, so turning `auto_context`
+on never names a file the tools would refuse to name.
 
 ### Security model
 
@@ -1156,6 +1250,21 @@ The REPL requires an interactive terminal and is refused under
 `GK_AGENT`/`--json`/CI. One-shot works everywhere; under agent mode it
 returns `{answer, tool_calls[], provider, model, lang, session_id,
 rounds, tokens_used}` in the standard envelope.
+
+A failed one-shot turn still emits this envelope on stdout (`answer`
+empty, the rest filled in with whatever the turn produced before it gave
+up), plus the standard error envelope (`hint` + `error.remedies[]`) on
+stderr, classified by what actually failed:
+
+- Round budget exhausted (`ai.chat.max_tool_rounds`) → `state: blocked`,
+  with remedies to raise the round budget or retry with a faster
+  `--model`.
+- A single round timing out (`ai.chat.round_timeout`) → `state: error`,
+  with the same `round_timeout`/`--model` remedies (retrying the
+  identical turn will not help by itself).
+- Every candidate provider failing to start a brand-new session →
+  `state: blocked`, pointing at `gk doctor`.
+- Ctrl-C / context cancellation → `state: error`, no remedy.
 
 ---
 

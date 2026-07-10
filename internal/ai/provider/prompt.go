@@ -165,6 +165,17 @@ func buildSummarizeUserPrompt(in SummarizeInput) string {
 		return b.String()
 	}
 
+	// "chat-compact" (gk chat's /compact) supplies its own role/instructions
+	// via SystemPrompt and its Diff field already carries the assembled
+	// conversation transcript to fold — same shape as "log"/"status"/"ask".
+	// Emit verbatim: a generic "summarize the following changes" <DIFF>
+	// fence reads oddly for a conversation transcript instead of a diff.
+	if in.Kind == "chat-compact" {
+		fmt.Fprintf(&b, "Respond in language: %s\n\n", lang)
+		b.WriteString(in.Diff)
+		return b.String()
+	}
+
 	switch in.Kind {
 	case "pr":
 		fmt.Fprintf(&b, "Task: write a Pull Request description in %s that helps a reviewer act.\n", lang)

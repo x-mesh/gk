@@ -3,6 +3,8 @@ package chat
 import (
 	"fmt"
 	"strings"
+
+	"github.com/x-mesh/gk/internal/aichat"
 )
 
 // SystemPrompt composes the gk chat role, its non-negotiable rules, and
@@ -11,7 +13,13 @@ import (
 // user-pasted text — can never masquerade as instructions. The rules are
 // still advisory for the model; the ENFORCED boundary is the sandbox and
 // argument validation in internal/chat/tools.
-func SystemPrompt(repoContext, lang string, easy bool) string {
+//
+// repoMap is the opt-in (ai.chat.auto_context) REPO_MAP block: a depth/
+// file-capped directory tree the caller built from `git ls-files`. Empty
+// when the config is off/unset — in that case no REPO_MAP fence is emitted
+// at all, so a disabled/default config produces byte-identical output to
+// before this parameter existed.
+func SystemPrompt(repoContext, repoMap, lang string, easy bool) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "You are gk chat, a read-only git and code exploration assistant running inside the gk CLI, in the user's repository.")
 	if easy {
@@ -26,20 +34,12 @@ func SystemPrompt(repoContext, lang string, easy bool) string {
 	fmt.Fprintf(&b, "- Respond in language: %s\n", lang)
 	if repoContext != "" {
 		fmt.Fprintln(&b)
-		b.WriteString(wrapUntrusted("REPO_CONTEXT", repoContext))
+		b.WriteString(aichat.WrapUntrusted("REPO_CONTEXT", repoContext))
+	}
+	if repoMap != "" {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "REPO_MAP is a directory tree of tracked files (depth- and count-capped; \"...\" marks an elided subtree, a trailing \"more file(s) not shown\" line marks a truncated file list) — orientation only, not the full repository.")
+		b.WriteString(aichat.WrapUntrusted("REPO_MAP", repoMap))
 	}
 	return b.String()
-}
-
-// wrapUntrusted fences content in a named tag, escaping embedded tag
-// spellings so repository data cannot terminate the fence early (the
-// aichat wrapContext idiom, generalized).
-func wrapUntrusted(tag, content string) string {
-	open, close := "<"+tag+">", "</"+tag+">"
-	sanitized := strings.ReplaceAll(content, close, "‹/"+tag+"›")
-	sanitized = strings.ReplaceAll(sanitized, open, "‹"+tag+"›")
-	if !strings.HasSuffix(sanitized, "\n") {
-		sanitized += "\n"
-	}
-	return open + "\n" + sanitized + close
 }

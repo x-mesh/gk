@@ -214,8 +214,18 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 	if err != nil {
 		return "", err
 	}
+	return g.filterAndDigest(out, in.Raw)
+}
+
+// filterAndDigest applies deny-path filtering to a raw unified diff and
+// renders it as either the full patch (raw=true) or a structured digest
+// (per-file stats + changed symbols). Shared by git_diff and
+// git_snapshot_diff so both honor the same deny surface and truncation
+// behavior. Withheld files are always noted — silence would read as
+// "those files didn't change".
+func (g *GitTools) filterAndDigest(out string, raw bool) (string, error) {
 	filtered, dropped := aicommit.FilterDiffByDeny(out, g.DenyGlobs)
-	if in.Raw {
+	if raw {
 		return appendDropNote(filtered, dropped), nil
 	}
 	res, pErr := diff.ParseUnifiedDiff(strings.NewReader(filtered))
@@ -227,7 +237,7 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 	dg := diff.BuildDigest(res)
 	b, mErr := json.MarshalIndent(dg, "", "  ")
 	if mErr != nil {
-		return "", fmt.Errorf("git_diff: encode digest: %w", mErr)
+		return "", fmt.Errorf("encode digest: %w", mErr)
 	}
 	return appendDropNote(string(b), dropped), nil
 }

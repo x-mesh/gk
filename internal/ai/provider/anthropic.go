@@ -301,6 +301,10 @@ type anthropicChatRequest struct {
 	System    []anthropicSystemBlock `json:"system,omitempty"`
 	Messages  []anthropicChatMessage `json:"messages"`
 	Tools     []anthropicToolDef     `json:"tools,omitempty"`
+	// Stream requests SSE streaming. omitempty keeps every existing
+	// non-streaming caller's request body byte-identical (the zero
+	// value, false, is dropped) — only chatWithToolsStream sets it.
+	Stream bool `json:"stream,omitempty"`
 }
 
 // ChatWithTools implements ToolCaller: one Messages API round-trip with
@@ -322,6 +326,40 @@ func (a *Anthropic) ChatWithTools(ctx context.Context, in ChatInput) (res ChatRe
 	tools := make([]anthropicToolDef, 0, len(in.Tools))
 	for _, t := range in.Tools {
 		tools = append(tools, anthropicToolDef(t))
+	}
+	if in.OnTextDelta != nil {
+		// The streaming attempt gets its OWN shorter sub-deadline
+		// (streamAttemptContext, stream.go) instead of the bare round
+		// ctx: a hung/incomplete stream must not be able to burn the
+		// entire round budget before the fallback below even starts —
+		// see streamAttemptContext's docstring. ctx (the round's own,
+		// untouched deadline) is what a.post further down still uses.
+		// Wrap OnTextDelta to learn whether the stream actually printed
+		// anything before it was abandoned — only then does the fallback
+		// owe the caller an OnStreamReset (a partial line to terminate).
+		streamedAny := false
+		si := in
+		if in.OnTextDelta != nil {
+			si.OnTextDelta = func(s string) { streamedAny = true; in.OnTextDelta(s) }
+		}
+		streamCtx, cancel := streamAttemptContext(ctx)
+		sres, ok := a.chatWithToolsStream(streamCtx, si, msgs, tools)
+		cancel()
+		if ok {
+			return sres, nil
+		}
+		// Streaming didn't produce a definitive text-only answer (a
+		// tool_use block was detected, a malformed/unparseable event
+		// arrived, or the stream ended anywhere short of message_stop) —
+		// fall through to the ordinary non-stream request below, which
+		// re-sends the IDENTICAL conversation and gets the authoritative
+		// answer through a.post's already-tested retry/backoff. Per
+		// OnTextDelta's contract this is the ONE fallback path: never a
+		// splice of streamed-then-abandoned text with this reply. If text
+		// already reached the caller, signal the reset so it can void it.
+		if streamedAny && in.OnStreamReset != nil {
+			in.OnStreamReset()
+		}
 	}
 	body, mErr := json.Marshal(anthropicChatRequest{
 		Model:     a.modelOrDefault(),
@@ -358,12 +396,176 @@ func (a *Anthropic) ChatWithTools(ctx context.Context, in ChatInput) (res ChatRe
 	return out, nil
 }
 
+// chatWithToolsStream attempts ONE streaming Messages API round-trip for a
+// text-only answer. It returns (result, true) ONLY when the stream ran to
+// completion (a message_stop event) with no tool_use block anywhere in the
+// response. Every other outcome — a tool_use content_block_start at any
+// point (even after some text already streamed), an in-band "error" event,
+// a malformed/unparseable chunk, a severed connection, a non-200 status, or
+// a stream that never reaches message_stop — returns (ChatResult{}, false)
+// so ChatWithTools falls back to the ordinary non-streaming request, which
+// carries the real retry/backoff policy (a.post). This method never
+// returns a Go error: every failure mode it can hit is meant to fall back
+// silently, not bubble up — including the network/marshal errors building
+// the streaming request itself, so the non-stream path gets a clean,
+// normally-reported shot at the identical request.
+func (a *Anthropic) chatWithToolsStream(ctx context.Context, in ChatInput, msgs []anthropicChatMessage, tools []anthropicToolDef) (ChatResult, bool) {
+	body, mErr := json.Marshal(anthropicChatRequest{
+		Model:     a.modelOrDefault(),
+		MaxTokens: a.resolveMaxTokens(in.MaxTokens),
+		System:    systemBlocks(in.System),
+		Messages:  msgs,
+		Tools:     tools,
+		Stream:    true,
+	})
+	if mErr != nil {
+		return ChatResult{}, false
+	}
+	req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(), bytes.NewReader(body))
+	if rErr != nil {
+		return ChatResult{}, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", a.apiKey())
+	req.Header.Set("anthropic-version", a.version())
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, doErr := a.Client.Do(ctx, req)
+	if doErr != nil {
+		return ChatResult{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return ChatResult{}, false
+	}
+
+	var sb strings.Builder
+	var model, stopReason string
+	var usage anthropicUsage
+	var toolUseSeen, sawError, gotStop, malformedEvent bool
+
+	scanErr := scanSSE(resp.Body, func(ev sseEvent) bool {
+		data := strings.TrimSpace(ev.Data)
+		if data == "" {
+			// SSE-legal but content-free: a comment line (leading ':')
+			// never reaches here at all — scanSSE drops those before
+			// calling onEvent. This is an event whose only fields were
+			// unknown ones (id:/retry:) or a blank "data:" line — there
+			// is nothing to parse and nothing lost by skipping it (same
+			// treatment as the OpenAI-compatible path in nvidia.go).
+			return false
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(data), &head) != nil {
+			// A NON-EMPTY data: payload that fails to parse as JSON is
+			// not a benign SSE framing quirk — every real Messages API
+			// event is JSON. This means the event is corrupted or was
+			// cut off mid-write. Silently skipping it (the pre-fix
+			// behavior) let scanning continue to a later, well-formed
+			// message_stop and confirm an answer that is missing
+			// whatever content this event carried — an incomplete reply
+			// reported as a complete success. Stop here instead,
+			// matching this method's own documented contract (a
+			// malformed/unparseable chunk returns (ChatResult{}, false)),
+			// so the caller falls back to a full non-stream retry.
+			malformedEvent = true
+			return true
+		}
+		switch head.Type {
+		case "message_start":
+			var m struct {
+				Message struct {
+					Model string         `json:"model"`
+					Usage anthropicUsage `json:"usage"`
+				} `json:"message"`
+			}
+			if json.Unmarshal([]byte(ev.Data), &m) == nil {
+				model = m.Message.Model
+				usage = m.Message.Usage
+			}
+		case "content_block_start":
+			var b struct {
+				ContentBlock struct {
+					Type string `json:"type"`
+				} `json:"content_block"`
+			}
+			if json.Unmarshal([]byte(ev.Data), &b) == nil && b.ContentBlock.Type == "tool_use" {
+				toolUseSeen = true
+				return true
+			}
+		case "content_block_delta":
+			var d struct {
+				Delta struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta"`
+			}
+			if json.Unmarshal([]byte(ev.Data), &d) == nil && d.Delta.Type == "text_delta" && d.Delta.Text != "" {
+				sb.WriteString(d.Delta.Text)
+				in.OnTextDelta(d.Delta.Text)
+			}
+		case "message_delta":
+			var md struct {
+				Delta struct {
+					StopReason string `json:"stop_reason"`
+				} `json:"delta"`
+				Usage struct {
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(ev.Data), &md) == nil {
+				if md.Delta.StopReason != "" {
+					stopReason = md.Delta.StopReason
+				}
+				if md.Usage.OutputTokens > 0 {
+					usage.OutputTokens = md.Usage.OutputTokens
+				}
+			}
+		case "message_stop":
+			gotStop = true
+			return true
+		case "error":
+			sawError = true
+			return true
+		}
+		return false
+	})
+
+	if malformedEvent || toolUseSeen || sawError || scanErr != nil || !gotStop {
+		return ChatResult{}, false
+	}
+	text := strings.TrimSpace(sb.String())
+	if text == "" {
+		return ChatResult{}, false
+	}
+	return ChatResult{
+		Text:       text,
+		Model:      model,
+		TokensUsed: usage.total(),
+		StopReason: normalizeAnthropicStop(stopReason),
+	}, true
+}
+
 // anthropicChatMessages converts the vendor-neutral history into Claude's
 // wire shape. Claude has no "tool" role: results travel in a user message
 // as tool_result blocks, and every result answering one assistant turn
 // must share a SINGLE user message — consecutive tool messages are
 // coalesced, or the API rejects the request.
+//
+// A history whose first message is not a user turn is rejected here rather
+// than sent: the Messages API answers that with an opaque 400, and the
+// caller — a chat round that has already spent a summarizer call, or a
+// --continue replay — has no way to tell that from a transport failure.
+// /compact once produced exactly this shape (a lone assistant summary at
+// index 0), silently breaking every subsequent round on this provider, so
+// the invariant is now enforced where it is depended on.
 func anthropicChatMessages(history []ChatMessage) ([]anthropicChatMessage, error) {
+	if len(history) > 0 && history[0].Role != "user" {
+		return nil, fmt.Errorf("anthropic: first message must have role \"user\", got %q", history[0].Role)
+	}
 	out := make([]anthropicChatMessage, 0, len(history))
 	for _, m := range history {
 		switch m.Role {

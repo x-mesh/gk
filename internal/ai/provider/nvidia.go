@@ -44,6 +44,25 @@ type Nvidia struct {
 	// "openai" keeps error messages truthful about which provider
 	// actually returned the failure.
 	Brand string
+	// RetryBudget bounds send()'s WHOLE retry loop (every attempt plus
+	// backoff), independent of Timeout, which bounds each INDIVIDUAL HTTP
+	// attempt (both directly, via Client's http.Client.Timeout, and as
+	// the loop's deadline when RetryBudget is unset). Zero — the default,
+	// and every caller except gk chat leaves it that way — falls back to
+	// Timeout, so Classify/Compose/Summarize/etc. keep exactly today's
+	// "total retry time bounded by Timeout" behavior.
+	//
+	// gk chat is the one caller that sets this explicitly (to
+	// ai.chat.round_timeout, chat.go's resolveChatProviderChain): a proxy
+	// that occasionally 500s needs room for ~3 attempts + backoff, and
+	// inflating Timeout itself to fit that (this field's predecessor)
+	// meant a single SLOW attempt could consume the entire round budget
+	// by itself (Timeout, via Client's http.Client.Timeout, no longer
+	// bounded just one attempt — it bounded the round). Keeping Timeout
+	// at its own small, independent default while RetryBudget alone
+	// grows to match the round means one hung attempt gets cut off with
+	// room left for the rest — see send()'s docstring.
+	RetryBudget time.Duration
 }
 
 // brand returns the prefix to use in error messages.
@@ -182,6 +201,19 @@ type chatRequest struct {
 	Temperature    float64         `json:"temperature,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 	Tools          []chatToolDef   `json:"tools,omitempty"`
+	// Stream and StreamOptions request SSE streaming. Both omitempty —
+	// every existing non-streaming caller's request body stays byte-
+	// identical (zero values are dropped); only chatWithToolsStream
+	// sets them.
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions requests usage accounting on the final streaming chunk —
+// Chat Completions streaming otherwise omits `usage` entirely, unlike the
+// non-streaming response.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // chatMessage covers every Chat Completions role. Content is omitempty so
@@ -244,6 +276,45 @@ type chatUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// ── Streaming (Chat Completions SSE chunks) ──────────────────────────
+
+// chatStreamChunk is one `data: {...}` SSE chunk from a streaming Chat
+// Completions request — the incremental counterpart to chatResponse.
+type chatStreamChunk struct {
+	Model   string             `json:"model"`
+	Choices []chatStreamChoice `json:"choices"`
+	Usage   *chatUsage         `json:"usage"`
+	// Error carries an in-band error object some OpenAI-compatible gateways
+	// emit as a well-formed `data: {"error":{...}}` chunk mid-stream (rate
+	// limit hit, upstream failure) instead of a transport-level non-2xx.
+	// Without this field the chunk parses cleanly, the error is dropped, and
+	// a trailing `data: [DONE]` would confirm a truncated answer as success
+	// — the Anthropic twin already guards this via its `event: error` case.
+	Error *chatStreamError `json:"error"`
+}
+
+type chatStreamError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+}
+
+type chatStreamChoice struct {
+	Delta        chatStreamDelta `json:"delta"`
+	FinishReason string          `json:"finish_reason"`
+}
+
+// chatStreamDelta reuses chatToolCall for ToolCalls: OpenAI-compatible
+// tool-call deltas arrive as fragments (an "index", sometimes an "id",
+// sometimes only a partial "function.arguments" string) but every field
+// chatToolCall declares is optional from JSON's perspective, so a
+// fragment unmarshals cleanly — this adapter only needs to DETECT a
+// tool_calls delta's presence, never assemble the fragments (that's the
+// exact assembly problem streaming sidesteps by falling back instead).
+type chatStreamDelta struct {
+	Content   string         `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+}
+
 // ── invoke: core HTTP call with retry ────────────────────────────────
 
 // invoke sends a Chat Completions request and returns the extracted
@@ -304,11 +375,18 @@ func (n *Nvidia) invoke(ctx context.Context, sysPrompt, userPrompt string, jsonM
 // and returns the parsed response with at least one choice. Shared by
 // invoke (text capabilities) and ChatWithTools so both speak identical
 // HTTP.
+//
+// The loop's own deadline is retryBudget(), NOT timeout() — timeout()
+// still separately bounds each individual attempt via Client's
+// http.Client.Timeout, but the two are independent (RetryBudget's
+// docstring has the full rationale). For every caller that never sets
+// RetryBudget, retryBudget() falls back to timeout() and this is exactly
+// the single deadline that existed before that field did.
 func (n *Nvidia) send(ctx context.Context, bodyBytes []byte) (chatResponse, error) {
 	endpoint := n.endpoint()
 	apiKey := n.apiKey()
 
-	deadline := time.Now().Add(n.timeout())
+	deadline := time.Now().Add(n.retryBudget())
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
@@ -451,6 +529,40 @@ func (n *Nvidia) ChatWithTools(ctx context.Context, in ChatInput) (res ChatResul
 			Function: chatToolFunction{Name: t.Name, Description: t.Description, Parameters: params},
 		})
 	}
+	if in.OnTextDelta != nil {
+		// The streaming attempt gets its OWN shorter sub-deadline
+		// (streamAttemptContext, stream.go) instead of the bare round
+		// ctx: a hung/incomplete stream must not be able to burn the
+		// entire round budget before the fallback below even starts — see
+		// streamAttemptContext's docstring. ctx (the round's own,
+		// untouched deadline) is what the fallback call further down
+		// still uses.
+		// Wrap OnTextDelta to learn whether the stream printed anything
+		// before it was abandoned — only then is an OnStreamReset owed.
+		streamedAny := false
+		si := in
+		if in.OnTextDelta != nil {
+			si.OnTextDelta = func(s string) { streamedAny = true; in.OnTextDelta(s) }
+		}
+		streamCtx, cancel := streamAttemptContext(ctx)
+		sres, ok := n.chatWithToolsStream(streamCtx, mdl, msgs, tools, si)
+		cancel()
+		if ok {
+			return sres, nil
+		}
+		// Streaming didn't produce a definitive text-only answer (a
+		// tool_calls delta was detected, a malformed/unparseable chunk
+		// arrived, or the stream ended anywhere short of its terminal
+		// "[DONE]" marker) — fall through to the ordinary non-stream
+		// request below, whose send() call carries the real
+		// retry/backoff policy. Same fallback contract as
+		// Anthropic.chatWithToolsStream: never a splice of streamed-
+		// then-abandoned text with the fallback's reply. Signal the reset
+		// if text already reached the caller so it can void the partial.
+		if streamedAny && in.OnStreamReset != nil {
+			in.OnStreamReset()
+		}
+	}
 	bodyBytes, mErr := json.Marshal(chatRequest{
 		Model:     mdl,
 		Messages:  msgs,
@@ -484,6 +596,132 @@ func (n *Nvidia) ChatWithTools(ctx context.Context, in ChatInput) (res ChatResul
 		return ChatResult{}, fmt.Errorf("%w: empty content", ErrProviderResponse)
 	}
 	return out, nil
+}
+
+// chatWithToolsStream mirrors Anthropic.chatWithToolsStream for the
+// OpenAI-compatible Chat Completions wire format — shared by nvidia, and
+// by openai/groq through their delegation into this adapter. It attempts
+// ONE streaming round-trip and returns (result, true) ONLY when the
+// stream ran to its terminal "data: [DONE]" marker with no tool_calls
+// delta anywhere in the response. Every other outcome — a tool_calls
+// delta at any point, a malformed/unparseable chunk, a severed
+// connection, a non-2xx status, or a stream that never reaches "[DONE]"
+// — returns (ChatResult{}, false) so the caller re-sends the identical
+// conversation through the ordinary non-streaming path, whose send()
+// call owns the real retry/backoff policy. Like its Anthropic
+// counterpart, this never returns a Go error: every failure mode here is
+// meant to fall back silently.
+func (n *Nvidia) chatWithToolsStream(ctx context.Context, mdl string, msgs []chatMessage, tools []chatToolDef, in ChatInput) (ChatResult, bool) {
+	bodyBytes, mErr := json.Marshal(chatRequest{
+		Model:         mdl,
+		Messages:      msgs,
+		MaxTokens:     in.MaxTokens,
+		Tools:         tools,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
+	})
+	if mErr != nil {
+		return ChatResult{}, false
+	}
+	req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, n.endpoint(), bytes.NewReader(bodyBytes))
+	if rErr != nil {
+		return ChatResult{}, false
+	}
+	req.Header.Set("Authorization", "Bearer "+n.apiKey())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, doErr := n.Client.Do(ctx, req)
+	if doErr != nil {
+		return ChatResult{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return ChatResult{}, false
+	}
+
+	var sb strings.Builder
+	var model, finishReason string
+	var usage *chatUsage
+	var toolCallsSeen, doneSeen, malformedChunk, sawError bool
+
+	scanErr := scanSSE(resp.Body, func(ev sseEvent) bool {
+		data := strings.TrimSpace(ev.Data)
+		if data == "" {
+			// SSE-legal but content-free: a comment line (leading ':')
+			// never reaches here at all — scanSSE drops those before
+			// calling onEvent. This is an event whose only fields were
+			// unknown ones (id:/retry:) or a blank "data:" line — there
+			// is nothing to parse and nothing lost by skipping it.
+			return false
+		}
+		if data == "[DONE]" {
+			doneSeen = true
+			return true
+		}
+		var chunk chatStreamChunk
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			// A NON-EMPTY data: payload that fails to parse as JSON is
+			// not a benign SSE framing quirk — every real chunk on this
+			// wire is JSON (or the literal "[DONE]" sentinel, already
+			// handled above). This means the chunk is corrupted or was
+			// cut off mid-write. Silently skipping it (the pre-fix
+			// behavior) let scanning continue to a later, well-formed
+			// "[DONE]" and confirm an answer that is missing whatever
+			// content this chunk carried — an incomplete reply reported
+			// as a complete success. Stop here instead, matching this
+			// method's own documented contract (a malformed/unparseable
+			// chunk returns (ChatResult{}, false)), so the caller falls
+			// back to a full non-stream retry.
+			malformedChunk = true
+			return true
+		}
+		if chunk.Error != nil {
+			// A well-formed in-band error chunk: abandon the stream so the
+			// caller falls back to a full non-stream retry, exactly as the
+			// Anthropic adapter does for its `event: error`.
+			sawError = true
+			return true
+		}
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+		for _, c := range chunk.Choices {
+			if len(c.Delta.ToolCalls) > 0 {
+				toolCallsSeen = true
+				return true
+			}
+			if c.Delta.Content != "" {
+				sb.WriteString(c.Delta.Content)
+				in.OnTextDelta(c.Delta.Content)
+			}
+			if c.FinishReason != "" {
+				finishReason = c.FinishReason
+			}
+		}
+		return false
+	})
+
+	if malformedChunk || sawError || toolCallsSeen || scanErr != nil || !doneSeen {
+		return ChatResult{}, false
+	}
+	text := strings.TrimSpace(sb.String())
+	if text == "" {
+		return ChatResult{}, false
+	}
+	out := ChatResult{
+		Text:       text,
+		Model:      model,
+		StopReason: normalizeOpenAIStop(finishReason),
+	}
+	if usage != nil {
+		out.TokensUsed = usage.TotalTokens
+	}
+	return out, true
 }
 
 // openAIChatMessages converts the vendor-neutral history into Chat
@@ -582,6 +820,15 @@ func (n *Nvidia) timeout() time.Duration {
 		return defaultNvidiaTimeout
 	}
 	return n.Timeout
+}
+
+// retryBudget bounds send()'s whole retry loop — see RetryBudget's
+// docstring for why this is independent of timeout().
+func (n *Nvidia) retryBudget() time.Duration {
+	if n.RetryBudget > 0 {
+		return n.RetryBudget
+	}
+	return n.timeout()
 }
 
 func (n *Nvidia) maxRetry() int {

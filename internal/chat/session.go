@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,42 @@ const (
 	// recordRoleClear marks a /clear: replay restarts from empty context
 	// (the file keeps the full record for audit).
 	recordRoleClear = "clear"
+	// recordRoleTitle carries a /rename title. Like aborted/clear it is a
+	// control record, never a conversation turn: Replay skips it without
+	// counting it toward the corrupted-line counter, and multiple title
+	// records may accumulate across renames — the LAST one in the file
+	// wins (readSessionMeta overwrites on each occurrence, in file order).
+	// A binary predating this field's introduction still parses the file
+	// fine: Role was already a free-form string (aborted/clear are prior
+	// art for the same additive pattern), so an unrecognized "title" value
+	// just falls through toMessage's default case and is skipped like any
+	// other unknown role — one extra "corrupted line" in the old binary's
+	// warning count, never a crash or a wedged replay.
+	recordRoleTitle = "title"
+	// recordRoleCompact marks a /compact summarization. Like title/aborted/
+	// clear it is a control record, never replayed as a conversation
+	// message: on Replay, everything accumulated so far collapses to the
+	// synthetic intro+summary pair compactSummaryMessages builds from Text
+	// (plus, when HistoryBudget > 0, the same hard-trim trimHistory pass a
+	// live Compact call already applied — see compactReplayFold), and
+	// replay then continues appending whatever comes after normally —
+	// mirroring exactly what a live Engine.Compact call does to e.history,
+	// so a --continue resumed after /compact sees the identical state the
+	// live process had. Model/TokensUsed/HistoryBudget record the
+	// summarizer call's own usage and budget for audit and replay parity.
+	//
+	// A binary predating this field's introduction still parses the file
+	// fine: Role was already free-form (title is prior art for the same
+	// pattern), so an unrecognized "compact" value falls through
+	// toMessage's default case and is skipped like any other unknown role
+	// — the ORIGINAL, uncompacted messages around it (still present on
+	// disk; JSONL is append-only) replay normally, just less compactly.
+	// One extra "corrupted line" in the old binary's warning count, never
+	// a crash or a wedged replay.
+	recordRoleCompact = "compact"
+	// sessionTitleMaxLen bounds the display title derived from a
+	// session's first user message when no explicit /rename exists.
+	sessionTitleMaxLen = 60
 )
 
 // SessionRecord is one persisted conversation event — one JSON object per
@@ -43,6 +80,12 @@ type SessionRecord struct {
 	ToolResult *provider.ToolResult `json:"tool_result,omitempty"`
 	Model      string               `json:"model,omitempty"`
 	TokensUsed int                  `json:"tokens_used,omitempty"`
+	// HistoryBudget is Engine.HistoryBudget as it stood when a
+	// recordRoleCompact record was written (0 for every other role, and
+	// for any compact record written before this field existed) — see
+	// RecordCompact and compactReplayFold. omitempty keeps every
+	// non-compact record byte-identical to before this field was added.
+	HistoryBudget int `json:"history_budget,omitempty"`
 }
 
 // sessionDir resolves .git/gk-chat via `git rev-parse --git-path` — never
@@ -75,6 +118,32 @@ type Session struct {
 	dir  string
 }
 
+// validSessionID rejects any id that would not resolve to a plain file
+// directly inside sessions/. Ids reach this package from two places that
+// are not the code that minted them — the `--session` flag and the
+// contents of the last-session pointer file — and both are joined with
+// the sessions dir to form a path that is then opened for APPEND. Without
+// this check `--session ../../../../tmp/x` (or the same string written
+// into last-session) resolves outside the directory and gk would append
+// JSONL records to whatever .jsonl file lives there.
+//
+// The accepted alphabet is what NewSession actually produces
+// (timestamp-pid, e.g. "20260710-093012-4821") plus '_' for headroom.
+func validSessionID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // NewSession creates a fresh session file. The id folds in a timestamp
 // passed by the caller so tests stay deterministic.
 func NewSession(ctx context.Context, runner git.Runner, id string) (*Session, error) {
@@ -82,8 +151,8 @@ func NewSession(ctx context.Context, runner git.Runner, id string) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	if id == "" {
-		return nil, fmt.Errorf("chat session: empty id")
+	if !validSessionID(id) {
+		return nil, fmt.Errorf("chat session: invalid id %q", id)
 	}
 	sdir := filepath.Join(dir, "sessions")
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
@@ -121,6 +190,9 @@ func OpenSession(ctx context.Context, runner git.Runner, id string) (*Session, e
 	dir, err := sessionDir(ctx, runner)
 	if err != nil {
 		return nil, err
+	}
+	if !validSessionID(id) {
+		return nil, fmt.Errorf("chat session: invalid id %q", id)
 	}
 	s := &Session{ID: id, path: filepath.Join(dir, "sessions", id+".jsonl"), dir: dir}
 	if _, err := os.Stat(s.path); err != nil {
@@ -164,6 +236,38 @@ func (s *Session) Append(rec SessionRecord) error {
 	return nil
 }
 
+// SetTitle appends a /rename title record. It is a control record exactly
+// like the /clear marker — never replayed as a conversation message — so
+// renaming mid-session costs one JSONL line and never touches prior
+// history. Safe to call repeatedly; the latest record wins for display.
+func (s *Session) SetTitle(title string) error {
+	if err := s.Append(SessionRecord{TS: time.Now().UTC(), Role: recordRoleTitle, Text: title}); err != nil {
+		return fmt.Errorf("chat session: set title: %w", err)
+	}
+	return nil
+}
+
+// RecordCompact appends a /compact control record: summary is the
+// summarizer's own output (the exact text compactSummaryMessages will wrap
+// into the synthetic intro+summary pair on replay), model/tokensUsed are
+// the summarize call's own usage, carried along for audit the same way a
+// normal assistant record does. historyBudget is the Engine.HistoryBudget
+// in effect at fold time — 0 when trimming is disabled — persisted so a
+// later --continue replay can re-apply the identical hard-trim fallback
+// Engine.Compact already applied in memory (see compactReplayFold); without
+// it, replay would only ever see the untrimmed summary+kept shape, which
+// silently diverges from live history whenever that fallback actually
+// fired. Called by Engine.Compact ONLY after a summarize call has already
+// succeeded and the in-memory history has already been folded — see that
+// method's docstring for what a failure here does and does not undo.
+func (s *Session) RecordCompact(summary, model string, tokensUsed, historyBudget int) error {
+	rec := SessionRecord{TS: time.Now().UTC(), Role: recordRoleCompact, Text: summary, Model: model, TokensUsed: tokensUsed, HistoryBudget: historyBudget}
+	if err := s.Append(rec); err != nil {
+		return fmt.Errorf("chat session: record compact: %w", err)
+	}
+	return nil
+}
+
 // Replay reads the session back as provider messages. Corruption is
 // contained, never fatal: an unparseable line (torn tail from a crash) is
 // skipped and reported via the second return so the caller can warn —
@@ -195,6 +299,20 @@ func (s *Session) Replay() ([]provider.ChatMessage, int, error) {
 			continue
 		case recordRoleClear:
 			msgs = nil
+			continue
+		case recordRoleTitle:
+			continue
+		case recordRoleCompact:
+			// A live Compact call does NOT discard everything — it folds
+			// only the turns before the last compactKeepTurns, and keeps
+			// those most-recent turns verbatim AFTER the summary (see
+			// Engine.Compact). The session file never re-emits those kept
+			// turns' records past this point (append-only; they are
+			// already earlier in the file), so replay must re-derive the
+			// SAME cut Compact used — via the SAME turnStarts/
+			// compactKeepTurns logic — from msgs as accumulated so far,
+			// rather than dropping them along with the folded prefix.
+			msgs = compactReplayFold(msgs, rec)
 			continue
 		}
 		msg, ok := rec.toMessage()
@@ -250,4 +368,133 @@ func (r SessionRecord) toMessage() (provider.ChatMessage, bool) {
 	default:
 		return provider.ChatMessage{}, false
 	}
+}
+
+// SessionMeta summarizes one session file for `gk chat sessions` — cheap
+// enough to compute for every file in the directory without a full Replay
+// reconstruction (no ToolCall/ToolResult shapes are rebuilt).
+type SessionMeta struct {
+	ID   string
+	Path string
+	// StartedAt is the first record's timestamp; the zero value means the
+	// file had no parseable line at all (empty or fully corrupt).
+	StartedAt time.Time
+	// Title is the latest /rename record's text, or — when none exists —
+	// the first non-empty user message, truncated to sessionTitleMaxLen
+	// runes. Empty only when the session has no title and no user turn
+	// yet (freshly created, untouched file).
+	Title string
+	// TurnCount counts every "user" record written to the file, including
+	// one from a turn later rolled back by a turn_aborted marker — an
+	// approximation cheap enough for a list view, not the exact
+	// replay-surviving turn count Replay would report.
+	TurnCount int
+}
+
+// ListSessions scans .git/gk-chat/sessions/*.jsonl and returns one
+// SessionMeta per file, newest first (by StartedAt, tie-broken by ID
+// descending — both monotonic for the timestamp-prefixed ids `gk chat`
+// generates). No separate index file: this is a directory scan plus one
+// lightweight pass per file. A missing sessions/ directory (no session
+// created yet) returns (nil, nil), not an error. A single unreadable file
+// is skipped rather than failing the whole listing — the same
+// corruption-tolerant spirit as Replay.
+func ListSessions(ctx context.Context, runner git.Runner) ([]SessionMeta, error) {
+	dir, err := sessionDir(ctx, runner)
+	if err != nil {
+		return nil, err
+	}
+	sdir := filepath.Join(dir, "sessions")
+	entries, err := os.ReadDir(sdir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("chat session: list sessions: %w", err)
+	}
+
+	metas := make([]SessionMeta, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(sdir, e.Name())
+		meta, mErr := readSessionMeta(path)
+		if mErr != nil {
+			continue // unreadable file: skip it, don't fail the listing
+		}
+		meta.ID = strings.TrimSuffix(e.Name(), ".jsonl")
+		meta.Path = path
+		metas = append(metas, meta)
+	}
+
+	sort.Slice(metas, func(i, j int) bool {
+		if !metas[i].StartedAt.Equal(metas[j].StartedAt) {
+			return metas[i].StartedAt.After(metas[j].StartedAt)
+		}
+		return metas[i].ID > metas[j].ID
+	})
+	return metas, nil
+}
+
+// readSessionMeta scans one session file for listing metadata. It tolerates
+// exactly the corruption Replay does: an unparseable line is skipped and
+// costs only that line's contribution (never the file). Unlike Replay it
+// does not reconstruct provider.ChatMessage values or apply the
+// turn_aborted/clear control markers — it only needs the first record's
+// timestamp, the latest title, the first user message, and a turn count.
+func readSessionMeta(path string) (SessionMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	var meta SessionMeta
+	firstUser := ""
+	haveFirst := false
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var rec SessionRecord
+		if uErr := json.Unmarshal([]byte(line), &rec); uErr != nil {
+			continue
+		}
+		if !haveFirst {
+			meta.StartedAt = rec.TS
+			haveFirst = true
+		}
+		switch rec.Role {
+		case recordRoleTitle:
+			meta.Title = rec.Text
+		case "user":
+			meta.TurnCount++
+			if firstUser == "" && rec.Text != "" {
+				firstUser = rec.Text
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return SessionMeta{}, fmt.Errorf("chat session: read: %w", err)
+	}
+	if meta.Title == "" {
+		meta.Title = truncateSessionTitle(firstUser)
+	}
+	return meta, nil
+}
+
+// truncateSessionTitle collapses whitespace and cuts to sessionTitleMaxLen
+// runes (not bytes, so multi-byte text like Korean is never split
+// mid-character), appending an ellipsis when truncated.
+func truncateSessionTitle(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= sessionTitleMaxLen {
+		return s
+	}
+	return string(r[:sessionTitleMaxLen]) + "…"
 }

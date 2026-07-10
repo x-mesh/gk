@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -189,5 +190,38 @@ func TestAnthropicChatEmptyContentIsError(t *testing.T) {
 	})
 	if !errors.Is(err, ErrProviderResponse) {
 		t.Errorf("err = %v, want ErrProviderResponse", err)
+	}
+}
+
+// TestAnthropicChatMessagesRejectsAssistantFirst pins the invariant the
+// Messages API enforces and /compact once violated: a history that opens
+// with an assistant turn must fail loudly here, not as an opaque 400 from
+// the API after the request has already been paid for.
+func TestAnthropicChatMessagesRejectsAssistantFirst(t *testing.T) {
+	_, err := anthropicChatMessages([]ChatMessage{
+		{Role: "assistant", Text: "summary of earlier conversation"},
+		{Role: "user", Text: "and then?"},
+	})
+	if err == nil {
+		t.Fatal("assistant-first history accepted, want an error")
+	}
+	if !strings.Contains(err.Error(), "first message") {
+		t.Errorf("error = %v, want it to name the first-message constraint", err)
+	}
+}
+
+// A user-first history — the only shape gk chat may produce — still
+// converts cleanly, including the compacted intro+summary pair.
+func TestAnthropicChatMessagesAcceptsCompactedShape(t *testing.T) {
+	msgs, err := anthropicChatMessages([]ChatMessage{
+		{Role: "user", Text: "[/compact] Summarize our conversation so far"},
+		{Role: "assistant", Text: "digest"},
+		{Role: "user", Text: "next question"},
+	})
+	if err != nil {
+		t.Fatalf("compacted history rejected: %v", err)
+	}
+	if len(msgs) != 3 || msgs[0].Role != "user" {
+		t.Errorf("messages = %+v, want 3 messages starting with user", msgs)
 	}
 }

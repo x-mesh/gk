@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 )
 
@@ -55,7 +56,7 @@ func aiDoctorChecks(cfg *config.Config) []doctorCheck {
 		defaultProvider = strings.TrimSpace(cfg.AI.Provider)
 	}
 
-	checks := make([]doctorCheck, 0, len(defaultAIAPISpecs)+len(defaultAICLISpecs))
+	checks := make([]doctorCheck, 0, (len(defaultAIAPISpecs)+len(defaultAICLISpecs))*2)
 	for _, spec := range defaultAIAPISpecs {
 		endpoint := spec.endpoint
 		overridden := false
@@ -70,10 +71,24 @@ func aiDoctorChecks(cfg *config.Config) []doctorCheck {
 		checks = append(checks, decorateDefaultProvider(
 			checkAIAPIProvider(spec.name, spec.envKey, endpoint, overridden, keyFromConfig),
 			spec.name, defaultProvider))
+
+		keyPresent := os.Getenv(spec.envKey) != "" || keyFromConfig
+		checks = append(checks, decorateDefaultProvider(
+			checkChatAvailability(spec.name, keyPresent, spec.envKey+" not set"),
+			spec.name, defaultProvider))
 	}
 	for _, spec := range defaultAICLISpecs {
 		checks = append(checks, decorateDefaultProvider(
 			checkAIProvider(spec.name), spec.name, defaultProvider))
+
+		authOK, hint := providerAuthHint(spec.name)
+		missingAuthHint := hint
+		if missingAuthHint == "" {
+			missingAuthHint = "auth not configured"
+		}
+		checks = append(checks, decorateDefaultProvider(
+			checkChatAvailability(spec.name, authOK, missingAuthHint),
+			spec.name, defaultProvider))
 	}
 	return checks
 }
@@ -130,6 +145,56 @@ func decorateDefaultProvider(c doctorCheck, providerName, defaultProvider string
 	}
 	c.Name = c.Name + " (default)"
 	return c
+}
+
+// providerImplementsToolCaller reports whether the named provider adapter
+// satisfies provider.ToolCaller — the exact type assertion
+// resolveChatProviderChain (chat.go) performs before handing a
+// provider to `gk chat`. provider.Build only constructs the adapter
+// struct (no network call, no auth check, no subprocess), so calling it
+// here is safe and cheap; it also means this check can never drift from
+// what `gk chat` actually does, since both call sites walk through the
+// same factory + assertion.
+func providerImplementsToolCaller(name string) bool {
+	p, err := provider.Build(name, provider.ExecRunner{})
+	if err != nil {
+		return false
+	}
+	_, ok := p.(provider.ToolCaller)
+	return ok
+}
+
+// checkChatAvailability reports whether `gk chat` can actually select
+// this provider. resolveChatProviderChain requires BOTH an available auth
+// source (the same API key / CLI auth the rows above already checked)
+// AND a provider.ToolCaller type assertion — CLI adapters (gemini/qwen/
+// kiro-cli) never satisfy that assertion no matter how well authenticated
+// they are. Before this check, `gk chat`'s "no tool-calling provider
+// available ... run `gk doctor` for setup hints" error pointed users at
+// a report that never looked at tool-calling at all; this row closes
+// that gap.
+func checkChatAvailability(name string, authAvailable bool, missingAuthHint string) doctorCheck {
+	if !providerImplementsToolCaller(name) {
+		return doctorCheck{
+			Name:   "ai chat: " + name,
+			Status: statusWarn,
+			Detail: "no tool-calling support — `gk chat` needs anthropic/openai/groq/nvidia",
+			Fix:    "use `gk ask` with " + name + ", or configure a tool-calling provider for `gk chat`",
+		}
+	}
+	if !authAvailable {
+		return doctorCheck{
+			Name:   "ai chat: " + name,
+			Status: statusWarn,
+			Detail: "tool-calling supported, but " + missingAuthHint,
+			Fix:    "see the ai api/provider row above for " + name,
+		}
+	}
+	return doctorCheck{
+		Name:   "ai chat: " + name,
+		Status: statusPass,
+		Detail: "tool-calling supported · auth present (validity not verified)",
+	}
 }
 
 // checkAIProvider emits one doctorCheck row per AI CLI that `gk

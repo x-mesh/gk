@@ -179,6 +179,12 @@ type AIAssistConfig struct {
 // effective deny list is always a union with DefaultDenyPaths, so no
 // config layer can shrink it below the defaults.
 //
+// HistoryBudget, like RoundTimeout, is a normal merged field (NOT
+// global-only): it only trades off cost/context for a session already
+// governed by the sandbox + deny list, it does not widen what the model
+// can see or how many actions it can take, so a repo-local override is
+// not the init.ai_gitignore attack shape.
+//
 // Dangerous `gk do` commands always require an extra confirmation (unless
 // --force); that gate is not configurable. A former `safety_confirm` field
 // implied it could be turned off but never actually did, so it was removed.
@@ -198,9 +204,36 @@ type AIChatConfig struct {
 	// ToolResultCap bounds one tool result's bytes (default 32768).
 	// Global config only.
 	ToolResultCap int `mapstructure:"tool_result_cap" yaml:"tool_result_cap,omitempty"`
+	// HistoryBudget approximates the token budget for the conversation
+	// replayed to the provider each round (default 32768; see
+	// chat.trimHistory). Provider context windows comfortably exceed
+	// this — trimming protects cost, not correctness. 0/negative falls
+	// back to the default, same convention as MaxTokens/MaxToolRounds.
+	HistoryBudget int `mapstructure:"history_budget" yaml:"history_budget,omitempty"`
 	// DenyPaths adds chat-specific deny globs on top of the defaults and
 	// ai.commit.deny_paths. Global config only.
 	DenyPaths []string `mapstructure:"deny_paths" yaml:"deny_paths,omitempty"`
+	// SessionRetentionDays, like Snapshot.RetentionDays, is opt-in (0 =
+	// never auto-prune). When set, it becomes the default --keep-days for
+	// `gk chat sessions prune` when the flag is not passed. Unlike
+	// MaxToolRounds/ToolResultCap/DenyPaths this is NOT a security-relevant
+	// knob — it only controls how long local session JSONL files are kept
+	// on disk — so it is read via the normal merged config path (repo
+	// .gk.yaml may set it), not GlobalChatSettings.
+	SessionRetentionDays int `mapstructure:"session_retention_days" yaml:"session_retention_days,omitempty"`
+	// AutoContext, when true, injects a depth/file-capped directory tree
+	// (built from `git ls-files`, like aider's repo-map but scoped down to
+	// structure only — no ctags/symbol index, which would overreach gk
+	// chat's git-Q&A position) into the system prompt as REPO_MAP. This
+	// saves the model from spending file_list/git_grep tool rounds just to
+	// learn "what does this project look like". Default FALSE: it costs
+	// prompt tokens on every session even when the question never touches
+	// repo structure, so it opts in like ai.assist.* rather than on by
+	// default like HistoryBudget. Same merged-config path as
+	// SessionRetentionDays (not security-relevant — it only widens what
+	// orientation text the model starts with, not what it can read or do,
+	// since git_grep/file_list already expose the whole tree on demand).
+	AutoContext bool `mapstructure:"auto_context" yaml:"auto_context,omitempty"`
 }
 
 // AIAnthropicConfig controls the Claude provider. Empty fields fall
@@ -872,11 +905,14 @@ func Defaults() Config {
 				Cache:       true,
 			},
 			Chat: AIChatConfig{
-				Timeout:       "30s",
-				MaxTokens:     4096,
-				RoundTimeout:  "120s",
-				MaxToolRounds: 15,
-				ToolResultCap: 32768,
+				Timeout:              "30s",
+				MaxTokens:            4096,
+				RoundTimeout:         "120s",
+				MaxToolRounds:        15,
+				ToolResultCap:        32768,
+				HistoryBudget:        32768,
+				SessionRetentionDays: 0,
+				AutoContext:          false,
 			},
 			Commit: AICommitConfig{
 				Mode:        "interactive",

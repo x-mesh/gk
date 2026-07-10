@@ -312,6 +312,18 @@ ai:
     # default). Applies to do/ask/explain and pr/review/changelog.
     max_tokens: 4096
 
+    # Retention window in days for `gk chat` session JSONL files under
+    # .git/gk-chat/sessions/. 0 (default) never auto-prunes; > 0 becomes the
+    # default for `gk chat sessions prune` when --keep-days is not passed.
+    # session_retention_days: 30
+
+    # When true, `gk chat` injects a depth/file-capped directory tree (from
+    # `git ls-files`) into its system prompt as REPO_MAP, so "what's this
+    # project's structure?" doesn't cost a file_list/git_grep round trip.
+    # Off by default: it spends prompt tokens on every session even when
+    # the question never touches repo layout.
+    # auto_context: true
+
   # Language for git *artifacts* — commit messages, pr, changelog (BCP-47
   # short code). Conversational commands (do / ask / explain, status --ai)
   # do NOT follow this; they render user-facing prose and follow output.lang

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -29,6 +31,18 @@ const (
 // ErrMaxRounds reports a turn that spent its round budget without the
 // model producing a final answer.
 var ErrMaxRounds = errors.New("chat: tool-call round limit reached without a final answer")
+
+// ErrFirstRoundFailed marks a failure at round 0 of a virgin session — no
+// assistant/tool message exists anywhere in history yet (turnStart == 0
+// AND round == 0). This is the ONE failure gk chat's session-start
+// fallback (chat.go's resolveChatProviderChain + runFirstChatTurn) may
+// safely retry against the next ToolCaller in its provider chain: since
+// nothing vendor-specific (tool_use IDs) has been generated yet,
+// restarting fresh with a different provider can't corrupt anything. Any
+// LATER round's failure is returned bare instead — the session has
+// already committed to this provider's tool_use IDs, so mid-conversation
+// failover is never attempted.
+var ErrFirstRoundFailed = errors.New("chat: round 0 failed before any assistant/tool history existed")
 
 // Engine drives the agentic loop: one RunTurn per user input, each turn
 // alternating provider round-trips with sandboxed tool dispatch until the
@@ -60,7 +74,20 @@ type Engine struct {
 	OnToolCall   func(call provider.ToolCall)
 	OnToolResult func(call provider.ToolCall, res provider.ToolResult)
 	OnRound      func(round, tokensSoFar int, approx bool)
-	Dbg          func(string, ...any)
+	// OnTextDelta, when set, opts every round of every turn into
+	// text-only SSE streaming: it is forwarded verbatim as
+	// ChatInput.OnTextDelta on each ChatWithTools call. nil (the
+	// default) leaves every round on the existing non-stream path — see
+	// ChatInput.OnTextDelta's docstring for the streaming/fallback
+	// contract. GK_AGENT/--json callers must leave this nil to keep the
+	// envelope contract (chat.go gates it on JSONOut()).
+	OnTextDelta func(string)
+	// OnStreamReset is forwarded as ChatInput.OnStreamReset: an adapter
+	// fires it when a streaming round is abandoned for the non-stream
+	// fallback after already delivering text, so the terminal UI can void
+	// the stale partial. nil when OnTextDelta is nil (no streaming).
+	OnStreamReset func()
+	Dbg           func(string, ...any)
 
 	history []provider.ChatMessage
 }
@@ -161,6 +188,16 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 	seen := make(map[string]int)
 	turnBytes := 0
 
+	// History trimming is turn-scoped: trimHistory never touches the
+	// in-flight turn, so the boundary at turnStart never moves once the
+	// turn starts. Seed the cache once here instead of re-running
+	// trimHistory's full O(history) scan on every one of this turn's
+	// (up to maxRounds) round-trips — see trimmedTurnHistory's docstring.
+	var histCache *trimmedTurnHistory
+	if e.HistoryBudget > 0 {
+		histCache = newTrimmedTurnHistory(e.history, turnStart, e.HistoryBudget)
+	}
+
 	for round := 0; round < e.maxRounds(); round++ {
 		if cErr := ctx.Err(); cErr != nil {
 			return nil, cErr
@@ -168,19 +205,43 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 		res.Rounds = round + 1
 
 		msgs := e.history
-		if e.HistoryBudget > 0 {
-			msgs = trimHistory(msgs, e.HistoryBudget)
+		if histCache != nil {
+			msgs = histCache.forRound(e.history, e.HistoryBudget)
 		}
 
 		roundCtx, cancel := context.WithTimeout(ctx, e.roundTimeout())
 		reply, err := e.Caller.ChatWithTools(roundCtx, provider.ChatInput{
-			System:    e.SystemPrompt,
-			Messages:  msgs,
-			Tools:     e.Registry.Specs(),
-			MaxTokens: e.MaxTokens,
+			System:        e.SystemPrompt,
+			Messages:      msgs,
+			Tools:         e.Registry.Specs(),
+			MaxTokens:     e.MaxTokens,
+			OnTextDelta:   e.OnTextDelta,
+			OnStreamReset: e.OnStreamReset,
 		})
+		if err == nil && len(reply.ToolCalls) > 0 {
+			if violations := toolSchemaViolations(e.Registry.Specs(), reply.ToolCalls); len(violations) > 0 {
+				reply = e.retrySchemaViolation(roundCtx, msgs, reply, violations, res)
+			}
+		}
 		cancel()
 		if err != nil {
+			// A virgin session (nothing recorded anywhere yet) failing on
+			// its very first provider round is the one case chat.go's
+			// session-start fallback may retry with the next provider —
+			// mark it so the caller can tell this apart from an ordinary
+			// mid-conversation failure. EXCEPT a user cancellation
+			// (Ctrl-C, context.Canceled): that says nothing about whether
+			// THIS candidate works, so wrapping it here would make
+			// chat.go's runFirstChatTurn treat "the user hit Ctrl-C" as
+			// "this provider is broken, try the next one" and re-fire the
+			// identical question at a different candidate — the opposite
+			// of what a cancellation asked for. A round-scoped timeout
+			// still wraps normally: e.roundTimeout()'s own deadline firing
+			// is context.DeadlineExceeded, a distinct error that never
+			// matches this check.
+			if round == 0 && turnStart == 0 && !errors.Is(err, context.Canceled) {
+				err = fmt.Errorf("%w: %w", ErrFirstRoundFailed, err)
+			}
 			return nil, err
 		}
 		res.Model = reply.Model
@@ -230,6 +291,148 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 		}
 	}
 	return nil, fmt.Errorf("%w (%d rounds) — narrow the question or raise ai.chat.max_tool_rounds", ErrMaxRounds, e.maxRounds())
+}
+
+// toolCallViolation reports why call fails the registry's own tool
+// schema — an unknown tool name, or a JSON Schema "required" field the
+// call's input omits — or "" when the call is schema-valid. This is a
+// best-effort, non-recursive check (top-level "required" keys only); it
+// exists to catch the same class of error Registry.Dispatch already
+// detects at execution time (executor.go's defense-in-depth rule still
+// holds — this is not a replacement validator), just early enough that
+// RunTurn can spend its one semantic reprompt before burning a whole
+// round on a call that was never going to execute.
+func toolCallViolation(specs map[string]provider.ToolSpec, call provider.ToolCall) string {
+	spec, ok := specs[call.Name]
+	if !ok {
+		return fmt.Sprintf("tool %q does not exist", call.Name)
+	}
+	if missing := missingRequiredFields(spec.InputSchema, call.Input); len(missing) > 0 {
+		return fmt.Sprintf("tool %q call is missing required argument(s): %s", call.Name, strings.Join(missing, ", "))
+	}
+	return ""
+}
+
+// missingRequiredFields extracts a JSON Schema object's top-level
+// "required" array and reports which of those keys are absent from
+// input's top-level object. A schema with no "required" array, or an
+// input that fails to parse as a JSON object, yields no findings — this
+// is a best-effort check, not a full validator, and a malformed
+// schema/input is the handler's problem to report, not a reason to
+// false-positive a retry.
+func missingRequiredFields(schema, input json.RawMessage) []string {
+	var s struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil || len(s.Required) == 0 {
+		return nil
+	}
+	if len(input) == 0 {
+		input = json.RawMessage(`{}`)
+	}
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil
+	}
+	var missing []string
+	for _, req := range s.Required {
+		if _, ok := in[req]; !ok {
+			missing = append(missing, req)
+		}
+	}
+	return missing
+}
+
+// toolSchemaViolations checks every call in one reply against the
+// registry's tool specs, returning one violation message per BAD call
+// keyed by ToolCall.ID. An empty map means every call is schema-valid.
+func toolSchemaViolations(specs []provider.ToolSpec, calls []provider.ToolCall) map[string]string {
+	bySpec := make(map[string]provider.ToolSpec, len(specs))
+	for _, s := range specs {
+		bySpec[s.Name] = s
+	}
+	violations := make(map[string]string)
+	for _, c := range calls {
+		if v := toolCallViolation(bySpec, c); v != "" {
+			violations[c.ID] = v
+		}
+	}
+	return violations
+}
+
+// buildSchemaRetryMessages appends the model's own (violating) reply plus
+// a synthetic tool_result per call — every vendor adapter requires each
+// tool_use to be answered before the conversation can continue
+// (Anthropic rejects a dangling tool_use outright, and two consecutive
+// user-role messages besides; OpenAI's "tool" role is keyed by
+// tool_call_id the same way a real dispatch round already uses). The
+// offending call(s) get their specific violation text; any call that was
+// itself fine but shared the reply with a violator gets a generic
+// "not executed" note. None of this reaches e.history or the session
+// file — it is a one-shot, ephemeral coaching message the model never
+// sees again on --continue replay.
+func buildSchemaRetryMessages(msgs []provider.ChatMessage, original provider.ChatResult, violations map[string]string) []provider.ChatMessage {
+	out := make([]provider.ChatMessage, 0, len(msgs)+1+len(original.ToolCalls))
+	out = append(out, msgs...)
+	out = append(out, provider.ChatMessage{Role: "assistant", Text: original.Text, ToolCalls: original.ToolCalls})
+	for _, c := range original.ToolCalls {
+		content, bad := violations[c.ID]
+		if !bad {
+			content = "not executed — a sibling tool call in this reply violated its schema; reissue this call again if it's still needed"
+		}
+		r := provider.ToolResult{ToolCallID: c.ID, Content: content, IsError: true}
+		out = append(out, provider.ChatMessage{Role: "tool", ToolResult: &r})
+	}
+	return out
+}
+
+// retrySchemaViolation re-prompts the model once, in place, when its
+// reply requested tool call(s) the registry can't satisfy — a
+// content-quality retry (the transport call already succeeded; the
+// CONTENT doesn't match what was asked), the same shape as
+// Classify/Compose's maxContentRetry pattern
+// (internal/ai/provider/nvidia.go), ported here for ChatWithTools. It is
+// entirely independent of invoke()'s transport-level 429/5xx backoff.
+//
+// A transport failure on the retry call keeps the ORIGINAL reply:
+// dispatchGuarded/Registry.Dispatch's existing "unknown tool" error path
+// still gives the model a chance to self-correct on the NEXT round,
+// exactly as if this retry didn't exist. A retry that succeeds but is
+// STILL schema-invalid is used anyway — one reprompt is the budget; the
+// still-broken call(s) surface through the normal dispatch error path from
+// here on.
+//
+// Token accounting is charged for the DISCARDED original ONLY on the
+// success path. When the retry succeeds, the original reply is thrown away
+// and its cost would otherwise vanish — a rejected attempt is never
+// silently free — so it is folded into res here, and the retried reply's
+// own cost is charged by RunTurn's normal accounting afterward. When the
+// retry FAILS, the original is returned and becomes `reply` in RunTurn,
+// which charges it there — so charging it here too would double-count it
+// (the v2 review's exact finding). Hence: no pre-charge; charge only when
+// we are about to drop the original for a successful retry.
+func (e *Engine) retrySchemaViolation(ctx context.Context, msgs []provider.ChatMessage, original provider.ChatResult, violations map[string]string, res *TurnResult) provider.ChatResult {
+	retryMsgs := buildSchemaRetryMessages(msgs, original, violations)
+	retried, err := e.Caller.ChatWithTools(ctx, provider.ChatInput{
+		System:    e.SystemPrompt,
+		Messages:  retryMsgs,
+		Tools:     e.Registry.Specs(),
+		MaxTokens: e.MaxTokens,
+	})
+	if err != nil {
+		// Original is kept and charged by RunTurn — do not charge it here.
+		e.dbg("chat: schema-violation retry failed, keeping the original reply: %v", err)
+		return original
+	}
+	// Original is discarded: charge its cost now, since RunTurn will only
+	// see (and charge) the retried reply.
+	if original.TokensUsed > 0 {
+		res.TokensUsed += original.TokensUsed
+	} else {
+		res.TokensUsed += estimateTokens(msgs) + (len(e.SystemPrompt)+len(original.Text))/charsPerToken
+		res.TokensApprox = true
+	}
+	return retried
 }
 
 // dispatchGuarded wraps Registry.Dispatch with the engine-level guards:

@@ -31,9 +31,11 @@ func anthropicErrResponse(code int, body string) *http.Response {
 	}
 }
 
-// newTestAnthropic returns an Anthropic wired to the fake client with an
-// instant sleep so retries don't slow tests.
-func newTestAnthropic(client *FakeHTTPClient) *Anthropic {
+// newTestAnthropic returns an Anthropic wired to the given client (a
+// *FakeHTTPClient for canned-response tests, or any other HTTPClient —
+// e.g. hangingThenFallbackClient — for tests that need real context
+// timing behavior) with an instant sleep so retries don't slow tests.
+func newTestAnthropic(client HTTPClient) *Anthropic {
 	return &Anthropic{
 		Client:    client,
 		APIKey:    "test-key",

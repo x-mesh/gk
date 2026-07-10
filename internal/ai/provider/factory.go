@@ -31,6 +31,15 @@ type FactoryOptions struct {
 	// the adapter default (60s). CLI adapters ignore it — the command-level
 	// context deadline bounds those instead.
 	Timeout time.Duration
+	// RetryBudget optionally overrides the WHOLE retry loop's deadline
+	// (every attempt plus backoff) for the OpenAI-compatible adapters
+	// (openai, groq, nvidia — all delegate through Nvidia.send), kept
+	// independent of Timeout so inflating one never inflates the other
+	// (see Nvidia.RetryBudget's docstring for why that matters). Zero
+	// leaves it equal to Timeout, today's single-value behavior. Ignored
+	// by anthropic (its retry loop has no internal deadline of its own —
+	// the caller's ctx already bounds it) and by the CLI adapters.
+	RetryBudget time.Duration
 	// APIKey optionally supplies the bearer token for the HTTP-based
 	// adapters (anthropic, openai, groq, nvidia). When non-empty it takes
 	// precedence over the adapter's per-provider env var. CLI adapters
@@ -116,6 +125,9 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 			o.nv.Timeout = opts.Timeout
 			o.nv.Client = NewDefaultHTTPClient(opts.Timeout)
 		}
+		if opts.RetryBudget > 0 {
+			o.nv.RetryBudget = opts.RetryBudget
+		}
 		return o, nil
 	case "nvidia":
 		n := NewNvidia()
@@ -131,6 +143,9 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Timeout > 0 {
 			n.Timeout = opts.Timeout
 			n.Client = NewDefaultHTTPClient(opts.Timeout)
+		}
+		if opts.RetryBudget > 0 {
+			n.RetryBudget = opts.RetryBudget
 		}
 		return n, nil
 	case "groq":
@@ -148,6 +163,9 @@ func buildWithOpts(name string, opts FactoryOptions) (Provider, error) {
 		if opts.Timeout > 0 {
 			g.nv.Timeout = opts.Timeout
 			g.nv.Client = NewDefaultHTTPClient(opts.Timeout)
+		}
+		if opts.RetryBudget > 0 {
+			g.nv.RetryBudget = opts.RetryBudget
 		}
 		return g, nil
 	case "gemini":

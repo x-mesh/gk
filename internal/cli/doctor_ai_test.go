@@ -183,3 +183,141 @@ func TestProviderAuthHintReturnsOKWhenEnvSet(t *testing.T) {
 		t.Error("hint should be non-empty")
 	}
 }
+
+// TestProviderImplementsToolCallerMatchesResolveChatProviderCriterion
+// verifies providerImplementsToolCaller agrees with the split
+// resolveChatProviderChain (chat.go) actually enforces via its own
+// `p.(provider.ToolCaller)` assertion: anthropic/openai/nvidia/groq
+// support tool calling, gemini/qwen/kiro(-cli) do not.
+func TestProviderImplementsToolCallerMatchesResolveChatProviderCriterion(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"anthropic", true},
+		{"openai", true},
+		{"nvidia", true},
+		{"groq", true},
+		{"gemini", false},
+		{"qwen", false},
+		{"kiro", false},
+		{"kiro-cli", false},
+		{"nonexistent-provider-xyz", false},
+	}
+	for _, tc := range cases {
+		if got := providerImplementsToolCaller(tc.name); got != tc.want {
+			t.Errorf("providerImplementsToolCaller(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCheckChatAvailabilityNoToolCallingIsWarn verifies CLI adapters
+// (gemini/qwen/kiro-cli) are reported chat-unavailable regardless of
+// auth state — they never satisfy provider.ToolCaller.
+func TestCheckChatAvailabilityNoToolCallingIsWarn(t *testing.T) {
+	c := checkChatAvailability("gemini", true, "should not matter")
+	if c.Status != statusWarn {
+		t.Fatalf("want WARN for a non-tool-calling provider, got %s", c.Status)
+	}
+	if !strings.Contains(c.Detail, "no tool-calling support") {
+		t.Errorf("detail should explain missing tool-calling support, got %q", c.Detail)
+	}
+	if !strings.Contains(c.Fix, "gk ask") {
+		t.Errorf("fix should point at `gk ask`, got %q", c.Fix)
+	}
+}
+
+// TestCheckChatAvailabilityAuthMissingIsWarn verifies a tool-calling
+// provider (anthropic) without an available auth source is WARN and
+// names the missing-auth hint verbatim.
+func TestCheckChatAvailabilityAuthMissingIsWarn(t *testing.T) {
+	c := checkChatAvailability("anthropic", false, "ANTHROPIC_API_KEY not set")
+	if c.Status != statusWarn {
+		t.Fatalf("want WARN when auth is missing, got %s", c.Status)
+	}
+	if !strings.Contains(c.Detail, "ANTHROPIC_API_KEY not set") {
+		t.Errorf("detail should include the missing-auth hint, got %q", c.Detail)
+	}
+}
+
+// TestCheckChatAvailabilityPass verifies a tool-calling provider with an
+// available auth source is PASS.
+func TestCheckChatAvailabilityPass(t *testing.T) {
+	c := checkChatAvailability("anthropic", true, "")
+	if c.Status != statusPass {
+		t.Fatalf("want PASS when tool-calling + auth are both present, got %s (%q)", c.Status, c.Detail)
+	}
+	if !strings.Contains(c.Detail, "tool-calling supported") {
+		t.Errorf("detail should confirm tool-calling support, got %q", c.Detail)
+	}
+}
+
+// TestAIDoctorChecksIncludesChatRows verifies aiDoctorChecks appends an
+// "ai chat: <name>" row per provider, and that a CLI provider's chat row
+// stays WARN even when its own auth is satisfied — proving the row
+// checks tool-calling support, not just the auth already reported by the
+// "ai provider" row above it.
+func TestAIDoctorChecksIncludesChatRows(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "x")
+	t.Setenv("GEMINI_API_KEY", "x")
+
+	checks := aiDoctorChecks(nil)
+
+	anthropicChat := findAICheck(checks, "ai chat: anthropic")
+	if anthropicChat.Name == "" {
+		t.Fatal("ai chat: anthropic row missing")
+	}
+	if anthropicChat.Status != statusPass {
+		t.Errorf("anthropic chat row: want PASS with key set, got %s (%q)", anthropicChat.Status, anthropicChat.Detail)
+	}
+
+	geminiChat := findAICheck(checks, "ai chat: gemini")
+	if geminiChat.Name == "" {
+		t.Fatal("ai chat: gemini row missing")
+	}
+	if geminiChat.Status != statusWarn {
+		t.Errorf("gemini chat row: want WARN (no tool-calling) even with auth present, got %s (%q)", geminiChat.Status, geminiChat.Detail)
+	}
+	if !strings.Contains(geminiChat.Detail, "no tool-calling support") {
+		t.Errorf("gemini chat detail should cite missing tool-calling support, got %q", geminiChat.Detail)
+	}
+}
+
+// TestAIDoctorChecksChatRowMissingKeyIsWarn verifies the anthropic chat
+// row is WARN — not silently PASS — when its API key is absent, even
+// though anthropic itself supports tool calling.
+func TestAIDoctorChecksChatRowMissingKeyIsWarn(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	cfg := config.Defaults()
+
+	checks := aiDoctorChecks(&cfg)
+	c := findAICheck(checks, "ai chat: anthropic")
+	if c.Name == "" {
+		t.Fatal("ai chat: anthropic row missing")
+	}
+	if c.Status != statusWarn {
+		t.Errorf("want WARN when key is missing, got %s (%q)", c.Status, c.Detail)
+	}
+	if !strings.Contains(c.Detail, "ANTHROPIC_API_KEY not set") {
+		t.Errorf("detail should name the missing key, got %q", c.Detail)
+	}
+}
+
+// TestAIDoctorChecksFlagsDefaultProviderChatRow verifies the "(default)"
+// annotation reaches the chat row too, not just the "ai api"/"ai
+// provider" row, so the report is unambiguous about which provider `gk
+// chat` will actually try first.
+func TestAIDoctorChecksFlagsDefaultProviderChatRow(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "x")
+	cfg := config.Defaults()
+	cfg.AI.Provider = "anthropic"
+
+	checks := aiDoctorChecks(&cfg)
+	c := findAICheck(checks, "ai chat: anthropic")
+	if c.Name == "" {
+		t.Fatal("ai chat: anthropic row missing")
+	}
+	if !strings.Contains(c.Name, "(default)") {
+		t.Errorf("configured default provider's chat row should be flagged, got name %q", c.Name)
+	}
+}

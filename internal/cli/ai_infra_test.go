@@ -18,6 +18,23 @@ func TestAIChatMaxTokens(t *testing.T) {
 	}
 }
 
+func TestAIChatHistoryBudget(t *testing.T) {
+	if got := aiChatHistoryBudget(config.AIConfig{}); got != 32768 {
+		t.Errorf("default = %d, want 32768", got)
+	}
+	ai := config.AIConfig{Chat: config.AIChatConfig{HistoryBudget: 5000}}
+	if got := aiChatHistoryBudget(ai); got != 5000 {
+		t.Errorf("configured = %d, want 5000", got)
+	}
+	// 0/negative fall back to the default, same convention as MaxTokens.
+	for _, v := range []int{0, -1} {
+		ai := config.AIConfig{Chat: config.AIChatConfig{HistoryBudget: v}}
+		if got := aiChatHistoryBudget(ai); got != 32768 {
+			t.Errorf("HistoryBudget=%d: got %d, want fallback 32768", v, got)
+		}
+	}
+}
+
 func TestAICacheKey(t *testing.T) {
 	a := aiCacheKey("review", "diff", "en", "fake")
 	if a != aiCacheKey("review", "diff", "en", "fake") {

@@ -345,6 +345,17 @@ func aiChatMaxTokens(ai config.AIConfig) int {
 	return 4096
 }
 
+// aiChatHistoryBudget is the approximate token budget `gk chat` trims
+// replayed history to (chat.Engine.HistoryBudget). Reads
+// ai.chat.history_budget, falling back to 32768 — same
+// zero/negative-falls-back-to-default convention as aiChatMaxTokens.
+func aiChatHistoryBudget(ai config.AIConfig) int {
+	if ai.Chat.HistoryBudget > 0 {
+		return ai.Chat.HistoryBudget
+	}
+	return 32768
+}
+
 // aiCallContext bounds a single AI call so a command never hangs on a slow
 // provider (including a long fallback chain). Derives the deadline from
 // ai.chat.timeout (default 30s). The caller must defer the returned cancel.

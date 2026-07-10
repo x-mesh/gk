@@ -75,6 +75,34 @@ type ChatInput struct {
 	Messages  []ChatMessage
 	Tools     []ToolSpec
 	MaxTokens int
+	// OnTextDelta opts this ONE round into text-only SSE streaming when
+	// non-nil (nil, the default, is byte-identical to every existing
+	// non-stream call — no adapter behavior changes for callers that
+	// don't set it). As text arrives it is delivered incrementally via
+	// this callback, and the same text is folded into ChatResult.Text
+	// as if the round had never streamed.
+	//
+	// If a tool_use/tool_calls block is detected anywhere in the
+	// stream — even after some text has already been delivered via
+	// this callback — the round abandons the stream and re-sends the
+	// identical request as a plain non-streaming call to get the
+	// authoritative reply; ChatResult reflects ONLY that reply, never a
+	// splice of streamed-then-discarded text plus the fallback. The
+	// same fallback applies to any stream anomaly (severed connection,
+	// malformed event, a stream that never reaches its terminal
+	// marker): every anomaly means a full retry via the ordinary
+	// non-stream path, never partial-response concatenation.
+	OnTextDelta func(string)
+	// OnStreamReset fires exactly once when a streaming attempt is
+	// abandoned for the non-stream fallback AFTER at least one OnTextDelta
+	// chunk was already delivered. It is the adapter telling the caller
+	// "everything I streamed to you this round is now void — the fallback
+	// reply below replaces it wholesale." A terminal caller uses it to
+	// terminate the stale partial line so the fallback answer is not
+	// concatenated onto it (an already-printed partial can't be unprinted,
+	// but it can be visually separated). nil callers are unaffected; no
+	// reset fires when nothing was streamed before the fallback.
+	OnStreamReset func()
 }
 
 // ChatResult is the assistant's reply for one round-trip. When ToolCalls

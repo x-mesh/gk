@@ -53,8 +53,10 @@ func validComposeContent() string {
 }
 
 // newTestNvidia returns a Nvidia configured for fast tests with the
-// given FakeHTTPClient and an instant sleep function.
-func newTestNvidia(client *FakeHTTPClient, apiKey string) *Nvidia {
+// given HTTPClient (a *FakeHTTPClient for canned-response tests, or any
+// other HTTPClient — e.g. hangingThenFallbackClient — for tests that
+// need real context timing behavior) and an instant sleep function.
+func newTestNvidia(client HTTPClient, apiKey string) *Nvidia {
 	return &Nvidia{
 		Client:    client,
 		APIKey:    apiKey,

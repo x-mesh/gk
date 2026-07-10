@@ -369,6 +369,89 @@ func TestAIDefaults(t *testing.T) {
 			t.Errorf("AI.Commit.DenyPaths missing %q", want)
 		}
 	}
+	if d.AI.Chat.HistoryBudget != 32768 {
+		t.Errorf("AI.Chat.HistoryBudget: want 32768, got %d", d.AI.Chat.HistoryBudget)
+	}
+}
+
+// ai.chat.history_budget is a normal merged field (unlike max_tool_rounds/
+// tool_result_cap, which are global-config-only) — a repo-local .gk.yaml
+// must be able to override it, and an unset value must resolve to the same
+// 32768 default trimHistory has always used.
+func TestLoadAIChatHistoryBudget(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Chat.HistoryBudget != 32768 {
+		t.Errorf("unset AI.Chat.HistoryBudget: want default 32768, got %d", cfg.AI.Chat.HistoryBudget)
+	}
+
+	yamlContent := "ai:\n  chat:\n    history_budget: 8192\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Chat.HistoryBudget != 8192 {
+		t.Errorf("AI.Chat.HistoryBudget: want 8192 (repo-local override), got %d", cfg.AI.Chat.HistoryBudget)
+	}
+}
+
+// ai.chat.auto_context gates gk chat's REPO_MAP injection. Like
+// history_budget (and unlike max_tool_rounds/tool_result_cap/deny_paths)
+// it is a normal merged field: it only trades prompt tokens for
+// orientation the model can already reach via existing tools, so a
+// repo-local .gk.yaml may turn it on. Default must stay false so an
+// unrelated config load does not silently start paying the injection cost.
+func TestLoadAIChatAutoContext(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+
+	repoDir := t.TempDir()
+	mustRunInDir(t, repoDir, "git", "init")
+	mustRunInDir(t, repoDir, "git", "config", "user.email", "test@example.com")
+	mustRunInDir(t, repoDir, "git", "config", "user.name", "Test")
+
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AI.Chat.AutoContext {
+		t.Error("unset AI.Chat.AutoContext: want default false")
+	}
+
+	yamlContent := "ai:\n  chat:\n    auto_context: true\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".gk.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AI.Chat.AutoContext {
+		t.Error("AI.Chat.AutoContext: want true (repo-local override)")
+	}
 }
 
 func TestLoadAIFromLocalYAML(t *testing.T) {

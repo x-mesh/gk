@@ -80,11 +80,24 @@ func wrapContext(repoCtx *RepoContext) string {
 	if formatted == "" || formatted == "Not a git repository." {
 		return formatted
 	}
-	// Escape closing tags to prevent prompt injection via branch names
-	// or commit messages that contain "</CONTEXT>".
-	sanitized := strings.ReplaceAll(formatted, "</CONTEXT>", "‹/CONTEXT›")
-	sanitized = strings.ReplaceAll(sanitized, "<CONTEXT>", "‹CONTEXT›")
-	return "<CONTEXT>\n" + sanitized + "</CONTEXT>"
+	return WrapUntrusted("CONTEXT", formatted)
+}
+
+// WrapUntrusted fences content in a named tag, escaping embedded tag
+// spellings so untrusted data (repository context, tool output, etc.)
+// cannot terminate the fence early or masquerade as instructions. It is
+// shared by aichat's single-shot prompts and gk chat's multi-turn engine.
+func WrapUntrusted(tag, content string) string {
+	open, close := "<"+tag+">", "</"+tag+">"
+	// Escape embedded tag spellings to prevent prompt injection via
+	// branch names, commit messages, or file content that happen to
+	// contain the tag literally.
+	sanitized := strings.ReplaceAll(content, close, "‹/"+tag+"›")
+	sanitized = strings.ReplaceAll(sanitized, open, "‹"+tag+"›")
+	if !strings.HasSuffix(sanitized, "\n") {
+		sanitized += "\n"
+	}
+	return open + "\n" + sanitized + close
 }
 
 // langInstruction returns a language instruction for the given lang code.

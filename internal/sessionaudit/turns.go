@@ -56,6 +56,17 @@ type toolInput struct {
 // they occupy an agent round-trip, so genuine interleaving is visible to the
 // collapse detector. Non-Claude (e.g. Codex) lines are skipped.
 func SessionTurns(data []byte) []TurnEvent {
+	events, _ := SessionTurnsWithLast(data)
+	return events
+}
+
+// SessionTurnsWithLast is SessionTurns plus the last turn index the session
+// allocated. Non-command tool calls (Read/Edit) advance the turn counter
+// without emitting a TurnEvent, so lastTurn can exceed the newest event's
+// Turn — the real-time collapse nudge needs that distance to apply the same
+// gap tolerance as the batch detector. lastTurn is -1 when the transcript
+// allocated no turns.
+func SessionTurnsWithLast(data []byte) (events []TurnEvent, lastTurn int) {
 	records := parseClaudeRecords(data)
 
 	// Pass 1: join tool_use id -> did that call error (from tool_result records).
@@ -72,7 +83,6 @@ func SessionTurns(data []byte) []TurnEvent {
 	// message id so parallel calls in one message share a turn.
 	turnOf := map[string]int{}
 	nextTurn := 0
-	var events []TurnEvent
 	for i, rec := range records {
 		toolUses := assistantToolUses(rec)
 		if len(toolUses) == 0 {
@@ -104,7 +114,7 @@ func SessionTurns(data []byte) []TurnEvent {
 			})
 		}
 	}
-	return events
+	return events, nextTurn - 1
 }
 
 // codexRecord is the minimal slice of a Codex rollout JSONL record the turn

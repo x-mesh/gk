@@ -202,6 +202,7 @@ func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
 		`{"payload":{"arguments":"{\"cmd\":\"git stash pop\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git stash clear\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git reset --hard HEAD~1\"}"}}`,
+		// Covered by git-kit apply — must not land in the gap.
 		`{"payload":{"arguments":"{\"cmd\":\"git apply fix.patch\"}"}}`,
 		// Suppressed: read-only plumbing and a diff flag variant must NOT be
 		// reported as gaps, or the roadmap signal drowns in noise.
@@ -221,31 +222,34 @@ func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
 	if f.Status != "gap" {
 		t.Errorf("status = %q, want gap", f.Status)
 	}
-	// stash clear x1 + reset x1 + apply x1 = 3; `git stash` and `git stash pop`
-	// map to git-kit stash (covered), `git stash clear` does not, and
-	// rev-parse/diff are suppressed plumbing.
-	if f.Count != 3 {
-		t.Errorf("gap count = %d, want 3 (subs %v)", f.Count, f.Subcommands)
+	// stash clear x1 + reset x1 = 2; `git stash` and `git stash pop` map to
+	// git-kit stash, `git apply` maps to git-kit apply (all covered),
+	// `git stash clear` does not, and rev-parse/diff are suppressed plumbing.
+	if f.Count != 2 {
+		t.Errorf("gap count = %d, want 2 (subs %v)", f.Count, f.Subcommands)
 	}
 	// git stash clear has no git-kit verb, so it alone stays in the gap.
 	if f.Subcommands["stash"] != 1 {
 		t.Errorf("stash gap count = %d, want 1 (subs %v)", f.Subcommands["stash"], f.Subcommands)
 	}
-	for _, absent := range []string{"rev-parse", "diff"} {
+	for _, absent := range []string{"rev-parse", "diff", "apply"} {
 		if _, ok := f.Subcommands[absent]; ok {
 			t.Errorf("%q should not appear in the gap, got %v", absent, f.Subcommands)
 		}
 	}
-	if report.Adoption.UncoveredRawHits != 3 {
-		t.Errorf("UncoveredRawHits = %d, want 3", report.Adoption.UncoveredRawHits)
+	if report.Adoption.UncoveredRawHits != 2 {
+		t.Errorf("UncoveredRawHits = %d, want 2", report.Adoption.UncoveredRawHits)
 	}
-	// git stash + git stash pop are covered raw git → they count toward CoveredRawHits.
-	if report.Adoption.CoveredRawHits != 2 {
-		t.Errorf("CoveredRawHits = %d, want 2", report.Adoption.CoveredRawHits)
+	// stash x2 + apply x1 are covered raw git → they count toward CoveredRawHits.
+	if report.Adoption.CoveredRawHits != 3 {
+		t.Errorf("CoveredRawHits = %d, want 3", report.Adoption.CoveredRawHits)
 	}
 	// the supported stash subcommands surface as covered raw-stash, not a gap.
 	if s := findingByKind(report, "raw-stash"); s == nil || s.Count != 2 {
 		t.Fatalf("raw-stash = %+v, want count 2", s)
+	}
+	if a := findingByKind(report, "raw-apply"); a == nil || a.Status != "covered" || !containsString(a.CoveredBy, "git-kit apply") {
+		t.Fatalf("git apply should be covered by git-kit apply, got %+v", a)
 	}
 }
 
@@ -369,15 +373,15 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	writeLines(t, path,
-		// Six apply hits — under a first-N cap these would claim every slot.
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a1.patch\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a2.patch\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a3.patch\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a4.patch\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a5.patch\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git apply --cached /tmp/a6.patch\"}"}}`,
+		// Six clean hits — under a first-N cap these would claim every slot.
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build2\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build3\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build4\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build5\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git clean -fd build6\"}"}}`,
 		// Rarer subcommands must still get a sample each.
-		`{"payload":{"arguments":"{\"cmd\":\"git init\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git revert HEAD\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git mv old.go new.go\"}"}}`,
 	)
 
@@ -395,21 +399,21 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 	}
 	prefixes := map[string]bool{}
 	for _, ev := range gap.Evidence {
-		for _, sub := range []string{"apply", "init", "mv"} {
+		for _, sub := range []string{"clean", "revert", "mv"} {
 			if strings.HasPrefix(ev.Command, "git "+sub) {
 				prefixes[sub] = true
 			}
 		}
 	}
-	for _, sub := range []string{"apply", "init", "mv"} {
+	for _, sub := range []string{"clean", "revert", "mv"} {
 		if !prefixes[sub] {
 			t.Errorf("no evidence sample for %q: %+v", sub, gap.Evidence)
 		}
 	}
 
-	// init and mv are one-call ops (~0 turn leverage); apply is not labeled —
+	// clean and mv are one-call ops (~0 turn leverage); revert is not labeled —
 	// its cost shows up in multi-turn recovery arcs.
-	want := []string{"init", "mv"}
+	want := []string{"clean", "mv"}
 	if len(gap.OneShot) != len(want) || gap.OneShot[0] != want[0] || gap.OneShot[1] != want[1] {
 		t.Errorf("one_shot = %v, want %v", gap.OneShot, want)
 	}
@@ -545,6 +549,221 @@ func TestAudit_ZeroSinceScansAllSessions(t *testing.T) {
 	}
 	if report.Since != "" {
 		t.Errorf("report.Since = %q, want empty without a window", report.Since)
+	}
+}
+
+// Heredoc BODY lines are data, not shell segments: a Korean prose line
+// starting with "git" inside a commit-message heredoc must not classify as a
+// raw git command (it used to file as git subcommand "도구는").
+func TestSplitShellSegments_HeredocBodyIsData(t *testing.T) {
+	cmd := "git commit -F - <<'EOF'\nfeat: 세션 감사 개선\n\ngit 도구는 세션을 정리한다\nEOF"
+	parts, chained := splitShellSegments(cmd)
+	if len(parts) != 1 || chained {
+		t.Fatalf("parts = %v (chained=%v), want the single commit segment", parts, chained)
+	}
+	if !strings.HasPrefix(parts[0], "git commit") {
+		t.Errorf("segment = %q, want the commit command", parts[0])
+	}
+
+	// A command after the terminator is still a separate, chained segment.
+	parts, chained = splitShellSegments("git commit -F - <<EOF\ngit 도구는 본문\nEOF\ngit status")
+	if len(parts) != 2 || !chained {
+		t.Fatalf("parts = %v (chained=%v), want commit + status", parts, chained)
+	}
+	if parts[1] != "git status" {
+		t.Errorf("parts[1] = %q, want git status", parts[1])
+	}
+
+	class := classifyCommand(cmd)
+	if class.RawGit != 1 {
+		t.Errorf("heredoc command RawGit = %d, want 1", class.RawGit)
+	}
+}
+
+// Shell arithmetic's `<<` (bit shift) is not a heredoc: `$((1<<16))` must not
+// swallow the rest of a multi-line tool call — the trailing git commands
+// stay visible to classification (audit counts, collapse, digest, hook).
+func TestSplitShellSegments_ArithmeticShiftIsNotHeredoc(t *testing.T) {
+	parts, chained := splitShellSegments("dd bs=$((1<<16)) if=a of=b\ngit add -A\ngit commit -m x")
+	if len(parts) != 3 || !chained {
+		t.Fatalf("parts = %v (chained=%v), want dd + add + commit", parts, chained)
+	}
+	if parts[1] != "git add -A" || parts[2] != "git commit -m x" {
+		t.Errorf("trailing commands swallowed: %v", parts)
+	}
+	if class := classifyCommand("x=$((n<<2))\ngit push --force"); class.RawGit != 1 {
+		t.Errorf("RawGit = %d, want 1 (push after arithmetic shift)", class.RawGit)
+	}
+}
+
+// A CRLF-encoded heredoc still terminates: the terminator line arrives as
+// "EOF\r" and must match the queued "EOF", or every following command is
+// consumed as heredoc body and escapes classification.
+func TestSplitShellSegments_HeredocCRLFTerminates(t *testing.T) {
+	parts, chained := splitShellSegments("printf x <<EOF\r\nbody line\r\nEOF\r\ngit push --force")
+	if len(parts) != 2 || !chained {
+		t.Fatalf("parts = %v (chained=%v), want printf + push", parts, chained)
+	}
+	if parts[1] != "git push --force" {
+		t.Errorf("parts[1] = %q, want the trailing push", parts[1])
+	}
+	if class := classifyCommand("printf x <<EOF\r\nbody\r\nEOF\r\ngit push --force"); class.RawGit != 1 {
+		t.Errorf("RawGit = %d, want 1", class.RawGit)
+	}
+}
+
+// Only the <<- form permits a tab-indented terminator; for plain << a
+// tab-indented line is body, exactly like the shell.
+func TestSplitShellSegments_HeredocTabTerminatorOnlyForDashForm(t *testing.T) {
+	// <<-: the indented terminator ends the body, the tail is a segment.
+	parts, _ := splitShellSegments("cat <<-EOF\n\tbody\n\tEOF\ngit status")
+	if len(parts) != 2 || parts[1] != "git status" {
+		t.Fatalf("<<- parts = %v, want cat + git status", parts)
+	}
+	// plain <<: the tab-indented "\tEOF" is body; the unindented one ends it.
+	parts, _ = splitShellSegments("cat <<EOF\n\tEOF\nEOF\ngit status")
+	if len(parts) != 2 || parts[1] != "git status" {
+		t.Fatalf("<< parts = %v, want cat + git status (only the unindented terminator counts)", parts)
+	}
+}
+
+// Tokens that are not shaped like a git subcommand (^[a-z0-9][a-z0-9-]*$)
+// must not classify — prose, expansions, uppercase.
+func TestGitSubcommand_RejectsNonSubcommandTokens(t *testing.T) {
+	cases := []struct {
+		segment string
+		wantOK  bool
+		wantSub string
+	}{
+		{"git status", true, "status"},
+		{"git cherry-pick abc", true, "cherry-pick"},
+		{"git 도구는 세션을 정리한다", false, ""},
+		{"git $(cat cmd.txt)", false, ""},
+		{"git STATUS", false, ""},
+	}
+	for _, tc := range cases {
+		sub, _, ok := gitSubcommand(tc.segment)
+		if ok != tc.wantOK || sub != tc.wantSub {
+			t.Errorf("gitSubcommand(%q) = (%q,%v), want (%q,%v)", tc.segment, sub, ok, tc.wantSub, tc.wantOK)
+		}
+	}
+}
+
+// The conflict-probe classifier must win over the context-probe shape:
+// `git diff --name-only --diff-filter=U` is a conflict probe, in both the
+// finding mapping and the synthesized batch step.
+func TestGitSegmentFinding_ConflictProbeBeforeContext(t *testing.T) {
+	args := []string{"--name-only", "--diff-filter=U"}
+	if kind := gitSegmentFinding("diff", args); kind != "raw-conflict-probes" {
+		t.Errorf("kind = %q, want raw-conflict-probes", kind)
+	}
+	step, ok := batchStepForGit("diff", args)
+	if !ok || strings.Join(step, " ") != "context --include=conflict" {
+		t.Errorf("batch step = %v (%v), want context --include=conflict", step, ok)
+	}
+}
+
+// SHA archaeology is not answerable by gk context: probes with an explicit
+// hex commit operand are excluded; HEAD/branch-name operands stay context.
+func TestIsRawContextProbe_ShaOperandGuard(t *testing.T) {
+	cases := []struct {
+		name   string
+		subcmd string
+		args   []string
+		want   bool
+	}{
+		{"bare status", "status", nil, true},
+		{"log HEAD", "log", []string{"--oneline", "-5", "HEAD"}, true},
+		{"log branch name", "log", []string{"--oneline", "develop"}, true},
+		{"log sha", "log", []string{"--oneline", "8b7a4f21c"}, false},
+		{"show sha stat", "show", []string{"--stat", "4f21c8b7a"}, false},
+		{"show sha colon path", "show", []string{"--name-only", "4f21c8b7a:main.go"}, false},
+		{"merge-base branches", "merge-base", []string{"main", "develop"}, true},
+		{"merge-base shas", "merge-base", []string{"8b7a4f21c", "1c8b7a4f2"}, false},
+		{"branch contains sha", "branch", []string{"-r", "--contains", "8b7a4f21c"}, false},
+		{"log sha range", "log", []string{"--oneline", "8b7a4f21c..HEAD"}, false},
+		{"log sha suffix", "log", []string{"-1", "8b7a4f21c~2"}, false},
+		{"sha after pathspec dashdash", "log", []string{"--oneline", "--", "8b7a4f21c"}, true},
+		{"hex word without digit", "log", []string{"--oneline", "deadbeef"}, true},
+		{"short hex ref", "log", []string{"-1", "abc12"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRawContextProbe(tc.subcmd, tc.args); got != tc.want {
+				t.Errorf("isRawContextProbe(%s %v) = %v, want %v", tc.subcmd, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// The sha-guarded probes are read-only inspection, never gap noise.
+func TestAudit_ShaArchaeologyNotContextNotGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git merge-base 8b7a4f21c 1c8b7a4f2\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git log --oneline 8b7a4f21c..HEAD\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git branch -r --contains 8b7a4f21c\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(report, "raw-context-probes") {
+		t.Errorf("sha archaeology must not count as context probes: %+v", report.Findings)
+	}
+	if hasFinding(report, "uncovered-raw-git") {
+		t.Errorf("sha archaeology must not surface as a gap: %+v", report.Findings)
+	}
+}
+
+// `git restore --staged <paths>` is the unstage spelling git-kit unstage
+// covers; adding --worktree (touches contents) or omitting --staged stays in
+// the uncovered gap.
+func TestAudit_RestoreStagedIsUnstageCovered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git restore --staged a.go b.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git restore --staged --worktree a.go\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git restore a.go\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unstage := findingByKind(report, "raw-unstage")
+	if unstage == nil || unstage.Count != 1 || unstage.Status != "covered" {
+		t.Fatalf("raw-unstage = %+v, want the --staged form covered once", unstage)
+	}
+	gap := findingByKind(report, "uncovered-raw-git")
+	if gap == nil || gap.Subcommands["restore"] != 2 {
+		t.Fatalf("worktree/plain restore should stay a gap x2, got %+v", gap)
+	}
+}
+
+// init/help/gc/archive/commit-tree are noise, not roadmap signals: init is
+// dominated by temp test fixtures (and gk init runs git init when needed),
+// help/archive are read-only, gc/commit-tree are maintenance/plumbing.
+func TestAudit_NonGapMaintenanceSubcommands(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git init\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git help commit\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git gc --prune=now\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git archive -o out.tar HEAD\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git commit-tree HEAD^{tree} -m x\"}"}}`,
+	)
+
+	report, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gap := findingByKind(report, "uncovered-raw-git"); gap != nil {
+		t.Errorf("maintenance subcommands must not surface as gaps: %+v", gap.Subcommands)
 	}
 }
 

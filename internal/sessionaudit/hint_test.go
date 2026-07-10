@@ -17,9 +17,13 @@ func TestHint(t *testing.T) {
 		{"stash push", "git stash push -m wip", true, "raw-stash"},
 		{"stash bare", "git stash", true, "raw-stash"},
 		{"integration", "git rebase main", true, "raw-integration"},
+		{"apply", "git apply --cached fix.patch", true, "raw-apply"},
+		{"restore staged (unstage)", "git restore --staged a.go", true, "raw-unstage"},
 		{"gk short alias", "gk pull --with-base", true, "gk-short-alias"},
 		// Highest severity wins across a chain: conflict (high) over status (medium).
 		{"chain picks highest severity", "git diff --cc && git status", true, "raw-conflict-probes"},
+		// Conflict wins over the context-probe shape it also matches.
+		{"unmerged-files probe", "git diff --name-only --diff-filter=U", true, "raw-conflict-probes"},
 		// Not covered: plumbing, file-restore checkout, stash subcommands git-kit
 		// stash lacks, already git-kit, non-git.
 		{"plumbing", "git rev-parse HEAD", false, ""},

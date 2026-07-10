@@ -247,9 +247,11 @@ var findingSpecs = map[string]findingSpec{
 	},
 	// git reset/restore are intentionally NOT mapped: gk reset means "reset to
 	// remote" and gk restore recovers dangling work, so neither matches the raw
-	// verbs' file/index semantics. stash maps only for the subcommands git-kit
-	// stash actually registers — gitKitStashCovers gates show/clear/branch/etc.
-	// back to a gap.
+	// verbs' file/index semantics. The one exception is the index-only unstage
+	// spellings (`git reset [HEAD]`, `git restore --staged`), which isRawUnstage
+	// routes to raw-unstage. stash maps only for the subcommands git-kit stash
+	// actually registers — gitKitStashCovers gates show/clear/branch/etc. back
+	// to a gap.
 	"raw-stash": {
 		kind:           "raw-stash",
 		severity:       "low",
@@ -270,6 +272,13 @@ var findingSpecs = map[string]findingSpec{
 		status:         "covered",
 		recommendation: "Use git-kit clone (short-form URL expansion) instead of raw git clone.",
 		coveredBy:      []string{"git-kit clone"},
+	},
+	"raw-apply": {
+		kind:           "raw-apply",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit apply instead of raw git apply so patch application stays in the agent envelope.",
+		coveredBy:      []string{"git-kit apply"},
 	},
 	"raw-forget": {
 		kind:           "raw-forget",
@@ -325,11 +334,18 @@ var rawGitNonGap = map[string]bool{
 	"var": true, "check-ignore": true, "check-attr": true, "describe": true,
 	"reflog": true, "blame": true, "grep": true, "shortlog": true,
 	"count-objects": true, "verify-commit": true, "verify-tag": true, "version": true,
-	"cherry": true,
+	"cherry": true, "help": true, "archive": true,
+	// context-verb family: the non-sha forms are covered context probes; the
+	// sha-archaeology forms (excluded by hasHexCommitOperand) are still
+	// read-only inspection, never a missing-verb signal.
+	"log": true, "rev-list": true, "merge-base": true, "branch": true,
 	// low-level plumbing git-kit never wraps (some mutates the index/object
-	// store, but none is a roadmap signal).
+	// store, but none is a roadmap signal). init is dominated by temp test
+	// fixtures and gk init already runs git init when needed; gc/commit-tree
+	// are maintenance/plumbing like their listed siblings.
 	"merge-tree": true, "read-tree": true, "checkout-index": true,
 	"diff-tree": true, "update-index": true, "commit-graph": true,
+	"init": true, "gc": true, "commit-tree": true,
 	// `git kit …` is not a git subcommand at all — dev sessions probing gk's
 	// own help (`git kit --help`) leave it behind; pure noise, never a gap.
 	"kit": true,
@@ -746,6 +762,11 @@ func splitShellSegments(s string) ([]string, bool) {
 	var b strings.Builder
 	var single, double, escaped bool
 	chained := false
+	// Heredoc terminators announced on the current command line, in order of
+	// appearance. Body lines between the line break and the terminators are
+	// data, not shell segments — without this, prose lines starting with "git"
+	// inside a commit-message heredoc were classified as git commands.
+	var heredocs []heredocDelim
 
 	flush := func() {
 		part := strings.TrimSpace(b.String())
@@ -778,8 +799,31 @@ func splitShellSegments(s string) ([]string, bool) {
 			continue
 		}
 		if !single && !double {
+			// << or <<- introduces a heredoc; <<< is a here-string (no body).
+			if c == '<' && i+1 < len(s) && s[i+1] == '<' && (i+2 >= len(s) || s[i+2] != '<') {
+				if delim, next := parseHeredocDelim(s, i+2); delim.word != "" {
+					heredocs = append(heredocs, delim)
+					b.WriteString(s[i:next])
+					i = next - 1
+					continue
+				}
+			}
 			switch c {
-			case '\n', ';':
+			case '\n':
+				if len(heredocs) > 0 {
+					flush()
+					i = skipHeredocBodies(s, i+1, heredocs) - 1
+					heredocs = nil
+					// Content after the terminator is a further command.
+					if i+1 < len(s) && strings.TrimSpace(s[i+1:]) != "" {
+						chained = true
+					}
+					continue
+				}
+				chained = true
+				flush()
+				continue
+			case ';':
 				chained = true
 				flush()
 				continue
@@ -803,6 +847,84 @@ func splitShellSegments(s string) ([]string, bool) {
 	}
 	flush()
 	return parts, chained
+}
+
+// heredocDelim is one announced heredoc terminator: its word and whether the
+// <<- form was used (only then may the terminator line be tab-indented).
+type heredocDelim struct {
+	word      string
+	stripTabs bool
+}
+
+// parseHeredocDelim reads the heredoc terminator word starting at j (the index
+// just past "<<"). It returns the unquoted terminator and the index of the
+// first byte after the consumed operator text; an empty word means "not a
+// heredoc" and the caller falls through to normal character handling.
+func parseHeredocDelim(s string, j int) (heredocDelim, int) {
+	var d heredocDelim
+	if j < len(s) && s[j] == '-' {
+		d.stripTabs = true
+		j++
+	}
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	if j >= len(s) {
+		return heredocDelim{}, j
+	}
+	switch q := s[j]; q {
+	case '\'', '"':
+		end := strings.IndexByte(s[j+1:], q)
+		if end < 0 {
+			return heredocDelim{}, j
+		}
+		d.word = s[j+1 : j+1+end]
+		return d, j + 1 + end + 1
+	case '\\':
+		j++
+	}
+	start := j
+	for j < len(s) && !strings.ContainsRune(" \t\r\n;&|<>", rune(s[j])) {
+		j++
+	}
+	word := s[start:j]
+	// Shell arithmetic (`$((1<<20))`) also carries an unquoted "<<": its
+	// would-be terminator keeps the closing parens (')' is not in the stop
+	// set) or starts with a digit. No real heredoc terminator looks like
+	// that, and treating it as one swallows every following command line.
+	if strings.ContainsAny(word, "()") || (word != "" && word[0] >= '0' && word[0] <= '9') {
+		return heredocDelim{}, j
+	}
+	d.word = word
+	return d, j
+}
+
+// skipHeredocBodies consumes body lines from start until every queued
+// terminator has been seen (in order), returning the index just past the last
+// terminator line. A trailing \r is tolerated (CRLF input — the terminator
+// word itself never carries one, its stop set includes \r); leading tabs are
+// tolerated only for the <<- form, matching the shell.
+func skipHeredocBodies(s string, start int, delims []heredocDelim) int {
+	i := start
+	for len(delims) > 0 && i < len(s) {
+		end := strings.IndexByte(s[i:], '\n')
+		var line string
+		var next int
+		if end < 0 {
+			line, next = s[i:], len(s)
+		} else {
+			line, next = s[i:i+end], i+end+1
+		}
+		line = strings.TrimSuffix(line, "\r")
+		if delims[0].stripTabs {
+			line = strings.TrimLeft(line, "\t")
+		}
+		if line == delims[0].word {
+			delims = delims[1:]
+		}
+		i = next
+	}
+	return i
 }
 
 func leadingTool(segment string) string {
@@ -1012,10 +1134,12 @@ func synthesizeBatchPlan(chain string) *BatchPlan {
 // are tested before the catch-all full-diff.
 func batchStepForGit(subcmd string, args []string) ([]string, bool) {
 	switch {
-	case isRawContextProbe(subcmd, args):
-		return []string{"context", "--include=diff,log"}, true
+	// Conflict before context, mirroring gitSegmentFinding: the unmerged-files
+	// probe matches both shapes and must map to the conflict include.
 	case isRawConflictProbe(subcmd, args):
 		return []string{"context", "--include=conflict"}, true
+	case isRawContextProbe(subcmd, args):
+		return []string{"context", "--include=diff,log"}, true
 	case subcmd == "add" || subcmd == "commit":
 		return []string{"commit"}, true
 	case subcmd == "pull" || subcmd == "fetch":
@@ -1097,9 +1221,9 @@ func addGapFinding(findings map[string]*Finding, file, subcmd, command string) {
 // oneShotGapSubcommands are gap subcommands whose raw invocation is one call —
 // a gk replacement would be a 1:1 swap saving ~0 turns. Kept in the gap (the
 // coverage hole is real) but labeled so the roadmap reads turn leverage, not
-// raw counts.
+// raw counts. init/archive moved to rawGitNonGap (never a gap at all).
 var oneShotGapSubcommands = map[string]bool{
-	"init": true, "clone": true, "mv": true, "rm": true, "archive": true, "clean": true,
+	"clone": true, "mv": true, "rm": true, "clean": true,
 }
 
 func sortedFindings(findings map[string]*Finding) []Finding {
@@ -1169,6 +1293,9 @@ func gitSubcommand(segment string) (string, []string, bool) {
 				args = args[1:]
 				continue
 			}
+			if !isGitSubcommandToken(head) {
+				return "", nil, false
+			}
 			return head, args[1:], true
 		}
 		return "", nil, false
@@ -1176,15 +1303,89 @@ func gitSubcommand(segment string) (string, []string, bool) {
 	return "", nil, false
 }
 
+// isGitSubcommandToken reports whether tok is shaped like a git subcommand
+// (^[a-z0-9][a-z0-9-]*$). Prose or expansion tokens after a literal "git" word
+// (e.g. a Korean sentence starting with "git") must not classify as raw git.
+func isGitSubcommandToken(tok string) bool {
+	if tok == "" || tok[0] == '-' {
+		return false
+	}
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (c == '-' && i > 0) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func isRawContextProbe(subcmd string, args []string) bool {
+	// SHA archaeology (`git show <sha>`, `git merge-base <sha> <sha>`) is not
+	// answerable by gk context — HEAD/branch-name operands stay context probes.
 	switch subcmd {
 	case "status", "branch", "log", "rev-list", "merge-base":
-		return true
+		return !hasHexCommitOperand(args)
 	case "diff", "show":
-		return hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
+		statish := hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
+		return statish && !hasHexCommitOperand(args)
 	default:
 		return false
 	}
+}
+
+// minHexOperandLen is the shortest all-hex operand treated as an explicit
+// commit sha — seven matches git's default abbreviation floor.
+const minHexOperandLen = 7
+
+// hasHexCommitOperand reports whether a non-flag operand names a commit by raw
+// hex sha. Operands after `--` are pathspecs, a `<rev>:<path>` form only names
+// a commit in its rev half, and `..`/`...` ranges are checked per side with
+// `^`/`~` suffixes stripped.
+func hasHexCommitOperand(args []string) bool {
+	for _, a := range args {
+		a = trimShellToken(a)
+		if a == "--" {
+			break
+		}
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		if i := strings.IndexByte(a, ':'); i >= 0 {
+			a = a[:i]
+		}
+		for part := range strings.SplitSeq(a, "..") {
+			if i := strings.IndexAny(part, "^~"); i >= 0 {
+				part = part[:i]
+			}
+			if isHexCommitToken(part) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isHexCommitToken matches lowercase hex of sha length. At least one digit is
+// required so a word that happens to spell in a-f (`deadbeef` as a branch
+// name) is not mistaken for a sha; real 7+ char sha prefixes lack a digit
+// only ~0.1% of the time.
+func isHexCommitToken(tok string) bool {
+	if len(tok) < minHexOperandLen {
+		return false
+	}
+	digit := false
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return digit
 }
 
 func isRawConflictProbe(subcmd string, args []string) bool {
@@ -1283,12 +1484,16 @@ func gitKitStashCovers(args []string) bool {
 // segments.
 func gitSegmentFinding(subcmd string, args []string) string {
 	switch {
-	case isRawContextProbe(subcmd, args):
-		return "raw-context-probes"
+	// Conflict probes first: `git diff --name-only --diff-filter=U` also
+	// matches the context-probe shape, and the conflict finding must win.
 	case isRawConflictProbe(subcmd, args):
 		return "raw-conflict-probes"
+	case isRawContextProbe(subcmd, args):
+		return "raw-context-probes"
 	case subcmd == "add" || subcmd == "commit":
 		return "raw-commit-sequence"
+	case subcmd == "apply":
+		return "raw-apply"
 	case isRawIntegration(subcmd):
 		return "raw-integration"
 	case isRawBranchSwitch(subcmd, args):
@@ -1312,17 +1517,23 @@ func gitSegmentFinding(subcmd string, args []string) string {
 	}
 }
 
-// isRawUnstage matches the index-only `git reset` forms git-kit unstage
-// covers: no branch-moving mode flag, no commit other than HEAD —
-// `git reset`, `git reset [-q] [--mixed] HEAD [paths]`, `git reset -- paths`.
-// `--mixed` with HEAD is still index-only; with any other commit
+// isRawUnstage matches the index-only forms git-kit unstage covers:
+// `git reset` with no branch-moving mode flag and no commit other than HEAD —
+// `git reset`, `git reset [-q] [--mixed] HEAD [paths]`, `git reset -- paths` —
+// and the restore spelling `git restore --staged <paths>` (adding --worktree
+// touches file contents, which gk unstage never does, so that form stays
+// uncovered). `--mixed` with HEAD is still index-only; with any other commit
 // (`--soft/--hard/--mixed HEAD~1`, a sha) the branch moves and the form
 // stays in the uncovered gap. Known limit: the pathspec-only form
 // (`git reset a.go`) IS an unstage, but a bare token is indistinguishable
 // from a commit-ish (`git reset origin/main`) without repo state, so it is
 // deliberately left uncounted rather than misclassifying history resets.
 func isRawUnstage(subcmd string, args []string) bool {
-	if subcmd != "reset" {
+	switch subcmd {
+	case "restore":
+		return hasAnyArg(args, "--staged", "-S") && !hasAnyArg(args, "--worktree", "-W")
+	case "reset":
+	default:
 		return false
 	}
 	sawTarget := false

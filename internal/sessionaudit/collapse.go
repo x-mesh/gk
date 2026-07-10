@@ -2,7 +2,6 @@ package sessionaudit
 
 import (
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -12,8 +11,10 @@ import (
 // far-apart probes as separate (non-collapsible) uses.
 const collapseMaxGap = 1
 
-// CollapseLookback is the default number of recent distinct turns the real-time
-// nudge (CollapseNudgeFor) inspects — the same locality the batch detector uses.
+// CollapseLookback is the default maximum turn distance between a prior
+// same-group turn and the pending command within which the real-time nudge
+// (CollapseNudgeFor) still fires — the same gap tolerance the batch detector
+// applies between adjacent hits (splitRuns' gapOK).
 const CollapseLookback = collapseMaxGap + 1
 
 // collapseGroupForKind maps a covered finding kind to the single git-kit call
@@ -30,6 +31,7 @@ var collapseGroupForKind = map[string]string{
 	"raw-full-diff":       "diff",
 	"raw-diff-check":      "diff",
 	"raw-stash":           "stash",
+	"raw-apply":           "apply",
 }
 
 // gkForGroup is the single git-kit call a run of the group collapses into.
@@ -41,6 +43,111 @@ var gkForGroup = map[string]string{
 	"worktree":    "git-kit worktree",
 	"diff":        "git-kit diff",
 	"stash":       "git-kit stash",
+	"apply":       "git-kit apply",
+}
+
+// CollapseGroups returns the collapse group keys (gkForGroup's domain), sorted.
+// It exists so cli-side mirrors of the group set (the tuned contract's leak
+// phrases) can be wiring-tested against the real groups instead of silently
+// drifting when one is added here.
+func CollapseGroups() []string {
+	groups := make([]string, 0, len(gkForGroup))
+	for g := range gkForGroup {
+		groups = append(groups, g)
+	}
+	sort.Strings(groups)
+	return groups
+}
+
+// groupPrecedence resolves per-turn PRIMARY attribution: a turn belongs to
+// exactly ONE collapse group, write groups before read groups, so a compound
+// like `git commit … && git log --oneline -1` is a commit turn — the trailing
+// verification probe never extends a context run and by_group sums never
+// double-count a turn.
+var groupPrecedence = []string{
+	"commit", "integration", "apply", "stash", "switch", "worktree", // write
+	"context", "diff", // read
+}
+
+// readOnlyCollapseGroups are the probe groups whose runs a mutating turn
+// severs: probes before and after a state change observe different repos, so
+// one gk call can never replace both sides.
+var readOnlyCollapseGroups = map[string]bool{"context": true, "diff": true}
+
+// mutatingGitVerbs are git subcommands that change repo state (index,
+// worktree, refs, or remotes) in every invocation form. Turns containing one
+// terminate read-only probe runs — including mutations the finding
+// classifiers do not map (`git reset --soft HEAD~1`, `git am`), which were
+// previously invisible to the run splitter.
+var mutatingGitVerbs = map[string]bool{
+	"add": true, "am": true, "apply": true, "checkout": true, "cherry-pick": true,
+	"clean": true, "commit": true, "fetch": true, "filter-repo": true,
+	"merge": true, "mv": true, "pull": true, "push": true, "rebase": true,
+	"reset": true, "restore": true, "revert": true, "rm": true, "switch": true,
+}
+
+// gitSegmentMutates reports whether one git segment changes repo state.
+// stash list/show only read; tag/branch mutate only in their delete/move/
+// create-with-flags forms — the bare forms are probes.
+func gitSegmentMutates(subcmd string, args []string) bool {
+	if mutatingGitVerbs[subcmd] {
+		return true
+	}
+	switch subcmd {
+	case "stash":
+		if len(args) == 0 {
+			return true
+		}
+		switch trimShellToken(args[0]) {
+		case "list", "show":
+			return false
+		}
+		return true
+	case "tag":
+		return hasAnyArg(args, "-d", "--delete", "-a", "--annotate", "-s", "--sign", "-f", "--force", "-m")
+	case "branch":
+		return hasAnyArg(args, "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream")
+	default:
+		return false
+	}
+}
+
+// commandMutates reports whether any git segment of cmd mutates repo state.
+func commandMutates(cmd string) bool {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if seg.Tool != "git" {
+			continue
+		}
+		if subcmd, args, ok := gitSubcommand(seg.Text); ok && gitSegmentMutates(subcmd, args) {
+			return true
+		}
+	}
+	return false
+}
+
+// trivialPayloadTools are non-git tools that only format or page output. A
+// turn whose non-git segments all come from this set still exists for its git
+// work; anything else (cargo, go, npm, …) means the turn would survive even
+// with its git segments folded into a gk call — such turns are not saveable.
+var trivialPayloadTools = map[string]bool{
+	"echo": true, "printf": true, "grep": true, "sed": true, "head": true,
+	"tail": true, "wc": true, "sort": true, "cut": true, "tr": true,
+	"cd": true, "true": true, "ls": true,
+}
+
+// commandPayloadTrivial reports whether every non-git segment of cmd is
+// trivial formatting. git-kit/gk segments count as payload: a turn that
+// already runs git-kit is not a turn gk would remove.
+func commandPayloadTrivial(cmd string) bool {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if seg.Tool == "git" {
+			continue
+		}
+		if !trivialPayloadTools[seg.Tool] {
+			return false
+		}
+	}
+	return true
 }
 
 // CollapsibleRun is a maximal run of same-group git commands spread across
@@ -79,17 +186,100 @@ func commandGroups(cmd string) map[string]bool {
 	return groups
 }
 
-// turnHit is one distinct turn that contributed a command of a given group.
-// subcmd/target carry the group's git verb and its operand signature so the
-// paging guard can tell repeated inspection of DIFFERENT objects
-// (`git show A`, `git show B`) — which one gk call cannot replace — from a
-// genuine probe sequence.
+// turnHit is one distinct turn attributed to a group. subcmd/target carry the
+// group's git verb and its operand signature so the paging guard can tell
+// repeated inspection of DIFFERENT objects (`git show A`, `git show B`) —
+// which one gk call cannot replace — from a genuine probe sequence.
 type turnHit struct {
 	turn   int
 	repo   string
 	cmd    string
 	subcmd string
 	target string
+}
+
+// turnAttr is one distinct turn's collapse attribution: the single PRIMARY
+// group the turn counts toward plus the flags the run splitter needs.
+type turnAttr struct {
+	turnHit
+	group    string // "" when the turn is not collapsible
+	mutating bool   // the turn ran a state-changing git segment
+}
+
+// attributeTurns folds ordered turn events into per-turn attributions, in
+// ascending turn order. Each distinct turn gets at most ONE collapse group
+// (primaryGroupOf), is flagged mutating when any of its commands mutates, and
+// is discounted entirely when any command carries non-trivial non-git payload
+// (`git log -1; cargo clippy` — the turn exists for cargo). Failed calls
+// (IsError) are dropped: a failed attempt is not a turn gk would have saved.
+func attributeTurns(events []TurnEvent) []turnAttr {
+	type accum struct {
+		groups     map[string]bool
+		mutating   bool
+		discounted bool
+		repo       string
+		cmds       []string
+	}
+	var order []int
+	acc := map[int]*accum{}
+	for _, ev := range events {
+		if ev.IsError {
+			continue
+		}
+		a := acc[ev.Turn]
+		if a == nil {
+			a = &accum{groups: map[string]bool{}}
+			acc[ev.Turn] = a
+			order = append(order, ev.Turn)
+		}
+		if a.repo == "" {
+			a.repo = ev.Repo
+		}
+		a.cmds = append(a.cmds, ev.Cmd)
+		a.mutating = a.mutating || commandMutates(ev.Cmd)
+		a.discounted = a.discounted || !commandPayloadTrivial(ev.Cmd)
+		for g := range commandGroups(ev.Cmd) {
+			a.groups[g] = true
+		}
+	}
+	sort.Ints(order)
+
+	out := make([]turnAttr, 0, len(order))
+	for _, tn := range order {
+		a := acc[tn]
+		ta := turnAttr{turnHit: turnHit{turn: tn, repo: a.repo}, mutating: a.mutating}
+		if !a.discounted {
+			ta.group = primaryGroupOf(a.groups, a.mutating)
+		}
+		if ta.group != "" {
+			for _, c := range a.cmds {
+				if commandGroups(c)[ta.group] {
+					ta.cmd = c
+					ta.subcmd, ta.target = groupTarget(c, ta.group)
+					break
+				}
+			}
+		}
+		out = append(out, ta)
+	}
+	return out
+}
+
+// primaryGroupOf picks the single group a turn is attributed to: first match
+// in groupPrecedence (write groups win over read groups). A mutating turn is
+// never attributed to a read-only group — the turn exists to change state, so
+// gk context/diff cannot replace it and it must never join a probe run.
+func primaryGroupOf(groups map[string]bool, mutating bool) string {
+	for _, g := range groupPrecedence {
+		if !groups[g] {
+			continue
+		}
+		if mutating && readOnlyCollapseGroups[g] {
+			continue
+		}
+		return g
+	}
+	return ""
 }
 
 // groupTarget returns the git verb and operand signature of the segment that
@@ -126,36 +316,33 @@ func operandSig(args []string) string {
 }
 
 // DetectCollapsibleRuns finds, per collapse group, the maximal local runs of
-// that group's git commands across distinct turns. Failed calls (IsError) are
-// dropped first — a failed attempt is not a turn gk would have saved, and this
-// also collapses failure→retry pairs to the single successful turn. Runs break
-// across a repo/worktree boundary so commands from different working dirs are
-// never merged. maxGap is the interleave tolerance (see collapseMaxGap).
+// that group's turns. Each distinct turn carries exactly one PRIMARY group
+// (attributeTurns), so a compound write-plus-probe turn counts once and
+// by_group sums never double-count. Runs break across a repo/worktree
+// boundary, and read-only probe runs additionally break on any interleaved
+// mutating turn. maxGap is the interleave tolerance (see collapseMaxGap).
 func DetectCollapsibleRuns(events []TurnEvent, maxGap int) []CollapsibleRun {
-	// group -> ordered distinct-turn hits (a turn appears once per group even if
-	// it ran two same-group commands: same turn saves nothing among itself).
+	attrs := attributeTurns(events)
+	var mutatingTurns []int // ascending, for the read-only barrier check
 	byGroup := map[string][]turnHit{}
-	seen := map[string]bool{} // group|turn already recorded
-	for _, ev := range events {
-		if ev.IsError {
+	for _, ta := range attrs {
+		if ta.mutating {
+			mutatingTurns = append(mutatingTurns, ta.turn)
+		}
+		if ta.group == "" {
 			continue
 		}
-		for g := range commandGroups(ev.Cmd) {
-			key := g + "|" + strconv.Itoa(ev.Turn)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			sc, target := groupTarget(ev.Cmd, g)
-			byGroup[g] = append(byGroup[g], turnHit{turn: ev.Turn, repo: ev.Repo, cmd: ev.Cmd, subcmd: sc, target: target})
-		}
+		byGroup[ta.group] = append(byGroup[ta.group], ta.turnHit)
 	}
 
 	var runs []CollapsibleRun
 	for _, group := range sortedKeys(byGroup) {
-		hits := byGroup[group]
-		sort.Slice(hits, func(i, j int) bool { return hits[i].turn < hits[j].turn })
-		for _, run := range splitRuns(hits, maxGap) {
+		hits := byGroup[group] // ascending by turn (attributeTurns order)
+		var barriers []int
+		if readOnlyCollapseGroups[group] {
+			barriers = mutatingTurns
+		}
+		for _, run := range splitRuns(hits, maxGap, barriers) {
 			if len(run) < 2 {
 				continue // one turn = nothing to collapse
 			}
@@ -241,81 +428,68 @@ type CollapseNudge struct {
 }
 
 // CollapseNudgeFor reports whether running `current` continues a same-group raw
-// run from the last `lookback` distinct turns of recent — i.e. the agent could
-// have folded them into one git-kit call. recent is oldest→newest. It honors
-// the same repo and paging guards as the batch detector, so a different repo or
-// a different inspection target (git show A then B) does not nudge.
-func CollapseNudgeFor(current string, recent []TurnEvent, lookback int) *CollapseNudge {
-	curGroups := commandGroups(current)
-	if len(curGroups) == 0 || lookback <= 0 {
+// run from the recent turns — i.e. the agent could have folded them into one
+// git-kit call. recent is oldest→newest; lastTurn is the session's last
+// allocated turn index (SessionTurnsWithLast), which the pending command runs
+// right after. A prior turn folds in only when its distance to that pending
+// turn is within lookback — the batch detector's gap tolerance (splitRuns'
+// gapOK). Distance is measured in turn indices, not inspected events: turns
+// occupied by non-shell tools (Read/Edit) allocate indices without emitting
+// events, and a probe separated from the pending one by several such turns is
+// exactly what the turn metric refuses to count as collapsible. It applies
+// the same per-turn primary attribution as the batch detector: `current` gets
+// exactly one group (write groups win, non-trivial payload discounts), a
+// mutating recent turn severs a read-only probe run — so a commit flow with
+// trailing verification probes never nudges "use gk context" — and the repo
+// and paging guards still apply.
+func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int) *CollapseNudge {
+	if lookback <= 0 || !commandPayloadTrivial(current) {
+		return nil
+	}
+	g := primaryGroupOf(commandGroups(current), commandMutates(current))
+	if g == "" {
 		return nil
 	}
 	curRepo := repoScope(current)
+	curSub, curTgt := groupTarget(current, g)
 
-	// Walk recent newest→oldest, collecting the last `lookback` distinct turns
-	// and the groups/cmd/repo each carried (skipping failed calls).
-	type rt struct {
-		groups map[string]bool
-		repo   string
-		cmd    string
-	}
-	seen := map[int]bool{}
-	var order []int
-	info := map[int]*rt{}
-	for i := len(recent) - 1; i >= 0; i-- {
-		ev := recent[i]
-		if ev.IsError {
+	attrs := attributeTurns(recent)
+	pending := lastTurn + 1 // the turn the pending command will occupy
+	var prior []string
+	for i := len(attrs) - 1; i >= 0; i-- {
+		ta := attrs[i]
+		if pending-ta.turn > lookback {
+			break // outside the gap tolerance — older turns can't fold in
+		}
+		if readOnlyCollapseGroups[g] && ta.mutating {
+			break // a state change severs the probe run — older turns can't fold in
+		}
+		if ta.group != g {
 			continue
 		}
-		if !seen[ev.Turn] {
-			if len(order) >= lookback {
-				break
-			}
-			seen[ev.Turn] = true
-			order = append(order, ev.Turn)
-			info[ev.Turn] = &rt{groups: map[string]bool{}, repo: ev.Repo, cmd: ev.Cmd}
+		if curRepo != "" && ta.repo != "" && curRepo != ta.repo {
+			continue // different repo — not collapsible
 		}
-		for g := range commandGroups(ev.Cmd) {
-			info[ev.Turn].groups[g] = true
+		if ta.subcmd == curSub && curTgt != "" && ta.target != "" && curTgt != ta.target {
+			continue // same verb, different target — paging, not a run
 		}
+		prior = append(prior, ta.cmd)
 	}
-
-	for _, g := range sortedGroupSet(curGroups) {
-		curSub, curTgt := groupTarget(current, g)
-		var prior []string
-		for _, tn := range order {
-			t := info[tn]
-			if !t.groups[g] {
-				continue
-			}
-			if curRepo != "" && t.repo != "" && curRepo != t.repo {
-				continue // different repo — not collapsible
-			}
-			if sub, tgt := groupTarget(t.cmd, g); sub == curSub && curTgt != "" && tgt != "" && curTgt != tgt {
-				continue // same verb, different target — paging, not a run
-			}
-			prior = append(prior, t.cmd)
-		}
-		if len(prior) > 0 {
-			return &CollapseNudge{Group: g, GkCommand: gkForGroup[g], PriorTurns: len(prior), Recent: prior}
-		}
+	if len(prior) == 0 {
+		return nil
 	}
-	return nil
-}
-
-func sortedGroupSet(m map[string]bool) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return &CollapseNudge{Group: g, GkCommand: gkForGroup[g], PriorTurns: len(prior), Recent: prior}
 }
 
 // splitRuns breaks an ordered slice of distinct-turn hits into maximal runs:
-// adjacent hits stay together while the turn gap is within maxGap and the repo
-// scope is compatible.
-func splitRuns(hits []turnHit, maxGap int) [][]turnHit {
+// adjacent hits stay together while the turn gap is within maxGap, the repo
+// scope is compatible, and no barrier turn (ascending; a mutating turn, for
+// read-only groups) sits strictly between them.
+func splitRuns(hits []turnHit, maxGap int, barriers []int) [][]turnHit {
+	barrierBetween := func(a, b int) bool {
+		i := sort.SearchInts(barriers, a+1)
+		return i < len(barriers) && barriers[i] < b
+	}
 	var runs [][]turnHit
 	var cur []turnHit
 	for _, h := range hits {
@@ -331,7 +505,7 @@ func splitRuns(hits []turnHit, maxGap int) [][]turnHit {
 		// gk call cannot stand in for distinct targets.
 		pagingSplit := prev.subcmd != "" && prev.subcmd == h.subcmd &&
 			prev.target != "" && h.target != "" && prev.target != h.target
-		if gapOK && repoOK && !pagingSplit {
+		if gapOK && repoOK && !pagingSplit && !barrierBetween(prev.turn, h.turn) {
 			cur = append(cur, h)
 			continue
 		}

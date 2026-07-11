@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tidwall/gjson"
@@ -170,6 +171,61 @@ func TestAgentsHookRun_CollapseModeDeniesReprobe(t *testing.T) {
 	}
 	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.permissionDecisionReason").String(), "git-kit context") {
 		t.Errorf("deny reason should point to git-kit context: %s", out)
+	}
+}
+
+// TestAgentsHookRun_CollapseRecoversRaceyTranscript reproduces the live
+// failure this test was added for: the harness can invoke the hook for the
+// pending command before it has finished flushing the immediately preceding
+// turn to the transcript file. A naive single read sees no prior turn and
+// silently waves the reprobe through. The retry in hookTailAndNudge must
+// recover once the writer catches up within the race window.
+func TestAgentsHookRun_CollapseRecoversRaceyTranscript(t *testing.T) {
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(tp, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(hookRaceRetryDelay)
+		content := `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}` + "\n"
+		if err := os.WriteFile(tp, []byte(content), 0o644); err != nil {
+			t.Errorf("concurrent write: %v", err)
+		}
+	}()
+	t.Cleanup(func() { <-done })
+
+	reprobe := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git log --oneline -5"}}`, tp)
+	out := hookRunOutputMode(t, reprobe, hookModeCollapse)
+	if got := gjson.Get(out, "hookSpecificOutput.permissionDecision").String(); got != "deny" {
+		t.Fatalf("retry should recover the race and deny, got decision=%q out=%s", got, out)
+	}
+}
+
+// TestAgentsHookRun_NoRetryOnSettledTranscript guards the fast path: a
+// covered command with genuinely no prior same-group turn must not pay the
+// retry delay when the transcript is old (settled), only when it was touched
+// moments ago.
+func TestAgentsHookRun_NoRetryOnSettledTranscript(t *testing.T) {
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	content := `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}]}}` + "\n"
+	if err := os.WriteFile(tp, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(tp, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	lone := fmt.Sprintf(`{"tool_name":"Bash","transcript_path":%q,"tool_input":{"command":"git status --short"}}`, tp)
+	start := time.Now()
+	out := hookRunOutputMode(t, lone, hookModeCollapse)
+	if elapsed := time.Since(start); elapsed > hookRaceRetryDelay {
+		t.Errorf("settled transcript should skip retry entirely, took %v", elapsed)
+	}
+	if got := gjson.Get(out, "hookSpecificOutput.permissionDecision").String(); got != "defer" {
+		t.Fatalf("lone covered command should advise, got decision=%q out=%s", got, out)
 	}
 }
 

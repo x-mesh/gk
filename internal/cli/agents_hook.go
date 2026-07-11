@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tidwall/gjson"
@@ -129,8 +130,7 @@ func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	res := sessionaudit.Hint(command)
-	tail := hookTranscriptTail(data)
-	nudge := collapseNudgeFromTail(tail, command)
+	tail, nudge := hookTailAndNudge(data, command, res.Covered)
 	hintSeen := res.Covered && len(tail) > 0 && bytes.Contains(tail, []byte(hookHintMarker(res)))
 	decision, reason, addl := hookDecide(mode, res, nudge, hintSeen)
 	if decision == "" {
@@ -213,20 +213,68 @@ func hookNoteText(res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge
 // so it must stay cheap on a multi-megabyte session log.
 const hookTranscriptTailBytes = 256 * 1024
 
-// hookTranscriptTail reads the recent tail of the live session transcript
-// (Claude passes its path on stdin) exactly once per fire — both the collapse
-// nudge and the advisory dedupe share it. Fail-open: absent path or read error
-// → nil (no nudge, no dedupe).
-func hookTranscriptTail(stdin []byte) []byte {
+// hookRaceRetryWindow/hookRaceRetryDelay/hookRaceRetryAttempts absorb a narrow
+// race with the harness's own transcript writer: Claude Code invokes this
+// hook immediately before running the pending Bash call, but the immediately
+// preceding turn's JSONL append can still be in flight when this fire's first
+// tail read lands — a covered command then sees no prior turn and a real
+// reprobe silently passes as a lone command (observed live: two raw git
+// context probes fired back-to-back went unblocked; the same pair replayed
+// from the settled transcript denied correctly). Retrying is gated on the
+// transcript having been touched moments ago, so an old/settled transcript —
+// the overwhelming majority of fires, and every fire for an uncovered command
+// — never pays the delay.
+const (
+	hookRaceRetryWindow   = 200 * time.Millisecond
+	hookRaceRetryDelay    = 8 * time.Millisecond
+	hookRaceRetryAttempts = 3
+)
+
+// hookShouldRetryRace reports whether a transcript modified at modTime is
+// recent enough that a missing prior turn might be an in-flight write rather
+// than a genuine absence.
+func hookShouldRetryRace(modTime, now time.Time) bool {
+	return !modTime.IsZero() && now.Sub(modTime) <= hookRaceRetryWindow
+}
+
+// hookTailAndNudge reads the transcript tail (Claude passes its path on
+// stdin) and derives the collapse nudge for command — both the collapse nudge
+// and the advisory dedupe share the returned tail. When the pending command
+// is covered and the first read finds no nudge, it retries briefly IF the
+// transcript was modified within hookRaceRetryWindow (see above); otherwise
+// it returns immediately. Fail-open throughout: absent path or read error →
+// (nil, nil).
+func hookTailAndNudge(stdin []byte, command string, covered bool) ([]byte, *sessionaudit.CollapseNudge) {
 	tp := strings.TrimSpace(gjson.GetBytes(stdin, "transcript_path").String())
 	if tp == "" {
-		return nil
+		return nil, nil
 	}
+	tail, nudge := tailAndNudge(tp, command)
+	if !covered || nudge != nil {
+		return tail, nudge
+	}
+	for attempt := 0; attempt < hookRaceRetryAttempts; attempt++ {
+		fi, err := os.Stat(tp)
+		if err != nil || !hookShouldRetryRace(fi.ModTime(), time.Now()) {
+			break
+		}
+		time.Sleep(hookRaceRetryDelay)
+		tail, nudge = tailAndNudge(tp, command)
+		if nudge != nil {
+			break
+		}
+	}
+	return tail, nudge
+}
+
+// tailAndNudge reads the transcript tail once and derives the collapse nudge
+// from it. Fail-open: a read error yields (nil, nil).
+func tailAndNudge(tp, command string) ([]byte, *sessionaudit.CollapseNudge) {
 	tail, err := tailFile(tp, hookTranscriptTailBytes)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return tail
+	return tail, collapseNudgeFromTail(tail, command)
 }
 
 // collapseNudgeFromTail reports whether the pending command continues a recent

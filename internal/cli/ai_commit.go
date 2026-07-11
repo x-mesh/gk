@@ -772,10 +772,15 @@ func runAICommitAbort(ctx context.Context, cmd *cobra.Command, runner git.Runner
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no backup ref found — nothing to abort")
 		return nil
 	}
-	if err := aicommit.AbortRestore(ctx, runner, latest); err != nil {
+	safety, err := aicommit.AbortRestore(ctx, runner, latest)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("commit: restored HEAD", "to %s", latest))
+	if safety != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf(
+			"hint: the state before this abort is saved at %s (git reset --hard %s to bring it back)", safety, safety)))
+	}
 	return nil
 }
 

@@ -112,17 +112,29 @@ func TestIntegrationAbortRestoresHEADFromBackupRef(t *testing.T) {
 		t.Fatal("backup ref should be non-empty for normal HEAD")
 	}
 
-	// Reset the runner and invoke AbortRestore — it should execute
-	// `git reset --hard <ref>`.
-	fake2 := &git.FakeRunner{}
-	if err := AbortRestore(context.Background(), fake2, ref); err != nil {
+	// Reset the runner and invoke AbortRestore — it should write a safety-net
+	// ref at current HEAD, then execute `git reset --hard <ref>`.
+	fake2 := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "babecafe\n"},
+		},
+	}
+	safety, err := AbortRestore(context.Background(), fake2, ref)
+	if err != nil {
 		t.Fatalf("AbortRestore: %v", err)
 	}
-	if len(fake2.Calls) != 1 {
-		t.Fatalf("calls: %+v", fake2.Calls)
+	if safety == "" {
+		t.Fatal("expected a non-empty safety-net ref")
 	}
-	if fake2.Calls[0].Args[0] != "reset" || fake2.Calls[0].Args[1] != "--hard" {
-		t.Errorf("abort did not reset --hard: %+v", fake2.Calls[0].Args)
+	var sawReset bool
+	for _, c := range fake2.Calls {
+		if c.Args[0] == "reset" && c.Args[1] == "--hard" {
+			sawReset = true
+		}
+	}
+	if !sawReset {
+		t.Errorf("abort did not reset --hard: %+v", fake2.Calls)
 	}
 }
 

@@ -242,19 +242,40 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 	return result, nil
 }
 
-// AbortRestore resets HEAD back to the given backup ref with a hard
-// reset. Intended for `gk commit --abort` after partial failure.
-// Empty backupRef is a no-op returning nil — callers should branch on
+// AbortRestore resets HEAD back to the given backup ref with a hard reset.
+// Intended for `gk commit --abort` after partial failure — but the run may
+// just as well have fully succeeded (the commit(s) landed cleanly) and the
+// user aborts anyway to redo the message or grouping. `--hard` discards the
+// working tree, not just the commit, and once that happens the just-created
+// commit's content lives nowhere else — a plain reset --hard here would
+// silently destroy real work with no recourse beyond an un-GC'd dangling
+// object. So before resetting, AbortRestore best-effort writes a second
+// safety-net ref at the CURRENT HEAD (refs/gk/ai-commit-abort-backup/<branch>/<unix>,
+// pruned the same conservative way as the run-start backup) and returns its
+// name so the caller can tell the user where their aborted state went; a
+// failure to write it never blocks the abort itself.
+//
+// Empty backupRef is a no-op returning ("", nil) — callers should branch on
 // that case to print a friendly "nothing to abort" message.
-func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) error {
+func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) (safetyRef string, err error) {
 	if backupRef == "" {
-		return nil
+		return "", nil
 	}
-	if _, stderr, err := runner.Run(ctx, "reset", "--hard", backupRef); err != nil {
-		return fmt.Errorf("aicommit: git reset --hard %s: %w (stderr=%s)",
-			backupRef, err, string(stderr))
+	branch, _ := currentBranch(ctx, runner)
+	if head, _, herr := runner.Run(ctx, "rev-parse", "HEAD"); herr == nil {
+		if sha := strings.TrimSpace(string(head)); sha != "" {
+			ref := gitsafe.BackupRefName("ai-commit-abort", branch, time.Now())
+			if _, _, uerr := runner.Run(ctx, "update-ref", ref, sha); uerr == nil {
+				safetyRef = ref
+			}
+		}
 	}
-	return nil
+	if _, stderr, rerr := runner.Run(ctx, "reset", "--hard", backupRef); rerr != nil {
+		return safetyRef, fmt.Errorf("aicommit: git reset --hard %s: %w (stderr=%s)",
+			backupRef, rerr, string(stderr))
+	}
+	_ = gitsafe.PruneKindBackups(ctx, runner, "ai-commit-abort", branch, 30*24*time.Hour, 10)
+	return safetyRef, nil
 }
 
 // currentBranch returns the short branch name or empty on detached HEAD.

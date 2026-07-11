@@ -630,8 +630,12 @@ func TestStagedRenamePairsParsesNZFormat(t *testing.T) {
 
 func TestAbortRestoreEmptyBackupIsNoop(t *testing.T) {
 	fake := &git.FakeRunner{}
-	if err := AbortRestore(context.Background(), fake, ""); err != nil {
+	safety, err := AbortRestore(context.Background(), fake, "")
+	if err != nil {
 		t.Errorf("empty backup should be no-op, got %v", err)
+	}
+	if safety != "" {
+		t.Errorf("empty backup should return no safety ref, got %q", safety)
 	}
 	if len(fake.Calls) != 0 {
 		t.Errorf("expected no git calls, got %+v", fake.Calls)
@@ -639,19 +643,51 @@ func TestAbortRestoreEmptyBackupIsNoop(t *testing.T) {
 }
 
 func TestAbortRestoreRunsHardReset(t *testing.T) {
-	fake := &git.FakeRunner{}
-	if err := AbortRestore(context.Background(), fake, "refs/gk/ai-commit-backup/main/123"); err != nil {
+	fake := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
+			"rev-parse HEAD":                    {Stdout: "deadbeef\n"},
+		},
+	}
+	safety, err := AbortRestore(context.Background(), fake, "refs/gk/ai-commit-backup/main/123")
+	if err != nil {
 		t.Errorf("AbortRestore: %v", err)
 	}
-	if len(fake.Calls) != 1 {
-		t.Fatalf("want 1 git call, got %+v", fake.Calls)
+	if safety == "" {
+		t.Error("expected a safety-net ref to be written before the hard reset")
 	}
-	args := fake.Calls[0].Args
+	var resetCall *git.FakeCall
+	for i := range fake.Calls {
+		if fake.Calls[i].Args[0] == "reset" {
+			resetCall = &fake.Calls[i]
+		}
+	}
+	if resetCall == nil {
+		t.Fatalf("no reset call among: %+v", fake.Calls)
+	}
+	args := resetCall.Args
 	want := []string{"reset", "--hard", "refs/gk/ai-commit-backup/main/123"}
 	for i, w := range want {
 		if args[i] != w {
 			t.Errorf("args[%d]: want %q, got %q", i, w, args[i])
 		}
+	}
+	// The safety ref must point at the PRE-reset HEAD (deadbeef), not the
+	// backup target — otherwise it would be redundant with backupRef itself.
+	var updateRefCall *git.FakeCall
+	for i := range fake.Calls {
+		if fake.Calls[i].Args[0] == "update-ref" {
+			updateRefCall = &fake.Calls[i]
+		}
+	}
+	if updateRefCall == nil {
+		t.Fatalf("no update-ref call among: %+v", fake.Calls)
+	}
+	if updateRefCall.Args[1] != safety {
+		t.Errorf("update-ref target = %q, want returned safety ref %q", updateRefCall.Args[1], safety)
+	}
+	if updateRefCall.Args[2] != "deadbeef" {
+		t.Errorf("update-ref sha = %q, want pre-reset HEAD %q", updateRefCall.Args[2], "deadbeef")
 	}
 }
 

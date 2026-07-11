@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-07-11
+
 ### Fixed
 
 - **`gk commit --abort`가 성공적으로 만든 커밋까지 조용히 지우던 문제.** `--abort`는 실행 시작 시점 백업 ref로 `git reset --hard`만 돌렸다 — partial failure 정리 용도로는 맞는 동작이지만, 커밋이 이미 깨끗하게 성공한 뒤(예: 메시지를 다시 쓰려고) abort해도 똑같이 하드 리셋이 돌아서 방금 만든 커밋의 내용이 워킹트리 어디에도 남지 않고 사라졌다 — GC 전 dangling object로만 운 좋게 복구 가능한 상태였다. 이제 `--abort`는 하드 리셋 직전에 현재 HEAD를 가리키는 안전망 ref(`refs/gk/ai-commit-abort-backup/<branch>/<unix>`, 기존 백업과 같은 방식으로 정리됨)를 하나 더 남기고, 그 경로와 복구 명령을 결과에 안내한다. 리셋 자체의 동작(결정적인 하드 리셋)은 그대로다 — 조용한 데이터 손실 가능성만 없앴다.

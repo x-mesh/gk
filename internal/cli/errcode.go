@@ -52,6 +52,20 @@ func errorCodeFromError(err error) string {
 		return "branch-not-found"
 	case strings.Contains(msg, "diverged"):
 		return "diverged"
+	// gk apply's ladder-exhaustion family: checked ahead of the generic
+	// "conflict" case below since a 3-way-conflict cause still gets folded
+	// into the "(tried ...)" message and should read as apply-specific, not
+	// the generic conflict code another command's error would carry.
+	case strings.Contains(msg, "and rollback also failed"):
+		return "apply-rollback-failed"
+	case strings.Contains(msg, "does not reverse-apply"):
+		return "patch-not-applied"
+	case strings.Contains(msg, "appears to be already applied"):
+		return "patch-already-applied"
+	case strings.HasPrefix(msg, "apply:") && strings.Contains(msg, "(tried "):
+		// HasPrefix disambiguates from the AI-provider selection error, which
+		// also ends in "(tried <providers>)".
+		return "patch-does-not-apply"
 	case strings.Contains(msg, "conflict"):
 		return "conflict"
 	case strings.Contains(msg, "uncommitted changes") ||

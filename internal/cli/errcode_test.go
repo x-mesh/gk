@@ -36,6 +36,12 @@ func TestErrorCodeFromError(t *testing.T) {
 		{"preflight", errors.New(`ship: preflight failed at step "test"`), "preflight-failed"},
 		{"json needs dry-run", errors.New("ship: --json emits the release plan and requires --dry-run"), "json-needs-dry-run"},
 		{"config invalid", errors.New(`gk config set: 알 수 없는 키 "pull.xyz"`), "config-invalid"},
+		{"apply rollback failed", errors.New("apply: x.patch failed (context mismatch) and rollback also failed (write-tree: exit 128) — the repository may hold partially applied state"), "apply-rollback-failed"},
+		{"apply reverse check failed", errors.New("apply: x.patch does not reverse-apply — the patch does not appear to be applied"), "patch-not-applied"},
+		{"apply already applied", errors.New("apply: x.patch appears to be already applied"), "patch-already-applied"},
+		{"apply ladder exhausted", errors.New("apply: x.patch: context mismatch (tried plain, recount, recount+unidiff-zero, 3way)"), "patch-does-not-apply"},
+		{"apply ladder exhausted, conflict cause", errors.New("apply: x.patch: 3-way merge would leave conflicts (tried plain, recount, recount+unidiff-zero, 3way)"), "patch-does-not-apply"},
+		{"ai provider tried-list does not collide with apply codes", errors.New("no AI provider available (tried gemini, qwen, kiro): all unauthenticated"), "unknown"},
 		{"unknown", errors.New("something completely else"), "unknown"},
 	}
 	for _, tc := range cases {

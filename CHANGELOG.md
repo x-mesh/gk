@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk commit --abort`가 성공적으로 만든 커밋까지 조용히 지우던 문제.** `--abort`는 실행 시작 시점 백업 ref로 `git reset --hard`만 돌렸다 — partial failure 정리 용도로는 맞는 동작이지만, 커밋이 이미 깨끗하게 성공한 뒤(예: 메시지를 다시 쓰려고) abort해도 똑같이 하드 리셋이 돌아서 방금 만든 커밋의 내용이 워킹트리 어디에도 남지 않고 사라졌다 — GC 전 dangling object로만 운 좋게 복구 가능한 상태였다. 이제 `--abort`는 하드 리셋 직전에 현재 HEAD를 가리키는 안전망 ref(`refs/gk/ai-commit-abort-backup/<branch>/<unix>`, 기존 백업과 같은 방식으로 정리됨)를 하나 더 남기고, 그 경로와 복구 명령을 결과에 안내한다. 리셋 자체의 동작(결정적인 하드 리셋)은 그대로다 — 조용한 데이터 손실 가능성만 없앴다.
+- **PreToolUse collapse 훅이 트랜스크립트 flush 경쟁 때문에 재프로브를 놓치던 문제.** 같은 그룹의 raw git 명령이 밀착해서 연달아 발화하면, 훅이 직전 턴을 읽으려 할 때 하네스가 아직 그 턴을 트랜스크립트 JSONL에 다 쓰지 못한 상태일 수 있었다 — 훅의 단일 읽기가 "직전 턴 없음"으로 잘못 판단해 진짜 재프로브를 그냥 통과시켰다. 이제 커버되는 명령이 첫 읽기에서 넛지를 못 찾았고 트랜스크립트가 200ms 이내에 막 수정됐을 때만(레이스가 진행 중일 신호) 최대 3번, 8ms 간격으로 재시도한다. 오래된 트랜스크립트나 커버 안 되는 명령은 예전처럼 한 번만 읽어 지연이 전혀 없다.
+
+### Added
+
+- **`gk apply` 실패가 `error.code`에서 더는 뭉뚱그려 "unknown"으로 잡히지 않는다.** 사다리가 전부 실패(`patch-does-not-apply`), reverse-check로 이미 적용됨이 확인(`patch-already-applied`), `--reverse`가 되돌릴 게 없음(`patch-not-applied`), 롤백 자체도 실패해 실제로 부분 적용 상태가 남음(`apply-rollback-failed`) — 네 가지를 구분해 에이전트가 재시도할지 no-op으로 넘길지 에스컬레이션할지 분기할 수 있게 했다.
+
 ## [0.116.0] - 2026-07-11
 
 ### Added

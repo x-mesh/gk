@@ -3653,6 +3653,8 @@ Every live run writes `refs/gk/ai-commit-backup/<branch>/<unix>` **before** the 
 - **To see what the run produced, diff the ref against the new tip:** `git diff <ref>..HEAD`. Diffing *backwards from* the ref (`git diff <ref>~2..<ref>`) instead shows pre-snapshot history — not the new commits — which is why it looks empty or wrong. (`gk timemachine show <ref>` shows the **rollback-target commit** itself — the pre-commit HEAD, i.e. its own diff against its parent — *not* the commits the run added, so it is not a substitute for `git diff <ref>..HEAD`.)
 - **Recovery** is `gk commit --abort` (restores HEAD to the latest such ref) or, by hand, `git reset --hard <ref>`.
 
+`--abort` itself is a hard reset — it discards the working tree, not just the commit. Since the run may have fully succeeded (the abort is just to redo the message or grouping), `--abort` first writes a second safety-net ref at the **pre-abort HEAD**, `refs/gk/ai-commit-abort-backup/<branch>/<unix>` — pruned the same way as the run-start backup — and prints its path plus the `git reset --hard` command to bring it back, so the just-aborted commit is always recoverable, not just when luck leaves it un-garbage-collected.
+
 Retention is automatic and best-effort: on the next commit a backup ref is pruned only once it is **both** older than 30 days **and** beyond the 10 newest (the same conservative policy gk's other backup families use). Recent snapshots within 30 days are always kept, so a burst of commits can hold one ref per commit until they age out — they don't accumulate for the life of the clone, but they aren't hard-capped at 10 either. List them with `gk timemachine list`.
 
 #### Examples

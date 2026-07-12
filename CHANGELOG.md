@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gk precheck`가 "어느 파일"이 아니라 "어느 함수"가 충돌할지 예보한다.** `merge-tree --write-tree`의 결과 트리에는 충돌 blob에 마커가 이미 박혀 있어서, precheck이 object db에서 그 내용을 직접 읽어(`git show <tree>:<path>`, 파일 20개·blob 256KB 캡) 각 마커의 감싸는 정의를 이름 붙인다 — `✗ app.py · in process`. 병합 합성도 외부 도구도 없다. JSON은 기존 `conflicts[]` 불변에 `details: [{path, symbols[]}]` append-only 추가, `gk context --include=precheck`에도 동일하게 실린다. git 2.38/39 폴백(경로 열거 불가)에선 조용히 생략. 라이브 피드·충돌 심볼과 같은 정의 스캐너를 공유하므로 `gk drivers install`로 diff driver를 지정하면 이 예보의 정확도도 같이 올라간다.
+- **`gk bench apply-sanity`(hidden) — apply 사다리의 zero-regression을 데이터로.** 히스토리의 비머지 커밋 각각을 제 부모에 재적용하는 체크아웃 없는 리플레이(temp `GIT_INDEX_FILE`만 사용, 워킹트리·인덱스·HEAD 무접촉): 사다리가 성공 보고한 결과 트리를 사람이 만든 원 커밋 트리와 OID 비교해, 불일치(=regression)를 잡아낸다. 케이스는 `~/.gk/bench/*.jsonl`, 요약은 표준 envelope. git-kit 자체 200커밋 실측: **200/200 pass, regressions 0**, 전부 plain rung, 9.9초. 도그푸딩 계측기라 사용자 문서는 없다.
+
 - **`gk drivers` — git 내장 언어 diff driver를 repo-local로 배선.** `install`이 `.git/info/attributes`(버전관리 밖, 워킹트리 무오염, 링크된 worktree 전체 공유)에 확장자→내장 driver 매핑 블록을 쓴다 — weave의 `setup --local` 패턴 차용. git hunk header의 함수 컨텍스트를 읽는 모든 곳(라이브 피드 심볼, `diff --digest`, 충돌 심볼)이 즉시 정확해진다: CSS hunk가 셀렉터를(`~ cost.css · .credit-expiry`), 들여쓰인 Python 메서드가 제 이름을 낸다. 내장 driver만 참조(config 무기록), 마커 펜스 멱등, `uninstall`은 블록만 제거(gk 블록만 있던 파일은 삭제해 원상복구).
 - **충돌에 entity 컨텍스트 — 어느 함수가 싸우는지.** `gk context --include=conflict`의 파일별 결과에 `symbols`가 붙는다: 각 충돌 마커 위쪽의 가장 가까운 정의를 확장자별 패턴으로 찾아 이름을 단다(weave의 충돌 마커 컨텍스트에서 착안, 외부 도구 없음). 텍스트 렌더도 `app.py both modified, 1 hunk(s) · in process`로 표시 — 에이전트가 "어느 파일"이 아니라 "어느 함수" 단위로 충돌에 접근한다.
 

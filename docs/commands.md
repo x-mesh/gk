@@ -332,10 +332,12 @@ gk refresh --no-fetch      # use cached remote refs (offline)
 
 Conflict forecast before integrating: `git merge-tree` simulation between HEAD and the target — working tree, index, and refs untouched. Without a target it checks the upstream (`@{u}`), falling back to the remote base branch — "will my next pull conflict?" in one read-only call, replacing the try→abort→retry loop. The simulation is a merge; a rebase replays commits one by one so its conflicts can differ in detail, but the file set is the practical forecast either way.
 
+The forecast names **which function** would conflict, not just which file (git ≥ 2.40): the merge-tree result tree already carries conflict markers inside conflicted blobs, so precheck reads them straight from the object db and attributes each marker to its enclosing definition — `✗ app.py · in process`. JSON gains an append-only `details: [{path, symbols[]}]` alongside the unchanged `conflicts[]`; capped at 20 files / 256KB per blob, and any unreadable file just omits its symbols. `gk context --include=precheck` carries the same details.
+
 ```
 gk precheck                  # forecast the next pull (@{u}, else remote base)
 gk forecast origin/main      # explicit target
-gk precheck develop --json   # {ours, target, base, clean, conflicts[]}
+gk precheck develop --json   # {ours, target, base, clean, conflicts[], details[]}
 ```
 
 Exit codes: 0 clean · 2 invalid input · 3 conflicts predicted. With `--json`/`GK_AGENT=1` the result follows the agent envelope; exit 3 still signals "conflicts" (a forecast, not an error).

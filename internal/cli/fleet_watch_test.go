@@ -21,7 +21,8 @@ func TestFleetEntryActive(t *testing.T) {
 		want bool
 	}{
 		{"current checkout", fleetEntryJSON{Path: "/w", Current: true}, true},
-		{"dirty", fleetEntryJSON{Path: "/w", Dirty: &contextDirtyJSON{Untracked: 1}}, true},
+		{"dirty and recent", fleetEntryJSON{Path: "/w", Dirty: &contextDirtyJSON{Untracked: 1}, lastActive: now.Add(-time.Minute)}, true},
+		{"dirty but abandoned", fleetEntryJSON{Path: "/w", Dirty: &contextDirtyJSON{Untracked: 1}, lastActive: now.Add(-60 * 24 * time.Hour)}, false},
 		{"paused op", fleetEntryJSON{Path: "/w", Operation: "rebase 2/5"}, true},
 		{"recent activity", fleetEntryJSON{Path: "/w", lastActive: now.Add(-30 * time.Minute)}, true},
 		{"stale clean", fleetEntryJSON{Path: "/w", lastActive: now.Add(-2 * time.Hour)}, false},

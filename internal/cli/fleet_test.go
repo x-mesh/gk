@@ -422,15 +422,15 @@ func TestFleetViewFilterSort(t *testing.T) {
 		{Path: "/err", Branch: "", Status: "error"},
 	}
 
-	busy := fleetFilterEntries(entries, fleetFilterBusy)
+	busy := fleetFilterEntries(entries, fleetFilterBusy, time.Time{})
 	if len(busy) != 3 {
 		t.Errorf("busy filter = %d entries, want 3 (dirty/paused/error): %+v", len(busy), busy)
 	}
-	stuck := fleetFilterEntries(entries, fleetFilterStuck)
+	stuck := fleetFilterEntries(entries, fleetFilterStuck, time.Time{})
 	if len(stuck) != 2 {
 		t.Errorf("stuck filter = %d entries, want 2 (paused/error): %+v", len(stuck), stuck)
 	}
-	if got := fleetFilterEntries(entries, fleetFilterAll); len(got) != 4 {
+	if got := fleetFilterEntries(entries, fleetFilterAll, time.Time{}); len(got) != 4 {
 		t.Errorf("all filter must keep everything")
 	}
 

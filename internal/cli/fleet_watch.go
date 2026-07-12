@@ -18,9 +18,9 @@ import (
 // get faster AND idle cost drops. Unlike status --watch there are N worktrees
 // sharing one process-wide directory budget (fsWatchMaxDirs), and the split
 // is by ACTIVITY, not headcount: watchers exist to make the feed instant
-// where changes are happening, so active worktrees (current checkout, dirty,
-// paused op, or moved within the last hour) divide the whole budget among
-// themselves and idle ones get none. An idle worktree costs nothing to skip —
+// where changes are happening, so active worktrees (current checkout, paused
+// op, or moved within the last hour — see fleetEntryActive) divide the whole
+// budget among themselves and idle ones get none. An idle worktree costs nothing to skip —
 // its row refreshes on the heartbeat, and the first change the heartbeat
 // detects promotes it to active, so it gains a watcher one poll later (a
 // one-time ≤heartbeat delay on first wake). A worktree too big even for its
@@ -71,16 +71,18 @@ const fleetActiveWindow = time.Hour
 
 // fleetEntryActive reports whether a worktree plausibly has an agent or a
 // human in it right now — the signals the dashboard already computes: the
-// current checkout (someone could start typing any second), uncommitted work,
-// a paused operation waiting on a resolution, or activity within the window.
+// current checkout (someone could start typing any second), a paused
+// operation waiting on a resolution, or activity within the window. Bare
+// dirtiness deliberately does NOT count: lastActive already advances to the
+// newest dirty-file mtime, so "dirty and recent" is covered by the recency
+// check — while a tree left dirty for two months is abandoned leftovers,
+// not work in flight, and should neither hold a watcher nor pass the
+// active view filter.
 func fleetEntryActive(e fleetEntryJSON, now time.Time) bool {
 	if e.Status == "error" || e.Path == "" {
 		return false
 	}
 	if e.Current || e.Operation != "" {
-		return true
-	}
-	if d := e.Dirty; d != nil && d.Staged+d.Unstaged+d.Untracked+d.Conflicts > 0 {
 		return true
 	}
 	return !e.lastActive.IsZero() && now.Sub(e.lastActive) <= fleetActiveWindow

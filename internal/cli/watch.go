@@ -19,8 +19,14 @@ func init() {
     'gk status --watch' change feed;
   - OUTSIDE any repo — say the parent directory holding all your projects —
     it scans one level down and opens the dashboard over every repo it
-    finds, grouped per repo (clean repos start folded; space unfolds).
-    'cd ~/work && gk watch' is the whole invocation.
+    finds, grouped per repo. 'cd ~/work && gk watch' is the whole invocation.
+    The multi-repo view starts on the ACTIVE filter — only worktrees someone
+    is plausibly in right now (current checkout, dirty, paused op, or moved
+    within the last hour; the header reads "5/21 repos" so hiding is never
+    silent) — because a wide scan mostly finds projects nobody has touched
+    in weeks. --filter all (or one press of f) shows everything; clean repos
+    start folded either way, and the activity age column renders green while
+    a worktree is active.
 
 Built for supervising parallel work (e.g. several AI agents each in their
 own worktree or repo) — answers "who is dirty / stuck / stale / ready to

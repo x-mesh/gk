@@ -2560,7 +2560,7 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ## gk watch
 
-Live supervision at whatever altitude fits where you run it (alias: `gk w`): inside a repo with several worktrees — or with the multi-repo flags — it opens the **dashboard**; with exactly one worktree it goes straight into the [`gk status --watch`](#gk-status) change feed; **outside any repo** — say the parent directory holding all your projects — it scans one level down and opens the dashboard over every repo it finds (`cd ~/work && gk watch` is the whole invocation; clean repos start folded, `space` unfolds). `gk fleet` is the **deprecated former name**, kept one release as a hidden alias (a stderr notice points here; the only behavioral difference is that `fleet` never auto-routes to the single-worktree feed). Config keys stay under `fleet.*`.
+Live supervision at whatever altitude fits where you run it (alias: `gk w`): inside a repo with several worktrees — or with the multi-repo flags — it opens the **dashboard**; with exactly one worktree it goes straight into the [`gk status --watch`](#gk-status) change feed; **outside any repo** — say the parent directory holding all your projects — it scans one level down and opens the dashboard over every repo it finds (`cd ~/work && gk watch` is the whole invocation; the view starts on the **active** filter — worktrees someone is plausibly in right now, header reads `5/21 repos` when hiding — with `--filter all` or one press of `f` showing everything; clean repos start folded, `space` unfolds). `gk fleet` is the **deprecated former name**, kept one release as a hidden alias (a stderr notice points here; the only behavioral difference is that `fleet` never auto-routes to the single-worktree feed). Config keys stay under `fleet.*`.
 
 The dashboard shows every worktree at once — branch, ahead/behind, dirty/conflict state, the last-changed file, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + a consolidated per-worktree change scan).
 
@@ -2602,6 +2602,7 @@ gk watch [--interval <seconds>] [--feed-stats] [--events]
 | `--scan <dir,…>` | — | Directory roots searched for git repos (enables multi-repo) |
 | `--all` | `false` | Watch sibling repos of the current repo; with no `--scan`/`--repos` it uses `fleet.repos`/`fleet.scan`, else scans the current repo's parent directory |
 | `--depth <n>` | `2` | Max scan recursion depth for `--scan` |
+| `--filter <mode>` | `active` (multi) / `all` (single) | Initial view filter: `all` \| `active` (current checkout · dirty · paused op · moved <1h) \| `busy` \| `stuck`. Also `fleet.filter` config; `f` cycles at runtime |
 
 ### Config (`fleet.*`)
 
@@ -2621,7 +2622,7 @@ fleet:
 
 ### Keys (TUI)
 
-`j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` folds/unfolds a repo group (clean repos start folded), and `enter` cycles the same cursor panel for worktree rows.
+`j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→active→busy→stuck; multi-repo starts on active) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` folds/unfolds a repo group (clean repos start folded), and `enter` cycles the same cursor panel for worktree rows.
 
 With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, …}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
 

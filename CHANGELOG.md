@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gk watch` 멀티-repo 뷰가 기본으로 "지금 작업 중인 것만" 보여준다.** 넓은 스캔은 대부분 몇 주째 안 만진 프로젝트를 찾아내는데, 대시보드는 작업 중인 것을 보라고 있는 물건이다 — 새 **`active` 필터**(현재 체크아웃 · paused op · 1시간 내 활동; 2개월 방치된 dirty는 활성이 아니다 — lastActive가 dirty 파일 mtime을 이미 반영하므로 "dirty이면서 최근"만 통과)가 멀티-repo의 시작 필터가 된다. 숨김은 절대 조용하지 않다: 헤더가 `5/21 repos`로 읽히고, 전부 숨으면 "press f to widen" 안내가 뜬다. `f` 순환에 active가 편입(all→active→busy→stuck)됐고 `--filter <mode>`/`fleet.filter`로 시작값을 고정할 수 있다(오타는 모든 경로에서 즉시 에러). 단일 repo는 종전대로 all 시작. **활동 시각화**도 분리했다: 상태 dot의 초록은 "ahead"라는 뜻이지 활동이 아니었어서, 활동은 age 열이 활성 시간창 안에 있을 때 초록으로 표시한다 — "지금 움직이는 워크트리"가 색으로 보인다. 같은 판정을 쓰는 워처 예산도 방치-dirty를 활성으로 치던 것을 바로잡았다.
+
+### Added
+
 - **`gk watch`가 프로젝트 부모 디렉토리에서 zero-flag로 동작한다.** git repo가 아닌 디렉토리(예: 모든 프로젝트를 담은 `~/work`)에서 맨 `gk watch`를 치면 한 단계 아래를 자동 스캔해 발견한 모든 repo의 대시보드를 연다 — `--scan . --depth 1`과 동일하되 타이핑이 없다(플래그·config는 종전대로 우선). 실측: 21 repo·32 워크트리 gather 0.56초. 넓은 스캔의 화면 밀도를 위해 **clean repo는 시작 시 접힌 상태**(`space`로 펼침 — 시작 시에만 적용, 세션 중 재접힘 없음)이고, 멀티 모드 폴링 폴백 기본이 5초로 완화됐다(fsnotify 활성 시엔 종전처럼 12s heartbeat라 무관). 멀티 모드에도 **detail/피드 패널**이 생겼다: `enter`가 단일 모드와 동일하게 커서 패널을 순환하고(fold는 `space` 전담), 워크트리 행에서 그 워크트리의 필드/라이브 피드를 옆에 띄운다.
 
 ### Fixed

@@ -223,11 +223,17 @@ func applyFeedDiff(prevSigs map[string]map[string]fileSig, entries []fleetEntryJ
 
 // --- view filtering & sorting ---------------------------------------------------
 
-// Filter cycle ('f'): everything → worktrees with work → worktrees needing a
-// human. Sort cycle ('s'): gather order (current-first/branch) → most recently
-// active → most urgent status.
+// Filter cycle ('f'): everything → worktrees someone is plausibly in right
+// now → worktrees with uncommitted work → worktrees needing a human. Sort
+// cycle ('s'): gather order (current-first/branch) → most recently active →
+// most urgent status.
+//
+// `active` is the multi-repo default: a wide scan mostly finds projects
+// nobody has touched in weeks, and the dashboard exists for the ones being
+// worked on — everything else is one `f` (or --filter all) away.
 const (
 	fleetFilterAll = iota
+	fleetFilterActive
 	fleetFilterBusy
 	fleetFilterStuck
 	fleetFilterModes
@@ -242,6 +248,8 @@ const (
 
 func fleetFilterName(f int) string {
 	switch f {
+	case fleetFilterActive:
+		return "active"
 	case fleetFilterBusy:
 		return "busy"
 	case fleetFilterStuck:
@@ -249,6 +257,21 @@ func fleetFilterName(f int) string {
 	default:
 		return "all"
 	}
+}
+
+// fleetFilterByName is the flag/config → mode mapping (ok=false on unknown).
+func fleetFilterByName(name string) (int, bool) {
+	switch name {
+	case "all":
+		return fleetFilterAll, true
+	case "active":
+		return fleetFilterActive, true
+	case "busy":
+		return fleetFilterBusy, true
+	case "stuck":
+		return fleetFilterStuck, true
+	}
+	return 0, false
 }
 
 func fleetSortName(s int) string {
@@ -262,16 +285,22 @@ func fleetSortName(s int) string {
 	}
 }
 
-// fleetFilterEntries keeps the entries matching the filter mode. busy = has
-// uncommitted work or needs attention; stuck = blocked on a human (paused op,
-// conflicts, unreachable repo).
-func fleetFilterEntries(entries []fleetEntryJSON, mode int) []fleetEntryJSON {
+// fleetFilterEntries keeps the entries matching the filter mode. active =
+// someone is plausibly in it right now (the watcher-budget predicate: current
+// checkout, dirty, paused op, or moved within the last hour — errors kept so
+// a broken repo can't hide); busy = has uncommitted work or needs attention;
+// stuck = blocked on a human (paused op, conflicts, unreachable repo).
+func fleetFilterEntries(entries []fleetEntryJSON, mode int, now time.Time) []fleetEntryJSON {
 	if mode == fleetFilterAll {
 		return entries
 	}
 	var out []fleetEntryJSON
 	for _, e := range entries {
 		switch mode {
+		case fleetFilterActive:
+			if fleetEntryActive(e, now) || e.Status == "error" {
+				out = append(out, e)
+			}
 		case fleetFilterBusy:
 			switch e.Status {
 			case "dirty", "conflict", "paused", "error":

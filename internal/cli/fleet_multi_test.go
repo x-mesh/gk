@@ -159,7 +159,7 @@ func TestFleetGroupedDetailPanel(t *testing.T) {
 	rows := buildFleetRows(entries, nil)
 
 	// cursor on alpha's worktree row (index 1: header, worktree, header, ...)
-	out := renderFleetGrouped(rows, 1, now, 110, fleetDetailFeed, feed)
+	out := renderFleetGrouped(rows, 1, now, 110, fleetDetailFeed, feed, 2, 2)
 	for _, want := range []string{"alpha", "develop", "validateToken", "+7"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grouped feed panel missing %q in:\n%s", want, out)
@@ -167,7 +167,7 @@ func TestFleetGroupedDetailPanel(t *testing.T) {
 	}
 
 	// cursor on a header row → no panel, no panic.
-	if out := renderFleetGrouped(rows, 0, now, 110, fleetDetailFeed, feed); strings.Contains(out, "validateToken") {
+	if out := renderFleetGrouped(rows, 0, now, 110, fleetDetailFeed, feed, 2, 2); strings.Contains(out, "validateToken") {
 		t.Errorf("header row must not render a worktree panel:\n%s", out)
 	}
 
@@ -180,5 +180,39 @@ func TestFleetGroupedDetailPanel(t *testing.T) {
 	next, _ = m.Update(keyMsg(" "))
 	if nm := next.(fleetModel); !nm.collapsed["/r/a"] {
 		t.Error("space should fold the cursor repo")
+	}
+}
+
+// TestFleetActiveFilterAndHeader: the active filter keeps only worktrees
+// someone is plausibly in (plus error rows so a broken repo can't hide), the
+// grouped header reads "n/m" when hiding, and an all-hidden view says how to
+// widen instead of pretending the fleet is empty.
+func TestFleetActiveFilterAndHeader(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 4, 5, 0, time.UTC)
+	entries := []fleetEntryJSON{
+		{Path: "/r/a/wt", RepoRoot: "/r/a", Repo: "alpha", Branch: "dev", Status: "dirty",
+			Dirty: &contextDirtyJSON{Unstaged: 1}, lastActive: now.Add(-2 * time.Minute)},
+		{Path: "/r/b/wt", RepoRoot: "/r/b", Repo: "beta", Branch: "main", Status: "clean",
+			lastActive: now.Add(-40 * 24 * time.Hour)},
+		{Path: "/r/c", RepoRoot: "/r/c", Repo: "gamma", Status: "error", Error: "timeout"},
+	}
+
+	kept := fleetFilterEntries(entries, fleetFilterActive, now)
+	if len(kept) != 2 || kept[0].Repo != "alpha" || kept[1].Repo != "gamma" {
+		t.Fatalf("active filter = %v, want [alpha gamma(error)]", kept)
+	}
+
+	rows := buildFleetRows(kept, nil)
+	out := renderFleetGrouped(rows, -1, now, 110, fleetDetailOff, nil, 3, len(entries))
+	if !strings.Contains(out, "2/3 repos") || !strings.Contains(out, "2/3 worktrees") {
+		t.Errorf("filtered header must read n/m, got:\n%s", out)
+	}
+	if strings.Contains(out, "beta") {
+		t.Errorf("stale repo must be hidden by the active filter:\n%s", out)
+	}
+
+	empty := renderFleetGrouped(nil, -1, now, 110, fleetDetailOff, nil, 3, len(entries))
+	if !strings.Contains(empty, "press f to widen") {
+		t.Errorf("all-hidden view must hint at the filter, got:\n%s", empty)
 	}
 }

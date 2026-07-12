@@ -49,6 +49,10 @@ type FleetConfig struct {
 	// Notify maps a fleet transition to a shell command (`sh -c`), run with
 	// GK_FLEET_* context env. Keys: conflict, paused, land_ready. Opt-in.
 	Notify map[string]string `mapstructure:"notify" yaml:"notify,omitempty"`
+	// Filter is the dashboard's initial view filter (all | active | busy |
+	// stuck). Unset keeps the mode default: active in multi-repo, all in
+	// single-repo. Same as --filter.
+	Filter string `mapstructure:"filter" yaml:"filter,omitempty"`
 }
 
 // SnapshotConfig controls the refs/wip/* safety-net snapshots.

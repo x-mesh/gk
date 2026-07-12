@@ -122,7 +122,7 @@ func fleetRowKeyOf(r fleetRow) fleetRowKey {
 // with each repo's worktrees indented beneath when expanded. detail joins the
 // cursor row's master-detail panel beside the table (worktree rows only —
 // a header row has no single entry to detail); feed feeds its event tail.
-func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, detail int, feed []fleetFeedEvent) string {
+func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, detail int, feed []fleetFeedEvent, totalRepos, totalWts int) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	if width <= 0 || width > 120 {
 		width = 80
@@ -136,9 +136,18 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, d
 	}
 
 	var b strings.Builder
-	count := fmt.Sprintf("%d %s · %d %s",
-		repos, pluralize(repos, "repo", "repos"),
-		wts, pluralize(wts, "worktree", "worktrees"))
+	// A filtered view says so in the header — "5/21 repos" reads as "16 are
+	// hidden", where a bare "5 repos" would read as "that's everything".
+	repoN, wtN := fmt.Sprintf("%d", repos), fmt.Sprintf("%d", wts)
+	if totalRepos > repos {
+		repoN = fmt.Sprintf("%d/%d", repos, totalRepos)
+	}
+	if totalWts > wts {
+		wtN = fmt.Sprintf("%d/%d", wts, totalWts)
+	}
+	count := fmt.Sprintf("%s %s · %s %s",
+		repoN, pluralize(totalRepos, "repo", "repos"),
+		wtN, pluralize(totalWts, "worktree", "worktrees"))
 	left := lipgloss.NewStyle().Bold(true).Render("gk watch") + "  " + dim.Render(count)
 	header := left
 	if !now.IsZero() {
@@ -153,7 +162,11 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, d
 	b.WriteString(header + "\n" + dim.Render(strings.Repeat("─", width)) + "\n")
 
 	if len(rows) == 0 {
-		b.WriteString(dim.Render("  (no repos)"))
+		if totalWts > 0 {
+			b.WriteString(dim.Render("  (nothing matches the filter — press f to widen)"))
+		} else {
+			b.WriteString(dim.Render("  (no repos)"))
+		}
 		return b.String()
 	}
 
@@ -215,7 +228,7 @@ func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time) string 
 				fleetDiffLabel(e.Ahead, e.Behind),
 				fleetDirtyLabel(e.Dirty),
 				fleetLastChangeLabel(e.LastChange),
-				fleetActiveLabel(e, now))
+				fleetActiveStyled(e, now))
 		}
 		if i == cursor {
 			line = lipgloss.NewStyle().Bold(true).Render(line)
@@ -296,11 +309,12 @@ func (m *fleetModel) toggleCursorRepo() {
 
 // runFleetMultiTUI runs the grouped multi-repo dashboard. It reuses fleetModel
 // with multi=true; polling calls gatherFleetMulti over the discovered repo set.
-func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
+func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration, feedStats bool, filter int) error {
 	m := fleetModel{
 		ctx:       ctx,
 		cmd:       cmd,
 		interval:  interval,
+		filter:    filter,
 		entries:   initial,
 		now:       time.Now(),
 		multi:     true,

@@ -51,6 +51,7 @@ func addFleetFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
 	cmd.Flags().Bool("feed-stats", true, "show +/- line counts and changed-function names in the change feed (--feed-stats=false to disable the extra git diff calls per poll)")
 	cmd.Flags().Bool("events", false, "stream fleet changes as NDJSON events instead of a dashboard (for orchestrators)")
+	cmd.Flags().String("filter", "", "initial view filter: all | active | busy | stuck (default: active in multi-repo, all in single-repo; f cycles)")
 }
 
 // fleetEntryJSON is the per-worktree fleet record — the contract `gk fleet
@@ -130,6 +131,11 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 	}
 	feedStats := resolveFleetFeedStats(cmd)
 	streamEvents, _ := cmd.Flags().GetBool("events")
+	// Validate --filter up front: a typo should fail loudly on every path,
+	// not just the interactive one (the static/JSON paths return earlier).
+	if _, ferr := resolveFleetFilter(cmd, multi); ferr != nil {
+		return ferr
+	}
 	if multi {
 		sem := newFleetLimiter(fleetConcurrency())
 		if streamEvents {
@@ -145,11 +151,12 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		}
 		// No TTY (pipe/redirect/CI): static grouped snapshot, all repos expanded.
 		if !ui.IsTerminal() {
-			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0, fleetDetailOff, nil))
+			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0, fleetDetailOff, nil, 0, 0))
 			return nil
 		}
 		interval := resolveFleetInterval(cmd, true)
-		return runFleetMultiTUI(ctx, cmd, ids, sem, entries, time.Duration(interval)*time.Second, feedStats)
+		filter, _ := resolveFleetFilter(cmd, true) // validated above
+		return runFleetMultiTUI(ctx, cmd, ids, sem, entries, time.Duration(interval)*time.Second, feedStats, filter)
 	}
 
 	// GIT_OPTIONAL_LOCKS=0 for every probe: fleet polls while agents commit in
@@ -190,7 +197,8 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		statusWatchInterval = time.Duration(interval) * time.Second
 		return runChangeWatch(cmd)
 	}
-	return runFleetTUI(ctx, cmd, runner, entries, time.Duration(interval)*time.Second, feedStats)
+	filter, _ := resolveFleetFilter(cmd, false) // validated above
+	return runFleetTUI(ctx, cmd, runner, entries, time.Duration(interval)*time.Second, feedStats, filter)
 }
 
 // fleetNotifyConfig loads the opt-in fleet.notify hook map (transition kind →
@@ -378,6 +386,35 @@ func currentRepoRoot(ctx context.Context) string {
 		return root
 	}
 	return ""
+}
+
+// resolveFleetFilter is the dashboard's initial view filter: the --filter
+// flag when set (unknown value = error), else fleet.filter from config
+// (unknown value falls through — a config typo shouldn't brick the TUI),
+// else the mode default: `active` for a multi-repo scan (mostly-idle project
+// piles are the norm there; the dashboard is for what's being worked on),
+// `all` for a single repo's few worktrees. f cycles at runtime either way.
+func resolveFleetFilter(cmd *cobra.Command, multi bool) (int, error) {
+	if cmd.Flags().Changed("filter") {
+		name, _ := cmd.Flags().GetString("filter")
+		mode, ok := fleetFilterByName(name)
+		if !ok {
+			return 0, WithHint(
+				fmt.Errorf("gk watch: unknown --filter %q", name),
+				"use one of: all, active, busy, stuck",
+			)
+		}
+		return mode, nil
+	}
+	if cfg, err := config.Load(nil); err == nil && cfg != nil && cfg.Fleet.Filter != "" {
+		if mode, ok := fleetFilterByName(cfg.Fleet.Filter); ok {
+			return mode, nil
+		}
+	}
+	if multi {
+		return fleetFilterActive, nil
+	}
+	return fleetFilterAll, nil
 }
 
 // resolveFleetInterval is the TUI poll interval: the --interval flag when the
@@ -673,6 +710,28 @@ func fleetActiveLabel(e fleetEntryJSON, now time.Time) string {
 	return "now"
 }
 
+// fleetActiveStyled colors the activity age green while the worktree counts
+// as active (same window as the watcher budget) — the user-facing answer to
+// "which of these is being worked on RIGHT NOW", separate from the status
+// dot whose green means "ahead of upstream". Only safe on the row's LAST
+// column: ANSI codes would break printf padding anywhere else.
+func fleetActiveStyled(e fleetEntryJSON, now time.Time) string {
+	lbl := fleetActiveLabel(e, now)
+	if !now.IsZero() && !e.lastActive.IsZero() && now.Sub(e.lastActive) <= fleetActiveWindow {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(lbl)
+	}
+	return lbl
+}
+
+// totalRepoCount is the unfiltered repo count behind the current view.
+func (m fleetModel) totalRepoCount() int {
+	seen := map[string]bool{}
+	for _, e := range m.entries {
+		seen[e.RepoRoot] = true
+	}
+	return len(seen)
+}
+
 func clip(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
@@ -791,7 +850,7 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) strin
 			fleetDiffLabel(e.Ahead, e.Behind),
 			fleetDirtyLabel(e.Dirty),
 			fleetLastChangeLabel(e.LastChange),
-			fleetActiveLabel(e, now),
+			fleetActiveStyled(e, now),
 		)
 		if i == cursor {
 			row = lipgloss.NewStyle().Bold(true).Render(row)
@@ -1021,7 +1080,7 @@ type fleetModel struct {
 // indexes into. Entries itself is never reordered — a filter change is a view
 // change, not a data change.
 func (m fleetModel) viewEntries() []fleetEntryJSON {
-	return fleetSortEntries(fleetFilterEntries(m.entries, m.filter), m.sortMode)
+	return fleetSortEntries(fleetFilterEntries(m.entries, m.filter, time.Now()), m.sortMode)
 }
 
 func (m fleetModel) Init() tea.Cmd {
@@ -1232,7 +1291,7 @@ func (m fleetModel) View() string {
 	var b strings.Builder
 	footer := "j/k move · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
 	if m.multi {
-		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed))
+		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed, m.totalRepoCount(), len(m.entries)))
 		footer = "j/k move · space fold · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
 	} else {
 		b.WriteString(renderFleet(fleetView{
@@ -1287,11 +1346,12 @@ func (m fleetModel) feedPaneLines() int {
 	return want
 }
 
-func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
+func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool, filter int) error {
 	m := fleetModel{
 		ctx:       ctx,
 		cmd:       cmd,
 		runner:    runner,
+		filter:    filter,
 		interval:  interval,
 		entries:   initial,
 		now:       time.Now(),

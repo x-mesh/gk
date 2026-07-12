@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -89,6 +90,13 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 			i++
 		}
 		ds := stats[path]
+		if xy == "??" {
+			// Untracked files never appear in `git diff` — profile them from
+			// the content so new files still carry +N and a symbol.
+			if up, ok := untrackedChangeProfile(root, path); ok {
+				ds = up
+			}
+		}
 		var mtime int64
 		if root != "" {
 			if fi, serr := os.Stat(filepath.Join(root, path)); serr == nil {
@@ -150,7 +158,17 @@ func changeDiffProfile(ctx context.Context, runner *git.ExecRunner) map[string]c
 			p.added += f.AddedLines
 			p.removed += f.DeletedLines
 			for _, h := range f.Hunks {
-				p.symbols = appendSymbol(p.symbols, funcContextName(h.FuncName))
+				name := funcContextName(h.FuncName)
+				if name == "" {
+					// git's funcname is the ENCLOSING context above the hunk,
+					// so it is empty exactly where the interesting name is
+					// inside the hunk itself: a new file, a change at the top
+					// of a file, or a language the default heuristic can't
+					// read (CSS selectors start with '.'). Scan the changed
+					// lines for a definition instead.
+					name = definitionNameFromHunk(path, h)
+				}
+				p.symbols = appendSymbol(p.symbols, name)
 			}
 			merged[path] = p
 		}
@@ -198,7 +216,129 @@ func funcContextName(raw string) string {
 		name = fields[len(fields)-1]
 	}
 	name = strings.TrimSpace(strings.SplitN(name, ",", 2)[0])
+	// A paren-less context keeps the definition line's trailing punctuation
+	// ("class TestScanHandler:" → "TestScanHandler:") — strip it so Python
+	// classes and friends read as bare names.
+	name = strings.TrimRight(name, ":;{")
 	return clip(name, 40)
+}
+
+// --- definition scan: the fallback when git offers no function context ------
+
+// definitionPatterns maps a language family to the definition-line shapes its
+// changed lines may carry. Keyed by extension so a brace in Go ("if x {")
+// can never be misread as a CSS selector — each family only ever sees its own
+// shapes. The generic set covers the keyword-led definitions that are
+// unambiguous in any language.
+var (
+	rePyDef      = regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	rePyClass    = regexp.MustCompile(`^\s*class\s+([A-Za-z_][A-Za-z0-9_.]*)`)
+	reGoFunc     = regexp.MustCompile(`^func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)`)
+	reGoType     = regexp.MustCompile(`^type\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	reRustFn     = regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	reJSFunction = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)`)
+	reJSArrow    = regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\(|function\b)`)
+	reJSClass    = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)`)
+	reRubyDef    = regexp.MustCompile(`^\s*def\s+([A-Za-z_][A-Za-z0-9_?!.]*)`)
+	reCSSRule    = regexp.MustCompile(`^\s*([.#]?[A-Za-z][A-Za-z0-9_-]*(?:\s*[.#:][A-Za-z0-9_-]+)*)\s*[^{;]*\{`)
+)
+
+var definitionPatterns = map[string][]*regexp.Regexp{
+	".py":   {rePyDef, rePyClass},
+	".go":   {reGoFunc, reGoType},
+	".rs":   {reRustFn},
+	".js":   {reJSFunction, reJSArrow, reJSClass},
+	".jsx":  {reJSFunction, reJSArrow, reJSClass},
+	".ts":   {reJSFunction, reJSArrow, reJSClass},
+	".tsx":  {reJSFunction, reJSArrow, reJSClass},
+	".mjs":  {reJSFunction, reJSArrow, reJSClass},
+	".cjs":  {reJSFunction, reJSArrow, reJSClass},
+	".rb":   {reRubyDef},
+	".css":  {reCSSRule},
+	".scss": {reCSSRule},
+	".less": {reCSSRule},
+}
+
+// genericDefinitionPatterns are the keyword-led shapes safe to try on any
+// other extension — a line starting with def/class/func/fn/function is a
+// definition in whatever language it appears.
+var genericDefinitionPatterns = []*regexp.Regexp{rePyDef, rePyClass, reGoFunc, reRustFn, reJSFunction}
+
+// definitionNameFromHunk scans a hunk's changed lines for a definition and
+// returns the first name found. Added lines are scanned before deleted ones:
+// for a new function the definition line IS an addition, and for a removed
+// one it survives only among the deletions.
+func definitionNameFromHunk(path string, h diff.Hunk) string {
+	pats := definitionPatternsFor(path)
+	for _, kind := range []diff.LineKind{diff.LineAdded, diff.LineDeleted} {
+		for _, ln := range h.Lines {
+			if ln.Kind != kind {
+				continue
+			}
+			if name := matchDefinition(pats, ln.Content); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func definitionPatternsFor(path string) []*regexp.Regexp {
+	if pats, ok := definitionPatterns[strings.ToLower(filepath.Ext(path))]; ok {
+		return pats
+	}
+	return genericDefinitionPatterns
+}
+
+func matchDefinition(pats []*regexp.Regexp, line string) string {
+	for _, re := range pats {
+		if m := re.FindStringSubmatch(line); m != nil {
+			return clip(strings.TrimSpace(m[1]), 40)
+		}
+	}
+	return ""
+}
+
+// untrackedProfileMaxBytes caps how much of an untracked file the profile
+// reads. Past this, no numbers beat approximate ones — a giant artifact must
+// never stall a poll tick.
+const untrackedProfileMaxBytes = 256 * 1024
+
+// untrackedChangeProfile derives a profile for a path `git diff` cannot see
+// (untracked): every line counts as an addition and definitions come from
+// scanning the content directly — otherwise a brand-new file shows neither
+// +/- nor a symbol on the feed, exactly where "what is the agent writing?"
+// matters most. ok is false for unreadable, directory, binary-looking
+// (NUL byte — git's own text sniff), or oversized files.
+func untrackedChangeProfile(root, rel string) (changeProfile, bool) {
+	if root == "" {
+		return changeProfile{}, false
+	}
+	full := filepath.Join(root, rel)
+	fi, err := os.Stat(full)
+	if err != nil || fi.IsDir() || fi.Size() > untrackedProfileMaxBytes {
+		return changeProfile{}, false
+	}
+	data, err := os.ReadFile(full)
+	if err != nil || len(data) == 0 {
+		return changeProfile{}, false
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return changeProfile{}, false
+	}
+
+	p := changeProfile{added: strings.Count(string(data), "\n")}
+	if data[len(data)-1] != '\n' {
+		p.added++ // final line without a trailing newline still counts
+	}
+	pats := definitionPatternsFor(rel)
+	for _, line := range strings.Split(string(data), "\n") {
+		if len(p.symbols) >= changeProfileSymbolCap {
+			break
+		}
+		p.symbols = appendSymbol(p.symbols, matchDefinition(pats, line))
+	}
+	return p, true
 }
 
 // diffChangeSnapshots returns the timeline events produced by the transition

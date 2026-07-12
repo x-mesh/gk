@@ -58,6 +58,18 @@ func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root strin
 				s.sigs[p] = sig
 			}
 		}
+		// Untracked files never appear in `git diff` — profile them from the
+		// content so a brand-new file still carries +N and a symbol.
+		for p, sig := range s.sigs {
+			if sig.xy != "??" {
+				continue
+			}
+			if up, ok := untrackedChangeProfile(root, p); ok {
+				sig.added = up.added
+				sig.symbols = strings.Join(up.symbols, ", ")
+				s.sigs[p] = sig
+			}
+		}
 	}
 	return s
 }

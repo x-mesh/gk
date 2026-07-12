@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/diff"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -189,13 +192,81 @@ func TestFuncContextName(t *testing.T) {
 		{"public static void main(String[] args)", "main"},
 		{"fn gather_fleet(&self) -> Result<()>", "gather_fleet"},
 		{"static int parse_line(char *s)", "parse_line"},
-		{"type fleetModel struct", "struct"}, // no "(": last token, better than nothing
+		{"type fleetModel struct", "struct"},          // no "(": last token, better than nothing
+		{"class TestScanHandler:", "TestScanHandler"}, // Python paren-less class: colon stripped
+		{"class WebAPIServer(unittest.TestCase):", "WebAPIServer"},
 		{"", ""},
 	}
 	for _, tc := range cases {
 		if got := funcContextName(tc.raw); got != tc.want {
 			t.Errorf("funcContextName(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
+	}
+}
+
+// TestDefinitionNameFromHunk covers the fallback for hunks git gave no
+// context for: new-file/top-of-file additions and languages the default
+// funcname heuristic can't read (CSS selectors). Deleted definitions are
+// found when nothing was added.
+func TestDefinitionNameFromHunk(t *testing.T) {
+	added := func(lines ...string) diff.Hunk {
+		h := diff.Hunk{}
+		for _, l := range lines {
+			h.Lines = append(h.Lines, diff.DiffLine{Kind: diff.LineAdded, Content: l})
+		}
+		return h
+	}
+	cases := []struct {
+		name string
+		path string
+		h    diff.Hunk
+		want string
+	}{
+		{"python def", "a.py", added("import os", "", "def submit_order(self):"), "submit_order"},
+		{"python class", "a.py", added("class TestScanHandler:"), "TestScanHandler"},
+		{"css selector", "cost.css", added(".credit-expiry {", "  color: red;"), ".credit-expiry"},
+		{"js arrow const", "cost.js", added("const renderCreditExpiry = async (el) => {"), "renderCreditExpiry"},
+		{"go func generic ext", "x.zig", added("func helper() {"), "helper"},
+		{"go brace not css", "a.go", added("if x > 0 {"), ""},
+		{"no definition", "a.py", added("x = 1"), ""},
+		{"deleted def found", "a.py", diff.Hunk{Lines: []diff.DiffLine{
+			{Kind: diff.LineDeleted, Content: "def gone_function():"},
+		}}, "gone_function"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := definitionNameFromHunk(tc.path, tc.h); got != tc.want {
+				t.Errorf("definitionNameFromHunk(%s) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUntrackedChangeProfile: a brand-new (untracked) file gets +N from its
+// line count and symbols from the content scan — git diff never sees it.
+func TestUntrackedChangeProfile(t *testing.T) {
+	dir := t.TempDir()
+	body := "import os\n\nclass TestScanHandler:\n    def test_scan(self):\n        pass\n"
+	if err := os.WriteFile(filepath.Join(dir, "new_test.py"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := untrackedChangeProfile(dir, "new_test.py")
+	if !ok {
+		t.Fatal("profile not derived for a readable text file")
+	}
+	if p.added != 5 {
+		t.Errorf("added = %d, want 5", p.added)
+	}
+	if len(p.symbols) < 2 || p.symbols[0] != "TestScanHandler" || p.symbols[1] != "test_scan" {
+		t.Errorf("symbols = %v, want [TestScanHandler test_scan ...]", p.symbols)
+	}
+
+	// Binary content (NUL byte) is refused rather than mis-counted.
+	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{1, 0, 2}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := untrackedChangeProfile(dir, "blob.bin"); ok {
+		t.Error("binary-looking file must not get a profile")
 	}
 }
 

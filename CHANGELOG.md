@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.119.0] - 2026-07-12
+
 ### Added
 
 - **에이전트 프롬프트 프리페치 훅 — 첫 오리엔테이션 턴을 없앤다.** `gk agents hook install`이 이제 PreToolUse 훅과 함께 Claude Code **UserPromptSubmit** 훅(`gk agents hook run --prompt`)을 배선한다(`--no-prompt`로 옵트아웃). 프롬프트가 명확한 git 작업 요청으로 읽히면 — 보수적 자연어 게이트: "커밋해줘"·"rebase develop"은 발동, "commit to this plan"·"커밋 메시지 스타일 어때?"는 무동작 — 에이전트가 첫 도구 호출로 다시 파낼 오리엔테이션(브랜치, upstream ↑↓, dirty 카운트, 진행 중 operation + resume 힌트)을 모델이 생각을 시작하기 전에 컨텍스트로 선주입한다. 페이로드는 800자 상한의 경량 프로브만 쓰고(실측 발동 warm p95 29ms, 미발동 18ms — `gk context`는 이 예산을 넘어 사용하지 않음), 같은 세션에 이미 주입돼 있으면 트랜스크립트 tail의 `[gk prefetch]` 마커로 감지해 건너뛴다. 전 실패 경로가 무출력 exit 0(fail-open) — 훅이 프롬프트 제출을 막는 일은 없다. settings.json 편집은 기존 훅 배선과 같은 외과적 방식(gk 엔트리만, `.bak` 백업, 타 도구 훅 바이트 보존).

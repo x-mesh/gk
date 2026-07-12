@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/spf13/cobra"
 )
 
 // fleetStatusRank orders statuses worst-first for the repo roll-up. It matches
@@ -237,19 +237,6 @@ func (m fleetModel) cursorWatchTarget() string {
 	return first
 }
 
-// watchCmd suspends the TUI and runs `gk status --watch --repo <path>` for the
-// drill-down target — reusing the existing single-repo change-feed — then
-// returns to fleet (and repolls) when it exits. The worktree path, not the repo
-// root, is the target: that is the tree the agent is actually editing.
-func (m fleetModel) watchCmd(path string) tea.Cmd {
-	self, err := os.Executable()
-	if err != nil {
-		self = os.Args[0]
-	}
-	c := exec.Command(self, "status", "--watch", "--repo", path)
-	return tea.ExecProcess(c, func(error) tea.Msg { return fleetRepollMsg{} })
-}
-
 // toggleCursorRepo folds/unfolds the repo the cursor is on (works whether the
 // cursor sits on the header or a worktree row) and rebuilds the row list.
 func (m *fleetModel) toggleCursorRepo() {
@@ -263,9 +250,10 @@ func (m *fleetModel) toggleCursorRepo() {
 
 // runFleetMultiTUI runs the grouped multi-repo dashboard. It reuses fleetModel
 // with multi=true; polling calls gatherFleetMulti over the discovered repo set.
-func runFleetMultiTUI(ctx context.Context, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
+func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent, sem chan struct{}, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
 	m := fleetModel{
 		ctx:       ctx,
+		cmd:       cmd,
 		interval:  interval,
 		entries:   initial,
 		now:       time.Now(),

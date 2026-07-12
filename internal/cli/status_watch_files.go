@@ -347,6 +347,18 @@ type changeWatchModel struct {
 	showDash  bool
 	dashFrame string
 
+	// Embedded mode: `gk fleet` hosts this model as its zoom view, inside the
+	// fleet program. Fleet drives every refresh (this model arms no tick or fs
+	// chains of its own), so these fields only shape the render and let fleet
+	// discard frames from a replaced zoom target.
+	embedded bool
+	fsLive   bool // fleet's fs watcher covers this worktree → header reads live
+	gen      int  // stamped into changeFrameMsg; fleet drops mismatches
+	// captureDash overrides the dashboard capture: the in-process capture
+	// (captureStatusFrame) renders via the global --repo flag, which points at
+	// the repo fleet started in — not the zoom target.
+	captureDash func() string
+
 	width, height int
 	now           func() time.Time
 }
@@ -384,6 +396,7 @@ type changeFrameMsg struct {
 	head   headInfo
 	dash   string // captured full-status frame, "" unless the dashboard is shown
 	ts     time.Time
+	gen    int // producing model's generation (embedded mode); 0 standalone
 }
 
 // headInfo is the compact orientation shown above the live feed: where you are
@@ -478,6 +491,8 @@ func (m *changeWatchModel) refreshCmd() tea.Cmd {
 	ctx := m.cmd.Context()
 	now := m.nowFn()
 	showDash := m.showDash
+	gen := m.gen
+	capture := m.captureDash
 	return func() tea.Msg {
 		curr := changeSnapshot(ctx, runner, root)
 		msg := changeFrameMsg{
@@ -485,11 +500,16 @@ func (m *changeWatchModel) refreshCmd() tea.Cmd {
 			events: diffChangeSnapshots(prev, curr, now),
 			head:   fetchHeadInfo(cmd, runner),
 			ts:     now,
+			gen:    gen,
 		}
 		// The full status dashboard is only rendered (and thus captured) when
 		// the user has toggled it on — keep the common feed path cheap.
 		if showDash {
-			msg.dash = captureStatusFrame(cmd)
+			if capture != nil {
+				msg.dash = capture()
+			} else {
+				msg.dash = captureStatusFrame(cmd)
+			}
 		}
 		return msg
 	}
@@ -656,7 +676,7 @@ func (m *changeWatchModel) compactHeader() string {
 	}
 	if m.paused {
 		bits = append(bits, pause.Render("⏸ paused"))
-	} else if m.fs != nil {
+	} else if m.fs != nil || m.fsLive {
 		bits = append(bits, pulse.Render("● live")+dim.Render(" (fsnotify)"))
 	} else {
 		bits = append(bits, dim.Render("every "+m.interval.String()+" (poll)"))
@@ -798,6 +818,12 @@ func styleStat(e changeEvent) string {
 }
 
 func (m *changeWatchModel) keyBar() string {
+	// Embedded (fleet zoom): navigation keys live on the fleet breadcrumb
+	// above; the interval keys are dropped because fleet drives the cadence.
+	if m.embedded {
+		return lipgloss.NewStyle().Faint(true).
+			Render("   [s] status  [r] refresh  [p] pause  [c] clear")
+	}
 	return lipgloss.NewStyle().Faint(true).
 		Render("   [s] status  [r] refresh  [p] pause  [c] clear  [+/-] interval  [q] quit")
 }

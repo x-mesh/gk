@@ -37,8 +37,9 @@ worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts).
 When filesystem watches can be established the dashboard reacts to edits
 instantly and the poll drops to a slow heartbeat; otherwise it polls on
 --interval. j/k move, enter cycles the cursor panel (status fields → that
-worktree's own live change feed → off), w drills into that worktree's
-'gk status --watch', f/s cycle the view filter (all→busy→stuck) and sort
+worktree's own live change feed → off), w zooms into that worktree's live
+feed in place ('gk status --watch' embedded: esc pops back, [ and ] hop
+between worktrees), f/s cycle the view filter (all→busy→stuck) and sort
 (default→activity→status), r refreshes, q quits.
 
 Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
@@ -146,7 +147,7 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 		interval := resolveFleetInterval(cmd)
-		return runFleetMultiTUI(ctx, ids, sem, entries, time.Duration(interval)*time.Second, feedStats)
+		return runFleetMultiTUI(ctx, cmd, ids, sem, entries, time.Duration(interval)*time.Second, feedStats)
 	}
 
 	// GIT_OPTIONAL_LOCKS=0 for every probe: fleet polls while agents commit in
@@ -180,7 +181,7 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 	}
 
 	interval := resolveFleetInterval(cmd)
-	return runFleetTUI(ctx, runner, entries, time.Duration(interval)*time.Second, feedStats)
+	return runFleetTUI(ctx, cmd, runner, entries, time.Duration(interval)*time.Second, feedStats)
 }
 
 // fleetNotifyConfig loads the opt-in fleet.notify hook map (transition kind →
@@ -923,6 +924,7 @@ type fleetClockMsg time.Time
 
 type fleetModel struct {
 	ctx      context.Context
+	cmd      *cobra.Command // for the embedded zoom view's head/status probes
 	runner   *git.ExecRunner
 	interval time.Duration
 	entries  []fleetEntryJSON
@@ -961,6 +963,15 @@ type fleetModel struct {
 	// notify is the opt-in fleet.notify hook map — transitions detected
 	// between polls fire it from the dashboard too, not just --events.
 	notify map[string]string
+
+	// zoom is the in-process drill-down ('w'): an embedded `gk status --watch`
+	// model that owns the screen while non-nil. Fleet keeps gathering in the
+	// background and drives the zoom's refreshes — the embedded model arms no
+	// timers of its own. zoomGen invalidates in-flight frames when the target
+	// switches ('[' / ']') or the zoom pops (esc).
+	zoom     *changeWatchModel
+	zoomPath string
+	zoomGen  int
 
 	// view controls: filter ('f' cycle: all→busy→stuck) and sort ('s' cycle:
 	// default→activity→status) apply to the rendered view only — entries and
@@ -1004,6 +1015,30 @@ func (m fleetModel) pollCmd() tea.Cmd {
 }
 
 func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Zoom mode: the embedded watch view owns the screen and the keyboard.
+	// Fleet's own machinery (poll/fs/notify/clock) keeps running below so the
+	// table is fresh the moment the zoom pops.
+	if m.zoom != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			return m.handleZoomKey(msg)
+		case changeFrameMsg:
+			if msg.gen != m.zoomGen {
+				return m, nil // frame from a replaced/popped zoom target
+			}
+			_, cmd := m.zoom.Update(msg)
+			return m, cmd
+		case tea.WindowSizeMsg:
+			m.width, m.height = msg.Width, msg.Height
+			m.zoom.width, m.zoom.height = msg.Width, zoomBodyHeight(msg.Height)
+			return m, nil
+		case fleetClockMsg:
+			// One clock drives both views: advance fleet's, mirror the zoom's.
+			m.now = time.Time(msg)
+			_, _ = m.zoom.Update(clockTickMsg(time.Time(msg)))
+			return m, m.clockTickCmd()
+		}
+	}
 	switch msg := msg.(type) {
 	case fleetRepollMsg:
 		if msg.seq != m.tickSeq || m.polling {
@@ -1017,13 +1052,19 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fleetFSMsg:
 		// A worktree changed on disk. One poll in flight at a time: bursts
 		// collapse into a single queued re-poll (fsPending) — the panel's
-		// backpressure requirement. Always re-arm the listener.
+		// backpressure requirement. Always re-arm the listener. A zoomed
+		// worktree additionally refreshes its watch view immediately — the
+		// zoom's refresh is independent of the fleet poll's backpressure.
+		var zoomCmd tea.Cmd
+		if m.zoom != nil && msg.path == m.zoomPath && !m.zoom.paused {
+			zoomCmd = m.zoom.refreshCmd()
+		}
 		if m.polling {
 			m.fsPending = true
-			return m, waitFleetFSCmd(m.ws)
+			return m, tea.Batch(waitFleetFSCmd(m.ws), zoomCmd)
 		}
 		m.polling = true
-		return m, tea.Batch(m.pollCmd(), waitFleetFSCmd(m.ws))
+		return m, tea.Batch(m.pollCmd(), waitFleetFSCmd(m.ws), zoomCmd)
 	case fleetClockMsg:
 		// Render-only heartbeat: advance the clock and re-arm. No git/fs work.
 		m.now = time.Time(msg)
@@ -1056,6 +1097,16 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			cmds = append(cmds, m.tickCmd())
 		}
+		// The fleet poll doubles as the zoom's heartbeat: refresh the zoomed
+		// view on every data receipt, and pop it if its worktree vanished
+		// (e.g. reaped mid-watch) rather than watching a dead path forever.
+		if m.zoom != nil {
+			if !m.hasEntry(m.zoomPath) {
+				m.closeZoom()
+			} else if !m.zoom.paused {
+				cmds = append(cmds, m.zoom.refreshCmd())
+			}
+		}
 		return m, tea.Batch(cmds...)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -1083,7 +1134,7 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toggleCursorRepo()
 			}
 		case "w":
-			// Drill into the live change feed for the cursor's worktree —
+			// Zoom into the live change feed for the cursor's worktree —
 			// single-repo picks the cursor entry directly; multi resolves
 			// through the grouped rows (headers → the repo's current worktree).
 			var path string
@@ -1093,7 +1144,7 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				path = view[m.cursor].Path
 			}
 			if path != "" {
-				return m, m.watchCmd(path)
+				return m.openZoom(path)
 			}
 		case "enter", "tab":
 			if m.multi {
@@ -1131,6 +1182,11 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m fleetModel) View() string {
 	if m.quitting {
 		return ""
+	}
+	// Zoom mode: breadcrumb (where in the fleet + how to get back), then the
+	// embedded watch view.
+	if m.zoom != nil {
+		return m.zoomBreadcrumb() + "\n" + m.zoom.View()
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
@@ -1191,9 +1247,10 @@ func (m fleetModel) feedPaneLines() int {
 	return want
 }
 
-func runFleetTUI(ctx context.Context, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
+func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool) error {
 	m := fleetModel{
 		ctx:       ctx,
+		cmd:       cmd,
 		runner:    runner,
 		interval:  interval,
 		entries:   initial,

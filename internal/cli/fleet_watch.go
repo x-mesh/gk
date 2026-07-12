@@ -121,6 +121,19 @@ func (ws *fleetWatchSet) forward(path string, fw *fsWatcher) {
 	}
 }
 
+// hasWatcher reports whether this worktree has its own fs watcher — i.e. its
+// changes reach the dashboard as events, not on the heartbeat. The zoom view
+// uses it for a truthful live-vs-poll header indicator.
+func (ws *fleetWatchSet) hasWatcher(path string) bool {
+	if ws == nil {
+		return false
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	_, ok := ws.watchers[path]
+	return ok
+}
+
 // Close tears down every watcher. The events channel stays open (readers see
 // no more sends); the TUI is quitting anyway.
 func (ws *fleetWatchSet) Close() {

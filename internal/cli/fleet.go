@@ -342,10 +342,13 @@ func resolveFleetRepos(ctx context.Context, cmd *cobra.Command) ([]repoIdent, bo
 		} else {
 			cwd := RepoFlag()
 			if cwd == "" {
-				cwd, _ = os.Getwd()
-			}
-			if cwd == "" {
-				return nil, false, nil
+				var werr error
+				if cwd, werr = os.Getwd(); werr != nil {
+					// "Can't tell where I am" must not degrade into a
+					// misleading single-repo run that then fails with
+					// "not a git repository".
+					return nil, false, fmt.Errorf("gk watch: cannot determine the working directory: %w", werr)
+				}
 			}
 			scan = []string{cwd}
 			if !depthSet && fc.Depth == 0 {
@@ -1253,7 +1256,7 @@ func (m fleetModel) View() string {
 		b.WriteString("\n")
 	}
 	cadence := fmt.Sprintf("polling every %s", m.interval)
-	if m.ws != nil {
+	if m.ws.hasAny() {
 		cadence = fmt.Sprintf("fs events · heartbeat %s", fleetTickInterval(m.interval, m.ws))
 	}
 	if m.filter != fleetFilterAll || m.sortMode != fleetSortDefault {

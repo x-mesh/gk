@@ -101,8 +101,11 @@ type fleetWatchPlan struct {
 // (an established watcher costs nothing to keep), but the moment an active
 // entry is missing one, every idle-held watcher is revoked to free budget —
 // the re-walk cost lands on the idle side, where a heartbeat-paced feed is
-// already the accepted service level.
-func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced map[string]bool, now time.Time) fleetWatchPlan {
+// already the accepted service level. denied carries the retry cooldown:
+// a path that failed a recent grant is not grantable this round, and —
+// critically — exerts no pressure either, so cooldown-blocked misses never
+// revoke idle holders for a grant that won't even be attempted.
+func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced map[string]bool, denied map[string]time.Time, now time.Time) fleetWatchPlan {
 	var missing, idleHolding []string
 	activeCount := 0
 	for _, e := range entries {
@@ -111,9 +114,13 @@ func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced ma
 		}
 		if fleetEntryActive(e, now) || forced[e.Path] {
 			activeCount++
-			if !have[e.Path] {
-				missing = append(missing, e.Path)
+			if have[e.Path] {
+				continue
 			}
+			if t, ok := denied[e.Path]; ok && now.Sub(t) < fleetWatchRetryCooldown {
+				continue // cooling down — not grantable, not pressure
+			}
+			missing = append(missing, e.Path)
 		} else if have[e.Path] {
 			idleHolding = append(idleHolding, e.Path)
 		}
@@ -125,8 +132,12 @@ func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced ma
 	return plan
 }
 
-// newFleetWatchSet establishes watchers for the given worktrees. Returns nil
-// when not a single worktree could be watched — the caller stays pure-polling.
+// newFleetWatchSet establishes watchers for the given worktrees. The set is
+// returned even when it starts EMPTY — an all-idle fleet legitimately grants
+// nothing at startup, and the per-poll sync is what later promotes a woken
+// worktree into a watcher. Returning nil here (the old behavior) killed that
+// promotion loop for the whole session. Callers that need "is anything
+// actually watched right now" ask hasAny(), not nil-ness.
 func newFleetWatchSet(ctx context.Context, entries []fleetEntryJSON) *fleetWatchSet {
 	ws := &fleetWatchSet{
 		watchers: map[string]*fsWatcher{},
@@ -135,10 +146,18 @@ func newFleetWatchSet(ctx context.Context, entries []fleetEntryJSON) *fleetWatch
 		denied:   map[string]time.Time{},
 	}
 	ws.sync(ctx, entries)
-	if len(ws.watchers) == 0 {
-		return nil
-	}
 	return ws
+}
+
+// hasAny reports whether the set currently holds at least one live watcher —
+// the question behind "are fs events driving refreshes right now". nil-safe.
+func (ws *fleetWatchSet) hasAny() bool {
+	if ws == nil {
+		return false
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	return len(ws.watchers) > 0
 }
 
 // sync reconciles the watcher set with the current fleet using the activity
@@ -170,7 +189,7 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		}
 	}
 
-	plan := planFleetWatchers(entries, have, forcedSet, time.Now())
+	plan := planFleetWatchers(entries, have, forcedSet, ws.denied, time.Now())
 	ws.dirCap = plan.dirCap
 	for _, path := range plan.revoke {
 		if fw, ok := ws.watchers[path]; ok {
@@ -179,9 +198,6 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		}
 	}
 	for _, path := range plan.grant {
-		if t, ok := ws.denied[path]; ok && time.Since(t) < fleetWatchRetryCooldown {
-			continue // recently failed — don't re-walk the same tree every poll
-		}
 		runner := &git.ExecRunner{Dir: path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
 		fw, ok := newFSWatcher(ctx, runner, fsWatchDebounce, ws.dirCap)
 		if !ok {
@@ -198,6 +214,13 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		if !want[path] {
 			fw.Close()
 			delete(ws.watchers, path)
+		}
+	}
+	// A vanished worktree's cooldown must vanish with it: a worktree
+	// recreated at the same path is a fresh tree, not the one that failed.
+	for path := range ws.denied {
+		if !want[path] {
+			delete(ws.denied, path)
 		}
 	}
 }
@@ -279,9 +302,12 @@ func fleetSyncWatchersCmd(ctx context.Context, ws *fleetWatchSet, entries []flee
 // fleetTickInterval is the poll cadence: the configured interval when polling
 // drives the dashboard, the slow heartbeat when fsnotify does (events carry
 // the real-time work; the poll only catches what no watcher saw, e.g. an
-// index-only `git add` or an unwatched over-budget worktree).
+// index-only `git add` or an unwatched over-budget worktree). The question is
+// whether any watcher is LIVE right now — an empty set (all-idle fleet) must
+// keep polling at the configured interval, not coast on a heartbeat nothing
+// is feeding.
 func fleetTickInterval(interval time.Duration, ws *fleetWatchSet) time.Duration {
-	if ws == nil {
+	if !ws.hasAny() {
 		return interval
 	}
 	if interval > fsHeartbeatInterval {

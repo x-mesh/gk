@@ -395,7 +395,13 @@ func TestFleetTickInterval(t *testing.T) {
 	if got := fleetTickInterval(2*time.Second, nil); got != 2*time.Second {
 		t.Errorf("no watcher: %v, want 2s", got)
 	}
-	ws := &fleetWatchSet{}
+	// An EMPTY set (all-idle fleet) must keep the configured interval — the
+	// heartbeat only makes sense when something actually feeds events.
+	empty := &fleetWatchSet{watchers: map[string]*fsWatcher{}}
+	if got := fleetTickInterval(2*time.Second, empty); got != 2*time.Second {
+		t.Errorf("empty set: %v, want 2s (keep polling)", got)
+	}
+	ws := &fleetWatchSet{watchers: map[string]*fsWatcher{"/w": nil}}
 	if got := fleetTickInterval(2*time.Second, ws); got != fsHeartbeatInterval {
 		t.Errorf("watcher active: %v, want heartbeat %v", got, fsHeartbeatInterval)
 	}

@@ -38,7 +38,7 @@ func raiseFDLimit() {
 		if lim.Cur >= 1<<20 {
 			return // already huge — nothing useful to gain
 		}
-		ladder := []uint64{1 << 20, 262144, 184320, 65536, 10240}
+		ladder := []rlimVal{1 << 20, 262144, 184320, 65536, 10240}
 		for _, want := range ladder {
 			if want <= lim.Cur || want > lim.Max {
 				continue
@@ -48,6 +48,14 @@ func raiseFDLimit() {
 			if syscall.Setrlimit(syscall.RLIMIT_NOFILE, &next) == nil {
 				return
 			}
+		}
+		// Last resort: a finite hard limit below the lowest rung (e.g. a
+		// container capped at a few thousand) — take all of it rather than
+		// silently staying at the tiny soft default.
+		if lim.Max > lim.Cur && lim.Max < 1<<20 {
+			next := lim
+			next.Cur = lim.Max
+			_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &next)
 		}
 	})
 }

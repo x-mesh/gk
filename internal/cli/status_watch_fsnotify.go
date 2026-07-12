@@ -128,6 +128,11 @@ func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Dur
 	count := 0
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if isFDExhausted(err) {
+				// WalkDir's own directory reads hit the fd wall (opendir →
+				// EMFILE), not just our Adds — same hard abort, same reason.
+				return err
+			}
 			return nil // unreadable entry — skip, don't abort the walk
 		}
 		if !d.IsDir() {

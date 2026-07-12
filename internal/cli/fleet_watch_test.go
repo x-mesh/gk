@@ -52,7 +52,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 	}
 
 	// No watchers yet: only the active entry is granted; budget = full/1.
-	plan := planFleetWatchers(entries, map[string]bool{}, nil, now)
+	plan := planFleetWatchers(entries, map[string]bool{}, nil, nil, now)
 	if len(plan.grant) != 1 || plan.grant[0] != "/w/active" {
 		t.Errorf("grant = %v, want [/w/active]", plan.grant)
 	}
@@ -65,7 +65,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 
 	// Idle holder without pressure (active already has its watcher): kept.
 	have := map[string]bool{"/w/active": true, "/w/idle1": true}
-	plan = planFleetWatchers(entries, have, nil, now)
+	plan = planFleetWatchers(entries, have, nil, nil, now)
 	if len(plan.grant) != 0 || len(plan.revoke) != 0 {
 		t.Errorf("steady state must be a no-op, got grant=%v revoke=%v", plan.grant, plan.revoke)
 	}
@@ -74,7 +74,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 	// watcher → the idle holder is revoked to free budget.
 	entries[1].lastActive = now // idle1 wakes up
 	have = map[string]bool{"/w/active": true, "/w/idle2": true}
-	plan = planFleetWatchers(entries, have, nil, now)
+	plan = planFleetWatchers(entries, have, nil, nil, now)
 	if len(plan.grant) != 1 || plan.grant[0] != "/w/idle1" {
 		t.Errorf("woken entry must be granted, got %v", plan.grant)
 	}
@@ -87,7 +87,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 
 	// Forced path (zoom target) counts as active despite no signals.
 	entries[1].lastActive = stale
-	plan = planFleetWatchers(entries, map[string]bool{}, map[string]bool{"/w/idle2": true}, now)
+	plan = planFleetWatchers(entries, map[string]bool{}, map[string]bool{"/w/idle2": true}, nil, now)
 	found := false
 	for _, p := range plan.grant {
 		if p == "/w/idle2" {
@@ -145,4 +145,32 @@ func TestNewFSWatcherCostCap(t *testing.T) {
 		t.Fatal("500 cost must fit a 10-file tree")
 	}
 	fw.Close()
+}
+
+// TestPlanFleetWatchers_CooldownExertsNoPressure (F4): when every missing
+// grant is blocked by the retry cooldown, idle holders must NOT be revoked —
+// otherwise the fleet sheds watchers for grants that won't even be attempted.
+func TestPlanFleetWatchers_CooldownExertsNoPressure(t *testing.T) {
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	entries := []fleetEntryJSON{
+		{Path: "/w/active", Dirty: &contextDirtyJSON{Unstaged: 1}, lastActive: now},
+		{Path: "/w/idle", lastActive: now.Add(-3 * time.Hour)},
+	}
+	have := map[string]bool{"/w/idle": true}
+	denied := map[string]time.Time{"/w/active": now.Add(-30 * time.Second)} // cooling down
+
+	plan := planFleetWatchers(entries, have, nil, denied, now)
+	if len(plan.grant) != 0 {
+		t.Errorf("cooldown-blocked path must not be granted, got %v", plan.grant)
+	}
+	if len(plan.revoke) != 0 {
+		t.Errorf("no attemptable grant → no revoke, got %v", plan.revoke)
+	}
+
+	// Cooldown expired → grant resumes and pressure applies again.
+	denied["/w/active"] = now.Add(-3 * time.Minute)
+	plan = planFleetWatchers(entries, have, nil, denied, now)
+	if len(plan.grant) != 1 || len(plan.revoke) != 1 {
+		t.Errorf("expired cooldown must restore grant+pressure, got grant=%v revoke=%v", plan.grant, plan.revoke)
+	}
 }

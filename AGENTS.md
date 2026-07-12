@@ -1,4 +1,4 @@
-<!-- gk:agents:begin v22 — managed by `gk agents install`; edit outside this block -->
+<!-- gk:agents:begin v23 — managed by `gk agents install`; edit outside this block -->
 ## Git workflow (git-kit)
 
 Use git-kit for git workflows whenever it has a path. In agent tool calls, run the full binary name with agent mode every time:

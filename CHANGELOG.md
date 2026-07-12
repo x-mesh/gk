@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **에이전트 프롬프트 프리페치 훅 — 첫 오리엔테이션 턴을 없앤다.** `gk agents hook install`이 이제 PreToolUse 훅과 함께 Claude Code **UserPromptSubmit** 훅(`gk agents hook run --prompt`)을 배선한다(`--no-prompt`로 옵트아웃). 프롬프트가 명확한 git 작업 요청으로 읽히면 — 보수적 자연어 게이트: "커밋해줘"·"rebase develop"은 발동, "commit to this plan"·"커밋 메시지 스타일 어때?"는 무동작 — 에이전트가 첫 도구 호출로 다시 파낼 오리엔테이션(브랜치, upstream ↑↓, dirty 카운트, 진행 중 operation + resume 힌트)을 모델이 생각을 시작하기 전에 컨텍스트로 선주입한다. 페이로드는 800자 상한의 경량 프로브만 쓰고(실측 발동 warm p95 29ms, 미발동 18ms — `gk context`는 이 예산을 넘어 사용하지 않음), 같은 세션에 이미 주입돼 있으면 트랜스크립트 tail의 `[gk prefetch]` 마커로 감지해 건너뛴다. 전 실패 경로가 무출력 exit 0(fail-open) — 훅이 프롬프트 제출을 막는 일은 없다. settings.json 편집은 기존 훅 배선과 같은 외과적 방식(gk 엔트리만, `.bak` 백업, 타 도구 훅 바이트 보존).
+- **`gk context --delta` — 반복 오리엔테이션이 "변한 것만" 받는다.** worktree별 원장(`~/.gk/context-ledger/`, 키=정규화 worktree 경로)에 마지막 스냅샷을 남기고, 재호출 시 core 필드를 비교해 변경분만 응답한다: 첫 호출은 `delta:"baseline"`이 붙은 full 문서, 무변경 재호출은 `{delta,unchanged,delta_base}` 세 필드(실측 79바이트), 변경 재호출은 움직인 필드만 — omitempty로 사라진 필드는 `null`로 표면화해 전이를 놓치지 않는다. `--include` 섹션은 델타 대상이 아니라 항상 fresh로 실린다(라이브 diff/log를 요청한 에이전트는 현재 값을 원하므로). 원장 손상·부재·홈 없음은 전부 무음으로 full 응답에 폴백하고, `--delta` 없는 기존 경로는 바이트 하나 안 바뀐다. 원장은 저장 시마다 7일 TTL lazy GC로 청소된다 — `~/.gk`가 GC 없이 누적된 선례의 재발 방지.
+
 ## [0.118.0] - 2026-07-12
 
 ### Added

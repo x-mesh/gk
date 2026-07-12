@@ -370,20 +370,22 @@ func TestApplyFeedDiff(t *testing.T) {
 	}
 }
 
-// TestFleetWatchBudget: N watchers split the process-wide directory budget,
-// with a floor so large fleets still get usable watchers.
+// TestFleetWatchBudget: N active watchers split the process-wide watch
+// budget (fd-aware on kqueue platforms), with a floor so a crowded fleet
+// still gets usable watchers.
 func TestFleetWatchBudget(t *testing.T) {
-	if got := fleetWatchBudget(1); got != fsWatchMaxDirs {
-		t.Errorf("budget(1) = %d, want %d", got, fsWatchMaxDirs)
+	total := fsWatchCostBudget()
+	if got := fleetWatchBudget(1); got != total {
+		t.Errorf("budget(1) = %d, want %d", got, total)
 	}
-	if got := fleetWatchBudget(4); got != fsWatchMaxDirs/4 {
-		t.Errorf("budget(4) = %d, want %d", got, fsWatchMaxDirs/4)
+	if got := fleetWatchBudget(4); got != total/4 {
+		t.Errorf("budget(4) = %d, want %d", got, total/4)
 	}
-	if got := fleetWatchBudget(1000); got != 64 {
-		t.Errorf("budget(1000) = %d, want the 64 floor", got)
+	if got := fleetWatchBudget(10 * total); got != 64 {
+		t.Errorf("budget(huge N) = %d, want the 64 floor", got)
 	}
-	if got := fleetWatchBudget(0); got != fsWatchMaxDirs {
-		t.Errorf("budget(0) = %d, want %d", got, fsWatchMaxDirs)
+	if got := fleetWatchBudget(0); got != total {
+		t.Errorf("budget(0) = %d, want %d", got, total)
 	}
 }
 

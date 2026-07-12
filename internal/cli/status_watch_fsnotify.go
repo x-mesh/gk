@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -30,10 +31,9 @@ const (
 	// for one logical save (write + chmod, or the create+rename of an atomic
 	// write) into a single feed refresh.
 	fsWatchDebounce = 200 * time.Millisecond
-	// fsWatchMaxDirs caps how many directories we register. kqueue (macOS) and
-	// inotify (Linux) consume a descriptor per watched directory, so an
-	// unbounded walk of a giant tree would exhaust the process's fd budget.
-	// Past the cap we tear down and let the caller poll instead.
+	// fsWatchMaxDirs caps how many directories we register on platforms where
+	// a watch costs one descriptor per DIRECTORY (inotify). kqueue platforms
+	// derive a larger, fd-aware budget instead — see fsWatchCostBudget.
 	fsWatchMaxDirs = 2048
 	// fsHeartbeatInterval is the safety-net poll cadence while fsnotify drives
 	// the feed — slow, because events do the real work; this only catches the
@@ -41,7 +41,43 @@ const (
 	fsHeartbeatInterval = 12 * time.Second
 )
 
-var errTooManyDirs = errors.New("fs watch: directory budget exceeded")
+var errTooManyDirs = errors.New("fs watch: watch budget exceeded")
+
+// fsWatchCostBudget is the process-wide watch budget in COST units. On kqueue
+// platforms the true cost of a watch is one descriptor per FILE (fsnotify
+// opens each file inside a watched directory), so the budget counts files and
+// derives from the fd soft limit — a third of it, leaving the rest for
+// subprocess pipes and everything else the process opens. Exceeding the fd
+// limit is not a degraded mode, it is an outage: every later git spawn dies
+// with EMFILE and the whole dashboard reads "unreachable". On inotify
+// platforms watches are not process fds, so the historical directory cap
+// stands.
+func fsWatchCostBudget() int {
+	if !fsWatchCostPerFile {
+		return fsWatchMaxDirs
+	}
+	raiseFDLimit()
+	soft := fdSoftLimit()
+	if soft == 0 {
+		return fsWatchMaxDirs
+	}
+	budget := int(soft / 3)
+	if budget > 1<<16 {
+		budget = 1 << 16
+	}
+	if budget < 256 {
+		budget = 256
+	}
+	return budget
+}
+
+// isFDExhausted reports whether err is the process (EMFILE) or system
+// (ENFILE) descriptor limit — the one failure a watcher must never shrug off
+// mid-walk, because the descriptors it already holds are what is starving
+// everything else.
+func isFDExhausted(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
+}
 
 // fsWatcher is a recursive, gitignore-aware filesystem watcher. events emits one
 // debounced signal per burst of changes; Close tears it down.
@@ -63,19 +99,23 @@ type fsWatcher struct {
 	ctx    context.Context
 }
 
-// newFSWatcher sets up a watcher over the repo's working tree. dirCap bounds
-// how many directories this watcher may register — pass fsWatchMaxDirs for a
-// solo watcher, or a share of it when several watchers split one process's
-// descriptor budget (gk fleet runs one per worktree). Returns (nil, false)
-// when fsnotify is unusable (the caller then polls): an unsupported platform,
-// a setup error, or a tree exceeding dirCap.
-func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Duration, dirCap int) (*fsWatcher, bool) {
+// newFSWatcher sets up a watcher over the repo's working tree. costCap bounds
+// this watcher's share of the process watch budget (fsWatchCostBudget) — the
+// whole budget for a solo watcher, a split when several watchers coexist
+// (`gk watch` runs one per active worktree). Cost counts directories, plus
+// every file on kqueue platforms where each watched file holds a descriptor.
+// Returns (nil, false) when fsnotify is unusable (the caller then polls): an
+// unsupported platform, a setup error, a tree exceeding costCap, or — the
+// case that must abort HARD — descriptor exhaustion mid-walk, where keeping
+// the half-built watcher would starve every git subprocess after it.
+func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Duration, costCap int) (*fsWatcher, bool) {
+	raiseFDLimit()
 	root := repoToplevel(ctx, runner)
 	if root == "" {
 		return nil, false
 	}
-	if dirCap <= 0 {
-		dirCap = fsWatchMaxDirs
+	if costCap <= 0 {
+		costCap = fsWatchCostBudget()
 	}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -87,22 +127,34 @@ func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Dur
 
 	count := 0
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil // unreadable entry / non-dir — skip, don't abort the walk
+		if err != nil {
+			return nil // unreadable entry — skip, don't abort the walk
+		}
+		if !d.IsDir() {
+			if fsWatchCostPerFile {
+				count++ // kqueue: every file in a watched dir costs one fd
+				if count > costCap {
+					return errTooManyDirs
+				}
+			}
+			return nil
 		}
 		if ignored[path] {
 			return filepath.SkipDir
 		}
 		if aerr := w.Add(path); aerr != nil {
+			if isFDExhausted(aerr) {
+				return aerr // hard abort: holding on would starve the process
+			}
 			return nil // best-effort per directory
 		}
 		count++
-		if count > dirCap {
+		if count > costCap {
 			return errTooManyDirs
 		}
 		return nil
 	})
-	if errors.Is(walkErr, errTooManyDirs) {
+	if walkErr != nil {
 		_ = w.Close()
 		return nil, false
 	}

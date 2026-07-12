@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gk watch`가 프로젝트 부모 디렉토리에서 zero-flag로 동작한다.** git repo가 아닌 디렉토리(예: 모든 프로젝트를 담은 `~/work`)에서 맨 `gk watch`를 치면 한 단계 아래를 자동 스캔해 발견한 모든 repo의 대시보드를 연다 — `--scan . --depth 1`과 동일하되 타이핑이 없다(플래그·config는 종전대로 우선). 실측: 21 repo·32 워크트리 gather 0.56초. 넓은 스캔의 화면 밀도를 위해 **clean repo는 시작 시 접힌 상태**(`space`로 펼침 — 시작 시에만 적용, 세션 중 재접힘 없음)이고, 멀티 모드 폴링 폴백 기본이 5초로 완화됐다(fsnotify 활성 시엔 종전처럼 12s heartbeat라 무관). 멀티 모드에도 **detail/피드 패널**이 생겼다: `enter`가 단일 모드와 동일하게 커서 패널을 순환하고(fold는 `space` 전담), 워크트리 행에서 그 워크트리의 필드/라이브 피드를 옆에 띄운다.
 
+### Fixed
+
+- **넓은 멀티-repo watch가 fd 고갈로 전 repo를 "unreachable"로 만들던 문제.** macOS의 fsnotify(kqueue)는 감시 대상 **파일마다** 디스크립터를 하나씩 열기 때문에, 활동 기반 배분으로 dirty repo들이 커진 감시 예산을 실제로 받자 워처가 프로세스 fd 한도를 소진했고 — 이후의 모든 git 서브프로세스가 `open /dev/null: too many open files`로 죽어 대시보드 전체가 error로 보였다. 네 겹으로 수정: ① watch 시작 시 `RLIMIT_NOFILE` soft 한도를 하강 사다리(1M→256K→184K→64K→10K)로 커널이 받는 최대치까지 상향(macOS는 상한 초과 요청이 EINVAL이라 단발 상향은 조용히 실패할 수 있음), ② kqueue 플랫폼의 감시 예산을 디렉토리 수가 아니라 **파일 수 비용**으로 계산하고 상향된 soft 한도의 1/3에서 도출(서브프로세스 몫 보존), ③ walk 도중 EMFILE/ENFILE을 만나면 반쯤 세운 워처를 유지하던 것을 **즉시 철거**(쥔 fd가 바로 다른 모든 것을 굶기는 원인이므로), ④ 워처 획득에 실패한 워크트리는 2분 쿨다운 후 재시도(매 폴 같은 트리 재탐색 방지). 검증: soft 512로 캡한 셸에서 21-repo watch가 EMFILE 0건으로 동작.
+
 ### Changed
 
 - **`gk watch`의 fsnotify 예산이 머릿수가 아니라 "활동"으로 배분된다.** 종전엔 감시 디렉토리 예산(2048)을 워크트리 수로 균등 분할해서, 20개 repo를 스캔하면 워크트리당 64 dir — 정작 작업 중인 큰 repo가 워처를 못 받아 heartbeat(12s)로 강등되고, 유휴 repo들이 안 쓰는 몫을 쥐고 있었다. 이제 활성 워크트리(현재 체크아웃·dirty·paused op·1시간 내 활동·줌 대상)만 전체 예산을 나눠 갖고, 유휴 워크트리는 heartbeat를 탄다 — heartbeat가 첫 변화를 감지하면 활성으로 승격돼 다음 폴에 워처를 받는다(첫 깨어남에 한해 ≤12s 지연). 압박 상황(활성인데 워처 없음)에서만 유휴 보유분을 회수하고, 매 폴 재계획되므로 배분이 작업을 따라다닌다. 줌 헤더의 live/poll 표시도 매 폴 실제 워처 보유 여부를 반영한다.

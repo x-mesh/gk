@@ -38,23 +38,32 @@ type fleetWatchSet struct {
 	events   chan string
 	dirCap   int
 	closed   bool
+	// denied records grant failures (path → when), enforcing the retry
+	// cooldown so an over-budget worktree isn't re-walked every poll.
+	denied map[string]time.Time
 }
 
-// fleetWatchBudget splits the process descriptor budget across n ACTIVE
-// worktrees. The floor keeps a tiny share from making every watcher fail its
-// walk when many worktrees are active at once — better a few over-budget
-// worktrees on the heartbeat than none watched at all.
+// fleetWatchBudget splits the process watch budget (fd-aware on kqueue
+// platforms — see fsWatchCostBudget) across n ACTIVE worktrees. The floor
+// keeps a tiny share from making every watcher fail its walk when many
+// worktrees are active at once — better a few over-budget worktrees on the
+// heartbeat than none watched at all.
 func fleetWatchBudget(n int) int {
 	if n <= 0 {
 		n = 1
 	}
-	per := fsWatchMaxDirs / n
+	per := fsWatchCostBudget() / n
 	const floor = 64
 	if per < floor {
 		return floor
 	}
 	return per
 }
+
+// fleetWatchRetryCooldown is how long a worktree that failed to get a watcher
+// (over budget, fd pressure) sits out before sync tries again. Without it the
+// per-poll re-plan would re-walk the same too-big tree every few seconds.
+const fleetWatchRetryCooldown = 2 * time.Minute
 
 // fleetActiveWindow is how recently a worktree must have moved to stay
 // "active" for watcher-budget purposes once its tree is clean again.
@@ -123,6 +132,7 @@ func newFleetWatchSet(ctx context.Context, entries []fleetEntryJSON) *fleetWatch
 		watchers: map[string]*fsWatcher{},
 		events:   make(chan string, 8),
 		dirCap:   fleetWatchBudget(len(entries)),
+		denied:   map[string]time.Time{},
 	}
 	ws.sync(ctx, entries)
 	if len(ws.watchers) == 0 {
@@ -169,11 +179,18 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		}
 	}
 	for _, path := range plan.grant {
+		if t, ok := ws.denied[path]; ok && time.Since(t) < fleetWatchRetryCooldown {
+			continue // recently failed — don't re-walk the same tree every poll
+		}
 		runner := &git.ExecRunner{Dir: path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
 		fw, ok := newFSWatcher(ctx, runner, fsWatchDebounce, ws.dirCap)
 		if !ok {
-			continue // over budget / unusable — this worktree rides the heartbeat
+			// Over budget / fd pressure / unusable — this worktree rides the
+			// heartbeat and sits out the cooldown before the next attempt.
+			ws.denied[path] = time.Now()
+			continue
 		}
+		delete(ws.denied, path)
 		ws.watchers[path] = fw
 		go ws.forward(path, fw)
 	}

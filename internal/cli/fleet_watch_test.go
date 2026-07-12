@@ -1,8 +1,14 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/testutil"
 )
 
 // TestFleetEntryActive locks the activity signals: current checkout, dirty
@@ -53,7 +59,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 	if len(plan.revoke) != 0 {
 		t.Errorf("no idle holders → no revokes, got %v", plan.revoke)
 	}
-	if plan.dirCap != fsWatchMaxDirs {
+	if plan.dirCap != fsWatchCostBudget() {
 		t.Errorf("one active gets the whole budget, dirCap = %d", plan.dirCap)
 	}
 
@@ -75,7 +81,7 @@ func TestPlanFleetWatchers(t *testing.T) {
 	if len(plan.revoke) != 1 || plan.revoke[0] != "/w/idle2" {
 		t.Errorf("idle holder must be revoked under pressure, got %v", plan.revoke)
 	}
-	if plan.dirCap != fsWatchMaxDirs/2 {
+	if plan.dirCap != fsWatchCostBudget()/2 {
 		t.Errorf("two actives split the budget, dirCap = %d", plan.dirCap)
 	}
 
@@ -91,4 +97,52 @@ func TestPlanFleetWatchers(t *testing.T) {
 	if !found {
 		t.Errorf("forced path must be granted, grant = %v", plan.grant)
 	}
+}
+
+// TestIsFDExhausted: EMFILE/ENFILE (wrapped or bare) are the hard-abort
+// signals; anything else stays best-effort.
+func TestIsFDExhausted(t *testing.T) {
+	if !isFDExhausted(syscall.EMFILE) || !isFDExhausted(fmt.Errorf("add: %w", syscall.ENFILE)) {
+		t.Error("EMFILE/ENFILE must be detected, wrapped or not")
+	}
+	if isFDExhausted(syscall.EACCES) || isFDExhausted(nil) {
+		t.Error("non-exhaustion errors must not trigger the hard abort")
+	}
+}
+
+// TestFSWatchCostBudget: the budget is always within sane bounds — at least
+// the floor, at most the cap (kqueue) or the historical dir constant.
+func TestFSWatchCostBudget(t *testing.T) {
+	got := fsWatchCostBudget()
+	if fsWatchCostPerFile {
+		if got < 256 || got > 1<<16 {
+			t.Errorf("kqueue budget out of bounds: %d", got)
+		}
+	} else if got != fsWatchMaxDirs {
+		t.Errorf("non-kqueue budget = %d, want %d", got, fsWatchMaxDirs)
+	}
+}
+
+// TestNewFSWatcherCostCap (kqueue platforms): a tree whose FILE count exceeds
+// the cost cap is refused outright — files, not just directories, are the
+// descriptor cost that melted the dashboard once.
+func TestNewFSWatcherCostCap(t *testing.T) {
+	if !fsWatchCostPerFile {
+		t.Skip("file-cost accounting only applies to kqueue platforms")
+	}
+	repo := testutil.NewRepo(t)
+	for i := 0; i < 10; i++ {
+		repo.WriteFile(fmt.Sprintf("f%02d.txt", i), "x")
+	}
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	if fw, ok := newFSWatcher(context.Background(), runner, fsWatchDebounce, 5); ok {
+		fw.Close()
+		t.Fatal("10 files must exceed a cost cap of 5")
+	}
+	fw, ok := newFSWatcher(context.Background(), runner, fsWatchDebounce, 500)
+	if !ok {
+		t.Fatal("500 cost must fit a 10-file tree")
+	}
+	fw.Close()
 }

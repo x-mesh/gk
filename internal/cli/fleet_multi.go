@@ -115,12 +115,12 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int) s
 	count := fmt.Sprintf("%d %s · %d %s",
 		repos, pluralize(repos, "repo", "repos"),
 		wts, pluralize(wts, "worktree", "worktrees"))
-	left := lipgloss.NewStyle().Bold(true).Render("gk fleet") + "  " + dim.Render(count)
+	left := lipgloss.NewStyle().Bold(true).Render("gk watch") + "  " + dim.Render(count)
 	header := left
 	if !now.IsZero() {
 		clockText := now.Format("15:04:05")
 		clock := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("●") + dim.Render(" "+clockText)
-		gap := width - runewidth.StringWidth("gk fleet  "+count) - runewidth.StringWidth("● "+clockText)
+		gap := width - runewidth.StringWidth("gk watch  "+count) - runewidth.StringWidth("● "+clockText)
 		if gap < 1 {
 			gap = 1
 		}

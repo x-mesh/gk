@@ -23,34 +23,19 @@ import (
 )
 
 func init() {
+	// `gk fleet` is the deprecated spelling of `gk watch` (see watch.go for
+	// the canonical command and its documentation). Kept for one release as a
+	// hidden alias because orchestrators pipe `gk fleet --events` / `--json`:
+	// the machine contracts keep working while the stderr notice steers
+	// humans to the new name. One behavioral difference is preserved: fleet
+	// never auto-routes a single-worktree repo into the plain watch feed.
 	cmd := &cobra.Command{
-		Use:   "fleet",
-		Short: "Live multi-worktree supervision dashboard",
-		Long: `Watch every worktree at once: branch, ahead/behind, dirty/conflict state,
-the last-changed file, last activity, any paused operation, and which one is
-current. Built for supervising parallel work (e.g. several AI agents each in
-their own worktree) — answers "who is dirty / stuck / stale / ready to land"
-without a per-worktree status probe.
-
-A merged change feed below the table shows which files — and which
-functions — changed in which worktree as they happen, in the same
-file · function · ± form as 'gk status --watch' ('e' toggles the pane;
---feed-stats=false drops the per-poll diff runs and shows file names only).
-When filesystem watches can be established the dashboard reacts to edits
-instantly and the poll drops to a slow heartbeat; otherwise it polls on
---interval. j/k move, enter cycles the cursor panel (status fields → that
-worktree's own live change feed → off), w zooms into that worktree's live
-feed in place ('gk status --watch' embedded: esc pops back, [ and ] hop
-between worktrees), f/s cycle the view filter (all→busy→stuck) and sort
-(default→activity→status), r refreshes, q quits.
-
-Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
-snapshot. --events streams fleet changes as NDJSON instead — file-changed /
-status-changed / op-start / op-end / land-ready events an orchestrator can
-subscribe to rather than polling; fleet.notify config maps conflict / paused /
-land_ready transitions to a shell hook.`,
-		Args: cobra.NoArgs,
-		RunE: runFleet,
+		Use:        "fleet",
+		Short:      "Deprecated alias of `gk watch` (always the dashboard view)",
+		Hidden:     true,
+		Deprecated: "use `gk watch` — same dashboard, clearer name. `gk fleet` will be removed in a future release.",
+		Args:       cobra.NoArgs,
+		RunE:       runFleet,
 	}
 	addFleetFlags(cmd)
 	rootCmd.AddCommand(cmd)
@@ -741,14 +726,14 @@ func renderFleet(v fleetView) string {
 // no worktree changes (mirrors `gk status --watch`).
 func renderFleetHeader(entries []fleetEntryJSON, now time.Time, width int, dim lipgloss.Style) string {
 	count := fmt.Sprintf("%d %s", len(entries), pluralize(len(entries), "worktree", "worktrees"))
-	left := lipgloss.NewStyle().Bold(true).Render("gk fleet") + "  " + dim.Render(count)
+	left := lipgloss.NewStyle().Bold(true).Render("gk watch") + "  " + dim.Render(count)
 	header := left
 
 	if !now.IsZero() {
 		clockText := now.Format("15:04:05")
 		clock := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("●") +
 			dim.Render(" "+clockText)
-		gap := width - runewidth.StringWidth("gk fleet  "+count) - runewidth.StringWidth("● "+clockText)
+		gap := width - runewidth.StringWidth("gk watch  "+count) - runewidth.StringWidth("● "+clockText)
 		if gap < 1 {
 			gap = 1
 		}

@@ -52,7 +52,7 @@ func TestFleetZoomOpen(t *testing.T) {
 	}
 
 	crumb := fm.zoomBreadcrumb()
-	for _, want := range []string{"feat/auth", "(2/2)", "esc fleet"} {
+	for _, want := range []string{"feat/auth", "(2/2)", "esc back"} {
 		if !strings.Contains(crumb, want) {
 			t.Errorf("breadcrumb missing %q in:\n%s", want, crumb)
 		}

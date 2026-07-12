@@ -2558,9 +2558,11 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ---
 
-## gk fleet
+## gk watch
 
-Live multi-worktree supervision dashboard: every worktree at once — branch, ahead/behind, dirty/conflict state, the last-changed file, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + a consolidated per-worktree change scan).
+Live supervision at whatever altitude fits the repo (alias: `gk w`): with several worktrees — or the multi-repo flags — it opens the **dashboard**; with exactly one worktree it goes straight into the [`gk status --watch`](#gk-status) change feed. `gk fleet` is the **deprecated former name**, kept one release as a hidden alias (a stderr notice points here; the only behavioral difference is that `fleet` never auto-routes to the single-worktree feed). Config keys stay under `fleet.*`.
+
+The dashboard shows every worktree at once — branch, ahead/behind, dirty/conflict state, the last-changed file, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + a consolidated per-worktree change scan).
 
 The TUI renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `paused` / `ahead` / `behind` / `diverged`). Below it a merged **change feed** streams which files changed in which worktree as they happen (`e` toggles; the startup dirty set is a silent baseline — only changes from then on are shown, ring-capped at 200). When filesystem watches can be established the dashboard reacts to edits instantly and the poll drops to a 12s heartbeat (N worktrees split one process descriptor budget; a worktree too big for its share rides the heartbeat); otherwise it polls on `--interval`. All probes run with `GIT_OPTIONAL_LOCKS=0` so they never contend on `index.lock` with the agents editing those trees.
 
@@ -2571,21 +2573,21 @@ Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable sn
 For an orchestrator, polling `--json` snapshots and diffing them is busywork — `--events` does the diff server-side and streams one NDJSON event per line: `file-changed` (`file`, `note: new|re-touched|cleared`; with `--feed-stats` also `added`/`removed` and `symbols` — the changed-function names from git's hunk contexts), `status-changed` (`from`/`to`), `op-start`/`op-end` (`operation`), and `land-ready`. Every event carries `ts`, `repo`, `branch`, and `path` (the worktree). Under `GK_AGENT=1` a single `{"schema":1,"state":"streaming","result":{"mode":"fleet-events"}}` header frame precedes the events so envelope consumers recognize the mode switch. Runs until interrupted; driven by filesystem events when available, with the same heartbeat fallback as the TUI.
 
 ```
-GK_AGENT=1 gk fleet --events | while read -r ev; do …; done
+GK_AGENT=1 gk watch --events | while read -r ev; do …; done
 ```
 
 The opt-in `fleet.notify` config maps a transition to a shell hook (`sh -c`, with `GK_FLEET_KIND/BRANCH/PATH/REPO/OPERATION` in the environment; output discarded). Keys: `conflict` (a worktree hit conflicts), `paused` (an operation stopped mid-way), `land_ready` (a branch became fully merged into base). Hooks fire from both the TUI and `--events`.
 
 ### Multi-repo mode
 
-By default `gk fleet` watches the current repo's worktrees. For supervising agents spread across **separate repositories** (e.g. `~/work/project/agentic/{gk,aic-rust,…}`), opt into multi-repo mode with `--repos`, `--scan`, or `--all`. The snapshot then spans every discovered repo; the TUI groups worktrees under a per-repo header you can fold/unfold, and `--json` stays a flat array — each entry tagged with `repo`/`repo_root` so a consumer groups with `jq 'group_by(.repo_root)'`.
+By default `gk watch` watches the current repo's worktrees. For supervising agents spread across **separate repositories** (e.g. `~/work/project/agentic/{gk,aic-rust,…}`), opt into multi-repo mode with `--repos`, `--scan`, or `--all`. The snapshot then spans every discovered repo; the TUI groups worktrees under a per-repo header you can fold/unfold, and `--json` stays a flat array — each entry tagged with `repo`/`repo_root` so a consumer groups with `jq 'group_by(.repo_root)'`.
 
-Discovery dedups by `git rev-parse --git-common-dir`, so a repo reached via a symlink or one of its linked worktrees collapses to a single entry. A repo that fails or times out (3s) becomes one synthetic `status:"error"` entry rather than silently vanishing. fleet stays local-only (never fetches) and runs its probes with `GIT_OPTIONAL_LOCKS=0` so it does not contend on `index.lock` with the agents editing those repos. A bare `gk fleet` inside a repo stays single-repo even if `fleet.repos`/`fleet.scan` are configured — config auto-activates multi-repo only when you run from outside any repo; use `--all` to force it from inside one.
+Discovery dedups by `git rev-parse --git-common-dir`, so a repo reached via a symlink or one of its linked worktrees collapses to a single entry. A repo that fails or times out (3s) becomes one synthetic `status:"error"` entry rather than silently vanishing. fleet stays local-only (never fetches) and runs its probes with `GIT_OPTIONAL_LOCKS=0` so it does not contend on `index.lock` with the agents editing those repos. A bare run inside a repo stays single-repo even if `fleet.repos`/`fleet.scan` are configured — config auto-activates multi-repo only when you run from outside any repo; use `--all` to force it from inside one.
 
 ### Synopsis
 
 ```
-gk fleet [--interval <seconds>] [--feed-stats] [--events]
+gk watch [--interval <seconds>] [--feed-stats] [--events]
          [--repos <path,…>] [--scan <dir,…>] [--all] [--depth <n>]
 ```
 
@@ -2622,19 +2624,6 @@ fleet:
 `j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` (or `enter` on a header) folds/unfolds a repo group.
 
 With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, …}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
-
----
-
-## gk watch
-
-One entry point for live supervision that picks the right zoom level: with several worktrees (or the multi-repo flags) it opens the `gk fleet` dashboard; with exactly one worktree it goes straight into the `gk status --watch` change feed. Inside fleet, `w` zooms into a worktree's feed in place (`esc` pops back, `[` / `]` hop between worktrees) — `gk watch` is the same live view at whatever altitude fits the repo. Alias: `gk w`.
-
-`gk fleet` and `gk status --watch` remain the explicit entry points; this command only routes between them. Flags mirror `gk fleet`, and the machine-readable modes — `--json` (or `GK_AGENT=1`) snapshot, `--events` NDJSON stream — behave exactly like fleet's regardless of worktree count, so orchestrators get one stable contract.
-
-```
-gk watch [--interval <seconds>] [--feed-stats] [--events]
-         [--repos <path,…>] [--scan <dir,…>] [--all] [--depth <n>]
-```
 
 ---
 
@@ -2818,7 +2807,7 @@ gk bisect reset                                    # end a manual bisect, remove
 ### Modes
 
 - **Automatic** (`-- <command>`): delegates to `git bisect run` in the worktree and returns the culprit in one call: `{culprit:{sha,subject,author,date}, good, bad, tested}`.
-- **Manual** (no `--` command): starts a bisect and pauses with `state:"paused"` on the first candidate, reporting the worktree to test and `{current, remaining, resume}`. Test it, then `gk bisect good|bad|skip` to advance; the session persists in `<git-common-dir>/gk/bisect.json` across invocations until the culprit is found or `gk bisect reset` ends it. `gk context` shows an active bisect (a `bisect` field + next actions) and `gk fleet` flags the worktree's state as `bisect`.
+- **Manual** (no `--` command): starts a bisect and pauses with `state:"paused"` on the first candidate, reporting the worktree to test and `{current, remaining, resume}`. Test it, then `gk bisect good|bad|skip` to advance; the session persists in `<git-common-dir>/gk/bisect.json` across invocations until the culprit is found or `gk bisect reset` ends it. `gk context` shows an active bisect (a `bisect` field + next actions) and `gk watch` flags the worktree's state as `bisect`.
 
 ---
 
@@ -3850,7 +3839,7 @@ gk changelog --dry-run
 
 Maps file extensions to git's **built-in language diff drivers** in `.git/info/attributes` — the repo-local attributes file git consults in addition to any versioned `.gitattributes`. Nothing lands in the working tree, teammates are unaffected, and linked worktrees share the one file (it lives in the common git dir).
 
-Why: git's hunk headers carry a function context (`@@ ... @@ def foo(...)`), and everything in gk that names *what* changed reads it — the live-feed symbols of `gk status --watch` and `gk fleet --feed-stats`, `gk diff --digest`, and the conflict symbols of `gk context --include=conflict`. Without a driver mapping, git's generic heuristic can't read CSS selectors or indented Python methods; with it, those names resolve correctly (`~ cost.css · .credit-expiry +1 -1`).
+Why: git's hunk headers carry a function context (`@@ ... @@ def foo(...)`), and everything in gk that names *what* changed reads it — the live-feed symbols of `gk status --watch` and `gk watch`, `gk diff --digest`, and the conflict symbols of `gk context --include=conflict`. Without a driver mapping, git's generic heuristic can't read CSS selectors or indented Python methods; with it, those names resolve correctly (`~ cost.css · .credit-expiry +1 -1`).
 
 Only built-in git drivers are referenced (`python`, `golang`, `rust`, `css`, `kotlin`, …) — no git config is written. The block is fenced with marker comments; `install` is idempotent, `uninstall` removes only the block (and deletes the file when gk's block was all it held). Inspired by weave's `setup --local`.
 

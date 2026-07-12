@@ -50,6 +50,13 @@ land_ready transitions to a shell hook.`,
 		Args: cobra.NoArgs,
 		RunE: runFleet,
 	}
+	addFleetFlags(cmd)
+	rootCmd.AddCommand(cmd)
+}
+
+// addFleetFlags registers the fleet flag set — shared with `gk watch`, whose
+// resolve helpers look the flags up by name on whichever command ran.
+func addFleetFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("interval", 2, "poll interval in seconds (TUI mode)")
 	cmd.Flags().StringSlice("repos", nil, "explicit repo paths to watch (multi-repo)")
 	cmd.Flags().StringSlice("scan", nil, "directory roots to scan for git repos (multi-repo)")
@@ -57,7 +64,6 @@ land_ready transitions to a shell hook.`,
 	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
 	cmd.Flags().Bool("feed-stats", false, "show +/- line counts in the change feed (extra git diff calls per poll)")
 	cmd.Flags().Bool("events", false, "stream fleet changes as NDJSON events instead of a dashboard (for orchestrators)")
-	rootCmd.AddCommand(cmd)
 }
 
 // fleetEntryJSON is the per-worktree fleet record — the contract `gk fleet
@@ -115,6 +121,15 @@ type fleetEntryJSON struct {
 const fleetRepoTimeout = 3 * time.Second
 
 func runFleet(cmd *cobra.Command, _ []string) error {
+	return runFleetCore(cmd, false)
+}
+
+// runFleetCore backs both `gk fleet` and `gk watch`: identical machinery,
+// except watch (autoSingleWatch) routes a single-worktree repo straight into
+// the `gk status --watch` live feed — an overview adds nothing when there is
+// only one thing to oversee. The machine-readable paths (--json / GK_AGENT /
+// --events) never reroute: their contract is fleet's regardless of count.
+func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -181,6 +196,13 @@ func runFleet(cmd *cobra.Command, _ []string) error {
 	}
 
 	interval := resolveFleetInterval(cmd)
+
+	// `gk watch` with one worktree: the single-worktree live feed IS the right
+	// zoom level — skip the one-row table and open it directly.
+	if autoSingleWatch && len(entries) == 1 {
+		statusWatchInterval = time.Duration(interval) * time.Second
+		return runChangeWatch(cmd)
+	}
 	return runFleetTUI(ctx, cmd, runner, entries, time.Duration(interval)*time.Second, feedStats)
 }
 

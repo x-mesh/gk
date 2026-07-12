@@ -481,6 +481,9 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 			if f.Hunks > 0 {
 				detail = fmt.Sprintf("%s, %d hunk(s)", detail, f.Hunks)
 			}
+			if len(f.Symbols) > 0 {
+				detail += " · in " + strings.Join(f.Symbols, ", ")
+			}
 			fmt.Fprintf(w, "  %s  %s\n", f.Path, detail)
 		}
 	}

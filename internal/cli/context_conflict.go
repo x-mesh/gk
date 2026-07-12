@@ -19,13 +19,19 @@ type contextConflictJSON struct {
 }
 
 type contextConflictFileJSON struct {
-	Path           string                     `json:"path"`
-	XY             string                     `json:"xy"`
-	Kind           string                     `json:"kind"`
-	Hunks          int                        `json:"hunks"`
-	WorktreeExists bool                       `json:"worktree_exists"`
-	Markers        bool                       `json:"markers"`
-	Stages         []contextConflictStageJSON `json:"stages,omitempty"`
+	Path           string `json:"path"`
+	XY             string `json:"xy"`
+	Kind           string `json:"kind"`
+	Hunks          int    `json:"hunks"`
+	WorktreeExists bool   `json:"worktree_exists"`
+	Markers        bool   `json:"markers"`
+	// Symbols name the nearest enclosing definition above each conflict
+	// marker — "which function is fighting", the piece a path alone doesn't
+	// tell an agent. Derived locally from the worktree file (weave-style
+	// entity context, no external tooling); empty when no marker sits below
+	// a recognizable definition.
+	Symbols []string                   `json:"symbols,omitempty"`
+	Stages  []contextConflictStageJSON `json:"stages,omitempty"`
 }
 
 type contextConflictStageJSON struct {
@@ -54,6 +60,9 @@ func collectContextConflict(ctx context.Context, runner *git.ExecRunner, c conte
 		files[i].Hunks = conflictHunkCount(runner.Dir, files[i].Path)
 		files[i].Markers = files[i].Hunks > 0
 		files[i].WorktreeExists = contextConflictWorktreeExists(runner.Dir, files[i].Path)
+		if files[i].Markers {
+			files[i].Symbols = conflictHunkSymbols(runner.Dir, files[i].Path)
+		}
 	}
 	sort.SliceStable(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return &contextConflictJSON{
@@ -132,6 +141,50 @@ func isZeroObjectID(s string) bool {
 		}
 	}
 	return true
+}
+
+// conflictHunkSymbols reads the conflicted worktree file and, for each
+// `<<<<<<<` marker, walks upward to the nearest definition line (per-extension
+// patterns — the same table the live feeds use) to name the entity the
+// conflict sits in. "Nearest definition above" is a heuristic, not a scope
+// parse: a conflict in the gap between two functions names the one above it,
+// which is still the right neighborhood for a human or agent to jump to.
+// Capped and deduped like every symbol list; best-effort (unreadable or
+// oversized files yield nil).
+func conflictHunkSymbols(repoDir, path string) []string {
+	p := path
+	if !filepath.IsAbs(p) {
+		if repoDir == "" {
+			repoDir, _ = os.Getwd()
+		}
+		p = filepath.Join(repoDir, path)
+	}
+	fi, err := os.Stat(p)
+	if err != nil || fi.Size() > untrackedProfileMaxBytes {
+		return nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	pats := definitionPatternsFor(path)
+	lines := strings.Split(string(data), "\n")
+	var syms []string
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "<<<<<<<") {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			if name := matchDefinition(pats, lines[j]); name != "" {
+				syms = appendSymbol(syms, name)
+				break
+			}
+		}
+		if len(syms) >= changeProfileSymbolCap {
+			break
+		}
+	}
+	return syms
 }
 
 func contextConflictWorktreeExists(repoDir, path string) bool {

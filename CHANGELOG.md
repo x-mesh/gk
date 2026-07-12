@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.118.0] - 2026-07-12
+
 ### Added
 
 - **`gk watch` — 감시 진입점 하나로 줌 레벨 자동 선택.** 워크트리가 여러 개(또는 멀티-repo 플래그)면 `gk fleet` 대시보드를, 정확히 하나면 `gk status --watch` 체인지 피드를 바로 연다. 플래그는 `gk fleet`을 그대로 미러하고, `--json`/`GK_AGENT`/`--events`는 워크트리 수와 무관하게 항상 fleet의 기계 계약으로 동작한다 — 오케스트레이터 입장에서 계약이 갈라지지 않는다. `gk fleet`과 `gk status --watch`는 명시적 진입점으로 그대로 남는다. 별칭 `gk w`.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk commit`의 "commitlint failed" 에러가 어느 규칙에 걸렸는지 말한다.** 종전엔 3회 재시도 실패 시 마지막 subject만 보여줘서, 겉보기에 멀쩡한 문장이 왜 반려됐는지(repo가 좁힌 `commit.types`? `subject-max`?) 추리해야 했다 — 이제 마지막 시도의 위반 목록(`violations: type-enum: ...`)이 에러에 실린다. 또 **그룹 타입이 허용 목록 밖이면 compose 전에 즉시 실패**한다: 타입은 그룹에 고정돼 있어 모델이 재작성으로 못 고치는 위반인데도 LLM 호출 3회를 태우던 것을, 분류 직후 검증으로 바꾸고 수정 방법(`commit.types`에 추가 또는 `--plan`)을 에러에 안내한다.
+
 ### Added
 
 - **`gk watch` 멀티-repo 뷰가 기본으로 "지금 작업 중인 것만" 보여준다.** 넓은 스캔은 대부분 몇 주째 안 만진 프로젝트를 찾아내는데, 대시보드는 작업 중인 것을 보라고 있는 물건이다 — 새 **`active` 필터**(내가 서 있는 워크트리 · paused op · 1시간 내 활동; 2개월 방치된 dirty는 활성이 아니다 — lastActive가 dirty 파일 mtime을 이미 반영하므로 "dirty이면서 최근"만 통과. `current`의 의미도 바로잡았다: 종전 멀티-repo gather는 repo마다 체크아웃된 루트 워크트리를 current로 표시해 스캔된 모든 repo가 "활성"이 되는 구멍이 있었다 — 이제 current는 프로세스가 실제로 서 있는 워크트리 하나만 가리키며, 부모 디렉토리 스캔에서는 보통 아무 것도 아니다)가 멀티-repo의 시작 필터가 된다. 숨김은 절대 조용하지 않다: 헤더가 `5/21 repos`로 읽히고, 전부 숨으면 "press f to widen" 안내가 뜬다. `f` 순환에 active가 편입(all→active→busy→stuck)됐고 `--filter <mode>`/`fleet.filter`로 시작값을 고정할 수 있다(오타는 모든 경로에서 즉시 에러). 단일 repo는 종전대로 all 시작. **활동 시각화**도 분리했다: 상태 dot의 초록은 "ahead"라는 뜻이지 활동이 아니었어서, 활동은 age 열이 활성 시간창 안에 있을 때 초록으로 표시한다 — "지금 움직이는 워크트리"가 색으로 보인다. 같은 판정을 쓰는 워처 예산도 방치-dirty를 활성으로 치던 것을 바로잡았다.

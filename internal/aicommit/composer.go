@@ -3,6 +3,7 @@ package aicommit
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -105,6 +106,21 @@ func ComposeAll(
 		AllowedTypes:     opts.AllowedTypes,
 		ScopeRequired:    opts.ScopeRequired,
 		MaxSubjectLength: opts.MaxSubjectLength,
+	}
+
+	// A group whose TYPE the lint rules reject can never compose clean: the
+	// type is pinned to the group (not the model), so every retry would fail
+	// the same type-enum check while burning an LLM call per attempt. The
+	// classifier is told the allowed types, so this only fires on classifier
+	// drift or a config mismatch — fail fast and name the fix instead.
+	if len(rules.AllowedTypes) > 0 {
+		for _, grp := range groups {
+			if !commitlint.TypeAllowed(grp.Type, rules.AllowedTypes) {
+				return nil, fmt.Errorf(
+					"group type %q is not an allowed commit type (%s) — add it to commit.types in .gk.yaml, or commit with an explicit plan (gk commit --plan -)",
+					grp.Type, strings.Join(rules.AllowedTypes, ", "))
+			}
+		}
 	}
 
 	// Index-aligned output: each goroutine writes its own slot, so no
@@ -231,8 +247,14 @@ func composeOne(
 		})
 	}
 
-	return Message{}, fmt.Errorf("commitlint failed after %d attempts (last subject=%q)",
-		maxAttempts, last.Subject)
+	// Name the violated rules: "commitlint failed" alone sends the user
+	// hunting through config for WHICH rule — the last attempt's issues are
+	// the diagnosis (e.g. a type-enum violation reveals a group type the
+	// repo's commit.types doesn't allow, which no amount of re-composing can
+	// fix).
+	lastIssues := issuesToStrings(lintMessage(last, g, rules))
+	return Message{}, fmt.Errorf("commitlint failed after %d attempts (last subject=%q; violations: %s)",
+		maxAttempts, last.Subject, strings.Join(lastIssues, "; "))
 }
 
 // lintMessage assembles the full "type(scope): subject" header

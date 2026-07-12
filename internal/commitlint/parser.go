@@ -185,6 +185,14 @@ func Lint(m Message, r Rules) []Issue {
 	return issues
 }
 
+// TypeAllowed reports whether t is one of the allowed commit types
+// (case-insensitive). Exported so callers that pin a type BEFORE composing a
+// message (gk commit's classifier groups) can validate it up front instead of
+// discovering the type-enum violation after the fact.
+func TypeAllowed(t string, allowed []string) bool {
+	return containsIgnoreCase(allowed, t)
+}
+
 func containsIgnoreCase(list []string, s string) bool {
 	sl := strings.ToLower(s)
 	for _, v := range list {

@@ -78,6 +78,35 @@ func TestComposeAllFailsAfterMaxAttempts(t *testing.T) {
 	if !strings.Contains(err.Error(), "commitlint failed after 3 attempts") {
 		t.Errorf("err: %v", err)
 	}
+	// The error must NAME the violated rule — "commitlint failed" alone is
+	// undiagnosable (real case: a repo config narrowed the rules and the
+	// user had no way to see which one fired).
+	if !strings.Contains(err.Error(), "violations:") || !strings.Contains(err.Error(), "subject-max-length") {
+		t.Errorf("error must carry the violated rules, got: %v", err)
+	}
+}
+
+// TestComposeAllRejectsDisallowedGroupType: a group type outside the lint
+// rules can never compose clean (the type is pinned to the group), so
+// ComposeAll fails fast with the config fix — zero LLM calls burned.
+func TestComposeAllRejectsDisallowedGroupType(t *testing.T) {
+	p := provider.NewFake()
+	var calls int
+	p.OnCompose = func(provider.ComposeInput) { calls++ }
+	groups := []provider.Group{{Type: "build", Files: []string{"Dockerfile"}}}
+	_, err := ComposeAll(context.Background(), p, groups, nil, ComposeOptions{
+		AllowedTypes:     []string{"feat", "fix", "chore"},
+		MaxSubjectLength: 72,
+	})
+	if err == nil {
+		t.Fatal("want fail-fast error for disallowed group type")
+	}
+	if !strings.Contains(err.Error(), `group type "build"`) || !strings.Contains(err.Error(), "commit.types") {
+		t.Errorf("error must name the type and the config fix, got: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("no LLM call should be spent on an unfixable group, got %d", calls)
+	}
 }
 
 func TestComposeAllFeedsRetryContext(t *testing.T) {

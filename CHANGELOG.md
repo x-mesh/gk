@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **라이브 피드가 파일만이 아니라 "어느 함수"가 바뀌었는지 보여준다.** `gk status --watch`의 이벤트 라인과 fleet의 병합 피드·detail 패널(feed-stats 모드)이 변경된 함수 이름을 표시한다 — `~ auth.go · validateToken +12 −3`. 이름은 git이 hunk header에 붙이는 함수 컨텍스트에서 추출하므로(sem 같은 외부 도구·tree-sitter·`.gitattributes` 설정 불필요) 추가 의존성이 없고, 기존 `--numstat` 2회를 `diff -U0` 파싱 2회로 바꿔 ±라인 수와 함수명을 같은 서브프로세스 예산으로 얻는다. 경로당 3개 상한, Go 리시버·`def`·시그니처 괄호를 처리하는 이름 추출기 포함. `gk fleet --events`의 `file-changed` 이벤트에도 `symbols` 배열이 실린다(feed-stats 모드, append-only) — 오케스트레이터가 "어느 파일"이 아니라 "어느 함수"에 반응할 수 있다.
+
 ## [0.119.0] - 2026-07-12
 
 ### Added

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.120.0] - 2026-07-13
+
 ### Fixed
 
 - **`commit.types`를 좁힌 repo에서 `gk commit`이 자기 라벨에 걸려 100% 실패하던 문제.** 경로 휴리스틱이 `go.sum`·`Makefile`·lockfile을 무조건 `build`로, CI 파일을 `ci`로 찍는데(LLM 결과 위에도 덮어씀), repo가 `commit.types: [fix, docs, feat, chore]`처럼 목록을 좁혀놓으면 gk가 LLM에게는 "이 타입만 써라"라고 말해놓고 자기 오버라이드는 그걸 무시해 — compose가 반드시 거절할 타입을 gk 스스로 만들어냈다. 이제 분류 결과에서 허용 목록 밖 타입은 **chore로 접는다**(Conventional Commits의 유지보수 catch-all; rationale에 `folded from "build"` 명시, 같은 타입·스코프 그룹은 병합). chore마저 허용 안 된 설정이면 접지 않고 종전 fail-fast가 설정 수정을 안내한다. 기본 `commit.types`(전체 세트)에서는 동작 변화 없음.

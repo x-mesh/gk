@@ -3,6 +3,7 @@ package aicommit
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -383,6 +384,179 @@ func TestToProviderFilesPropagatesOrigPath(t *testing.T) {
 }
 
 // errUnexpected is returned by fake hooks that should never fire.
+// TestConstrainTypes covers the fold policy directly: a type the repo's
+// commit.types rejects becomes "chore" (merging with an existing chore
+// group of the same scope), while an empty allow-list, an allowed type,
+// or a config without chore leave the groups untouched.
+func TestConstrainTypes(t *testing.T) {
+	cases := []struct {
+		name    string
+		groups  []provider.Group
+		allowed []string
+		want    []string // expected group types, in order
+	}{
+		{
+			name:    "empty-allowed-passes-through",
+			groups:  []provider.Group{{Type: "build", Files: []string{"go.sum"}}},
+			allowed: nil,
+			want:    []string{"build"},
+		},
+		{
+			name:    "allowed-type-untouched",
+			groups:  []provider.Group{{Type: "build", Files: []string{"go.sum"}}},
+			allowed: []string{"feat", "build", "chore"},
+			want:    []string{"build"},
+		},
+		{
+			name:    "disallowed-folds-to-chore",
+			groups:  []provider.Group{{Type: "build", Files: []string{"go.sum"}}},
+			allowed: []string{"fix", "docs", "feat", "chore"},
+			want:    []string{"chore"},
+		},
+		{
+			name: "fold-merges-into-existing-chore",
+			groups: []provider.Group{
+				{Type: "chore", Files: []string{"a.go"}},
+				{Type: "build", Files: []string{"go.sum", "Makefile"}},
+			},
+			allowed: []string{"fix", "feat", "chore"},
+			want:    []string{"chore"},
+		},
+		{
+			name:    "no-chore-fallback-leaves-groups-for-failfast",
+			groups:  []provider.Group{{Type: "build", Files: []string{"go.sum"}}},
+			allowed: []string{"fix", "feat"},
+			want:    []string{"build"},
+		},
+		{
+			name:    "case-insensitive-allowed",
+			groups:  []provider.Group{{Type: "BUILD", Files: []string{"go.sum"}}},
+			allowed: []string{"Fix", "Chore"},
+			want:    []string{"chore"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := constrainTypes(tc.groups, tc.allowed)
+			if len(got) != len(tc.want) {
+				t.Fatalf("constrainTypes = %+v, want types %v", got, tc.want)
+			}
+			for i, w := range tc.want {
+				if !strings.EqualFold(got[i].Type, w) {
+					t.Errorf("group[%d].Type = %q, want %q", i, got[i].Type, w)
+				}
+			}
+		})
+	}
+
+	// The merge case must keep every file and note the fold in the rationale.
+	merged := constrainTypes([]provider.Group{
+		{Type: "chore", Files: []string{"a.go"}},
+		{Type: "build", Files: []string{"go.sum"}, Rationale: "heuristic path-based"},
+	}, []string{"chore"})
+	if len(merged) != 1 || len(merged[0].Files) != 2 {
+		t.Fatalf("merge lost files: %+v", merged)
+	}
+}
+
+// TestClassifyFoldsDisallowedHeuristicType is the user-reported failure in
+// miniature: a repo narrows commit.types to (fix, docs, feat, chore), yet the
+// path heuristic stamps go.sum as "build" — a label the composer is
+// guaranteed to reject. Classify must hand back only allowed types.
+func TestClassifyFoldsDisallowedHeuristicType(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyErrs = []error{errUnexpected{}}
+
+	files := []FileChange{
+		{Path: "go.sum", Status: "modified"},
+		{Path: "internal/cli/root.go", Status: "modified"},
+	}
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
+		HeuristicOnly: true,
+		AllowedTypes:  []string{"fix", "docs", "feat", "chore"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	// build folds into the chore group root.go already produced — one group.
+	if len(groups) != 1 || groups[0].Type != "chore" || len(groups[0].Files) != 2 {
+		t.Fatalf("want one chore group holding both files, got %+v", groups)
+	}
+}
+
+// TestClassifyDefiniteFastPathFoldsDisallowedBuild guards the interplay of
+// fold and fast path: definiteness is judged on the RAW heuristic kind, so a
+// lockfile/build-only change still skips the LLM even when "build" is not
+// allowed — it just ships under the repo's catch-all type.
+func TestClassifyDefiniteFastPathFoldsDisallowedBuild(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyErrs = []error{errUnexpected{}}
+
+	// 6 build-kind files (> HybridFileLimit) so isSmallHomogeneous does not
+	// short-circuit; only the definite fast path can keep the LLM out.
+	files := []FileChange{
+		{Path: "go.sum"},
+		{Path: "Makefile"},
+		{Path: "Dockerfile"},
+		{Path: "package-lock.json"},
+		{Path: "yarn.lock"},
+		{Path: "pnpm-lock.yaml"},
+	}
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 5,
+		AllowedTypes:    []string{"fix", "docs", "feat", "chore"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if count(p.Calls, "Classify") != 0 {
+		t.Errorf("definite build-only input must still skip the LLM, calls=%v", p.Calls)
+	}
+	if len(groups) != 1 || groups[0].Type != "chore" || len(groups[0].Files) != 6 {
+		t.Fatalf("want one folded chore group with 6 files, got %+v", groups)
+	}
+}
+
+// TestClassifyLLMOverrideFoldsDisallowedType closes the LLM path: even when
+// the model answers within the allowed set, overrideWithPathRules stamps the
+// heuristic "build" back onto go.sum — the fold must catch that too.
+func TestClassifyLLMOverrideFoldsDisallowedType(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{
+			{Type: "feat", Files: []string{
+				"internal/a.go", "internal/b.go", "internal/c.go",
+				"internal/d.go", "internal/e.go", "internal/f.go", "go.sum",
+			}},
+		},
+	}}
+	files := []FileChange{
+		{Path: "internal/a.go"}, {Path: "internal/b.go"}, {Path: "internal/c.go"},
+		{Path: "internal/d.go"}, {Path: "internal/e.go"}, {Path: "internal/f.go"},
+		{Path: "go.sum"},
+	}
+	groups, err := classifyGroups(context.Background(), p, files, ClassifyOptions{
+		HybridFileLimit: 5,
+		AllowedTypes:    []string{"fix", "docs", "feat", "chore"},
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	byType := map[string][]string{}
+	for _, g := range groups {
+		byType[g.Type] = append(byType[g.Type], g.Files...)
+	}
+	if len(byType["feat"]) != 6 {
+		t.Errorf("feat group should keep the 6 source files, got %+v", groups)
+	}
+	if len(byType["chore"]) != 1 || byType["chore"][0] != "go.sum" {
+		t.Errorf("go.sum must land in a folded chore group, got %+v", groups)
+	}
+	if len(byType["build"]) != 0 {
+		t.Errorf("no build group may survive a narrowed commit.types, got %+v", groups)
+	}
+}
+
 type errUnexpected struct{}
 
 func (errUnexpected) Error() string { return "classifier called provider when it shouldn't have" }

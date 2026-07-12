@@ -2,11 +2,13 @@ package aicommit
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/commitlint"
 )
 
 // ClassifyOptions shapes Classify behaviour.
@@ -55,7 +57,8 @@ func Classify(
 		return provider.ClassifyResult{}, nil
 	}
 
-	heuristic := heuristicGroups(safe)
+	rawHeuristic := heuristicGroups(safe)
+	heuristic := constrainTypes(rawHeuristic, opts.AllowedTypes)
 	if opts.HeuristicOnly || isSmallHomogeneous(safe, opts.HybridFileLimit) {
 		return provider.ClassifyResult{Groups: heuristic, Model: heuristicModel}, nil
 	}
@@ -70,7 +73,12 @@ func Classify(
 	// Skipped when ScopeRequired: heuristic groups have no scope, so the
 	// scopeless message would fail commitlint — defer to the LLM, which can
 	// infer one.
-	if len(heuristic) == 1 && isDefiniteKind(heuristic[0].Type) && !opts.ScopeRequired {
+	// Definiteness is a property of the PATH (the raw heuristic kind), while
+	// the returned label may have been folded by constrainTypes — so the
+	// check reads rawHeuristic and the return ships the folded groups. A
+	// lockfile-only change in a repo whose commit.types lacks "build" still
+	// skips the LLM; it just lands as the repo's catch-all type.
+	if len(rawHeuristic) == 1 && isDefiniteKind(rawHeuristic[0].Type) && !opts.ScopeRequired {
 		return provider.ClassifyResult{Groups: heuristic, Model: heuristicModel}, nil
 	}
 
@@ -102,10 +110,59 @@ func Classify(
 		tokens += res.TokensUsed
 	}
 	return provider.ClassifyResult{
-		Groups:     overrideWithPathRules(groups, safe),
+		Groups:     constrainTypes(overrideWithPathRules(groups, safe), opts.AllowedTypes),
 		Model:      model,
 		TokensUsed: tokens,
 	}, nil
+}
+
+// constrainTypes folds group types the repo's commit.types rejects into
+// "chore". The path heuristics (heuristicType, and overrideWithPathRules
+// stamping their verdict over the LLM's) know nothing about AllowedTypes, so
+// in a repo that deliberately narrows commit.types they would emit a type the
+// composer is guaranteed to reject — gk failing on a label gk itself
+// invented. Chore is the Conventional Commits catch-all for maintenance
+// work, which is exactly what the definite kinds (test/docs/ci/build) are.
+// When chore itself is not allowed there is no honest fallback: the groups
+// pass through unchanged and the composer's fail-fast names the config fix.
+// Folding can leave two groups with the same (type, scope); those merge so
+// the user reviews one chore commit, not several.
+func constrainTypes(groups []provider.Group, allowed []string) []provider.Group {
+	if len(allowed) == 0 || len(groups) == 0 {
+		return groups
+	}
+	needsFold := false
+	for _, g := range groups {
+		if !commitlint.TypeAllowed(g.Type, allowed) {
+			needsFold = true
+			break
+		}
+	}
+	if !needsFold || !commitlint.TypeAllowed("chore", allowed) {
+		return groups
+	}
+	type key struct{ typ, scope string }
+	index := map[key]int{}
+	out := make([]provider.Group, 0, len(groups))
+	for _, g := range groups {
+		if !commitlint.TypeAllowed(g.Type, allowed) {
+			note := fmt.Sprintf("folded from %q (not in commit.types)", g.Type)
+			if g.Rationale != "" {
+				g.Rationale += "; " + note
+			} else {
+				g.Rationale = note
+			}
+			g.Type = "chore"
+		}
+		k := key{typ: strings.ToLower(g.Type), scope: g.Scope}
+		if i, seen := index[k]; seen {
+			out[i].Files = append(out[i].Files, g.Files...)
+			continue
+		}
+		index[k] = len(out)
+		out = append(out, g)
+	}
+	return out
 }
 
 // classifyChunkSize bounds how many files one provider Classify call sees.

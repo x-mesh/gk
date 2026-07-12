@@ -169,7 +169,7 @@ func runApplySanity(ctx context.Context, repoDir, home string, limit int, ts int
 	if err != nil {
 		return benchApplySanityResult{}, nil, fmt.Errorf("bench apply-sanity: temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	res := benchApplySanityResult{
 		Schema: benchApplySanitySchema,

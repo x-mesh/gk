@@ -59,12 +59,11 @@ func TestBenchApplySanityAllPass(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		switch {
-		case c.Parent == "":
+		if c.Parent == "" {
 			if c.Outcome != benchOutcomeSkipped {
 				t.Errorf("root commit %s: outcome = %q, want skipped", c.Commit, c.Outcome)
 			}
-		default:
+		} else {
 			if c.Outcome != benchOutcomePass {
 				t.Errorf("commit %s: outcome = %q, want pass (reason %q)", c.Commit, c.Outcome, c.Reason)
 			}

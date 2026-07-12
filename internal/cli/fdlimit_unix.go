@@ -66,5 +66,5 @@ func fdSoftLimit() uint64 {
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
 		return 0
 	}
-	return uint64(lim.Cur)
+	return uint64(lim.Cur) //nolint:unconvert // lim.Cur is int64 on freebsd/dragonfly (rlimVal); the conversion is only redundant on other unix platforms
 }

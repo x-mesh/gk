@@ -36,9 +36,10 @@ A merged change feed below the table shows which files changed in which
 worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts).
 When filesystem watches can be established the dashboard reacts to edits
 instantly and the poll drops to a slow heartbeat; otherwise it polls on
---interval. j/k move, enter toggles the detail panel, w drills into that
-worktree's 'gk status --watch', f/s cycle the view filter (all→busy→stuck)
-and sort (default→activity→status), r refreshes, q quits.
+--interval. j/k move, enter cycles the cursor panel (status fields → that
+worktree's own live change feed → off), w drills into that worktree's
+'gk status --watch', f/s cycle the view filter (all→busy→stuck) and sort
+(default→activity→status), r refreshes, q quits.
 
 Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
 snapshot. --events streams fleet changes as NDJSON instead — file-changed /
@@ -646,15 +647,25 @@ func clip(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// Detail-panel modes, cycled by enter: the field panel (default), the cursor
+// worktree's own live change feed, or no panel. The zero value is the field
+// panel so a zero fleetView keeps the legacy default.
+const (
+	fleetDetailFields = iota
+	fleetDetailFeed
+	fleetDetailOff
+	fleetDetailModes
+)
+
 // fleetView carries everything renderFleet needs. A zero `now` suppresses the
 // live wall-clock (static snapshot); a negative cursor renders no selection
-// marker; detail draws the master-detail panel for the cursor row.
+// marker; detail picks the master-detail panel mode for the cursor row.
 type fleetView struct {
 	entries []fleetEntryJSON
 	cursor  int
 	now     time.Time
 	width   int
-	detail  bool
+	detail  int
 	// feed feeds the detail panel's per-worktree event tail (may be nil).
 	feed []fleetFeedEvent
 }
@@ -682,9 +693,14 @@ func renderFleet(v fleetView) string {
 
 	// Master-detail: place the detail panel beside the table when there's room.
 	// Below ~64 cols the panel is dropped so the table stays readable.
-	if v.detail && v.cursor >= 0 && v.cursor < len(v.entries) && width >= 64 {
+	if v.detail != fleetDetailOff && v.cursor >= 0 && v.cursor < len(v.entries) && width >= 64 {
 		e := v.entries[v.cursor]
-		panel := renderFleetDetail(e, v.now, fleetEventTail(v.feed, e.Path, 3))
+		var panel string
+		if v.detail == fleetDetailFeed {
+			panel = renderFleetDetailFeed(e, v.now, fleetEventTail(v.feed, e.Path, fleetDetailFeedLines))
+		} else {
+			panel = renderFleetDetail(e, v.now, fleetEventTail(v.feed, e.Path, 3))
+		}
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
 		return b.String()
 	}
@@ -827,6 +843,47 @@ func renderFleetDetail(e fleetEntryJSON, now time.Time, tail []fleetFeedEvent) s
 		Render(strings.Join(lines, "\n"))
 }
 
+// fleetDetailFeedLines is how many of the cursor worktree's change events the
+// feed-mode detail panel shows — enough to read a burst of agent edits, small
+// enough that the panel doesn't dwarf the table.
+const fleetDetailFeedLines = 10
+
+// renderFleetDetailFeed is the detail panel's live-feed mode: the cursor
+// worktree's own slice of the merged change feed — `gk status --watch` in
+// miniature. No extra git work: the events are already collected fleet-wide,
+// this only filters them to one worktree.
+func renderFleetDetailFeed(e fleetEntryJSON, now time.Time, tail []fleetFeedEvent) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	title := e.Branch
+	if e.Current {
+		title += " *"
+	}
+	lines := []string{
+		lipgloss.NewStyle().Bold(true).Foreground(fleetStatusColor(e.Status)).Render(title),
+		dim.Render(e.Status+"  "+fleetDirtyLabel(e.Dirty)) + "  " + dim.Render("· "+fleetActiveDetail(e, now)),
+	}
+	if len(tail) == 0 {
+		lines = append(lines, dim.Render("no changes yet — watching…"))
+	}
+	for _, ev := range tail {
+		line := dim.Render(ev.ts.Format("15:04:05")) + " " + ev.glyph + " " + clip(ev.path, 30)
+		if ev.added > 0 || ev.removed > 0 {
+			line += dim.Render(fmt.Sprintf(" +%d/-%d", ev.added, ev.removed))
+		}
+		if ev.note == "new" {
+			line += dim.Render(" new")
+		}
+		lines = append(lines, line)
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("241")).
+		Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
+}
+
 func fleetSyncDetail(e fleetEntryJSON) string {
 	lbl := fleetDiffLabel(e.Ahead, e.Behind)
 	if lbl == "·" {
@@ -873,7 +930,7 @@ type fleetModel struct {
 	now      time.Time
 	width    int
 	height   int
-	detail   bool
+	detail   int // fleetDetailFields | fleetDetailFeed | fleetDetailOff
 	lastErr  error
 	quitting bool
 
@@ -1044,7 +1101,7 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// single-repo only for now).
 				m.toggleCursorRepo()
 			} else {
-				m.detail = !m.detail
+				m.detail = (m.detail + 1) % fleetDetailModes
 			}
 		case "e":
 			m.showFeed = !m.showFeed
@@ -1077,7 +1134,7 @@ func (m fleetModel) View() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
-	footer := "j/k move · enter detail · w watch · e feed · f/s view · r refresh · q quit · %s"
+	footer := "j/k move · enter panel · w watch · e feed · f/s view · r refresh · q quit · %s"
 	if m.multi {
 		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width))
 		footer = "j/k move · space fold · w watch · e feed · f/s view · r refresh · q quit · %s"
@@ -1141,7 +1198,7 @@ func runFleetTUI(ctx context.Context, runner *git.ExecRunner, initial []fleetEnt
 		interval:  interval,
 		entries:   initial,
 		now:       time.Now(),
-		detail:    true,
+		detail:    fleetDetailFields,
 		showFeed:  true,
 		feedStats: feedStats,
 		prevSigs:  map[string]map[string]fileSig{},

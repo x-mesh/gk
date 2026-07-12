@@ -189,7 +189,7 @@ func TestFleetRenderDetail(t *testing.T) {
 
 	// Cursor on the dirty branch: panel shows its parent/land fields; the paused
 	// worktree still flags ⏸ in the table.
-	out := renderFleet(fleetView{entries: entries, cursor: 1, now: now, width: 100, detail: true})
+	out := renderFleet(fleetView{entries: entries, cursor: 1, now: now, width: 100, detail: fleetDetailFields})
 	for _, want := range []string{
 		"15:04:05",    // live wall-clock in the header
 		"feat/auth",   // cursor row title in the detail panel
@@ -205,11 +205,49 @@ func TestFleetRenderDetail(t *testing.T) {
 	}
 
 	// Cursor on the paused worktree: the panel carries the op label + resume.
-	paused := renderFleet(fleetView{entries: entries, cursor: 2, now: now, width: 100, detail: true})
+	paused := renderFleet(fleetView{entries: entries, cursor: 2, now: now, width: 100, detail: fleetDetailFields})
 	for _, want := range []string{"rebase 2/5", "gk continue", "18m ago"} {
 		if !strings.Contains(paused, want) {
 			t.Errorf("paused render missing %q in:\n%s", want, paused)
 		}
+	}
+}
+
+// TestFleetRenderDetailFeed covers the detail panel's live-feed mode: only the
+// cursor worktree's events appear (with stats/notes), and an event-less
+// worktree shows the waiting placeholder instead.
+func TestFleetRenderDetailFeed(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 4, 5, 0, time.UTC)
+	entries := []fleetEntryJSON{
+		{Path: "/wt/a", Branch: "feat/auth", Dirty: &contextDirtyJSON{Unstaged: 2}, Status: "dirty", lastActive: now},
+		{Path: "/wt/b", Branch: "fix/race", Status: "clean"},
+	}
+	feed := []fleetFeedEvent{
+		{ts: now.Add(-30 * time.Second), wt: "/wt/a", path: "internal/auth/auth.go", glyph: "~", added: 12, removed: 3},
+		{ts: now.Add(-10 * time.Second), wt: "/wt/a", path: "internal/auth/auth_test.go", glyph: "+", note: "new"},
+		{ts: now.Add(-5 * time.Second), wt: "/wt/b", path: "other.go", glyph: "~"},
+	}
+
+	out := renderFleet(fleetView{entries: entries, cursor: 0, now: now, width: 100, detail: fleetDetailFeed, feed: feed})
+	for _, want := range []string{
+		"feat/auth",    // panel title
+		"auth.go",      // this worktree's event
+		"auth_test.go", // and the second one
+		"+12/-3",       // stats carried onto the event line
+		"new",          // note marker
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("feed panel missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "other.go") {
+		t.Errorf("feed panel leaked another worktree's event:\n%s", out)
+	}
+
+	// No events for the cursor worktree → placeholder, not an empty box.
+	quiet := renderFleet(fleetView{entries: entries, cursor: 1, now: now, width: 100, detail: fleetDetailFeed, feed: feed[:2]})
+	if !strings.Contains(quiet, "no changes yet") {
+		t.Errorf("quiet feed panel missing placeholder in:\n%s", quiet)
 	}
 }
 

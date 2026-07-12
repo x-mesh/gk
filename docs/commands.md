@@ -2560,7 +2560,7 @@ gk worktree remove ~/.gk/worktree/gk/feat-login
 
 ## gk watch
 
-Live supervision at whatever altitude fits the repo (alias: `gk w`): with several worktrees — or the multi-repo flags — it opens the **dashboard**; with exactly one worktree it goes straight into the [`gk status --watch`](#gk-status) change feed. `gk fleet` is the **deprecated former name**, kept one release as a hidden alias (a stderr notice points here; the only behavioral difference is that `fleet` never auto-routes to the single-worktree feed). Config keys stay under `fleet.*`.
+Live supervision at whatever altitude fits where you run it (alias: `gk w`): inside a repo with several worktrees — or with the multi-repo flags — it opens the **dashboard**; with exactly one worktree it goes straight into the [`gk status --watch`](#gk-status) change feed; **outside any repo** — say the parent directory holding all your projects — it scans one level down and opens the dashboard over every repo it finds (`cd ~/work && gk watch` is the whole invocation; clean repos start folded, `space` unfolds). `gk fleet` is the **deprecated former name**, kept one release as a hidden alias (a stderr notice points here; the only behavioral difference is that `fleet` never auto-routes to the single-worktree feed). Config keys stay under `fleet.*`.
 
 The dashboard shows every worktree at once — branch, ahead/behind, dirty/conflict state, the last-changed file, and which one is current. Built for supervising parallel work (e.g. several AI agents each in their own worktree); answers "who is dirty / stuck / behind" without a per-worktree status probe. Reuses the same enrichment `gk worktree list` uses (porcelain parse + ahead/behind + a consolidated per-worktree change scan).
 
@@ -2580,7 +2580,7 @@ The opt-in `fleet.notify` config maps a transition to a shell hook (`sh -c`, wit
 
 ### Multi-repo mode
 
-By default `gk watch` watches the current repo's worktrees. For supervising agents spread across **separate repositories** (e.g. `~/work/project/agentic/{gk,aic-rust,…}`), opt into multi-repo mode with `--repos`, `--scan`, or `--all`. The snapshot then spans every discovered repo; the TUI groups worktrees under a per-repo header you can fold/unfold, and `--json` stays a flat array — each entry tagged with `repo`/`repo_root` so a consumer groups with `jq 'group_by(.repo_root)'`.
+By default `gk watch` watches the current repo's worktrees; run from a non-repo directory it auto-scans one level down (equivalent to `--scan . --depth 1`). For supervising agents spread across **separate repositories** (e.g. `~/work/project/agentic/{gk,aic-rust,…}`), opt into multi-repo mode with `--repos`, `--scan`, or `--all`. The snapshot then spans every discovered repo; the TUI groups worktrees under a per-repo header you can fold/unfold, and `--json` stays a flat array — each entry tagged with `repo`/`repo_root` so a consumer groups with `jq 'group_by(.repo_root)'`.
 
 Discovery dedups by `git rev-parse --git-common-dir`, so a repo reached via a symlink or one of its linked worktrees collapses to a single entry. A repo that fails or times out (3s) becomes one synthetic `status:"error"` entry rather than silently vanishing. fleet stays local-only (never fetches) and runs its probes with `GIT_OPTIONAL_LOCKS=0` so it does not contend on `index.lock` with the agents editing those repos. A bare run inside a repo stays single-repo even if `fleet.repos`/`fleet.scan` are configured — config auto-activates multi-repo only when you run from outside any repo; use `--all` to force it from inside one.
 
@@ -2595,7 +2595,7 @@ gk watch [--interval <seconds>] [--feed-stats] [--events]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--interval <seconds>` | `2` | Poll interval in TUI mode (demoted to a 12s heartbeat while filesystem watches are active) |
+| `--interval <seconds>` | `2` (single) / `5` (multi) | Poll interval in TUI mode (demoted to a 12s heartbeat while filesystem watches are active) |
 | `--feed-stats` | `true` | +/− line counts and changed-function names on change-feed events, `gk status --watch` style. `--feed-stats=false` (or `fleet.feed_stats: false`) disables the two `git diff -U0` runs per **dirty** worktree per poll |
 | `--events` | `false` | Stream fleet changes as NDJSON events instead of a dashboard (for orchestrators) |
 | `--repos <path,…>` | — | Explicit repo paths to watch (enables multi-repo) |
@@ -2621,7 +2621,7 @@ fleet:
 
 ### Keys (TUI)
 
-`j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` (or `enter` on a header) folds/unfolds a repo group.
+`j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` folds/unfolds a repo group (clean repos start folded), and `enter` cycles the same cursor panel for worktree rows.
 
 With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, …}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
 

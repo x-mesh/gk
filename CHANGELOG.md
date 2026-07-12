@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk watch`가 프로젝트 부모 디렉토리에서 zero-flag로 동작한다.** git repo가 아닌 디렉토리(예: 모든 프로젝트를 담은 `~/work`)에서 맨 `gk watch`를 치면 한 단계 아래를 자동 스캔해 발견한 모든 repo의 대시보드를 연다 — `--scan . --depth 1`과 동일하되 타이핑이 없다(플래그·config는 종전대로 우선). 실측: 21 repo·32 워크트리 gather 0.56초. 넓은 스캔의 화면 밀도를 위해 **clean repo는 시작 시 접힌 상태**(`space`로 펼침 — 시작 시에만 적용, 세션 중 재접힘 없음)이고, 멀티 모드 폴링 폴백 기본이 5초로 완화됐다(fsnotify 활성 시엔 종전처럼 12s heartbeat라 무관). 멀티 모드에도 **detail/피드 패널**이 생겼다: `enter`가 단일 모드와 동일하게 커서 패널을 순환하고(fold는 `space` 전담), 워크트리 행에서 그 워크트리의 필드/라이브 피드를 옆에 띄운다.
+
 ### Changed
 
 - **`gk fleet`이 `gk watch`로 통합됐다 — 같은 대시보드, 더 명확한 이름.** `gk watch`(별칭 `gk w`)가 정식 명령이 되고 문서도 전부 이관됐다: 워크트리 여러 개면 대시보드, 하나면 `gk status --watch` 피드로 직행. TUI 헤더·줌 breadcrumb도 `gk watch`로 바뀐다. `gk fleet`은 **한 릴리스 동안 hidden deprecated 별칭**으로 남는다(`land --promote` 전례) — 실행하면 stderr로 안내가 나오고, `--events`/`--json`을 물고 있는 오케스트레이터 스크립트는 그대로 동작하며, fleet은 예전처럼 워크트리 1개여도 대시보드를 강제한다(자동 라우팅 없음). 기계 계약은 불변: `--events`의 `mode:"fleet-events"` 헤더 프레임, 이벤트 스키마, config `fleet.*` 키(`fleet.notify` 포함) 전부 그대로다.

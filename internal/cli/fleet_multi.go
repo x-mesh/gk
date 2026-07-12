@@ -81,6 +81,28 @@ func buildFleetRows(entries []fleetEntryJSON, collapsed map[string]bool) []fleet
 	return rows
 }
 
+// initialCollapsed folds repos whose roll-up is clean at startup: on a wide
+// scan (20+ repos in the reference layout) the interesting rows are the ones
+// with work in flight, and a folded clean repo is still one glance — dot +
+// roll-up — away; space unfolds. Startup-only policy: a repo that turns
+// dirty (or clean) later keeps whatever fold state the user left it in, so
+// the table never reshuffles itself mid-session.
+func initialCollapsed(entries []fleetEntryJSON) map[string]bool {
+	collapsed := map[string]bool{}
+	for i := 0; i < len(entries); {
+		root := entries[i].RepoRoot
+		j := i
+		for j < len(entries) && entries[j].RepoRoot == root {
+			j++
+		}
+		if fleetGroupRollup(entries[i:j]) == "clean" {
+			collapsed[root] = true
+		}
+		i = j
+	}
+	return collapsed
+}
+
 // fleetRowKey identifies a row across polls so the cursor stays put when the row
 // list is rebuilt. Header rows carry an empty path.
 type fleetRowKey struct {
@@ -97,8 +119,10 @@ func fleetRowKeyOf(r fleetRow) fleetRowKey {
 
 // renderFleetGrouped draws the multi-repo dashboard: a count+clock header, then
 // one line per repo group (▼/▶ fold arrow, roll-up dot, label, worktree count)
-// with each repo's worktrees indented beneath when expanded.
-func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int) string {
+// with each repo's worktrees indented beneath when expanded. detail joins the
+// cursor row's master-detail panel beside the table (worktree rows only —
+// a header row has no single entry to detail); feed feeds its event tail.
+func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, detail int, feed []fleetFeedEvent) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	if width <= 0 || width > 120 {
 		width = 80
@@ -133,6 +157,28 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int) s
 		return b.String()
 	}
 
+	table := renderFleetGroupedTable(rows, cursor, now)
+	if detail != fleetDetailOff && cursor >= 0 && cursor < len(rows) && width >= 64 {
+		if r := rows[cursor]; !r.header && r.entry.Status != "error" {
+			var panel string
+			if detail == fleetDetailFeed {
+				panel = renderFleetDetailFeed(r.entry, now, fleetEventTail(feed, r.entry.Path, fleetDetailFeedLines))
+			} else {
+				panel = renderFleetDetail(r.entry, now, fleetEventTail(feed, r.entry.Path, 3))
+			}
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
+			return b.String()
+		}
+	}
+	b.WriteString(table)
+	return b.String()
+}
+
+// renderFleetGroupedTable draws the grouped rows themselves — split out so the
+// detail panel can be joined beside just the table, not the header.
+func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	var b strings.Builder
 	for i, r := range rows {
 		caret := "  "
 		if i == cursor {
@@ -260,7 +306,8 @@ func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent
 		multi:     true,
 		repos:     repos,
 		sem:       sem,
-		collapsed: map[string]bool{},
+		collapsed: initialCollapsed(initial),
+		detail:    fleetDetailFields,
 		showFeed:  true,
 		feedStats: feedStats,
 		prevSigs:  map[string]map[string]fileSig{},

@@ -137,7 +137,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 				return gatherFleetMulti(gctx, ids, sem, fleetRepoTimeout, feedStats), nil
 			}
 			return runFleetEvents(ctx, cmd, gather,
-				time.Duration(resolveFleetInterval(cmd))*time.Second, fleetNotifyConfig())
+				time.Duration(resolveFleetInterval(cmd, true))*time.Second, fleetNotifyConfig())
 		}
 		entries := gatherFleetMulti(ctx, ids, sem, fleetRepoTimeout, feedStats)
 		if JSONOut() {
@@ -145,10 +145,10 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		}
 		// No TTY (pipe/redirect/CI): static grouped snapshot, all repos expanded.
 		if !ui.IsTerminal() {
-			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0))
+			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0, fleetDetailOff, nil))
 			return nil
 		}
-		interval := resolveFleetInterval(cmd)
+		interval := resolveFleetInterval(cmd, true)
 		return runFleetMultiTUI(ctx, cmd, ids, sem, entries, time.Duration(interval)*time.Second, feedStats)
 	}
 
@@ -162,7 +162,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 			return gatherFleet(gctx, runner, feedStats)
 		}
 		return runFleetEvents(ctx, cmd, gather,
-			time.Duration(resolveFleetInterval(cmd))*time.Second, fleetNotifyConfig())
+			time.Duration(resolveFleetInterval(cmd, false))*time.Second, fleetNotifyConfig())
 	}
 
 	entries, err := gatherFleet(ctx, runner, feedStats)
@@ -182,7 +182,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		return nil
 	}
 
-	interval := resolveFleetInterval(cmd)
+	interval := resolveFleetInterval(cmd, false)
 
 	// `gk watch` with one worktree: the single-worktree live feed IS the right
 	// zoom level — skip the one-row table and open it directly.
@@ -327,12 +327,30 @@ func resolveFleetRepos(ctx context.Context, cmd *cobra.Command) ([]repoIdent, bo
 			}
 		}
 	default:
-		// No multi flags: config opts in ONLY when not inside a repo, so a bare
-		// `gk fleet` in a repo stays single-repo (use --all to override).
-		if (len(fc.Repos) > 0 || len(fc.Scan) > 0) && currentRepoRoot(ctx) == "" {
+		// No multi flags. Inside a repo a bare run stays single-repo (use
+		// --all to override). OUTSIDE a repo, multi-repo is the only sensible
+		// reading: prefer the configured repo set, else scan the current
+		// directory one level down — so `cd ~/work && gk watch` just works as
+		// the "everything I'm running here" dashboard, zero flags. Depth 1
+		// keeps the scan from wandering into vendored/archived trees; --scan
+		// with --depth remains the explicit deeper form.
+		if currentRepoRoot(ctx) != "" {
+			return nil, false, nil
+		}
+		if len(fc.Repos) > 0 || len(fc.Scan) > 0 {
 			repos, scan = fc.Repos, fc.Scan
 		} else {
-			return nil, false, nil
+			cwd := RepoFlag()
+			if cwd == "" {
+				cwd, _ = os.Getwd()
+			}
+			if cwd == "" {
+				return nil, false, nil
+			}
+			scan = []string{cwd}
+			if !depthSet && fc.Depth == 0 {
+				depth = 1
+			}
 		}
 	}
 
@@ -341,7 +359,7 @@ func resolveFleetRepos(ctx context.Context, cmd *cobra.Command) ([]repoIdent, bo
 		return nil, true, err
 	}
 	if len(ids) == 0 {
-		return nil, true, fmt.Errorf("fleet: no git repositories found; pass --scan <dir> or --repos <path>")
+		return nil, true, fmt.Errorf("gk watch: no git repositories found; pass --scan <dir> or --repos <path>")
 	}
 	return ids, true, nil
 }
@@ -360,8 +378,12 @@ func currentRepoRoot(ctx context.Context) string {
 }
 
 // resolveFleetInterval is the TUI poll interval: the --interval flag when the
-// user set it, else fleet.interval from config, else the 2s default.
-func resolveFleetInterval(cmd *cobra.Command) int {
+// user set it, else fleet.interval from config, else a default that scales
+// with scope — 2s single-repo, 5s multi-repo. A multi gather fans out
+// repo×worktree subprocesses (measured ~0.5s wall for 21 repos), so the
+// polling FALLBACK (no fsnotify) shouldn't burn that every 2 seconds; with
+// fsnotify active the heartbeat floor (12s) makes this moot either way.
+func resolveFleetInterval(cmd *cobra.Command, multi bool) int {
 	if cmd.Flags().Changed("interval") {
 		if n, _ := cmd.Flags().GetInt("interval"); n >= 1 {
 			return n
@@ -371,8 +393,8 @@ func resolveFleetInterval(cmd *cobra.Command) int {
 	if cfg, err := config.Load(nil); err == nil && cfg != nil && cfg.Fleet.Interval > 0 {
 		return cfg.Fleet.Interval
 	}
-	if n, _ := cmd.Flags().GetInt("interval"); n >= 1 {
-		return n
+	if multi {
+		return 5
 	}
 	return 2
 }
@@ -1159,13 +1181,10 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.openZoom(path)
 			}
 		case "enter", "tab":
-			if m.multi {
-				// Multi-repo: enter folds/unfolds the repo (detail panel is
-				// single-repo only for now).
-				m.toggleCursorRepo()
-			} else {
-				m.detail = (m.detail + 1) % fleetDetailModes
-			}
+			// Both modes: cycle the cursor panel (fields → live feed → off).
+			// Multi-repo folding stays on space, so the two gestures don't
+			// share a key anymore.
+			m.detail = (m.detail + 1) % fleetDetailModes
 		case "e":
 			m.showFeed = !m.showFeed
 		case "f":
@@ -1202,10 +1221,10 @@ func (m fleetModel) View() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
-	footer := "j/k move · enter panel · w watch · e feed · f/s view · r refresh · q quit · %s"
+	footer := "j/k move · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
 	if m.multi {
-		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width))
-		footer = "j/k move · space fold · w watch · e feed · f/s view · r refresh · q quit · %s"
+		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed))
+		footer = "j/k move · space fold · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
 	} else {
 		b.WriteString(renderFleet(fleetView{
 			entries: m.viewEntries(),

@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestFleetGroupRollup(t *testing.T) {
 	cases := []struct {
@@ -118,5 +122,63 @@ func TestFleetRebuildCursorStable(t *testing.T) {
 	m.rebuildRows()
 	if got := fleetRowKeyOf(m.rows[m.cursor]); got != want {
 		t.Errorf("cursor jumped to %+v after folding b, want %+v", got, want)
+	}
+}
+
+// TestInitialCollapsed: clean repos start folded, anything with work in
+// flight starts expanded.
+func TestInitialCollapsed(t *testing.T) {
+	entries := []fleetEntryJSON{
+		{RepoRoot: "/r/clean", Repo: "clean", Status: "clean"},
+		{RepoRoot: "/r/busy", Repo: "busy", Status: "clean"},
+		{RepoRoot: "/r/busy", Repo: "busy", Status: "dirty"}, // worst-wins → expanded
+		{RepoRoot: "/r/stuck", Repo: "stuck", Status: "paused"},
+	}
+	got := initialCollapsed(entries)
+	if !got["/r/clean"] {
+		t.Error("all-clean repo should start folded")
+	}
+	if got["/r/busy"] || got["/r/stuck"] {
+		t.Errorf("repos with work must start expanded, got %v", got)
+	}
+}
+
+// TestFleetGroupedDetailPanel: in multi mode enter now cycles the cursor
+// panel (fold stays on space), and the grouped render joins the panel for a
+// worktree row — feed mode carrying the worktree's own events.
+func TestFleetGroupedDetailPanel(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 4, 5, 0, time.UTC)
+	entries := []fleetEntryJSON{
+		{Path: "/r/a/wt", RepoRoot: "/r/a", Repo: "alpha", Branch: "develop", Status: "dirty",
+			Dirty: &contextDirtyJSON{Unstaged: 2}, lastActive: now},
+		{Path: "/r/b/wt", RepoRoot: "/r/b", Repo: "beta", Branch: "main", Status: "clean"},
+	}
+	feed := []fleetFeedEvent{
+		{ts: now.Add(-9 * time.Second), wt: "/r/a/wt", path: "svc/auth.go", glyph: "~", symbols: "validateToken", added: 7, removed: 1},
+	}
+	rows := buildFleetRows(entries, nil)
+
+	// cursor on alpha's worktree row (index 1: header, worktree, header, ...)
+	out := renderFleetGrouped(rows, 1, now, 110, fleetDetailFeed, feed)
+	for _, want := range []string{"alpha", "develop", "validateToken", "+7"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped feed panel missing %q in:\n%s", want, out)
+		}
+	}
+
+	// cursor on a header row → no panel, no panic.
+	if out := renderFleetGrouped(rows, 0, now, 110, fleetDetailFeed, feed); strings.Contains(out, "validateToken") {
+		t.Errorf("header row must not render a worktree panel:\n%s", out)
+	}
+
+	// enter cycles the panel in multi mode; space still folds.
+	m := fleetModel{multi: true, entries: entries, rows: rows, collapsed: map[string]bool{}, detail: fleetDetailFields}
+	next, _ := m.Update(keyMsg("enter"))
+	if nm := next.(fleetModel); nm.detail != fleetDetailFeed {
+		t.Errorf("enter should cycle detail in multi mode, got %d", nm.detail)
+	}
+	next, _ = m.Update(keyMsg(" "))
+	if nm := next.(fleetModel); !nm.collapsed["/r/a"] {
+		t.Error("space should fold the cursor repo")
 	}
 }

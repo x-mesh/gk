@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/fatih/color"
 
@@ -220,6 +221,25 @@ func FormatError(err error) string {
 // string, then splice the originals back. Sentinels survive translation
 // because no term pattern matches NUL or digits-between-NULs.
 func translateErrorBody(eng *easy.Engine, s string) string {
+	// English prose gains nothing from term splicing: "not an allowed
+	// 변경사항 저장 (commit) type" is HARDER to read than the English it
+	// replaces (real case: the compose type-enum error came out as word
+	// salad). A body earns term translation only when it already reads in
+	// Korean — Hangul present — so the annotated term lands as a loanword
+	// inside a Korean sentence instead of a graft into an English one.
+	// Multi-line bodies decide per line: gk's own Korean lines translate,
+	// spliced English lines (child output, upstream messages) stay verbatim.
+	if !strings.ContainsFunc(s, func(r rune) bool { return unicode.Is(unicode.Hangul, r) }) {
+		return s
+	}
+	if strings.Contains(s, "\n") {
+		lines := strings.Split(s, "\n")
+		for i, ln := range lines {
+			lines[i] = translateErrorBody(eng, ln)
+		}
+		return strings.Join(lines, "\n")
+	}
+
 	spans := protectedSpans(s)
 	if len(spans) == 0 {
 		return eng.TranslateTerms(s)

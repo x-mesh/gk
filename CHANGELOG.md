@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Easy Mode가 영어 에러 문장에 한국어를 접붙여 문장을 망가뜨리던 문제.** 용어 번역기가 에러 본문의 영어 산문 속 "commit" 같은 단어를 치환해 "not an allowed 변경사항 저장 (commit) type" 같은 워드샐러드를 만들었다. 이제 에러 본문의 각 줄은 **이미 한글이 있을 때만** 용어 번역을 받는다 — 한국어 문장 속 영어 용어는 병기 주석이 자연스럽지만, 순수 영어 문장은 원문이 항상 더 읽기 쉽다. 따옴표로 인용된 자식 프로세스 출력 보호는 종전대로 유지.
+
 - **`gk commit`의 "commitlint failed" 에러가 어느 규칙에 걸렸는지 말한다.** 종전엔 3회 재시도 실패 시 마지막 subject만 보여줘서, 겉보기에 멀쩡한 문장이 왜 반려됐는지(repo가 좁힌 `commit.types`? `subject-max`?) 추리해야 했다 — 이제 마지막 시도의 위반 목록(`violations: type-enum: ...`)이 에러에 실린다. 또 **그룹 타입이 허용 목록 밖이면 compose 전에 즉시 실패**한다: 타입은 그룹에 고정돼 있어 모델이 재작성으로 못 고치는 위반인데도 LLM 호출 3회를 태우던 것을, 분류 직후 검증으로 바꾸고 수정 방법(`commit.types`에 추가 또는 `--plan`)을 에러에 안내한다.
 
 ### Added

@@ -193,9 +193,12 @@ func newKoEasyEngine(t *testing.T) *easy.Engine {
 	return eng
 }
 
-// TestTranslateErrorBody verifies that translateErrorBody translates the
-// prose part of an error while leaving quoted child-process output (git
-// stderr/stdout, lint output, exit-code tails) verbatim — the t3 invariant.
+// TestTranslateErrorBody verifies translateErrorBody's two invariants:
+// quoted child-process output (git stderr/stdout, lint output, exit-code
+// tails) stays verbatim, and — since the compose word-salad incident — a
+// line translates AT ALL only when it already contains Hangul: splicing
+// Korean terms into an English sentence ("not an allowed 변경사항 저장
+// (commit) type") reads worse than the English it replaces.
 func TestTranslateErrorBody(t *testing.T) {
 	eng := newKoEasyEngine(t)
 
@@ -241,17 +244,35 @@ func TestTranslateErrorBody(t *testing.T) {
 			wantNotContains: []string{"작업 갈래 (Branch) string", `작업 갈래 (branch)\"`},
 		},
 		{
-			// Pure prose with no quote: a git term still translates normally.
-			name:            "plain-prose-translates",
+			// English-only prose: left completely alone. Splicing Korean
+			// terms into an English sentence is the word salad this
+			// function now exists to prevent.
+			name:            "english-prose-stays-verbatim",
 			in:              "cannot rebase: you have unstaged changes",
-			wantContains:    []string{"커밋 재정렬 (rebase)", "아직 준비 안 됨 (unstaged)"},
+			wantContains:    []string{"cannot rebase: you have unstaged changes"},
+			wantNotContains: []string{"커밋 재정렬", "아직 준비 안 됨"},
+		},
+		{
+			// The real incident shape: a compose error whose prose is pure
+			// English must survive untouched end to end.
+			name:            "compose-type-enum-untouched",
+			in:              `compose: group type "build" is not an allowed commit type (fix, docs, feat, chore) — add it to commit.types in .gk.yaml, or commit with an explicit plan (gk commit --plan -)`,
+			wantContains:    []string{"is not an allowed commit type", "or commit with an explicit plan"},
+			wantNotContains: []string{"변경사항 저장"},
+		},
+		{
+			// Korean context: terms embedded in a Korean sentence DO get the
+			// annotated-loanword treatment — that is where it helps.
+			name:            "korean-prose-translates",
+			in:              "rebase 도중 충돌이 발생했습니다",
+			wantContains:    []string{"커밋 재정렬 (rebase)"},
 			wantNotContains: nil,
 		},
 		{
-			// Prose precedes a stderr quote: prose half translates, quote half raw.
-			name:            "prose-plus-quote",
-			in:              "rebase failed (stderr=could not apply commit abc123)",
-			wantContains:    []string{"커밋 재정렬 (rebase) failed", "(stderr=could not apply commit abc123)"},
+			// Korean prose + quoted child output: the quote still stays raw.
+			name:            "korean-prose-plus-quote",
+			in:              "rebase 실패 (stderr=could not apply commit abc123)",
+			wantContains:    []string{"커밋 재정렬 (rebase) 실패", "(stderr=could not apply commit abc123)"},
 			wantNotContains: []string{"apply 변경사항 저장 (commit) abc123"},
 		},
 		{

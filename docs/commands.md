@@ -2594,7 +2594,7 @@ gk fleet [--interval <seconds>] [--feed-stats] [--events]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--interval <seconds>` | `2` | Poll interval in TUI mode (demoted to a 12s heartbeat while filesystem watches are active) |
-| `--feed-stats` | `false` | Add +/− line counts and changed-function names to change-feed events (two extra `git diff -U0` runs per dirty worktree per poll) |
+| `--feed-stats` | `true` | +/− line counts and changed-function names on change-feed events, `gk status --watch` style. `--feed-stats=false` (or `fleet.feed_stats: false`) disables the two `git diff -U0` runs per **dirty** worktree per poll |
 | `--events` | `false` | Stream fleet changes as NDJSON events instead of a dashboard (for orchestrators) |
 | `--repos <path,…>` | — | Explicit repo paths to watch (enables multi-repo) |
 | `--scan <dir,…>` | — | Directory roots searched for git repos (enables multi-repo) |
@@ -2610,7 +2610,7 @@ fleet:
   depth: 2
   exclude: ["node_modules", "vendor", ".archive"]   # dir-name globs skipped while scanning
   interval: 2
-  feed_stats: false                 # +/- line counts on feed events (same as --feed-stats)
+  feed_stats: true                  # ±counts + changed-function names on feed events (default on; false to disable)
   notify:                           # opt-in transition hooks (sh -c, GK_FLEET_* env)
     conflict:   osascript -e 'display notification "conflict" with title "gk fleet"'
     paused:     ~/bin/notify-stuck.sh

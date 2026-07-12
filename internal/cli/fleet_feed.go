@@ -310,6 +310,24 @@ func fleetSortEntries(entries []fleetEntryJSON, mode int) []fleetEntryJSON {
 	return out
 }
 
+// fleetFeedStatLabel renders an event's ± counts in the same green/red form
+// `gk status --watch` uses, so the two feeds read identically.
+func fleetFeedStatLabel(ev fleetFeedEvent) string {
+	if ev.cleared || (ev.added == 0 && ev.removed == 0) {
+		return ""
+	}
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	var parts []string
+	if ev.added > 0 {
+		parts = append(parts, green.Render(fmt.Sprintf("+%d", ev.added)))
+	}
+	if ev.removed > 0 {
+		parts = append(parts, red.Render(fmt.Sprintf("−%d", ev.removed)))
+	}
+	return "  " + strings.Join(parts, " ")
+}
+
 // renderFleetFeed draws the newest `lines` events, oldest first, under a rule —
 // the fleet-wide file timeline. multi controls whether the repo label is shown.
 func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string {
@@ -332,7 +350,7 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 			who = ev.repo + ":" + ev.branch
 		}
 		line := fmt.Sprintf("%s %s %s %s",
-			dim.Render(ev.ts.Format("15:04:05")),
+			dim.Render(ev.ts.Format(changeTSFormat)),
 			ev.glyph,
 			dim.Render("["+clip(who, 22)+"]"),
 			clip(ev.path, 40),
@@ -340,11 +358,9 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 		if ev.symbols != "" {
 			line += dim.Render(" · " + clip(ev.symbols, 34))
 		}
-		if ev.added > 0 || ev.removed > 0 {
-			line += dim.Render(fmt.Sprintf("  +%d/-%d", ev.added, ev.removed))
-		}
-		if ev.note == "new" {
-			line += dim.Render("  new")
+		line += fleetFeedStatLabel(ev)
+		if ev.note != "" {
+			line += dim.Render("  " + ev.note)
 		}
 		b.WriteString("\n" + line)
 	}

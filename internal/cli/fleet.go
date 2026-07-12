@@ -32,9 +32,10 @@ current. Built for supervising parallel work (e.g. several AI agents each in
 their own worktree) — answers "who is dirty / stuck / stale / ready to land"
 without a per-worktree status probe.
 
-A merged change feed below the table shows which files changed in which
-worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts
-and the changed-function names from git's hunk contexts).
+A merged change feed below the table shows which files — and which
+functions — changed in which worktree as they happen, in the same
+file · function · ± form as 'gk status --watch' ('e' toggles the pane;
+--feed-stats=false drops the per-poll diff runs and shows file names only).
 When filesystem watches can be established the dashboard reacts to edits
 instantly and the poll drops to a slow heartbeat; otherwise it polls on
 --interval. j/k move, enter cycles the cursor panel (status fields → that
@@ -63,7 +64,7 @@ func addFleetFlags(cmd *cobra.Command) {
 	cmd.Flags().StringSlice("scan", nil, "directory roots to scan for git repos (multi-repo)")
 	cmd.Flags().Bool("all", false, "watch sibling repos of the current repo (multi-repo)")
 	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
-	cmd.Flags().Bool("feed-stats", false, "show +/- line counts and changed-function names in the change feed (extra git diff calls per poll)")
+	cmd.Flags().Bool("feed-stats", true, "show +/- line counts and changed-function names in the change feed (--feed-stats=false to disable the extra git diff calls per poll)")
 	cmd.Flags().Bool("events", false, "stream fleet changes as NDJSON events instead of a dashboard (for orchestrators)")
 }
 
@@ -217,17 +218,19 @@ func fleetNotifyConfig() map[string]string {
 }
 
 // resolveFleetFeedStats: the --feed-stats flag when set, else fleet.feed_stats
-// from config. Off by default — stats cost two extra `git diff --numstat`
-// runs per dirty worktree per poll.
+// from config, else ON. Default-on since the feed should read like
+// `gk status --watch` (file · function · ±) out of the box; the cost — two
+// `git diff -U0` runs per DIRTY worktree per poll — only accrues where work
+// is actually happening, which is exactly where the detail matters.
 func resolveFleetFeedStats(cmd *cobra.Command) bool {
 	if cmd.Flags().Changed("feed-stats") {
 		on, _ := cmd.Flags().GetBool("feed-stats")
 		return on
 	}
-	if cfg, err := config.Load(nil); err == nil && cfg != nil {
-		return cfg.Fleet.FeedStats
+	if cfg, err := config.Load(nil); err == nil && cfg != nil && cfg.Fleet.FeedStats != nil {
+		return *cfg.Fleet.FeedStats
 	}
-	return false
+	return true
 }
 
 // gatherFleet builds the fleet snapshot, reusing the same worktree enrichment
@@ -891,15 +894,13 @@ func renderFleetDetailFeed(e fleetEntryJSON, now time.Time, tail []fleetFeedEven
 		lines = append(lines, dim.Render("no changes yet — watching…"))
 	}
 	for _, ev := range tail {
-		line := dim.Render(ev.ts.Format("15:04:05")) + " " + ev.glyph + " " + clip(ev.path, 30)
+		line := dim.Render(ev.ts.Format(changeTSFormat)) + " " + ev.glyph + " " + clip(ev.path, 30)
 		if ev.symbols != "" {
 			line += dim.Render(" · " + clip(ev.symbols, 26))
 		}
-		if ev.added > 0 || ev.removed > 0 {
-			line += dim.Render(fmt.Sprintf(" +%d/-%d", ev.added, ev.removed))
-		}
-		if ev.note == "new" {
-			line += dim.Render(" new")
+		line += fleetFeedStatLabel(ev)
+		if ev.note != "" {
+			line += dim.Render(" " + ev.note)
 		}
 		lines = append(lines, line)
 	}

@@ -234,8 +234,9 @@ func TestFleetRenderDetailFeed(t *testing.T) {
 		"auth.go",       // this worktree's event
 		"auth_test.go",  // and the second one
 		"validateToken", // changed-function name on the event line
-		"+12/-3",        // stats carried onto the event line
-		"new",           // note marker
+		"+12",           // stats on the event line (watch-style green/red ± form)
+		"−3",
+		"new", // note marker
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("feed panel missing %q in:\n%s", want, out)

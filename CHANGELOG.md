@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **fleet(·watch)의 병합 피드가 기본으로 `gk status --watch`처럼 읽힌다.** 종전에는 `--feed-stats`를 켜야 함수명·±가 붙고 기본은 파일명뿐이었다 — 이제 기본 on: `21:33:49.12 ~ [develop] auth.go · validateToken +12 −3 re-touched`. 비용(dirty 워크트리당 폴마다 `diff -U0` 2회)은 실제 작업이 일어나는 곳에서만 발생하므로 기본값으로 정당하다. `--feed-stats=false` 또는 `fleet.feed_stats: false`로 종전 동작(파일명만) 복귀. 이벤트 라인 포맷도 watch와 통일(1/100초 타임스탬프, 초록/빨강 ± 표기).
+
 ### Added
 
 - **`gk precheck`가 "어느 파일"이 아니라 "어느 함수"가 충돌할지 예보한다.** `merge-tree --write-tree`의 결과 트리에는 충돌 blob에 마커가 이미 박혀 있어서, precheck이 object db에서 그 내용을 직접 읽어(`git show <tree>:<path>`, 파일 20개·blob 256KB 캡) 각 마커의 감싸는 정의를 이름 붙인다 — `✗ app.py · in process`. 병합 합성도 외부 도구도 없다. JSON은 기존 `conflicts[]` 불변에 `details: [{path, symbols[]}]` append-only 추가, `gk context --include=precheck`에도 동일하게 실린다. git 2.38/39 폴백(경로 열거 불가)에선 조용히 생략. 라이브 피드·충돌 심볼과 같은 정의 스캐너를 공유하므로 `gk drivers install`로 diff driver를 지정하면 이 예보의 정확도도 같이 올라간다.

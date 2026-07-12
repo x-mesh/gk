@@ -2612,9 +2612,22 @@ fleet:
 
 ### Keys (TUI)
 
-`j`/`k` (or ↓/↑) move the cursor · `enter` toggles the detail panel (with the worktree's recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` opens `gk status --watch` for the selected worktree and returns to fleet on exit · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` (or `enter` on a header) folds/unfolds a repo group.
+`j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→busy→stuck) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` (or `enter` on a header) folds/unfolds a repo group.
 
 With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, …}` (one snapshot, no polling). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
+
+---
+
+## gk watch
+
+One entry point for live supervision that picks the right zoom level: with several worktrees (or the multi-repo flags) it opens the `gk fleet` dashboard; with exactly one worktree it goes straight into the `gk status --watch` change feed. Inside fleet, `w` zooms into a worktree's feed in place (`esc` pops back, `[` / `]` hop between worktrees) — `gk watch` is the same live view at whatever altitude fits the repo. Alias: `gk w`.
+
+`gk fleet` and `gk status --watch` remain the explicit entry points; this command only routes between them. Flags mirror `gk fleet`, and the machine-readable modes — `--json` (or `GK_AGENT=1`) snapshot, `--events` NDJSON stream — behave exactly like fleet's regardless of worktree count, so orchestrators get one stable contract.
+
+```
+gk watch [--interval <seconds>] [--feed-stats] [--events]
+         [--repos <path,…>] [--scan <dir,…>] [--all] [--depth <n>]
+```
 
 ---
 

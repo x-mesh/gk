@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk watch` — 감시 진입점 하나로 줌 레벨 자동 선택.** 워크트리가 여러 개(또는 멀티-repo 플래그)면 `gk fleet` 대시보드를, 정확히 하나면 `gk status --watch` 체인지 피드를 바로 연다. 플래그는 `gk fleet`을 그대로 미러하고, `--json`/`GK_AGENT`/`--events`는 워크트리 수와 무관하게 항상 fleet의 기계 계약으로 동작한다 — 오케스트레이터 입장에서 계약이 갈라지지 않는다. `gk fleet`과 `gk status --watch`는 명시적 진입점으로 그대로 남는다. 별칭 `gk w`.
+- **`gk fleet` 상세 패널에 라이브 피드 모드.** `enter`가 이제 커서 패널을 3단계로 순환한다: 상태 필드 → 그 워크트리만의 라이브 체인지 피드(미니 `gk status --watch`) → 끔. 피드 이벤트는 이미 fleet 전체 피드에 수집돼 있던 것을 워크트리로 필터링만 하므로 추가 git 호출이 없다 — j/k로 커서만 옮기면 패널이 그 워크트리의 실시간 피드로 바뀌는 가벼운 master-detail.
+
+### Changed
+
+- **`gk fleet`의 `w` 드릴다운이 자식 프로세스 대신 in-process 줌이 됐다.** 종전에는 TUI를 통째로 멈추고 `gk status --watch --repo <path>`를 자식 프로세스로 실행했다 — 전환마다 fs 워처를 처음부터 다시 세우고, 돌아올 때까지 대시보드가 얼어 있었다. 이제 같은 watch 모델을 fleet 프로그램 안에 임베드한다: 전환이 즉각이고, fleet이 뒤에서 계속 수집하며(fleet 폴이 줌의 heartbeat를 겸하고 fs 이벤트가 줌 뷰를 즉시 갱신), `[`/`]`로 나갔다-이동-재진입 없이 워크트리를 순회한다. `esc`(또는 `w`)는 테이블로 복귀, `q`는 종료, breadcrumb이 현재 대상과 위치(n/N)를 표시하고, 감시 중인 워크트리가 사라지면(reap 등) 죽은 경로를 계속 보는 대신 줌이 자동으로 닫힌다.
+
 ## [0.117.0] - 2026-07-11
 
 ### Fixed

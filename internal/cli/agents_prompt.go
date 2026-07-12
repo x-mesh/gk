@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/spf13/cobra"
+	"github.com/tidwall/gjson"
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
@@ -436,4 +442,95 @@ func collectPromptPayload(ctx context.Context, dir string) (string, bool) {
 	}
 
 	return clip(strings.Join(parts, " · "), promptPayloadCharCap), true
+}
+
+// --- runAgentsHookPrompt: the UserPromptSubmit hook handler ---
+//
+// This is the prefetch companion to runAgentsHookRun (agents_hook.go): where
+// that hook steers a raw git call at the moment it runs, this one fires
+// earlier — before the agent's first turn — and, for a prompt that reads as a
+// git-action request, injects the same orientation an agent would otherwise
+// spend a tool call re-deriving. Fail-open throughout, mirroring
+// runAgentsHookRun's contract: any problem (unreadable stdin, a blank or
+// slash-command prompt, no git intent, an unresolvable cwd, a repo that
+// doesn't check out, or the payload already sitting in the transcript) emits
+// nothing and returns nil, so it never blocks prompt submission.
+
+// gkPromptHookMarker identifies gk's UserPromptSubmit prefetch injection
+// inside the live transcript tail — runAgentsHookPrompt's own dedupe probe,
+// the same role hookHintMarker plays for the PreToolUse advisory. It is a
+// distinct constant from both gkHookMarker (the settings.json command-line
+// marker) and hookHintMarker (the per-kind advisory sentence): this one only
+// ever marks "a prefetch payload was already injected this session," and it
+// is written verbatim into additionalContext so a plain substring probe over
+// the tail is enough to detect it.
+const gkPromptHookMarker = "[gk prefetch]"
+
+// runAgentsHookPrompt is the `gk agents hook run --prompt` handler. See the
+// section comment above for the fail-open contract.
+func runAgentsHookPrompt(cmd *cobra.Command, _ []string) error {
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return nil
+	}
+	prompt := gjson.GetBytes(data, "prompt").String()
+	if prompt == "" || strings.HasPrefix(strings.TrimSpace(prompt), "/") {
+		return nil // blank prompt, or a slash command — never a git-action request
+	}
+	if !gitIntentGate(prompt) {
+		return nil
+	}
+
+	// The client field name for the working directory has been observed to
+	// vary across Claude Code versions, so try each candidate in turn rather
+	// than trusting one name.
+	cwd := firstNonEmpty(
+		strings.TrimSpace(gjson.GetBytes(data, "cwd").String()),
+		strings.TrimSpace(gjson.GetBytes(data, "workspace.current_dir").String()),
+		strings.TrimSpace(gjson.GetBytes(data, "workspace_roots.0").String()),
+	)
+	if cwd == "" {
+		return nil
+	}
+
+	// Dedupe against a prior fire this session. A missing/unreadable
+	// transcript only forfeits the dedupe, never the prefetch itself — one
+	// extra injection costs a few tokens, a wrongly suppressed one costs the
+	// whole point of this hook.
+	if tp := strings.TrimSpace(gjson.GetBytes(data, "transcript_path").String()); tp != "" {
+		if tail, terr := tailFile(tp, hookTranscriptTailBytes); terr == nil && bytes.Contains(tail, []byte(gkPromptHookMarker)) {
+			return nil
+		}
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload, ok := collectPromptPayload(ctx, cwd)
+	if !ok || payload == "" {
+		return nil
+	}
+	return emitPromptContext(cmd.OutOrStdout(), payload)
+}
+
+// emitPromptContext writes the Claude Code UserPromptSubmit payload to
+// stdout. Unlike PreToolUse, this event has no permissionDecision field —
+// there is nothing to allow or deny, only context to add — so this is a
+// separate emit function rather than a variant of emitHookDecision.
+func emitPromptContext(w io.Writer, payload string) error {
+	type spec struct {
+		HookEventName     string `json:"hookEventName"`
+		AdditionalContext string `json:"additionalContext"`
+	}
+	out := struct {
+		HookSpecificOutput spec `json:"hookSpecificOutput"`
+	}{spec{
+		HookEventName: "UserPromptSubmit",
+		AdditionalContext: fmt.Sprintf(
+			"%s %s — this orientation was pre-fetched by gk; use it instead of re-probing.",
+			gkPromptHookMarker, payload,
+		),
+	}}
+	return json.NewEncoder(w).Encode(out)
 }

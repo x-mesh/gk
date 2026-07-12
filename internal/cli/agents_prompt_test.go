@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/tidwall/gjson"
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -198,4 +203,141 @@ func writeRebaseMergeFixture(dir string) error {
 		}
 	}
 	return nil
+}
+
+// --- runAgentsHookPrompt (UserPromptSubmit handler) ---
+
+// promptHookOutput drives runAgentsHookPrompt exactly the way Claude Code
+// would: JSON on stdin, captured stdout, no flags (the handler doesn't read
+// any).
+func promptHookOutput(t *testing.T, stdin string) string {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader(stdin))
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runAgentsHookPrompt(cmd, nil); err != nil {
+		t.Fatalf("runAgentsHookPrompt: %v", err)
+	}
+	return buf.String()
+}
+
+// TestAgentsHookPrompt_FailOpen covers every "give up quietly" path: bad
+// stdin, a missing/blank prompt field, and a cwd that isn't a usable git
+// repo. Every case must emit nothing and (checked by promptHookOutput
+// itself) never return a non-nil error.
+func TestAgentsHookPrompt_FailOpen(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	notARepo := t.TempDir()
+
+	cases := []struct {
+		name, stdin string
+	}{
+		{"garbage stdin", `not json at all`},
+		{"empty stdin", ``},
+		{"missing prompt field", fmt.Sprintf(`{"cwd":%q}`, repo.Dir)},
+		{"blank prompt", fmt.Sprintf(`{"prompt":"","cwd":%q}`, repo.Dir)},
+		{"whitespace-only prompt", fmt.Sprintf(`{"prompt":"   ","cwd":%q}`, repo.Dir)},
+		{"non-repo cwd", fmt.Sprintf(`{"prompt":"커밋해줘","cwd":%q}`, notARepo)},
+		{"missing cwd entirely", `{"prompt":"커밋해줘"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := promptHookOutput(t, tc.stdin); strings.TrimSpace(out) != "" {
+				t.Errorf("expected no output (fail-open), got: %q", out)
+			}
+		})
+	}
+}
+
+// TestAgentsHookPrompt_SlashCommandNoOp confirms a slash command is never
+// treated as a git-action request, even when its body would otherwise trip
+// gitIntentGate.
+func TestAgentsHookPrompt_SlashCommandNoOp(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	stdin := fmt.Sprintf(`{"prompt":"/커밋해줘","cwd":%q}`, repo.Dir)
+	if out := promptHookOutput(t, stdin); strings.TrimSpace(out) != "" {
+		t.Errorf("slash command must be a no-op, got: %q", out)
+	}
+}
+
+// TestAgentsHookPrompt_NoGitIntentNoOp confirms a prompt with no git intent
+// (per gitIntentGate) never triggers the prefetch.
+func TestAgentsHookPrompt_NoGitIntentNoOp(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	stdin := fmt.Sprintf(`{"prompt":"오늘 날씨 어때?","cwd":%q}`, repo.Dir)
+	if out := promptHookOutput(t, stdin); strings.TrimSpace(out) != "" {
+		t.Errorf("non-git-intent prompt must be a no-op, got: %q", out)
+	}
+}
+
+// TestAgentsHookPrompt_NormalPath drives the full path against a real repo:
+// a triggering prompt with no transcript on file produces the
+// UserPromptSubmit JSON schema, carrying the marker and the branch name.
+func TestAgentsHookPrompt_NormalPath(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	branch := strings.TrimSpace(runGitOut(t, runner, "branch", "--show-current"))
+
+	stdin := fmt.Sprintf(`{"prompt":"커밋해줘","cwd":%q}`, repo.Dir)
+	out := promptHookOutput(t, stdin)
+	if got := gjson.Get(out, "hookSpecificOutput.hookEventName").String(); got != "UserPromptSubmit" {
+		t.Fatalf("hookEventName = %q, want UserPromptSubmit: %s", got, out)
+	}
+	ctx := gjson.Get(out, "hookSpecificOutput.additionalContext").String()
+	if !strings.Contains(ctx, gkPromptHookMarker) {
+		t.Errorf("additionalContext missing marker %q: %s", gkPromptHookMarker, ctx)
+	}
+	if !strings.Contains(ctx, branch) {
+		t.Errorf("additionalContext %q does not mention branch %q", ctx, branch)
+	}
+}
+
+// TestAgentsHookPrompt_CwdFallback exercises the cwd field-name cascade:
+// workspace.current_dir wins when the top-level cwd is absent, and
+// workspace_roots.0 wins when both of those are absent.
+func TestAgentsHookPrompt_CwdFallback(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	stdin := fmt.Sprintf(`{"prompt":"커밋해줘","workspace":{"current_dir":%q}}`, repo.Dir)
+	if out := promptHookOutput(t, stdin); gjson.Get(out, "hookSpecificOutput.hookEventName").String() != "UserPromptSubmit" {
+		t.Errorf("workspace.current_dir fallback did not fire: %q", out)
+	}
+
+	stdin = fmt.Sprintf(`{"prompt":"커밋해줘","workspace_roots":[%q]}`, repo.Dir)
+	if out := promptHookOutput(t, stdin); gjson.Get(out, "hookSpecificOutput.hookEventName").String() != "UserPromptSubmit" {
+		t.Errorf("workspace_roots.0 fallback did not fire: %q", out)
+	}
+}
+
+// TestAgentsHookPrompt_MarkerDedupe confirms a transcript tail that already
+// carries the prefetch marker suppresses a repeat injection.
+func TestAgentsHookPrompt_MarkerDedupe(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	tp := filepath.Join(t.TempDir(), "transcript.jsonl")
+	line := fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"%s already injected"}]}}`, gkPromptHookMarker)
+	if err := os.WriteFile(tp, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdin := fmt.Sprintf(`{"prompt":"커밋해줘","cwd":%q,"transcript_path":%q}`, repo.Dir, tp)
+	if out := promptHookOutput(t, stdin); strings.TrimSpace(out) != "" {
+		t.Errorf("marker already in transcript tail should suppress the prefetch, got: %q", out)
+	}
+}
+
+// TestAgentsHookPrompt_UnreadableTranscriptStillFires confirms the dedupe
+// only forfeits itself on a missing/unreadable transcript — the prefetch
+// must still fire, per the fail-open contract (one extra injection beats a
+// wrongly suppressed one).
+func TestAgentsHookPrompt_UnreadableTranscriptStillFires(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+
+	stdin := fmt.Sprintf(`{"prompt":"커밋해줘","cwd":%q,"transcript_path":%q}`, repo.Dir, missing)
+	out := promptHookOutput(t, stdin)
+	if got := gjson.Get(out, "hookSpecificOutput.hookEventName").String(); got != "UserPromptSubmit" {
+		t.Errorf("missing transcript must fail open to the prefetch, got: %q", out)
+	}
 }

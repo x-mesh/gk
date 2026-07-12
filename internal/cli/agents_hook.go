@@ -75,12 +75,13 @@ is written first, and --dry-run previews without writing.`,
 
 	run := &cobra.Command{
 		Use:    "run",
-		Short:  "PreToolUse hook handler — reads the tool call on stdin, emits the decision",
+		Short:  "PreToolUse/UserPromptSubmit hook handler — reads the event on stdin, emits the decision",
 		Hidden: true,
-		RunE:   runAgentsHookRun,
+		RunE:   runAgentsHookRunDispatch,
 	}
 	run.Flags().Bool("warn", false, "warn instead of block (surface a note but let the command run)")
 	run.Flags().String("mode", "", "block | collapse | warn — enforcement level (overrides --warn)")
+	run.Flags().Bool("prompt", false, "UserPromptSubmit mode: prefetch git orientation for a detected git-action prompt")
 	hook.AddCommand(run)
 
 	install := &cobra.Command{
@@ -111,6 +112,19 @@ is written first, and --dry-run previews without writing.`,
 }
 
 // --- handler (gk agents hook run) ---
+
+// runAgentsHookRunDispatch routes `gk agents hook run` to the PreToolUse
+// handler (default) or the UserPromptSubmit handler (--prompt). Both Claude
+// Code hook events share this one binary entry point (see hookCommandString
+// for the settings.json command line the PreToolUse install writes; the
+// UserPromptSubmit registration adds --prompt the same way), so the flag is
+// what decides which payload shape stdin holds.
+func runAgentsHookRunDispatch(cmd *cobra.Command, args []string) error {
+	if prompt, _ := cmd.Flags().GetBool("prompt"); prompt {
+		return runAgentsHookPrompt(cmd, args)
+	}
+	return runAgentsHookRun(cmd, args)
+}
 
 // runAgentsHookRun is the hook handler Claude Code invokes before each Bash
 // call. It is fail-open by contract: any problem (unreadable stdin, non-Bash

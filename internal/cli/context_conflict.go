@@ -167,8 +167,18 @@ func conflictHunkSymbols(repoDir, path string) []string {
 	if err != nil {
 		return nil
 	}
+	return conflictSymbolsFromContent(path, string(data))
+}
+
+// conflictSymbolsFromContent is the content-only core of conflictHunkSymbols:
+// given a file body carrying `<<<<<<<` markers, it names the nearest enclosing
+// definition above each marker (per-extension patterns keyed off path). Pure so
+// it serves both the worktree reader above and precheck's forecast, which feeds
+// it a merged-tree blob rather than a worktree file. Capped and deduped like
+// every symbol list.
+func conflictSymbolsFromContent(path, content string) []string {
 	pats := definitionPatternsFor(path)
-	lines := strings.Split(string(data), "\n")
+	lines := strings.Split(content, "\n")
 	var syms []string
 	for i, line := range lines {
 		if !strings.HasPrefix(line, "<<<<<<<") {

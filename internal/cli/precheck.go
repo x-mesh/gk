@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -46,11 +47,33 @@ Requires git >= 2.40 (for --name-only). Falls back to marker parsing on older gi
 // precheckResult is the JSON shape emitted by --json / agent mode.
 // Fields are append-only.
 type precheckResult struct {
-	Ours      string   `json:"ours"`
-	Target    string   `json:"target"`
-	Base      string   `json:"base"`
-	Clean     bool     `json:"clean"`
-	Conflicts []string `json:"conflicts"`
+	Ours      string                   `json:"ours"`
+	Target    string                   `json:"target"`
+	Base      string                   `json:"base"`
+	Clean     bool                     `json:"clean"`
+	Conflicts []string                 `json:"conflicts"`
+	Details   []precheckConflictDetail `json:"details,omitempty"`
+}
+
+// precheckConflictDetail names the enclosing definitions a conflicted path
+// fights over — "which function", not just "which file". Populated only when
+// the merge-tree result tree is available (git >= 2.40) and the blob's symbols
+// could be read; absent otherwise, which is why Details is omitempty rather
+// than always mirroring Conflicts.
+type precheckConflictDetail struct {
+	Path    string   `json:"path"`
+	Symbols []string `json:"symbols"`
+}
+
+// symbolsFor returns the enclosing-definition names forecast for a conflicted
+// path, or nil when none were resolved for it.
+func (r precheckResult) symbolsFor(path string) []string {
+	for _, d := range r.Details {
+		if d.Path == path {
+			return d.Symbols
+		}
+	}
+	return nil
 }
 
 func runPrecheck(cmd *cobra.Command, args []string) error {
@@ -142,21 +165,29 @@ func collectPrecheck(ctx context.Context, runner *git.ExecRunner, target, baseOv
 		base = strings.TrimSpace(string(resolved))
 	}
 
-	conflicts, serr := scanMergeConflicts(ctx, runner, base, "HEAD", target)
+	scan, serr := scanMergeConflictsTree(ctx, runner, base, "HEAD", target)
 	if serr != nil {
 		return res, fmt.Errorf("merge-tree scan: %w", serr)
 	}
+	conflicts := scan.conflicts
 	if conflicts == nil {
 		conflicts = []string{}
 	}
 
-	return precheckResult{
+	out := precheckResult{
 		Ours:      "HEAD",
 		Target:    target,
 		Base:      base,
 		Clean:     len(conflicts) == 0,
 		Conflicts: conflicts,
-	}, nil
+	}
+	// The merged tree's conflicted blobs already carry git's `<<<<<<<` markers,
+	// so we can name the fighting functions without synthesizing a merge — but
+	// only when merge-tree handed back a tree OID (git >= 2.40).
+	if len(conflicts) > 0 && scan.treeOID != "" {
+		out.Details = precheckConflictDetails(ctx, runner, scan.treeOID, conflicts)
+	}
+	return out, nil
 }
 
 // precheckDefaultTarget resolves what "the next integration" means when no
@@ -230,7 +261,15 @@ func writePrecheckHuman(w io.Writer, res precheckResult, color bool) {
 	}
 	fmt.Fprintf(w, "%s %d conflict(s) merging HEAD into %s:\n", cross, len(res.Conflicts), res.Target)
 	for _, p := range res.Conflicts {
-		fmt.Fprintf(w, "  %s\n", p)
+		line := "  " + p
+		if syms := res.symbolsFor(p); len(syms) > 0 {
+			suffix := "  · in " + strings.Join(syms, ", ")
+			if color {
+				suffix = ansiFaint + suffix + ansiResetBold
+			}
+			line += suffix
+		}
+		fmt.Fprintf(w, "%s\n", line)
 	}
 	fmt.Fprintf(w, "\n%s resolve locally via\n", hintLabel)
 	fmt.Fprintf(w, "  %s\n", hintCmd)
@@ -246,15 +285,33 @@ func writePrecheckHuman(w io.Writer, res precheckResult, color bool) {
 // Prefers `git merge-tree --name-only` (git >= 2.40). Falls back to parsing
 // `<<<<<<<` markers for older git, where paths cannot be enumerated.
 func scanMergeConflicts(ctx context.Context, r git.Runner, base, ours, theirs string) ([]string, error) {
+	scan, err := scanMergeConflictsTree(ctx, r, base, ours, theirs)
+	return scan.conflicts, err
+}
+
+// mergeScan carries a merge-tree scan's results: the conflicted paths and, on
+// git >= 2.40, the OID of the merged tree. That tree's conflicted blobs already
+// contain git's `<<<<<<<` markers, so a caller can read a path back with
+// `git show <treeOID>:<path>` and inspect the fight without synthesizing a
+// merge. treeOID is empty on the 2.38/2.39 marker-parsing fallback.
+type mergeScan struct {
+	conflicts []string
+	treeOID   string
+}
+
+// scanMergeConflictsTree is scanMergeConflicts plus the merged-tree OID. See
+// scanMergeConflicts for the exit-code and fallback semantics — this is the
+// same logic, only also surfacing the tree line merge-tree emits first.
+func scanMergeConflictsTree(ctx context.Context, r git.Runner, base, ours, theirs string) (mergeScan, error) {
 	stdout, stderr, err := runMergeTree(ctx, r, base, ours, theirs, true /*nameOnly*/)
 	if err == nil {
-		return parseMergeTreeNames(stdout), nil
+		return mergeScan{conflicts: parseMergeTreeNames(stdout), treeOID: parseMergeTreeOID(stdout)}, nil
 	}
 
 	// Git returns non-zero on conflicts too — if we got a parseable tree line
 	// in stdout, treat it as a conflict report rather than an error.
 	if looksLikeTreeOID(stdout) {
-		return parseMergeTreeNames(stdout), nil
+		return mergeScan{conflicts: parseMergeTreeNames(stdout), treeOID: parseMergeTreeOID(stdout)}, nil
 	}
 
 	stderrStr := string(stderr)
@@ -263,24 +320,69 @@ func scanMergeConflicts(ctx context.Context, r git.Runner, base, ours, theirs st
 	if !unsupported {
 		trimmed := strings.TrimSpace(stderrStr)
 		if trimmed == "" {
-			return nil, err
+			return mergeScan{}, err
 		}
-		return nil, fmt.Errorf("%s", trimmed)
+		return mergeScan{}, fmt.Errorf("%s", trimmed)
 	}
 
-	// Fallback: git 2.38/2.39 — no --name-only; parse markers instead.
+	// Fallback: git 2.38/2.39 — no --name-only; parse markers instead. The tree
+	// OID is left empty: this path can't enumerate paths, so the per-path blob
+	// reads that need it aren't possible here anyway.
 	stdout2, stderr2, err2 := runMergeTree(ctx, r, base, ours, theirs, false /*nameOnly*/)
 	if err2 != nil && !looksLikeTreeOID(stdout2) {
 		trimmed := strings.TrimSpace(string(stderr2))
 		if trimmed == "" {
-			return nil, err2
+			return mergeScan{}, err2
 		}
-		return nil, fmt.Errorf("%s", trimmed)
+		return mergeScan{}, fmt.Errorf("%s", trimmed)
 	}
 	if strings.Contains(string(stdout2), "<<<<<<<") {
-		return []string{"(git <2.40: paths not enumerable)"}, nil
+		return mergeScan{conflicts: []string{"(git <2.40: paths not enumerable)"}}, nil
 	}
-	return nil, nil
+	return mergeScan{}, nil
+}
+
+// precheckConflictDetailMaxFiles caps how many conflicted files we crack open
+// to name the fighting definitions — a forecast is a glance, not a full merge
+// review, so past a couple dozen files the honest signal is "lots conflicts".
+const precheckConflictDetailMaxFiles = 20
+
+// precheckConflictDetails names the enclosing definitions for each conflicted
+// path by reading its blob out of the merged tree (git show <treeOID>:<path>)
+// and scanning the `<<<<<<<` markers merge-tree already wrote there. Every
+// per-path failure — missing path, binary, oversized, unreadable, or no symbol
+// under a marker — is silently skipped: the file list alone stays a valid
+// forecast, so a detail we can't produce simply isn't emitted.
+func precheckConflictDetails(ctx context.Context, r git.Runner, treeOID string, conflicts []string) []precheckConflictDetail {
+	var details []precheckConflictDetail
+	for i, path := range conflicts {
+		if i >= precheckConflictDetailMaxFiles {
+			break
+		}
+		syms := precheckPathSymbols(ctx, r, treeOID, path)
+		if len(syms) == 0 {
+			continue
+		}
+		details = append(details, precheckConflictDetail{Path: path, Symbols: syms})
+	}
+	return details
+}
+
+// precheckPathSymbols reads one conflicted path's marker-bearing blob from the
+// merged tree and returns its enclosing-definition names. Returns nil on any
+// failure or when the blob is oversized or binary — the same content cap and
+// text sniff the live feeds' symbol scan uses.
+func precheckPathSymbols(ctx context.Context, r git.Runner, treeOID, path string) []string {
+	// treeOID is git-emitted hex and path is git-emitted output, so
+	// "<oid>:<path>" can neither be empty nor look like a flag.
+	out, _, err := r.Run(ctx, "show", treeOID+":"+path)
+	if err != nil {
+		return nil
+	}
+	if len(out) > untrackedProfileMaxBytes || bytes.IndexByte(out, 0) >= 0 {
+		return nil
+	}
+	return conflictSymbolsFromContent(path, string(out))
 }
 
 // runMergeTree issues a single `git merge-tree` call with the given options.
@@ -300,16 +402,26 @@ func runMergeTree(ctx context.Context, r git.Runner, base, ours, theirs string, 
 // (SHA-1) or 64-char hex (SHA-256) tree OID — indicating merge-tree actually
 // ran and produced output, not a usage dump.
 func looksLikeTreeOID(out []byte) bool {
-	s := string(out)
-	nl := strings.IndexByte(s, '\n')
-	if nl < 0 {
-		nl = len(s)
+	return looksLikeHexOID(firstLine(string(out)))
+}
+
+// parseMergeTreeOID returns the merged-tree OID from merge-tree output — its
+// first line — or "" when that line is not an OID (e.g. a usage dump), so a
+// caller can tell "no tree to read blobs from" from a real OID.
+func parseMergeTreeOID(out []byte) string {
+	if first := firstLine(string(out)); looksLikeHexOID(first) {
+		return first
 	}
-	first := strings.TrimSpace(s[:nl])
-	if len(first) != 40 && len(first) != 64 {
+	return ""
+}
+
+// looksLikeHexOID reports whether s is a 40-char (SHA-1) or 64-char (SHA-256)
+// lowercase-hex object ID.
+func looksLikeHexOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
 		return false
 	}
-	for _, ch := range first {
+	for _, ch := range s {
 		isHex := (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
 		if !isHex {
 			return false

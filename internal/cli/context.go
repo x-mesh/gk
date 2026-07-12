@@ -466,8 +466,15 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 		if c.Precheck.Clean {
 			fmt.Fprintf(w, "precheck: clean merge → %s\n", c.Precheck.Target)
 		} else {
+			parts := make([]string, len(c.Precheck.Conflicts))
+			for i, p := range c.Precheck.Conflicts {
+				parts[i] = p
+				if syms := c.Precheck.symbolsFor(p); len(syms) > 0 {
+					parts[i] += " (in " + strings.Join(syms, ", ") + ")"
+				}
+			}
 			fmt.Fprintf(w, "precheck: %d conflict(s) merging into %s: %s\n",
-				len(c.Precheck.Conflicts), c.Precheck.Target, strings.Join(c.Precheck.Conflicts, ", "))
+				len(c.Precheck.Conflicts), c.Precheck.Target, strings.Join(parts, ", "))
 		}
 	}
 	if c.Conflict != nil {

@@ -497,6 +497,147 @@ func TestIntegration_PrecheckDefaultTargetSameName(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Function-level forecast — conflictSymbolsFromContent + precheck details
+// ---------------------------------------------------------------------------
+
+func TestConflictSymbolsFromContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		path    string
+		content string
+		want    []string
+	}{
+		{
+			name: "go func above marker",
+			path: "calc.go",
+			content: "package calc\n\nfunc Add(a, b int) int {\n" +
+				"<<<<<<< HEAD\n\treturn a + b + 2\n=======\n\treturn a + b + 1\n>>>>>>> feature\n}\n",
+			want: []string{"Add"},
+		},
+		{
+			name: "python def above marker",
+			path: "m.py",
+			content: "def beta():\n" +
+				"<<<<<<< HEAD\n    x = 1\n=======\n    x = 2\n>>>>>>> feature\n",
+			want: []string{"beta"},
+		},
+		{
+			name:    "marker with no enclosing definition",
+			path:    "notes.txt",
+			content: "just prose\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\n",
+			want:    nil,
+		},
+		{
+			name:    "no markers at all",
+			path:    "calc.go",
+			content: "package calc\n\nfunc Add(a, b int) int { return a + b }\n",
+			want:    nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := conflictSymbolsFromContent(c.path, c.content)
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Fatalf("got %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// makeFuncConflictRepo builds a repo whose feature and main branches edit the
+// same line of the same function, so merge-tree reports calc.go as conflicting
+// with `<<<<<<<` markers sitting inside func Add.
+func makeFuncConflictRepo(t *testing.T) *testutil.Repo {
+	t.Helper()
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("calc.go", "package calc\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n")
+	repo.Commit("init")
+	repo.CreateBranch("feature")
+	repo.WriteFile("calc.go", "package calc\n\nfunc Add(a, b int) int {\n\treturn a + b + 1\n}\n")
+	repo.Commit("feat: feature edit")
+	repo.Checkout("main")
+	repo.WriteFile("calc.go", "package calc\n\nfunc Add(a, b int) int {\n\treturn a + b + 2\n}\n")
+	repo.Commit("chore: main edit")
+	return repo
+}
+
+func TestPrecheckConflictDetails_FunctionNames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := makeFuncConflictRepo(t)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	res, err := collectPrecheck(context.Background(), runner, "feature", "")
+	if err != nil {
+		t.Fatalf("collectPrecheck: %v", err)
+	}
+	if len(res.Conflicts) == 1 && strings.HasPrefix(res.Conflicts[0], "(git <2.40") {
+		t.Skip("git too old to enumerate paths / read merge-tree blobs")
+	}
+	syms := res.symbolsFor("calc.go")
+	if len(syms) != 1 || syms[0] != "Add" {
+		t.Fatalf("details for calc.go = %v, want [Add]", syms)
+	}
+}
+
+// TestPrecheckPathSymbols_SilentSkip: a git-show failure (missing path, bogus
+// tree) or a binary blob yields no symbols and no error — the file list stays
+// a valid forecast even when a detail can't be produced.
+func TestPrecheckPathSymbols_SilentSkip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.go", "package a\n")
+	repo.WriteFile("bin.go", "package a\nfunc F() {}\n<<<<<<< HEAD\n\x00binary\n=======\n\x00other\n>>>>>>> x\n")
+	repo.Commit("init")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	tree := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD^{tree}"))
+	ctx := context.Background()
+
+	if got := precheckPathSymbols(ctx, runner, tree, "ghost.go"); got != nil {
+		t.Errorf("missing path must yield nil, got %v", got)
+	}
+	if got := precheckPathSymbols(ctx, runner, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "a.go"); got != nil {
+		t.Errorf("bogus tree must yield nil, got %v", got)
+	}
+	if got := precheckPathSymbols(ctx, runner, tree, "bin.go"); got != nil {
+		t.Errorf("binary blob must yield nil, got %v", got)
+	}
+}
+
+// TestPrecheckPathSymbols_OversizedSkip: a marker-bearing blob past the size
+// cap is skipped — the same content the reader would name below the cap yields
+// nothing above it.
+func TestPrecheckPathSymbols_OversizedSkip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	head := "package big\n\nfunc Huge() {\n<<<<<<< HEAD\n\treturn 1\n=======\n\treturn 2\n>>>>>>> x\n}\n"
+	oversized := head + strings.Repeat("// pad\n", untrackedProfileMaxBytes/7+1000)
+	repo.WriteFile("big.go", oversized)
+	repo.Commit("big")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	tree := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD^{tree}"))
+
+	if got := precheckPathSymbols(context.Background(), runner, tree, "big.go"); got != nil {
+		t.Fatalf("oversized blob must yield no symbols, got %v", got)
+	}
+	// Sanity: the same content under the cap names Huge — proving the cap, not
+	// a scan failure, is what suppressed the oversized case.
+	if got := conflictSymbolsFromContent("big.go", head); len(got) != 1 || got[0] != "Huge" {
+		t.Fatalf("small content should name Huge, got %v", got)
+	}
+}
+
 // TestIntegration_PrecheckTrackingCacheMissing: tracking config intact but
 // the remote-tracking ref absent — precheck is read-only, so it must refuse
 // with the fetch remedy instead of silently forecasting the wrong branch.

@@ -97,6 +97,12 @@ type contextJSON struct {
 	// precheck with no upstream) — absence of a section plus its note is
 	// the contract for "asked, not available".
 	Notes []string `json:"notes,omitempty"`
+	// Delta marks a `--delta` response. On the baseline (or a degraded
+	// fallback) full response it is "baseline"; the compact unchanged/changed
+	// responses are assembled as maps (see context_delta.go) that carry
+	// delta/delta_base/unchanged inline. Empty — and thus omitted — on every
+	// non-delta call, so the default context output stays byte-identical.
+	Delta string `json:"delta,omitempty"`
 }
 
 type contextLogJSON struct {
@@ -171,6 +177,8 @@ upstream) degrades to a note instead of failing the whole call.`,
 	}
 	cmd.Flags().StringSlice("include", nil,
 		"extra sections to fuse into the result: diff, log, precheck, remotes, release, or all")
+	cmd.Flags().Bool("delta", false,
+		"emit only the core fields that changed since the last context call for this worktree")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -191,6 +199,13 @@ func runContext(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// --delta short-circuits into the ledger-backed path, which has to
+	// snapshot the core context before the include sections are fused in.
+	if delta, _ := cmd.Flags().GetBool("delta"); delta {
+		return runContextWithDelta(cmd, runner, cfg, includes, out)
+	}
+
 	collectContextIncludes(ctx, runner, cfg, includes, &out)
 
 	if JSONOut() {

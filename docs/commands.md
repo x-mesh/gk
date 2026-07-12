@@ -408,7 +408,7 @@ Each linked worktree carries its own status: `current` (the worktree this call r
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
-`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, and stage blobs), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (commit count + summaries since the latest tag — what is still unreleased; degrades to a note when the repo has no tags). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, stage blobs, and `symbols` — the enclosing function/entity of each conflict marker, weave-style: "`process` 양쪽 수정" beats "app.py 충돌"), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (commit count + summaries since the latest tag — what is still unreleased; degrades to a note when the repo has no tags). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
 
 `--delta` answers a **repeat** orientation with only what moved: the first call in a worktree returns the full document tagged `delta:"baseline"` (and records the snapshot under `~/.gk/context-ledger/`, keyed by the normalized worktree path); an unchanged repeat collapses to `{delta:"unchanged", unchanged:true, delta_base}`; a changed repeat carries just the core fields that differ (a field that vanished — e.g. `in_progress` after a rebase finishes — surfaces as `null` rather than silently disappearing). `--include` sections are never delta'd: they ride along fresh on every call. Any ledger problem (missing, corrupt, unwritable home) silently degrades to the full response, and the ledger directory is swept with a 7-day TTL on every save. The non-delta output is byte-identical to before.
 
@@ -3840,6 +3840,22 @@ gk changelog --format json
 
 # Preview the prompt
 gk changelog --dry-run
+```
+
+---
+
+## gk drivers
+
+Maps file extensions to git's **built-in language diff drivers** in `.git/info/attributes` — the repo-local attributes file git consults in addition to any versioned `.gitattributes`. Nothing lands in the working tree, teammates are unaffected, and linked worktrees share the one file (it lives in the common git dir).
+
+Why: git's hunk headers carry a function context (`@@ ... @@ def foo(...)`), and everything in gk that names *what* changed reads it — the live-feed symbols of `gk status --watch` and `gk fleet --feed-stats`, `gk diff --digest`, and the conflict symbols of `gk context --include=conflict`. Without a driver mapping, git's generic heuristic can't read CSS selectors or indented Python methods; with it, those names resolve correctly (`~ cost.css · .credit-expiry +1 -1`).
+
+Only built-in git drivers are referenced (`python`, `golang`, `rust`, `css`, `kotlin`, …) — no git config is written. The block is fenced with marker comments; `install` is idempotent, `uninstall` removes only the block (and deletes the file when gk's block was all it held). Inspired by weave's `setup --local`.
+
+```
+gk drivers install      # write the fenced rule block into .git/info/attributes
+gk drivers status       # installed or not (+path)
+gk drivers uninstall    # remove the block, restore the pre-install state
 ```
 
 ---

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gk drivers` — git 내장 언어 diff driver를 repo-local로 배선.** `install`이 `.git/info/attributes`(버전관리 밖, 워킹트리 무오염, 링크된 worktree 전체 공유)에 확장자→내장 driver 매핑 블록을 쓴다 — weave의 `setup --local` 패턴 차용. git hunk header의 함수 컨텍스트를 읽는 모든 곳(라이브 피드 심볼, `diff --digest`, 충돌 심볼)이 즉시 정확해진다: CSS hunk가 셀렉터를(`~ cost.css · .credit-expiry`), 들여쓰인 Python 메서드가 제 이름을 낸다. 내장 driver만 참조(config 무기록), 마커 펜스 멱등, `uninstall`은 블록만 제거(gk 블록만 있던 파일은 삭제해 원상복구).
+- **충돌에 entity 컨텍스트 — 어느 함수가 싸우는지.** `gk context --include=conflict`의 파일별 결과에 `symbols`가 붙는다: 각 충돌 마커 위쪽의 가장 가까운 정의를 확장자별 패턴으로 찾아 이름을 단다(weave의 충돌 마커 컨텍스트에서 착안, 외부 도구 없음). 텍스트 렌더도 `app.py both modified, 1 hunk(s) · in process`로 표시 — 에이전트가 "어느 파일"이 아니라 "어느 함수" 단위로 충돌에 접근한다.
+
 - **라이브 피드가 파일만이 아니라 "어느 함수"가 바뀌었는지 보여준다.** `gk status --watch`의 이벤트 라인과 fleet의 병합 피드·detail 패널(feed-stats 모드)이 변경된 함수 이름을 표시한다 — `~ auth.go · validateToken +12 −3`. 이름은 git이 hunk header에 붙이는 함수 컨텍스트에서 추출하므로(sem 같은 외부 도구·tree-sitter·`.gitattributes` 설정 불필요) 추가 의존성이 없고, 기존 `--numstat` 2회를 `diff -U0` 파싱 2회로 바꿔 ±라인 수와 함수명을 같은 서브프로세스 예산으로 얻는다. git의 funcname이 비는 곳 — 새 파일, 파일 최상단 변경, 기본 휴리스틱이 못 읽는 언어(CSS 셀렉터 등) — 은 hunk의 변경 라인에서 확장자별 정의 패턴(`def`/`class`/`func`/`fn`/`function`/arrow/셀렉터)을 직접 스캔해 메우고, **untracked 신규 파일**은 `git diff`에 아예 안 나타나므로 내용을 직접 읽어(256KB 캡, 바이너리 제외) +행수와 정의를 채운다 — 에이전트가 새 파일을 쓰는 순간이 가장 궁금한 순간이라서. 경로당 3개 상한, Go 리시버·`def`·시그니처 괄호·Python `class Foo:`의 후행 콜론을 처리하는 이름 추출기 포함. `gk fleet --events`의 `file-changed` 이벤트에도 `symbols` 배열이 실린다(feed-stats 모드, append-only) — 오케스트레이터가 "어느 파일"이 아니라 "어느 함수"에 반응할 수 있다.
 
 ## [0.119.0] - 2026-07-12

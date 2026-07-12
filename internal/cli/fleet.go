@@ -33,7 +33,8 @@ their own worktree) — answers "who is dirty / stuck / stale / ready to land"
 without a per-worktree status probe.
 
 A merged change feed below the table shows which files changed in which
-worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts).
+worktree as they happen ('e' toggles it; --feed-stats adds +/- line counts
+and the changed-function names from git's hunk contexts).
 When filesystem watches can be established the dashboard reacts to edits
 instantly and the poll drops to a slow heartbeat; otherwise it polls on
 --interval. j/k move, enter cycles the cursor panel (status fields → that
@@ -62,7 +63,7 @@ func addFleetFlags(cmd *cobra.Command) {
 	cmd.Flags().StringSlice("scan", nil, "directory roots to scan for git repos (multi-repo)")
 	cmd.Flags().Bool("all", false, "watch sibling repos of the current repo (multi-repo)")
 	cmd.Flags().Int("depth", 2, "max scan recursion depth for --scan")
-	cmd.Flags().Bool("feed-stats", false, "show +/- line counts in the change feed (extra git diff calls per poll)")
+	cmd.Flags().Bool("feed-stats", false, "show +/- line counts and changed-function names in the change feed (extra git diff calls per poll)")
 	cmd.Flags().Bool("events", false, "stream fleet changes as NDJSON events instead of a dashboard (for orchestrators)")
 }
 
@@ -891,6 +892,9 @@ func renderFleetDetailFeed(e fleetEntryJSON, now time.Time, tail []fleetFeedEven
 	}
 	for _, ev := range tail {
 		line := dim.Render(ev.ts.Format("15:04:05")) + " " + ev.glyph + " " + clip(ev.path, 30)
+		if ev.symbols != "" {
+			line += dim.Render(" · " + clip(ev.symbols, 26))
+		}
 		if ev.added > 0 || ev.removed > 0 {
 			line += dim.Render(fmt.Sprintf(" +%d/-%d", ev.added, ev.removed))
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,21 +24,25 @@ import (
 // `--follow`, which would collide with the `gk follow` command).
 
 // fleetStreamEvent is one NDJSON line. Kind decides which fields are set:
-// file-changed (file/note[/added/removed]), status-changed (from/to),
+// file-changed (file/note[/added/removed/symbols]), status-changed (from/to),
 // op-start/op-end (operation), land-ready (—).
 type fleetStreamEvent struct {
-	TS        string `json:"ts"`
-	Kind      string `json:"kind"`
-	Repo      string `json:"repo,omitempty"`
-	Branch    string `json:"branch,omitempty"`
-	Path      string `json:"path"`
-	File      string `json:"file,omitempty"`
-	Note      string `json:"note,omitempty"`
-	Added     int    `json:"added,omitempty"`
-	Removed   int    `json:"removed,omitempty"`
-	From      string `json:"from,omitempty"`
-	To        string `json:"to,omitempty"`
-	Operation string `json:"operation,omitempty"`
+	TS      string `json:"ts"`
+	Kind    string `json:"kind"`
+	Repo    string `json:"repo,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	Path    string `json:"path"`
+	File    string `json:"file,omitempty"`
+	Note    string `json:"note,omitempty"`
+	Added   int    `json:"added,omitempty"`
+	Removed int    `json:"removed,omitempty"`
+	// Symbols are the changed-function names of a file-changed event
+	// (feed-stats mode only) — extracted from git's hunk function contexts,
+	// so an orchestrator can react to WHAT changed, not just which file.
+	Symbols   []string `json:"symbols,omitempty"`
+	From      string   `json:"from,omitempty"`
+	To        string   `json:"to,omitempty"`
+	Operation string   `json:"operation,omitempty"`
 }
 
 // fleetTransitions diffs two fleet snapshots into state-transition events:
@@ -92,10 +97,17 @@ func feedEventsToStream(feed []fleetFeedEvent) []fleetStreamEvent {
 		if ev.cleared {
 			note = "cleared"
 		}
+		var symbols []string
+		if ev.symbols != "" {
+			// The display string joins extracted names (comma-free by
+			// construction) with ", ", so the split is lossless.
+			symbols = strings.Split(ev.symbols, ", ")
+		}
 		evs = append(evs, fleetStreamEvent{
 			TS: ev.ts.Format(time.RFC3339), Kind: "file-changed",
 			Repo: ev.repo, Branch: ev.branch, Path: ev.wt,
 			File: ev.path, Note: note, Added: ev.added, Removed: ev.removed,
+			Symbols: symbols,
 		})
 	}
 	return evs

@@ -223,18 +223,19 @@ func TestFleetRenderDetailFeed(t *testing.T) {
 		{Path: "/wt/b", Branch: "fix/race", Status: "clean"},
 	}
 	feed := []fleetFeedEvent{
-		{ts: now.Add(-30 * time.Second), wt: "/wt/a", path: "internal/auth/auth.go", glyph: "~", added: 12, removed: 3},
+		{ts: now.Add(-30 * time.Second), wt: "/wt/a", path: "internal/auth/auth.go", glyph: "~", added: 12, removed: 3, symbols: "validateToken"},
 		{ts: now.Add(-10 * time.Second), wt: "/wt/a", path: "internal/auth/auth_test.go", glyph: "+", note: "new"},
 		{ts: now.Add(-5 * time.Second), wt: "/wt/b", path: "other.go", glyph: "~"},
 	}
 
 	out := renderFleet(fleetView{entries: entries, cursor: 0, now: now, width: 100, detail: fleetDetailFeed, feed: feed})
 	for _, want := range []string{
-		"feat/auth",    // panel title
-		"auth.go",      // this worktree's event
-		"auth_test.go", // and the second one
-		"+12/-3",       // stats carried onto the event line
-		"new",          // note marker
+		"feat/auth",     // panel title
+		"auth.go",       // this worktree's event
+		"auth_test.go",  // and the second one
+		"validateToken", // changed-function name on the event line
+		"+12/-3",        // stats carried onto the event line
+		"new",           // note marker
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("feed panel missing %q in:\n%s", want, out)

@@ -151,35 +151,51 @@ func TestDiffChangeSnapshots_MtimeReTouch(t *testing.T) {
 	}
 }
 
-func TestParseNumstatZ(t *testing.T) {
-	// Normal record, a rename (empty path field + old/new NUL tokens, keyed
-	// by NEW path), a binary file ("-"), and a binary rename — mixed in one
-	// stream so cursor alignment after each form is exercised.
-	in := "3\t1\tfile.go\x00" +
-		"5\t2\t\x00old.go\x00new.go\x00" +
-		"-\t-\timg.png\x00" +
-		"-\t-\t\x00a.bin\x00b.bin\x00" +
-		"7\t0\tlast.go\x00"
-	got := parseNumstatZ([]byte(in))
+// TestChangeDiffProfile exercises the -U0 diff parse against a real repo: ±
+// counts per path, the changed-function name extracted from the hunk context,
+// and the staged+unstaged merge.
+func TestChangeDiffProfile(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.go", "package a\n\nfunc alpha() int {\n\treturn 1\n}\n\nfunc beta() int {\n\treturn 2\n}\n")
+	repo.Commit("init")
 
-	if s := got["file.go"]; s.added != 3 || s.removed != 1 {
-		t.Errorf("file.go = %+v, want {3 1}", s)
+	// One-line edit inside alpha: the hunk context names alpha, beta stays
+	// out of the symbol list.
+	repo.WriteFile("a.go", "package a\n\nfunc alpha() int {\n\treturn 10\n}\n\nfunc beta() int {\n\treturn 2\n}\n")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	got := changeDiffProfile(ctx, runner)
+	p, ok := got["a.go"]
+	if !ok {
+		t.Fatalf("a.go missing from profile: %v", got)
 	}
-	if s := got["new.go"]; s.added != 5 || s.removed != 2 {
-		t.Errorf("rename must key by NEW path: new.go = %+v, want {5 2}", s)
+	if p.added != 1 || p.removed != 1 {
+		t.Errorf("a.go = {+%d -%d}, want {+1 -1}", p.added, p.removed)
 	}
-	if _, ok := got["old.go"]; ok {
-		t.Errorf("rename must NOT key by old path")
+	if len(p.symbols) != 1 || p.symbols[0] != "alpha" {
+		t.Errorf("symbols = %v, want [alpha] (hunk func context, name only)", p.symbols)
 	}
-	if _, ok := got["img.png"]; ok {
-		t.Errorf("binary file must be skipped")
+}
+
+// TestFuncContextName locks the name extraction across the common language
+// shapes git's funcname heuristics emit.
+func TestFuncContextName(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"func gatherFleet(ctx context.Context) error", "gatherFleet"},
+		{"func (m fleetModel) openZoom(path string) (tea.Model, tea.Cmd)", "openZoom"},
+		{"def submit_order(self, order):", "submit_order"},
+		{"function handleClick(e)", "handleClick"},
+		{"public static void main(String[] args)", "main"},
+		{"fn gather_fleet(&self) -> Result<()>", "gather_fleet"},
+		{"static int parse_line(char *s)", "parse_line"},
+		{"type fleetModel struct", "struct"}, // no "(": last token, better than nothing
+		{"", ""},
 	}
-	if _, ok := got["b.bin"]; ok {
-		t.Errorf("binary rename must be skipped")
-	}
-	// last.go proves the cursor stayed aligned through the binary-rename form.
-	if s := got["last.go"]; s.added != 7 || s.removed != 0 {
-		t.Errorf("cursor misaligned after binary rename: last.go = %+v, want {7 0}", s)
+	for _, tc := range cases {
+		if got := funcContextName(tc.raw); got != tc.want {
+			t.Errorf("funcContextName(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
 	}
 }
 

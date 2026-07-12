@@ -40,9 +40,10 @@ type worktreeScan struct {
 }
 
 // scanWorktreeChanges runs the consolidated scan for one worktree. withStats
-// additionally pays two `git diff --numstat` runs to fill per-path +/- counts
-// (the feed-stats opt-in). Best-effort: any git failure returns a zero scan
-// (clean), matching the degrade-to-nil convention of the probes it replaces.
+// additionally pays two `git diff -U0` runs to fill per-path +/- counts and
+// changed-function names (the feed-stats opt-in). Best-effort: any git
+// failure returns a zero scan (clean), matching the degrade-to-nil convention
+// of the probes it replaces.
 func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root string, withStats bool) worktreeScan {
 	out, _, err := runner.Run(ctx, "--no-optional-locks", "status", "--porcelain", "-z")
 	if err != nil {
@@ -50,9 +51,10 @@ func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root strin
 	}
 	s := parseWorktreeScan(string(out), root)
 	if withStats && len(s.sigs) > 0 {
-		for p, ds := range changeDiffStats(ctx, runner) {
+		for p, ds := range changeDiffProfile(ctx, runner) {
 			if sig, ok := s.sigs[p]; ok {
 				sig.added, sig.removed = ds.added, ds.removed
+				sig.symbols = strings.Join(ds.symbols, ", ")
 				s.sigs[p] = sig
 			}
 		}
@@ -170,6 +172,7 @@ type fleetFeedEvent struct {
 	cleared bool
 	added   int // populated only in feed-stats mode
 	removed int
+	symbols string // changed-function names, feed-stats mode only
 }
 
 // applyFeedDiff diffs the fresh entries against prevSigs, appends the resulting
@@ -196,7 +199,7 @@ func applyFeedDiff(prevSigs map[string]map[string]fileSig, entries []fleetEntryJ
 			feed = append(feed, fleetFeedEvent{
 				ts: ev.ts, repo: e.Repo, branch: e.Branch, wt: e.Path, path: ev.path,
 				glyph: changeGlyph(ev), note: ev.note, cleared: ev.cleared,
-				added: ev.added, removed: ev.removed,
+				added: ev.added, removed: ev.removed, symbols: ev.symbols,
 			})
 		}
 	}
@@ -322,6 +325,9 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 			dim.Render("["+clip(who, 22)+"]"),
 			clip(ev.path, 40),
 		)
+		if ev.symbols != "" {
+			line += dim.Render(" · " + clip(ev.symbols, 34))
+		}
 		if ev.added > 0 || ev.removed > 0 {
 			line += dim.Render(fmt.Sprintf("  +%d/-%d", ev.added, ev.removed))
 		}

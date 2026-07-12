@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/diff"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/ui"
 )
@@ -39,6 +40,11 @@ type fileSig struct {
 	xy      string
 	added   int
 	removed int
+	// symbols is the display-joined list of function contexts the path's
+	// hunks touch ("openZoom, closeZoom"). It participates in the equality
+	// comparison, which is safe: it derives from the same diff as the +/-
+	// counts, so it never flaps independently of a real change.
+	symbols string
 	// mtime is the file's on-disk modification time (UnixNano). It lets the
 	// diff catch a re-save that leaves the porcelain code and +/- counts
 	// unchanged (e.g. swapping a line for one of equal length) — without it
@@ -53,6 +59,7 @@ type changeEvent struct {
 	label   string // xyLabel(xy), or "cleared" when the file left the dirty set
 	added   int
 	removed int
+	symbols string // display-joined changed-function names ("" when unknown)
 	note    string // "new", "re-touched", "" (baseline / cleared)
 	cleared bool
 }
@@ -67,7 +74,7 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 	if err != nil {
 		return sigs
 	}
-	stats := changeDiffStats(ctx, runner)
+	stats := changeDiffProfile(ctx, runner)
 	tokens := strings.Split(string(out), "\x00")
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -88,69 +95,110 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 				mtime = fi.ModTime().UnixNano()
 			}
 		}
-		sigs[path] = fileSig{xy: xy, added: ds.added, removed: ds.removed, mtime: mtime}
+		sigs[path] = fileSig{xy: xy, added: ds.added, removed: ds.removed,
+			symbols: strings.Join(ds.symbols, ", "), mtime: mtime}
 	}
 	return sigs
 }
 
-// changeDiffStats fetches +/- line counts for the feed. Unlike the shared
-// fetchDiffStats it (1) passes --no-optional-locks so a polling tick never
-// blocks on .git/index.lock while the agent runs `git add`, and (2) uses
-// `--numstat -z`, whose rename records carry the old and new paths as
-// separate NUL fields — so the stat is keyed by the NEW path the porcelain
-// snapshot uses, instead of the "old => new" string the non-z parse produces.
-// Staged + unstaged are merged.
-func changeDiffStats(ctx context.Context, runner *git.ExecRunner) map[string]diffStat {
-	merged := map[string]diffStat{}
+// changeProfile is one path's +/- line counts plus the function contexts its
+// hunks touch — what the numstat pair used to answer, upgraded with "which
+// function", from the same two git calls.
+type changeProfile struct {
+	added   int
+	removed int
+	symbols []string // extracted names, deduped, first-seen order, capped
+}
+
+// changeProfileSymbolCap bounds how many distinct function names one path
+// carries into the feed — an event line must stay glanceable, and past a few
+// names the honest summary is "lots of this file changed" anyway.
+const changeProfileSymbolCap = 3
+
+// changeDiffProfile fetches per-path +/- counts AND changed-function names
+// for the feed, replacing the former two `git diff --numstat` runs with two
+// `git diff -U0` parses (staged + unstaged merged, keyed by the NEW path so
+// renames match the porcelain snapshot). Same subprocess count, one upgrade:
+// unified hunk headers carry git's own function-context detection — no
+// .gitattributes or external tooling required — so feed events can name the
+// function, not just the file. --no-optional-locks for the same reason as
+// changeSnapshot (never contend with the agent's own `git add` on
+// index.lock); -U0 keeps the payload to changed lines only.
+func changeDiffProfile(ctx context.Context, runner *git.ExecRunner) map[string]changeProfile {
+	merged := map[string]changeProfile{}
 	for _, args := range [][]string{
-		{"--no-optional-locks", "diff", "--numstat", "-z"},
-		{"--no-optional-locks", "diff", "--cached", "--numstat", "-z"},
+		{"--no-optional-locks", "diff", "-U0"},
+		{"--no-optional-locks", "diff", "--cached", "-U0"},
 	} {
 		out, _, err := runner.Run(ctx, args...)
 		if err != nil {
 			continue
 		}
-		for p, s := range parseNumstatZ(out) {
-			ex := merged[p]
-			merged[p] = diffStat{added: ex.added + s.added, removed: ex.removed + s.removed}
+		res, perr := diff.ParseUnifiedDiff(bytes.NewReader(out))
+		if perr != nil {
+			continue
+		}
+		for _, f := range res.Files {
+			path := f.NewPath
+			if path == "" {
+				path = f.OldPath
+			}
+			if path == "" || f.IsBinary {
+				continue
+			}
+			p := merged[path]
+			p.added += f.AddedLines
+			p.removed += f.DeletedLines
+			for _, h := range f.Hunks {
+				p.symbols = appendSymbol(p.symbols, funcContextName(h.FuncName))
+			}
+			merged[path] = p
 		}
 	}
 	return merged
 }
 
-// parseNumstatZ parses `git diff --numstat -z`. A normal record is the single
-// NUL token "<add>\t<del>\t<path>". A rename/copy record has an empty path
-// field after the two tabs and is followed by two more NUL tokens — the old
-// then the new path; it is keyed by the NEW path. Binary files ("-") are
-// skipped (but their path tokens are still consumed so the cursor stays aligned).
-func parseNumstatZ(out []byte) map[string]diffStat {
-	m := map[string]diffStat{}
-	toks := strings.Split(string(out), "\x00")
-	for i := 0; i < len(toks); i++ {
-		t := toks[i]
-		if t == "" {
-			continue
-		}
-		cols := strings.SplitN(t, "\t", 3)
-		if len(cols) != 3 {
-			continue
-		}
-		path := cols[2]
-		if path == "" { // rename/copy header → old, new follow as NUL tokens
-			if i+2 >= len(toks) {
-				break
-			}
-			path = toks[i+2]
-			i += 2
-		}
-		a, e1 := strconv.Atoi(cols[0])
-		d, e2 := strconv.Atoi(cols[1])
-		if e1 != nil || e2 != nil { // binary "-" or malformed counts
-			continue
-		}
-		m[path] = diffStat{added: a, removed: d}
+// appendSymbol adds one extracted name to the capped, deduped symbol list.
+func appendSymbol(into []string, name string) []string {
+	if name == "" || len(into) >= changeProfileSymbolCap {
+		return into
 	}
-	return m
+	for _, s := range into {
+		if s == name {
+			return into
+		}
+	}
+	return append(into, name)
+}
+
+// funcContextName reduces a hunk's full function context ("func (m
+// fleetModel) openZoom(path string) (tea.Model, tea.Cmd)") to the bare name
+// ("openZoom") for the feed line. The heuristic: drop a Go method receiver
+// group, then take the last identifier before the argument list's "(". A
+// context with no "(" (e.g. "type fleetModel struct") is used as-is — better
+// an odd label than a dropped signal. The result is comma-free (a defensive
+// cut at the first comma), so display strings joined with ", " stay
+// unambiguous.
+func funcContextName(raw string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return ""
+	}
+	// Go method receiver: "func (recv T) name(args...)" — cut the receiver
+	// group so the first "(" below is the argument list, not the receiver.
+	if rest, ok := strings.CutPrefix(name, "func ("); ok {
+		if end := strings.Index(rest, ")"); end >= 0 {
+			name = "func " + strings.TrimSpace(rest[end+1:])
+		}
+	}
+	if paren := strings.Index(name, "("); paren >= 0 {
+		name = strings.TrimSpace(name[:paren])
+	}
+	if fields := strings.Fields(name); len(fields) > 0 {
+		name = fields[len(fields)-1]
+	}
+	name = strings.TrimSpace(strings.SplitN(name, ",", 2)[0])
+	return clip(name, 40)
 }
 
 // diffChangeSnapshots returns the timeline events produced by the transition
@@ -178,7 +226,7 @@ func diffChangeSnapshots(prev, curr map[string]fileSig, ts time.Time) []changeEv
 		}
 		evs = append(evs, changeEvent{
 			ts: ts, path: path, label: xyLabel(sig.xy),
-			added: sig.added, removed: sig.removed, note: note,
+			added: sig.added, removed: sig.removed, symbols: sig.symbols, note: note,
 		})
 	}
 	for path := range prev {
@@ -300,6 +348,10 @@ func runChangeWatchPlain(cmd *cobra.Command, runner *git.ExecRunner, interval ti
 }
 
 func plainEventLine(e changeEvent) string {
+	sym := ""
+	if e.symbols != "" {
+		sym = "  · " + e.symbols
+	}
 	stat := ""
 	if e.added > 0 || e.removed > 0 {
 		stat = fmt.Sprintf("  +%d -%d", e.added, e.removed)
@@ -308,8 +360,8 @@ func plainEventLine(e changeEvent) string {
 	if e.note != "" {
 		note = "  " + e.note
 	}
-	return fmt.Sprintf("%s  %s %s%s%s",
-		e.ts.Format(changeTSFormat), changeGlyph(e), e.path, stat, note)
+	return fmt.Sprintf("%s  %s %s%s%s%s",
+		e.ts.Format(changeTSFormat), changeGlyph(e), e.path, sym, stat, note)
 }
 
 // --- bubbletea model ---------------------------------------------------------
@@ -766,19 +818,35 @@ func (m *changeWatchModel) renderEvent(e changeEvent) string {
 	ts := dim.Render(e.ts.Format(changeTSFormat))
 	glyph := styleGlyph(e)
 	path := e.path
+	// The changed-function names ride between path and stats; they share the
+	// path's width budget so a long path + symbols never push the +/- off
+	// screen.
+	sym := e.symbols
 	// Reserve: indent(3)+ts(11)+sp(2)+glyph(1)+sp(1)+stat(~12)+note(~12).
 	if m.width > 24 {
 		budget := m.width - 3 - 11 - 2 - 1 - 1 - 12 - 12
 		if budget > 8 && runewidth.StringWidth(path) > budget {
 			path = runewidth.Truncate(path, budget, "…")
 		}
+		if sym != "" {
+			symBudget := budget - runewidth.StringWidth(path) - 3
+			if symBudget < 8 {
+				sym = ""
+			} else if runewidth.StringWidth(sym) > symBudget {
+				sym = runewidth.Truncate(sym, symBudget, "…")
+			}
+		}
+	}
+	symPart := ""
+	if sym != "" {
+		symPart = "  " + dim.Render("· "+sym)
 	}
 	stat := styleStat(e)
 	note := ""
 	if e.note != "" {
 		note = "  " + dim.Render(e.note)
 	}
-	return fmt.Sprintf("   %s  %s %s%s%s", ts, glyph, path, stat, note)
+	return fmt.Sprintf("   %s  %s %s%s%s%s", ts, glyph, path, symPart, stat, note)
 }
 
 func styleGlyph(e changeEvent) string {

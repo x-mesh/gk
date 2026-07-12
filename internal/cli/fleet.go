@@ -240,7 +240,7 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner, withStats bool) ([
 		root = r
 	}
 	sem := newFleetLimiter(fleetConcurrency())
-	return gatherFleetRepo(ctx, runner, filepath.Base(root), root, sem, withStats)
+	return gatherFleetRepo(ctx, runner, filepath.Base(root), root, currentWorktreePath(ctx, runner), sem, withStats)
 }
 
 // gatherFleetRepo enriches one repo's worktrees, tagging every entry with the
@@ -250,14 +250,13 @@ func gatherFleet(ctx context.Context, runner *git.ExecRunner, withStats bool) ([
 // one-shot `worktree list`/meta queries run outside sem; gating the repo level
 // on the same semaphore would deadlock (repos holding every slot while their
 // worktrees wait for one).
-func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root string, sem chan struct{}, withStats bool) ([]fleetEntryJSON, error) {
+func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root, current string, sem chan struct{}, withStats bool) ([]fleetEntryJSON, error) {
 	stdout, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("fleet: worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	entries := parseWorktreePorcelain(string(stdout))
 	meta := loadWorktreeBranchMeta(ctx, runner)
-	current := currentWorktreePath(ctx, runner)
 	base := resolveDefaultBranchForWorktree(ctx, runner)
 	now := time.Now()
 
@@ -375,6 +374,19 @@ func resolveFleetRepos(ctx context.Context, cmd *cobra.Command) ([]repoIdent, bo
 	return ids, true, nil
 }
 
+// processCwdWorktree returns the toplevel of the worktree the process is
+// standing in (honoring --repo), or "" when not inside one.
+func processCwdWorktree(ctx context.Context) string {
+	dir := RepoFlag()
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	if dir == "" {
+		return ""
+	}
+	return repoToplevel(ctx, &git.ExecRunner{Dir: dir})
+}
+
 // currentRepoRoot returns the canonical root of the repo containing the current
 // directory (or --repo), or "" when not inside a repo.
 func currentRepoRoot(ctx context.Context) string {
@@ -445,6 +457,13 @@ func resolveFleetInterval(cmd *cobra.Command, multi bool) int {
 // snapshot. GIT_OPTIONAL_LOCKS=0 keeps fleet's read-only probes from contending
 // on index.lock with the agents editing in those repos.
 func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{}, perRepo time.Duration, withStats bool) []fleetEntryJSON {
+	// Current must mean "the worktree the PROCESS is standing in" — computed
+	// once from the process location, not per repo. Each scanned repo has a
+	// checked-out root worktree, and marking those current (the old per-repo
+	// probe) branded every repo "active", neutering the activity filter and
+	// handing watchers to all of them. In a parent-directory scan the honest
+	// answer is usually: none.
+	current := processCwdWorktree(ctx)
 	out := make([][]fleetEntryJSON, len(repos))
 	var wg sync.WaitGroup
 	for i := range repos {
@@ -455,7 +474,7 @@ func gatherFleetMulti(ctx context.Context, repos []repoIdent, sem chan struct{},
 			rctx, cancel := context.WithTimeout(ctx, perRepo)
 			defer cancel()
 			runner := &git.ExecRunner{Dir: id.Root, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
-			entries, err := gatherFleetRepo(rctx, runner, id.Label, id.Root, sem, withStats)
+			entries, err := gatherFleetRepo(rctx, runner, id.Label, id.Root, current, sem, withStats)
 			if err != nil {
 				out[i] = []fleetEntryJSON{{
 					Repo:     id.Label,

@@ -24,6 +24,17 @@ import (
 // the user's other hooks.
 const gkHookMarker = "agents hook run"
 
+// gkHookEvents lists the Claude Code hook events gk manages: PreToolUse (raw
+// git steering, matcher "Bash") and UserPromptSubmit (git-orientation
+// prefetch, no matcher). Both carry gkHookMarker in their command string, so
+// install/uninstall/status can walk the two arrays uniformly.
+var gkHookEvents = []string{"PreToolUse", "UserPromptSubmit"}
+
+// hookPromptTimeoutSeconds bounds the UserPromptSubmit prefetch hook. That
+// hook must never hold up a prompt from going through, so a short ceiling
+// acts as a safety net against a hang (e.g. a slow git call in a huge repo).
+const hookPromptTimeoutSeconds = 5
+
 // Hook enforcement levels, from least to most strict:
 //
 //	warn     — never deny; surface an advisory note the agent may ignore.
@@ -64,11 +75,17 @@ git-kit pass through.
   gk agents hook install                 register in the repo's .claude/settings.json (warn)
   gk agents hook install --mode collapse deny only a repeated same-group probe
   gk agents hook install --mode block    deny every covered raw git
+  gk agents hook install --no-prompt     skip the UserPromptSubmit prefetch hook
   gk agents hook install --global        register in ~/.claude/settings.json (all projects)
-  gk agents hook uninstall               remove the gk-managed hook (revert)
+  gk agents hook uninstall               remove the gk-managed hooks (revert)
   gk agents hook status                  report install state for local + global
 
-settings.json edits are surgical: only the gk entry is added or removed, the
+install also registers a UserPromptSubmit hook (` + "`gk agents hook run --prompt`" + `)
+that prefetches git orientation for a detected git-action prompt, so the agent
+finds it already in context instead of probing for it — opt out with
+--no-prompt. Both hooks share one gk-managed marker, so uninstall removes both.
+
+settings.json edits are surgical: only the gk entries are added or removed, the
 rest of the file (other hooks, all settings) is preserved byte-for-byte, a .bak
 is written first, and --dry-run previews without writing.`,
 	}
@@ -91,12 +108,13 @@ is written first, and --dry-run previews without writing.`,
 	}
 	install.Flags().Bool("global", false, "install into ~/.claude/settings.json instead of the repo's .claude/settings.json")
 	install.Flags().String("mode", "warn", "block | collapse | warn — deny all covered raw git, deny only a repeated probe, or just surface a note")
+	install.Flags().Bool("no-prompt", false, "skip the UserPromptSubmit prefetch hook (PreToolUse only)")
 	install.Flags().Bool("dry-run", false, "preview the change without writing")
 	hook.AddCommand(install)
 
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the gk-managed PreToolUse hook (revert)",
+		Short: "Remove the gk-managed PreToolUse and UserPromptSubmit hooks (revert)",
 		RunE:  runAgentsHookUninstall,
 	}
 	uninstall.Flags().Bool("global", false, "uninstall from ~/.claude/settings.json instead of the repo root")
@@ -384,18 +402,21 @@ func emitHookDecision(w io.Writer, decision, reason, additionalContext string) e
 // --- install / uninstall / status ---
 
 type hookActionJSON struct {
-	Schema  int    `json:"schema"`
-	Path    string `json:"path"`
-	Scope   string `json:"scope"`  // local | global
-	Action  string `json:"action"` // installed | updated | unchanged | removed | absent | dry-run
-	Mode    string `json:"mode,omitempty"`
-	Command string `json:"command,omitempty"`
+	Schema        int    `json:"schema"`
+	Path          string `json:"path"`
+	Scope         string `json:"scope"`  // local | global
+	Action        string `json:"action"` // installed | updated | unchanged | removed | absent | dry-run
+	Mode          string `json:"mode,omitempty"`
+	Command       string `json:"command,omitempty"`
+	PromptAction  string `json:"promptAction,omitempty"`  // installed | updated | removed | skipped | dry-run
+	PromptCommand string `json:"promptCommand,omitempty"` // set only when the prefetch hook is (re)installed
 }
 
 func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 	global, _ := cmd.Flags().GetBool("global")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	mode, _ := cmd.Flags().GetString("mode")
+	noPrompt, _ := cmd.Flags().GetBool("no-prompt")
 	if mode != hookModeBlock && mode != hookModeCollapse && mode != hookModeWarn {
 		return fmt.Errorf("gk agents hook install: --mode must be block, collapse, or warn, got %q", mode)
 	}
@@ -409,30 +430,65 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	stripped, preExisted := stripGKHookEntriesForEvent(data, "PreToolUse")
+	stripped, promptExisted := stripGKHookEntriesForEvent(stripped, "UserPromptSubmit")
+
 	hookCmd := hookCommandString(mode)
-	stripped, existed := stripGKHookEntries(data)
-	entry := map[string]any{
+	updated, err := sjson.SetBytes(stripped, "hooks.PreToolUse.-1", map[string]any{
 		"matcher": "Bash",
 		"hooks":   []map[string]any{{"type": "command", "command": hookCmd}},
-	}
-	updated, err := sjson.SetBytes(stripped, "hooks.PreToolUse.-1", entry)
+	})
 	if err != nil {
 		return fmt.Errorf("gk agents hook install: edit settings: %w", err)
 	}
-
 	action := "installed"
-	if existed > 0 {
+	if preExisted > 0 {
 		action = "updated"
 	}
+
+	var promptCmd, promptAction string
+	switch {
+	case noPrompt && promptExisted > 0:
+		promptAction = "removed"
+	case noPrompt:
+		promptAction = "skipped"
+	default:
+		promptCmd = promptHookCommandString()
+		updated, err = sjson.SetBytes(updated, "hooks.UserPromptSubmit.-1", map[string]any{
+			"hooks": []map[string]any{{"type": "command", "command": promptCmd, "timeout": hookPromptTimeoutSeconds}},
+		})
+		if err != nil {
+			return fmt.Errorf("gk agents hook install: edit settings: %w", err)
+		}
+		promptAction = "installed"
+		if promptExisted > 0 {
+			promptAction = "updated"
+		}
+	}
+
 	if dryRun {
 		action = "dry-run"
+		if promptAction != "skipped" {
+			promptAction = "dry-run"
+		}
 	} else if err := writeSettings(path, updated); err != nil {
 		return err
 	}
 
+	human := fmt.Sprintf("%s: %s PreToolUse hook (%s mode) in %s", action, scopeLabel(scope), mode, path)
+	switch promptAction {
+	case "installed", "updated", "dry-run":
+		human += fmt.Sprintf("; %s UserPromptSubmit prefetch hook", promptAction)
+	case "removed":
+		human += "; removed the existing UserPromptSubmit prefetch hook (--no-prompt)"
+	case "skipped":
+		human += "; UserPromptSubmit prefetch hook skipped (--no-prompt)"
+	}
+
 	return emitAgentResultHuman(cmd, hookActionJSON{
 		Schema: 1, Path: path, Scope: scope, Action: action, Mode: mode, Command: hookCmd,
-	}, fmt.Sprintf("%s: %s PreToolUse hook (%s mode) in %s", action, scopeLabel(scope), mode, path))
+		PromptAction: promptAction, PromptCommand: promptCmd,
+	}, human)
 }
 
 func runAgentsHookUninstall(cmd *cobra.Command, _ []string) error {
@@ -464,14 +520,15 @@ func runAgentsHookUninstall(cmd *cobra.Command, _ []string) error {
 
 	return emitAgentResultHuman(cmd, hookActionJSON{
 		Schema: 1, Path: path, Scope: scope, Action: action,
-	}, fmt.Sprintf("%s: gk PreToolUse hook in %s", action, path))
+	}, fmt.Sprintf("%s: gk hooks (PreToolUse + UserPromptSubmit) in %s", action, path))
 }
 
 type hookStatusFileJSON struct {
-	Path      string `json:"path"`
-	Scope     string `json:"scope"`
-	Installed bool   `json:"installed"`
-	Mode      string `json:"mode,omitempty"`
+	Path            string `json:"path"`
+	Scope           string `json:"scope"`
+	Installed       bool   `json:"installed"`
+	Mode            string `json:"mode,omitempty"`
+	PromptInstalled bool   `json:"promptInstalled"`
 }
 
 func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
@@ -490,7 +547,10 @@ func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
 		}
 		data, _ := readSettings(path) // absent → "{}"
 		installed, mode := gkHookState(data)
-		out.Files = append(out.Files, hookStatusFileJSON{Path: path, Scope: scope, Installed: installed, Mode: mode})
+		promptInstalled := gkPromptHookInstalled(data)
+		out.Files = append(out.Files, hookStatusFileJSON{
+			Path: path, Scope: scope, Installed: installed, Mode: mode, PromptInstalled: promptInstalled,
+		})
 	}
 
 	if JSONOut() {
@@ -502,7 +562,11 @@ func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
 		if f.Installed {
 			state = "installed (" + f.Mode + ")"
 		}
-		fmt.Fprintf(w, "%-7s %s — %s\n", scopeLabel(f.Scope), f.Path, state)
+		promptState := "not installed"
+		if f.PromptInstalled {
+			promptState = "installed"
+		}
+		fmt.Fprintf(w, "%-7s %s — PreToolUse: %s, UserPromptSubmit: %s\n", scopeLabel(f.Scope), f.Path, state, promptState)
 	}
 	return nil
 }
@@ -569,13 +633,13 @@ func writeSettings(path string, data []byte) error {
 	return nil
 }
 
-// stripGKHookEntries removes every PreToolUse entry whose command is the
-// gk-managed hook, deleting from the highest index down so earlier indices stay
-// valid. It also prunes a now-empty PreToolUse array (and hooks object) so an
-// uninstall leaves no stray scaffolding. Returns the modified bytes and how
-// many entries were removed.
-func stripGKHookEntries(data []byte) ([]byte, int) {
-	pre := gjson.GetBytes(data, "hooks.PreToolUse")
+// stripGKHookEntriesForEvent removes every hooks.<event> entry whose command
+// is the gk-managed hook, deleting from the highest index down so earlier
+// indices stay valid. It also prunes a now-empty <event> array. Returns the
+// modified bytes and how many entries were removed from this event only.
+func stripGKHookEntriesForEvent(data []byte, event string) ([]byte, int) {
+	path := "hooks." + event
+	pre := gjson.GetBytes(data, path)
 	if !pre.IsArray() {
 		return data, 0
 	}
@@ -583,21 +647,37 @@ func stripGKHookEntries(data []byte) ([]byte, int) {
 	removed := 0
 	for i := len(arr) - 1; i >= 0; i-- {
 		if entryIsGKHook(arr[i]) {
-			if next, err := sjson.DeleteBytes(data, fmt.Sprintf("hooks.PreToolUse.%d", i)); err == nil {
+			if next, err := sjson.DeleteBytes(data, fmt.Sprintf("%s.%d", path, i)); err == nil {
 				data = next
 				removed++
 			}
 		}
 	}
 	if removed > 0 {
-		if rest := gjson.GetBytes(data, "hooks.PreToolUse"); rest.IsArray() && len(rest.Array()) == 0 {
-			data, _ = sjson.DeleteBytes(data, "hooks.PreToolUse")
-			if hooks := gjson.GetBytes(data, "hooks"); hooks.IsObject() && len(hooks.Map()) == 0 {
-				data, _ = sjson.DeleteBytes(data, "hooks")
-			}
+		if rest := gjson.GetBytes(data, path); rest.IsArray() && len(rest.Array()) == 0 {
+			data, _ = sjson.DeleteBytes(data, path)
 		}
 	}
 	return data, removed
+}
+
+// stripGKHookEntries removes gk-managed entries from every event gk manages
+// (see gkHookEvents — PreToolUse and UserPromptSubmit), then prunes a
+// now-empty hooks object so an uninstall leaves no stray scaffolding. Returns
+// the modified bytes and the total number of entries removed across events.
+func stripGKHookEntries(data []byte) ([]byte, int) {
+	total := 0
+	for _, event := range gkHookEvents {
+		var removed int
+		data, removed = stripGKHookEntriesForEvent(data, event)
+		total += removed
+	}
+	if total > 0 {
+		if hooks := gjson.GetBytes(data, "hooks"); hooks.IsObject() && len(hooks.Map()) == 0 {
+			data, _ = sjson.DeleteBytes(data, "hooks")
+		}
+	}
+	return data, total
 }
 
 func entryIsGKHook(entry gjson.Result) bool {
@@ -612,10 +692,27 @@ func entryIsGKHook(entry gjson.Result) bool {
 	return gk
 }
 
-// gkHookState reports whether the gk hook is present and, if so, its mode
-// (block/warn, read back from the `--warn` flag in the stored command).
+// gkHookState reports whether the gk PreToolUse hook is present and, if so,
+// its mode (block/warn/collapse, read back from the stored command).
 func gkHookState(data []byte) (installed bool, mode string) {
-	pre := gjson.GetBytes(data, "hooks.PreToolUse")
+	return gkEventHookMode(data, "PreToolUse")
+}
+
+// gkPromptHookInstalled reports whether the gk UserPromptSubmit prefetch hook
+// is registered. Unlike PreToolUse it carries no enforcement mode — the
+// prefetch handler only ever injects additionalContext, so presence is all
+// status needs.
+func gkPromptHookInstalled(data []byte) bool {
+	installed, _ := gkEventHookMode(data, "UserPromptSubmit")
+	return installed
+}
+
+// gkEventHookMode scans hooks.<event> for the gk-managed entry and, if found,
+// reads its mode back from the `--mode`/`--warn` flags in the stored command
+// (meaningless for UserPromptSubmit, whose command carries neither — callers
+// there only look at the bool).
+func gkEventHookMode(data []byte, event string) (installed bool, mode string) {
+	pre := gjson.GetBytes(data, "hooks."+event)
 	if !pre.IsArray() {
 		return false, ""
 	}
@@ -635,7 +732,7 @@ func gkHookState(data []byte) (installed bool, mode string) {
 				return true, hookModeCollapse
 			case strings.Contains(found, "--mode "+hookModeWarn), strings.Contains(found, "--warn"):
 				return true, hookModeWarn
-			default: // "--mode block" or a legacy bare install
+			default: // "--mode block", a legacy bare install, or a --prompt entry
 				return true, hookModeBlock
 			}
 		}
@@ -657,6 +754,18 @@ func hookCommandString(mode string) string {
 		mode = hookModeBlock
 	}
 	return fmt.Sprintf("%q agents hook run --mode %s", self, mode)
+}
+
+// promptHookCommandString is the settings.json command that invokes this
+// binary's UserPromptSubmit handler (the git-orientation prefetch). Unlike
+// hookCommandString it carries no --mode: the prefetch handler only ever
+// injects additionalContext, it never denies.
+func promptHookCommandString() string {
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "git-kit"
+	}
+	return fmt.Sprintf("%q agents hook run --prompt", self)
 }
 
 func scopeLabel(scope string) string {

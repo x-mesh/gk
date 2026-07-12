@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -397,6 +398,225 @@ func TestGKHookState(t *testing.T) {
 	}
 	if inst, _ := gkHookState([]byte(`{}`)); inst {
 		t.Error("empty settings reported as installed")
+	}
+}
+
+// hookInstallCmd builds a bare cobra.Command wired for
+// runAgentsHookInstall/runAgentsHookUninstall/runAgentsHookStatus, scoped to
+// --global with CLAUDE_CONFIG_DIR redirected to dir via t.Setenv — this must
+// never resolve to the real ~/.claude/settings.json.
+func hookInstallCmd(t *testing.T, dir string) *cobra.Command {
+	t.Helper()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.Flags().Bool("global", true, "")
+	cmd.Flags().String("mode", hookModeWarn, "")
+	cmd.Flags().Bool("no-prompt", false, "")
+	cmd.Flags().Bool("dry-run", false, "")
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	return cmd
+}
+
+func agentsHookSettingsPath(dir string) string {
+	return filepath.Join(dir, "settings.json")
+}
+
+func TestAgentsHookInstall_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := hookInstallCmd(t, dir)
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	data, err := os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings after first install: %v", err)
+	}
+	if n := gjson.GetBytes(data, "hooks.PreToolUse.#").Int(); n != 1 {
+		t.Fatalf("PreToolUse entries after first install = %d, want 1", n)
+	}
+	if n := gjson.GetBytes(data, "hooks.UserPromptSubmit.#").Int(); n != 1 {
+		t.Fatalf("UserPromptSubmit entries after first install = %d, want 1", n)
+	}
+
+	// Re-running install must refresh in place, not duplicate.
+	cmd = hookInstallCmd(t, dir)
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	data, err = os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings after second install: %v", err)
+	}
+	if n := gjson.GetBytes(data, "hooks.PreToolUse.#").Int(); n != 1 {
+		t.Fatalf("PreToolUse entries after second install = %d, want 1 (no duplicate)", n)
+	}
+	if n := gjson.GetBytes(data, "hooks.UserPromptSubmit.#").Int(); n != 1 {
+		t.Fatalf("UserPromptSubmit entries after second install = %d, want 1 (no duplicate)", n)
+	}
+	promptCmd := gjson.GetBytes(data, "hooks.UserPromptSubmit.0.hooks.0.command").String()
+	if !strings.Contains(promptCmd, "--prompt") {
+		t.Errorf("UserPromptSubmit command = %q, want --prompt", promptCmd)
+	}
+	if to := gjson.GetBytes(data, "hooks.UserPromptSubmit.0.hooks.0.timeout").Int(); to != hookPromptTimeoutSeconds {
+		t.Errorf("UserPromptSubmit timeout = %d, want %d", to, hookPromptTimeoutSeconds)
+	}
+	if gjson.GetBytes(data, "hooks.UserPromptSubmit.0.matcher").Exists() {
+		t.Error("UserPromptSubmit entry should carry no matcher field")
+	}
+}
+
+func TestAgentsHookInstall_NoPromptFlag(t *testing.T) {
+	dir := t.TempDir()
+	cmd := hookInstallCmd(t, dir)
+	if err := cmd.Flags().Set("no-prompt", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("install --no-prompt: %v", err)
+	}
+	data, err := os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if n := gjson.GetBytes(data, "hooks.PreToolUse.#").Int(); n != 1 {
+		t.Fatalf("PreToolUse entries = %d, want 1 (still installed)", n)
+	}
+	if gjson.GetBytes(data, "hooks.UserPromptSubmit").Exists() {
+		t.Errorf("UserPromptSubmit must not be installed with --no-prompt: %s", data)
+	}
+}
+
+func TestAgentsHookInstall_PreservesOtherToolHooks(t *testing.T) {
+	dir := t.TempDir()
+	seed := []byte(`{"model":"opus","hooks":{` +
+		`"UserPromptSubmit":[{"hooks":[{"type":"command","command":"node mem-mesh-hook.mjs"}]}],` +
+		`"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"stop.sh"}]}]}}`)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentsHookSettingsPath(dir), seed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := hookInstallCmd(t, dir)
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	data, err := os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+
+	if got := gjson.GetBytes(data, "hooks.UserPromptSubmit.0").Raw; got != `{"hooks":[{"type":"command","command":"node mem-mesh-hook.mjs"}]}` {
+		t.Errorf("mem-mesh UserPromptSubmit entry not preserved byte-for-byte: %s", got)
+	}
+	if n := gjson.GetBytes(data, "hooks.UserPromptSubmit.#").Int(); n != 2 {
+		t.Fatalf("UserPromptSubmit entries = %d, want 2 (mem-mesh + gk)", n)
+	}
+	if !gjson.GetBytes(data, "hooks.Stop").Exists() {
+		t.Error("Stop hook was dropped")
+	}
+	if gjson.GetBytes(data, "model").String() != "opus" {
+		t.Error("unrelated top-level key was dropped")
+	}
+
+	// Uninstalling must remove only the gk entries, leaving mem-mesh and Stop intact.
+	if err := runAgentsHookUninstall(cmd, nil); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	data, err = os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings after uninstall: %v", err)
+	}
+	if got := gjson.GetBytes(data, "hooks.UserPromptSubmit.0").Raw; got != `{"hooks":[{"type":"command","command":"node mem-mesh-hook.mjs"}]}` {
+		t.Errorf("mem-mesh UserPromptSubmit entry not preserved after uninstall: %s", got)
+	}
+	if n := gjson.GetBytes(data, "hooks.UserPromptSubmit.#").Int(); n != 1 {
+		t.Fatalf("UserPromptSubmit entries after uninstall = %d, want 1 (mem-mesh only)", n)
+	}
+	if !gjson.GetBytes(data, "hooks.Stop").Exists() {
+		t.Error("Stop hook was dropped by uninstall")
+	}
+}
+
+func TestAgentsHookUninstall_NoResidue(t *testing.T) {
+	dir := t.TempDir()
+	cmd := hookInstallCmd(t, dir)
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cmd = hookInstallCmd(t, dir)
+	if err := runAgentsHookUninstall(cmd, nil); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	data, err := os.ReadFile(agentsHookSettingsPath(dir))
+	if err != nil {
+		t.Fatalf("read settings after uninstall: %v", err)
+	}
+	if gjson.GetBytes(data, "hooks").Exists() {
+		t.Errorf("empty hooks object should be pruned after uninstall: %s", data)
+	}
+
+	// A second uninstall on an already-clean file is a no-op ("absent"), not an error.
+	cmd = hookInstallCmd(t, dir)
+	if err := runAgentsHookUninstall(cmd, nil); err != nil {
+		t.Fatalf("second uninstall: %v", err)
+	}
+}
+
+func TestAgentsHookStatus_ReportsBothEvents(t *testing.T) {
+	dir := t.TempDir()
+	cmd := hookInstallCmd(t, dir)
+	if err := runAgentsHookInstall(cmd, nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	statusCmd := hookInstallCmd(t, dir)
+	var buf bytes.Buffer
+	statusCmd.SetOut(&buf)
+	if err := runAgentsHookStatus(statusCmd, nil); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	out := buf.String()
+	globalLine := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "global") {
+			globalLine = line
+		}
+	}
+	if globalLine == "" {
+		t.Fatalf("no global status line in output: %q", out)
+	}
+	if !strings.Contains(globalLine, "PreToolUse: installed (warn)") {
+		t.Errorf("global status line = %q, want PreToolUse installed (warn)", globalLine)
+	}
+	if !strings.Contains(globalLine, "UserPromptSubmit: installed") {
+		t.Errorf("global status line = %q, want UserPromptSubmit installed", globalLine)
+	}
+
+	// After uninstall, both must report not installed.
+	cmd = hookInstallCmd(t, dir)
+	if err := runAgentsHookUninstall(cmd, nil); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	statusCmd = hookInstallCmd(t, dir)
+	buf.Reset()
+	statusCmd.SetOut(&buf)
+	if err := runAgentsHookStatus(statusCmd, nil); err != nil {
+		t.Fatalf("status after uninstall: %v", err)
+	}
+	globalLine = ""
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(line, "global") {
+			globalLine = line
+		}
+	}
+	if !strings.Contains(globalLine, "PreToolUse: not installed") || !strings.Contains(globalLine, "UserPromptSubmit: not installed") {
+		t.Errorf("global status line after uninstall = %q, want both not installed", globalLine)
 	}
 }
 

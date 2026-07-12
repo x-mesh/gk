@@ -15,10 +15,16 @@ import (
 // Like `gk status --watch`, fleet is polling-first with an fsnotify upgrade:
 // when watchers can be established the poll drops to a slow heartbeat
 // (fsHeartbeatInterval) and file events drive refreshes instead — reactions
-// get faster AND idle cost drops. Unlike status --watch there are N worktrees,
-// so N watchers split one process-wide directory budget: each gets
-// fsWatchMaxDirs / N. A worktree too big for its share simply doesn't get a
-// watcher (its changes ride on the heartbeat) — degrade, don't fail.
+// get faster AND idle cost drops. Unlike status --watch there are N worktrees
+// sharing one process-wide directory budget (fsWatchMaxDirs), and the split
+// is by ACTIVITY, not headcount: watchers exist to make the feed instant
+// where changes are happening, so active worktrees (current checkout, dirty,
+// paused op, or moved within the last hour) divide the whole budget among
+// themselves and idle ones get none. An idle worktree costs nothing to skip —
+// its row refreshes on the heartbeat, and the first change the heartbeat
+// detects promotes it to active, so it gains a watcher one poll later (a
+// one-time ≤heartbeat delay on first wake). A worktree too big even for its
+// share still just rides the heartbeat — degrade, don't fail.
 //
 // Backpressure: events request a poll; while one poll is in flight further
 // events only set a pending flag, so a burst of saves across worktrees
@@ -34,10 +40,10 @@ type fleetWatchSet struct {
 	closed   bool
 }
 
-// fleetWatchBudget splits the process descriptor budget across n worktrees.
-// The floor keeps a tiny share from making every watcher fail its walk when
-// the fleet is large — better a few over-budget worktrees on the heartbeat
-// than none watched at all.
+// fleetWatchBudget splits the process descriptor budget across n ACTIVE
+// worktrees. The floor keeps a tiny share from making every watcher fail its
+// walk when many worktrees are active at once — better a few over-budget
+// worktrees on the heartbeat than none watched at all.
 func fleetWatchBudget(n int) int {
 	if n <= 0 {
 		n = 1
@@ -48,6 +54,66 @@ func fleetWatchBudget(n int) int {
 		return floor
 	}
 	return per
+}
+
+// fleetActiveWindow is how recently a worktree must have moved to stay
+// "active" for watcher-budget purposes once its tree is clean again.
+const fleetActiveWindow = time.Hour
+
+// fleetEntryActive reports whether a worktree plausibly has an agent or a
+// human in it right now — the signals the dashboard already computes: the
+// current checkout (someone could start typing any second), uncommitted work,
+// a paused operation waiting on a resolution, or activity within the window.
+func fleetEntryActive(e fleetEntryJSON, now time.Time) bool {
+	if e.Status == "error" || e.Path == "" {
+		return false
+	}
+	if e.Current || e.Operation != "" {
+		return true
+	}
+	if d := e.Dirty; d != nil && d.Staged+d.Unstaged+d.Untracked+d.Conflicts > 0 {
+		return true
+	}
+	return !e.lastActive.IsZero() && now.Sub(e.lastActive) <= fleetActiveWindow
+}
+
+// fleetWatchPlan is one sync's allocation decision, computed as a pure
+// function so the policy is testable without filesystem watchers.
+type fleetWatchPlan struct {
+	grant  []string // active worktrees that should gain a watcher
+	revoke []string // idle worktrees whose watcher should be freed (pressure)
+	dirCap int      // per-watcher directory budget for this round's grants
+}
+
+// planFleetWatchers allocates the directory budget by activity. Active
+// entries (plus any forced path — e.g. the zoomed worktree, which the user is
+// staring at) divide the whole budget; idle entries get no new watcher. An
+// idle entry that already HOLDS a watcher keeps it while there's no pressure
+// (an established watcher costs nothing to keep), but the moment an active
+// entry is missing one, every idle-held watcher is revoked to free budget —
+// the re-walk cost lands on the idle side, where a heartbeat-paced feed is
+// already the accepted service level.
+func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced map[string]bool, now time.Time) fleetWatchPlan {
+	var missing, idleHolding []string
+	activeCount := 0
+	for _, e := range entries {
+		if e.Status == "error" || e.Path == "" {
+			continue
+		}
+		if fleetEntryActive(e, now) || forced[e.Path] {
+			activeCount++
+			if !have[e.Path] {
+				missing = append(missing, e.Path)
+			}
+		} else if have[e.Path] {
+			idleHolding = append(idleHolding, e.Path)
+		}
+	}
+	plan := fleetWatchPlan{grant: missing, dirCap: fleetWatchBudget(activeCount)}
+	if len(missing) > 0 {
+		plan.revoke = idleHolding
+	}
+	return plan
 }
 
 // newFleetWatchSet establishes watchers for the given worktrees. Returns nil
@@ -65,10 +131,13 @@ func newFleetWatchSet(ctx context.Context, entries []fleetEntryJSON) *fleetWatch
 	return ws
 }
 
-// sync reconciles the watcher set with the current fleet: new worktrees get a
-// watcher (best-effort within the budget), vanished ones are closed. Safe to
-// call from a tea.Cmd goroutine.
-func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON) {
+// sync reconciles the watcher set with the current fleet using the activity
+// plan: newly active worktrees get a watcher (best-effort within the budget),
+// idle holders are revoked under pressure, vanished ones are closed. forced
+// paths (the zoomed worktree) always count as active. Safe to call from a
+// tea.Cmd goroutine; re-planning every poll is what makes the allocation
+// self-correcting as activity moves between worktrees.
+func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, forced ...string) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	if ws.closed {
@@ -80,26 +149,33 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON) {
 			want[e.Path] = true
 		}
 	}
-	// Re-split the budget for the CURRENT fleet size so worktrees added after
-	// startup don't stack fixed initial-size shares past the process budget.
-	// Established watchers keep their walk (re-registering is expensive) —
-	// only new ones pick up the tightened cap; a grown fleet therefore trends
-	// toward the correct split as worktrees come and go.
-	ws.dirCap = fleetWatchBudget(len(want))
-	for _, e := range entries {
-		if !want[e.Path] {
-			continue
+	have := make(map[string]bool, len(ws.watchers))
+	for path := range ws.watchers {
+		have[path] = true
+	}
+	forcedSet := map[string]bool{}
+	for _, p := range forced {
+		if p != "" {
+			forcedSet[p] = true
 		}
-		if _, ok := ws.watchers[e.Path]; ok {
-			continue
+	}
+
+	plan := planFleetWatchers(entries, have, forcedSet, time.Now())
+	ws.dirCap = plan.dirCap
+	for _, path := range plan.revoke {
+		if fw, ok := ws.watchers[path]; ok {
+			fw.Close()
+			delete(ws.watchers, path)
 		}
-		runner := &git.ExecRunner{Dir: e.Path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
+	}
+	for _, path := range plan.grant {
+		runner := &git.ExecRunner{Dir: path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
 		fw, ok := newFSWatcher(ctx, runner, fsWatchDebounce, ws.dirCap)
 		if !ok {
 			continue // over budget / unusable — this worktree rides the heartbeat
 		}
-		ws.watchers[e.Path] = fw
-		go ws.forward(e.Path, fw)
+		ws.watchers[path] = fw
+		go ws.forward(path, fw)
 	}
 	for path, fw := range ws.watchers {
 		if !want[path] {
@@ -168,15 +244,17 @@ func waitFleetFSCmd(ws *fleetWatchSet) tea.Cmd {
 }
 
 // fleetSyncWatchersCmd reconciles watchers with the latest fleet in the
-// background (the walk of a new worktree is too slow for Update).
-func fleetSyncWatchersCmd(ctx context.Context, ws *fleetWatchSet, entries []fleetEntryJSON) tea.Cmd {
+// background (the walk of a new worktree is too slow for Update). forced
+// paths are treated as active regardless of their signals — the zoomed
+// worktree must react instantly while the user is looking at it.
+func fleetSyncWatchersCmd(ctx context.Context, ws *fleetWatchSet, entries []fleetEntryJSON, forced ...string) tea.Cmd {
 	if ws == nil {
 		return nil
 	}
 	snapshot := make([]fleetEntryJSON, len(entries))
 	copy(snapshot, entries)
 	return func() tea.Msg {
-		ws.sync(ctx, snapshot)
+		ws.sync(ctx, snapshot, forced...)
 		return nil
 	}
 }

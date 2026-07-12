@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`gk watch`의 fsnotify 예산이 머릿수가 아니라 "활동"으로 배분된다.** 종전엔 감시 디렉토리 예산(2048)을 워크트리 수로 균등 분할해서, 20개 repo를 스캔하면 워크트리당 64 dir — 정작 작업 중인 큰 repo가 워처를 못 받아 heartbeat(12s)로 강등되고, 유휴 repo들이 안 쓰는 몫을 쥐고 있었다. 이제 활성 워크트리(현재 체크아웃·dirty·paused op·1시간 내 활동·줌 대상)만 전체 예산을 나눠 갖고, 유휴 워크트리는 heartbeat를 탄다 — heartbeat가 첫 변화를 감지하면 활성으로 승격돼 다음 폴에 워처를 받는다(첫 깨어남에 한해 ≤12s 지연). 압박 상황(활성인데 워처 없음)에서만 유휴 보유분을 회수하고, 매 폴 재계획되므로 배분이 작업을 따라다닌다. 줌 헤더의 live/poll 표시도 매 폴 실제 워처 보유 여부를 반영한다.
+
 - **`gk fleet`이 `gk watch`로 통합됐다 — 같은 대시보드, 더 명확한 이름.** `gk watch`(별칭 `gk w`)가 정식 명령이 되고 문서도 전부 이관됐다: 워크트리 여러 개면 대시보드, 하나면 `gk status --watch` 피드로 직행. TUI 헤더·줌 breadcrumb도 `gk watch`로 바뀐다. `gk fleet`은 **한 릴리스 동안 hidden deprecated 별칭**으로 남는다(`land --promote` 전례) — 실행하면 stderr로 안내가 나오고, `--events`/`--json`을 물고 있는 오케스트레이터 스크립트는 그대로 동작하며, fleet은 예전처럼 워크트리 1개여도 대시보드를 강제한다(자동 라우팅 없음). 기계 계약은 불변: `--events`의 `mode:"fleet-events"` 헤더 프레임, 이벤트 스키마, config `fleet.*` 키(`fleet.notify` 포함) 전부 그대로다.
 
 - **fleet(·watch)의 병합 피드가 기본으로 `gk status --watch`처럼 읽힌다.** 종전에는 `--feed-stats`를 켜야 함수명·±가 붙고 기본은 파일명뿐이었다 — 이제 기본 on: `21:33:49.12 ~ [develop] auth.go · validateToken +12 −3 re-touched`. 비용(dirty 워크트리당 폴마다 `diff -U0` 2회)은 실제 작업이 일어나는 곳에서만 발생하므로 기본값으로 정당하다. `--feed-stats=false` 또는 `fleet.feed_stats: false`로 종전 동작(파일명만) 복귀. 이벤트 라인 포맷도 watch와 통일(1/100초 타임스탬프, 초록/빨강 ± 표기).

@@ -1123,7 +1123,7 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.tickSeq++ // invalidate any timer armed before this receipt
-		cmds := []tea.Cmd{fleetSyncWatchersCmd(m.ctx, m.ws, m.entries)}
+		cmds := []tea.Cmd{fleetSyncWatchersCmd(m.ctx, m.ws, m.entries, m.zoomPath)}
 		if m.fsPending {
 			m.fsPending = false
 			m.polling = true
@@ -1134,11 +1134,17 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The fleet poll doubles as the zoom's heartbeat: refresh the zoomed
 		// view on every data receipt, and pop it if its worktree vanished
 		// (e.g. reaped mid-watch) rather than watching a dead path forever.
+		// The live indicator re-reads the watcher set each round — the
+		// activity-based allocation may have granted (or freed) this
+		// worktree's watcher since the zoom opened.
 		if m.zoom != nil {
 			if !m.hasEntry(m.zoomPath) {
 				m.closeZoom()
-			} else if !m.zoom.paused {
-				cmds = append(cmds, m.zoom.refreshCmd())
+			} else {
+				m.zoom.fsLive = m.ws.hasWatcher(m.zoomPath)
+				if !m.zoom.paused {
+					cmds = append(cmds, m.zoom.refreshCmd())
+				}
 			}
 		}
 		return m, tea.Batch(cmds...)

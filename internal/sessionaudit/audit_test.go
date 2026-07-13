@@ -222,27 +222,26 @@ func TestAudit_SurfacesUncoveredRawGitGap(t *testing.T) {
 	if f.Status != "gap" {
 		t.Errorf("status = %q, want gap", f.Status)
 	}
-	// stash clear x1 + reset x1 = 2; `git stash` and `git stash pop` map to
-	// git-kit stash, `git apply` maps to git-kit apply (all covered),
-	// `git stash clear` does not, and rev-parse/diff are suppressed plumbing.
-	if f.Count != 2 {
-		t.Errorf("gap count = %d, want 2 (subs %v)", f.Count, f.Subcommands)
+	// `git stash clear` alone stays in the gap: `git stash`/`git stash pop` map
+	// to git-kit stash, `git apply` to git-kit apply, `git reset --hard HEAD~1`
+	// to git-kit reset --to, and rev-parse/diff are suppressed plumbing.
+	if f.Count != 1 {
+		t.Errorf("gap count = %d, want 1 (subs %v)", f.Count, f.Subcommands)
 	}
-	// git stash clear has no git-kit verb, so it alone stays in the gap.
 	if f.Subcommands["stash"] != 1 {
 		t.Errorf("stash gap count = %d, want 1 (subs %v)", f.Subcommands["stash"], f.Subcommands)
 	}
-	for _, absent := range []string{"rev-parse", "diff", "apply"} {
+	for _, absent := range []string{"rev-parse", "diff", "apply", "reset"} {
 		if _, ok := f.Subcommands[absent]; ok {
 			t.Errorf("%q should not appear in the gap, got %v", absent, f.Subcommands)
 		}
 	}
-	if report.Adoption.UncoveredRawHits != 2 {
-		t.Errorf("UncoveredRawHits = %d, want 2", report.Adoption.UncoveredRawHits)
+	if report.Adoption.UncoveredRawHits != 1 {
+		t.Errorf("UncoveredRawHits = %d, want 1", report.Adoption.UncoveredRawHits)
 	}
-	// stash x2 + apply x1 are covered raw git → they count toward CoveredRawHits.
-	if report.Adoption.CoveredRawHits != 3 {
-		t.Errorf("CoveredRawHits = %d, want 3", report.Adoption.CoveredRawHits)
+	// stash x2 + apply x1 + reset --hard x1 are covered raw git.
+	if report.Adoption.CoveredRawHits != 4 {
+		t.Errorf("CoveredRawHits = %d, want 4", report.Adoption.CoveredRawHits)
 	}
 	// the supported stash subcommands surface as covered raw-stash, not a gap.
 	if s := findingByKind(report, "raw-stash"); s == nil || s.Count != 2 {
@@ -419,8 +418,11 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 	}
 }
 
-// Index-only `git reset` forms are covered by git-kit unstage; resets that
-// move the branch (--soft/--hard, HEAD~1) remain uncovered gap signals.
+// The reset family splits three ways, by what gk can actually offer:
+//   - index-only forms → git-kit unstage (covered)
+//   - `--hard <ref>` → git-kit reset --to <ref> (covered: same target, backed up)
+//   - everything else that moves the branch (--soft, --mixed <commit>) → gap,
+//     because gk's only uncommit-but-keep-work path is an interactive picker.
 func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -446,9 +448,15 @@ func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 	if unstage.Status != "covered" || len(unstage.CoveredBy) == 0 {
 		t.Errorf("raw-unstage should be covered by git-kit unstage: %+v", unstage)
 	}
+	// --hard origin/main is exactly what `gk reset --to origin/main` does.
+	hard := findingByKind(report, "raw-reset-hard")
+	if hard == nil || hard.Count != 1 {
+		t.Fatalf("raw-reset-hard = %+v, want count 1 (--hard origin/main)", hard)
+	}
+	// --soft HEAD~1 and --mixed HEAD~1 move the branch with no gk equivalent.
 	gap := findingByKind(report, "uncovered-raw-git")
-	if gap == nil || gap.Subcommands["reset"] != 3 {
-		t.Fatalf("history resets should stay in the gap (want reset x3, incl --mixed HEAD~1): %+v", gap)
+	if gap == nil || gap.Subcommands["reset"] != 2 {
+		t.Fatalf("soft/mixed history resets must stay in the gap (want reset x2): %+v", gap)
 	}
 }
 
@@ -794,4 +802,72 @@ func containsString(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- reset/fsck mapping -------------------------------------------------------
+//
+// gk gained `reset --to <ref>` (and `restore --lost`) after the classifier was
+// written, so raw forms with an exact gk equivalent were still being reported as
+// "no gk verb exists". Mapping is by TARGET, not by verb name: the destructive
+// forms that share gk's destination map; the ones that do not stay a gap, because
+// a wrong recommendation here throws away work.
+func TestGitSegmentFinding_ResetAndFsck(t *testing.T) {
+	cases := []struct {
+		name   string
+		subcmd string
+		args   []string
+		want   string
+	}{
+		// gk reset --to takes the same target (and backs it up first).
+		{"hard to remote ref", "reset", []string{"--hard", "origin/main"}, "raw-reset-hard"},
+		{"hard to commit", "reset", []string{"--hard", "HEAD~1"}, "raw-reset-hard"},
+		{"hard to sha", "reset", []string{"--hard", "8b7a4f21c"}, "raw-reset-hard"},
+
+		// BARE --hard discards the working tree AT HEAD; a bare `gk reset` resets
+		// to the upstream remote. Same spelling, different destination — mapping
+		// it would move a branch the user never asked to move.
+		{"bare hard", "reset", []string{"--hard"}, ""},
+		{"bare hard quiet", "reset", []string{"-q", "--hard"}, ""},
+
+		// --soft keeps the work staged. gk's only equivalent is the interactive
+		// `gk undo` picker, which an agent cannot drive — leave it a gap.
+		{"soft uncommit", "reset", []string{"--soft", "HEAD~1"}, ""},
+
+		// Index-only spellings still belong to unstage.
+		{"unstage paths", "reset", []string{"HEAD", "file.go"}, "raw-unstage"},
+		{"bare reset", "reset", nil, "raw-unstage"},
+
+		// gk restore --lost IS the fsck dangling-work hunt.
+		{"fsck unreachable", "fsck", []string{"--unreachable", "--no-reflog"}, "raw-lost-found"},
+		{"fsck lost-found", "fsck", []string{"--lost-found"}, "raw-lost-found"},
+		{"fsck dangling", "fsck", []string{"--dangling"}, "raw-lost-found"},
+		// A bare fsck is an integrity check, not a recovery hunt.
+		{"bare fsck", "fsck", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitSegmentFinding(tc.subcmd, tc.args); got != tc.want {
+				t.Errorf("gitSegmentFinding(%q, %v) = %q, want %q", tc.subcmd, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// Per-path discard has NO gk verb — gk wipe is whole-tree and also removes
+// untracked files, so it is not this. The gap is the finding; do not "fix" it by
+// mapping it to something destructive.
+func TestGitSegmentFinding_PerPathDiscardStaysAGap(t *testing.T) {
+	for _, tc := range []struct {
+		subcmd string
+		args   []string
+	}{
+		{"checkout", []string{"--", "lib.rs"}},
+		{"restore", []string{"src/main.go"}},
+		{"restore", []string{"--worktree", "src/main.go"}},
+	} {
+		if got := gitSegmentFinding(tc.subcmd, tc.args); got != "" {
+			t.Errorf("gitSegmentFinding(%q, %v) = %q, want \"\" (no gk verb discards single paths)",
+				tc.subcmd, tc.args, got)
+		}
+	}
 }

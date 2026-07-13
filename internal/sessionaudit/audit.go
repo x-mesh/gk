@@ -245,13 +245,35 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit diff --raw-patch --json for exact unified patch text, or git-kit diff --json for parsed hunks.",
 		coveredBy:      []string{"git-kit diff --raw-patch --json", "git-kit diff --json", "git-kit diff --digest"},
 	},
-	// git reset/restore are intentionally NOT mapped: gk reset means "reset to
-	// remote" and gk restore recovers dangling work, so neither matches the raw
-	// verbs' file/index semantics. The one exception is the index-only unstage
-	// spellings (`git reset [HEAD]`, `git restore --staged`), which isRawUnstage
-	// routes to raw-unstage. stash maps only for the subcommands git-kit stash
-	// actually registers — gitKitStashCovers gates show/clear/branch/etc. back
-	// to a gap.
+	// `git reset --hard <ref>` and the fsck recovery hunt DO have gk verbs; the
+	// rest of the reset/restore family still does not. Mapped by target, not by
+	// verb name:
+	//   - index-only spellings (`git reset [HEAD]`, `git restore --staged`) →
+	//     raw-unstage, via isRawUnstage.
+	//   - `git reset --hard <ref>` → raw-reset-hard (gk reset --to takes the same
+	//     target and writes a backup ref first).
+	//   - `git fsck --lost-found/--unreachable` → raw-lost-found (gk restore --lost).
+	// Deliberately still UNMAPPED, because no gk verb has the same meaning:
+	//   - `git reset --soft <ref>` — gk undo is an interactive reflog picker, not
+	//     a scriptable "uncommit but keep the work".
+	//   - `git checkout -- <paths>` / `git restore <paths>` — per-path discard.
+	//     gk wipe is whole-tree (and cleans untracked), so it is NOT this.
+	// stash maps only for the subcommands git-kit stash actually registers —
+	// gitKitStashCovers gates show/clear/branch/etc. back to a gap.
+	"raw-reset-hard": {
+		kind:           "raw-reset-hard",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit reset --to <ref> — same destructive reset, but it writes a backup ref first and gates on a confirm.",
+		coveredBy:      []string{"git-kit reset --to <ref>"},
+	},
+	"raw-lost-found": {
+		kind:           "raw-lost-found",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit restore --lost — it runs the fsck hunt and renders the dangling commits as a restorable list.",
+		coveredBy:      []string{"git-kit restore --lost"},
+	},
 	"raw-stash": {
 		kind:           "raw-stash",
 		severity:       "low",
@@ -1508,6 +1530,10 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-stash"
 	case isRawUnstage(subcmd, args):
 		return "raw-unstage"
+	case isRawResetHard(subcmd, args):
+		return "raw-reset-hard"
+	case isRawLostFound(subcmd, args):
+		return "raw-lost-found"
 	case subcmd == "diff" && hasArg(args, "--check"):
 		return "raw-diff-check"
 	case isRawFullDiff(subcmd, args):
@@ -1558,6 +1584,38 @@ func isRawUnstage(subcmd string, args []string) bool {
 		// tokens after HEAD are pathspecs — still an unstage.
 	}
 	return true
+}
+
+// isRawResetHard matches `git reset --hard <commit-ish>` — the destructive form
+// `gk reset --to <ref>` covers: same target, but it writes a backup ref and gates
+// on a confirm before throwing work away.
+//
+// A BARE `git reset --hard` is deliberately NOT matched. It discards the working
+// tree at HEAD, whereas a bare `gk reset` resets to the UPSTREAM remote branch —
+// same shape, different destination, and recommending it would move the branch
+// the user never asked to move. `--soft` is likewise excluded: gk's only
+// uncommit-but-keep-the-work path is the interactive `gk undo` picker, which an
+// agent cannot drive.
+func isRawResetHard(subcmd string, args []string) bool {
+	if subcmd != "reset" || !hasArg(args, "--hard") {
+		return false
+	}
+	for _, a := range args {
+		if a == "--" {
+			break // pathspecs follow; a hard reset takes no target after this
+		}
+		if !strings.HasPrefix(a, "-") {
+			return true // an explicit commit-ish target — this is gk reset --to
+		}
+	}
+	return false
+}
+
+// isRawLostFound matches the `git fsck` forms that hunt for dangling work, which
+// is exactly what `gk restore --lost` wraps. A bare `git fsck` is an integrity
+// check, not a recovery hunt, and stays a gap.
+func isRawLostFound(subcmd string, args []string) bool {
+	return subcmd == "fsck" && hasAnyArg(args, "--lost-found", "--unreachable", "--dangling")
 }
 
 func isRawFullDiff(subcmd string, args []string) bool {

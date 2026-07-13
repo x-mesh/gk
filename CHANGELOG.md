@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk session audit`가 `git reset --hard <ref>`와 `git fsck` 복구 탐색을 "gk 동사 없음"으로 오분류하던 문제.** 분류기가 작성된 뒤에 `gk reset --to <ref>`와 `gk restore --lost`가 생겼는데 매핑이 따라가지 못해, 감사는 이미 커버되는 명령을 coverage gap으로 보고했다 — 로드맵이 "만들어야 할 것" 목록에 이미 있는 기능을 올리게 된다. 이제 **대상(target) 기준으로** 매핑한다: `git reset --hard <ref>` → `gk reset --to <ref>`(같은 목적지에, 백업 ref를 먼저 쓰고 확인을 받는다), `git fsck --lost-found/--unreachable/--dangling` → `gk restore --lost`(그 fsck 탐색을 감싼 것이 이 명령이다). 실측 코퍼스(세션 3307개)에서 uncovered 90 → 73건. **의도적으로 매핑하지 않은 것**도 함께 고정했다 — 잘못된 추천은 작업을 날리기 때문이다: 인자 없는 `git reset --hard`는 HEAD에서 작업트리를 버리지만 인자 없는 `gk reset`은 **upstream 원격으로** 되돌리므로(철자만 같고 목적지가 다르다) 매핑하지 않는다. `--soft`도 마찬가지다 — gk의 유일한 "커밋만 취소하고 작업은 보존" 경로인 `gk undo`는 대화형 reflog 피커라 에이전트가 몰 수 없다. `git checkout -- <path>`/`git restore <path>`(경로 단위 폐기)는 `gk wipe`가 작업트리 전체를 대상으로 하고 추적 안 되는 파일까지 지우므로 **여전히 진짜 갭**이며, 그렇게 남겨 둔다. 분류기는 인라인 `gk hint`와 단일 소스라 감사·훅·turn 지표가 함께 정확해진다.
+
 ## [0.121.0] - 2026-07-13
 
 ### Added

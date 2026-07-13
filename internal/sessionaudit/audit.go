@@ -260,6 +260,28 @@ var findingSpecs = map[string]findingSpec{
 	//     gk wipe is whole-tree (and cleans untracked), so it is NOT this.
 	// stash maps only for the subcommands git-kit stash actually registers —
 	// gitKitStashCovers gates show/clear/branch/etc. back to a gap.
+	// The branch survey is covered — but by gk branch list, NOT by gk context.
+	// A 1:1 swap, so it gets no collapse group: it saves correctness, not turns.
+	"raw-branch-list": {
+		kind:           "raw-branch-list",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit branch list (--merged/--unmerged/--gone/--stale, --json) to survey branches — gk context reports the CURRENT branch, not the set of them.",
+		coveredBy:      []string{"git-kit branch list"},
+	},
+	// History SEARCH has no gk verb at all. This is the one finding here that is
+	// a genuine capability gap rather than an adoption gap: gk log has no --grep,
+	// no -S pickaxe, no --follow, no pathspec, so an agent hunting "which commit
+	// introduced X" has nowhere to go and burns several raw turns doing it.
+	// Status "gap" keeps it out of CoveredRawHits — claiming it as covered is
+	// what made the context group's turn savings look bigger than gk can deliver.
+	"raw-history-search": {
+		kind:           "raw-history-search",
+		severity:       "medium",
+		status:         "gap",
+		recommendation: "No git-kit verb searches history: gk log has no --grep/-S/--follow/pathspec, and gk context answers 'where am I', not 'which commit introduced X'. These turns are a capability gap, not an adoption gap.",
+		gap:            "git-kit has no history-search verb (--grep / -S pickaxe / --follow / path-scoped log / ref-range comparison)",
+	},
 	"raw-reset-hard": {
 		kind:           "raw-reset-hard",
 		severity:       "medium",
@@ -1342,11 +1364,28 @@ func isGitSubcommandToken(tok string) bool {
 	return true
 }
 
+// isRawContextProbe matches the raw probes `gk context` genuinely answers: WHERE
+// AM I — the current branch, its upstream, ahead/behind, the dirty set, the
+// recent commits on this branch.
+//
+// It deliberately does NOT match history SEARCH (`--grep`, `-S`, path-scoped
+// log) or branch SURVEY (`git branch -a --merged`), even though both are
+// read-only probes of the same verbs. gk context reports one repo's current
+// state; it cannot answer "which commit mentions X" or "which branches are
+// merged into main". Crediting those to gk context inflated the turn metric with
+// savings gk cannot deliver AND made the inline hint push agents toward a
+// command that does not answer their question — measured: roughly half of the
+// context group's collapsible turns were probes of that kind. They route to
+// isRawHistorySearch (a real gap) and isRawBranchList (gk branch list) instead.
+//
+// SHA archaeology (`git show <sha>`, `git merge-base <sha> <sha>`) is excluded
+// for the same reason — HEAD/branch-name operands stay context probes.
 func isRawContextProbe(subcmd string, args []string) bool {
-	// SHA archaeology (`git show <sha>`, `git merge-base <sha> <sha>`) is not
-	// answerable by gk context — HEAD/branch-name operands stay context probes.
+	if isRawHistorySearch(subcmd, args) || isRawBranchList(subcmd, args) {
+		return false
+	}
 	switch subcmd {
-	case "status", "branch", "log", "rev-list", "merge-base":
+	case "status", "log", "rev-list", "merge-base":
 		return !hasHexCommitOperand(args)
 	case "diff", "show":
 		statish := hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
@@ -1354,6 +1393,115 @@ func isRawContextProbe(subcmd string, args []string) bool {
 	default:
 		return false
 	}
+}
+
+// branchValueFlags are `git branch` filters that consume the NEXT token, so the
+// operand they take is not a branch name to create — `--merged main` is a
+// listing filter, not a rename target.
+var branchValueFlags = map[string]bool{
+	"--merged": true, "--no-merged": true, "--contains": true, "--no-contains": true,
+	"--sort": true, "--format": true, "--points-at": true,
+}
+
+// branchMutationFlags turn `git branch` from a listing into a write. gk branch
+// list does not cover these (delete/rename/copy/upstream edits), so they are not
+// claimed as covered.
+var branchMutationFlags = map[string]bool{
+	"-d": true, "-D": true, "--delete": true,
+	"-m": true, "-M": true, "--move": true,
+	"-c": true, "-C": true, "--copy": true,
+	"-u": true, "--set-upstream-to": true, "--unset-upstream": true,
+	"--edit-description": true,
+}
+
+// isRawBranchList matches the `git branch` forms that SURVEY branches — the bare
+// listing, `-v/-vv`, `-a/-r`, and the `--merged/--no-merged` filters. `gk branch
+// list` is what covers these (it has --merged/--unmerged/--gone/--stale and
+// --json); `gk context` never did — it reports the CURRENT branch, not the set
+// of them, which is why these used to inflate the context collapse group.
+//
+// Excluded: mutations (delete/rename/upstream — see branchMutationFlags), a bare
+// operand (that names a branch to create), and `--contains <ref>`, which is a
+// history question gk branch cannot ask (it routes to isRawHistorySearch).
+func isRawBranchList(subcmd string, args []string) bool {
+	if subcmd != "branch" {
+		return false
+	}
+	skipNext := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "" {
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			return false // a branch name operand — create/rename, not a listing
+		}
+		name, _, hasValue := strings.Cut(a, "=")
+		if branchMutationFlags[name] {
+			return false
+		}
+		if strings.HasPrefix(name, "--contains") || strings.HasPrefix(name, "--no-contains") {
+			return false // a history question — isRawHistorySearch owns it
+		}
+		if branchValueFlags[name] && !hasValue {
+			skipNext = true
+		}
+	}
+	return true
+}
+
+// isRawHistorySearch matches the log/rev-list/branch forms that SEARCH history
+// rather than report the current state — the ones gk has no verb for at all.
+//
+// gk log takes -n/--since/--ahead/--behind/--graph, but it has no --grep, no
+// -S/-G pickaxe, no --follow, no -p, no --all, and no pathspec. So an agent
+// hunting "which commit introduced X" or "what changed in this file over time"
+// has nowhere in gk to go, and burns 3-4 raw turns doing it. That is a genuine
+// capability gap, and it must read as one — not as an adoption failure against
+// `gk context`, which cannot answer the question either.
+//
+// Known limit (same shape as isRawUnstage's pathspec caveat): the range form
+// `origin/main..HEAD` IS answerable by `gk log --ahead`, but only when the range
+// happens to name the branch's own upstream — indistinguishable from any other
+// two-ref comparison without repo state, so all ranges are counted here rather
+// than silently miscrediting gk log.
+func isRawHistorySearch(subcmd string, args []string) bool {
+	switch subcmd {
+	case "log", "rev-list":
+	case "branch":
+		for _, raw := range args {
+			a := trimShellToken(raw)
+			if strings.HasPrefix(a, "--contains") || strings.HasPrefix(a, "--no-contains") {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if a == "--" {
+			return true // path-scoped history — gk log takes no pathspec
+		}
+		switch a {
+		case "--all", "-p", "--patch", "--follow", "--source", "--reverse":
+			return true
+		}
+		for _, p := range []string{"--grep", "--author", "--committer", "-S", "-G"} {
+			if strings.HasPrefix(a, p) {
+				return true
+			}
+		}
+		if !strings.HasPrefix(a, "-") && strings.Contains(a, "..") {
+			return true // a comparison between two refs
+		}
+	}
+	return false
 }
 
 // minHexOperandLen is the shortest all-hex operand treated as an explicit
@@ -1510,6 +1658,13 @@ func gitSegmentFinding(subcmd string, args []string) string {
 	// matches the context-probe shape, and the conflict finding must win.
 	case isRawConflictProbe(subcmd, args):
 		return "raw-conflict-probes"
+	// History search and branch survey are read-only probes of the SAME verbs as
+	// a context probe (log / branch), so they must be decided first — otherwise
+	// `gk context` gets credited with turns it cannot save.
+	case isRawHistorySearch(subcmd, args):
+		return "raw-history-search"
+	case isRawBranchList(subcmd, args):
+		return "raw-branch-list"
 	case isRawContextProbe(subcmd, args):
 		return "raw-context-probes"
 	case subcmd == "add" || subcmd == "commit":

@@ -691,7 +691,11 @@ func TestIsRawContextProbe_ShaOperandGuard(t *testing.T) {
 		{"branch contains sha", "branch", []string{"-r", "--contains", "8b7a4f21c"}, false},
 		{"log sha range", "log", []string{"--oneline", "8b7a4f21c..HEAD"}, false},
 		{"log sha suffix", "log", []string{"-1", "8b7a4f21c~2"}, false},
-		{"sha after pathspec dashdash", "log", []string{"--oneline", "--", "8b7a4f21c"}, true},
+		// Path-scoped log is no longer a context probe at all — gk log takes no
+		// pathspec, so it routes to raw-history-search regardless of what the
+		// path is named. The sha-vs-path distinction it used to exercise is
+		// asserted directly below, on hasHexCommitOperand.
+		{"sha after pathspec dashdash", "log", []string{"--oneline", "--", "8b7a4f21c"}, false},
 		{"hex word without digit", "log", []string{"--oneline", "deadbeef"}, true},
 		{"short hex ref", "log", []string{"-1", "abc12"}, true},
 	}
@@ -701,6 +705,10 @@ func TestIsRawContextProbe_ShaOperandGuard(t *testing.T) {
 				t.Errorf("isRawContextProbe(%s %v) = %v, want %v", tc.subcmd, tc.args, got, tc.want)
 			}
 		})
+	}
+	// A sha-looking token AFTER `--` is a path, not a commit operand.
+	if hasHexCommitOperand([]string{"--oneline", "--", "8b7a4f21c"}) {
+		t.Error("a token after -- is a pathspec, not a commit sha")
 	}
 }
 
@@ -869,5 +877,69 @@ func TestGitSegmentFinding_PerPathDiscardStaysAGap(t *testing.T) {
 			t.Errorf("gitSegmentFinding(%q, %v) = %q, want \"\" (no gk verb discards single paths)",
 				tc.subcmd, tc.args, got)
 		}
+	}
+}
+
+// --- context must not over-claim ---------------------------------------------
+//
+// log/branch probes were ALL credited to `gk context`, which reports the CURRENT
+// repo's state. It cannot answer "which commit mentions X" or "which branches are
+// merged into main" — so the turn metric counted savings gk cannot deliver, and
+// the inline hint pushed agents toward a command that does not answer them.
+func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
+	cases := []struct {
+		name   string
+		subcmd string
+		args   []string
+		want   string
+	}{
+		// gk context DOES answer these: where am I, what is dirty, what is recent.
+		{"status", "status", nil, "raw-context-probes"},
+		{"status short", "status", []string{"--short"}, "raw-context-probes"},
+		{"recent log", "log", []string{"--oneline", "-5"}, "raw-context-probes"},
+
+		// gk branch list answers the survey — gk context never did.
+		{"branch verbose", "branch", []string{"-vv"}, "raw-branch-list"},
+		{"branch all merged", "branch", []string{"-a", "--merged", "main"}, "raw-branch-list"},
+		{"branch remotes", "branch", []string{"-r"}, "raw-branch-list"},
+
+		// Nothing in gk answers these — they are a capability gap, not adoption.
+		{"log grep", "log", []string{"--all", "--grep=ship"}, "raw-history-search"},
+		{"log pickaxe", "log", []string{"-S", "tildePath"}, "raw-history-search"},
+		{"log path scoped", "log", []string{"--oneline", "--", "internal/cli/x.go"}, "raw-history-search"},
+		{"log patch", "log", []string{"-p"}, "raw-history-search"},
+		{"log follow", "log", []string{"--follow", "x.go"}, "raw-history-search"},
+		{"log range", "log", []string{"--oneline", "origin/main..HEAD"}, "raw-history-search"},
+		{"branch contains", "branch", []string{"--contains", "abc1234"}, "raw-history-search"},
+
+		// A branch mutation is neither a survey nor a search.
+		{"branch delete", "branch", []string{"-d", "feature"}, ""},
+		{"branch create", "branch", []string{"feature"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitSegmentFinding(tc.subcmd, tc.args); got != tc.want {
+				t.Errorf("gitSegmentFinding(%q, %v) = %q, want %q", tc.subcmd, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// A gap has no replacement to suggest, so the hint (and the PreToolUse hook built
+// on it) must stay silent rather than nag with an empty "use  instead".
+func TestHint_GapKindsStaySilent(t *testing.T) {
+	for _, cmd := range []string{
+		"git log --all --grep=ship",
+		"git log -S tildePath",
+		"git branch --contains abc1234",
+	} {
+		if res := Hint(cmd); res.Covered {
+			t.Errorf("Hint(%q).Covered = true (CoveredBy=%v) — a capability gap has nothing to recommend",
+				cmd, res.CoveredBy)
+		}
+	}
+	// The covered side still hints.
+	if res := Hint("git branch -vv"); !res.Covered || len(res.CoveredBy) == 0 {
+		t.Errorf("Hint(git branch -vv) = %+v, want covered by git-kit branch list", res)
 	}
 }

@@ -34,6 +34,15 @@ func Hint(command string) HintResult {
 		if !ok {
 			return
 		}
+		// A hint answers "run this instead". A kind with status "gap" (e.g.
+		// raw-history-search: gk has no --grep/-S/pathspec log) has no such
+		// answer, so the hint — and the PreToolUse hook built on it — must stay
+		// SILENT rather than nag with an empty replacement. Nagging an agent
+		// toward a command that cannot answer its question is exactly the
+		// over-claim this classifier split exists to remove.
+		if spec.status != "covered" || len(spec.coveredBy) == 0 {
+			return
+		}
 		if r := severityRank(spec.severity); r > bestRank {
 			bestRank = r
 			best = HintResult{

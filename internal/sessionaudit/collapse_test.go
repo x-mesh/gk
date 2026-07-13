@@ -368,10 +368,14 @@ func TestAudit_TurnMetricOptInAndBothSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := filepath.Join(claudeDir, "s.jsonl")
+	// All three are probes gk context actually answers (current state / recent
+	// commits / working-tree diffstat). `git branch -a` used to sit here, but a
+	// branch SURVEY is gk branch list, not gk context — see
+	// TestGitSegmentFinding_ContextVsSearchVsSurvey.
 	if err := os.WriteFile(claude, session(
 		asst("m1", "t1", "git status"),
 		asst("m2", "t2", "git log --oneline -5"),
-		asst("m3", "t3", "git branch -a"),
+		asst("m3", "t3", "git diff --stat"),
 	), 0o644); err != nil {
 		t.Fatal(err)
 	}

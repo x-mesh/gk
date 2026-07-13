@@ -168,21 +168,25 @@ func (ws *fleetWatchSet) hasAny() bool {
 // paths (the zoomed worktree) always count as active. Safe to call from a
 // tea.Cmd goroutine; re-planning every poll is what makes the allocation
 // self-correcting as activity moves between worktrees.
+// Threading: sync DECIDES under ws.mu, then does the slow work with the lock
+// released, then INSTALLS under ws.mu again. Establishing one watcher forks git
+// twice and walks the entire worktree (registering a descriptor per file on
+// kqueue) — ~30ms per worktree, measured; retiring one waits for its loop to
+// hand back those descriptors. Holding ws.mu across that froze the UI, because
+// View() takes the very same mutex on every frame (hasAny) and sync runs on a
+// tea.Cmd goroutine: a render blocked behind a filesystem walk, for ~600ms when
+// a whole fleet was granted at once.
+//
+// The cost of releasing the lock is that the set can move underneath us: the
+// dashboard may quit, or a concurrent sync may grant the same path first. A
+// watcher we then cannot install is CLOSED, never dropped — it holds
+// descriptors, and leaking those is the one failure the budget cannot absorb.
 func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, forced ...string) {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-	if ws.closed {
-		return
-	}
 	want := map[string]bool{}
 	for _, e := range entries {
 		if e.Status != "error" && e.Path != "" {
 			want[e.Path] = true
 		}
-	}
-	have := make(map[string]bool, len(ws.watchers))
-	for path := range ws.watchers {
-		have[path] = true
 	}
 	forcedSet := map[string]bool{}
 	for _, p := range forced {
@@ -191,30 +195,32 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		}
 	}
 
+	// --- decide (locked) -----------------------------------------------------
+	ws.mu.Lock()
+	if ws.closed {
+		ws.mu.Unlock()
+		return
+	}
+	have := make(map[string]bool, len(ws.watchers))
+	for path := range ws.watchers {
+		have[path] = true
+	}
 	plan := planFleetWatchers(entries, have, forcedSet, ws.denied, time.Now())
 	ws.dirCap = plan.dirCap
+	dirCap := plan.dirCap
+
+	// Detach everything this round retires — revoked holders and worktrees that
+	// vanished — so the teardown itself happens outside the lock.
+	retire := make([]*fsWatcher, 0, len(plan.revoke))
 	for _, path := range plan.revoke {
 		if fw, ok := ws.watchers[path]; ok {
-			fw.Close()
+			retire = append(retire, fw)
 			delete(ws.watchers, path)
 		}
 	}
-	for _, path := range plan.grant {
-		runner := &git.ExecRunner{Dir: path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
-		fw, ok := newFSWatcher(ctx, runner, fsWatchDebounce, ws.dirCap)
-		if !ok {
-			// Over budget / fd pressure / unusable — this worktree rides the
-			// heartbeat and sits out the cooldown before the next attempt.
-			ws.denied[path] = time.Now()
-			continue
-		}
-		delete(ws.denied, path)
-		ws.watchers[path] = fw
-		go ws.forward(path, fw)
-	}
 	for path, fw := range ws.watchers {
 		if !want[path] {
-			fw.Close()
+			retire = append(retire, fw)
 			delete(ws.watchers, path)
 		}
 	}
@@ -224,6 +230,56 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 		if !want[path] {
 			delete(ws.denied, path)
 		}
+	}
+	ws.mu.Unlock()
+
+	// --- the slow part (unlocked) --------------------------------------------
+	for _, fw := range retire {
+		fw.Close()
+	}
+	type grant struct {
+		path string
+		fw   *fsWatcher
+	}
+	granted := make([]grant, 0, len(plan.grant))
+	var denied []string
+	for _, path := range plan.grant {
+		runner := &git.ExecRunner{Dir: path, ExtraEnv: []string{"GIT_OPTIONAL_LOCKS=0"}}
+		fw, ok := newFSWatcher(ctx, runner, fsWatchDebounce, dirCap)
+		if !ok {
+			// Over budget / fd pressure / unusable — this worktree rides the
+			// heartbeat and sits out the cooldown before the next attempt.
+			denied = append(denied, path)
+			continue
+		}
+		granted = append(granted, grant{path: path, fw: fw})
+	}
+
+	// --- install (locked) ----------------------------------------------------
+	ws.mu.Lock()
+	now := time.Now()
+	var orphans []*fsWatcher
+	for _, g := range granted {
+		switch {
+		case ws.closed:
+			orphans = append(orphans, g.fw) // dashboard quit while we walked
+		case ws.watchers[g.path] != nil:
+			orphans = append(orphans, g.fw) // a concurrent sync got there first
+		default:
+			delete(ws.denied, g.path)
+			ws.watchers[g.path] = g.fw
+			go ws.forward(g.path, g.fw)
+		}
+	}
+	if !ws.closed {
+		for _, path := range denied {
+			ws.denied[path] = now
+		}
+	}
+	ws.mu.Unlock()
+
+	for _, fw := range orphans {
+		fw.Close()
 	}
 }
 

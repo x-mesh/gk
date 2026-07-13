@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -173,5 +174,128 @@ func TestPlanFleetWatchers_CooldownExertsNoPressure(t *testing.T) {
 	plan = planFleetWatchers(entries, have, nil, denied, now)
 	if len(plan.grant) != 1 || len(plan.revoke) != 1 {
 		t.Errorf("expired cooldown must restore grant+pressure, got grant=%v revoke=%v", plan.grant, plan.revoke)
+	}
+}
+
+// --- sync must not hold ws.mu across the filesystem walk ----------------------
+
+func newTestWatchSet() *fleetWatchSet {
+	return &fleetWatchSet{
+		watchers: map[string]*fsWatcher{},
+		events:   make(chan string, 8),
+		denied:   map[string]time.Time{},
+	}
+}
+
+// bigRepo is large enough that establishing a watcher over it takes measurable
+// time — which is the whole point: a walk that finishes instantly cannot prove
+// anything about who is blocked while it runs.
+func bigRepo(t *testing.T) *testutil.Repo {
+	t.Helper()
+	repo := testutil.NewRepo(t)
+	for i := 0; i < 2000; i++ {
+		repo.WriteFile(fmt.Sprintf("f%04d.txt", i), "x")
+	}
+	return repo
+}
+
+// The regression: sync ran on a tea.Cmd goroutine and held ws.mu for its whole
+// body — including newFSWatcher, which forks git twice and walks the entire
+// worktree. View() takes that same mutex on every frame (hasAny), so rendering
+// stalled behind the walk: ~30ms per worktree, ~600ms for a whole fleet.
+func TestFleetWatchSyncKeepsSetReadableDuringWalk(t *testing.T) {
+	repo := bigRepo(t)
+	ws := newTestWatchSet()
+	defer ws.Close()
+	entries := []fleetEntryJSON{{Path: repo.Dir, Current: true}}
+
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		ws.sync(context.Background(), entries)
+		done <- time.Since(start)
+	}()
+
+	// What matters is the WORST read, not how many got through: with the lock
+	// held across the walk, a reader still completes thousands of fast reads
+	// before sync manages to take the lock — and then exactly one read blocks
+	// for the entire walk. That single stalled read IS the dropped frame.
+	reads := 0
+	var worst time.Duration
+	for {
+		select {
+		case took := <-done:
+			if took < 3*time.Millisecond {
+				t.Skipf("watcher setup took only %v — too fast to prove the lock is free", took)
+			}
+			if reads == 0 {
+				t.Fatal("no reads observed — the probe never ran alongside sync")
+			}
+			// Generous: a render may legitimately wait for the short locked
+			// phases. It may not wait for the walk. (Measured: ~0.3ms free vs
+			// ~36ms — the whole walk — when the lock was held across it.)
+			if limit := took / 4; worst > limit {
+				t.Fatalf("a hasAny() read blocked %v of a %v walk (limit %v) — View() is stalled behind the filesystem walk",
+					worst, took, limit)
+			}
+			t.Logf("sync %v · %d concurrent hasAny() reads · worst %v", took, reads, worst)
+			return
+		default:
+			start := time.Now()
+			ws.hasAny() // exactly what View() calls on every frame
+			if d := time.Since(start); d > worst {
+				worst = d
+			}
+			reads++
+		}
+	}
+}
+
+// Releasing the lock during the walk means two syncs can race to grant the same
+// worktree. The loser's watcher must be closed, not installed twice or leaked —
+// it holds one descriptor per file.
+func TestFleetWatchSyncConcurrentGrantsDedupe(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "x")
+	ws := newTestWatchSet()
+	defer ws.Close()
+	entries := []fleetEntryJSON{{Path: repo.Dir, Current: true}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ws.sync(context.Background(), entries)
+		}()
+	}
+	wg.Wait()
+
+	ws.mu.Lock()
+	n := len(ws.watchers)
+	ws.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("one worktree must hold exactly one watcher, got %d", n)
+	}
+}
+
+// The dashboard can quit while sync is still walking. A watcher that finishes
+// after Close must not be installed into a closed set (nor leaked).
+func TestFleetWatchSyncRacingCloseInstallsNothing(t *testing.T) {
+	repo := bigRepo(t)
+	ws := newTestWatchSet()
+	entries := []fleetEntryJSON{{Path: repo.Dir, Current: true}}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ws.sync(context.Background(), entries)
+	}()
+	ws.Close() // lands during the walk
+	wg.Wait()
+
+	if ws.hasAny() {
+		t.Fatal("a closed watch set must not gain a watcher from an in-flight sync")
 	}
 }

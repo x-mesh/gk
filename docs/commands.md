@@ -1970,6 +1970,33 @@ gk reset --yes --clean
 
 ---
 
+## gk restore
+
+Recover work that is no longer reachable from any branch — a commit orphaned by a reset, a rebase that dropped a commit, a deleted branch.
+
+### Synopsis
+
+```
+gk restore --lost [--limit N]
+```
+
+`--lost` scans `git fsck --lost-found` for dangling commits and blobs and renders them as a restorable list with cherry-pick hints, so the recovery is a read of one list instead of a raw fsck dump you have to decode.
+
+### Flags
+
+| Flag | Description |
+| --- | --- |
+| `--lost` | Show unreachable commits/blobs found by `git fsck --lost-found` |
+| `--limit N` | Maximum entries to show (default 20) |
+
+### Notes
+
+- This is the verb behind raw `git fsck --lost-found` / `--unreachable` / `--dangling`: `gk session audit` maps those forms here.
+- It only *surfaces* lost work; nothing is written. Restore an entry with the cherry-pick command it prints.
+- For "I want to go back to a moment", not "I lost a commit", see `gk undo` (reflog picker) and `gk timemachine`.
+
+---
+
 ## gk undo
 
 Read git reflog, pick a past HEAD state, and reset to it after recording a

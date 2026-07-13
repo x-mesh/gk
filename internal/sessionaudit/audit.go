@@ -251,7 +251,8 @@ var findingSpecs = map[string]findingSpec{
 	//   - index-only spellings (`git reset [HEAD]`, `git restore --staged`) →
 	//     raw-unstage, via isRawUnstage.
 	//   - `git reset --hard <ref>` → raw-reset-hard (gk reset --to takes the same
-	//     target and writes a backup ref first).
+	//     target, fetches it first, and gates on a confirm — it does NOT write a
+	//     backup ref; the reflog is the only way back, via gk undo).
 	//   - `git fsck --lost-found/--unreachable` → raw-lost-found (gk restore --lost).
 	// Deliberately still UNMAPPED, because no gk verb has the same meaning:
 	//   - `git reset --soft <ref>` — gk undo is an interactive reflog picker, not
@@ -296,7 +297,7 @@ var findingSpecs = map[string]findingSpec{
 		kind:           "raw-reset-hard",
 		severity:       "medium",
 		status:         "covered",
-		recommendation: "Use git-kit reset --to <ref> — same destructive reset, but it writes a backup ref first and gates on a confirm.",
+		recommendation: "Use git-kit reset --to <ref> — the same destructive reset, but it fetches the target first and gates on a confirm (-y to skip); the pre-reset HEAD stays in the reflog, so git-kit undo can walk it back.",
 		coveredBy:      []string{"git-kit reset --to <ref>"},
 	},
 	"raw-lost-found": {

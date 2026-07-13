@@ -909,8 +909,12 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		{"log path scoped", "log", []string{"--oneline", "--", "internal/cli/x.go"}, "raw-history-search"},
 		{"log patch", "log", []string{"-p"}, "raw-history-search"},
 		{"log follow", "log", []string{"--follow", "x.go"}, "raw-history-search"},
-		{"log range", "log", []string{"--oneline", "origin/main..HEAD"}, "raw-history-search"},
 		{"branch contains", "branch", []string{"--contains", "abc1234"}, "raw-history-search"},
+
+		// A range is NOT a search — gk find cannot answer "what is in B that is
+		// not in A", so it stays its own gap rather than being folded in.
+		{"log range", "log", []string{"--oneline", "origin/main..HEAD"}, "raw-range-compare"},
+		{"log sha range", "log", []string{"--oneline", "ce6cd4a~1..ce6cd4a"}, "raw-range-compare"},
 
 		// A branch mutation is neither a survey nor a search.
 		{"branch delete", "branch", []string{"-d", "feature"}, ""},
@@ -928,18 +932,29 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 // A gap has no replacement to suggest, so the hint (and the PreToolUse hook built
 // on it) must stay silent rather than nag with an empty "use  instead".
 func TestHint_GapKindsStaySilent(t *testing.T) {
+	// A ref-range comparison has no gk verb — gk find searches, it does not diff
+	// two refs, and saying otherwise is the over-claim this split exists to kill.
 	for _, cmd := range []string{
-		"git log --all --grep=ship",
-		"git log -S tildePath",
-		"git branch --contains abc1234",
+		"git log --oneline origin/main..HEAD",
+		"git log --oneline ce6cd4a~1..ce6cd4a",
 	} {
 		if res := Hint(cmd); res.Covered {
 			t.Errorf("Hint(%q).Covered = true (CoveredBy=%v) — a capability gap has nothing to recommend",
 				cmd, res.CoveredBy)
 		}
 	}
-	// The covered side still hints.
-	if res := Hint("git branch -vv"); !res.Covered || len(res.CoveredBy) == 0 {
+	// The search family now DOES have an answer, and the hint must name it.
+	for _, cmd := range []string{
+		"git log --all --grep=ship",
+		"git log -S tildePath",
+		"git branch --contains abc1234",
+	} {
+		res := Hint(cmd)
+		if !res.Covered || !containsString(res.CoveredBy, "git-kit find") {
+			t.Errorf("Hint(%q) = %+v, want covered by git-kit find", cmd, res)
+		}
+	}
+	if res := Hint("git branch -vv"); !res.Covered || !containsString(res.CoveredBy, "git-kit branch list") {
 		t.Errorf("Hint(git branch -vv) = %+v, want covered by git-kit branch list", res)
 	}
 }

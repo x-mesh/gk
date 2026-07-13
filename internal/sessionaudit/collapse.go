@@ -32,6 +32,12 @@ var collapseGroupForKind = map[string]string{
 	"raw-diff-check":      "diff",
 	"raw-stash":           "stash",
 	"raw-apply":           "apply",
+	// The history hunt is a real collapse, not a 1:1 swap: the agent pays a turn
+	// per GUESS (--grep, then the pickaxe, then a path scope), and gk find runs
+	// all of them in one call. raw-branch-list and raw-range-compare are absent
+	// on purpose — the first IS a 1:1 swap (gk branch list) and the second has no
+	// verb at all, so neither may claim turn savings.
+	"raw-history-search": "find",
 }
 
 // gkForGroup is the single git-kit call a run of the group collapses into.
@@ -44,6 +50,7 @@ var gkForGroup = map[string]string{
 	"diff":        "git-kit diff",
 	"stash":       "git-kit stash",
 	"apply":       "git-kit apply",
+	"find":        "git-kit find",
 }
 
 // CollapseGroups returns the collapse group keys (gkForGroup's domain), sorted.
@@ -66,13 +73,13 @@ func CollapseGroups() []string {
 // double-count a turn.
 var groupPrecedence = []string{
 	"commit", "integration", "apply", "stash", "switch", "worktree", // write
-	"context", "diff", // read
+	"context", "diff", "find", // read
 }
 
 // readOnlyCollapseGroups are the probe groups whose runs a mutating turn
 // severs: probes before and after a state change observe different repos, so
 // one gk call can never replace both sides.
-var readOnlyCollapseGroups = map[string]bool{"context": true, "diff": true}
+var readOnlyCollapseGroups = map[string]bool{"context": true, "diff": true, "find": true}
 
 // mutatingGitVerbs are git subcommands that change repo state (index,
 // worktree, refs, or remotes) in every invocation form. Turns containing one

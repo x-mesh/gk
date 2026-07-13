@@ -269,18 +269,28 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit branch list (--merged/--unmerged/--gone/--stale, --json) to survey branches — gk context reports the CURRENT branch, not the set of them.",
 		coveredBy:      []string{"git-kit branch list"},
 	},
-	// History SEARCH has no gk verb at all. This is the one finding here that is
-	// a genuine capability gap rather than an adoption gap: gk log has no --grep,
-	// no -S pickaxe, no --follow, no pathspec, so an agent hunting "which commit
-	// introduced X" has nowhere to go and burns several raw turns doing it.
-	// Status "gap" keeps it out of CoveredRawHits — claiming it as covered is
-	// what made the context group's turn savings look bigger than gk can deliver.
+	// History SEARCH is what gk find answers, and it is a real turn collapse (see
+	// collapseGroupForKind): the agent does not know WHICH query will hit, so it
+	// tries --grep, then the pickaxe, then a path scope, one raw turn each. gk
+	// find runs all three at once and reports which matched.
 	"raw-history-search": {
 		kind:           "raw-history-search",
 		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit find <query> — it searches commit messages, changed content (pickaxe) and paths in ONE call across every ref, and says which matched, instead of one raw git log per guess.",
+		coveredBy:      []string{"git-kit find"},
+	},
+	// A range comparison is NOT a search — `git log A..B` asks "what is in B that
+	// is not in A". gk log --ahead/--behind --base answers the upstream/base
+	// spellings of that question, but an arbitrary two-ref range has no verb, so
+	// this stays an honest gap rather than being folded into gk find (which
+	// cannot answer it) or gk context (which never could).
+	"raw-range-compare": {
+		kind:           "raw-range-compare",
+		severity:       "low",
 		status:         "gap",
-		recommendation: "No git-kit verb searches history: gk log has no --grep/-S/--follow/pathspec, and gk context answers 'where am I', not 'which commit introduced X'. These turns are a capability gap, not an adoption gap.",
-		gap:            "git-kit has no history-search verb (--grep / -S pickaxe / --follow / path-scoped log / ref-range comparison)",
+		recommendation: "Ref-range comparison (git log A..B). gk log --ahead/--behind --base covers the upstream/base cases; an arbitrary two-ref range has no git-kit verb yet.",
+		gap:            "git-kit has no arbitrary ref-range comparison (git log A..B)",
 	},
 	"raw-reset-hard": {
 		kind:           "raw-reset-hard",
@@ -1381,7 +1391,7 @@ func isGitSubcommandToken(tok string) bool {
 // SHA archaeology (`git show <sha>`, `git merge-base <sha> <sha>`) is excluded
 // for the same reason — HEAD/branch-name operands stay context probes.
 func isRawContextProbe(subcmd string, args []string) bool {
-	if isRawHistorySearch(subcmd, args) || isRawBranchList(subcmd, args) {
+	if isRawHistorySearch(subcmd, args) || isRawRangeCompare(subcmd, args) || isRawBranchList(subcmd, args) {
 		return false
 	}
 	switch subcmd {
@@ -1455,20 +1465,17 @@ func isRawBranchList(subcmd string, args []string) bool {
 }
 
 // isRawHistorySearch matches the log/rev-list/branch forms that SEARCH history
-// rather than report the current state — the ones gk has no verb for at all.
+// rather than report the current state — "which commit introduced X", "what
+// changed in this file over time", "which branch contains this commit".
 //
-// gk log takes -n/--since/--ahead/--behind/--graph, but it has no --grep, no
-// -S/-G pickaxe, no --follow, no -p, no --all, and no pathspec. So an agent
-// hunting "which commit introduced X" or "what changed in this file over time"
-// has nowhere in gk to go, and burns 3-4 raw turns doing it. That is a genuine
-// capability gap, and it must read as one — not as an adoption failure against
-// `gk context`, which cannot answer the question either.
+// This is what `gk find` collapses. The turn cost was never one query; it was
+// that the agent cannot know which query will hit, so it pays a turn per guess
+// (--grep, then the -S pickaxe, then a path scope). gk find runs them together.
 //
-// Known limit (same shape as isRawUnstage's pathspec caveat): the range form
-// `origin/main..HEAD` IS answerable by `gk log --ahead`, but only when the range
-// happens to name the branch's own upstream — indistinguishable from any other
-// two-ref comparison without repo state, so all ranges are counted here rather
-// than silently miscrediting gk log.
+// Note this is decided BEFORE isRawContextProbe: these are read-only probes of
+// the very same verbs (log/branch), and crediting them to `gk context` — which
+// reports the current repo's state and cannot answer any of them — is what
+// inflated the context group's turn savings.
 func isRawHistorySearch(subcmd string, args []string) bool {
 	switch subcmd {
 	case "log", "rev-list":
@@ -1486,7 +1493,7 @@ func isRawHistorySearch(subcmd string, args []string) bool {
 	for _, raw := range args {
 		a := trimShellToken(raw)
 		if a == "--" {
-			return true // path-scoped history — gk log takes no pathspec
+			return true // path-scoped history — gk find --path
 		}
 		switch a {
 		case "--all", "-p", "--patch", "--follow", "--source", "--reverse":
@@ -1497,8 +1504,28 @@ func isRawHistorySearch(subcmd string, args []string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// isRawRangeCompare matches `git log A..B` — "what is in B that is not in A".
+// It is NOT a search, and gk find cannot answer it, so it must not be folded in:
+// over-claiming coverage is exactly what made the old context group's numbers
+// fiction. gk log --ahead/--behind --base answers the upstream/base spellings;
+// an arbitrary two-ref range still has no verb, and stays a gap.
+func isRawRangeCompare(subcmd string, args []string) bool {
+	switch subcmd {
+	case "log", "rev-list":
+	default:
+		return false
+	}
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if a == "--" {
+			break // pathspecs follow — a path is not a range
+		}
 		if !strings.HasPrefix(a, "-") && strings.Contains(a, "..") {
-			return true // a comparison between two refs
+			return true
 		}
 	}
 	return false
@@ -1663,6 +1690,8 @@ func gitSegmentFinding(subcmd string, args []string) string {
 	// `gk context` gets credited with turns it cannot save.
 	case isRawHistorySearch(subcmd, args):
 		return "raw-history-search"
+	case isRawRangeCompare(subcmd, args):
+		return "raw-range-compare"
 	case isRawBranchList(subcmd, args):
 		return "raw-branch-list"
 	case isRawContextProbe(subcmd, args):

@@ -1143,6 +1143,42 @@ gk log --lanes                            # author swim-lanes instead of commit 
 
 ---
 
+## gk find (alias: search)
+
+One-call history search: `gk find <query>` runs three searches **at the same time**, across every ref, and reports which one matched.
+
+| mode | what it asks | raw equivalent |
+| --- | --- | --- |
+| `message` | the commit message mentions it | `git log --grep` |
+| `content` | the commit added or removed it | `git log -S` (the "pickaxe") |
+| `path` | the commit touched a matching file | `git log -- '*<query>*'` |
+
+The gap it closes is **not** "gk log lacks `--grep`" — adding that flag would be a 1:1 swap. It is that you cannot know *which* query will hit, so the hunt costs a turn per guess:
+
+```
+git log --all --oneline --grep="OTLP exporter"      # nothing
+git log --all --oneline | grep -i otlp             # nothing
+git log --all -p -S "OTLPExporter" -- internal/    # found it
+```
+
+`gk find OTLPExporter` is that same hunt in one call. Commits matched by more than one mode rank first (the strongest signal there is), then by recency; each row is tagged with what matched, so "the message never mentions it but the code changed here" is visible rather than re-derived with another query.
+
+```bash
+gk find OTLPExporter                    # all three modes, every ref
+gk find "fleet watch" --since 2w        # narrow by time
+gk find tildePath --path internal/cli   # narrow to a subtree
+gk find --path docs/commands.md         # no query: the history of a path
+gk find OTLP --json                     # agent contract
+```
+
+Flags: `-n/--limit` (default 20) · `--since` · `--author` · `--path` · `--ref` (search one ref instead of all) · `--no-message` / `--no-content` / `--no-path` to narrow the fan-out — `--no-content` drops the pickaxe, which is the slow mode on large repos because it must diff every commit.
+
+A mode that fails (an unknown `--ref`, say) is reported in `failed` alongside whatever the other modes found: a partial answer beats no answer, but it must never read as a complete one.
+
+**What `gk find` does not answer:** "what is in B that is not in A" (`git log A..B`). That is a range comparison, not a search. Use `gk log --ahead` / `--behind` (add `--base` to compare against the base branch instead of the upstream) for those.
+
+---
+
 ## gk chat
 
 Talk to your repository. Unlike `gk ask` (one answer from pre-collected

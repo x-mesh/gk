@@ -26,7 +26,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 23
+const agentsContractVersion = 24
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -48,7 +48,7 @@ Use git-kit for git workflows whenever it has a path. In agent tool calls, run t
 
 Minimum rules:
 - Orient with ` + "`git-kit context`" + ` before git work; add ` + "`--include=diff,log,precheck,remotes,release`" + ` instead of separate status/log/diff probes.
-- Prefer git-kit verbs over raw git: ` + "`commit`" + `, ` + "`land`" + `, ` + "`pull --with-base`" + `, ` + "`sync`" + `, ` + "`merge`" + `, ` + "`rebase --plan`" + `, ` + "`diff --digest`" + `, ` + "`diff --raw-patch --json`" + `, ` + "`worktree ...`" + `, ` + "`ship`" + `, ` + "`batch --plan -`" + `.
+- Prefer git-kit verbs over raw git: ` + "`commit`" + `, ` + "`land`" + `, ` + "`pull --with-base`" + `, ` + "`sync`" + `, ` + "`merge`" + `, ` + "`rebase --plan`" + `, ` + "`diff --digest`" + `, ` + "`diff --raw-patch --json`" + `, ` + "`find`" + `, ` + "`worktree ...`" + `, ` + "`ship`" + `, ` + "`batch --plan -`" + `.
 - Keep read-only plumbing raw when needed: ` + "`git rev-parse`" + `, ` + "`git config --get`" + `, ` + "`git cat-file`" + `, ` + "`git ls-files`" + `.
 - For commit + pull + push, use ` + "`git-kit land`" + `; for local-only integration use ` + "`git-kit promote`" + `; for releases inspect ` + "`git-kit ship --dry-run --json`" + ` before ` + "`git-kit ship -y`" + `.
 - Agent-mode output is ` + "`{state, ok, result, error}`" + `. Branch on ` + "`state`" + `, not prose: ` + "`ok`" + `, ` + "`paused`" + `, ` + "`blocked`" + `, ` + "`error`" + `; ` + "`ok`" + ` is only ` + "`state==\"ok\"`" + `.
@@ -61,7 +61,9 @@ const agentsFullContractBody = `## Git workflow (git-kit)
 
 | Don't (raw git) | Do (git-kit) |
 | --- | --- |
-| git status / log / diff --stat / branch (orienting) | git-kit context — one call; add --include=diff,log,precheck,remotes for more |
+| git status / log / diff --stat (orienting: where am I) | git-kit context — one call; add --include=diff,log,precheck,remotes for more |
+| git log --grep / -S / --follow / -- <path> (searching history) | git-kit find <query> — messages, changed content and paths in ONE call, across every ref |
+| git branch -a / --merged (surveying branches) | git-kit branch list --merged/--unmerged/--gone/--stale --json |
 | git add + git commit | git-kit commit (AI groups) — or git-kit commit --plan - to group it yourself |
 | git checkout / git switch (to a branch) | git-kit switch |
 | git worktree … | git-kit worktree … |
@@ -83,6 +85,7 @@ This repository is driven with git-kit, an agent-native git CLI. Always invoke i
 - **Batch any sequence**: ` + "`git-kit batch --plan -`" + ` — run several git-kit commands as one transaction from a JSON plan on stdin: ` + "`{\"steps\":[{\"args\":[\"pull\",\"--with-base\"]},{\"args\":[\"push\"]}]}`" + `, optional per-step ` + "`on_failure: \"abort\"|\"continue\"`" + `. The result reports per-step outcomes plus ` + "`failed_step`" + `/` + "`resume`" + `; a gating failure skip-marks the remaining steps. Draft a plan with ` + "`--plan-template`" + `, preview with ` + "`--dry-run`" + `. N calls → 1.
 - **Sync**: ` + "`git-kit pull`" + ` (add ` + "`--with-base`" + ` to also fast-forward the local base branch, FF-only). On conflict the result lists the files plus the exact resume/abort commands. ` + "`--from <remote>[/<branch>]`" + ` integrates from a secondary remote (mirror, org fork) that the upstream chain never fetches — tracking config stays untouched.
 - **Forecast before integrating**: ` + "`git-kit precheck [target]`" + ` — read-only merge-tree simulation (no target = the next pull). Clean → integrate; conflicts listed → pick a strategy first instead of try→abort.
+- **Search history**: ` + "`git-kit find <query>`" + ` — one call searches commit MESSAGES, changed CONTENT (the pickaxe) and PATHS at once, across every ref, and each result says which of the three matched. The turn cost of raw archaeology is not one query — it is that you cannot know which query will hit: ` + "`git log --grep`" + ` (miss) → ` + "`git log -S`" + ` (miss) → ` + "`git log -- <path>`" + ` (hit) is three turns for one answer. Narrow with ` + "`--path`" + `/` + "`--since`" + `/` + "`--author`" + `/` + "`--ref`" + `; ` + "`--no-content`" + ` drops the pickaxe, the slow mode on large repos. It does NOT answer "what is in B that is not in A" — that is a range comparison; use ` + "`git-kit log --ahead/--behind --base`" + ` for the upstream/base cases.
 - **Inspect changes**: ` + "`git-kit diff --digest`" + ` — per-file change kind, ±lines, hunk count, and the changed symbols, without the patch body. Same ref/path arguments as plain diff (` + "`--staged`" + `, ` + "`HEAD~3`" + `, ` + "`main..feature`" + `). Read the full patch only for the files the digest makes interesting.
 - **Agent worktree lifecycle**: for multi-turn isolated work, acquire a ready worktree first with ` + "`git-kit worktree acquire <branch> --json`" + `, then use ` + "`result.path`" + ` as the cwd for later tool calls; ` + "`worktree.init`" + ` runs by default, and ` + "`--no-init`" + ` skips it. Finish from inside that worktree with ` + "`git-kit worktree finish --to parent --cleanup`" + ` (local promote + remove the linked worktree); add ` + "`--push`" + ` to use ` + "`land --to`" + `, and ` + "`--delete-branch`" + ` when the finished branch should also be removed. Reclaim old finished worktrees with ` + "`git-kit worktree cleanup --merged --stale 7d --json`" + `, then rerun with ` + "`-y`" + ` after reviewing candidates.
 - **Isolated one-shot worktree task**: ` + "`git-kit worktree run <branch> --init -- <command>`" + ` — create (or reuse) a worktree for ` + "`<branch>`" + `, bootstrap it (including reused worktrees), run ` + "`<command>`" + ` as the cwd, and exit with the command's own exit code. ` + "`--cleanup`" + ` reclaims success (and deletes the branch if this call created it); failing commands leave the worktree for inspection. ` + "`--from <ref>`" + ` bases a new branch elsewhere, and ` + "`--no-init`" + ` skips bootstrap. To find which worktree holds unfinished work without a per-path probe, ` + "`git-kit worktree list --json`" + ` reports each worktree's branch, ahead/behind, parent, lock state, and dirty counts in one call.
@@ -131,6 +134,7 @@ var agentsLeakPhrase = map[string]struct{ what, fix string }{
 	"diff":        {"repeated diff probes", "fold each into one `git-kit diff --digest` call instead"},
 	"stash":       {"raw stash sequences", "use `git-kit stash` instead"},
 	"apply":       {"raw apply retry churn", "use `git-kit apply` (automatic recount/3way ladder) instead"},
+	"find":        {"one raw `git log` per search guess", "search messages, changed content and paths together with ONE `git-kit find <query>` call instead"},
 }
 
 // agentsLeakGroupRE bounds what an UNKNOWN group key may look like before it

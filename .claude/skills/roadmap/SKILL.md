@@ -78,6 +78,30 @@ already carries.)
   a one-time step drop in `estimated_turns_saved`/`rate` across that boundary —
   do not read that step as an adoption regression.
 
+**Two classifier discontinuities — the history is measured with three different
+rulers. Never compare across a boundary.**
+
+| boundary | what changed | expected step |
+|---|---|---|
+| 2026-07 turn-estimator fix | stopped double-counting turns | `rate` / `estimated_turns_saved` drop |
+| **v0.122.0 (2026-07-13)** | `raw-context-probes` split into context / `gk find` / `gk branch list` / range-compare | **`rate` drops again** (5.8% → 3.1% on the full corpus) |
+
+The v0.122.0 split removed savings that were never real: every `git log --grep` /
+`-S` / `git branch -a --merged` was being credited to `gk context`, which cannot
+answer any of them (measured: 86 of the context group's 143 turns were fiction).
+The first entry recorded on the new ruler is **2026-07-13T04:50** (`rate` 0.3%,
+`adoption` 13.1%). Entries before it are a different measurement — reading the
+step as an adoption collapse is exactly the error the split was made to prevent.
+
+**The open question that boundary was drawn to answer:** `gk find` and `gk branch
+list` shipped in v0.122.0 to cover a workload gk previously had NO verb for. The
+test case is the `jinjjajinwoo` project — 370 session files, adoption **6%**,
+whose git usage is almost entirely `git branch` (218) + `git log` (174), i.e.
+exactly what the two new verbs answer. If its adoption does not move in the
+entries after 2026-07-13, the gap was never capability — it is adoption, and
+escalating the PreToolUse hook (`--mode warn` → `block`) finally has evidence
+behind it. Until then it does not.
+
 ## Phase 2 — INTERPRET (five signal classes)
 
 Read each class and tag every item with a **type** and a **turn-impact**.

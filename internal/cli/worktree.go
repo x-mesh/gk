@@ -296,15 +296,25 @@ type worktreeBranchMeta struct {
 }
 
 func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[string]worktreeBranchMeta {
+	meta, _ := loadWorktreeBranchMetaWithBase(ctx, runner)
+	return meta
+}
+
+// loadWorktreeBranchMetaWithBase also hands back the trunk it resolved. The
+// probe is a `symbolic-ref` subprocess, and a caller that needs both (fleet's
+// poll: the meta map for every worktree, the trunk for the land-ready check)
+// used to fork it a second time — twice per repo per poll, which on a
+// 17-repo fleet was 34 subprocesses where 17 would do.
+func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner) (map[string]worktreeBranchMeta, string) {
+	// Resolved before the branch listing so a listing failure still yields the
+	// trunk — callers use it independently of the meta map.
+	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
 	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {
-		return nil
+		return nil, defaultBr
 	}
-	// computeForkPoints needs a default-base hint; reuse the same
-	// resolveBaseForStatus output gk relies on elsewhere. Tolerate
-	// failures: without a default we lose the fork annotation but
-	// still get upstream/diff/age.
-	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
+	// computeForkPoints needs a default-base hint. Tolerate failures: without a
+	// default we lose the fork annotation but still get upstream/diff/age.
 	if defaultBr != "" {
 		computeForkPoints(ctx, runner, defaultBr, branches)
 	}
@@ -319,7 +329,7 @@ func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[str
 			LastCommit: b.LastCommit,
 		}
 	}
-	return out
+	return out, defaultBr
 }
 
 // resolveDefaultBranchForWorktree returns the trunk used as the

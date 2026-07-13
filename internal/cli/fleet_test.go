@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -171,6 +174,182 @@ func TestParseWorktreeScan(t *testing.T) {
 	// zero mtime — they must not win the newest-change slot.
 	if sig := s.sigs["conflicted.go"]; sig.mtime != 0 {
 		t.Errorf("conflicted.go sig mtime = %d, want 0 (not on disk)", sig.mtime)
+	}
+}
+
+// TestFleetLayoutUsesTerminalWidth locks the wide-terminal behaviour: the frame
+// spans the real width (it used to collapse back to 80 columns above 120), and
+// the slack goes to the elastic columns — a long path renders whole instead of
+// being clipped to `ContentView.s…` with half the screen empty beside it.
+func TestFleetLayoutUsesTerminalWidth(t *testing.T) {
+	if got := fleetWidth(0); got != fleetDefaultWidth {
+		t.Errorf("fleetWidth(0) = %d, want %d", got, fleetDefaultWidth)
+	}
+	if got := fleetWidth(20); got != fleetMinWidth {
+		t.Errorf("fleetWidth(20) = %d, want floor %d", got, fleetMinWidth)
+	}
+	if got := fleetWidth(166); got != 166 {
+		t.Errorf("fleetWidth(166) = %d, want 166 (no 120→80 fallback)", got)
+	}
+
+	narrow := fleetColumns(80, fleetIndentGrouped)
+	wide := fleetColumns(166, fleetIndentGrouped)
+	if wide.branch <= narrow.branch || wide.file <= narrow.file {
+		t.Errorf("columns did not grow with width: 80=%+v 166=%+v", narrow, wide)
+	}
+	if huge := fleetColumns(400, fleetIndentGrouped); huge.branch != wide.branch || huge.file != wide.file {
+		t.Errorf("columns unbounded at 400 cols: %+v", huge)
+	}
+
+	const path = "app/Sources/SpaceMeshApp/ContentView.swift"
+	if got := fleetLastChangeLabel(path, wide.file); got != path {
+		t.Errorf("wide file column = %q, want the full path", got)
+	}
+	// Narrow: the basename, as before — no room for directories.
+	if got := fleetLastChangeLabel(path, 14); got != "ContentView.s…" {
+		t.Errorf("narrow file column = %q, want the clipped basename", got)
+	}
+	// Mid: the basename fits but the path doesn't — keep the identifying tail.
+	if got := fleetLastChangeLabel(path, 30); !strings.HasSuffix(got, "ContentView.swift") || !strings.HasPrefix(got, "…") {
+		t.Errorf("mid file column = %q, want a left-clipped tail", got)
+	}
+
+	now := time.Date(2026, 6, 23, 15, 4, 5, 0, time.UTC)
+	rows := buildFleetRows([]fleetEntryJSON{
+		{Repo: "space-mesh", RepoRoot: "/r/sm", Path: "/r/sm", Branch: "phase2-rewire",
+			Status: "dirty", Dirty: &contextDirtyJSON{Unstaged: 13}, LastChange: path, lastActive: now},
+	}, map[string]bool{})
+	out := renderFleetGrouped(rows, 0, now, 166, fleetDetailOff, nil, 1, 1, fleetChurn{}, 0)
+	if !strings.Contains(out, path) {
+		t.Errorf("grouped render at 166 cols clipped the path:\n%s", out)
+	}
+	if w := lipgloss.Width(out); w < 160 {
+		t.Errorf("grouped render width = %d, want the frame to span the terminal", w)
+	}
+}
+
+// TestFleetChurn covers the session-volume accumulator: a worktree's first poll
+// is a baseline (whatever was already dirty did not happen on our watch), a
+// re-touch counts only the increment, and a commit — which resets the counts
+// against HEAD — contributes nothing rather than going negative.
+func TestFleetChurn(t *testing.T) {
+	const wt = "/r/wt"
+	entry := func(sigs map[string]fileSig) []fleetEntryJSON {
+		return []fleetEntryJSON{{Path: wt, sigs: sigs}}
+	}
+	var c fleetChurn
+	prev := map[string]map[string]fileSig{}
+
+	// Poll 1: first sight of the worktree — baseline, no churn.
+	first := map[string]fileSig{"a.go": {xy: " M", added: 10, removed: 2}}
+	c.accumulate(prev, entry(first))
+	if c.any() {
+		t.Errorf("baseline poll produced churn: %+v", c)
+	}
+	prev[wt] = first
+
+	// Poll 2: a.go grows by 5/1, b.go appears with 7 — churn is the increment.
+	second := map[string]fileSig{
+		"a.go": {xy: " M", added: 15, removed: 3},
+		"b.go": {xy: "??", added: 7},
+	}
+	c.accumulate(prev, entry(second))
+	if c.added != 5+7 || c.removed != 1 {
+		t.Errorf("churn = +%d −%d, want +12 −1", c.added, c.removed)
+	}
+	if c.touched() != 2 {
+		t.Errorf("touched = %d, want 2 (a.go, b.go)", c.touched())
+	}
+	prev[wt] = second
+
+	// Poll 3: the agent commits — sigs go empty. Nothing negative, nothing new.
+	c.accumulate(prev, entry(map[string]fileSig{}))
+	if c.added != 12 || c.removed != 1 || c.touched() != 2 {
+		t.Errorf("a commit changed the churn: %+v", c)
+	}
+	prev[wt] = map[string]fileSig{}
+
+	// Poll 4: fresh work after the commit counts in full (baseline is HEAD again).
+	c.accumulate(prev, entry(map[string]fileSig{"c.go": {xy: " M", added: 4}}))
+	if c.added != 16 || c.touched() != 3 {
+		t.Errorf("post-commit work = %+v, want +16 over 3 files", c)
+	}
+}
+
+// TestFleetVolumeHeadline: the header carries both readings — the uncommitted
+// diffstat and the session Δ — and drops Δ before the clock when the terminal
+// is too narrow to hold both.
+func TestFleetVolumeHeadline(t *testing.T) {
+	now := time.Date(2026, 7, 13, 8, 22, 59, 0, time.UTC)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	entries := []fleetEntryJSON{
+		{Branch: "develop", Status: "dirty", Files: 7, Added: 31, Removed: 3},
+		{Branch: "phase2", Status: "dirty", Files: 27, Added: 12890, Removed: 261},
+	}
+	churn := fleetChurn{added: 3142, removed: 210, files: map[string]bool{"a": true, "b": true}}
+
+	wide := renderFleetHeadline("2 worktrees", entries, now, 166, dim, churn, 17*time.Minute)
+	for _, want := range []string{"34 files", "+12,921", "−264", "Δ", "+3,142", "2 files · 17m", "08:22:59"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("headline missing %q in:\n%s", want, wide)
+		}
+	}
+
+	// Narrow: Δ goes first, the diffstat next, the count never.
+	narrow := renderFleetHeadline("2 worktrees", entries, now, 80, dim, churn, 17*time.Minute)
+	if strings.Contains(narrow, "Δ") {
+		t.Errorf("narrow headline kept Δ:\n%s", narrow)
+	}
+	for _, want := range []string{"2 worktrees", "34 files", "08:22:59"} {
+		if !strings.Contains(narrow, want) {
+			t.Errorf("narrow headline missing %q in:\n%s", want, narrow)
+		}
+	}
+
+	// Nothing dirty and nothing seen yet: just the count and the clock.
+	idle := renderFleetHeadline("2 worktrees", nil, now, 166, dim, fleetChurn{}, 0)
+	if strings.Contains(idle, "files") || strings.Contains(idle, "Δ") {
+		t.Errorf("idle headline should carry no volume:\n%s", idle)
+	}
+}
+
+// TestFleetStatColumn: the row diffstat column exists when there are counts to
+// put in it, and yields (rather than printing a column of `·`) when the counts
+// were never gathered — `--feed-stats=false`.
+func TestFleetStatColumn(t *testing.T) {
+	withStats := []fleetEntryJSON{{Branch: "develop", Files: 7, Added: 31, Removed: 3}}
+	noStats := []fleetEntryJSON{{Branch: "develop", Files: 7}}
+
+	if cols := fleetStatCols(166, fleetIndentFlat, withStats); cols.stat == 0 {
+		t.Error("stat column dropped even though the entries carry counts")
+	}
+	if cols := fleetStatCols(166, fleetIndentFlat, noStats); cols.stat != 0 {
+		t.Error("stat column kept with no counts to show (--feed-stats=false)")
+	}
+	if cols := fleetColumns(80, fleetIndentGrouped); cols.stat != 0 {
+		t.Errorf("stat column claimed %d cols on an 80-col terminal", cols.stat)
+	}
+
+	now := time.Date(2026, 7, 13, 8, 22, 59, 0, time.UTC)
+	out := renderFleetTable(withStats, 0, now, fleetStatCols(166, fleetIndentFlat, withStats))
+	if !strings.Contains(out, "+31") || !strings.Contains(out, "−3") {
+		t.Errorf("row missing its diffstat:\n%s", out)
+	}
+}
+
+// TestFleetFeedPaneFillsHeight: the feed tail takes whatever height the
+// dashboard leaves (the pane was capped at 8 lines while the rest of the
+// terminal sat blank), and still yields entirely when there is no room.
+func TestFleetFeedPaneFillsHeight(t *testing.T) {
+	m := fleetModel{height: 48}
+	if got := m.feedPaneLines(6); got != 48-6-3 {
+		t.Errorf("feedPaneLines(6) = %d, want the remaining height %d", got, 48-6-3)
+	}
+	if got := m.feedPaneLines(46); got != 0 {
+		t.Errorf("feedPaneLines(46) = %d, want the pane dropped", got)
+	}
+	if got := (fleetModel{}).feedPaneLines(6); got != 8 {
+		t.Errorf("unknown height = %d, want the static default 8", got)
 	}
 }
 
@@ -523,5 +702,113 @@ func TestFleetFeedRingCap(t *testing.T) {
 		// oldest entries were dropped from the front — the first remaining
 		// element is still an "old" filler unless exactly at the boundary.
 		t.Logf("front of ring: %+v", feed[0])
+	}
+}
+
+// --- fs-triggered poll rate limit -------------------------------------------
+//
+// Backpressure (one poll in flight) does not bound the poll RATE: before
+// fsPollGap, a worktree under continuous churn re-triggered a full fleet scan
+// the instant the previous one landed. On a 21-worktree fleet — where one poll
+// costs ~1.8 CPU-seconds — that pinned the process at >100% CPU indefinitely.
+
+func fsRateModel(interval time.Duration, sinceLastPoll time.Duration) fleetModel {
+	return fleetModel{
+		interval:      interval,
+		lastPollStart: time.Now().Add(-sinceLastPoll),
+	}
+}
+
+func TestFleetFSEventPollsImmediatelyWhenGapElapsed(t *testing.T) {
+	m := fsRateModel(5*time.Second, 10*time.Second) // last poll long past
+	got, cmd := m.Update(fleetFSMsg{path: "/w"})
+	fm := got.(fleetModel)
+	if !fm.polling {
+		t.Fatal("an event after the gap must poll immediately (fs latency is the feature)")
+	}
+	if fm.deferred {
+		t.Error("deferred should stay false when the poll ran now")
+	}
+	if cmd == nil {
+		t.Error("expected a poll command")
+	}
+}
+
+func TestFleetFSEventInsideGapDefersInsteadOfPolling(t *testing.T) {
+	m := fsRateModel(5*time.Second, 1*time.Second) // 4s of the gap still to run
+	got, cmd := m.Update(fleetFSMsg{path: "/w"})
+	fm := got.(fleetModel)
+	if fm.polling {
+		t.Fatal("an event inside the rate-limit window must NOT start a poll")
+	}
+	if !fm.deferred {
+		t.Fatal("the event must be queued (deferred), never dropped")
+	}
+	if cmd == nil {
+		t.Error("expected the cooldown timer command")
+	}
+}
+
+func TestFleetFSEventWhileDeferredCoalesces(t *testing.T) {
+	m := fsRateModel(5*time.Second, 1*time.Second)
+	m.deferred = true
+	got, _ := m.Update(fleetFSMsg{path: "/w"})
+	fm := got.(fleetModel)
+	if fm.polling {
+		t.Error("a second event must not jump the queued poll")
+	}
+	if !fm.deferred {
+		t.Error("still exactly one queued poll")
+	}
+}
+
+// The regression that mattered: a poll landing with fsPending set used to
+// re-poll with zero cooldown, chaining full scans back to back.
+func TestFleetPendingEventRepollsThroughRateLimit(t *testing.T) {
+	m := fsRateModel(5*time.Second, 0) // this poll started just now
+	m.polling, m.fsPending = true, true
+	got, _ := m.Update(fleetDataMsg{})
+	fm := got.(fleetModel)
+	if fm.polling {
+		t.Fatal("re-poll must wait out the gap, not start immediately (this was the 116% CPU bug)")
+	}
+	if !fm.deferred {
+		t.Fatal("the pending event must still be honoured — queued, not dropped")
+	}
+	if fm.fsPending {
+		t.Error("fsPending consumed into the queued poll")
+	}
+}
+
+func TestFleetPendingEventPollsNowWhenGapAlreadyElapsed(t *testing.T) {
+	m := fsRateModel(5*time.Second, 9*time.Second) // slow poll outran the gap
+	m.polling, m.fsPending = true, true
+	got, _ := m.Update(fleetDataMsg{})
+	fm := got.(fleetModel)
+	if !fm.polling {
+		t.Fatal("a poll slower than the gap owes no further wait")
+	}
+}
+
+func TestFleetManualRefreshOverridesRateLimit(t *testing.T) {
+	m := fsRateModel(5*time.Second, 0)
+	m.deferred = true
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	fm := got.(fleetModel)
+	if !fm.polling {
+		t.Fatal("a keypress is not the runaway loop the limit exists to stop")
+	}
+	if fm.deferred {
+		t.Error("the armed cooldown must be retired, not left to fire a second poll")
+	}
+}
+
+func TestFleetStaleCooldownIgnored(t *testing.T) {
+	m := fsRateModel(5*time.Second, 10*time.Second)
+	m.tickSeq = 3
+	got, cmd := m.Update(fleetCooldownMsg{seq: 2}) // superseded generation
+	fm := got.(fleetModel)
+	if fm.polling || cmd != nil {
+		t.Error("a cooldown from a superseded chain must not poll")
 	}
 }

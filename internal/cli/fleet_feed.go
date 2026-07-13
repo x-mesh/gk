@@ -160,6 +160,81 @@ func splitNulTokens(raw string) []string {
 	return toks
 }
 
+// scanTotals rolls a worktree's per-file signatures up into a diffstat: how
+// many files are in flight and how many lines they add/remove against HEAD.
+// The line counts are zero outside feed-stats mode (no diff runs, no counts);
+// the file count is free either way.
+func scanTotals(sigs map[string]fileSig) (files, added, removed int) {
+	for _, s := range sigs {
+		files++
+		added += s.added
+		removed += s.removed
+	}
+	return files, added, removed
+}
+
+// fleetTotals is the same roll-up across a set of worktrees — the number the
+// header and the repo group lines report.
+func fleetTotals(entries []fleetEntryJSON) (files, added, removed int) {
+	for _, e := range entries {
+		files += e.Files
+		added += e.Added
+		removed += e.Removed
+	}
+	return files, added, removed
+}
+
+// --- session churn ---------------------------------------------------------
+//
+// The diffstat above answers "how much is uncommitted right now" — and it
+// drops to zero the moment an agent commits. Churn answers the other half:
+// how much work went by while watch was up. Signatures carry each file's
+// counts against HEAD, so a poll's churn is the POSITIVE movement of those
+// counts; a shrink means a commit (or a revert) reset the baseline, not
+// negative work, and contributes nothing. A worktree seen for the first time
+// is a silent baseline, exactly as it is for the feed: whatever was already
+// dirty when watch started is not something watch saw happen.
+//
+// This is why the feed lines cannot simply be summed: their +/− are cumulative
+// against HEAD, so a file re-touched five times would be counted five times.
+
+type fleetChurn struct {
+	files          map[string]bool // "worktree\x00path" — distinct files touched
+	added, removed int
+}
+
+func (c fleetChurn) touched() int { return len(c.files) }
+
+func (c fleetChurn) any() bool { return c.added > 0 || c.removed > 0 || len(c.files) > 0 }
+
+// accumulate folds one poll's entries into the running churn, diffing them
+// against the signature state that produced the previous frame (so it must run
+// before applyFeedDiff replaces that state).
+func (c *fleetChurn) accumulate(prevSigs map[string]map[string]fileSig, entries []fleetEntryJSON) {
+	for _, e := range entries {
+		prev, seen := prevSigs[e.Path]
+		if e.sigs == nil || !seen {
+			continue // an error entry carries no scan; an unseen worktree is a baseline
+		}
+		for p, cur := range e.sigs {
+			old, existed := prev[p] // zero value when the file is new this poll
+			if existed && old == cur {
+				continue // untouched since the last poll
+			}
+			if c.files == nil {
+				c.files = map[string]bool{}
+			}
+			c.files[e.Path+"\x00"+p] = true
+			if d := cur.added - old.added; d > 0 {
+				c.added += d
+			}
+			if d := cur.removed - old.removed; d > 0 {
+				c.removed += d
+			}
+		}
+	}
+}
+
 // --- cross-worktree change feed -----------------------------------------------
 //
 // The feed is the fleet-wide counterpart of `gk status --watch`: a merged
@@ -364,9 +439,15 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 		return ""
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	if width <= 0 || width > 120 {
-		width = 80
-	}
+	width = fleetWidth(width)
+	// Elastic path column. Everything around it is bounded — the head
+	// (timestamp · glyph · [who]) and the tail (symbols, ± stats, note) — so the
+	// columns a wide terminal adds go to the path, the field that was getting
+	// truncated (`…/SpaceMeshApp/ContentView…`) while half the screen sat empty.
+	const feedHead = 11 + 1 + 1 + 1 + 24 + 1 // ts + glyph + [who] + gutters
+	const feedTail = 34 + 26                 // symbols + stats + note
+	pathW := min(max(width-feedHead-feedTail, 40), 80)
+
 	start := len(feed) - lines
 	if start < 0 {
 		start = 0
@@ -382,7 +463,7 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 			dim.Render(ev.ts.Format(changeTSFormat)),
 			ev.glyph,
 			dim.Render("["+clip(who, 22)+"]"),
-			clip(ev.path, 40),
+			clipLeft(ev.path, pathW),
 		)
 		if ev.symbols != "" {
 			line += dim.Render(" · " + clip(ev.symbols, 34))

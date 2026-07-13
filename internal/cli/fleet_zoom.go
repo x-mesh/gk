@@ -187,10 +187,7 @@ func (m fleetModel) zoomBreadcrumb() string {
 	left := bold.Render("gk watch") + dim.Render(" ▸ ") + bold.Render(label) + dim.Render(pos)
 	hint := "[/] worktree · esc back · q quit"
 
-	width := m.width
-	if width <= 0 || width > 120 {
-		width = 80
-	}
+	width := fleetWidth(m.width)
 	gap := width - runewidth.StringWidth("gk watch ▸ "+label+pos) - runewidth.StringWidth(hint)
 	if gap < 2 {
 		gap = 2

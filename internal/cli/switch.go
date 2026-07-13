@@ -878,6 +878,13 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		anchor string
 		hash   string
 	}
+	// Tip hashes come free with the branch listing — they are what makes the
+	// fork-point cache exact (see forkPointCache).
+	tips := make(map[string]string, len(local))
+	for _, b := range local {
+		tips[b.Name] = b.Hash
+	}
+	keys := make(map[int]string, len(local)) // idx → cache key, for the misses we compute
 	out := make(chan result, len(local))
 	// Bound concurrency at NumCPU so a repo with hundreds of stale
 	// local branches doesn't fork hundreds of `git merge-base`
@@ -891,6 +898,20 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		anchor := defaultBr
 		if p := parents[b.Name]; p != "" && p != b.Name {
 			anchor = p
+		}
+		// A live dashboard re-derives fork points on every poll, and each one is
+		// a `merge-base` fork — on a fleet this scaled with BRANCH count, not
+		// worktree count (measured: ~21 subprocesses per poll). The answer is a
+		// pure function of the two commits, so a hit here is exact, not stale.
+		key, cacheable := forkPointKey(runner, b.Name, b.Hash, anchor, tips[anchor])
+		if cacheable {
+			if hit, ok := forkPointCache.Load(key); ok {
+				if r, valid := hit.(forkPoint); valid {
+					local[i].ForkBranch, local[i].ForkPoint = r.anchor, r.hash
+					continue
+				}
+			}
+			keys[i] = key
 		}
 		wg.Add(1)
 		go func(idx int, branch, anchor string) {
@@ -924,7 +945,41 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	for r := range out {
 		local[r.idx].ForkBranch = r.anchor
 		local[r.idx].ForkPoint = r.hash
+		if key, ok := keys[r.idx]; ok {
+			forkPointCache.Store(key, forkPoint{anchor: r.anchor, hash: r.hash})
+		}
 	}
+}
+
+// forkPoint is one memoised `merge-base` outcome. The anchor is stored beside
+// the hash because computeForkPoints falls back to the trunk when a recorded
+// parent ref is unusable — the anchor that ANSWERED is not always the one asked
+// for, and a cache that dropped it would re-attribute the fork on every hit.
+type forkPoint struct{ anchor, hash string }
+
+// forkPointCache memoises merge-base by its inputs: the two commits it joins.
+// Keyed by content, so an entry can never go stale — a moved tip is a different
+// key, not a wrong answer. It exists for the live dashboard, which otherwise
+// re-forked one `merge-base` per upstream-less branch per repo on every poll.
+var forkPointCache sync.Map // key → forkPoint
+
+// forkPointKey identifies a merge-base by (repo, branch tip, anchor tip). It
+// reports false when either tip is unknown — an anchor whose ref was deleted has
+// no tip to key on, so that branch is computed fresh every time rather than
+// cached against an input we cannot see change.
+//
+// The repo directory is part of the key because branchInfo.Hash is a SHORT
+// hash: 7 hex chars collide across repositories far too easily to key a
+// process-wide cache on alone.
+func forkPointKey(runner git.Runner, branch, branchTip, anchor, anchorTip string) (string, bool) {
+	if branchTip == "" || anchorTip == "" || branch == "" || anchor == "" {
+		return "", false
+	}
+	dir := ""
+	if er, ok := runner.(*git.ExecRunner); ok {
+		dir = er.Dir
+	}
+	return strings.Join([]string{dir, branch, branchTip, anchor, anchorTip}, "\x00"), true
 }
 
 // applyUntrackedFallback patches Ahead/Behind on branches that have

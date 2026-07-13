@@ -9,7 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +46,10 @@ type fleetRow struct {
 	rollup    string // header: worst-wins status
 	count     int    // header: worktree count
 	collapsed bool   // header: folded?
-	entry     fleetEntryJSON
+	// header: the group's uncommitted diffstat, summed over its worktrees —
+	// a folded repo still reports how much work is sitting in it.
+	files, added, removed int
+	entry                 fleetEntryJSON
 }
 
 // buildFleetRows flattens repo-grouped entries into renderable rows honoring the
@@ -63,6 +65,7 @@ func buildFleetRows(entries []fleetEntryJSON, collapsed map[string]bool) []fleet
 		}
 		group := entries[i:j]
 		folded := collapsed[root]
+		files, added, removed := fleetTotals(group)
 		rows = append(rows, fleetRow{
 			header:    true,
 			repoRoot:  root,
@@ -70,6 +73,9 @@ func buildFleetRows(entries []fleetEntryJSON, collapsed map[string]bool) []fleet
 			rollup:    fleetGroupRollup(group),
 			count:     len(group),
 			collapsed: folded,
+			files:     files,
+			added:     added,
+			removed:   removed,
 		})
 		if !folded {
 			for _, e := range group {
@@ -122,11 +128,9 @@ func fleetRowKeyOf(r fleetRow) fleetRowKey {
 // with each repo's worktrees indented beneath when expanded. detail joins the
 // cursor row's master-detail panel beside the table (worktree rows only —
 // a header row has no single entry to detail); feed feeds its event tail.
-func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, detail int, feed []fleetFeedEvent, totalRepos, totalWts int) string {
+func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, detail int, feed []fleetFeedEvent, totalRepos, totalWts int, churn fleetChurn, since time.Duration) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	if width <= 0 || width > 120 {
-		width = 80
-	}
+	width = fleetWidth(width)
 	repos, wts := 0, 0
 	for _, r := range rows {
 		if r.header {
@@ -148,18 +152,22 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, d
 	count := fmt.Sprintf("%s %s · %s %s",
 		repoN, pluralize(totalRepos, "repo", "repos"),
 		wtN, pluralize(totalWts, "worktree", "worktrees"))
-	left := lipgloss.NewStyle().Bold(true).Render("gk watch") + "  " + dim.Render(count)
-	header := left
-	if !now.IsZero() {
-		clockText := now.Format("15:04:05")
-		clock := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("●") + dim.Render(" "+clockText)
-		gap := width - runewidth.StringWidth("gk watch  "+count) - runewidth.StringWidth("● "+clockText)
-		if gap < 1 {
-			gap = 1
+	// Sum over the visible worktrees: what the header reports is what the table
+	// below it shows, filter and all.
+	visible := make([]fleetEntryJSON, 0, len(rows))
+	for _, r := range rows {
+		if r.header {
+			continue
 		}
-		header = left + strings.Repeat(" ", gap) + clock
+		visible = append(visible, r.entry)
 	}
-	b.WriteString(header + "\n" + dim.Render(strings.Repeat("─", width)) + "\n")
+	// A folded repo hides its worktree rows but must not hide its volume.
+	for _, r := range rows {
+		if r.header && r.collapsed {
+			visible = append(visible, fleetEntryJSON{Files: r.files, Added: r.added, Removed: r.removed})
+		}
+	}
+	b.WriteString(renderFleetHeadline(count, visible, now, width, dim, churn, since) + "\n")
 
 	if len(rows) == 0 {
 		if totalWts > 0 {
@@ -170,18 +178,22 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, d
 		return b.String()
 	}
 
-	table := renderFleetGroupedTable(rows, cursor, now)
+	var panel string
 	if detail != fleetDetailOff && cursor >= 0 && cursor < len(rows) && width >= 64 {
 		if r := rows[cursor]; !r.header && r.entry.Status != "error" {
-			var panel string
 			if detail == fleetDetailFeed {
 				panel = renderFleetDetailFeed(r.entry, now, fleetEventTail(feed, r.entry.Path, fleetDetailFeedLines))
 			} else {
 				panel = renderFleetDetail(r.entry, now, fleetEventTail(feed, r.entry.Path, 3))
 			}
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
-			return b.String()
 		}
+	}
+	table := renderFleetGroupedTable(rows, cursor, now,
+		fleetStatCols(fleetTableWidth(width, panel), fleetIndentGrouped, visible))
+
+	if panel != "" {
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
+		return b.String()
 	}
 	b.WriteString(table)
 	return b.String()
@@ -189,7 +201,7 @@ func renderFleetGrouped(rows []fleetRow, cursor int, now time.Time, width int, d
 
 // renderFleetGroupedTable draws the grouped rows themselves — split out so the
 // detail panel can be joined beside just the table, not the header.
-func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time) string {
+func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time, cols fleetCols) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	var b strings.Builder
 	for i, r := range rows {
@@ -210,24 +222,32 @@ func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time) string 
 				caret, arrow, dot, label,
 				dim.Render(fmt.Sprintf("(%d)", r.count)),
 				dim.Render(r.rollup))
+			// The group's roll-up parks in the same columns its worktrees use,
+			// so a repo total reads as the sum of the numbers right below it.
+			if cols.stat > 0 && r.files > 0 {
+				line = padCell(line, fleetStatStart(cols, fleetIndentGrouped)-cols.file-2) +
+					padCell(dim.Render(pluralCount(r.files, "file", "files")), cols.file+2) +
+					fleetStatCell(r.added, r.removed)
+			}
 		case r.entry.Status == "error":
 			dot := lipgloss.NewStyle().Foreground(fleetStatusColor("error")).Render("●")
 			line = fmt.Sprintf("%s    %s %s", caret, dot, dim.Render("unreachable: "+r.entry.Error))
 		default:
 			e := r.entry
 			dot := lipgloss.NewStyle().Foreground(fleetStatusColor(e.Status)).Render("●")
-			branch := clip(e.Branch, 18)
+			branch := clip(e.Branch, cols.branch)
 			if e.Current {
 				branch += "*"
 			}
 			if e.Operation != "" {
 				branch += " ⏸"
 			}
-			line = fmt.Sprintf("%s    %s %-21s  %-8s  %-11s  %-14s  %s",
-				caret, dot, branch,
+			line = fmt.Sprintf("%s    %s %-*s  %-8s  %-11s  %-*s  %s%s",
+				caret, dot, cols.branch+3, branch,
 				fleetDiffLabel(e.Ahead, e.Behind),
 				fleetDirtyLabel(e.Dirty),
-				fleetLastChangeLabel(e.LastChange),
+				cols.file, fleetLastChangeLabel(e.LastChange, cols.file),
+				fleetRowStat(e, cols),
 				fleetActiveStyled(e, now))
 		}
 		if i == cursor {
@@ -317,6 +337,7 @@ func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent
 		filter:    filter,
 		entries:   initial,
 		now:       time.Now(),
+		startedAt: time.Now(),
 		multi:     true,
 		repos:     repos,
 		sem:       sem,

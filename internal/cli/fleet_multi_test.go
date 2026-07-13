@@ -159,7 +159,7 @@ func TestFleetGroupedDetailPanel(t *testing.T) {
 	rows := buildFleetRows(entries, nil)
 
 	// cursor on alpha's worktree row (index 1: header, worktree, header, ...)
-	out := renderFleetGrouped(rows, 1, now, 110, fleetDetailFeed, feed, 2, 2)
+	out := renderFleetGrouped(rows, 1, now, 110, fleetDetailFeed, feed, 2, 2, fleetChurn{}, 0)
 	for _, want := range []string{"alpha", "develop", "validateToken", "+7"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grouped feed panel missing %q in:\n%s", want, out)
@@ -167,7 +167,7 @@ func TestFleetGroupedDetailPanel(t *testing.T) {
 	}
 
 	// cursor on a header row → no panel, no panic.
-	if out := renderFleetGrouped(rows, 0, now, 110, fleetDetailFeed, feed, 2, 2); strings.Contains(out, "validateToken") {
+	if out := renderFleetGrouped(rows, 0, now, 110, fleetDetailFeed, feed, 2, 2, fleetChurn{}, 0); strings.Contains(out, "validateToken") {
 		t.Errorf("header row must not render a worktree panel:\n%s", out)
 	}
 
@@ -203,7 +203,7 @@ func TestFleetActiveFilterAndHeader(t *testing.T) {
 	}
 
 	rows := buildFleetRows(kept, nil)
-	out := renderFleetGrouped(rows, -1, now, 110, fleetDetailOff, nil, 3, len(entries))
+	out := renderFleetGrouped(rows, -1, now, 110, fleetDetailOff, nil, 3, len(entries), fleetChurn{}, 0)
 	if !strings.Contains(out, "2/3 repos") || !strings.Contains(out, "2/3 worktrees") {
 		t.Errorf("filtered header must read n/m, got:\n%s", out)
 	}
@@ -211,7 +211,7 @@ func TestFleetActiveFilterAndHeader(t *testing.T) {
 		t.Errorf("stale repo must be hidden by the active filter:\n%s", out)
 	}
 
-	empty := renderFleetGrouped(nil, -1, now, 110, fleetDetailOff, nil, 3, len(entries))
+	empty := renderFleetGrouped(nil, -1, now, 110, fleetDetailOff, nil, 3, len(entries), fleetChurn{}, 0)
 	if !strings.Contains(empty, "press f to widen") {
 		t.Errorf("all-hidden view must hint at the filter, got:\n%s", empty)
 	}

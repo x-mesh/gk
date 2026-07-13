@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,14 @@ type fleetEntryJSON struct {
 	// "what did the agent just touch", where ActiveAgoS only says when.
 	LastChange string `json:"last_change,omitempty"`
 
+	// Files/Added/Removed are the worktree's uncommitted diffstat: how much
+	// work is in flight, where Dirty only counts files by state (S/U/?). Files
+	// is free (the porcelain scan already lists them); Added/Removed come from
+	// the feed-stats diff runs and stay 0 when --feed-stats=false.
+	Files   int `json:"files,omitempty"`
+	Added   int `json:"added,omitempty"`
+	Removed int `json:"removed,omitempty"`
+
 	// Repo/RepoRoot identify which repository this worktree belongs to in
 	// multi-repo mode; filled in single-repo mode too so the JSON contract is
 	// uniform across modes (consumers group by repo_root). Error is set only on a
@@ -151,7 +160,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		}
 		// No TTY (pipe/redirect/CI): static grouped snapshot, all repos expanded.
 		if !ui.IsTerminal() {
-			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0, fleetDetailOff, nil, 0, 0))
+			fmt.Fprintln(cmd.OutOrStdout(), renderFleetGrouped(buildFleetRows(entries, nil), -1, time.Time{}, 0, fleetDetailOff, nil, 0, 0, fleetChurn{}, 0))
 			return nil
 		}
 		interval := resolveFleetInterval(cmd, true)
@@ -256,8 +265,7 @@ func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root, c
 		return nil, fmt.Errorf("fleet: worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	entries := parseWorktreePorcelain(string(stdout))
-	meta := loadWorktreeBranchMeta(ctx, runner)
-	base := resolveDefaultBranchForWorktree(ctx, runner)
+	meta, base := loadWorktreeBranchMetaWithBase(ctx, runner)
 	now := time.Now()
 
 	live := make([]WorktreeEntry, 0, len(entries))
@@ -543,6 +551,7 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 	f.Dirty = dirtyPtrIfAny(scan.dirty)
 	f.sigs = scan.sigs
 	f.LastChange = scan.newestPath
+	f.Files, f.Added, f.Removed = scanTotals(scan.sigs)
 
 	// Paused operation — the "who is stuck" signal a dirty count alone misses.
 	if st, derr := gitstate.Detect(ctx, e.Path); derr == nil && st != nil {
@@ -644,6 +653,111 @@ func fleetStatus(f fleetEntryJSON) string {
 
 // --- rendering ---
 
+// Fleet layout budget. The dashboard is a full-screen alt-screen view, so a
+// wide terminal gets wide columns instead of an 80-column island in the corner:
+// fleetWidth passes the real width through (floored so the fixed columns can't
+// collide) and fleetColumns hands the slack to the two columns that actually
+// carry information — the branch and the last-changed file.
+const (
+	fleetDefaultWidth = 80 // unknown terminal width (0): a sane static default
+	fleetMinWidth     = 48
+)
+
+func fleetWidth(w int) int {
+	if w <= 0 {
+		return fleetDefaultWidth
+	}
+	if w < fleetMinWidth {
+		return fleetMinWidth
+	}
+	return w
+}
+
+// fleetCols is the elastic part of a table row. stat is 0 when the diffstat
+// column doesn't fit — a narrow terminal keeps the pre-diffstat layout.
+type fleetCols struct{ branch, file, stat int }
+
+// fleetStatW holds "+99,999 −9,999" without wrapping — an agent's bulk edit
+// reaches five figures, and an overflowing cell would shove the age column out
+// of line on that row alone.
+const fleetStatW = 14
+
+// fleetColumns sizes the elastic columns for a render width. indent is the row
+// prefix cost (caret + dot, plus the group indent in multi-repo mode); the
+// remaining columns (sync, dirty, age) and their gutters are fixed. The
+// diffstat column is claimed first (it is the reason to look at the row at
+// all), then branch grows — the row's identity — and the file column soaks the
+// rest, both bounded so a 300-column terminal doesn't stretch them past
+// readability.
+func fleetColumns(width, indent int) fleetCols {
+	const (
+		branchMin, branchMax = 18, 34
+		fileMin, fileMax     = 14, 64
+		fixed                = 8 + 11 + 5 + 2*4 // sync + dirty + age + gutters
+	)
+	c := fleetCols{branch: branchMin, file: fileMin}
+	spare := width - (indent + branchMin + fileMin + fixed)
+	if spare >= fleetStatW+2 {
+		c.stat = fleetStatW
+		spare -= fleetStatW + 2
+	}
+	if spare <= 0 {
+		return c
+	}
+	grow := min(spare, branchMax-branchMin)
+	c.branch += grow
+	c.file += min(spare-grow, fileMax-fileMin)
+	return c
+}
+
+// fleetStatStart is the column the diffstat cell begins at, so a repo group's
+// roll-up lands directly above the worktree numbers it sums.
+func fleetStatStart(cols fleetCols, indent int) int {
+	return indent + cols.branch + 3 + 2 + 8 + 2 + 11 + 2 + cols.file + 2
+}
+
+// fleetStatCell renders one row's uncommitted diffstat. Colored, so it must be
+// padded by width (padCell), never by printf: %-*s counts ANSI bytes.
+func fleetStatCell(added, removed int) string {
+	if added == 0 && removed == 0 {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("·")
+	}
+	var parts []string
+	if added > 0 {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("+"+commaInt(added)))
+	}
+	if removed > 0 {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("−"+commaInt(removed)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// padCell right-pads a styled cell to w visible columns (a no-op when it
+// already overflows — clipping colored text would cut an escape sequence).
+func padCell(s string, w int) string {
+	if gap := w - lipgloss.Width(s); gap > 0 {
+		return s + strings.Repeat(" ", gap)
+	}
+	return s
+}
+
+// commaInt groups thousands: line counts run to five figures on an agent's
+// bulk edit, and `+12483` is a number you have to stop and parse.
+func commaInt(n int) string {
+	s := strconv.Itoa(n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteRune(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func fleetStatusColor(status string) lipgloss.Color {
 	switch status {
 	case "error":
@@ -701,13 +815,26 @@ func fleetDirtyLabel(d *contextDirtyJSON) string {
 	return strings.Join(parts, " ")
 }
 
-// fleetLastChangeLabel renders the last-changed-file column: the basename
-// (clipped) so the column stays narrow — the detail panel shows the full path.
-func fleetLastChangeLabel(path string) string {
+// fleetLastChangeLabel renders the last-changed-file column inside w columns:
+// the full repo-relative path when the terminal has the room (a bare
+// `ContentView.swift` is ambiguous the moment a repo has two of them), else the
+// tail — `…/SpaceMeshApp/ContentView.swift` — because the basename is the part
+// that identifies the file. Falls back to the clipped basename only when even
+// the tail would be noise.
+func fleetLastChangeLabel(path string, w int) string {
 	if path == "" {
 		return "·"
 	}
-	return clip(filepath.Base(path), 14)
+	if w <= 0 {
+		w = 14
+	}
+	if runewidth.StringWidth(path) <= w {
+		return path
+	}
+	if base := filepath.Base(path); runewidth.StringWidth(base) > w {
+		return clip(base, w)
+	}
+	return clipLeft(path, w)
 }
 
 // fleetActiveLabel renders the staleness column. With a live clock (now set)
@@ -762,6 +889,19 @@ func clip(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// clipLeft trims from the left, keeping the tail — the informative end of a
+// path (`…/SpaceMeshApp/ContentView.swift`), where clip keeps the head.
+func clipLeft(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[len(r)-n:])
+	}
+	return "…" + string(r[len(r)-(n-1):])
+}
+
 // Detail-panel modes, cycled by enter: the field panel (default), the cursor
 // worktree's own live change feed, or no panel. The zero value is the field
 // panel so a zero fleetView keeps the legacy default.
@@ -783,6 +923,9 @@ type fleetView struct {
 	detail  int
 	// feed feeds the detail panel's per-worktree event tail (may be nil).
 	feed []fleetFeedEvent
+	// churn/since drive the header's Δ reading (zero churn hides it).
+	churn fleetChurn
+	since time.Duration
 }
 
 // renderFleet draws the worktree dashboard: a full-width header (count + live
@@ -790,13 +933,10 @@ type fleetView struct {
 // the cursor row.
 func renderFleet(v fleetView) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	width := v.width
-	if width <= 0 || width > 120 {
-		width = 80
-	}
+	width := fleetWidth(v.width)
 
 	var b strings.Builder
-	b.WriteString(renderFleetHeader(v.entries, v.now, width, dim))
+	b.WriteString(renderFleetHeader(v.entries, v.now, width, dim, v.churn, v.since))
 	b.WriteString("\n")
 
 	if len(v.entries) == 0 {
@@ -804,18 +944,23 @@ func renderFleet(v fleetView) string {
 		return b.String()
 	}
 
-	table := renderFleetTable(v.entries, v.cursor, v.now)
-
 	// Master-detail: place the detail panel beside the table when there's room.
-	// Below ~64 cols the panel is dropped so the table stays readable.
+	// Below ~64 cols the panel is dropped so the table stays readable. The
+	// panel is built first because its measured width is what the table's
+	// elastic columns have to give up (fleetTableWidth).
+	var panel string
 	if v.detail != fleetDetailOff && v.cursor >= 0 && v.cursor < len(v.entries) && width >= 64 {
 		e := v.entries[v.cursor]
-		var panel string
 		if v.detail == fleetDetailFeed {
 			panel = renderFleetDetailFeed(e, v.now, fleetEventTail(v.feed, e.Path, fleetDetailFeedLines))
 		} else {
 			panel = renderFleetDetail(e, v.now, fleetEventTail(v.feed, e.Path, 3))
 		}
+	}
+	table := renderFleetTable(v.entries, v.cursor, v.now,
+		fleetStatCols(fleetTableWidth(width, panel), fleetIndentFlat, v.entries))
+
+	if panel != "" {
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, table, "   ", panel))
 		return b.String()
 	}
@@ -823,33 +968,105 @@ func renderFleet(v fleetView) string {
 	return b.String()
 }
 
+// Row prefix cost the elastic columns must budget around: caret + status dot
+// (+ the group indent when worktrees hang under a repo header).
+const (
+	fleetIndentFlat    = 4
+	fleetIndentGrouped = 8
+)
+
+// fleetTableWidth is the width the table's elastic columns may spend: the
+// render width minus the measured detail panel (and the join gutter). It can go
+// negative on a narrow terminal — fleetColumns then pins every column to its
+// minimum, which is what the fixed-width layout always did.
+func fleetTableWidth(width int, panel string) int {
+	if panel == "" {
+		return width
+	}
+	return width - lipgloss.Width(panel) - 3 // 3 = the join gutter
+}
+
 // renderFleetHeader is the title line (count) with the live wall-clock pushed
 // to the right edge, followed by a horizontal rule. The clock — green dot +
 // HH:MM:SS — ticks every second so the dashboard visibly stays alive even when
 // no worktree changes (mirrors `gk status --watch`).
-func renderFleetHeader(entries []fleetEntryJSON, now time.Time, width int, dim lipgloss.Style) string {
+func renderFleetHeader(entries []fleetEntryJSON, now time.Time, width int, dim lipgloss.Style, churn fleetChurn, since time.Duration) string {
 	count := fmt.Sprintf("%d %s", len(entries), pluralize(len(entries), "worktree", "worktrees"))
-	left := lipgloss.NewStyle().Bold(true).Render("gk watch") + "  " + dim.Render(count)
-	header := left
+	return renderFleetHeadline(count, entries, now, width, dim, churn, since)
+}
 
-	if !now.IsZero() {
-		clockText := now.Format("15:04:05")
-		clock := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("●") +
-			dim.Render(" "+clockText)
-		gap := width - runewidth.StringWidth("gk watch  "+count) - runewidth.StringWidth("● "+clockText)
-		if gap < 1 {
-			gap = 1
+// renderFleetHeadline is the shared title line: `gk watch` + the count, then
+// the two volume readings, then the clock at the right edge.
+//
+// The readings answer different questions and both are worth the row: the
+// diffstat is what sits uncommitted right now (it resets to zero when an agent
+// commits), while Δ is everything that went by since watch started (it does
+// not). Segments are dropped right-to-left when the terminal can't hold them,
+// so a narrow header degrades to the count alone rather than colliding with
+// the clock.
+func renderFleetHeadline(count string, entries []fleetEntryJSON, now time.Time, width int, dim lipgloss.Style, churn fleetChurn, since time.Duration) string {
+	files, added, removed := fleetTotals(entries)
+
+	segs := []string{dim.Render(count)}
+	if files > 0 {
+		seg := dim.Render(pluralCount(files, "file", "files"))
+		if added > 0 || removed > 0 { // 0 outside feed-stats mode — don't print a bare "·"
+			seg += " " + fleetStatCell(added, removed)
 		}
-		header = left + strings.Repeat(" ", gap) + clock
+		segs = append(segs, seg)
+	}
+	if churn.any() {
+		seg := dim.Render("Δ")
+		if churn.added > 0 || churn.removed > 0 {
+			seg += " " + fleetStatCell(churn.added, churn.removed)
+		}
+		segs = append(segs, seg+dim.Render(fmt.Sprintf(" over %s · %s",
+			pluralCount(churn.touched(), "file", "files"), fleetSinceLabel(since))))
+	}
+
+	title := lipgloss.NewStyle().Bold(true).Render("gk watch")
+	var clock string
+	if !now.IsZero() {
+		clock = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Render("●") +
+			dim.Render(" "+now.Format("15:04:05"))
+	}
+
+	// Widest set of segments that still leaves the clock its own space.
+	header := title
+	for n := len(segs); n >= 1; n-- {
+		cand := title + "  " + strings.Join(segs[:n], dim.Render("  ·  "))
+		if lipgloss.Width(cand)+lipgloss.Width(clock)+2 <= width || n == 1 {
+			header = cand
+			break
+		}
+	}
+	if clock != "" {
+		gap := max(width-lipgloss.Width(header)-lipgloss.Width(clock), 1)
+		header += strings.Repeat(" ", gap) + clock
 	}
 	return header + "\n" + dim.Render(strings.Repeat("─", width))
+}
+
+// fleetSinceLabel is how long watch has been up ("17m", "2h04m") — the
+// denominator that turns Δ from a number into a rate you can feel.
+func fleetSinceLabel(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func pluralCount(n int, one, many string) string {
+	return fmt.Sprintf("%s %s", commaInt(n), pluralize(n, one, many))
 }
 
 // renderFleetTable draws one line per worktree: status dot, branch (with a `*`
 // current marker and a `⏸` paused marker), sync, dirty, the last-changed file,
 // and the staleness age. The cursor row is marked and bolded.
-func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) string {
-	const branchW = 20
+func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time, cols fleetCols) string {
 	var b strings.Builder
 	for i, e := range entries {
 		caret := "  "
@@ -857,18 +1074,19 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) strin
 			caret = "› "
 		}
 		dot := lipgloss.NewStyle().Foreground(fleetStatusColor(e.Status)).Render("●")
-		branch := clip(e.Branch, branchW)
+		branch := clip(e.Branch, cols.branch)
 		if e.Current {
 			branch += "*"
 		}
 		if e.Operation != "" {
 			branch += " ⏸"
 		}
-		row := fmt.Sprintf("%s%s %-*s  %-8s  %-11s  %-14s  %s",
-			caret, dot, branchW+3, branch,
+		row := fmt.Sprintf("%s%s %-*s  %-8s  %-11s  %-*s  %s%s",
+			caret, dot, cols.branch+3, branch,
 			fleetDiffLabel(e.Ahead, e.Behind),
 			fleetDirtyLabel(e.Dirty),
-			fleetLastChangeLabel(e.LastChange),
+			cols.file, fleetLastChangeLabel(e.LastChange, cols.file),
+			fleetRowStat(e, cols),
 			fleetActiveStyled(e, now),
 		)
 		if i == cursor {
@@ -880,6 +1098,29 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time) strin
 		}
 	}
 	return b.String()
+}
+
+// fleetStatCols is fleetColumns with the diffstat column dropped when nothing
+// would go in it: --feed-stats=false pays for no diff runs (so the counts are
+// all zero), and a column of `·` is worse than no column.
+func fleetStatCols(width, indent int, entries []fleetEntryJSON) fleetCols {
+	cols := fleetColumns(width, indent)
+	for _, e := range entries {
+		if e.Added > 0 || e.Removed > 0 {
+			return cols
+		}
+	}
+	cols.stat = 0
+	return cols
+}
+
+// fleetRowStat is the row's padded diffstat cell, or "" when the column was
+// dropped for width — the caller concatenates it straight before the age.
+func fleetRowStat(e fleetEntryJSON, cols fleetCols) string {
+	if cols.stat == 0 {
+		return ""
+	}
+	return padCell(fleetStatCell(e.Added, e.Removed), cols.stat) + "  "
 }
 
 // fleetEventTail returns the newest n feed events for one worktree, oldest
@@ -1037,6 +1278,12 @@ type fleetRepollMsg struct{ seq int }
 // visibly ticks even when no worktree changes.
 type fleetClockMsg time.Time
 
+// fleetCooldownMsg starts a poll that an fs event asked for while the rate
+// limit (fsPollGap) was still closed. It carries the tick generation for the
+// same reason fleetRepollMsg does: a manual refresh or a poll that landed in
+// between supersedes it.
+type fleetCooldownMsg struct{ seq int }
+
 type fleetModel struct {
 	ctx      context.Context
 	cmd      *cobra.Command // for the embedded zoom view's head/status probes
@@ -1067,13 +1314,28 @@ type fleetModel struct {
 	showFeed  bool
 	feedStats bool
 
+	// churn is the volume of work seen since startedAt — the header's Δ, and
+	// the one reading a commit doesn't erase.
+	churn     fleetChurn
+	startedAt time.Time
+
 	// fsnotify upgrade: ws is nil when no worktree could be watched (pure
 	// polling). polling/fsPending implement the one-in-flight backpressure;
 	// tickSeq invalidates superseded heartbeat timers (see fleetRepollMsg).
-	ws        *fleetWatchSet
-	polling   bool
-	fsPending bool
-	tickSeq   int
+	//
+	// deferred/lastPollStart add the RATE limit that backpressure alone does not
+	// give: one-in-flight only stops two polls overlapping, so a worktree under
+	// continuous churn re-triggered a fresh full poll the instant the previous
+	// one landed — back-to-back polls forever (measured: 116% CPU sustained over
+	// 21 worktrees, where one poll costs ~1.8 CPU-seconds). Poll STARTS are now
+	// spaced by at least fsPollGap; an event arriving inside that window arms a
+	// cooldown timer (deferred) instead of polling immediately.
+	ws            *fleetWatchSet
+	polling       bool // a poll is in flight
+	deferred      bool // a rate-limited poll is armed and waiting out the gap
+	fsPending     bool // an event landed mid-poll — re-poll once this one lands
+	lastPollStart time.Time
+	tickSeq       int
 
 	// notify is the opt-in fleet.notify hook map — transitions detected
 	// between polls fire it from the dashboard too, not just --events.
@@ -1117,6 +1379,41 @@ func (m fleetModel) clockTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return fleetClockMsg(t) })
 }
 
+// fsPollGap is the minimum spacing between poll STARTS when filesystem events —
+// not the timer — are driving the refresh. The configured interval IS the user's
+// cost budget ("re-scan this fleet no more often than every N seconds"), so fs
+// events buy latency (a poll begins the moment a file lands, instead of up to N
+// seconds later) without buying extra polls. Without this the fs path ignored
+// the interval entirely and polled as fast as a poll could finish.
+func (m fleetModel) fsPollGap() time.Duration {
+	if m.interval <= 0 {
+		return fsWatchDebounce
+	}
+	return m.interval
+}
+
+// pollNow starts a poll immediately, reserving the in-flight slot.
+func (m *fleetModel) pollNow() tea.Cmd {
+	m.polling = true
+	m.deferred = false
+	m.lastPollStart = time.Now()
+	return m.pollCmd()
+}
+
+// pollOrDefer starts a poll if the rate limit allows one now, otherwise arms a
+// cooldown timer for the remainder of the gap. Either way the caller has handed
+// the request off: an fs event is never dropped, only delayed. deferred holds
+// the in-flight slot so events arriving during the wait coalesce into the one
+// poll already queued instead of each arming their own timer.
+func (m *fleetModel) pollOrDefer() tea.Cmd {
+	if wait := m.fsPollGap() - time.Since(m.lastPollStart); wait > 0 {
+		m.deferred = true
+		seq := m.tickSeq
+		return tea.Tick(wait, func(time.Time) tea.Msg { return fleetCooldownMsg{seq} })
+	}
+	return m.pollNow()
+}
+
 func (m fleetModel) pollCmd() tea.Cmd {
 	if m.multi {
 		return func() tea.Msg {
@@ -1156,20 +1453,28 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case fleetRepollMsg:
-		if msg.seq != m.tickSeq || m.polling {
+		if msg.seq != m.tickSeq || m.polling || m.deferred {
 			// Stale timer from a superseded chain, or a poll is already in
-			// flight (fs-triggered/manual) — starting a second would diff the
-			// same prevSigs twice and duplicate feed/notify events.
+			// flight (fs-triggered/manual) or queued behind the rate limit —
+			// starting a second would diff the same prevSigs twice and
+			// duplicate feed/notify events.
 			return m, nil
 		}
-		m.polling = true
-		return m, m.pollCmd()
+		return m, m.pollNow()
+	case fleetCooldownMsg:
+		if msg.seq != m.tickSeq || m.polling {
+			return m, nil // superseded by a manual refresh or a poll that landed
+		}
+		return m, m.pollNow()
 	case fleetFSMsg:
-		// A worktree changed on disk. One poll in flight at a time: bursts
-		// collapse into a single queued re-poll (fsPending) — the panel's
-		// backpressure requirement. Always re-arm the listener. A zoomed
-		// worktree additionally refreshes its watch view immediately — the
-		// zoom's refresh is independent of the fleet poll's backpressure.
+		// A worktree changed on disk. Two limits apply. One poll in flight at a
+		// time: bursts collapse into a single queued re-poll (fsPending) — the
+		// panel's backpressure requirement. And poll starts are spaced by
+		// fsPollGap, so sustained churn cannot chain full fleet scans back to
+		// back. Always re-arm the listener. A zoomed worktree additionally
+		// refreshes its watch view immediately — the zoom's refresh is
+		// independent of the fleet poll's backpressure and of the rate limit,
+		// because it is a single cheap worktree, not the whole fleet.
 		var zoomCmd tea.Cmd
 		if m.zoom != nil && msg.path == m.zoomPath && !m.zoom.paused {
 			zoomCmd = m.zoom.refreshCmd()
@@ -1178,8 +1483,10 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fsPending = true
 			return m, tea.Batch(waitFleetFSCmd(m.ws), zoomCmd)
 		}
-		m.polling = true
-		return m, tea.Batch(m.pollCmd(), waitFleetFSCmd(m.ws), zoomCmd)
+		if m.deferred {
+			return m, tea.Batch(waitFleetFSCmd(m.ws), zoomCmd) // already queued
+		}
+		return m, tea.Batch(m.pollOrDefer(), waitFleetFSCmd(m.ws), zoomCmd)
 	case fleetClockMsg:
 		// Render-only heartbeat: advance the clock and re-arm. No git/fs work.
 		m.now = time.Time(msg)
@@ -1196,6 +1503,9 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.entries = msg.entries
+			// Churn reads the signature state this poll is about to replace,
+			// so it has to run before applyFeedDiff swaps it out.
+			m.churn.accumulate(m.prevSigs, m.entries)
 			m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, m.entries, m.feed, m.now)
 			if m.multi {
 				m.rebuildRows()
@@ -1206,9 +1516,11 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tickSeq++ // invalidate any timer armed before this receipt
 		cmds := []tea.Cmd{fleetSyncWatchersCmd(m.ctx, m.ws, m.entries, m.zoomPath)}
 		if m.fsPending {
+			// Events landed while this poll ran. Honour them — but through the
+			// rate limit, not immediately: an unconditional re-poll here is what
+			// let one busy worktree pin the fleet at back-to-back scans.
 			m.fsPending = false
-			m.polling = true
-			cmds = append(cmds, m.pollCmd())
+			cmds = append(cmds, m.pollOrDefer())
 		} else {
 			cmds = append(cmds, m.tickCmd())
 		}
@@ -1290,8 +1602,12 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.polling {
 				return m, nil // refresh already under way
 			}
-			m.polling = true
-			return m, m.pollCmd() // manual refresh now
+			// A manual refresh overrides the rate limit — the user asked for it,
+			// and a keypress is not the runaway loop fsPollGap exists to stop.
+			// tickSeq++ retires the armed cooldown timer so it cannot fire a
+			// second, redundant poll on top of this one.
+			m.tickSeq++
+			return m, m.pollNow() // manual refresh now
 		}
 	}
 	return m, nil
@@ -1307,31 +1623,41 @@ func (m fleetModel) View() string {
 		return m.zoomBreadcrumb() + "\n" + m.zoom.View()
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	var b strings.Builder
 	footer := "j/k move · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
+	var dash string
 	if m.multi {
-		b.WriteString(renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed, m.totalRepoCount(), len(m.entries)))
+		dash = renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed,
+			m.totalRepoCount(), len(m.entries), m.churn, m.uptime())
 		footer = "j/k move · space fold · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
 	} else {
-		b.WriteString(renderFleet(fleetView{
+		dash = renderFleet(fleetView{
 			entries: m.viewEntries(),
 			cursor:  m.cursor,
 			now:     m.now,
 			width:   m.width,
 			detail:  m.detail,
 			feed:    m.feed,
-		}))
+			churn:   m.churn,
+			since:   m.uptime(),
+		})
 	}
+
+	var b strings.Builder
+	b.WriteString(dash)
 	if m.showFeed {
-		if pane := renderFleetFeed(m.feed, m.width, m.feedPaneLines(), m.multi); pane != "" {
+		// Size the feed against what the dashboard actually drew — the detail
+		// panel can be taller than the table, and a row count would miss that.
+		if pane := renderFleetFeed(m.feed, m.width, m.feedPaneLines(lipgloss.Height(dash)), m.multi); pane != "" {
 			b.WriteString("\n" + pane)
 		}
 	}
-	b.WriteString("\n")
+	body := b.String()
+
+	var tail strings.Builder
 	if m.lastErr != nil {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
+		tail.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
 			Render("refresh failed: " + m.lastErr.Error()))
-		b.WriteString("\n")
+		tail.WriteString("\n")
 	}
 	cadence := fmt.Sprintf("polling every %s", m.interval)
 	if m.ws.hasAny() {
@@ -1340,29 +1666,43 @@ func (m fleetModel) View() string {
 	if m.filter != fleetFilterAll || m.sortMode != fleetSortDefault {
 		cadence += fmt.Sprintf(" · filter:%s sort:%s", fleetFilterName(m.filter), fleetSortName(m.sortMode))
 	}
-	b.WriteString(dim.Render(fmt.Sprintf(footer, cadence)))
-	return b.String()
+	tail.WriteString(dim.Render(fmt.Sprintf(footer, cadence)))
+
+	// Pin the keybar to the bottom of the alt screen: the dashboard owns the
+	// whole terminal, so a footer floating under a short table (with dead space
+	// below it) reads as a truncated frame. Padding only — never clipping.
+	pad := "\n"
+	if m.height > 0 {
+		if gap := m.height - lipgloss.Height(body) - lipgloss.Height(tail.String()); gap > 0 {
+			pad = strings.Repeat("\n", gap+1)
+		}
+	}
+	return body + pad + tail.String()
 }
 
-// feedPaneLines sizes the feed pane: enough to be useful, never so tall it
-// pushes the table off a small terminal. Height 0 (unknown) gets the default.
-func (m fleetModel) feedPaneLines() int {
-	const want = 8
-	rows := len(m.viewEntries()) // size against what is actually drawn (filter-aware)
-	if m.multi {
-		rows = len(m.rows)
+// uptime is how long watch has been running — the Δ reading's denominator.
+func (m fleetModel) uptime() time.Duration {
+	if m.startedAt.IsZero() || m.now.IsZero() {
+		return 0
 	}
+	return m.now.Sub(m.startedAt)
+}
+
+// feedPaneLines sizes the feed pane: it fills whatever height the dashboard
+// (dashH: header + rule + the taller of table/detail panel) leaves, since the
+// alt screen is ours either way and a longer tail is strictly more history.
+// Height 0 (unknown) gets a static default; too little room drops the pane
+// entirely rather than showing a one-line stub.
+func (m fleetModel) feedPaneLines(dashH int) int {
+	const want = 8
 	if m.height <= 0 {
 		return want
 	}
-	free := m.height - rows - 5 // header(2) + footer(1) + rule(1) + slack(1)
+	free := m.height - dashH - 3 // the pane's own rule + keybar + slack
 	if free < 2 {
 		return 0
 	}
-	if free < want {
-		return free
-	}
-	return want
+	return free
 }
 
 func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, initial []fleetEntryJSON, interval time.Duration, feedStats bool, filter int) error {
@@ -1374,6 +1714,7 @@ func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner
 		interval:  interval,
 		entries:   initial,
 		now:       time.Now(),
+		startedAt: time.Now(),
 		detail:    fleetDetailFields,
 		showFeed:  true,
 		feedStats: feedStats,

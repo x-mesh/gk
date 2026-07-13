@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // StateKind represents which in-progress operation git is currently performing.
@@ -151,9 +152,40 @@ func DetectFromGitDir(commonDir string) (*State, error) {
 	return &State{Kind: StateNone, GitDir: base.GitDir, CommonDir: commonDir}, nil
 }
 
+// gitDirs is one worktree's resolved layout — the answer resolveGitDirs forks
+// two `git rev-parse` calls to learn.
+type gitDirs struct{ common, git string }
+
+// gitDirCache memoises that answer per working directory. A worktree's git dir
+// does not move while a process runs, but a live dashboard (`gk watch`) calls
+// Detect on every worktree on every poll — 2 subprocesses each, ~46 per poll on
+// a 21-worktree fleet, purely to re-learn paths it already knew.
+//
+// The entry is dropped when its common dir no longer exists, so a worktree that
+// is removed (or a repo re-created at the same path with a different layout)
+// re-resolves instead of serving a stale path forever. That check is a stat,
+// not a fork.
+var gitDirCache sync.Map // workDir → gitDirs
+
 // resolveGitDirs runs `git rev-parse --git-common-dir` (with --git-dir fallback)
 // to locate the git and common directories, resolving them to absolute paths.
+// Memoised per workDir — see gitDirCache.
 func resolveGitDirs(ctx context.Context, workDir string) (commonDir, gitDir string, err error) {
+	if v, ok := gitDirCache.Load(workDir); ok {
+		if d, valid := v.(gitDirs); valid && dirExists(d.common) {
+			return d.common, d.git, nil
+		}
+		gitDirCache.Delete(workDir) // the repo it described is gone
+	}
+	common, git, err := probeGitDirs(ctx, workDir)
+	if err != nil {
+		return "", "", err
+	}
+	gitDirCache.Store(workDir, gitDirs{common: common, git: git})
+	return common, git, nil
+}
+
+func probeGitDirs(ctx context.Context, workDir string) (commonDir, gitDir string, err error) {
 	run := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = workDir

@@ -27,6 +27,14 @@ const defaultPerFileCap = 24 * 1024
 
 type fileReadInput struct {
 	Path string `json:"path"`
+	// StartLine/EndLine optionally bound the read to a 1-based, inclusive
+	// line range so the model can page a large file instead of always
+	// getting the (byte-capped) top. Both optional; omit both to read from
+	// the top. These names match what tool-callers reach for by reflex —
+	// before they existed, a start_line guess was a hard "unknown field"
+	// error that stalled investigation on big files.
+	StartLine int `json:"start_line,omitempty"`
+	EndLine   int `json:"end_line,omitempty"`
 }
 
 func (f *FileTools) fileRead(_ context.Context, raw json.RawMessage) (string, error) {
@@ -48,11 +56,37 @@ func (f *FileTools) fileRead(_ context.Context, raw json.RawMessage) (string, er
 	if rErr != nil {
 		return "", fmt.Errorf("file_read: %v", rErr)
 	}
+	text := string(b)
+	if in.StartLine > 0 || in.EndLine > 0 {
+		text = sliceLines(text, in.StartLine, in.EndLine)
+	}
 	limit := f.PerFileCap
 	if limit <= 0 {
 		limit = defaultPerFileCap
 	}
-	return capBytes(string(b), limit), nil
+	return capBytes(text, limit), nil
+}
+
+// sliceLines returns the 1-based, inclusive [start, end] line range of text.
+// start <= 0 means "from the first line"; end <= 0 or past the end means "to
+// the last line". A start past the end returns a note rather than "" so the
+// model learns the file's real length instead of seeing a blank result.
+func sliceLines(text string, start, end int) string {
+	lines := strings.Split(text, "\n")
+	n := len(lines)
+	if start <= 0 {
+		start = 1
+	}
+	if end <= 0 || end > n {
+		end = n
+	}
+	if start > n {
+		return fmt.Sprintf("(file has %d line(s); start_line %d is past the end)", n, start)
+	}
+	if end < start {
+		end = start
+	}
+	return strings.Join(lines[start-1:end], "\n")
 }
 
 type fileListInput struct {
@@ -107,9 +141,11 @@ func (f *FileTools) fileList(_ context.Context, raw json.RawMessage) (string, er
 func RegisterFileTools(r *Registry, f *FileTools) {
 	r.Register(Tool{
 		Name:        "file_read",
-		Description: "Read one text file from the repository work tree (repo-relative path). Binary files and paths outside the repo are refused.",
+		Description: "Read one text file from the repository work tree (repo-relative path). Optionally pass start_line and/or end_line (1-based, inclusive) to read only that range of a large file; omit both to read from the top (output is byte-capped). Binary files and paths outside the repo are refused.",
 		Schema: json.RawMessage(`{"type":"object","properties":{
-			"path":{"type":"string"}
+			"path":{"type":"string"},
+			"start_line":{"type":"integer","description":"1-based first line to read (inclusive); optional"},
+			"end_line":{"type":"integer","description":"1-based last line to read (inclusive); optional"}
 		},"required":["path"],"additionalProperties":false}`),
 		Handler: f.fileRead,
 	})

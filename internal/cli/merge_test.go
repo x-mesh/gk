@@ -21,8 +21,8 @@ func TestRunMergeCorePrechecksAndMerges(t *testing.T) {
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
 		"rev-parse HEAD":                        {Stdout: "old123456\n"},
 		"log --oneline HEAD..main":              {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":                {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main":         {Stdout: "M\tfile.go\n"},
+		"diff --stat HEAD...main":               {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main":        {Stdout: "M\tfile.go\n"},
 		"merge --no-edit main":                  {Stdout: "merged\n"},
 		"rev-list --count old123456..new123456": {Stdout: "2\n"},
 	}}
@@ -62,6 +62,45 @@ func TestRunMergeCorePrechecksAndMerges(t *testing.T) {
 	}
 }
 
+// TestBuildMergePlanPayloadUses3DotDiff guards the cry-wolf regression:
+// on a diverged receiver the merge-plan diff must be computed with 3-dot
+// (merge-base..target) so receiver-only commits are not misreported as
+// deletions. A 2-dot `diff HEAD..target` inverts the receiver's unique
+// commits into phantom deletions and scares users off a safe, additive
+// merge (memory 3f39d299). The incoming-commit log stays 2-dot.
+func TestBuildMergePlanPayloadUses3DotDiff(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
+	}}
+
+	payload, commits := buildMergePlanPayload(context.Background(), runner, "main", "develop", nil)
+
+	if len(commits) != 1 {
+		t.Fatalf("expected 1 incoming commit, got %d", len(commits))
+	}
+	if !strings.Contains(payload, "file.go") {
+		t.Fatalf("expected diff stat in payload, got:\n%s", payload)
+	}
+
+	joined := joinedShipCalls(runner.Calls)
+	for _, want := range []string{"diff --stat HEAD...main", "diff --name-status HEAD...main"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected 3-dot diff call %q in:\n%s", want, joined)
+		}
+	}
+	// A diff call using 2-dot HEAD..main would reintroduce the cry-wolf bug.
+	for _, call := range runner.Calls {
+		if len(call.Args) == 0 || call.Args[0] != "diff" {
+			continue
+		}
+		if strings.Contains(strings.Join(call.Args, " "), "HEAD..main") {
+			t.Fatalf("merge-plan diff must not use 2-dot HEAD..main (cry-wolf regression): %v", call.Args)
+		}
+	}
+}
+
 func TestRunMergeCoreBlocksPrecheckConflicts(t *testing.T) {
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
@@ -71,9 +110,9 @@ func TestRunMergeCoreBlocksPrecheckConflicts(t *testing.T) {
 			Stdout:   "0123456789abcdef0123456789abcdef01234567\nconflict.go\n",
 			ExitCode: 1,
 		},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " conflict.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tconflict.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " conflict.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tconflict.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -98,9 +137,9 @@ func TestRunMergeCorePlanOnlyDoesNotMerge(t *testing.T) {
 		"symbolic-ref --short HEAD":        {Stdout: "feature/ship\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -130,10 +169,10 @@ func TestRunMergeCorePlanOnlyAllowsDirtyTree(t *testing.T) {
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
-		"status --porcelain=v1 -uno":    {Stdout: " M local.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
+		"status --porcelain=v1 -uno":     {Stdout: " M local.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -158,9 +197,9 @@ func TestRunMergeCorePlanOnlyNoAIUsesLocalPlan(t *testing.T) {
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -192,8 +231,8 @@ func TestRunMergeIntoMergesCurrentBranchInReceiverWorktree(t *testing.T) {
 		"merge-base HEAD ship":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD ship": {Stdout: "tree123\n"},
 		"log --oneline HEAD..ship":              {Stdout: "def456 feat: ship\n"},
-		"diff --stat HEAD..ship":                {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..ship":         {Stdout: "M\tfile.go\n"},
+		"diff --stat HEAD...ship":               {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...ship":        {Stdout: "M\tfile.go\n"},
 		"status --porcelain=v1 -uno":            {Stdout: ""},
 		"merge --no-edit ship":                  {Stdout: "merged\n"},
 		"rev-list --count old123456..new123456": {Stdout: "2\n"},
@@ -268,9 +307,9 @@ func TestRunMergeIntoUsesExplicitSource(t *testing.T) {
 		"rev-parse --verify feature/x^{commit}": {Stdout: "def456\n"},
 		"merge-base HEAD feature/x":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD feature/x": {Stdout: "tree123\n"},
-		"log --oneline HEAD..feature/x":      {Stdout: ""},
-		"diff --stat HEAD..feature/x":        {Stdout: ""},
-		"diff --name-status HEAD..feature/x": {Stdout: ""},
+		"log --oneline HEAD..feature/x":       {Stdout: ""},
+		"diff --stat HEAD...feature/x":        {Stdout: ""},
+		"diff --name-status HEAD...feature/x": {Stdout: ""},
 	}}
 	var errOut bytes.Buffer
 
@@ -513,8 +552,8 @@ func TestRunMergeIntoDirtySourceCanCreateWipCommit(t *testing.T) {
 		"merge-base HEAD ship":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD ship": {Stdout: "tree123\n"},
 		"log --oneline HEAD..ship":              {Stdout: ""},
-		"diff --stat HEAD..ship":                {Stdout: ""},
-		"diff --name-status HEAD..ship":         {Stdout: ""},
+		"diff --stat HEAD...ship":               {Stdout: ""},
+		"diff --name-status HEAD...ship":        {Stdout: ""},
 		"status --porcelain=v1 -uno":            {Stdout: ""},
 		"merge --no-edit ship":                  {Stdout: "merged\n"},
 		"rev-list --count old123456..new123456": {Stdout: "1\n"},
@@ -626,9 +665,9 @@ func TestRunMergeCorePlanLabelsNonSummarizerProvider(t *testing.T) {
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -650,9 +689,9 @@ func TestRunMergeCorePlanLabelsProviderInitError(t *testing.T) {
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 	var errOut bytes.Buffer
 
@@ -674,9 +713,9 @@ func TestRunMergeCorePlanUsesAISummary(t *testing.T) {
 		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
 		"merge-base HEAD main":             {Stdout: "base123\n"},
 		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
-		"log --oneline HEAD..main":      {Stdout: "abc123 feat: incoming\n"},
-		"diff --stat HEAD..main":        {Stdout: " file.go | 2 ++\n"},
-		"diff --name-status HEAD..main": {Stdout: "M\tfile.go\n"},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 	fake := provider.NewFake()
 	fake.NameVal = "nvidia"

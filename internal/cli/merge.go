@@ -765,7 +765,13 @@ func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current st
 			}
 		}
 	}
-	if out, _, err := r.Run(ctx, "diff", "--stat", "HEAD.."+target); err == nil {
+	// Use 3-dot (merge-base..target) so the stat reflects what the merge
+	// actually adds, not the 2-dot HEAD..target diff. On a diverged
+	// receiver the 2-dot form treats receiver-only commits as deletions,
+	// producing a cry-wolf "large deletion / runtime error" warning even
+	// though the merge is purely additive. 3-dot = git diff $(merge-base
+	// HEAD target) target, which is exactly the incoming change set.
+	if out, _, err := r.Run(ctx, "diff", "--stat", "HEAD..."+target); err == nil {
 		trimmed := strings.TrimSpace(string(out))
 		if trimmed != "" {
 			fmt.Fprintln(&b, "\nDiff stat:")
@@ -773,7 +779,7 @@ func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current st
 			fmt.Fprintln(&b)
 		}
 	}
-	if out, _, err := r.Run(ctx, "diff", "--name-status", "HEAD.."+target); err == nil {
+	if out, _, err := r.Run(ctx, "diff", "--name-status", "HEAD..."+target); err == nil {
 		trimmed := strings.TrimSpace(string(out))
 		if trimmed != "" {
 			fmt.Fprintln(&b, "\nChanged files:")

@@ -75,8 +75,34 @@ func TestGitDiffStaged(t *testing.T) {
 	if !strings.Contains(staged.Content, "staged.go") {
 		t.Errorf("staged diff should include staged.go: %s", staged.Content)
 	}
+	stagedPath := dispatch(t, r, "git_diff", `{"staged":true,"path":"staged.go"}`)
+	if stagedPath.IsError || !strings.Contains(stagedPath.Content, "staged.go") {
+		t.Errorf("staged path alias should include staged.go: %s", stagedPath.Content)
+	}
 	// Default (unstaged) diff must NOT show a fully-staged file.
 	if plain := dispatch(t, r, "git_diff", `{}`); strings.Contains(plain.Content, "staged.go") {
 		t.Errorf("unstaged diff should not include staged-only file: %s", plain.Content)
+	}
+	badRange := dispatch(t, r, "git_diff", `{"staged":true,"range":"main..HEAD"}`)
+	if !badRange.IsError || !strings.Contains(badRange.Content, "base ref") {
+		t.Errorf("staged revision range should fail clearly: %+v", badRange)
+	}
+	baseRef := dispatch(t, r, "git_diff", `{"staged":true,"range":"HEAD~1"}`)
+	if baseRef.IsError || !strings.Contains(baseRef.Content, "a.go") {
+		t.Errorf("staged single base ref should include committed a.go change: %+v", baseRef)
+	}
+}
+
+func TestGitToolNewFieldContracts(t *testing.T) {
+	r, _ := newTestGitTools(t)
+
+	grep := dispatch(t, r, "git_grep", `{"pattern":"Hello","path":"a.go"}`)
+	if grep.IsError || !strings.Contains(grep.Content, "a.go") {
+		t.Errorf("git_grep path alias: %s", grep.Content)
+	}
+
+	log := dispatch(t, r, "git_log", `{"since":"2 days ago","until":"tomorrow"}`)
+	if log.IsError || !strings.Contains(log.Content, "initial") {
+		t.Errorf("git_log since/until: %s", log.Content)
 	}
 }

@@ -189,8 +189,9 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 	turnBytes := 0
 	// groundingReprompted guards the code-first grounding gate below to
 	// fire at most once per turn — a hard stop against a reprompt loop,
-	// independent of the res.ToolCalls==0 check it sits beside.
+	// independent of the successful exploration check it sits beside.
 	groundingReprompted := false
+	groundedWithRepo := false
 
 	// History trimming is turn-scoped: trimHistory never touches the
 	// in-flight turn, so the boundary at turnStart never moves once the
@@ -269,16 +270,24 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 			// assistant, but a model will happily answer a code-answerable
 			// question ("what command checks the remote?") from general git
 			// knowledge without ever opening a file here. When that happens —
-			// a final answer produced with zero tool calls this turn, on a
-			// question the code here can answer — spend ONE reprompt that
-			// tells it to investigate first. res.ToolCalls stays 0 only until
-			// the model calls a tool, and groundingReprompted latches after
-			// the first nudge, so this fires at most once and never loops:
+			// a final answer produced without successful repository
+			// exploration this turn, on a question the code here can answer —
+			// spend ONE reprompt that
+			// tells it to investigate first. Only a successful repository
+			// exploration result satisfies the gate; an unknown/failed tool
+			// call is an attempt, not grounding. groundingReprompted latches
+			// after the first nudge, so this fires at most once and never loops:
 			// if the reprompt still yields no tool call, the answer is
 			// returned as-is (a nudge, not a wall). Repo-independent
 			// questions and already-grounded answers skip the gate entirely.
-			if !groundingReprompted && res.ToolCalls == 0 && IsCodeAnswerable(userInput) {
+			// Reserve two calls after the draft: one for an exploration call
+			// and one for the final answer. With a smaller remaining budget,
+			// pass the draft through instead of turning a nudge into
+			// ErrMaxRounds (MaxToolRounds is a supported user setting).
+			canFinishGrounding := e.maxRounds()-res.Rounds >= 2
+			if !groundingReprompted && !groundedWithRepo && canFinishGrounding && IsCodeAnswerable(userInput) {
 				groundingReprompted = true
+				reprompt := groundingReprompt(userInput)
 				// Persist the ungrounded draft as a real assistant turn
 				// BEFORE the user reprompt: two consecutive user messages are
 				// the POISON described on RunTurn, so the alternation must be
@@ -288,18 +297,18 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 					SessionRecord{Role: "assistant", Text: reply.Text, Model: reply.Model, TokensUsed: reply.TokensUsed},
 				)
 				e.appendAndPersist(
-					provider.ChatMessage{Role: "user", Text: groundingReprompt},
-					SessionRecord{Role: "user", Text: groundingReprompt},
+					provider.ChatMessage{Role: "user", Text: reprompt},
+					SessionRecord{Role: "user", Text: reprompt},
 				)
 				// In REPL streaming the draft already reached the terminal;
 				// void the stale partial before the regenerated answer streams.
 				if e.OnStreamReset != nil {
 					e.OnStreamReset()
 				}
-				e.dbg("chat: grounding gate — reprompting to investigate (code-answerable question answered with 0 tool calls)")
+				e.dbg("chat: grounding gate — reprompting to investigate (code-answerable question answered without successful repository exploration)")
 				continue
 			}
-			if groundingReprompted && res.ToolCalls == 0 {
+			if groundingReprompted && !groundedWithRepo {
 				// The nudge did not take: answer is returned, but flag the
 				// weak grounding so --debug shows the answer was not verified
 				// against the repository (R7 — pass through, do not loop).
@@ -324,6 +333,9 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 				e.OnToolCall(call)
 			}
 			result := e.dispatchGuarded(ctx, call, seen, &turnBytes)
+			if !result.IsError && isRepositoryExplorationTool(call.Name) {
+				groundedWithRepo = true
+			}
 			if e.OnToolResult != nil {
 				e.OnToolResult(call, result)
 			}
@@ -513,6 +525,13 @@ func callKey(call provider.ToolCall) string {
 	h.Write([]byte{0})
 	h.Write(call.Input)
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// isRepositoryExplorationTool distinguishes evidence-producing read tools
+// from arbitrary registry extensions used by tests or future callers. Every
+// production git_* tool and both file tools are read-only repository probes.
+func isRepositoryExplorationTool(name string) bool {
+	return strings.HasPrefix(name, "git_") || name == "file_read" || name == "file_list"
 }
 
 // appendAndPersist grows the in-memory history and mirrors the message to

@@ -5,40 +5,62 @@ import (
 	"unicode"
 )
 
-// groundingReprompt is the single nudge the engine injects when the model
+// groundingRepromptInstruction is the single nudge the engine injects when the model
 // answered a code-answerable question without touching a tool. It names the
 // tools explicitly and forbids answering from prior knowledge, so the next
 // round actually inspects the repository.
-const groundingReprompt = "You answered from general knowledge without inspecting this repository, but this question is answerable from the code here. Before answering, use your tools (git_grep, file_list, file_read, git_log) to find the actual command / function / file, then answer citing the specific files and lines you saw. Do not answer from prior knowledge."
+const groundingRepromptInstruction = "You answered from general knowledge without inspecting this repository, but this question is answerable from the code here. Before answering, use your tools (git_grep, file_list, file_read, git_log) to find the actual command / function / file, then answer citing the specific files and lines you saw. Do not answer from prior knowledge."
 
-// koCodeSignals are substrings that mark a question as answerable from the
-// repository the user is standing in: code/repo nouns and the this-repo
-// deixis that point an answer at actual files rather than at general
-// knowledge. Korean has no word boundaries, so these match as substrings.
-// The list is biased toward code/repo vocabulary, NOT question shape
-// ("어떻게/뭐야") alone — a bare "오늘 어때" must never trip it.
-var koCodeSignals = []string{
-	// this-repo deixis
+func groundingReprompt(question string) string {
+	return groundingRepromptInstruction + "\n\nOriginal question:\n" + question
+}
+
+// Explicit repository references are sufficient by themselves. Generic code
+// nouns must be paired with a lookup/deictic signal below, so "여기서 가까운
+// 맛집" and "Python에서 파일 열기" stay repo-independent.
+var koRepoSignals = []string{
 	"이 저장소", "이 레포", "이 코드", "이 프로젝트", "이 파일", "이 함수",
-	"여기서", "여기에",
-	// code / repo nouns
+	"저장소", "레포지토리",
+}
+
+var koCodeSignals = []string{
 	"커맨드", "명령어", "명령", "서브커맨드", "함수", "메서드", "메소드",
 	"클래스", "구조체", "인터페이스", "패키지", "모듈", "파일", "디렉토리",
 	"구현", "동작", "옵션", "플래그", "설정값", "코드", "로직", "테스트",
-	"버그", "예외처리", "리팩터", "리팩토링", "저장소", "레포지토리",
+	"버그", "예외처리", "리팩터", "리팩토링",
 }
 
-// enCodeSignals are English code/repo words matched whole-word (not
-// substring) so "latest" never trips "test" and "terror" never trips
-// "error". Deliberately excludes over-generic terms like "git"/"gk" that
-// appear in nearly every question this tool sees.
+var koCommandSignals = []string{"커맨드", "명령어", "명령", "서브커맨드"}
+
+var koLookupSignals = []string{
+	"여기서", "여기에", "뭐", "어디", "어느", "언제", "왜", "찾아", "보여", "설명",
+}
+
+// English signals are whole words, including common plurals. A code noun must
+// be paired with a lookup/deictic word unless the question names the repo
+// explicitly. This keeps "which commands are available?" grounded while
+// leaving "how do I open a file in Python?" alone.
 var enCodeSignals = map[string]bool{
-	"command": true, "subcommand": true, "function": true, "func": true,
-	"method": true, "class": true, "struct": true, "interface": true,
-	"package": true, "module": true, "file": true, "directory": true,
-	"implement": true, "implementation": true, "option": true, "flag": true,
-	"config": true, "logic": true, "test": true, "bug": true, "error": true,
-	"refactor": true, "repo": true, "repository": true, "codebase": true,
+	"command": true, "commands": true, "subcommand": true, "subcommands": true,
+	"function": true, "functions": true, "func": true, "method": true, "methods": true,
+	"class": true, "classes": true, "struct": true, "structs": true,
+	"interface": true, "interfaces": true, "package": true, "packages": true,
+	"module": true, "modules": true, "file": true, "files": true,
+	"directory": true, "directories": true,
+	"implement": true, "implementation": true, "implementations": true,
+	"option": true, "options": true, "flag": true, "flags": true,
+	"config": true, "configs": true, "logic": true,
+	"test": true, "tests": true, "bug": true, "bugs": true,
+	"error": true, "errors": true, "refactor": true, "refactors": true,
+}
+
+var enRepoSignals = map[string]bool{
+	"repo": true, "repos": true, "repository": true, "repositories": true, "codebase": true,
+}
+
+var enLookupSignals = map[string]bool{
+	"which": true, "where": true, "when": true, "why": true,
+	"this": true, "that": true, "these": true, "those": true, "here": true,
 }
 
 // IsCodeAnswerable reports whether a chat question should be grounded in the
@@ -58,18 +80,33 @@ func IsCodeAnswerable(question string) bool {
 	if q == "" {
 		return false
 	}
-	// Korean / substring signals first: the script has no word boundaries.
-	for _, s := range koCodeSignals {
-		if strings.Contains(q, s) {
-			return true
-		}
+	if containsAny(q, koRepoSignals) {
+		return true
 	}
-	// English signals matched as whole words to avoid substring accidents.
+	if containsAny(q, koCodeSignals) && containsAny(q, koLookupSignals) {
+		return true
+	}
+	if strings.Contains(q, "확인") && containsAny(q, koCommandSignals) {
+		return true
+	}
+
 	words := strings.FieldsFunc(q, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
+	hasCode, hasLookup := false, false
 	for _, w := range words {
-		if enCodeSignals[w] {
+		if enRepoSignals[w] {
+			return true
+		}
+		hasCode = hasCode || enCodeSignals[w]
+		hasLookup = hasLookup || enLookupSignals[w]
+	}
+	return hasCode && hasLookup
+}
+
+func containsAny(s string, signals []string) bool {
+	for _, signal := range signals {
+		if strings.Contains(s, signal) {
 			return true
 		}
 	}

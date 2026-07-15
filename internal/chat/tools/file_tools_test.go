@@ -5,30 +5,60 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestSliceLines(t *testing.T) {
-	text := "L1\nL2\nL3\nL4\nL5"
 	cases := []struct {
-		name       string
+		name, text string
 		start, end int
 		want       string
 	}{
-		{"middle range", 2, 4, "L2\nL3\nL4"},
-		{"single line", 3, 3, "L3"},
-		{"start only to end", 4, 0, "L4\nL5"},
-		{"end past length clamps", 3, 99, "L3\nL4\nL5"},
-		{"zero start defaults to first", 0, 2, "L1\nL2"},
-		{"end before start snaps to single", 4, 2, "L4"},
-		{"start past end returns note", 10, 12, "(file has 5 line(s); start_line 10 is past the end)"},
+		{"middle range", "L1\nL2\nL3\nL4\nL5", 2, 4, "L2\nL3\nL4"},
+		{"single line", "L1\nL2\nL3\nL4\nL5", 3, 3, "L3"},
+		{"start only to end", "L1\nL2\nL3\nL4\nL5", 4, 0, "L4\nL5"},
+		{"end past length clamps", "L1\nL2\nL3\nL4\nL5", 3, 99, "L3\nL4\nL5"},
+		{"zero start defaults to first", "L1\nL2\nL3\nL4\nL5", 0, 2, "L1\nL2"},
+		{"end before start snaps to single", "L1\nL2\nL3\nL4\nL5", 4, 2, "L4"},
+		{"start past end returns note", "L1\nL2\nL3\nL4\nL5", 10, 12, "(file has 5 line(s); start_line 10 is past the end)"},
+		{"trailing newline is not extra line", "L1\nL2\n", 3, 3, "(file has 2 line(s); start_line 3 is past the end)"},
+		{"empty file has zero lines", "", 1, 1, "(file has 0 line(s); start_line 1 is past the end)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := sliceLines(text, c.start, c.end); got != c.want {
-				t.Errorf("sliceLines(%d,%d) = %q, want %q", c.start, c.end, got, c.want)
+			got, err := readLineRange(strings.NewReader(c.text), c.start, c.end, defaultPerFileCap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("readLineRange(%d,%d) = %q, want %q", c.start, c.end, got, c.want)
 			}
 		})
+	}
+}
+
+func TestReadLineRangeStopsAtEndAndCap(t *testing.T) {
+	text := strings.Repeat("line\n", 10_000)
+	r := strings.NewReader(text)
+	if got, err := readLineRange(r, 2, 2, defaultPerFileCap); err != nil || got != "line" {
+		t.Fatalf("bounded line read = %q, %v", got, err)
+	}
+	if r.Len() == 0 {
+		t.Fatal("bounded line read consumed the whole file")
+	}
+
+	long := strings.NewReader(strings.Repeat("x", 1<<20))
+	got, err := readLineRange(long, 1, 1, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "[truncated") || long.Len() == 0 {
+		t.Fatalf("capped read did not stop early: len=%d remaining=%d", len(got), long.Len())
+	}
+	exact, err := readLineRange(strings.NewReader(strings.Repeat("x", 32)+"\n"), 1, 1, 32)
+	if err != nil || exact != strings.Repeat("x", 32) {
+		t.Fatalf("line-ending delimiter consumed cap: %q, %v", exact, err)
 	}
 }
 

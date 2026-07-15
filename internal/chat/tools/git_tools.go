@@ -221,6 +221,9 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 	if err := validateRef(in.Range); err != nil {
 		return "", err
 	}
+	if in.Staged && strings.Contains(in.Range, "..") {
+		return "", fmt.Errorf("git_diff: staged=true accepts at most one base ref, not a two-dot/three-dot revision range; omit range or pass a single ref")
+	}
 	args := []string{"-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
 		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/",
 		"diff", "--no-color", "--no-ext-diff", "--no-textconv"}
@@ -464,7 +467,7 @@ func RegisterGitTools(r *Registry, g *GitTools) {
 		Name:        "git_diff",
 		Description: "Diff the working tree, the staged index, or a revision range. Default returns a structured digest (per-file stats + changed symbols); set raw=true for the full patch. Set staged=true to diff the index against HEAD.",
 		Schema: json.RawMessage(`{"type":"object","properties":{
-			"range":{"type":"string","description":"revision range like main..HEAD; empty = working tree vs HEAD"},
+			"range":{"type":"string","description":"revision range like main..HEAD; empty = working tree vs HEAD; with staged=true only a single base ref is allowed"},
 			"paths":{"type":"array","items":{"type":"string"}},
 			"path":{"type":"string","description":"single repo-relative path (alias for paths)"},
 			"staged":{"type":"boolean","description":"diff the staged index against HEAD (git diff --staged)"},

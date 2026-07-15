@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk branch clean --gone`가 merged 브랜치와 base 자신까지 후보로 끌어오던 문제.** `--gone`은 "merged 대신 gone인 브랜치를 대상으로"라고 문서화돼 있는데, 수집기가 merged 목록을 조건 없이 항상 긁어와 `--gone --force` 한 번에 현재 브랜치(main/develop)까지 삭제 후보로 노출됐다. `--gone`일 때는 merged 수집을 건너뛰도록 고쳤다 — `--all`은 기존대로 전부 포함한다.
+- **`gk branch clean` 삭제 실패 메시지가 git의 raw 조언을 그대로 흘리던 문제.** 미머지 브랜치를 `--force` 없이 지우려 하면 브랜치마다 `hint: run 'git branch -D ...'` / `hint: Disable this message with ...` 두 줄이 그대로 찍혀, 여러 개를 한 번에 지울 때 화면을 도배했다. 이제 첫 줄만 남기고, 미머지로 건너뛴 개수를 모아 `--force` 안내 한 줄로 대체한다.
+- **`gk branch list --merged`/`--unmerged`의 컬럼 정렬이 업스트림 유무에 따라 어긋나던 문제.** 브랜치 이름만 고정폭이던 출력을 다른 명령(`gk sw`, `gk worktree list`)과 동일한 동적 컬럼 폭 계산으로 바꿨다. 기준 브랜치(base)가 무엇인지 요약줄에 명시하고, base 자신은 항상 결과에서 제외한다(자기 자신에 "merged"된 건 의미 없는 노이즈였다). DIFF 컬럼은 ahead(초록 ↑)/behind(빨강 ↓)로 색을 입혔다.
+
 ## [0.122.2] - 2026-07-15
 
 ### Fixed

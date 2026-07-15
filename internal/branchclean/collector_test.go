@@ -146,7 +146,12 @@ func TestCollectStale_Basic(t *testing.T) {
 // Unit tests: CollectAll
 // ---------------------------------------------------------------------------
 
-func TestCollectAll_MergedAndGone(t *testing.T) {
+// TestCollectAll_GoneExcludesMerged is the regression test for the reported
+// bug: `--gone` is documented as targeting gone branches *instead of* merged
+// ones, but CollectMerged used to run unconditionally, so a `--gone` run
+// surfaced every merged branch too (and, under --force, the base itself).
+// With --gone (and not --all), only gone branches must appear.
+func TestCollectAll_GoneExcludesMerged(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
@@ -163,11 +168,46 @@ func TestCollectAll_MergedAndGone(t *testing.T) {
 	}
 	c := &Collector{Runner: runner, Client: git.NewClient(runner)}
 
-	opts := CleanOptions{
-		Gone: true,
-		All:  false,
+	entries, err := c.CollectAll(context.Background(), CleanOptions{Gone: true, All: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	entries, err := c.CollectAll(context.Background(), opts)
+
+	names := make(map[string]bool)
+	for _, e := range entries {
+		names[e.Name] = true
+	}
+	if names["feat/merged"] {
+		t.Error("--gone must not surface merged-only branches (instead-of-merged contract)")
+	}
+	if names["main"] {
+		t.Error("main must never appear under --gone")
+	}
+	if !names["feat/gone"] {
+		t.Fatal("expected feat/gone in results")
+	}
+}
+
+// TestCollectAll_AllIncludesMergedAndGone confirms --all still unions every
+// category (the escape hatch that DOES include merged alongside gone).
+func TestCollectAll_AllIncludesMergedAndGone(t *testing.T) {
+	now := time.Now()
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                     {Stdout: "main\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {
+				Stdout: fmt.Sprintf("feat/merged\x00%d\nmain\x00%d\n", now.Unix(), now.Unix()),
+			},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: fmt.Sprintf("feat/gone\x00origin/feat/gone\x00%d\x00[gone]\nfeat/merged\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n",
+					now.Unix(), now.Unix(), now.Unix()),
+			},
+		},
+	}
+	c := &Collector{Runner: runner, Client: git.NewClient(runner)}
+
+	entries, err := c.CollectAll(context.Background(), CleanOptions{All: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,13 +217,13 @@ func TestCollectAll_MergedAndGone(t *testing.T) {
 		names[e.Name] = true
 	}
 	if !names["feat/merged"] {
-		t.Fatal("expected feat/merged in results")
+		t.Error("--all should include merged branches")
 	}
 	if !names["feat/gone"] {
-		t.Fatal("expected feat/gone in results")
+		t.Error("--all should include gone branches")
 	}
 	if names["main"] {
-		t.Fatal("main should be excluded")
+		t.Error("main (base) should stay excluded — it is protected without --force")
 	}
 }
 

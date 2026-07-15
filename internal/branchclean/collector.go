@@ -53,12 +53,18 @@ func (c *Collector) CollectAll(ctx context.Context, opts CleanOptions) ([]Branch
 
 	var all []BranchEntry
 
-	// merged 브랜치 수집 (기본 동작 또는 --all)
-	merged, err := c.CollectMerged(ctx, base, protected)
-	if err != nil {
-		return nil, err
+	// merged 브랜치 수집. --gone은 "merged 대신 gone을 대상으로" 한다고
+	// 문서화돼 있으므로(플래그 help: "instead of merged ones") --gone일 때는
+	// merged를 수집하지 않는다. --all은 모든 부류를 포함하므로 예외.
+	// --stale/--squash-merged는 "추가로 포함"(additive)이라 기본 merged를
+	// 유지한다 — 이들만으로는 Gone이 false라 아래 조건이 참이 된다.
+	if opts.All || !opts.Gone {
+		merged, err := c.CollectMerged(ctx, base, protected)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, merged...)
 	}
-	all = append(all, merged...)
 
 	// gone 브랜치 수집 (--gone 또는 --all)
 	if opts.Gone || opts.All {

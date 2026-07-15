@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -19,6 +20,7 @@ import (
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -208,6 +210,7 @@ func mergedBranches(ctx context.Context, r git.Runner, base string) (map[string]
 }
 
 func runBranchList(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	client := git.NewClient(runner)
 	cfg, _ := config.Load(cmd.Flags())
@@ -221,46 +224,184 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--merged and --unmerged are mutually exclusive")
 	}
 
-	branches, err := listLocalBranches(cmd.Context(), runner)
+	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {
 		return err
 	}
 
 	var merged, unmerged map[string]bool
+	base := ""
 	if onlyMerged || onlyUnmerged {
-		base, berr := client.DefaultBranch(cmd.Context(), cfg.Remote)
-		if berr != nil {
-			return fmt.Errorf("could not determine default branch: %w", berr)
+		base, err = client.DefaultBranch(ctx, cfg.Remote)
+		if err != nil {
+			return fmt.Errorf("could not determine default branch: %w", err)
 		}
 		if onlyMerged {
-			merged, err = mergedBranches(cmd.Context(), runner, base)
+			merged, err = mergedBranches(ctx, runner, base)
 		} else {
-			unmerged, err = unmergedBranches(cmd.Context(), runner, base)
+			unmerged, err = unmergedBranches(ctx, runner, base)
 		}
 		if err != nil {
 			return err
 		}
 	}
+	current, _ := client.CurrentBranch(ctx)
 
-	cutoff := time.Now().AddDate(0, 0, -stale)
+	rows := buildBranchListRows(branches, branchListFilter{
+		Base:         base,
+		Current:      current,
+		OnlyMerged:   onlyMerged,
+		OnlyUnmerged: onlyUnmerged,
+		OnlyGone:     onlyGone,
+		Merged:       merged,
+		Unmerged:     unmerged,
+		Stale:        stale > 0,
+		Cutoff:       time.Now().AddDate(0, 0, -stale),
+	})
+
 	w := cmd.OutOrStdout()
-	sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
-	for _, b := range branches {
-		if onlyMerged && !merged[b.Name] {
-			continue
-		}
-		if onlyUnmerged && !unmerged[b.Name] {
-			continue
-		}
-		if onlyGone && !b.Gone {
-			continue
-		}
-		if stale > 0 && b.LastCommit.After(cutoff) {
-			continue
-		}
-		fmt.Fprintf(w, "%-40s  %s  %s\n", b.Name, b.Upstream, b.LastCommit.Format("2006-01-02"))
+	var filterNote string
+	switch {
+	case onlyMerged:
+		filterNote = " · merged into " + base
+	case onlyUnmerged:
+		filterNote = " · not merged into " + base
 	}
+	if onlyGone {
+		filterNote += " · gone upstream"
+	}
+	summary := fmt.Sprintf("%d %s%s", len(rows), pluralize(len(rows), "branch", "branches"), filterNote)
+
+	fmt.Fprint(w, ui.RenderSection("branches", summary, renderBranchListRows(rows), ui.SectionOpts{
+		Layout: ui.SectionLayoutBar,
+		Color:  ui.SectionInfo,
+	}))
 	return nil
+}
+
+// branchListRow is one rendered row of `gk branch list`. Ahead/Behind are
+// carried as raw counts (not a pre-formatted string) so the renderer can
+// derive both the plain form — for column-width measurement — and the
+// coloured form (green ↑ / red ↓) from the same source.
+type branchListRow struct {
+	Current  bool
+	Name     string
+	Upstream string
+	Ahead    int
+	Behind   int
+	Age      string
+}
+
+// branchListFilter carries every knob buildBranchListRows needs, decoupled
+// from cobra/git so the filtering + row-shaping logic is unit-testable
+// without a real repo. Merged/Unmerged are membership sets keyed by branch
+// name (nil when neither --merged nor --unmerged was requested).
+type branchListFilter struct {
+	Base                     string // "" when --merged/--unmerged wasn't requested
+	Current                  string
+	OnlyMerged, OnlyUnmerged bool
+	OnlyGone                 bool
+	Merged, Unmerged         map[string]bool
+	Cutoff                   time.Time // zero-stale (stale=0) callers pass a zero-value cutoff filter via Stale
+	Stale                    bool      // true when --stale was given (Cutoff should be applied)
+}
+
+// buildBranchListRows filters branches and shapes them into display rows.
+// Sorted by name. The base branch is always excluded (see the inline
+// comment at the call site: it's trivially "merged into base" and pure
+// noise in --merged output — the exact complaint that motivated this).
+func buildBranchListRows(branches []branchInfo, f branchListFilter) []branchListRow {
+	sorted := make([]branchInfo, len(branches))
+	copy(sorted, branches)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	rows := make([]branchListRow, 0, len(sorted))
+	for _, b := range sorted {
+		if f.Base != "" && b.Name == f.Base {
+			continue
+		}
+		if f.OnlyMerged && !f.Merged[b.Name] {
+			continue
+		}
+		if f.OnlyUnmerged && !f.Unmerged[b.Name] {
+			continue
+		}
+		if f.OnlyGone && !b.Gone {
+			continue
+		}
+		if f.Stale && b.LastCommit.After(f.Cutoff) {
+			continue
+		}
+		upstream := b.Upstream
+		switch {
+		case upstream == "":
+			upstream = "-"
+		case b.Gone:
+			upstream += " (gone)"
+		}
+		rows = append(rows, branchListRow{
+			Current:  b.Name == f.Current,
+			Name:     b.Name,
+			Upstream: upstream,
+			Ahead:    b.Ahead,
+			Behind:   b.Behind,
+			Age:      ifZeroTime(b.LastCommit),
+		})
+	}
+	return rows
+}
+
+// renderBranchListRows formats rows as fixed-width columns, widths computed
+// from the actual content (mirrors renderWorktreeRows) so the table reads
+// cleanly whether or not every branch has an upstream — the ragged
+// alignment a bare `%-40s  %s  %s` produced when some rows had no upstream
+// is exactly the bug this fixes. The current branch is starred, matching
+// `gk sw` / `gk worktree list`.
+func renderBranchListRows(rows []branchListRow) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	wName, wUpstream, wDiff := len("BRANCH"), len("UPSTREAM"), len("DIFF")
+	for _, r := range rows {
+		if w := runeLen(r.Name); w > wName {
+			wName = w
+		}
+		if w := runeLen(r.Upstream); w > wUpstream {
+			wUpstream = w
+		}
+		// Measure the plain (uncoloured) diff; colorSwitchDiff only adds
+		// ANSI, so the visible width matches formatSwitchDiff.
+		if w := runeLen(formatSwitchDiff(r.Ahead, r.Behind)); w > wDiff {
+			wDiff = w
+		}
+	}
+	faint := color.New(color.Faint).SprintFunc()
+	yellow := color.YellowString
+	header := fmt.Sprintf("  %s  %s  %s  %s",
+		padRight("BRANCH", wName),
+		padRight("UPSTREAM", wUpstream),
+		padRight("DIFF", wDiff),
+		"AGE",
+	)
+	out := make([]string, 0, len(rows)+1)
+	out = append(out, faint(header))
+	for _, r := range rows {
+		marker := "  "
+		nameCell := r.Name
+		if r.Current {
+			marker = yellow("★") + " "
+			nameCell = yellow(r.Name)
+		}
+		out = append(out, fmt.Sprintf("%s%s  %s  %s  %s",
+			marker,
+			padRightVisible(nameCell, wName),
+			padRight(r.Upstream, wUpstream),
+			// colorSwitchDiff carries ANSI, so pad by visible width.
+			padRightVisible(colorSwitchDiff(r.Ahead, r.Behind), wDiff),
+			r.Age,
+		))
+	}
+	return out
 }
 
 func runBranchClean(cmd *cobra.Command, args []string) error {
@@ -420,6 +561,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		if force {
 			deleteFlag = "-D"
 		}
+		notMergedCount := 0
 		for _, key := range selected {
 			name, isRemote, remoteName := ParseCandidateKey(key)
 			if isRemote {
@@ -446,14 +588,23 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 				fmt.Fprintln(w, successLinef("removed worktree", "%s", wp))
 			}
 			if _, stderr, derr := runner.Run(ctx, "branch", deleteFlag, name); derr != nil {
-				msg := strings.TrimSpace(string(stderr))
+				raw := strings.TrimSpace(string(stderr))
+				msg, notMerged := branchclean.ClassifyDeleteError(raw)
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to delete %s: %s\n", name, msg)
-				if h := branchclean.WorktreeHint(name, msg); h != "" {
+				if notMerged {
+					notMergedCount++
+				}
+				if h := branchclean.WorktreeHint(name, raw); h != "" {
 					fmt.Fprintln(cmd.ErrOrStderr(), h)
 				}
 				continue
 			}
 			fmt.Fprintln(w, successLine("deleted", name))
+		}
+		if !force {
+			if h := branchclean.ForceDeleteHint(notMergedCount); h != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), h)
+			}
 		}
 		return nil
 	}

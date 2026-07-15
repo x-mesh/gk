@@ -182,6 +182,7 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 	if opts.Force {
 		deleteFlag = "-D"
 	}
+	notMergedCount := 0
 	for _, name := range toDelete {
 		cand := cmap[name]
 		// worktree가 점유한 브랜치(--worktrees 모드에서만 여기 도달)는
@@ -211,17 +212,29 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 			_, stderr, err = c.Runner.Run(ctx, "branch", deleteFlag, name)
 		}
 		if err != nil {
-			msg := strings.TrimSpace(string(stderr))
+			raw := strings.TrimSpace(string(stderr))
+			msg, notMerged := ClassifyDeleteError(raw)
 			result.Failed[name] = fmt.Errorf("gk branch clean: delete %s: %s: %w", name, msg, err)
+			if notMerged {
+				notMergedCount++
+			}
 			if c.Stderr != nil {
-				fmt.Fprintf(c.Stderr, "error: failed to delete %s: %s\n", name, msg)
-				if h := WorktreeHint(name, msg); h != "" {
+				fmt.Fprintf(c.Stderr, "failed to delete %s: %s\n", name, msg)
+				// WorktreeHint keys off the raw stderr's "used by worktree"
+				// marker (a distinct, non-merge failure), so pass raw.
+				if h := WorktreeHint(name, raw); h != "" {
 					fmt.Fprintln(c.Stderr, h)
 				}
 			}
 			continue
 		}
 		result.Deleted = append(result.Deleted, name)
+	}
+
+	if !opts.Force && c.Stderr != nil {
+		if h := ForceDeleteHint(notMergedCount); h != "" {
+			fmt.Fprintln(c.Stderr, h)
+		}
 	}
 
 	return result, nil
@@ -236,6 +249,34 @@ func WorktreeHint(name, stderr string) string {
 		return ""
 	}
 	return fmt.Sprintf("hint: %q is checked out in a worktree — run 'gk wt remove %s' first (or 'gk branch clean --worktrees')", name, name)
+}
+
+// ClassifyDeleteError normalizes a `git branch -d` failure for display.
+// git's "not fully merged" refusal comes with two trailing advice lines —
+// `hint: … run 'git branch -D <name>'` and `hint: Disable this message with
+// …` — that both steer the user into raw git and, printed once per branch,
+// bury the actual result. This keeps only the first substantive line
+// (dropping git's redundant "error: " prefix) and reports whether the
+// failure was that merge-safety refusal, so the caller can surface a single
+// gk-idiomatic --force hint instead of echoing per-branch git advice.
+func ClassifyDeleteError(stderr string) (msg string, notMerged bool) {
+	s := strings.TrimSpace(stderr)
+	notMerged = strings.Contains(s, "not fully merged")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimPrefix(strings.TrimSpace(s), "error: "), notMerged
+}
+
+// ForceDeleteHint is the single line shown once, after the delete loop, when
+// n branches were skipped because git's -d refused them as not merged into
+// the current branch. It replaces the per-branch `git branch -D` advice with
+// the gk way. Returns "" when n == 0 (nothing was skipped for that reason).
+func ForceDeleteHint(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("hint: %d branch(es) not merged into the current branch — re-run with --force to delete them", n)
 }
 
 // RemoveWorktreeForBranchDelete removes the worktree at path so the branch

@@ -779,3 +779,118 @@ func TestRunBranchUnsetParent_Idempotent(t *testing.T) {
 		t.Errorf("config still present after unset: %q", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// buildBranchListRows / renderBranchListRows — UX regression (실사용자 리포트:
+// 컬럼 정렬 깨짐 + base 브랜치가 자기 자신의 merged 목록에 나타남)
+// ---------------------------------------------------------------------------
+
+func TestBuildBranchListRowsExcludesBase(t *testing.T) {
+	branches := []branchInfo{
+		{Name: "main", Upstream: "origin/main"},
+		{Name: "feature-a", Upstream: "origin/feature-a"},
+		{Name: "feature-b"},
+	}
+	merged := map[string]bool{"main": true, "feature-a": true}
+
+	rows := buildBranchListRows(branches, branchListFilter{
+		Base:       "main",
+		OnlyMerged: true,
+		Merged:     merged,
+	})
+
+	for _, r := range rows {
+		if r.Name == "main" {
+			t.Fatalf("base branch must not appear in its own --merged list, got rows: %+v", rows)
+		}
+	}
+	if len(rows) != 1 || rows[0].Name != "feature-a" {
+		t.Fatalf("expected only feature-a, got %+v", rows)
+	}
+}
+
+func TestBuildBranchListRowsNoUpstreamShowsDash(t *testing.T) {
+	rows := buildBranchListRows([]branchInfo{{Name: "solo"}}, branchListFilter{})
+	if len(rows) != 1 || rows[0].Upstream != "-" {
+		t.Fatalf("expected upstream placeholder %q, got %+v", "-", rows)
+	}
+}
+
+func TestBuildBranchListRowsMarksCurrent(t *testing.T) {
+	rows := buildBranchListRows([]branchInfo{
+		{Name: "main"},
+		{Name: "feature"},
+	}, branchListFilter{Current: "feature"})
+
+	byName := map[string]branchListRow{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	if !byName["feature"].Current {
+		t.Error("current branch not marked")
+	}
+	if byName["main"].Current {
+		t.Error("non-current branch incorrectly marked as current")
+	}
+}
+
+func TestBuildBranchListRowsGoneUpstreamAnnotated(t *testing.T) {
+	rows := buildBranchListRows([]branchInfo{
+		{Name: "stale", Upstream: "origin/stale", Gone: true},
+	}, branchListFilter{})
+	if len(rows) != 1 || !strings.Contains(rows[0].Upstream, "(gone)") {
+		t.Fatalf("expected gone marker in upstream cell, got %+v", rows)
+	}
+}
+
+// TestRenderBranchListRowsAligns is the direct regression test for the
+// reported bug: the old `%-40s  %s  %s` format left ragged columns whenever
+// some rows had an upstream and others didn't, because only the first
+// column was fixed-width. Every row's AGE cell must now start at the same
+// rune offset regardless of upstream length.
+func TestRenderBranchListRowsAligns(t *testing.T) {
+	rows := []branchListRow{
+		{Name: "short", Upstream: "-", Age: "2h"},
+		{Name: "a-much-longer-branch-name", Upstream: "origin/a-much-longer-branch-name", Ahead: 3, Behind: 5, Age: "3w"},
+		{Current: true, Name: "curr", Upstream: "-", Age: "now"},
+	}
+	out := renderBranchListRows(rows)
+	if len(out) != len(rows)+1 {
+		t.Fatalf("expected header + %d rows, got %d lines", len(rows), len(out))
+	}
+
+	header := stripANSIForWidth(out[0])
+	for _, want := range []string{"BRANCH", "UPSTREAM", "DIFF", "AGE"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header missing %q\n%s", want, header)
+		}
+	}
+
+	// Column position must be measured in runes, not bytes — the ↑/↓ diff
+	// glyphs are multi-byte in UTF-8, so a byte-offset slice would drift
+	// out of alignment with itself on any row that carries one.
+	headerRunes := []rune(header)
+	ageCol := -1
+	for i := 0; i+2 < len(headerRunes); i++ {
+		if headerRunes[i] == 'A' && headerRunes[i+1] == 'G' && headerRunes[i+2] == 'E' {
+			ageCol = i
+			break
+		}
+	}
+	if ageCol < 0 {
+		t.Fatalf("AGE header not found: %q", header)
+	}
+	for i, line := range out[1:] {
+		plainRunes := []rune(stripANSIForWidth(line))
+		if len(plainRunes) < ageCol || !strings.HasPrefix(string(plainRunes[ageCol:]), rows[i].Age) {
+			t.Errorf("row %d misaligned: AGE %q does not start at rune column %d\nline: %q", i, rows[i].Age, ageCol, string(plainRunes))
+		}
+	}
+
+	if !strings.Contains(out[3], "★") {
+		t.Errorf("current row should carry ★ marker\n%s", out[3])
+	}
+	if strings.Contains(out[1], "★") || strings.Contains(out[2], "★") {
+		t.Errorf("non-current rows should not carry ★")
+	}
+}

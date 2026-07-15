@@ -419,6 +419,50 @@ func TestWorktreeHint(t *testing.T) {
 	}
 }
 
+func TestClassifyDeleteError(t *testing.T) {
+	// git's real "not fully merged" refusal: substantive line + two advice
+	// lines that steer the user into raw `git branch -D`. We keep the first
+	// line only, strip the "error: " prefix, and flag notMerged.
+	raw := "error: the branch 'release/v0.100.0' is not fully merged\n" +
+		"hint: If you are sure you want to delete it, run 'git branch -D release/v0.100.0'\n" +
+		"hint: Disable this message with \"git config set advice.forceDeleteBranch false\""
+	msg, notMerged := ClassifyDeleteError(raw)
+	if !notMerged {
+		t.Error("expected notMerged=true for a 'not fully merged' refusal")
+	}
+	if strings.Contains(msg, "hint:") || strings.Contains(msg, "\n") {
+		t.Errorf("git advice lines must be stripped, got: %q", msg)
+	}
+	if strings.HasPrefix(msg, "error: ") {
+		t.Errorf("redundant 'error: ' prefix must be dropped, got: %q", msg)
+	}
+	if msg != "the branch 'release/v0.100.0' is not fully merged" {
+		t.Errorf("unexpected message: %q", msg)
+	}
+
+	// A worktree-held failure is not a merge refusal.
+	wmsg, wnot := ClassifyDeleteError("error: cannot delete branch 'x' used by worktree at '/x'")
+	if wnot {
+		t.Error("worktree failure should not be classified as notMerged")
+	}
+	if strings.Contains(wmsg, "used by worktree") == false {
+		t.Errorf("worktree message body must survive for WorktreeHint, got: %q", wmsg)
+	}
+}
+
+func TestForceDeleteHint(t *testing.T) {
+	if ForceDeleteHint(0) != "" {
+		t.Error("zero skipped branches should yield no hint")
+	}
+	h := ForceDeleteHint(3)
+	if !strings.Contains(h, "--force") || !strings.Contains(h, "3") {
+		t.Errorf("hint should mention the count and --force, got: %q", h)
+	}
+	if strings.Contains(h, "git branch -D") {
+		t.Errorf("hint should point at the gk flow, not raw git, got: %q", h)
+	}
+}
+
 func TestBuildCandidates_StaleNoAISelected(t *testing.T) {
 	entries := []BranchEntry{
 		{Name: "feat/old", Status: StatusStale},
@@ -634,6 +678,54 @@ func TestCleanerRun_DeleteFailureContinues(t *testing.T) {
 	}
 	if _, ok := result.Failed["feat/a"]; !ok {
 		t.Fatal("expected feat/a in Failed")
+	}
+}
+
+// TestCleanerRun_NotMergedFailureCleanOutput is the regression test for the
+// raw-git leak: a `--yes` run where -d refuses an unmerged branch must NOT
+// echo git's "hint: … git branch -D" / "Disable this message" advice, and
+// must instead emit exactly one aggregated --force hint.
+func TestCleanerRun_NotMergedFailureCleanOutput(t *testing.T) {
+	now := time.Now()
+	var stderr bytes.Buffer
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/a\x001700000000\nfeat/b\x001700000000\n"},
+			"branch -d feat/a": {
+				Stderr: "error: the branch 'feat/a' is not fully merged\n" +
+					"hint: If you are sure you want to delete it, run 'git branch -D feat/a'\n" +
+					"hint: Disable this message with \"git config set advice.forceDeleteBranch false\"",
+				ExitCode: 1,
+			},
+			"branch -d feat/b": {
+				Stderr:   "error: the branch 'feat/b' is not fully merged",
+				ExitCode: 1,
+			},
+			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
+				Stdout: fmt.Sprintf("feat/a\x00\x00%d\x00\nfeat/b\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n",
+					now.Unix(), now.Unix(), now.Unix(), now.Unix()),
+			},
+		},
+	}
+	cleaner := &Cleaner{Runner: runner, Client: git.NewClient(runner), Stderr: &stderr}
+	if _, err := cleaner.Run(ctx(), CleanOptions{Yes: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stderr.String()
+	if strings.Contains(out, "git branch -D") {
+		t.Errorf("raw git '-D' advice leaked:\n%s", out)
+	}
+	if strings.Contains(out, "Disable this message") || strings.Contains(out, "advice.forceDeleteBranch") {
+		t.Errorf("git advice noise leaked:\n%s", out)
+	}
+	// One aggregated hint for the two skipped branches.
+	if n := strings.Count(out, "re-run with --force"); n != 1 {
+		t.Errorf("expected exactly one aggregated --force hint, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "2 branch(es) not merged") {
+		t.Errorf("aggregated hint should report the count (2), got:\n%s", out)
 	}
 }
 

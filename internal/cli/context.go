@@ -112,14 +112,31 @@ type contextLogJSON struct {
 	Date    string `json:"date"`
 }
 
-// contextReleaseJSON answers "what hasn't shipped?" — the commits between the
-// latest tag and HEAD. CommitCount is the true total (tag..HEAD); Commits is
-// capped at 20 so the section stays orientation-sized, with CommitCount
-// revealing any overflow.
+// contextReleaseJSON answers "what hasn't shipped?" — from two angles.
+//
+// SinceTag/CommitCount/Commits count tag..HEAD: everything added since the
+// latest tag. Under a squash-merge workflow this OVER-counts — develop-side
+// originals of work already squashed onto the release branch still fall in
+// tag..HEAD — so it reads as "commits since the last version", not "unshipped".
+//
+// BaseRef/UnreleasedCount/UnreleasedCommits count <base_ref>..HEAD: commits on
+// HEAD not yet reachable from the release branch (origin/<base>), the honest
+// "what hasn't shipped" number. It is ancestry-based and as-of the last fetch
+// (context never touches the network), so it excludes work that reached base by
+// merge/rebase/ff — but a pure squash-merge mints a new SHA, so un-merged-back
+// squash originals cannot be excluded by any git-native means. AlreadyOnBase
+// (CommitCount - UnreleasedCount, when positive) makes the gap between the two
+// counts explicit. All base fields are empty when no release branch resolves.
+// Commits and UnreleasedCommits are each capped at 20 so the section stays
+// orientation-sized, with the counts revealing any overflow.
 type contextReleaseJSON struct {
-	SinceTag    string           `json:"since_tag"`
-	CommitCount int              `json:"commit_count"`
-	Commits     []contextLogJSON `json:"commits,omitempty"`
+	SinceTag          string           `json:"since_tag"`
+	CommitCount       int              `json:"commit_count"`
+	Commits           []contextLogJSON `json:"commits,omitempty"`
+	BaseRef           string           `json:"base_ref,omitempty"`
+	UnreleasedCount   int              `json:"unreleased_count"`
+	UnreleasedCommits []contextLogJSON `json:"unreleased_commits,omitempty"`
+	AlreadyOnBase     int              `json:"already_on_base,omitempty"`
 }
 
 // contextRemoteJSON describes one registered remote and the current
@@ -450,9 +467,26 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 		fmt.Fprintf(w, "latest tag: %s\n", c.LatestTag)
 	}
 	if c.Release != nil {
-		fmt.Fprintf(w, "release: %d commit(s) since %s\n", c.Release.CommitCount, c.Release.SinceTag)
-		for _, l := range c.Release.Commits {
-			fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
+		rel := c.Release
+		if rel.BaseRef != "" {
+			// Lead with the honest unreleased count; the since-tag total is
+			// secondary and, under squash-merge, inflated.
+			line := fmt.Sprintf("release: %d unreleased vs %s", rel.UnreleasedCount, rel.BaseRef)
+			if rel.SinceTag != "" {
+				line += fmt.Sprintf(" · %d since %s", rel.CommitCount, rel.SinceTag)
+			}
+			if rel.AlreadyOnBase > 0 {
+				line += fmt.Sprintf(" (%d already on %s)", rel.AlreadyOnBase, rel.BaseRef)
+			}
+			fmt.Fprintln(w, line)
+			for _, l := range rel.UnreleasedCommits {
+				fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
+			}
+		} else {
+			fmt.Fprintf(w, "release: %d commit(s) since %s\n", rel.CommitCount, rel.SinceTag)
+			for _, l := range rel.Commits {
+				fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
+			}
 		}
 	}
 	if c.Diff != nil {
@@ -589,7 +623,8 @@ func collectContextIncludes(ctx context.Context, runner *git.ExecRunner, cfg *co
 		}
 	}
 	if includes["release"] {
-		if rel, rerr := collectContextRelease(ctx, runner, out.LatestTag); rerr == nil {
+		baseRef := releaseBaseRef(ctx, runner, cfg, out.Base)
+		if rel, rerr := collectContextRelease(ctx, runner, out.LatestTag, baseRef); rerr == nil {
 			out.Release = rel
 		} else {
 			out.Notes = append(out.Notes, "release skipped: "+rerr.Error())
@@ -732,34 +767,84 @@ func countLines(data []byte) int {
 	return n
 }
 
-// collectContextRelease reports the commits between the latest tag and HEAD —
-// the unshipped backlog. latestTag empty (no tags) is an error so the caller
-// degrades to a note rather than reporting the whole history as "unreleased".
-// CommitCount is the true total via rev-list --count; the commit list is
-// capped at 20 so the section stays orientation-sized, the cap visible through
-// CommitCount. Read-only: no network.
-func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTag string) (*contextReleaseJSON, error) {
-	if latestTag == "" {
+// releaseBaseRef returns the remote-tracking release-branch ref (e.g.
+// "origin/main") to measure unreleased work against, or "" when none applies:
+// no base resolved, HEAD sits on the base branch itself (base is nil then), or
+// the remote-tracking ref does not exist locally (no remote / never fetched).
+// The ref is compared as-is; context never fetches, so it is as-of last fetch.
+func releaseBaseRef(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, base *contextBaseJSON) string {
+	if base == nil || base.Name == "" {
+		return ""
+	}
+	remote := cfg.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	ref := remote + "/" + base.Name
+	if !git.RefExists(ctx, runner, ref) {
+		return ""
+	}
+	return ref
+}
+
+// collectContextRelease reports unshipped work from two angles: tag..HEAD
+// ("since the last version") and, when a release branch resolves, baseRef..HEAD
+// ("not yet on the release branch" — the honest unreleased count that a stale
+// tag over-states under squash-merge). baseRef is pre-resolved and RefExists-
+// checked by the caller; "" means no release branch, so only the tag view is
+// produced. With neither a tag nor a base there is nothing to report.
+func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTag, baseRef string) (*contextReleaseJSON, error) {
+	if latestTag == "" && baseRef == "" {
 		return nil, fmt.Errorf("no tags")
 	}
-	rangeSpec := latestTag + "..HEAD"
 	rel := &contextReleaseJSON{SinceTag: latestTag}
 
+	if latestTag != "" {
+		n, commits, err := revCountAndLog(ctx, runner, latestTag+"..HEAD")
+		if err != nil {
+			return nil, err
+		}
+		rel.CommitCount = n
+		rel.Commits = commits
+	}
+
+	if baseRef != "" {
+		rel.BaseRef = baseRef
+		n, commits, err := revCountAndLog(ctx, runner, baseRef+"..HEAD")
+		if err != nil {
+			return nil, err
+		}
+		rel.UnreleasedCount = n
+		rel.UnreleasedCommits = commits
+		// AlreadyOnBase exposes the squash-merge illusion: how much of the
+		// since-tag count already sits on the release branch. origin/<base>
+		// can trail the tag, so clamp a negative gap away rather than imply
+		// the tag under-counts.
+		if latestTag != "" && rel.CommitCount > rel.UnreleasedCount {
+			rel.AlreadyOnBase = rel.CommitCount - rel.UnreleasedCount
+		}
+	}
+	return rel, nil
+}
+
+// revCountAndLog returns the commit count and up to 20 newest commits in a
+// revision range, in the unit-separated (\x1f) form the release section uses.
+// A zero count short-circuits the log call and returns no commits.
+func revCountAndLog(ctx context.Context, runner *git.ExecRunner, rangeSpec string) (int, []contextLogJSON, error) {
 	countOut, stderr, err := runner.Run(ctx, "rev-list", "--count", rangeSpec)
 	if err != nil {
 		msg := strings.TrimSpace(string(stderr))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("%s", msg)
+		return 0, nil, fmt.Errorf("%s", msg)
 	}
 	n, perr := parsePositiveInt(strings.TrimSpace(string(countOut)))
 	if perr != nil {
-		return nil, perr
+		return 0, nil, perr
 	}
-	rel.CommitCount = n
 	if n == 0 {
-		return rel, nil
+		return 0, nil, nil
 	}
 
 	stdout, lstderr, lerr := runner.Run(ctx, "log",
@@ -769,18 +854,19 @@ func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTa
 		if msg == "" {
 			msg = lerr.Error()
 		}
-		return nil, fmt.Errorf("%s", msg)
+		return 0, nil, fmt.Errorf("%s", msg)
 	}
+	var commits []contextLogJSON
 	for _, line := range strings.Split(strings.TrimRight(string(stdout), "\n"), "\n") {
 		parts := strings.SplitN(line, "\x1f", 4)
 		if len(parts) != 4 {
 			continue
 		}
-		rel.Commits = append(rel.Commits, contextLogJSON{
+		commits = append(commits, contextLogJSON{
 			SHA: parts[0], Subject: parts[1], Author: parts[2], Date: parts[3],
 		})
 	}
-	return rel, nil
+	return n, commits, nil
 }
 
 // collectContextLog returns the last n commits on HEAD. Unit-separator

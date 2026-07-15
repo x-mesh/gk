@@ -366,6 +366,104 @@ func TestIntegration_ContextReleaseNoTags(t *testing.T) {
 	}
 }
 
+// With a release branch, the section reports unreleased (base..HEAD) separately
+// from the inflated since-tag total, and AlreadyOnBase exposes the gap — the
+// squash-merge over-count the tag-only view hid.
+func TestIntegration_ContextReleaseUnreleasedVsBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "seed\n")
+	repo.Commit("feat: seed")
+	repo.RunGit("tag", "v1.0.0")
+	repo.WriteFile("b.txt", "b\n")
+	repo.Commit("feat: shipped 1")
+	repo.WriteFile("c.txt", "c\n")
+	shippedTip := repo.Commit("feat: shipped 2")
+	// The release branch (origin/main) sits at the shipped tip — fabricate the
+	// remote-tracking ref offline, matching context's no-network model.
+	repo.RunGit("update-ref", "refs/remotes/origin/main", shippedTip)
+	// Add unreleased work on a branch that is NOT the base branch.
+	repo.RunGit("checkout", "-b", "feature/work")
+	repo.WriteFile("d.txt", "d\n")
+	repo.Commit("fix: unreleased 1")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	cfg.BaseBranch = "main"
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"release": true}, &out)
+
+	if out.Release == nil {
+		t.Fatalf("release section missing, notes=%v", out.Notes)
+	}
+	rel := out.Release
+	if rel.CommitCount != 3 {
+		t.Errorf("commit_count = %d, want 3 (tag..HEAD)", rel.CommitCount)
+	}
+	if rel.BaseRef != "origin/main" {
+		t.Errorf("base_ref = %q, want origin/main", rel.BaseRef)
+	}
+	if rel.UnreleasedCount != 1 {
+		t.Errorf("unreleased_count = %d, want 1 (origin/main..HEAD)", rel.UnreleasedCount)
+	}
+	if rel.AlreadyOnBase != 2 {
+		t.Errorf("already_on_base = %d, want 2 (3 since tag − 1 unreleased)", rel.AlreadyOnBase)
+	}
+	if len(rel.UnreleasedCommits) != 1 || rel.UnreleasedCommits[0].Subject != "fix: unreleased 1" {
+		t.Errorf("unreleased_commits = %+v, want the single unreleased commit", rel.UnreleasedCommits)
+	}
+}
+
+// With no tags but a resolvable release branch, the release section still
+// appears — reporting unreleased vs base — instead of being skipped.
+func TestIntegration_ContextReleaseNoTagsWithBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "seed\n")
+	seed := repo.Commit("feat: seed")
+	repo.RunGit("update-ref", "refs/remotes/origin/main", seed)
+	repo.RunGit("checkout", "-b", "feature/work")
+	repo.WriteFile("b.txt", "b\n")
+	repo.Commit("feat: unreleased")
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	cfg := config.Defaults()
+	cfg.BaseBranch = "main"
+	out, err := collectContext(context.Background(), runner, &cfg)
+	if err != nil {
+		t.Fatalf("collectContext: %v", err)
+	}
+	collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"release": true}, &out)
+
+	if out.Release == nil {
+		t.Fatalf("release section missing with a base but no tag, notes=%v", out.Notes)
+	}
+	if out.Release.SinceTag != "" {
+		t.Errorf("since_tag = %q, want empty (no tags)", out.Release.SinceTag)
+	}
+	if out.Release.UnreleasedCount != 1 {
+		t.Errorf("unreleased_count = %d, want 1", out.Release.UnreleasedCount)
+	}
+	if out.Release.BaseRef != "origin/main" {
+		t.Errorf("base_ref = %q, want origin/main", out.Release.BaseRef)
+	}
+}
+
 func TestIntegration_ContextRemotes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in short mode")

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk chat`이 저장소 코드로 답할 수 있는 질문을 사전지식이 아니라 실제 코드에서 찾아 답한다.** chat은 "read-only git·code 탐색 어시스턴트"인데도, "이 저장소에서 원격 변경을 확인하는 커맨드가 뭐야?"처럼 코드에 답이 있는 질문을 파일 한 번 안 열고 일반 git 지식으로 답하곤 했다 — 도구를 쓰라는 규칙이 권고(advisory)라 모델이 "아는 질문"으로 판단하면 조사를 건너뛰었기 때문이다. 두 겹으로 조사를 강제한다: 시스템 프롬프트의 규칙을 "저장소로 답할 수 있는 질문이면 반드시 탐색 도구를 먼저 호출하라"는 명령형으로 바꾸고 few-shot 예시와 저장소-무관 질문 예외를 명시했고, 엔진에는 코드로 답할 수 있는 질문(`IsCodeAnswerable` — 순수·결정적 키워드 휴리스틱, 한글 substring + 영어 whole-word, 애매하면 트리거하지 않는다)에 도구 0회로 답이 나오면 "코드부터 조사하라"는 재프롬프트를 **최대 1회** 주입하고 답을 재생성한다(무한루프 없이 통과). 실측: "원격 변경 확인 커맨드?"가 1라운드 `git fetch`(사전지식)에서 5라운드 `gk follow`(`cmd/follow.go` 인용)로 바뀌었다.
+
+- **`gk context --include=release`가 미출시 커밋을 릴리스 브랜치 기준으로 센다.** release 섹션이 미출시를 `<태그>..HEAD`(2-dot 조상 기준)로 셌는데, squash-merge 워크플로에서는 이미 릴리스 브랜치에 (squash로) 나간 작업의 원본 커밋이 그대로 카운트돼 미출시량이 과대계상됐다 — "태그 이후 38커밋"이 실제로는 6개만 미출시인 식이다. 이제 릴리스 브랜치가 해석되면 `origin/<base>..HEAD`도 함께 계산해 `unreleased_count`/`unreleased_commits`/`base_ref`와, 태그 총계에서 미출시를 뺀 `already_on_base`(착시를 드러내는 값)를 append-only 필드로 추가하고, 텍스트 출력은 미출시 수를 앞세운다(`release: 6 unreleased vs origin/main · 38 since v0.155.0`). 태그가 없어도 릴리스 브랜치가 해석되면 섹션이 나온다. 한계: 2-dot 조상 비교는 merge/rebase/ff로 base에 도달했거나 base가 머지백된 경우만 제외하며, 머지백 없는 순수 squash 원본은 git 구조상 완전히 걸러낼 수 없다(patch-id도 N:1 squash는 못 잡아 채택하지 않았다).
+
+### Changed
+
+- **`gk chat`의 읽기 전용 도구가 미지원 인자를 자기교정 에러로 돌려주고, 손이 먼저 가는 입력을 받는다.** 모든 chat 도구가 unknown 필드를 엄격히 거부하는데, 에러가 "unknown field X"만 말하고 "그럼 뭐가 허용되는지"는 알려주지 않아, 모델이 근접 오타(`start_line` 등)에 갇혀 라운드를 태웠다(`file_read`가 큰 파일을 라인 범위로 페이징하려다 스톨한 게 그 사례다). 이제 `strictUnmarshal`이 unknown-field 에러에 그 도구가 받는 필드 목록을 붙여, 오타·동의어가 1회 재시도로 자가 복구된다. 아울러 실제 공백과 최다 오타를 메웠다: `file_read`에 `start_line`/`end_line`(1-based, inclusive)로 큰 파일 페이징, `git_diff`에 `staged`(스테이징 diff를 볼 방법이 없었다), `git_log`에 `author`/`since`/`until`(값은 `--flag=value`로 넘겨 옵션 인젝션 불가), 그리고 `git_log`/`git_diff`/`git_grep`이 복수 `paths`의 단수 별칭 `path`를 받는다.
+
 ## [0.122.3] - 2026-07-15
 
 ### Fixed

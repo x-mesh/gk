@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk merge` AI 플랜이 diverged 브랜치에서 receiver 고유 커밋을 "삭제"로 오표시하던 문제 — 머지 플랜 diff를 3-dot으로 교체.** `buildMergePlanPayload`가 AI에 넘기는 diff를 `git diff --stat HEAD..target`(2-dot, tip 대 tip 비교)로 계산했는데, non-fast-forward 머지에서는 이 방향이 receiver(HEAD)에만 있는 커밋을 "target에서 삭제된 것"으로 뒤집어 보여준다 — 실제로는 머지가 그 커밋을 그대로 유지하고 source 변경만 추가하는데도, 플랜은 "대규모 삭제·런타임 에러 위험"을 경고해 안전한 additive 머지를 사용자가 겁먹고 abort하게 만들었다. `merge-base..target`(3-dot)으로 바꿔 실제 머지 산출물과 일치시켰다 — `git merge-tree --write-tree` 결과 트리와 대조해 검증. incoming 커밋 목록(`log --oneline HEAD..target`)은 원래도 옳았던 2-dot을 그대로 유지한다.
+
 ## [0.122.0] - 2026-07-13
 
 ### Added

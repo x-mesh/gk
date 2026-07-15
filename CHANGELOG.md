@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.122.2] - 2026-07-15
+
 ### Fixed
 
 - **`gk commit --abort`가 커밋 안 된 워킹트리 편집을 영구히 지우던 문제 — autostash 경로로 통일.** `AbortRestore`가 `git reset --hard`를 raw로 직접 호출했는데, `--hard`는 추적 파일의 워킹트리 변경을 그대로 버린다 — 그 변경은 스테이징도 커밋도 된 적이 없어 되돌릴 git 객체가 아예 없다. `gitsafe.Restorer.Restore(WithAutostash(true))`로 위임해 `undo`/`wipe`/`timemachine`과 같은 안전망(stash push → reset --hard → stash pop)을 태우도록 고쳤다. 클린 트리에서는 autostash를 건너뛴다 — 무조건 stash push하면 아무것도 안 쌓이는데 뒤이은 pop만 실패해 존재하지도 않는 충돌을 오보하기 때문이다.

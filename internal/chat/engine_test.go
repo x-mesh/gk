@@ -840,6 +840,105 @@ func TestEngineSemanticRetry_FailedRetryChargesOriginalOnce(t *testing.T) {
 	}
 }
 
+// messagesContain reports whether any message carries the given text.
+func messagesContain(msgs []provider.ChatMessage, text string) bool {
+	for _, m := range msgs {
+		if m.Text == text {
+			return true
+		}
+	}
+	return false
+}
+
+// A code-answerable question answered with zero tool calls triggers the
+// grounding gate: the engine injects one reprompt and the model then
+// investigates with a tool before answering.
+func TestEngineGroundingGateReprompts(t *testing.T) {
+	caller := &scriptedCaller{replies: []provider.ChatResult{
+		// Round 1: ungrounded answer from general knowledge, no tool call.
+		{Text: "just run git fetch", StopReason: "end_turn", TokensUsed: 5, Model: "m"},
+		// Round 2 (after reprompt): the model investigates.
+		{ToolCalls: []provider.ToolCall{toolCall("c1", "echo", `{}`)}, StopReason: "tool_use", TokensUsed: 6, Model: "m"},
+		// Round 3: grounded final answer.
+		{Text: "use gk follow (cmd/follow.go)", StopReason: "end_turn", TokensUsed: 4, Model: "m"},
+	}}
+	e := &Engine{Caller: caller, Registry: echoRegistry("follow watches a remote branch")}
+	res, err := e.RunTurn(context.Background(), "이 저장소에서 원격 변경 확인 커맨드가 뭐야?")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d, want 1 (gate must force investigation)", res.ToolCalls)
+	}
+	if res.Text != "use gk follow (cmd/follow.go)" {
+		t.Errorf("Text = %q, want the grounded round-3 answer", res.Text)
+	}
+	if res.Rounds != 3 {
+		t.Errorf("Rounds = %d, want 3 (draft, tool, final)", res.Rounds)
+	}
+	// Round 2's request must carry the injected reprompt.
+	if len(caller.inputs) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(caller.inputs))
+	}
+	if !messagesContain(caller.inputs[1].Messages, groundingReprompt) {
+		t.Errorf("round 2 request missing grounding reprompt: %+v", caller.inputs[1].Messages)
+	}
+	// History alternation stays valid: user, assistant(draft), user(reprompt),
+	// assistant(tool_calls), tool, assistant(final).
+	h := e.History()
+	if len(h) != 6 {
+		t.Fatalf("history len = %d, want 6: %+v", len(h), h)
+	}
+	if h[1].Role != "assistant" || h[2].Role != "user" || h[2].Text != groundingReprompt {
+		t.Errorf("bad alternation around reprompt: h[1]=%+v h[2]=%+v", h[1], h[2])
+	}
+}
+
+// A repo-independent question answered with zero tool calls does NOT trigger
+// the gate — it returns directly, with no reprompt and no forced tool call.
+func TestEngineGroundingGateSkipsRepoIndependent(t *testing.T) {
+	caller := &scriptedCaller{replies: []provider.ChatResult{
+		{Text: "4", StopReason: "end_turn", TokensUsed: 3, Model: "m"},
+	}}
+	e := &Engine{Caller: caller, Registry: echoRegistry("unused")}
+	res, err := e.RunTurn(context.Background(), "what is 2 + 2?")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.ToolCalls != 0 {
+		t.Errorf("ToolCalls = %d, want 0 (no gate for repo-independent question)", res.ToolCalls)
+	}
+	if res.Text != "4" || res.Rounds != 1 {
+		t.Errorf("res = %+v, want direct answer in 1 round", res)
+	}
+	if len(caller.inputs) != 1 {
+		t.Errorf("provider calls = %d, want 1 (no reprompt)", len(caller.inputs))
+	}
+}
+
+// The gate fires at most once: if the model still refuses to use a tool after
+// the reprompt, the answer is returned as-is instead of looping forever.
+func TestEngineGroundingGateFiresOnce(t *testing.T) {
+	caller := &scriptedCaller{replies: []provider.ChatResult{
+		{Text: "still guessing", StopReason: "end_turn", TokensUsed: 5, Model: "m"},
+		{Text: "still guessing again", StopReason: "end_turn", TokensUsed: 5, Model: "m"},
+	}}
+	e := &Engine{Caller: caller, Registry: echoRegistry("unused")}
+	res, err := e.RunTurn(context.Background(), "이 함수는 어디에 구현돼 있어?")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(caller.inputs) != 2 {
+		t.Errorf("provider calls = %d, want 2 (one reprompt, then give up)", len(caller.inputs))
+	}
+	if res.ToolCalls != 0 {
+		t.Errorf("ToolCalls = %d, want 0", res.ToolCalls)
+	}
+	if res.Text != "still guessing again" || res.Rounds != 2 {
+		t.Errorf("res = %+v, want round-2 answer returned as-is", res)
+	}
+}
+
 var errChatRetryBoom = errorsNew("simulated reprompt transport failure")
 
 func errorsNew(s string) error { return &simpleErr{s} }

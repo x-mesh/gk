@@ -187,6 +187,10 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 	res := &TurnResult{}
 	seen := make(map[string]int)
 	turnBytes := 0
+	// groundingReprompted guards the code-first grounding gate below to
+	// fire at most once per turn — a hard stop against a reprompt loop,
+	// independent of the res.ToolCalls==0 check it sits beside.
+	groundingReprompted := false
 
 	// History trimming is turn-scoped: trimHistory never touches the
 	// in-flight turn, so the boundary at turnStart never moves once the
@@ -261,6 +265,46 @@ func (e *Engine) RunTurn(ctx context.Context, userInput string) (_ *TurnResult, 
 		}
 
 		if len(reply.ToolCalls) == 0 {
+			// Code-first grounding gate. gk chat is a repository exploration
+			// assistant, but a model will happily answer a code-answerable
+			// question ("what command checks the remote?") from general git
+			// knowledge without ever opening a file here. When that happens —
+			// a final answer produced with zero tool calls this turn, on a
+			// question the code here can answer — spend ONE reprompt that
+			// tells it to investigate first. res.ToolCalls stays 0 only until
+			// the model calls a tool, and groundingReprompted latches after
+			// the first nudge, so this fires at most once and never loops:
+			// if the reprompt still yields no tool call, the answer is
+			// returned as-is (a nudge, not a wall). Repo-independent
+			// questions and already-grounded answers skip the gate entirely.
+			if !groundingReprompted && res.ToolCalls == 0 && IsCodeAnswerable(userInput) {
+				groundingReprompted = true
+				// Persist the ungrounded draft as a real assistant turn
+				// BEFORE the user reprompt: two consecutive user messages are
+				// the POISON described on RunTurn, so the alternation must be
+				// assistant(draft) → user(reprompt) → assistant(round 2).
+				e.appendAndPersist(
+					provider.ChatMessage{Role: "assistant", Text: reply.Text},
+					SessionRecord{Role: "assistant", Text: reply.Text, Model: reply.Model, TokensUsed: reply.TokensUsed},
+				)
+				e.appendAndPersist(
+					provider.ChatMessage{Role: "user", Text: groundingReprompt},
+					SessionRecord{Role: "user", Text: groundingReprompt},
+				)
+				// In REPL streaming the draft already reached the terminal;
+				// void the stale partial before the regenerated answer streams.
+				if e.OnStreamReset != nil {
+					e.OnStreamReset()
+				}
+				e.dbg("chat: grounding gate — reprompting to investigate (code-answerable question answered with 0 tool calls)")
+				continue
+			}
+			if groundingReprompted && res.ToolCalls == 0 {
+				// The nudge did not take: answer is returned, but flag the
+				// weak grounding so --debug shows the answer was not verified
+				// against the repository (R7 — pass through, do not loop).
+				e.dbg("chat: grounding gate — answered without tools after reprompt; grounding unverified")
+			}
 			e.appendAndPersist(
 				provider.ChatMessage{Role: "assistant", Text: reply.Text},
 				SessionRecord{Role: "assistant", Text: reply.Text, Model: reply.Model, TokensUsed: reply.TokensUsed},

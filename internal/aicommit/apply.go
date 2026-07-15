@@ -242,40 +242,61 @@ func ApplyMessages(ctx context.Context, runner git.Runner, messages []Message, o
 	return result, nil
 }
 
-// AbortRestore resets HEAD back to the given backup ref with a hard reset.
+// AbortResult is returned by AbortRestore.
+type AbortResult struct {
+	// SafetyRef is the backup ref written at the pre-abort HEAD — this
+	// abort's own undo point. Empty when backupRef was empty (no-op) or the
+	// ref write failed (best-effort; never blocks the abort itself).
+	SafetyRef string
+
+	// StashConflict is set only when the tree carried tracked-file changes
+	// and the autostash pop after the reset could not reapply cleanly (e.g.
+	// a conflict) — the caller should tell the user to finish manually via
+	// `git stash pop`. Empty on the common path (clean tree, or pop
+	// succeeded).
+	StashConflict string
+}
+
+// AbortRestore resets HEAD back to the given backup ref.
 // Intended for `gk commit --abort` after partial failure — but the run may
 // just as well have fully succeeded (the commit(s) landed cleanly) and the
-// user aborts anyway to redo the message or grouping. `--hard` discards the
-// working tree, not just the commit, and once that happens the just-created
-// commit's content lives nowhere else — a plain reset --hard here would
-// silently destroy real work with no recourse beyond an un-GC'd dangling
-// object. So before resetting, AbortRestore best-effort writes a second
-// safety-net ref at the CURRENT HEAD (refs/gk/ai-commit-abort-backup/<branch>/<unix>,
-// pruned the same conservative way as the run-start backup) and returns its
-// name so the caller can tell the user where their aborted state went; a
-// failure to write it never blocks the abort itself.
+// user aborts anyway to redo the message or grouping. `--hard` discards
+// tracked-file changes in the working tree, not just the commit: a plain
+// `git reset --hard` here would silently destroy any edits the user made
+// after (or during) the AI commit run, with no git object to recover them
+// from — they were never staged or committed. So when the tree carries
+// tracked-file changes, the reset is wrapped in gitsafe's autostash dance
+// (stash push --include-untracked -> reset --hard -> stash pop), the same
+// safety net every other HEAD-moving gk command (undo/wipe/timemachine)
+// already gets. A clean tree skips the stash step entirely — stashing
+// nothing would make the subsequent pop fail and misreport a conflict that
+// never happened.
 //
-// Empty backupRef is a no-op returning ("", nil) — callers should branch on
-// that case to print a friendly "nothing to abort" message.
-func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) (safetyRef string, err error) {
+// Before resetting, a safety-net ref is also written at the CURRENT HEAD
+// (refs/gk/ai-commit-abort-backup/<branch>/<unix>, pruned the same
+// conservative way as the run-start backup) so the caller can tell the user
+// where their aborted state went.
+//
+// Empty backupRef is a no-op returning (AbortResult{}, nil) — callers
+// should branch on that case to print a friendly "nothing to abort" message.
+func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) (AbortResult, error) {
 	if backupRef == "" {
-		return "", nil
+		return AbortResult{}, nil
 	}
 	branch, _ := currentBranch(ctx, runner)
-	if head, _, herr := runner.Run(ctx, "rev-parse", "HEAD"); herr == nil {
-		if sha := strings.TrimSpace(string(head)); sha != "" {
-			ref := gitsafe.BackupRefName("ai-commit-abort", branch, time.Now())
-			if _, _, uerr := runner.Run(ctx, "update-ref", ref, sha); uerr == nil {
-				safetyRef = ref
-			}
-		}
+
+	var opts []gitsafe.RestoreOption
+	if dirty, derr := git.NewClient(runner).IsDirty(ctx); derr == nil && dirty {
+		opts = append(opts, gitsafe.WithAutostash(true))
 	}
-	if _, stderr, rerr := runner.Run(ctx, "reset", "--hard", backupRef); rerr != nil {
-		return safetyRef, fmt.Errorf("aicommit: git reset --hard %s: %w (stderr=%s)",
-			backupRef, rerr, string(stderr))
+
+	restorer := gitsafe.NewRestorer(runner, time.Now, "ai-commit-abort")
+	res, rerr := restorer.Restore(ctx, branch, gitsafe.Target{SHA: backupRef}, gitsafe.StrategyHard, opts...)
+	if rerr != nil {
+		return AbortResult{SafetyRef: res.BackupRef}, fmt.Errorf("aicommit: abort restore: %w", rerr)
 	}
 	_ = gitsafe.PruneKindBackups(ctx, runner, "ai-commit-abort", branch, 30*24*time.Hour, 10)
-	return safetyRef, nil
+	return AbortResult{SafetyRef: res.BackupRef, StashConflict: res.AutostashRef}, nil
 }
 
 // currentBranch returns the short branch name or empty on detached HEAD.

@@ -2,6 +2,7 @@ package aicommit
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -630,12 +631,12 @@ func TestStagedRenamePairsParsesNZFormat(t *testing.T) {
 
 func TestAbortRestoreEmptyBackupIsNoop(t *testing.T) {
 	fake := &git.FakeRunner{}
-	safety, err := AbortRestore(context.Background(), fake, "")
+	result, err := AbortRestore(context.Background(), fake, "")
 	if err != nil {
 		t.Errorf("empty backup should be no-op, got %v", err)
 	}
-	if safety != "" {
-		t.Errorf("empty backup should return no safety ref, got %q", safety)
+	if result.SafetyRef != "" {
+		t.Errorf("empty backup should return no safety ref, got %q", result.SafetyRef)
 	}
 	if len(fake.Calls) != 0 {
 		t.Errorf("expected no git calls, got %+v", fake.Calls)
@@ -646,20 +647,27 @@ func TestAbortRestoreRunsHardReset(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
-			"rev-parse HEAD":                    {Stdout: "deadbeef\n"},
+			"status --porcelain=v1 -uno":        {Stdout: ""},
+			"rev-parse --verify HEAD^{commit}":  {Stdout: "deadbeef\n"},
 		},
 	}
-	safety, err := AbortRestore(context.Background(), fake, "refs/gk/ai-commit-backup/main/123")
+	result, err := AbortRestore(context.Background(), fake, "refs/gk/ai-commit-backup/main/123")
 	if err != nil {
 		t.Errorf("AbortRestore: %v", err)
 	}
-	if safety == "" {
+	if result.SafetyRef == "" {
 		t.Error("expected a safety-net ref to be written before the hard reset")
 	}
-	var resetCall *git.FakeCall
+	if result.StashConflict != "" {
+		t.Errorf("clean tree should not report a stash conflict, got %q", result.StashConflict)
+	}
+	var resetCall, stashCall *git.FakeCall
 	for i := range fake.Calls {
-		if fake.Calls[i].Args[0] == "reset" {
+		switch fake.Calls[i].Args[0] {
+		case "reset":
 			resetCall = &fake.Calls[i]
+		case "stash":
+			stashCall = &fake.Calls[i]
 		}
 	}
 	if resetCall == nil {
@@ -672,6 +680,11 @@ func TestAbortRestoreRunsHardReset(t *testing.T) {
 			t.Errorf("args[%d]: want %q, got %q", i, w, args[i])
 		}
 	}
+	// A clean tree must not stash — pushing an empty stash would make the
+	// subsequent pop fail and misreport a conflict that never happened.
+	if stashCall != nil {
+		t.Errorf("expected no stash call on a clean tree, got %+v", *stashCall)
+	}
 	// The safety ref must point at the PRE-reset HEAD (deadbeef), not the
 	// backup target — otherwise it would be redundant with backupRef itself.
 	var updateRefCall *git.FakeCall
@@ -683,11 +696,150 @@ func TestAbortRestoreRunsHardReset(t *testing.T) {
 	if updateRefCall == nil {
 		t.Fatalf("no update-ref call among: %+v", fake.Calls)
 	}
-	if updateRefCall.Args[1] != safety {
-		t.Errorf("update-ref target = %q, want returned safety ref %q", updateRefCall.Args[1], safety)
+	if updateRefCall.Args[1] != result.SafetyRef {
+		t.Errorf("update-ref target = %q, want returned safety ref %q", updateRefCall.Args[1], result.SafetyRef)
 	}
-	if updateRefCall.Args[2] != "deadbeef" {
-		t.Errorf("update-ref sha = %q, want pre-reset HEAD %q", updateRefCall.Args[2], "deadbeef")
+	if updateRefCall.Args[2] != "HEAD" {
+		t.Errorf("update-ref value = %q, want literal %q (resolved by git itself)", updateRefCall.Args[2], "HEAD")
+	}
+}
+
+// TestAbortRestorePreservesDirtyWorkingTree is the regression test for the
+// data-loss defect (memory aba7d613): `gk commit --plan` failed partway
+// through (e.g. its path-normalization bug) without creating a commit, and
+// `gk commit --abort` — a raw `git reset --hard` back to the pre-run backup
+// ref, which happens to equal current HEAD here since nothing was committed
+// — permanently destroyed the user's unrelated uncommitted edit. It must
+// now autostash dirty tracked-file changes across the reset.
+func TestAbortRestorePreservesDirtyWorkingTree(t *testing.T) {
+	dir := t.TempDir()
+	runner := &git.ExecRunner{Dir: dir}
+	ctx := context.Background()
+	run := func(args ...string) string {
+		t.Helper()
+		out, stderr, err := runner.Run(ctx, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v (stderr=%s)", strings.Join(args, " "), err, stderr)
+		}
+		return string(out)
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(dir+"/tracked.txt", []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "tracked.txt")
+	run("commit", "-q", "-m", "init")
+
+	// Simulate EnsureBackupRef's snapshot at the start of an ai-commit run
+	// that then fails before creating any commit — backupRef == HEAD.
+	backupRef, err := EnsureBackupRef(ctx, runner)
+	if err != nil {
+		t.Fatalf("EnsureBackupRef: %v", err)
+	}
+
+	// The user's uncommitted edit, unrelated to the failed run, must
+	// survive the abort.
+	if err := os.WriteFile(dir+"/tracked.txt", []byte("v1 + my uncommitted edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AbortRestore(ctx, runner, backupRef)
+	if err != nil {
+		t.Fatalf("AbortRestore: %v", err)
+	}
+	if result.StashConflict != "" {
+		t.Fatalf("unexpected stash conflict: %q", result.StashConflict)
+	}
+
+	got, err := os.ReadFile(dir + "/tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "v1 + my uncommitted edit\n" {
+		t.Fatalf("uncommitted edit lost across abort: got %q", string(got))
+	}
+
+	head := strings.TrimSpace(run("rev-parse", "HEAD"))
+	backupSHA := strings.TrimSpace(run("rev-parse", backupRef))
+	if head != backupSHA {
+		t.Fatalf("HEAD = %s, want backup ref target %s", head, backupSHA)
+	}
+}
+
+// TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit covers the case
+// where the AI commit DID land (HEAD moved past backupRef) and the user then
+// made an uncommitted edit to a file the AI commit never touched — abort
+// must still land HEAD back at backupRef without disturbing that edit or
+// hitting a stash conflict.
+func TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit(t *testing.T) {
+	dir := t.TempDir()
+	runner := &git.ExecRunner{Dir: dir}
+	ctx := context.Background()
+	run := func(args ...string) string {
+		t.Helper()
+		out, stderr, err := runner.Run(ctx, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v (stderr=%s)", strings.Join(args, " "), err, stderr)
+		}
+		return string(out)
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(dir+"/committed.txt", []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/other.txt", []byte("other v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "committed.txt", "other.txt")
+	run("commit", "-q", "-m", "init")
+
+	backupRef, err := EnsureBackupRef(ctx, runner)
+	if err != nil {
+		t.Fatalf("EnsureBackupRef: %v", err)
+	}
+
+	// The AI commit lands, touching only committed.txt.
+	if err := os.WriteFile(dir+"/committed.txt", []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-q", "-am", "ai commit")
+
+	// Separately, an uncommitted edit to the untouched file.
+	if err := os.WriteFile(dir+"/other.txt", []byte("other v1 + my edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AbortRestore(ctx, runner, backupRef)
+	if err != nil {
+		t.Fatalf("AbortRestore: %v", err)
+	}
+	if result.StashConflict != "" {
+		t.Fatalf("unexpected stash conflict: %q", result.StashConflict)
+	}
+
+	gotCommitted, err := os.ReadFile(dir + "/committed.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotCommitted) != "v1\n" {
+		t.Fatalf("committed.txt not reset to backup content: got %q", string(gotCommitted))
+	}
+	gotOther, err := os.ReadFile(dir + "/other.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotOther) != "other v1 + my edit\n" {
+		t.Fatalf("unrelated uncommitted edit lost across abort: got %q", string(gotOther))
+	}
+
+	head := strings.TrimSpace(run("rev-parse", "HEAD"))
+	backupSHA := strings.TrimSpace(run("rev-parse", backupRef))
+	if head != backupSHA {
+		t.Fatalf("HEAD = %s, want backup ref target %s", head, backupSHA)
 	}
 }
 

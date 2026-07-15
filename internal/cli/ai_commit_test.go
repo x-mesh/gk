@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -495,5 +496,73 @@ func TestApplyAICommitFlags_LangResolution(t *testing.T) {
 				t.Errorf("Lang = %q, want %q", out.Lang, c.want)
 			}
 		})
+	}
+}
+
+// TestRootedCommitRunnerResolvesSubdirectoryToRepoRoot is the regression
+// test for the path-doubling defect (memory aba7d613): `gk commit` used to
+// build its ExecRunner straight from --repo (empty by default, i.e. the
+// process cwd) with no toplevel resolution. Invoked from a subdirectory,
+// repo-root-relative pathspecs handed back by the classifier/plan (e.g.
+// "web/src/x.ts") would be re-joined against that subdirectory cwd
+// ("web/web/src/x.ts") and `git add` failed with "could not open
+// directory". rootedCommitRunner must resolve to the true toplevel
+// regardless of which subdirectory it's given.
+func TestRootedCommitRunnerResolvesSubdirectoryToRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	probe := &git.ExecRunner{Dir: root}
+	ctx := context.Background()
+	run := func(args ...string) {
+		t.Helper()
+		if _, stderr, err := probe.Run(ctx, args...); err != nil {
+			t.Fatalf("git %s: %v (stderr=%s)", strings.Join(args, " "), err, stderr)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+
+	sub := root + "/web"
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sub+"/x.ts", []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "web/x.ts")
+	run("commit", "-q", "-m", "init")
+
+	// Simulate `gk commit` invoked with cwd == the subdirectory (--repo
+	// defaults to "", which ExecRunner treats as the process cwd — passing
+	// the subdirectory explicitly here is equivalent).
+	rooted, err := rootedCommitRunner(ctx, sub)
+	if err != nil {
+		t.Fatalf("rootedCommitRunner: %v", err)
+	}
+	if rooted.Dir != root {
+		// t.TempDir() can return a path containing a symlink (e.g. /tmp ->
+		// /private/tmp on macOS); rev-parse --show-toplevel resolves
+		// symlinks, so compare the resolved form too before failing.
+		resolvedRoot, _, _ := probe.Run(ctx, "rev-parse", "--show-toplevel")
+		if rooted.Dir != strings.TrimSpace(string(resolvedRoot)) {
+			t.Fatalf("rootedCommitRunner(sub).Dir = %q, want repo root %q", rooted.Dir, root)
+		}
+	}
+
+	// The actual failure mode: a repo-root-relative pathspec, as the
+	// classifier/plan hands back, must resolve correctly against the
+	// rooted runner even though we "invoked" from the subdirectory.
+	if err := os.WriteFile(sub+"/x.ts", []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := rooted.Run(ctx, "add", "-A", "--", "web/x.ts"); err != nil {
+		t.Fatalf("git add -A -- web/x.ts via rooted runner failed (path doubling regressed?): %v (stderr=%s)", err, stderr)
+	}
+	out, _, err := rooted.Run(ctx, "diff", "--cached", "--name-only")
+	if err != nil {
+		t.Fatalf("diff --cached: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "web/x.ts" {
+		t.Fatalf("staged files = %q, want %q", strings.TrimSpace(string(out)), "web/x.ts")
 	}
 }

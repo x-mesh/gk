@@ -115,7 +115,10 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	ai := applyAICommitFlagsToConfig(cfg.AI, flags)
 
-	runner := &git.ExecRunner{Dir: RepoFlag()}
+	runner, err := rootedCommitRunner(ctx, RepoFlag())
+	if err != nil {
+		return err
+	}
 
 	if flags.abort {
 		return runAICommitAbort(ctx, cmd, runner)
@@ -472,6 +475,28 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// rootedCommitRunner returns an ExecRunner pinned to the repo's worktree
+// root, resolved via `git rev-parse --show-toplevel` — never the raw repo
+// flag (which is "" by default, i.e. the process cwd).
+//
+// Every other HEAD-touching gk command (status/apply/ship/switch/…)
+// resolves the toplevel before building pathspecs; `gk commit` was the one
+// command that didn't (memory aba7d613). Without this, running `gk commit`
+// from a subdirectory doubles the leading path segment when the classifier
+// hands back repo-root-relative pathspecs: cwd=web/ + pathspec web/src/x.ts
+// resolves to web/web/src/x.ts, and `git add` fails with "could not open
+// directory". Pinning Dir to the resolved root once, up front, keeps every
+// downstream git call (status, add, commit, diff, abort) consistently
+// rooted regardless of where the user's shell happened to be.
+func rootedCommitRunner(ctx context.Context, repo string) (*git.ExecRunner, error) {
+	probe := &git.ExecRunner{Dir: repo}
+	out, stderr, err := probe.Run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("commit: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+	return &git.ExecRunner{Dir: strings.TrimSpace(string(out))}, nil
+}
+
 type wipCommitForAICommit struct {
 	Present bool
 	// ChainLen is how many recent commits will be unwrapped after
@@ -772,14 +797,18 @@ func runAICommitAbort(ctx context.Context, cmd *cobra.Command, runner git.Runner
 		fmt.Fprintln(cmd.OutOrStdout(), "commit: no backup ref found — nothing to abort")
 		return nil
 	}
-	safety, err := aicommit.AbortRestore(ctx, runner, latest)
+	result, err := aicommit.AbortRestore(ctx, runner, latest)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("commit: restored HEAD", "to %s", latest))
-	if safety != "" {
+	if result.SafetyRef != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf(
-			"hint: the state before this abort is saved at %s (git reset --hard %s to bring it back)", safety, safety)))
+			"hint: the state before this abort is saved at %s (git reset --hard %s to bring it back)", result.SafetyRef, result.SafetyRef)))
+	}
+	if result.StashConflict != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf(
+			"hint: pre-abort uncommitted changes could not be reapplied automatically — recover with `git stash pop` (%s)", result.StashConflict)))
 	}
 	return nil
 }

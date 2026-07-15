@@ -117,14 +117,15 @@ func TestIntegrationAbortRestoresHEADFromBackupRef(t *testing.T) {
 	fake2 := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
-			"rev-parse HEAD":                    {Stdout: "babecafe\n"},
+			"status --porcelain=v1 -uno":        {Stdout: ""},
+			"rev-parse --verify HEAD^{commit}":  {Stdout: "babecafe\n"},
 		},
 	}
-	safety, err := AbortRestore(context.Background(), fake2, ref)
+	result, err := AbortRestore(context.Background(), fake2, ref)
 	if err != nil {
 		t.Fatalf("AbortRestore: %v", err)
 	}
-	if safety == "" {
+	if result.SafetyRef == "" {
 		t.Fatal("expected a non-empty safety-net ref")
 	}
 	var sawReset bool

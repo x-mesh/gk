@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -97,6 +98,14 @@ type gitLogInput struct {
 	Range string   `json:"range,omitempty"`
 	Limit int      `json:"limit,omitempty"`
 	Paths []string `json:"paths,omitempty"`
+	// Path is a singular alias for Paths — a common reflex.
+	Path string `json:"path,omitempty"`
+	// Author/Since/Until map to git log's --author/--since/--until. Passed
+	// as a single --flag=value arg each, so the value is data, never an
+	// option (no flag injection possible).
+	Author string `json:"author,omitempty"`
+	Since  string `json:"since,omitempty"`
+	Until  string `json:"until,omitempty"`
 }
 
 func (g *GitTools) gitLog(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -116,11 +125,22 @@ func (g *GitTools) gitLog(ctx context.Context, raw json.RawMessage) (string, err
 	// leak path.
 	args := []string{"log", "--no-color", "--date=iso-strict",
 		"--format=%h %ad %an %s", "-n", strconv.Itoa(limit)}
+	// --flag=value form keeps the model-supplied value out of option parsing.
+	if in.Author != "" {
+		args = append(args, "--author="+in.Author)
+	}
+	if in.Since != "" {
+		args = append(args, "--since="+in.Since)
+	}
+	if in.Until != "" {
+		args = append(args, "--until="+in.Until)
+	}
 	if in.Range != "" {
 		args = append(args, in.Range)
 	}
-	if len(in.Paths) > 0 {
-		rels, err := g.resolvePaths(in.Paths)
+	paths := mergePathArg(in.Paths, in.Path)
+	if len(paths) > 0 {
+		rels, err := g.resolvePaths(paths)
 		if err != nil {
 			return "", err
 		}
@@ -182,6 +202,11 @@ func (g *GitTools) gitShow(ctx context.Context, raw json.RawMessage) (string, er
 type gitDiffInput struct {
 	Range string   `json:"range,omitempty"`
 	Paths []string `json:"paths,omitempty"`
+	// Path is a singular alias for Paths — a common reflex.
+	Path string `json:"path,omitempty"`
+	// Staged diffs the index against HEAD (git diff --staged). Without it
+	// the model had no way to see what is staged, only that something was.
+	Staged bool `json:"staged,omitempty"`
 	// Raw switches from the default digest (per-file stats + changed
 	// symbols) to the full patch. Digest-first keeps results inside the
 	// 32KB cap for typical ranges.
@@ -196,14 +221,21 @@ func (g *GitTools) gitDiff(ctx context.Context, raw json.RawMessage) (string, er
 	if err := validateRef(in.Range); err != nil {
 		return "", err
 	}
+	if in.Staged && strings.Contains(in.Range, "..") {
+		return "", fmt.Errorf("git_diff: staged=true accepts at most one base ref, not a two-dot/three-dot revision range; omit range or pass a single ref")
+	}
 	args := []string{"-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
 		"-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/",
 		"diff", "--no-color", "--no-ext-diff", "--no-textconv"}
+	if in.Staged {
+		args = append(args, "--staged")
+	}
 	if in.Range != "" {
 		args = append(args, in.Range)
 	}
-	if len(in.Paths) > 0 {
-		rels, err := g.resolvePaths(in.Paths)
+	paths := mergePathArg(in.Paths, in.Path)
+	if len(paths) > 0 {
+		rels, err := g.resolvePaths(paths)
 		if err != nil {
 			return "", err
 		}
@@ -279,6 +311,8 @@ func (g *GitTools) gitBlame(ctx context.Context, raw json.RawMessage) (string, e
 type gitGrepInput struct {
 	Pattern string   `json:"pattern"`
 	Paths   []string `json:"paths,omitempty"`
+	// Path is a singular alias for Paths — a common reflex.
+	Path string `json:"path,omitempty"`
 }
 
 func (g *GitTools) gitGrep(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -292,8 +326,9 @@ func (g *GitTools) gitGrep(ctx context.Context, raw json.RawMessage) (string, er
 	// -e isolates the pattern from option parsing, so a leading '-' in a
 	// model-supplied pattern is data, not a flag.
 	args := []string{"grep", "-n", "--no-color", "-I", "-e", in.Pattern, "--"}
-	if len(in.Paths) > 0 {
-		rels, err := g.resolvePaths(in.Paths)
+	paths := mergePathArg(in.Paths, in.Path)
+	if len(paths) > 0 {
+		rels, err := g.resolvePaths(paths)
 		if err != nil {
 			return "", err
 		}
@@ -349,7 +384,11 @@ func appendDropNote(out string, dropped []string) string {
 }
 
 // strictUnmarshal rejects unknown fields so a hallucinated argument fails
-// loudly instead of being silently ignored.
+// loudly instead of being silently ignored. On an unknown-field error it
+// appends the fields this input DOES accept — the plain decoder error names
+// only the offending key, leaving the model to guess the right one and often
+// loop on the same near-miss (e.g. start_line vs start). Naming the allowed
+// fields turns that dead-end into a one-shot self-correction.
 func strictUnmarshal(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{}`)
@@ -357,20 +396,61 @@ func strictUnmarshal(raw json.RawMessage, v any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if strings.Contains(err.Error(), "unknown field") {
+			if fields := allowedJSONFields(v); len(fields) > 0 {
+				return fmt.Errorf("invalid tool input: %v; allowed fields: %s", err, strings.Join(fields, ", "))
+			}
+		}
 		return fmt.Errorf("invalid tool input: %v", err)
 	}
 	return nil
+}
+
+// allowedJSONFields reflects the json field names the struct behind v accepts
+// (v is a pointer to a struct). Used to tell a caller what IS valid after an
+// unknown-field rejection.
+func allowedJSONFields(v any) []string {
+	t := reflect.TypeOf(v)
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+	var out []string
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// mergePathArg folds a singular `path` alias into the plural `paths` list.
+// git_log/git_diff/git_grep all take `paths`, but a model reflexively passes
+// a single `path` string; accepting both removes the most common near-miss.
+func mergePathArg(paths []string, single string) []string {
+	if strings.TrimSpace(single) != "" {
+		return append(paths, single)
+	}
+	return paths
 }
 
 // RegisterGitTools adds the five git tools to the registry.
 func RegisterGitTools(r *Registry, g *GitTools) {
 	r.Register(Tool{
 		Name:        "git_log",
-		Description: "List commits (hash, date, author, subject). Optional revision range (e.g. 'v1.0..HEAD'), limit (default 30, max 200), and path filters. No patch content — use git_diff or git_show for content.",
+		Description: "List commits (hash, date, author, subject). Optional revision range (e.g. 'v1.0..HEAD'), limit (default 30, max 200), path filter(s), and author/since/until filters. No patch content — use git_diff or git_show for content.",
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"range":{"type":"string","description":"revision range like main..HEAD or a single ref"},
 			"limit":{"type":"integer","description":"max commits, default 30"},
-			"paths":{"type":"array","items":{"type":"string"},"description":"restrict to these repo-relative paths"}
+			"paths":{"type":"array","items":{"type":"string"},"description":"restrict to these repo-relative paths"},
+			"path":{"type":"string","description":"single repo-relative path (alias for paths)"},
+			"author":{"type":"string","description":"filter by author (name/email substring or regex)"},
+			"since":{"type":"string","description":"only commits after this date/approxidate (e.g. '2 weeks ago')"},
+			"until":{"type":"string","description":"only commits before this date/approxidate"}
 		},"additionalProperties":false}`),
 		Handler: g.gitLog,
 	})
@@ -385,10 +465,12 @@ func RegisterGitTools(r *Registry, g *GitTools) {
 	})
 	r.Register(Tool{
 		Name:        "git_diff",
-		Description: "Diff the working tree or a revision range. Default returns a structured digest (per-file stats + changed symbols); set raw=true for the full patch.",
+		Description: "Diff the working tree, the staged index, or a revision range. Default returns a structured digest (per-file stats + changed symbols); set raw=true for the full patch. Set staged=true to diff the index against HEAD.",
 		Schema: json.RawMessage(`{"type":"object","properties":{
-			"range":{"type":"string","description":"revision range like main..HEAD; empty = working tree vs HEAD"},
+			"range":{"type":"string","description":"revision range like main..HEAD; empty = working tree vs HEAD; with staged=true only a single base ref is allowed"},
 			"paths":{"type":"array","items":{"type":"string"}},
+			"path":{"type":"string","description":"single repo-relative path (alias for paths)"},
+			"staged":{"type":"boolean","description":"diff the staged index against HEAD (git diff --staged)"},
 			"raw":{"type":"boolean","description":"full patch instead of digest"}
 		},"additionalProperties":false}`),
 		Handler: g.gitDiff,
@@ -405,10 +487,11 @@ func RegisterGitTools(r *Registry, g *GitTools) {
 	})
 	r.Register(Tool{
 		Name:        "git_grep",
-		Description: "Search tracked file contents with a regex pattern. Returns file:line matches.",
+		Description: "Search tracked file contents with a regex pattern. Returns file:line matches. Optionally restrict to path(s).",
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"pattern":{"type":"string"},
-			"paths":{"type":"array","items":{"type":"string"}}
+			"paths":{"type":"array","items":{"type":"string"}},
+			"path":{"type":"string","description":"single repo-relative path (alias for paths)"}
 		},"required":["pattern"],"additionalProperties":false}`),
 		Handler: g.gitGrep,
 	})

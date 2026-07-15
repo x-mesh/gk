@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.122.3] - 2026-07-15
+
 ### Fixed
 
 - **`gk branch clean --gone`가 merged 브랜치와 base 자신까지 후보로 끌어오던 문제.** `--gone`은 "merged 대신 gone인 브랜치를 대상으로"라고 문서화돼 있는데, 수집기가 merged 목록을 조건 없이 항상 긁어와 `--gone --force` 한 번에 현재 브랜치(main/develop)까지 삭제 후보로 노출됐다. `--gone`일 때는 merged 수집을 건너뛰도록 고쳤다 — `--all`은 기존대로 전부 포함한다.

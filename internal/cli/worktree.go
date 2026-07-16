@@ -137,6 +137,7 @@ Examples:
 		newWorktreeRunCmd(),
 		newWorktreeFinishCmd(),
 		newWorktreeCleanupCmd(),
+		newWorktreeRenameCmd(),
 	)
 	rootCmd.AddCommand(wt)
 }
@@ -190,11 +191,10 @@ type worktreeListEntryJSON struct {
 
 func runWorktreeList(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
-	stdout, stderr, err := runner.Run(cmd.Context(), "worktree", "list", "--porcelain")
+	entries, err := listWorktreeEntries(cmd.Context(), runner)
 	if err != nil {
-		return fmt.Errorf("worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
+		return err
 	}
-	entries := parseWorktreePorcelain(string(stdout))
 
 	// Enrich entries with branchInfo (upstream, ahead/behind, fork parent,
 	// last-commit age) so both the JSON document and the table mirror `gk
@@ -886,15 +886,8 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	// ones require the explicit --force-locked to avoid yanking a worktree
 	// out from under an active process (e.g. a running claude agent).
 	if lock := worktreeLockInfo(ctx, runner, path); lock.Locked {
-		switch {
-		case lock.Alive && !forceLocked:
-			return WithHint(
-				fmt.Errorf("worktree is locked and still in use: %s", lock.Reason),
-				"the lock holder is still running — stop it first, or pass --force-locked to override")
-		case !lock.Alive && !force && !forceLocked:
-			return WithHint(
-				fmt.Errorf("worktree is locked by a stale holder: %s", lock.Reason),
-				"the holder is no longer running — rerun with --force to unlock and remove")
+		if err := checkWorktreeLockGate(lock, force, forceLocked); err != nil {
+			return err
 		}
 		return forceRemoveWorktree(ctx, runner, w, path)
 	}

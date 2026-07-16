@@ -2474,6 +2474,30 @@ Project layout on disk:
 |------|---------|-------------|
 | `-f, --force` | false | Force remove even when the worktree is dirty or locked |
 
+### gk worktree rename
+
+Moves a linked worktree to a new location (`git worktree move`) and, with `--with-branch`, also renames the branch it holds (`git branch -m`, which carries the branch's upstream and `gk-parent` config across). Aliased as `gk worktree mv`.
+
+`<worktree>` matches by managed name (the path's last segment), an absolute/relative path, or the checked-out branch name. `<new-name>` is resolved through the same managed layout as `gk worktree add` — a plain name lands under `<worktree.base>/<project>/<name>`; an absolute path is used verbatim. By default only the directory moves; the branch is untouched.
+
+The main worktree can't be renamed. A locked worktree is refused unless its lock holder is gone (`--force`) or you override a live one (`--force-locked`), mirroring `gk worktree remove`. Renaming the worktree you're currently standing in prints a hint to `cd` to the new path.
+
+```bash
+gk worktree rename ai-commit ai-commit-v2            # move directory only
+gk worktree rename feat-x feat-y --with-branch       # move directory + rename branch
+gk worktree rename feat-x /tmp/exp                   # move to an absolute path
+gk worktree rename ai-commit ai-commit-v2 --dry-run  # preview
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--with-branch` | false | Also rename the checked-out branch to `<new-name>` (`git branch -m`) |
+| `-f, --force` | false | Unlock and move a worktree whose lock holder is no longer running |
+| `--force-locked` | false | Move even when the lock holder is still running (dangerous) |
+| `--print-path` | false | Print the new absolute path on success (for `cd $(…)` wrappers) |
+
+With `--json` (or `GK_AGENT=1`) the result is `{old_path, new_path, old_branch, new_branch, with_branch, managed}`.
+
 ### gk worktree run
 
 Runs a command inside a worktree for `<branch>` — the CLI form of an isolated, parallel task (the single-shot sibling of the Workflow worktree-isolation pattern). If a worktree is already checked out on `<branch>` it is reused; otherwise gk creates one (managed-base layout, `gk-parent` recorded) before running. Pass `--init` to run `worktree.init` for both newly created and reused worktrees. The command runs with the worktree as its working directory, and **gk exits with the command's exit code**.

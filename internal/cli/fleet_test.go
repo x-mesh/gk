@@ -284,18 +284,23 @@ func TestFleetVolumeHeadline(t *testing.T) {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	entries := []fleetEntryJSON{
 		{Branch: "develop", Status: "dirty", Files: 7, Added: 31, Removed: 3},
-		{Branch: "phase2", Status: "dirty", Files: 27, Added: 12890, Removed: 261},
+		{Branch: "phase2", Status: "dirty", Files: 27, Added: 12890, Removed: 261, Ahead: 2},
 	}
 	churn := fleetChurn{added: 3142, removed: 210, files: map[string]bool{"a": true, "b": true}}
 
+	// Wide: uncommitted (~ 34 files +…), unpushed (↑2), the │ divider, then Δ.
+	// The Δ reading no longer carries "over N files" — it is +/− and elapsed.
 	wide := renderFleetHeadline("2 worktrees", entries, now, 166, dim, churn, 17*time.Minute)
-	for _, want := range []string{"34 files", "+12,921", "−264", "Δ", "+3,142", "2 files · 17m", "08:22:59"} {
+	for _, want := range []string{"~ 34 files", "+12,921", "−264", "↑2", "unpushed", "│", "Δ", "+3,142", "17m", "08:22:59"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("headline missing %q in:\n%s", want, wide)
 		}
 	}
+	if strings.Contains(wide, "over") {
+		t.Errorf("Δ should no longer print 'over N files':\n%s", wide)
+	}
 
-	// Narrow: Δ goes first, the diffstat next, the count never.
+	// Narrow: Δ (flow) drops first, then the pending segments; the count never.
 	narrow := renderFleetHeadline("2 worktrees", entries, now, 80, dim, churn, 17*time.Minute)
 	if strings.Contains(narrow, "Δ") {
 		t.Errorf("narrow headline kept Δ:\n%s", narrow)
@@ -304,6 +309,26 @@ func TestFleetVolumeHeadline(t *testing.T) {
 		if !strings.Contains(narrow, want) {
 			t.Errorf("narrow headline missing %q in:\n%s", want, narrow)
 		}
+	}
+
+	// Δ present but nothing pending: the divider must not appear (it only
+	// separates pending work from flow, and there is no pending work here).
+	flowOnly := renderFleetHeadline("2 worktrees", nil, now, 166, dim, churn, 17*time.Minute)
+	if strings.Contains(flowOnly, "│") {
+		t.Errorf("divider drawn with no pending segments:\n%s", flowOnly)
+	}
+	if !strings.Contains(flowOnly, "Δ") {
+		t.Errorf("flow-only headline dropped Δ:\n%s", flowOnly)
+	}
+
+	// Pending present but no churn yet: still no divider (nothing to divide
+	// from), and the unpushed reading stands alone.
+	pendingOnly := renderFleetHeadline("2 worktrees", entries, now, 166, dim, fleetChurn{}, 0)
+	if strings.Contains(pendingOnly, "│") {
+		t.Errorf("divider drawn with no flow segment:\n%s", pendingOnly)
+	}
+	if !strings.Contains(pendingOnly, "↑2") {
+		t.Errorf("pending-only headline dropped the unpushed reading:\n%s", pendingOnly)
 	}
 
 	// Nothing dirty and nothing seen yet: just the count and the clock.

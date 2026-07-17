@@ -996,32 +996,65 @@ func renderFleetHeader(entries []fleetEntryJSON, now time.Time, width int, dim l
 }
 
 // renderFleetHeadline is the shared title line: `gk watch` + the count, then
-// the two volume readings, then the clock at the right edge.
+// the volume readings, then the clock at the right edge.
 //
-// The readings answer different questions and both are worth the row: the
-// diffstat is what sits uncommitted right now (it resets to zero when an agent
-// commits), while Δ is everything that went by since watch started (it does
-// not). Segments are dropped right-to-left when the terminal can't hold them,
-// so a narrow header degrades to the count alone rather than colliding with
-// the clock.
+// The readings live on two different time axes, and reading them as one
+// undifferentiated list of "+X −Y" was the old header's confusion. They are
+// now split into two clusters with distinct visual identity:
+//
+//   - "not shipped yet" — what is stacked up waiting to leave the worktree:
+//     the uncommitted diffstat (`~`, resets to zero when an agent commits)
+//     and the unpushed commit count (`↑N`, committed but not pushed).
+//   - "flow" — Δ, everything that went by since watch started, the one
+//     reading a commit does not erase.
+//
+// A single ` │ ` divider separates the two; within a cluster segments join on
+// a plain gap. Segments drop right-to-left when the terminal can't hold them
+// (flow first, then unpushed, then uncommitted, never the count), so the
+// divider — attached to flow, the rightmost segment — is only ever drawn when
+// the pending segments it divides are all present.
 func renderFleetHeadline(count string, entries []fleetEntryJSON, now time.Time, width int, dim lipgloss.Style, churn fleetChurn, since time.Duration) string {
 	files, added, removed := fleetTotals(entries)
+	ahead := fleetAheadTotal(entries)
 
-	segs := []string{dim.Render(count)}
+	// headSeg is one reading plus the separator that precedes it.
+	type headSeg struct {
+		text string
+		sep  string
+	}
+	segs := []headSeg{{text: dim.Render(count)}}
+
+	// Pending cluster — what has not shipped yet.
+	pending := false
 	if files > 0 {
-		seg := dim.Render(pluralCount(files, "file", "files"))
+		seg := dim.Render("~ " + pluralCount(files, "file", "files"))
 		if added > 0 || removed > 0 { // 0 outside feed-stats mode — don't print a bare "·"
 			seg += " " + fleetStatCell(added, removed)
 		}
-		segs = append(segs, seg)
+		segs = append(segs, headSeg{text: seg, sep: "  "})
+		pending = true
 	}
+	if ahead > 0 {
+		// Green ↑ to match the "ahead" status color used across the table.
+		up := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("↑"+strconv.Itoa(ahead)) +
+			dim.Render(" unpushed")
+		segs = append(segs, headSeg{text: up, sep: "  "})
+		pending = true
+	}
+
+	// Flow cluster — Δ since watch started. The divider only appears when there
+	// is pending work to separate it from; otherwise flow follows on a gap.
 	if churn.any() {
 		seg := dim.Render("Δ")
 		if churn.added > 0 || churn.removed > 0 {
 			seg += " " + fleetStatCell(churn.added, churn.removed)
 		}
-		segs = append(segs, seg+dim.Render(fmt.Sprintf(" over %s · %s",
-			pluralCount(churn.touched(), "file", "files"), fleetSinceLabel(since))))
+		seg += dim.Render(" · " + fleetSinceLabel(since))
+		sep := "  "
+		if pending {
+			sep = dim.Render("  │  ")
+		}
+		segs = append(segs, headSeg{text: seg, sep: sep})
 	}
 
 	title := lipgloss.NewStyle().Bold(true).Render("gk watch")
@@ -1031,10 +1064,22 @@ func renderFleetHeadline(count string, entries []fleetEntryJSON, now time.Time, 
 			dim.Render(" "+now.Format("15:04:05"))
 	}
 
-	// Widest set of segments that still leaves the clock its own space.
-	header := title
+	join := func(n int) string {
+		var b strings.Builder
+		b.WriteString(title + "  ")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(segs[i].sep)
+			}
+			b.WriteString(segs[i].text)
+		}
+		return b.String()
+	}
+
+	// Widest prefix of segments that still leaves the clock its own space.
+	header := join(1)
 	for n := len(segs); n >= 1; n-- {
-		cand := title + "  " + strings.Join(segs[:n], dim.Render("  ·  "))
+		cand := join(n)
 		if lipgloss.Width(cand)+lipgloss.Width(clock)+2 <= width || n == 1 {
 			header = cand
 			break
@@ -1045,6 +1090,17 @@ func renderFleetHeadline(count string, entries []fleetEntryJSON, now time.Time, 
 		header += strings.Repeat(" ", gap) + clock
 	}
 	return header + "\n" + dim.Render(strings.Repeat("─", width))
+}
+
+// fleetAheadTotal sums commits ahead of upstream across entries — the header's
+// "unpushed" reading: work that is committed but not yet pushed, the push-stage
+// sibling of the uncommitted diffstat.
+func fleetAheadTotal(entries []fleetEntryJSON) int {
+	n := 0
+	for _, e := range entries {
+		n += e.Ahead
+	}
+	return n
 }
 
 // fleetSinceLabel is how long watch has been up ("17m", "2h04m") — the

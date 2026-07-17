@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk clone`을 인자 없이 치면 설정된 계정의 원격 저장소를 목록에서 골라 clone한다.** 종전엔 인자가 필수라 `owner/repo`를 알고 있어야 했는데, 어떤 레포가 있는지 자체가 궁금할 때가 많다. 이제 맨 `gk clone`은 `clone.hosts`에 `owner`가 설정된 github 프로필(예: `personal`→JINWOO-J, `x-mesh`→x-mesh)의 저장소를 나열해 필터 가능한 인터랙티브 피커로 보여주고, 고른 것을 clone한다. 목록은 `gh` 바이너리 없이 `api.github.com` REST를 직접 호출해 가져온다 — 토큰은 `GH_TOKEN` → `GITHUB_TOKEN` → `gh`가 저장해 둔 인증(`~/.config/gh/hosts.yml`을 파일로 읽음, `gh` 실행 아님) 순으로 자동 탐지하고, 셋 다 없으면 비인증으로 폴백한다(public 저장소만, 시간당 60회 제한). SSH 키는 clone/push의 git 와이어 프로토콜을 인증할 뿐 이 REST API는 인증하지 못하므로 목록 조회의 토큰 소스가 아니다 — 토큰이 없으면 대상 owner의 private 저장소는 목록에 안 뜬다. 여러 프로필은 동시에 조회하고, 고른 `owner/repo`는 기존 `ResolveURL` 경로로 태워 프로필의 protocol/ssh_host 설정을 그대로 따른다. github.com이 아닌 host의 프로필(gitlab 등)은 이 목록에서 빠진다(REST 클라이언트가 github 전용). ([README.md](README.md))
+
+- **`gk worktree rename` — 링크된 워크트리를 옮기고, 원하면 브랜치까지 개명한다.** 기본은 디렉터리만 이동한다(`git worktree move`) — 브랜치·upstream·gk-parent 메타데이터는 건드리지 않는다. `<new-name>`은 `gk worktree add`와 같은 관리 레이아웃으로 해석돼(맨 이름이면 `<worktree.base>/<project>/<name>`, 절대경로면 그대로), `--with-branch`를 주면 체크아웃된 브랜치도 같은 이름으로 개명한다(`git branch -m`). protected 브랜치(main/master/develop)에 `--with-branch`는 거부하고(디렉터리만 옮기라고 안내), gk-parent가 옛 브랜치 이름을 가리키던 자식 브랜치는 새 이름으로 재작성한다. 잠긴 워크트리는 `gk worktree remove`와 같은 규칙(홀더가 사라졌으면 `--force`, 살아 있으면 `--force-locked`)으로 다루고 새 경로에 잠금을 복원하며, 메인 워크트리는 개명할 수 없다. ([docs/commands.md](docs/commands.md))
+
+- **`gk watch` 헤더의 볼륨 지표를 "안 나간 일"과 "흐름" 두 묶음으로 가른다.** 종전엔 미커밋 diffstat(`4 files +272 −6`)과 세션 Δ(`Δ +130 −6 over 3 files`)가 같은 `+X −Y` 셀에 같은 `·` 구분자로 나열돼, 어느 쪽이 "지금 미커밋"이고 어느 쪽이 "watch 켠 뒤 누적"인지 라벨을 읽어야 구분됐다 — 여기에 미푸시 지표까지 얹으면 서로 구분 안 되는 셀 세 개가 된다. 이제 두 묶음으로 나뉜다: **안 나간 일**은 미커밋 diffstat(`~`, 커밋하면 0으로 리셋)과 미푸시 커밋 수(`↑N unpushed`, 커밋됐지만 안 밀린 것 — 워크트리별 ahead 합산), **흐름**은 `Δ`(커밋해도 안 사라지는 시작 이후 누적, `over N files` 꼬리는 제거). 둘 사이는 dim `│` 하나로 가르는데, 나눌 pending이 있을 때만 그린다. 폭이 좁으면 세그먼트가 오른쪽부터 접히고(흐름 → 미푸시 → 미커밋 순, count는 절대 안 접힘), `│`는 자기가 가르는 pending 세그먼트가 다 살아 있을 때만 그려져 외톨이 구분자가 남지 않는다. ([docs/commands.md](docs/commands.md#gk-watch))
+
+### Fixed
+
+- **`gk chat` REPL 입력이 한글/CJK 넓은 글자를 정확히 지운다.** 프롬프트가 `golang.org/x/term`의 라인 에디터를 썼는데, 이 에디터는 룬 하나가 터미널 셀 하나라고 가정한다 — 한글·CJK·와이드 이모지처럼 두 셀을 차지하는 글자를 지우면 반쪽 글자 잔상이 남았다. `x/term`의 `terminal.go`를 `internal/lineedit`로 vendor하고 go-runewidth로 커서 열 계산(`visualLength`/`moveCursorToPos`/`setLine`/`eraseNPreviousChars`)을 셀 단위로 정확히 맞췄다. 하드웨어 커서를 0열에 세워 터미널 IME preedit를 깨뜨리는 bubbletea 인라인 렌더러와 달리, 이 방식은 캐럿을 논리 셀 위치에 둬 한국어 IME가 제자리에서 조합된다. `chatLineReader`를 `lineedit.NewTerminal`에 배선하고 실제 터미널 크기를 넘겨 줄바꿈도 정확해졌다.
+
 ## [0.123.0] - 2026-07-16
 
 ### Added

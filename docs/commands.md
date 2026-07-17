@@ -951,8 +951,10 @@ Clone a repository with short-form URL expansion.
 ### Synopsis
 
 ```
-gk clone <owner/repo | alias:owner/repo | url> [target] [flags]
+gk clone [owner/repo | alias:owner/repo | url] [target] [flags]
 ```
+
+With no positional argument, gk opens an interactive **browse-and-pick** over the repositories under your configured account profiles — see [No arguments](#no-arguments--browse-and-pick) below.
 
 ### Dispatch order
 
@@ -1002,7 +1004,20 @@ gk clone personal:playground           # → git@github.com:JINWOO-J/playground.
 gk clone git@host:team/proj.git        # SCP URL passes through unchanged
 gk clone https://example.com/x/y       # scheme URL passes through unchanged
 gk clone --dry-run foo/bar             # prints url + target, no network call
+gk clone                               # browse + pick from configured account profiles
 ```
+
+### No arguments — browse and pick
+
+`gk clone` with no positional argument lists the repositories under every `clone.hosts` profile that has an `owner` set and resolves to **github.com**, then lets you pick one from a filterable interactive list; the chosen `owner/repo` is cloned through the same dispatch above (so the profile's protocol / `ssh_host` still apply).
+
+The repository list is fetched from `api.github.com` **directly over HTTP — no `gh` binary is required**. An API token is resolved in this order, and the first hit wins:
+
+1. `GH_TOKEN`
+2. `GITHUB_TOKEN`
+3. `gh`'s own stored auth — `~/.config/gh/hosts.yml` (or `$GH_CONFIG_DIR`), read as a plain file, so a prior `gh auth login` is reused even when the CLI itself isn't on `PATH`.
+
+With none of those, the request is unauthenticated: public repositories only, subject to GitHub's 60-requests/hour anonymous rate limit. SSH keys authenticate the git wire protocol (clone/push), **not** this REST API, so they are not a token source here — without a token, a profile's private repositories do not appear in the list. Profiles whose host is not github.com (e.g. a GitLab alias) are skipped in this mode; clone them by typing `owner/repo` or a URL directly.
 
 ---
 
@@ -2656,7 +2671,7 @@ The dashboard shows every worktree at once — branch, ahead/behind, dirty/confl
 
 The TUI renders a coloured table; each row rolls up to a `status` (`clean` / `dirty` / `conflict` / `paused` / `ahead` / `behind` / `diverged`). Below it a merged **change feed** streams which files changed in which worktree as they happen (`e` toggles; the startup dirty set is a silent baseline — only changes from then on are shown, ring-capped at 200). When filesystem watches can be established the dashboard reacts to edits instantly and the poll drops to a 12s heartbeat; otherwise it polls on `--interval`. The process-wide watch budget is allocated by **activity**, not headcount: worktrees that plausibly have someone in them (current checkout, dirty, paused op, or moved within the last hour — plus the zoomed worktree) divide the whole budget, idle ones ride the heartbeat, and the first change the heartbeat detects promotes an idle worktree to active so it gains a watcher one poll later. Re-planned every poll, so the allocation follows the work. All probes run with `GIT_OPTIONAL_LOCKS=0` so they never contend on `index.lock` with the agents editing those trees.
 
-**How much is being written** reads on three levels, all from the scan the dashboard already runs (no extra git calls). Each worktree row carries its uncommitted diffstat (`+31 −3`), a repo group line sums its worktrees (`7 files  +31 −3` — a folded repo still reports its volume), and the header totals the visible fleet. The header also carries **Δ**, the churn since watch started (`Δ +3,142 −210 over 41 files · 17m`): the diffstat resets to zero when an agent commits, Δ does not — one answers "how much is uncommitted right now", the other "how much work went by while I was watching". Δ counts the positive movement of each file's counts per poll, so a file touched five times is counted once per actual change, not five times over (summing the feed lines would do the latter — their `+/−` are cumulative against HEAD). What was already dirty when watch started is a baseline, not churn. Line counts come from the same diff runs as the feed's, so `--feed-stats=false` leaves the file counts and drops the `+/−`; a narrow terminal drops the Δ segment, then the row column.
+**How much is being written** reads on three levels, all from the scan the dashboard already runs (no extra git calls). Each worktree row carries its uncommitted diffstat (`+31 −3`), a repo group line sums its worktrees (`7 files  +31 −3` — a folded repo still reports its volume), and the header totals the visible fleet as two clusters on different time axes. **Not shipped yet** groups what is waiting to leave the worktree: the uncommitted diffstat (`~ 34 files +272 −6`, resets to zero when an agent commits) and the unpushed commit count (`↑2 unpushed`, committed but not pushed — the worktrees' `ahead` summed). **Flow** is **Δ**, the churn since watch started (`Δ +130 −6 · 5m`), which a commit does *not* erase — one cluster answers "how much is stacked up right now", the other "how much work went by while I was watching". A single dim `│` divides the two, drawn only when there is pending work to separate from flow. Δ counts the positive movement of each file's counts per poll, so a file touched five times is counted once per actual change, not five times over (summing the feed lines would do the latter — their `+/−` are cumulative against HEAD). What was already dirty when watch started is a baseline, not churn. Line counts come from the same diff runs as the feed's, so `--feed-stats=false` leaves the file counts and drops the `+/−`; a narrow terminal drops segments right-to-left (flow first, then unpushed, then uncommitted — never the count), and the `│` shows only while the pending segments it divides are all present.
 
 Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable snapshot of the same data — the contract a GUI/agent polls, with the TUI as its consumer. `--events` streams changes as NDJSON instead (see below).
 

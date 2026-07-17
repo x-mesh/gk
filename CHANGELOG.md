@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.124.0] - 2026-07-17
+
 ### Added
 
 - **`gk clone`을 인자 없이 치면 설정된 계정의 원격 저장소를 목록에서 골라 clone한다.** 종전엔 인자가 필수라 `owner/repo`를 알고 있어야 했는데, 어떤 레포가 있는지 자체가 궁금할 때가 많다. 이제 맨 `gk clone`은 `clone.hosts`에 `owner`가 설정된 github 프로필(예: `personal`→JINWOO-J, `x-mesh`→x-mesh)의 저장소를 나열해 필터 가능한 인터랙티브 피커로 보여주고, 고른 것을 clone한다. 목록은 `gh` 바이너리 없이 `api.github.com` REST를 직접 호출해 가져온다 — 토큰은 `GH_TOKEN` → `GITHUB_TOKEN` → `gh`가 저장해 둔 인증(`~/.config/gh/hosts.yml`을 파일로 읽음, `gh` 실행 아님) 순으로 자동 탐지하고, 셋 다 없으면 비인증으로 폴백한다(public 저장소만, 시간당 60회 제한). SSH 키는 clone/push의 git 와이어 프로토콜을 인증할 뿐 이 REST API는 인증하지 못하므로 목록 조회의 토큰 소스가 아니다 — 토큰이 없으면 대상 owner의 private 저장소는 목록에 안 뜬다. 여러 프로필은 동시에 조회하고, 고른 `owner/repo`는 기존 `ResolveURL` 경로로 태워 프로필의 protocol/ssh_host 설정을 그대로 따른다. github.com이 아닌 host의 프로필(gitlab 등)은 이 목록에서 빠진다(REST 클라이언트가 github 전용). ([README.md](README.md))

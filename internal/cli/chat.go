@@ -24,6 +24,7 @@ import (
 	"github.com/x-mesh/gk/internal/chat/tools"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/lineedit"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -947,23 +948,29 @@ func chatOneShotFailure(cmd *cobra.Command, engine *chat.Engine, prov provider.P
 	return wrapped
 }
 
-// chatLineReader returns the REPL's line source. On a real terminal it
-// uses x/term's line editor, which gives shell-style history (↑/↓ walk
-// previous questions) and inline editing for free. Raw mode is entered
-// ONLY while reading a line and restored before the turn runs, so Ctrl-C
-// still raises SIGINT during provider calls (turn cancellation); at the
-// prompt the editor maps Ctrl-C and empty-line Ctrl-D to io.EOF, which
-// the loop treats as a graceful exit. Non-TTY stdin (tests, pipes) falls
-// back to a plain scanner (seed and Tab-completion are both no-ops there
-// — a scanner has no history or cursor to complete against).
+// chatLineReader returns the REPL's line source. On a real terminal it uses a
+// vendored, wide-rune-aware fork of x/term's line editor (internal/lineedit),
+// which gives shell-style history (↑/↓ walk previous questions) and inline
+// editing while — unlike bubbletea's inline renderer — leaving the hardware
+// cursor at the caret so terminal IME preedit (한글 조합) composes in place, and
+// unlike stock x/term, deleting wide runes leaves no half-glyph residue. Raw
+// mode is entered ONLY while reading a line and restored before the turn runs,
+// so Ctrl-C still raises SIGINT during provider calls (turn cancellation); at
+// the prompt the editor maps Ctrl-C and empty-line Ctrl-D to io.EOF, which the
+// loop treats as a graceful exit. A non-TTY stdin or stdout (tests, pipes,
+// redirects) falls back to a plain scanner (seed and Tab-completion are both
+// no-ops there — a scanner has no history or cursor to complete against).
 //
 // seed primes the arrow-key history with a --continue session's prior user
-// turns, oldest first: x/term.History.Add appends the most-recent entry,
-// so replaying in chronological order leaves the LAST past question one
-// ↑ press away, exactly like a session that never restarted.
+// turns, oldest first: lineedit.History.Add appends the most-recent entry, so
+// replaying in chronological order leaves the LAST past question one ↑ press
+// away, exactly like a session that never restarted.
 func chatLineReader(cmd *cobra.Command, prompt string, seed []string) func() (string, error) {
 	stdin, okIn := cmd.InOrStdin().(*os.File)
-	if !okIn || !term.IsTerminal(int(stdin.Fd())) {
+	stdout, okOut := cmd.OutOrStdout().(*os.File)
+	interactive := okIn && okOut &&
+		term.IsTerminal(int(stdin.Fd())) && term.IsTerminal(int(stdout.Fd()))
+	if !interactive {
 		// ONE scanner for the whole loop — recreating it per prompt makes
 		// the buffered reader swallow the next line (ai_do.go's confirm).
 		scanner := bufio.NewScanner(cmd.InOrStdin())
@@ -981,10 +988,15 @@ func chatLineReader(cmd *cobra.Command, prompt string, seed []string) func() (st
 		}
 	}
 	fd := int(stdin.Fd())
-	t := term.NewTerminal(struct {
+	t := lineedit.NewTerminal(struct {
 		io.Reader
 		io.Writer
-	}{stdin, cmd.OutOrStdout()}, prompt)
+	}{stdin, stdout}, prompt)
+	// Feed the real terminal width so line wrapping and cursor math line up
+	// on wide windows (the editor otherwise assumes 80 columns).
+	if w, h, err := term.GetSize(fd); err == nil {
+		_ = t.SetSize(w, h)
+	}
 	for _, line := range seed {
 		t.History.Add(line)
 	}
@@ -1022,7 +1034,7 @@ func chatRenameArg(line string) (title string, ok bool) {
 	}
 }
 
-// chatAutoComplete is x/term's AutoCompleteCallback: it fires on every key
+// chatAutoComplete is lineedit's AutoCompleteCallback: it fires on every key
 // that isn't otherwise handled by the line editor, so the first job is
 // ignoring everything except Tab — regular typing must fall through
 // unchanged (ok=false re-processes the key normally).

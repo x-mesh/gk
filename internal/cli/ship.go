@@ -832,7 +832,10 @@ func runShipCommitLint(ctx context.Context, r git.Runner, cfg *config.Config, pl
 	if plan.LatestTag != "" && plan.LatestTag != "v0.0.0" {
 		rangeSpec = plan.LatestTag + "..HEAD"
 	}
-	stdout, stderr, err := r.Run(ctx, "log", "--format=%H%x00%B%x1e", rangeSpec)
+	// Skip merge commits: their auto-generated "Merge branch ..." headers are not
+	// Conventional Commits and never will be, so linting them only blocks releases
+	// that legitimately used a merge. This matches commitlint's default `ignores`.
+	stdout, stderr, err := r.Run(ctx, "log", "--no-merges", "--format=%H%x00%B%x1e", rangeSpec)
 	if err != nil {
 		return fmt.Errorf("git log: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}

@@ -111,6 +111,40 @@ func TestLintCommit_RevRange_3(t *testing.T) {
 	}
 }
 
+// TestLintCommit_RevRange_SkipsMergeCommits verifies that a merge commit's
+// auto-generated "Merge branch ..." header — which is not Conventional Commits
+// and never will be — is excluded from linting, matching commitlint's default
+// `ignores` behavior. Without --no-merges this range would fail on the merge.
+func TestLintCommit_RevRange_SkipsMergeCommits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("feat: base")
+	base := repo.RunGit("rev-parse", "HEAD")
+
+	repo.CreateBranch("feat/x")
+	repo.WriteFile("b.txt", "b")
+	repo.Commit("feat: side work")
+
+	repo.Checkout("main")
+	repo.WriteFile("c.txt", "c")
+	repo.Commit("fix: main work")
+
+	// A real merge commit with git's default non-Conventional header.
+	repo.RunGit("merge", "--no-ff", "-m", "Merge branch 'feat/x'", "feat/x")
+
+	root, buf := buildLintCommitCmd(repo.Dir, base+"..HEAD")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("expected no lint failure (merge commit should be skipped), got: %v\noutput: %s", err, buf.String())
+	}
+	if strings.Contains(buf.String(), "Merge branch") || strings.Contains(buf.String(), "✗") {
+		t.Errorf("merge commit was linted, want it skipped:\n%s", buf.String())
+	}
+}
+
 func TestLintCommit_File(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

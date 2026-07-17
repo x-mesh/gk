@@ -70,7 +70,9 @@ func runLintCommit(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
-	stdout, stderr, err := runner.Run(cmd.Context(), "log", "--format=%H%x00%B%x1e", rev)
+	// Skip merge commits — their "Merge branch ..." headers are not Conventional
+	// Commits by design, matching commitlint's default `ignores` behavior.
+	stdout, stderr, err := runner.Run(cmd.Context(), "log", "--no-merges", "--format=%H%x00%B%x1e", rev)
 	if err != nil {
 		return fmt.Errorf("git log: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}

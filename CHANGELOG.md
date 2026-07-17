@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gk ship` preflight과 `gk lint-commit`이 merge 커밋을 검사해 릴리스를 막던 문제.** commit-lint가 릴리스 범위(`<tag>..HEAD`)의 **모든** 커밋을 Conventional Commits로 검사했는데, git이 자동 생성하는 `Merge branch '...'` 헤더는 타입이 없어 항상 `header-invalid`로 걸린다 — merge를 정당하게 쓴 브랜치에서 릴리스가 통째로 막혔고(`gk ship`이 squash/force-push를 권하지만 이미 push된 커밋은 재작성할 수 없다), 대안이 전부 공유 히스토리 재작성이라 막다른 길이었다. 이제 `git log`에 `--no-merges`를 붙여 merge 커밋을 검사에서 제외한다 — 표준 commitlint의 기본 `ignores` 동작과 동일하다. `gk ship`의 preflight와 `gk lint-commit` 양쪽에 적용된다.
+
 - **`gk chat` REPL 입력이 한글/CJK 넓은 글자를 정확히 지운다.** 프롬프트가 `golang.org/x/term`의 라인 에디터를 썼는데, 이 에디터는 룬 하나가 터미널 셀 하나라고 가정한다 — 한글·CJK·와이드 이모지처럼 두 셀을 차지하는 글자를 지우면 반쪽 글자 잔상이 남았다. `x/term`의 `terminal.go`를 `internal/lineedit`로 vendor하고 go-runewidth로 커서 열 계산(`visualLength`/`moveCursorToPos`/`setLine`/`eraseNPreviousChars`)을 셀 단위로 정확히 맞췄다. 하드웨어 커서를 0열에 세워 터미널 IME preedit를 깨뜨리는 bubbletea 인라인 렌더러와 달리, 이 방식은 캐럿을 논리 셀 위치에 둬 한국어 IME가 제자리에서 조합된다. `chatLineReader`를 `lineedit.NewTerminal`에 배선하고 실제 터미널 크기를 넘겨 줄바꿈도 정확해졌다.
 
 ## [0.123.0] - 2026-07-16

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 var (
@@ -25,7 +26,7 @@ type cloneMeta = config.CloneMeta
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "clone <owner/repo | alias:owner/repo | url> [target]",
+		Use:   "clone [owner/repo | alias:owner/repo | url] [target]",
 		Short: "Clone a repository with short-form URL expansion",
 		Long: `gk clone expands short-form inputs into a git URL before handing off to
 git clone, so you rarely type the full host or protocol:
@@ -36,6 +37,16 @@ git clone, so you rarely type the full host or protocol:
   gk clone https://example.com/x/y     # fully-qualified URL is passed through
   gk clone git@host:x/y.git            # SCP-style URL is also passed through
 
+With no arguments, gk lists the repos under every clone.hosts profile that
+has an owner set (github.com only — it talks to api.github.com directly,
+no gh binary required) and lets you pick one interactively:
+
+  gk clone                             # browse + pick from configured profiles
+
+It looks for a token in GH_TOKEN/GITHUB_TOKEN, then in gh's own stored
+auth (~/.config/gh/hosts.yml) if you've run 'gh auth login' before; with
+none of those it falls back to unauthenticated (public repos only).
+
 Config keys (in .gk.yaml):
 
   clone:
@@ -44,12 +55,12 @@ Config keys (in .gk.yaml):
     root: ~/work                # optional Go-style layout: <root>/<host>/<owner>/<repo>
     hosts:
       gl: { host: gitlab.com, protocol: ssh }
-      work: { host: git.company.internal, protocol: https }
+      work: { host: git.company.internal, protocol: https, owner: myorg }
     post_actions: [hooks-install, doctor]
 
 With --dry-run, gk prints the resolved URL + target and exits without
 touching the network.`,
-		Args: cobra.RangeArgs(1, 2),
+		Args: cobra.RangeArgs(0, 2),
 		RunE: runClone,
 	}
 	cmd.Flags().BoolVar(&cloneForceSSH, "ssh", false, "force ssh URL for this invocation (overrides clone.default_protocol)")
@@ -64,9 +75,22 @@ func runClone(cmd *cobra.Command, args []string) error {
 
 	cfg, _ := config.Load(cmd.Flags())
 
-	spec := args[0]
-	explicitTarget := ""
-	if len(args) == 2 {
+	var spec, explicitTarget string
+	switch len(args) {
+	case 0:
+		picked, err := browseCloneCandidates(cmd.Context(), cfg.Clone, cmd.ErrOrStderr())
+		if errors.Is(err, ui.ErrPickerAborted) {
+			fmt.Fprintln(cmd.OutOrStdout(), "cancelled")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		spec = picked
+	case 1:
+		spec = args[0]
+	default:
+		spec = args[0]
 		explicitTarget = args[1]
 	}
 

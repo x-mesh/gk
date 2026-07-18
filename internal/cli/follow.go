@@ -16,6 +16,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	ghapi "github.com/x-mesh/gk/internal/github"
 	"github.com/x-mesh/gk/internal/gitsafe"
 )
 
@@ -75,6 +76,8 @@ Use --once to run exactly one cycle and exit (cron / tests).`,
 	cmd.Flags().String("run", "", "hook command run via `sh -c` on each change (a trailing `-- cmd...` overrides this)")
 	cmd.Flags().Bool("discard-dirty", false, "allow the hard reset to discard uncommitted local changes (DESTRUCTIVE)")
 	cmd.Flags().Bool("once", false, "run exactly one cycle (check, maybe update+hook) then exit")
+	cmd.Flags().String("engine", "", "change-detection engine: ref (git ls-remote) | events (GitHub PR/issue) | auto (default from config)")
+	cmd.Flags().StringArray("on", nil, "GitHub event trigger for the events engine (repeatable): pr:merged, pr:opened, pr:closed, pr:label=<name>, pr:review[=state], issue:opened, issue:closed, issue:label=<name>, issue:comment")
 	// watchIntervalValue.String() reports status --watch's 2s default; follow's
 	// runtime default is 30s (enforced in runFollow). Correct the help text so
 	// --help doesn't advertise the wrong default.
@@ -153,10 +156,54 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	discardDirty, _ := cmd.Flags().GetBool("discard-dirty")
 	once, _ := cmd.Flags().GetBool("once")
 	runStr, _ := cmd.Flags().GetString("run")
+	rawBranch, _, _ := splitFollowArgs(cmd, args) // "" when the branch was defaulted, not given
 
-	// Hook precedence: a trailing `-- cmd args...` wins over --run. cobra
-	// hands us everything after `--` as args, and resolveFollowArgs splits it
-	// from the optional branch.
+	// Resolve the change-detection engine (flag > config > auto).
+	engine, _ := cmd.Flags().GetString("engine")
+	if engine == "" {
+		engine = cfg.Follow.Engine
+	}
+	if engine == "" {
+		engine = "auto"
+	}
+	if engine != "ref" && engine != "events" && engine != "auto" {
+		return fmt.Errorf("follow: invalid --engine %q (valid: ref, events, auto)", engine)
+	}
+	onRaw, _ := cmd.Flags().GetStringArray("on")
+	triggers, terr := parseFollowTriggers(onRaw)
+	if terr != nil {
+		return terr
+	}
+	token := ghapi.ResolveToken()
+	useEvents, refFallback := followEngineDecision(engine, len(onRaw) > 0, followTriggersNeedAPI(triggers), token != "")
+
+	errOut := cmd.ErrOrStderr()
+	if engine == "ref" && len(onRaw) > 0 {
+		fmt.Fprintln(errOut, "warn: follow: --on is ignored by the ref engine (it watches the branch, not GitHub events)")
+	}
+	if refFallback {
+		fmt.Fprintf(errOut, "warn: follow: no GitHub token — falling back to the ref engine, watching %s for any advance (PR-level filters ignored). set GH_TOKEN for true event triggers.\n", branch)
+	}
+	if useEvents && token == "" {
+		fmt.Fprintln(errOut, "warn: follow: no GitHub token — the events engine works on PUBLIC repos only; private repos will fail. set GH_TOKEN / GITHUB_TOKEN or run 'gh auth login'.")
+	}
+
+	// Graceful shutdown: SIGINT/SIGTERM cancel the loop's context. The wait
+	// between cycles is interrupted immediately; a hook running at that moment
+	// inherits this context and is cancelled too (exec sends SIGKILL once ctx is
+	// done), so a supervised follow stops promptly instead of hanging on a hook.
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if useEvents {
+		return runFollowEvents(ctx, cmd, runner, cfg, followWiring{
+			remote: remote, branch: branch, rawBranch: rawBranch, interval: interval,
+			once: once, discardDirty: discardDirty, hookArgs: hookArgs, runStr: runStr,
+			triggers: triggers, token: token,
+		})
+	}
+
+	// ref engine (the original branch-mirror path).
 	var hook func(ctx context.Context) (int, error)
 	if len(hookArgs) > 0 {
 		hook = func(ctx context.Context) (int, error) {
@@ -167,14 +214,6 @@ func runFollow(cmd *cobra.Command, args []string) error {
 			return runHookExec(ctx, RepoFlag(), "sh", "-c", runStr)
 		}
 	}
-
-	// Graceful shutdown: SIGINT/SIGTERM cancel the loop's context. The wait
-	// between cycles is interrupted immediately; a hook running at that moment
-	// inherits this context and is cancelled too (exec sends SIGKILL once ctx is
-	// done), so a supervised follow stops promptly instead of hanging on a hook.
-	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	opts := followOpts{
 		remote:       remote,
 		branch:       branch,
@@ -186,6 +225,94 @@ func runFollow(cmd *cobra.Command, args []string) error {
 		now:          time.Now,
 	}
 	return followLoop(ctx, runner, cmd.OutOrStdout(), opts)
+}
+
+// followEngineDecision resolves which engine runs. useEvents selects the events
+// loop; refFallback=true means the user asked for events but we degraded to the
+// ref engine (no token, only merge triggers) and the caller should warn.
+func followEngineDecision(engine string, hasOn, needAPI, hasToken bool) (useEvents, refFallback bool) {
+	switch engine {
+	case "ref":
+		return false, false
+	case "events":
+		return true, false
+	default: // auto
+		if !hasOn {
+			return false, false // pure branch mirror — no token needed
+		}
+		if hasToken {
+			return true, false
+		}
+		if needAPI {
+			return true, false // no ref fallback exists; try events (public works)
+		}
+		return false, true // merge-only triggers → ref fallback
+	}
+}
+
+// followWiring carries the resolved follow settings into the events path.
+type followWiring struct {
+	remote, branch, rawBranch string
+	interval                  time.Duration
+	once, discardDirty        bool
+	hookArgs                  []string
+	runStr                    string
+	triggers                  []followTrigger
+	token                     string
+}
+
+// runFollowEvents builds the events-engine loop from the resolved wiring: the
+// origin slug, the hook dispatcher (with event env), and the mirror-on-merge
+// closure (only when a branch was explicitly given).
+func runFollowEvents(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, cfg *config.Config, w followWiring) error {
+	owner, repo, err := currentRepoSlug(ctx, *cfg, runner)
+	if err != nil {
+		return fmt.Errorf("follow: the events engine needs a github.com origin: %w", err)
+	}
+
+	var dispatch func(ctx context.Context, env []string) (int, error)
+	if len(w.hookArgs) > 0 {
+		dispatch = func(ctx context.Context, env []string) (int, error) {
+			return runHookExecEnv(ctx, RepoFlag(), env, w.hookArgs[0], w.hookArgs[1:]...)
+		}
+	} else if strings.TrimSpace(w.runStr) != "" {
+		dispatch = func(ctx context.Context, env []string) (int, error) {
+			return runHookExecEnv(ctx, RepoFlag(), env, "sh", "-c", w.runStr)
+		}
+	}
+
+	var mirror func(ctx context.Context) (string, error)
+	if w.rawBranch != "" {
+		mopts := followOpts{remote: w.remote, branch: w.branch, discardDirty: w.discardDirty, now: time.Now}
+		mirror = func(ctx context.Context) (string, error) {
+			sha, serr := lsRemoteSHA(ctx, runner, w.remote, w.branch)
+			if serr != nil {
+				return "", serr
+			}
+			return followMirror(ctx, runner, mopts, sha)
+		}
+	}
+
+	client := &ghapi.Client{Token: w.token}
+	poll := func(ctx context.Context, etag string) ([]ghapi.RepoEvent, string, bool, error) {
+		evs, newETag, notMod, _, perr := client.ListRepoEvents(ctx, owner, repo, etag)
+		return evs, newETag, notMod, perr
+	}
+
+	return followEventsLoop(ctx, followEventsOpts{
+		slug:     owner + "/" + repo,
+		branch:   w.rawBranch, // base filter for pr:merged; "" = any base
+		triggers: w.triggers,
+		interval: w.interval,
+		once:     w.once,
+		poll:     poll,
+		dispatch: dispatch,
+		mirror:   mirror,
+		agent:    AgentOut(),
+		now:      time.Now,
+		out:      cmd.OutOrStdout(),
+		runner:   runner,
+	})
 }
 
 func resolveFollowArgs(ctx context.Context, runner git.Runner, cmd *cobra.Command, args []string) (string, []string, error) {
@@ -238,11 +365,21 @@ func splitFollowArgs(cmd *cobra.Command, args []string) (string, []string, error
 // cancels it, so a supervised follow stops promptly rather than blocking on a
 // long-running hook.
 func runHookExec(ctx context.Context, dir, name string, args ...string) (int, error) {
+	return runHookExecEnv(ctx, dir, nil, name, args...)
+}
+
+// runHookExecEnv is runHookExec with extra environment variables appended to
+// the inherited environment — used by the events engine to hand the hook the
+// event context (GK_EVENT, GK_PR_NUMBER, …).
+func runHookExecEnv(ctx context.Context, dir string, extraEnv []string, name string, args ...string) (int, error) {
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = dir
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	c.Stdin = os.Stdin
+	if len(extraEnv) > 0 {
+		c.Env = append(os.Environ(), extraEnv...)
+	}
 	err := c.Run()
 	if err == nil {
 		return 0, nil
@@ -372,48 +509,13 @@ func followCycle(ctx context.Context, runner git.Runner, opts followOpts, lastAp
 	}
 	res.Changed = true
 
-	// c. safety gate — refuse to reset over uncommitted work unless told to.
-	if !opts.discardDirty {
-		dirty, derr := followWorkingTreeDirty(ctx, runner)
-		if derr != nil {
-			return res, fmt.Errorf("follow: cannot read working tree status: %w", derr)
-		}
-		if dirty {
-			return res, WithRemedy(
-				fmt.Errorf("follow: remote %s/%s advanced but the working tree has uncommitted changes — refusing to hard-reset over them", opts.remote, opts.branch),
-				"commit/stash the changes, or pass --discard-dirty to mirror anyway (DESTRUCTIVE)",
-				errRemedy{Command: "git stash", Safety: "safe"},
-				errRemedy{Command: fmt.Sprintf("gk follow %s --discard-dirty", opts.branch), Safety: "destructive"},
-			)
-		}
-	}
-
-	// backup BEFORE the reset — the recovery anchor. Skipping it is ONLY safe
-	// when the repo genuinely has no commits yet (nothing to lose). If HEAD is
-	// unreadable but the repo HAS history, a reset with no recovery anchor is
-	// the one thing we must never do — abort the cycle instead.
-	head, herr := gitsafe.ResolveRef(ctx, runner, "HEAD")
-	switch {
-	case herr == nil && head != "":
-		ref := gitsafe.BackupRefName("follow", opts.branch, opts.now())
-		if _, stderr, berr := runner.Run(ctx, "update-ref", ref, head); berr != nil {
-			return res, fmt.Errorf("follow: write backup ref: %s: %w", strings.TrimSpace(string(stderr)), berr)
-		}
-		res.BackupRef = ref
-	default:
-		empty, eerr := repoHasNoCommits(ctx, runner)
-		if eerr != nil || !empty {
-			return res, fmt.Errorf("follow: cannot resolve HEAD to back up before the reset; refusing a destructive reset with no recovery anchor (HEAD: %v)", herr)
-		}
-		// genuinely empty repo (no commits) → nothing to back up; mirror on.
-	}
-
-	// fetch the advanced ref, then hard-reset the mirror to the remote SHA.
-	if err := git.NewClient(runner).Fetch(ctx, opts.remote, opts.branch, false); err != nil {
-		return res, fmt.Errorf("follow: fetch %s %s: %w", opts.remote, opts.branch, err)
-	}
-	if _, stderr, rerr := runner.Run(ctx, "reset", "--hard", sha); rerr != nil {
-		return res, fmt.Errorf("follow: reset --hard %s: %s: %w", sha, strings.TrimSpace(string(stderr)), rerr)
+	// c. mirror the local checkout to the remote tip (dirty gate → backup →
+	// fetch → reset --hard), the destructive-but-recoverable sequence shared
+	// with the events engine's mirror-on-merge path.
+	backupRef, mErr := followMirror(ctx, runner, opts, sha)
+	res.BackupRef = backupRef
+	if mErr != nil {
+		return res, mErr
 	}
 	res.Updated = true
 	// Record the applied SHA now: even if the hook fails below, the mirror is
@@ -432,6 +534,59 @@ func followCycle(ctx context.Context, runner git.Runner, opts followOpts, lastAp
 	}
 
 	return res, nil
+}
+
+// followMirror mirrors the local checkout to sha (the remote tip of
+// opts.branch): the dirty gate, the pre-reset backup ref, the fetch, and the
+// hard reset. It is the ONE destructive sequence, shared by followCycle (ref
+// engine) and the events engine's mirror-on-merge, so the recovery contract
+// never drifts between the two. Returns the backup ref it wrote ("" for a
+// genuinely empty repo).
+func followMirror(ctx context.Context, runner git.Runner, opts followOpts, sha string) (backupRef string, err error) {
+	// Refuse to reset over uncommitted work unless told to.
+	if !opts.discardDirty {
+		dirty, derr := followWorkingTreeDirty(ctx, runner)
+		if derr != nil {
+			return "", fmt.Errorf("follow: cannot read working tree status: %w", derr)
+		}
+		if dirty {
+			return "", WithRemedy(
+				fmt.Errorf("follow: remote %s/%s advanced but the working tree has uncommitted changes — refusing to hard-reset over them", opts.remote, opts.branch),
+				"commit/stash the changes, or pass --discard-dirty to mirror anyway (DESTRUCTIVE)",
+				errRemedy{Command: "git stash", Safety: "safe"},
+				errRemedy{Command: fmt.Sprintf("gk follow %s --discard-dirty", opts.branch), Safety: "destructive"},
+			)
+		}
+	}
+
+	// Backup BEFORE the reset — the recovery anchor. Skipping it is ONLY safe
+	// when the repo genuinely has no commits yet (nothing to lose). If HEAD is
+	// unreadable but the repo HAS history, a reset with no recovery anchor is
+	// the one thing we must never do — abort instead.
+	head, herr := gitsafe.ResolveRef(ctx, runner, "HEAD")
+	switch {
+	case herr == nil && head != "":
+		ref := gitsafe.BackupRefName("follow", opts.branch, opts.now())
+		if _, stderr, berr := runner.Run(ctx, "update-ref", ref, head); berr != nil {
+			return "", fmt.Errorf("follow: write backup ref: %s: %w", strings.TrimSpace(string(stderr)), berr)
+		}
+		backupRef = ref
+	default:
+		empty, eerr := repoHasNoCommits(ctx, runner)
+		if eerr != nil || !empty {
+			return "", fmt.Errorf("follow: cannot resolve HEAD to back up before the reset; refusing a destructive reset with no recovery anchor (HEAD: %v)", herr)
+		}
+		// genuinely empty repo (no commits) → nothing to back up; mirror on.
+	}
+
+	// Fetch the advanced ref, then hard-reset the mirror to the remote SHA.
+	if err := git.NewClient(runner).Fetch(ctx, opts.remote, opts.branch, false); err != nil {
+		return backupRef, fmt.Errorf("follow: fetch %s %s: %w", opts.remote, opts.branch, err)
+	}
+	if _, stderr, rerr := runner.Run(ctx, "reset", "--hard", sha); rerr != nil {
+		return backupRef, fmt.Errorf("follow: reset --hard %s: %s: %w", sha, strings.TrimSpace(string(stderr)), rerr)
+	}
+	return backupRef, nil
 }
 
 // repoHasNoCommits reports whether the repository has no commits on any ref yet

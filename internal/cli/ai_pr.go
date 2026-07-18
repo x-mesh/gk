@@ -56,7 +56,19 @@ to copy directly.`,
 	newCmd.Flags().String("provider", "", "override ai.provider")
 	newCmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 
-	prCmd.AddCommand(newCmd)
+	checkoutCmd := &cobra.Command{
+		Use:   "checkout <number>",
+		Short: "Fetch and check out a pull request's branch locally",
+		Long: `Fetches the pull request's head via GitHub's refs/pull/<n>/head (which
+exists for every PR, including forks) and switches to a local branch. Uses
+git only — no GitHub API or token required (git's own auth applies).`,
+		Args: cobra.ExactArgs(1),
+		RunE: runPRCheckout,
+	}
+	checkoutCmd.Flags().String("branch", "", "local branch name (default: pr/<number>)")
+	checkoutCmd.Flags().String("remote", "", "remote to fetch from (default: config remote, else origin)")
+
+	prCmd.AddCommand(newCmd, checkoutCmd)
 	rootCmd.AddCommand(prCmd)
 }
 

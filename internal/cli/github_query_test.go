@@ -147,21 +147,22 @@ func TestRunGitHubListRejectsBarePositional(t *testing.T) {
 
 func TestBuildSearchQuery(t *testing.T) {
 	cases := []struct {
-		name       string
-		prefix     string
-		typeFilter string
-		state      string
-		mine       bool
-		want       string
+		name   string
+		prefix string
+		f      githubSearchFilters
+		want   string
 	}{
-		{"repo pr open", "repo:x-mesh/gk", "is:pr", "open", false, "repo:x-mesh/gk is:pr is:open"},
-		{"org issue all mine", "org:acme", "is:issue", "all", true, "org:acme is:issue author:@me"},
-		{"repo pr closed", "repo:x-mesh/gk", "is:pr", "closed", false, "repo:x-mesh/gk is:pr is:closed"},
-		{"inbox untyped open", "involves:@me", "", "open", false, "involves:@me is:open"},
-		{"unknown state defaults open", "repo:x-mesh/gk", "is:pr", "weird", false, "repo:x-mesh/gk is:pr is:open"},
+		{"repo pr open", "repo:x-mesh/gk", githubSearchFilters{typeFilter: "is:pr", state: "open"}, "repo:x-mesh/gk is:pr is:open"},
+		{"org issue all mine", "org:acme", githubSearchFilters{typeFilter: "is:issue", state: "all", mine: true}, "org:acme is:issue author:@me"},
+		{"repo pr closed", "repo:x-mesh/gk", githubSearchFilters{typeFilter: "is:pr", state: "closed"}, "repo:x-mesh/gk is:pr is:closed"},
+		{"inbox untyped open", "involves:@me", githubSearchFilters{state: "open"}, "involves:@me is:open"},
+		{"unknown state defaults open", "repo:x-mesh/gk", githubSearchFilters{typeFilter: "is:pr", state: "weird"}, "repo:x-mesh/gk is:pr is:open"},
+		{"review + assigned", "repo:x-mesh/gk", githubSearchFilters{typeFilter: "is:pr", state: "open", review: true, assigned: true}, "repo:x-mesh/gk is:pr is:open review-requested:@me assignee:@me"},
+		{"author + assignee", "org:acme", githubSearchFilters{typeFilter: "is:pr", state: "open", author: "octocat", assignee: "hubot"}, "org:acme is:pr is:open author:octocat assignee:hubot"},
+		{"labels + raw", "repo:x-mesh/gk", githubSearchFilters{typeFilter: "is:issue", state: "open", labels: []string{"bug", "good first issue"}, raw: "is:draft"}, `repo:x-mesh/gk is:issue is:open label:bug label:"good first issue" is:draft`},
 	}
 	for _, tc := range cases {
-		if got := buildSearchQuery(tc.prefix, tc.typeFilter, tc.state, tc.mine); got != tc.want {
+		if got := buildSearchQuery(tc.prefix, tc.f); got != tc.want {
 			t.Errorf("%s: buildSearchQuery = %q, want %q", tc.name, got, tc.want)
 		}
 	}

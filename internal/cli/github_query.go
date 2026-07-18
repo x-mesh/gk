@@ -29,9 +29,71 @@ func addGitHubScopeFlags(cmd *cobra.Command) {
 	cmd.Flags().String("org", "", "search the whole org/account instead of the current repo (optional name; defaults to github.owner or origin's owner)")
 	cmd.Flags().Lookup("org").NoOptDefVal = orgFlagSentinel
 	cmd.Flags().Bool("mine", false, "only items you authored (author:@me; needs a token)")
+	cmd.Flags().Bool("review", false, "only PRs awaiting your review (review-requested:@me; needs a token)")
+	cmd.Flags().Bool("assigned", false, "only items assigned to you (assignee:@me; needs a token)")
+	cmd.Flags().String("author", "", "only items opened by <user>")
+	cmd.Flags().String("assignee", "", "only items assigned to <user>")
 	cmd.Flags().String("state", "open", "which items: open | closed | all")
+	addGitHubQueryFlags(cmd)
+}
+
+// addGitHubQueryFlags wires the query/output flags shared by pr, issue, and
+// inbox: label/raw-query/sort/limit filters plus the link/url/web/pick output
+// options.
+func addGitHubQueryFlags(cmd *cobra.Command) {
+	cmd.Flags().StringArray("label", nil, "filter by label (repeatable; matches label:<name>)")
+	cmd.Flags().StringP("query", "q", "", "extra raw GitHub search qualifiers, appended verbatim (e.g. is:draft)")
+	cmd.Flags().String("sort", "updated", "sort key: updated | created | comments")
+	cmd.Flags().Int("limit", 0, "cap the number of results (0 = no cap)")
 	cmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
 	cmd.Flags().Bool("url", false, "show the full item URL as a trailing column (bare URLs that most terminals auto-link)")
+	cmd.Flags().Bool("web", false, "open the results in the browser (GitHub search) instead of listing")
+	cmd.Flags().Bool("pick", false, "pick an item interactively, then open it in the browser")
+}
+
+// readGitHubFilters collects the filter flags into a githubSearchFilters.
+// isPR sets the type qualifier; scope-only flags absent on a command (e.g. the
+// author/review flags on inbox) resolve to their zero value.
+func readGitHubFilters(cmd *cobra.Command, isPR bool) githubSearchFilters {
+	f := githubSearchFilters{typeFilter: "is:issue"}
+	if isPR {
+		f.typeFilter = "is:pr"
+	}
+	f.state, _ = cmd.Flags().GetString("state")
+	f.mine, _ = cmd.Flags().GetBool("mine")
+	f.review = boolFlag(cmd, "review")
+	f.assigned = boolFlag(cmd, "assigned")
+	f.author = stringFlag(cmd, "author")
+	f.assignee = stringFlag(cmd, "assignee")
+	f.labels, _ = cmd.Flags().GetStringArray("label")
+	f.raw = stringFlag(cmd, "query")
+	return f
+}
+
+// boolFlag / stringFlag read a flag that may not be registered on this command
+// (inbox omits the scope-relative filters), returning the zero value if absent.
+func boolFlag(cmd *cobra.Command, name string) bool {
+	if cmd.Flags().Lookup(name) == nil {
+		return false
+	}
+	v, _ := cmd.Flags().GetBool(name)
+	return v
+}
+
+func stringFlag(cmd *cobra.Command, name string) string {
+	if cmd.Flags().Lookup(name) == nil {
+		return ""
+	}
+	v, _ := cmd.Flags().GetString(name)
+	return v
+}
+
+func intFlag(cmd *cobra.Command, name string) int {
+	if cmd.Flags().Lookup(name) == nil {
+		return 0
+	}
+	v, _ := cmd.Flags().GetInt(name)
+	return v
 }
 
 // githubItemJSON is the per-row shape emitted by `gk pr/issue/inbox --json`.
@@ -166,15 +228,41 @@ func originOwner(ctx context.Context, cfg config.Config, runner git.Runner) stri
 	return meta.Owner
 }
 
-// buildSearchQuery assembles the Search API q= from a scope prefix and the
-// shared flags. isPR selects is:pr vs is:issue; empty typeFilter (inbox)
-// leaves the type unrestricted.
-func buildSearchQuery(prefix, typeFilter, state string, mine bool) string {
+// githubSearchFilters is the resolved set of qualifiers a listing applies on
+// top of its scope prefix. typeFilter is is:pr / is:issue / "" (inbox).
+type githubSearchFilters struct {
+	typeFilter string
+	state      string // open | closed | all
+	mine       bool   // author:@me
+	review     bool   // review-requested:@me
+	assigned   bool   // assignee:@me
+	author     string // author:<user>
+	assignee   string // assignee:<user>
+	labels     []string
+	raw        string // -q: appended verbatim
+}
+
+// needsToken reports whether any @me-relative qualifier is set — those require
+// a token for the search API to resolve @me.
+func (f githubSearchFilters) needsToken() bool {
+	return f.mine || f.review || f.assigned
+}
+
+// isPlainOpen reports whether the filters are just "open items, no narrowing" —
+// the only case where the result count equals the repo's true open PR/issue
+// count and is safe to warm the count cache from.
+func (f githubSearchFilters) isPlainOpen() bool {
+	return f.state == "open" && !f.mine && !f.review && !f.assigned &&
+		f.author == "" && f.assignee == "" && len(f.labels) == 0 && f.raw == ""
+}
+
+// buildSearchQuery assembles the Search API q= from a scope prefix and filters.
+func buildSearchQuery(prefix string, f githubSearchFilters) string {
 	parts := []string{prefix}
-	if typeFilter != "" {
-		parts = append(parts, typeFilter)
+	if f.typeFilter != "" {
+		parts = append(parts, f.typeFilter)
 	}
-	switch state {
+	switch f.state {
 	case "closed":
 		parts = append(parts, "is:closed")
 	case "all":
@@ -182,10 +270,37 @@ func buildSearchQuery(prefix, typeFilter, state string, mine bool) string {
 	default: // "open"
 		parts = append(parts, "is:open")
 	}
-	if mine {
+	if f.mine {
 		parts = append(parts, "author:@me")
 	}
+	if f.review {
+		parts = append(parts, "review-requested:@me")
+	}
+	if f.assigned {
+		parts = append(parts, "assignee:@me")
+	}
+	if f.author != "" {
+		parts = append(parts, "author:"+f.author)
+	}
+	if f.assignee != "" {
+		parts = append(parts, "assignee:"+f.assignee)
+	}
+	for _, l := range f.labels {
+		parts = append(parts, "label:"+quoteQualifier(l))
+	}
+	if f.raw != "" {
+		parts = append(parts, f.raw)
+	}
 	return strings.Join(parts, " ")
+}
+
+// quoteQualifier wraps a value containing whitespace in double quotes so a
+// multi-word label (e.g. "good first issue") stays one qualifier.
+func quoteQualifier(s string) string {
+	if strings.ContainsAny(s, " \t") {
+		return `"` + s + `"`
+	}
+	return s
 }
 
 // runGitHubList backs `gk pr` and `gk issue`: resolve scope, run one search,
@@ -208,11 +323,11 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	token := ghapi.ResolveToken()
 
-	// --mine expands to author:@me, which the search API rejects (422) without
-	// a token — guard early with a clear message rather than a raw API error.
-	mine, _ := cmd.Flags().GetBool("mine")
-	if mine && token == "" {
-		return fmt.Errorf("--mine needs a GitHub token to resolve @me — set GH_TOKEN / GITHUB_TOKEN or run 'gh auth login'")
+	filters := readGitHubFilters(cmd, isPR)
+	// @me qualifiers (--mine/--review/--assigned) need a token, or the search
+	// API rejects them (422) — guard early with a clear message.
+	if filters.needsToken() && token == "" {
+		return fmt.Errorf("--mine/--review/--assigned need a GitHub token to resolve @me — set GH_TOKEN / GITHUB_TOKEN or run 'gh auth login'")
 	}
 	client := &ghapi.Client{Token: token}
 
@@ -220,31 +335,32 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	if err != nil {
 		return err
 	}
+	query := buildSearchQuery(prefix, filters)
 
-	typeFilter := "is:issue"
-	if isPR {
-		typeFilter = "is:pr"
+	// --web opens the GitHub search in the browser instead of listing.
+	if boolFlag(cmd, "web") {
+		return openGitHubSearch(cmd, query)
 	}
-	state, _ := cmd.Flags().GetString("state")
-	query := buildSearchQuery(prefix, typeFilter, state, mine)
 
-	links, _ := cmd.Flags().GetBool("links")
-	showURL, _ := cmd.Flags().GetBool("url")
-
-	issues, err := client.SearchIssues(ctx, query)
+	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
 	}
 
-	// warm_on_list: a current-repo, open, non-mine listing already hit the
-	// network, so refresh the count cache from it for free (partial — pr sets
-	// the PR count, issue the issue count). Skips org/--mine/closed scopes,
-	// whose counts don't map to "this repo's open PRs/issues".
-	if cfg.GitHub.Counts.WarmOnList && !mine && state == "open" && strings.HasPrefix(label, "repo:") {
+	// warm_on_list: a plain current-repo open listing already hit the network,
+	// so refresh the count cache from it for free (partial — pr sets the PR
+	// count, issue the issue count). Any extra filter (label/author/@me/limit)
+	// makes the count non-representative, so skip warming then.
+	if cfg.GitHub.Counts.WarmOnList && filters.isPlainOpen() && intFlag(cmd, "limit") == 0 && strings.HasPrefix(label, "repo:") {
 		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, len(issues))
 	}
 
-	return emitGitHubList(cmd, label, query, issues, links, showURL)
+	// --pick: choose one item interactively, then open it in the browser.
+	if boolFlag(cmd, "pick") {
+		return pickGitHubItem(cmd, issues)
+	}
+
+	return emitGitHubList(cmd, label, query, issues, boolFlag(cmd, "links"), boolFlag(cmd, "url"))
 }
 
 // emitGitHubList renders the result set as JSON (agent envelope) or a table.

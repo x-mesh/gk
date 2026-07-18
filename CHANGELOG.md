@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `gk pr` / `gk issue` / `gk inbox` gained `--url`: shows the full item URL as
-  a trailing column. Unlike `--links` (OSC 8 hyperlink on the `PR#` token, which
-  some terminals like Warp don't render), a bare `https://` URL is auto-linked
-  by virtually every terminal.
+- `gk pr` / `gk issue` / `gk inbox` filter and output flags:
+  - `--review` (PRs awaiting your review, `review-requested:@me`), `--assigned`
+    (`assignee:@me`), `--author <user>`, `--assignee <user>`, `--label <name>`
+    (repeatable), and `-q/--query` for raw GitHub search qualifiers appended
+    verbatim (e.g. `is:draft`). `--sort updated|created|comments` and `--limit N`.
+  - `--url` shows the full item URL as a trailing column — a bare `https://` URL
+    is auto-linked by virtually every terminal, including ones that don't render
+    `--links`' OSC 8 hyperlink (e.g. Warp).
+  - `--web` opens the results in the browser as a github.com search; `--pick`
+    chooses an item interactively (TUI) and opens it.
+- `gk pr checkout <n>` — fetch a pull request's head via `refs/pull/<n>/head`
+  (works for fork PRs too) and switch to a local `pr/<n>` branch. git only, no
+  API/token.
 
 ## [0.125.0] - 2026-07-18
 

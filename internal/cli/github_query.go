@@ -30,6 +30,7 @@ func addGitHubScopeFlags(cmd *cobra.Command) {
 	cmd.Flags().Lookup("org").NoOptDefVal = orgFlagSentinel
 	cmd.Flags().Bool("mine", false, "only items you authored (author:@me; needs a token)")
 	cmd.Flags().String("state", "open", "which items: open | closed | all")
+	cmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
 }
 
 // githubItemJSON is the per-row shape emitted by `gk pr/issue/inbox --json`.
@@ -226,6 +227,8 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	state, _ := cmd.Flags().GetString("state")
 	query := buildSearchQuery(prefix, typeFilter, state, mine)
 
+	links, _ := cmd.Flags().GetBool("links")
+
 	issues, err := client.SearchIssues(ctx, query)
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
@@ -239,11 +242,13 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, len(issues))
 	}
 
-	return emitGitHubList(cmd, label, query, issues)
+	return emitGitHubList(cmd, label, query, issues, links)
 }
 
 // emitGitHubList renders the result set as JSON (agent envelope) or a table.
-func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issue) error {
+// links makes the ref token a clickable terminal hyperlink (text mode only;
+// the URL is always present in the JSON payload).
+func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issue, links bool) error {
 	out := cmd.OutOrStdout()
 	if JSONOut() {
 		payload := githubListJSON{Scope: scope, Query: query, Count: len(issues)}
@@ -252,7 +257,7 @@ func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issu
 		}
 		return emitAgentResult(out, payload)
 	}
-	renderGitHubTable(out, scope, issues)
+	renderGitHubTable(out, scope, issues, links)
 	return nil
 }
 
@@ -291,7 +296,7 @@ func (c *ghCol) width() int {
 // the PLAIN text (runewidth, ANSI-blind) and the color is applied afterward, so
 // the escape bytes never skew the columns. The repo column is shown only for
 // org/inbox scopes that span repositories — it is redundant under a repo scope.
-func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
+func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links bool) {
 	if len(issues) == 0 {
 		fmt.Fprintln(w, cellFaint(fmt.Sprintf("no matching items · %s", scope)))
 		return
@@ -327,6 +332,9 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 		refColored := typColored + cellCyan(num)
 		if closed {
 			refColored = cellFaint(ref)
+		}
+		if links {
+			refColored = osc8Link(is.URL, refColored)
 		}
 		refCol.add(ref, refColored)
 

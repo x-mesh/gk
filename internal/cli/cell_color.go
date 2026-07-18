@@ -93,3 +93,14 @@ func cellBold(s string) string {
 	}
 	return ansiBold + s + ansiResetBold
 }
+
+// osc8Link wraps text in an OSC 8 terminal hyperlink to url so supporting
+// terminals render it clickable. Non-interactive output (colorOff) or a
+// missing url returns the text plain, so no escape leaks into a pipe/file;
+// terminals without OSC 8 support ignore the sequence and show text unchanged.
+func osc8Link(url, text string) string {
+	if colorOff() || url == "" {
+		return text
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}

@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Every surface's policy is independently settable, e.g.
     `gk config set github.counts.include force`,
     `gk config set github.counts.ttl_minutes 5`.
+  - The list output is colored and column-aligned (runewidth, ANSI-safe): a
+    single `PR#4` / `issue#128` token, labels, faint author/age, no emoji.
+    `--links` turns the token into a clickable terminal hyperlink (OSC 8) to
+    the item's URL.
 - `github.owner` config key — the default org/account `gk pr --org` and
   `gk issue --org` use when no name is given (falls back to origin's owner).
   Auth is reused from `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth login`.

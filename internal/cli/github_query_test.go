@@ -206,7 +206,7 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 		{Number: 128, Title: "a much longer title here", State: "open", Owner: "x-mesh", Repo: "term-mesh", Author: "bb", IsPR: false},
 	}
 	var buf strings.Builder
-	renderGitHubTable(&buf, "org:x-mesh", issues)
+	renderGitHubTable(&buf, "org:x-mesh", issues, false)
 	out := buf.String()
 	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "PR#4") || !strings.Contains(out, "issue#128") {
 		t.Fatalf("table missing expected glued ref tokens:\n%s", out)
@@ -225,5 +225,16 @@ func TestHumanGitHubScope(t *testing.T) {
 	}
 	if got := humanGitHubScope("org:acme"); got != "org:acme" {
 		t.Errorf("org scope should be kept, got %q", got)
+	}
+}
+
+func TestOSC8Link(t *testing.T) {
+	// colorOff() is true under `go test` (no TTY), so links degrade to plain —
+	// exactly the pipe/file contract; escapes must never leak.
+	if got := osc8Link("https://x/1", "PR#4"); got != "PR#4" {
+		t.Errorf("non-TTY should be plain, got %q", got)
+	}
+	if got := osc8Link("", "PR#4"); got != "PR#4" {
+		t.Errorf("empty url should be plain, got %q", got)
 	}
 }

@@ -3827,6 +3827,7 @@ gk pr --mine         # only PRs you opened
 | `--org [name]` | — | Search the whole org/account instead of the current repo. Owner priority: the value you pass > `github.owner` in config > origin's owner. `--org` and `--org=acme`/`--org acme` both work. |
 | `--mine` | false | Restrict to items you authored (`author:@me`; needs a token) |
 | `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
+| `--links` | false | Make the `PR#`/`issue#` token a clickable terminal hyperlink (OSC 8) to its URL; ignored on pipes/non-TTY. The URL is always in `--json`. |
 | `--json` | false | Emit the machine-readable list (agent envelope under `GK_AGENT=1`) |
 
 #### What it does

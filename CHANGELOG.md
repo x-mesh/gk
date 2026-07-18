@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `gk pr` / `gk issue` / `gk inbox` are **interactive by default in a terminal**,
+  matching `gk switch` / `gk worktree` / `gk clone`: the listing opens in the
+  table picker with type-to-filter, instead of printing a static list.
+  - Keys: `enter` open in browser · `c` check out the PR (`gk pr checkout`) ·
+    `y` copy the URL · `o` cycle scope (repo → org → inbox) · `a` toggle
+    open/all. The typed filter is preserved across actions.
+  - Non-interactive runs are unchanged: `--json`, `GK_AGENT=1`, pipes, and CI
+    still print the static list. `--list` forces the static list in a terminal;
+    `--pick` forces the picker.
+  - An empty scope offers a way out inline ("press o to widen the scope")
+    rather than just printing nothing.
+
 ## [0.126.0] - 2026-07-18
 
 ### Added

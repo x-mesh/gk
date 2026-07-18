@@ -48,7 +48,8 @@ func addGitHubQueryFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
 	cmd.Flags().Bool("url", false, "show the full item URL as a trailing column (bare URLs that most terminals auto-link)")
 	cmd.Flags().Bool("web", false, "open the results in the browser (GitHub search) instead of listing")
-	cmd.Flags().Bool("pick", false, "pick an item interactively, then open it in the browser")
+	cmd.Flags().Bool("pick", false, "force the interactive picker (the default in a terminal)")
+	cmd.Flags().Bool("list", false, "print the static list instead of opening the interactive picker")
 }
 
 // readGitHubFilters collects the filter flags into a githubSearchFilters.
@@ -342,6 +343,17 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 		return openGitHubSearch(cmd, query)
 	}
 
+	// Interactive by default in a terminal — the same convention as gk switch /
+	// gk worktree / gk clone. promptAllowed() keeps agent/--json/CI/piped runs
+	// on the static list; --list forces it off, --pick forces it on.
+	if boolFlag(cmd, "pick") || (promptAllowed() && !boolFlag(cmd, "list")) {
+		kind := "repo"
+		if cmd.Flags().Changed("org") {
+			kind = "org"
+		}
+		return newGHPicker(cmd, client, runner, cfg, isPR, kind, filters).run(ctx)
+	}
+
 	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
@@ -353,11 +365,6 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	// makes the count non-representative, so skip warming then.
 	if cfg.GitHub.Counts.WarmOnList && filters.isPlainOpen() && intFlag(cmd, "limit") == 0 && strings.HasPrefix(label, "repo:") {
 		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, len(issues))
-	}
-
-	// --pick: choose one item interactively, then open it in the browser.
-	if boolFlag(cmd, "pick") {
-		return pickGitHubItem(cmd, issues)
 	}
 
 	return emitGitHubList(cmd, label, query, issues, boolFlag(cmd, "links"), boolFlag(cmd, "url"))

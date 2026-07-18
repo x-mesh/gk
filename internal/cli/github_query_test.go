@@ -202,7 +202,7 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 	// Two repos (org scope) → repo column shown; verify columns align on the
 	// PLAIN text even though the output carries ANSI color.
 	issues := []ghapi.Issue{
-		{Number: 4, Title: "short", State: "open", Owner: "x-mesh", Repo: "gk", Author: "a", IsPR: true},
+		{Number: 4, Title: "short", State: "open", Owner: "x-mesh", Repo: "gk", Author: "a", IsPR: true, Labels: []string{"bug", "docs"}},
 		{Number: 128, Title: "a much longer title here", State: "open", Owner: "x-mesh", Repo: "term-mesh", Author: "bb", IsPR: false},
 	}
 	var buf strings.Builder
@@ -210,6 +210,9 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "#4") || !strings.Contains(out, "#128") {
 		t.Fatalf("table missing expected content:\n%s", out)
+	}
+	if !strings.Contains(out, "bug, docs") {
+		t.Errorf("labels should appear in the table, got:\n%s", out)
 	}
 	if strings.Contains(out, "repo:") {
 		t.Errorf("header should humanize the scope, got:\n%s", out)

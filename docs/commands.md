@@ -3836,10 +3836,30 @@ gk pr --mine         # only PRs you opened
 | `--limit <n>` | 0 | Cap the number of results (0 = no cap) |
 | `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
 | `--web` | false | Open the results in the browser as a github.com search instead of listing |
-| `--pick` | false | Pick an item interactively (TUI), then open it in the browser |
+| `--pick` | false | Force the interactive picker (already the default in a terminal) |
+| `--list` | false | Print the static list instead of opening the interactive picker |
 | `--links` | false | Make the `PR#`/`issue#` token a clickable terminal hyperlink (OSC 8) to its URL; ignored on pipes/non-TTY. The URL is always in `--json`. |
 | `--url` | false | Show the full item URL as a trailing column. A bare `https://` URL is auto-linked by virtually every terminal (including ones that don't support `--links`' OSC 8, e.g. Warp). |
 | `--json` | false | Emit the machine-readable list (agent envelope under `GK_AGENT=1`) |
+
+#### Interactive by default
+
+In a terminal, `gk pr` opens the **table picker** rather than printing a static
+list — the same convention as `gk switch`, `gk worktree`, and `gk clone`. Type to
+filter; the typed filter survives an action and the picker re-opens on it.
+
+| Key | Action |
+|-----|--------|
+| `enter` | Open the item in the browser |
+| `c` | Check out the PR locally (`gk pr checkout`) |
+| `y` | Copy the item URL |
+| `o` | Cycle scope: repo → org → inbox |
+| `a` | Toggle state: open ↔ all |
+
+Non-interactive runs are untouched: `--json`, `GK_AGENT=1`, a pipe, or CI all
+print the static list (the gate is `promptAllowed()`). `--list` forces the static
+list in a terminal; `--pick` forces the picker. An empty scope shows an inline
+"press o to widen the scope" row instead of nothing.
 
 #### What it does
 

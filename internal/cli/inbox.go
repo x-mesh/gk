@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
 	ghapi "github.com/x-mesh/gk/internal/github"
 )
 
@@ -50,13 +52,26 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 		return openGitHubSearch(cmd, query)
 	}
 
+	// Interactive by default in a terminal (same gate as gk pr / gk issue).
+	if boolFlag(cmd, "pick") || (promptAllowed() && !boolFlag(cmd, "list")) {
+		cfg, _ := config.Load(cmd.Flags())
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+		f := githubSearchFilters{state: stringFlag(cmd, "state"), labels: labels, raw: stringFlag(cmd, "query")}
+		switch {
+		case onlyPR:
+			f.typeFilter = "is:pr"
+		case onlyIssue:
+			f.typeFilter = "is:issue"
+		}
+		runner := &git.ExecRunner{Dir: RepoFlag()}
+		return newGHPicker(cmd, client, runner, cfg, onlyPR, "inbox", f).run(ctx)
+	}
+
 	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
-	}
-
-	if boolFlag(cmd, "pick") {
-		return pickGitHubItem(cmd, issues)
 	}
 	return emitGitHubList(cmd, "involves:@me", query, issues, boolFlag(cmd, "links"), boolFlag(cmd, "url"))
 }

@@ -347,11 +347,9 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	// gk worktree / gk clone. promptAllowed() keeps agent/--json/CI/piped runs
 	// on the static list; --list forces it off, --pick forces it on.
 	if boolFlag(cmd, "pick") || (promptAllowed() && !boolFlag(cmd, "list")) {
-		kind := "repo"
-		if cmd.Flags().Changed("org") {
-			kind = "org"
-		}
-		return newGHPicker(cmd, client, runner, cfg, isPR, kind, filters).run(ctx)
+		p := newGHPicker(cmd, client, runner, cfg, isPR, "repo", filters)
+		p.setScopeFromPrefix(prefix) // reuse the scope already resolved above
+		return p.run(ctx)
 	}
 
 	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))

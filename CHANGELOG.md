@@ -13,8 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching `gk switch` / `gk worktree` / `gk clone`: the listing opens in the
   table picker with type-to-filter, instead of printing a static list.
   - Keys: `enter` open in browser · `c` check out the PR (`gk pr checkout`) ·
-    `y` copy the URL · `o` cycle scope (repo → org → inbox) · `a` toggle
-    open/all. The typed filter is preserved across actions.
+    `y` copy the URL · `o` open the **scope layer** · `a` toggle open/all. The
+    typed filter is preserved across actions.
+  - The scope layer is a second picker listing this repository, your own
+    account, every organization you belong to (`/user/orgs`), and the inbox —
+    so you can move between owners without leaving the command. Without a token
+    it still offers the repo and whatever `github.owner`/origin resolved.
+
+### Fixed
+
+- The interactive picker ignored an explicit `--org <name>`, re-deriving the
+  owner from `github.owner`/origin instead (so `gk pr --org jinwoo-j` listed
+  origin's org). It now inherits the scope already resolved for the run.
   - Non-interactive runs are unchanged: `--json`, `GK_AGENT=1`, pipes, and CI
     still print the static list. `--list` forces the static list in a terminal;
     `--pick` forces the picker.

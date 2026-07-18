@@ -411,7 +411,7 @@ func strictUnmarshal(raw json.RawMessage, v any) error {
 // unknown-field rejection.
 func allowedJSONFields(v any) []string {
 	t := reflect.TypeOf(v)
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == nil || t.Kind() != reflect.Struct {

@@ -267,7 +267,7 @@ func TestRunShipCoreAutoSquashesInvalidReleaseCommitMessages(t *testing.T) {
 				{Stdout: "feat: valid\n\x1eWIP checkpoint\n\x1e"},
 				{Stdout: "feat: release changes\n\x1e"},
 			},
-			"log --format=%H%x00%B%x1e v1.2.3..HEAD": {
+			"log --no-merges --format=%H%x00%B%x1e v1.2.3..HEAD": {
 				{Stdout: "bad123456789\x00WIP checkpoint\n\x1e"},
 				{Stdout: "good12345678\x00feat: release changes\n\x1e"},
 			},
@@ -287,7 +287,7 @@ func TestRunShipCoreAutoSquashesInvalidReleaseCommitMessages(t *testing.T) {
 	for _, want := range []string{
 		"reset --soft v1.2.3",
 		"commit -m feat: release changes",
-		"log --format=%H%x00%B%x1e v1.2.3..HEAD",
+		"log --no-merges --format=%H%x00%B%x1e v1.2.3..HEAD",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing call %q in:\n%s", want, got)

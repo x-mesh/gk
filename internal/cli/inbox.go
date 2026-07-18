@@ -25,6 +25,7 @@ Use --pr or --issue to narrow the type, --state open|closed|all, and --json.`,
 	inboxCmd.Flags().Bool("issue", false, "only issues")
 	inboxCmd.Flags().String("state", "open", "which items: open | closed | all")
 	inboxCmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
+	inboxCmd.Flags().Bool("url", false, "show the full item URL as a trailing column (bare URLs that most terminals auto-link)")
 	rootCmd.AddCommand(inboxCmd)
 }
 
@@ -50,7 +51,8 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("github search: %w", err)
 	}
 	links, _ := cmd.Flags().GetBool("links")
-	return emitGitHubList(cmd, "involves:@me", query, issues, links)
+	showURL, _ := cmd.Flags().GetBool("url")
+	return emitGitHubList(cmd, "involves:@me", query, issues, links, showURL)
 }
 
 // inboxSearchQuery builds the involves:@me query for `gk inbox`, applying the

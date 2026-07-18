@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk pr` / `gk issue` / `gk inbox` gained `--url`: shows the full item URL as
+  a trailing column. Unlike `--links` (OSC 8 hyperlink on the `PR#` token, which
+  some terminals like Warp don't render), a bare `https://` URL is auto-linked
+  by virtually every terminal.
+
 ## [0.125.0] - 2026-07-18
 
 ### Added

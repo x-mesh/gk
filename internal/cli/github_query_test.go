@@ -206,7 +206,7 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 		{Number: 128, Title: "a much longer title here", State: "open", Owner: "x-mesh", Repo: "term-mesh", Author: "bb", IsPR: false},
 	}
 	var buf strings.Builder
-	renderGitHubTable(&buf, "org:x-mesh", issues, false)
+	renderGitHubTable(&buf, "org:x-mesh", issues, false, false)
 	out := buf.String()
 	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "PR#4") || !strings.Contains(out, "issue#128") {
 		t.Fatalf("table missing expected glued ref tokens:\n%s", out)
@@ -216,6 +216,24 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 	}
 	if strings.Contains(out, "repo:") {
 		t.Errorf("header should humanize the scope, got:\n%s", out)
+	}
+}
+
+func TestRenderGitHubTableURLColumn(t *testing.T) {
+	issues := []ghapi.Issue{
+		{Number: 4, Title: "t", State: "open", Owner: "x-mesh", Repo: "gk", Author: "a", IsPR: true, URL: "https://github.com/x-mesh/gk/pull/4"},
+	}
+	// without --url: no URL in output
+	var plain strings.Builder
+	renderGitHubTable(&plain, "repo:x-mesh/gk", issues, false, false)
+	if strings.Contains(plain.String(), "https://github.com") {
+		t.Errorf("URL should not appear without --url:\n%s", plain.String())
+	}
+	// with --url: the bare URL appears (terminals auto-link it)
+	var withURL strings.Builder
+	renderGitHubTable(&withURL, "repo:x-mesh/gk", issues, false, true)
+	if !strings.Contains(withURL.String(), "https://github.com/x-mesh/gk/pull/4") {
+		t.Errorf("--url should show the full URL:\n%s", withURL.String())
 	}
 }
 

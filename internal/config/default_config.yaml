@@ -35,7 +35,10 @@ status:
   # types, staleness, tree, conflict, churn, risk, base, local, since-push,
   # stash, heatmap, glyphs, wip (WIP chain at HEAD), squash (◈ unlanded
   # fixup!/WIP count), ancestry (parent-chain stack depth), collision
-  # (⊠ files also dirty in another worktree).
+  # (⊠ files also dirty in another worktree), github (open PR/issue counts
+  # for a GitHub origin — OFF by default; reads a disk cache only and never
+  # fetches, so add it here only if you populate the cache with
+  # `gk context --include=github`).
   # Override per-invocation with `--vis ...` or disable all with `--vis none`.
   #
   # `local` adds a working-tree change badge to the BRANCH line
@@ -529,3 +532,40 @@ ai:
 #
 #   # Hint verbosity after each command: "verbose", "minimal", or "off".
 #   hints: verbose
+
+# GitHub — the default account/org that `gk pr` and `gk issue` query with
+# --org (and no explicit name). When unset, those commands fall back to the
+# owner parsed from the current repo's origin remote. Set it globally, or
+# per-repo in .gk.yaml, so `gk pr --org` needs no argument.
+# Auth comes from GH_TOKEN / GITHUB_TOKEN / `gh auth login` — not from here.
+#
+# `counts` tunes the open PR/issue counts shown by `gk context` and
+# `gk status --vis github`. All three surfaces share one on-disk cache
+# (.git/gk-github-cache); each surface's policy decides whether it may fetch:
+#   off   — do not show this surface
+#   cache — show cached counts only, NEVER fetch (safe on hot paths)
+#   ttl   — show cached; fetch when older than ttl_minutes
+#   force — always fetch (ignores ttl_minutes)
+# Defaults keep `gk context` (bare) and `gk status` offline (cache), let an
+# explicit `--include=github` refresh on a 3-minute TTL, and warm the cache
+# for free whenever you run `gk pr`/`gk issue` on the current repo.
+#
+# github:
+#   owner: acme
+#   counts:
+#     ttl_minutes: 3
+#     context: cache      # gk context (bare)
+#     include: ttl        # gk context --include=github
+#     status: cache       # gk status --vis github
+#     warm_on_list: true  # gk pr / gk issue refresh the cache
+
+# Follow — `gk follow` change-detection engine.
+#   ref    — poll a remote branch via git ls-remote (no token; any git host)
+#   events — poll the GitHub Events API for PR/issue/review activity (--on
+#            triggers; needs a token for private repos)
+#   auto   — ref when no --on is given; events when --on + a token allows, else
+#            fall back to ref for merge-only triggers (default)
+# Override per run with --engine.
+#
+# follow:
+#   engine: auto

@@ -100,7 +100,7 @@ func init() {
 		Short:   "Show concise working tree status",
 		RunE:    runStatus,
 	}
-	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,local,since-push,stash,heatmap,glyphs,wip,squash,ancestry,collision; pass 'none' to disable the configured default")
+	cmd.Flags().StringSliceVar(&statusVisFlags, "vis", nil, "visualizations (repeatable or comma-list): gauge,bar,progress,types,staleness,tree,conflict,churn,risk,base,local,since-push,stash,heatmap,glyphs,wip,squash,ancestry,collision,github; pass 'none' to disable the configured default")
 	cmd.Flags().BoolVarP(&statusFetch, "fetch", "f", false, "fetch the current branch's upstream before reporting ↑N ↓N (opt-in; no network activity by default)")
 	cmd.Flags().IntVar(&statusTopN, "top", 0, "limit the entry list to the first N rows; 0 = unlimited. A footer shows the hidden remainder")
 	cmd.Flags().BoolVar(&statusLegend, "legend", false, "print a one-time key for every glyph and color in the current output and exit")
@@ -1782,6 +1782,15 @@ func runStatusOnce(cmd *cobra.Command) (int, error) {
 
 	if statusVisEnabled("squash") && !detached {
 		if line := renderSquashDebtLine(cmd.Context(), runner, cfg, st.Upstream, baseRes.Resolved, st.Branch); line != "" {
+			fmt.Fprintln(w, line)
+		}
+	}
+
+	// Opt-in (off by default): open PR/issue counts for a GitHub origin.
+	// Cache-only — never fetches on the status hot path; populated by
+	// `gk context --include=github`.
+	if statusVisEnabled("github") {
+		if line := renderStatusGitHub(cmd.Context(), runner, cfg); line != "" {
 			fmt.Fprintln(w, line)
 		}
 	}

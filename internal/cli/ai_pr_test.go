@@ -24,9 +24,13 @@ func TestAIPRRegistered(t *testing.T) {
 
 func TestAIPRHelpListsFlags(t *testing.T) {
 	buf := &bytes.Buffer{}
-	found, _, err := rootCmd.Find([]string{"pr"})
+	// The AI description generator's flags moved to `gk pr new`.
+	found, _, err := rootCmd.Find([]string{"pr", "new"})
 	if err != nil {
 		t.Fatalf("find: %v", err)
+	}
+	if found.Use != "new" {
+		t.Fatalf("Find(pr new) resolved to %q, want the 'new' subcommand", found.Use)
 	}
 	found.SetOut(buf)
 	found.SetErr(buf)

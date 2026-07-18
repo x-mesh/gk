@@ -98,6 +98,8 @@ var reservedConfigSections = map[string]bool{
 	"ai":        true,
 	"output":    true,
 	"fleet":     true,
+	"github":    true,
+	"follow":    true,
 	"lang":      true,
 }
 

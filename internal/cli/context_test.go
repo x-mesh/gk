@@ -114,6 +114,15 @@ func TestParseContextIncludes(t *testing.T) {
 	if got, err := parseContextIncludes(mk("all")); err != nil || len(got) != len(contextIncludeValues) || !got["release"] || !got["conflict"] {
 		t.Errorf("all: got %v, %v", got, err)
 	}
+	// github is a network include: valid on its own, but deliberately excluded
+	// from "all" so an offline `--include=all` stays fast. Guard both halves of
+	// that contract against regression.
+	if got, err := parseContextIncludes(mk("all")); err != nil || got["github"] {
+		t.Errorf("all must NOT include github (network include), got %v, %v", got, err)
+	}
+	if got, err := parseContextIncludes(mk("github")); err != nil || !got["github"] {
+		t.Errorf("github must be a valid --include section, got %v, %v", got, err)
+	}
 	if _, err := parseContextIncludes(mk("digest")); err == nil || !strings.Contains(err.Error(), "unknown --include") {
 		t.Errorf("typo must be a usage error, got %v", err)
 	}

@@ -249,14 +249,17 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 
 | Command | Alias | Description |
 |---|---|---|
-| `gk follow [branch] [-- <hook>...]` | | Foreground watcher that polls a **remote** branch and, each time it advances, hard-resets the local checkout to the remote tip (GitOps mirror) and runs a hook once. Omit `branch` to follow the current branch. Zero-infra "git-sync + watchexec" for dev boxes, agent sandboxes, and single-container deploys — supervised externally (systemd/docker/k8s), no built-in daemon. A backup ref is written before every reset (recover with `git reset --hard <backup-ref>`); an uncommitted working tree is refused unless `--discard-dirty`. A non-zero hook exit backs the poll off exponentially. `--remote`, `--interval` (default 30s), `--run`, `--once`. Not to be confused with `gk status --watch` (local file-change feed). Ships as a container (`Dockerfile`). |
+| `gk follow [branch] [-- <hook>...]` | | Foreground watcher that polls a **remote** branch and, each time it advances, hard-resets the local checkout to the remote tip (GitOps mirror) and runs a hook once. Omit `branch` to follow the current branch. Zero-infra "git-sync + watchexec" for dev boxes, agent sandboxes, and single-container deploys — supervised externally (systemd/docker/k8s), no built-in daemon. A backup ref is written before every reset (recover with `git reset --hard <backup-ref>`); an uncommitted working tree is refused unless `--discard-dirty`. A non-zero hook exit backs the poll off exponentially. `--remote`, `--interval` (default 30s), `--run`, `--once`. With `--on <trigger>` (`--engine events`) it instead watches GitHub **PR/issue events** (`pr:merged`, `pr:label=deploy`, `issue:closed`, …) via the Events API and runs the hook with event context in `GK_*` env — `gk follow main --on pr:merged -- ./deploy.sh` deploys on merge; `auto` falls back to ref (git-native, no token) for merge triggers. Not to be confused with `gk status --watch` (local file-change feed). Ships as a container (`Dockerfile`). |
 
 ### AI
 | Command | Description |
 |---|---|
 | `gk commit` | Group WIP (staged + unstaged + untracked) into semantic commit plans via an AI CLI and apply them. `-f/--force` skips review, `-i/--interactive` groups files into commits by hand in a TUI (no AI; builds the same plan as `--plan`), `--dry-run` previews only, `--abort` restores HEAD to the latest backup ref. See **AI commit** section below |
 | `gk next` | Explain the current repository state in plain language and suggest safe next commands. Falls back to a local rule-based plan when no AI provider is available. `--run`/`-r` executes the top recommended step (from gk's deterministic allowlist, never free-form AI output) after confirmation; risky commands are refused |
-| `gk pr` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
+| `gk pr` | List open pull requests via the GitHub search API — current repo by default, `--org [name]` for a whole org/account in one search, `--mine` for yours. `--state open\|closed\|all`, `--json`. Auth from `GH_TOKEN`/`GITHUB_TOKEN`/`gh auth login` |
+| `gk pr new` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
+| `gk issue` | List open issues via the GitHub search API. Same scope flags as `gk pr` (`--org`, `--mine`, `--state`, `--json`) |
+| `gk inbox` | Every open PR and issue involving you (`involves:@me`) across all repos, in one search. `--pr`/`--issue` narrow the type; needs a token |
 | `gk review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
 | `gk changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
 
@@ -418,15 +421,15 @@ gk commit --abort
 
 These commands use the provider's **Summarizer** capability. All shipped providers (`anthropic`, `openai`, `nvidia`, `groq`, `gemini`, `qwen`, `kiro-cli`) implement Summarizer.
 
-### `gk pr`
+### `gk pr new`
 
-Generate a structured PR description from the current branch's commits relative to the base branch.
+Generate a structured PR description from the current branch's commits relative to the base branch. (Bare `gk pr` now lists open PRs — see the command table above.)
 
 ```bash
-gk pr                          # output to stdout
-gk pr --output clipboard       # copy to clipboard
-gk pr --dry-run                # preview the prompt
-gk pr --provider nvidia --lang ko
+gk pr new                          # output to stdout
+gk pr new --output clipboard       # copy to clipboard
+gk pr new --dry-run                # preview the prompt
+gk pr new --provider nvidia --lang ko
 ```
 
 Flags: `--output` (stdout|clipboard), `--dry-run`, `--provider`, `--lang`

@@ -17,8 +17,30 @@ import (
 )
 
 func init() {
-	cmd := &cobra.Command{
+	// `gk pr` LISTS open pull requests (repo / --org / --mine); the AI
+	// description generator moved to the `gk pr new` subcommand.
+	prCmd := &cobra.Command{
 		Use:   "pr",
+		Short: "List open pull requests (current repo, --org, or --mine)",
+		Long: `Lists open pull requests via the GitHub search API.
+
+No flag lists the current repo's PRs (owner/repo from origin). --org lists
+a whole org/account's PRs in one query; --mine restricts to PRs you opened.
+--state open|closed|all and --json are supported.
+
+Auth comes from GH_TOKEN / GITHUB_TOKEN / a prior 'gh auth login'. Without
+a token only public results show, under a lower rate limit.
+
+To generate a PR *description* from branch commits, use 'gk pr new'.`,
+		Args: cobra.MaximumNArgs(1), // permits the `--org acme` space form
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runGitHubList(cmd, args, true)
+		},
+	}
+	addGitHubScopeFlags(prCmd)
+
+	newCmd := &cobra.Command{
+		Use:   "new",
 		Short: "Generate a PR description from branch commits",
 		Long: `Computes the diff between the current branch and the base branch,
 collects commit messages, and generates a structured PR description
@@ -29,12 +51,13 @@ The base branch is determined from config (base_branch) or auto-detected
 to copy directly.`,
 		RunE: runAIPR,
 	}
-	cmd.Flags().String("output", "stdout", `output target: "stdout" or "clipboard"`)
-	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
-	cmd.Flags().String("provider", "", "override ai.provider")
-	cmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
+	newCmd.Flags().String("output", "stdout", `output target: "stdout" or "clipboard"`)
+	newCmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
+	newCmd.Flags().String("provider", "", "override ai.provider")
+	newCmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
 
-	rootCmd.AddCommand(cmd)
+	prCmd.AddCommand(newCmd)
+	rootCmd.AddCommand(prCmd)
 }
 
 // aiPRFlags captures CLI flags for `gk pr`.

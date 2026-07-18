@@ -19,7 +19,7 @@ import (
 // comparison: an agent that asked for a live diff/log/precheck section wants
 // the current value, not "unchanged since". They are disjoint from the core
 // fields, so a fresh include key never collides with a changed core field.
-var contextIncludeResponseKeys = []string{"diff", "log", "precheck", "conflict", "remotes", "release", "notes"}
+var contextIncludeResponseKeys = []string{"diff", "log", "precheck", "conflict", "remotes", "release", "github", "notes"}
 
 // contextDeltaOutcome classifies the current core context against the
 // last-saved snapshot for this worktree.

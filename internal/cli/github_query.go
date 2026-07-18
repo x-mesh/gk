@@ -31,6 +31,7 @@ func addGitHubScopeFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("mine", false, "only items you authored (author:@me; needs a token)")
 	cmd.Flags().String("state", "open", "which items: open | closed | all")
 	cmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
+	cmd.Flags().Bool("url", false, "show the full item URL as a trailing column (bare URLs that most terminals auto-link)")
 }
 
 // githubItemJSON is the per-row shape emitted by `gk pr/issue/inbox --json`.
@@ -228,6 +229,7 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	query := buildSearchQuery(prefix, typeFilter, state, mine)
 
 	links, _ := cmd.Flags().GetBool("links")
+	showURL, _ := cmd.Flags().GetBool("url")
 
 	issues, err := client.SearchIssues(ctx, query)
 	if err != nil {
@@ -242,13 +244,13 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, len(issues))
 	}
 
-	return emitGitHubList(cmd, label, query, issues, links)
+	return emitGitHubList(cmd, label, query, issues, links, showURL)
 }
 
 // emitGitHubList renders the result set as JSON (agent envelope) or a table.
-// links makes the ref token a clickable terminal hyperlink (text mode only;
-// the URL is always present in the JSON payload).
-func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issue, links bool) error {
+// links makes the ref token a clickable terminal hyperlink; showURL adds a
+// trailing full-URL column (text mode only; the URL is always in JSON).
+func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issue, links, showURL bool) error {
 	out := cmd.OutOrStdout()
 	if JSONOut() {
 		payload := githubListJSON{Scope: scope, Query: query, Count: len(issues)}
@@ -257,7 +259,7 @@ func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issu
 		}
 		return emitAgentResult(out, payload)
 	}
-	renderGitHubTable(out, scope, issues, links)
+	renderGitHubTable(out, scope, issues, links, showURL)
 	return nil
 }
 
@@ -296,7 +298,7 @@ func (c *ghCol) width() int {
 // the PLAIN text (runewidth, ANSI-blind) and the color is applied afterward, so
 // the escape bytes never skew the columns. The repo column is shown only for
 // org/inbox scopes that span repositories — it is redundant under a repo scope.
-func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links bool) {
+func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links, showURL bool) {
 	if len(issues) == 0 {
 		fmt.Fprintln(w, cellFaint(fmt.Sprintf("no matching items · %s", scope)))
 		return
@@ -311,6 +313,7 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links bo
 	labelCol := &ghCol{}
 	authorCol := &ghCol{}
 	ageCol := &ghCol{}
+	urlCol := &ghCol{}
 	anyLabels := false
 
 	for _, is := range issues {
@@ -368,6 +371,10 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links bo
 			age = relativeTime(time.Since(is.UpdatedAt))
 		}
 		ageCol.add(age, cellFaint(age))
+
+		// Full URL as bare text — most terminals (incl. Warp) auto-link a bare
+		// https:// URL, so this works where OSC 8 (--links) does not.
+		urlCol.add(is.URL, cellFaint(is.URL))
 	}
 
 	cols := []*ghCol{refCol}
@@ -379,6 +386,9 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links bo
 		cols = append(cols, labelCol)
 	}
 	cols = append(cols, authorCol, ageCol)
+	if showURL { // trailing (ragged) column, so it never skews the ones before it
+		cols = append(cols, urlCol)
+	}
 
 	widths := make([]int, len(cols))
 	for i, c := range cols {

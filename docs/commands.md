@@ -3828,6 +3828,7 @@ gk pr --mine         # only PRs you opened
 | `--mine` | false | Restrict to items you authored (`author:@me`; needs a token) |
 | `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
 | `--links` | false | Make the `PR#`/`issue#` token a clickable terminal hyperlink (OSC 8) to its URL; ignored on pipes/non-TTY. The URL is always in `--json`. |
+| `--url` | false | Show the full item URL as a trailing column. A bare `https://` URL is auto-linked by virtually every terminal (including ones that don't support `--links`' OSC 8, e.g. Warp). |
 | `--json` | false | Emit the machine-readable list (agent envelope under `GK_AGENT=1`) |
 
 #### What it does

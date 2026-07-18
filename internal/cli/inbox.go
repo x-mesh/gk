@@ -17,15 +17,15 @@ you authored, are assigned, are requested to review, or are mentioned on —
 across every repository, in a single search.
 
 Requires a token (GH_TOKEN / GITHUB_TOKEN / 'gh auth login') to resolve @me.
-Use --pr or --issue to narrow the type, --state open|closed|all, and --json.`,
+Use --pr or --issue to narrow the type, --state open|closed|all, --label,
+-q for raw qualifiers, --sort/--limit, and --web/--pick/--links/--url/--json.`,
 		Args: cobra.NoArgs,
 		RunE: runInbox,
 	}
 	inboxCmd.Flags().Bool("pr", false, "only pull requests")
 	inboxCmd.Flags().Bool("issue", false, "only issues")
 	inboxCmd.Flags().String("state", "open", "which items: open | closed | all")
-	inboxCmd.Flags().Bool("links", false, "make the PR#/issue# token a clickable terminal hyperlink to its URL")
-	inboxCmd.Flags().Bool("url", false, "show the full item URL as a trailing column (bare URLs that most terminals auto-link)")
+	addGitHubQueryFlags(inboxCmd)
 	rootCmd.AddCommand(inboxCmd)
 }
 
@@ -38,37 +38,43 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 	}
 	client := &ghapi.Client{Token: token}
 
-	onlyPR, _ := cmd.Flags().GetBool("pr")
-	onlyIssue, _ := cmd.Flags().GetBool("issue")
-	state, _ := cmd.Flags().GetString("state")
-	query, err := inboxSearchQuery(onlyPR, onlyIssue, state)
+	onlyPR := boolFlag(cmd, "pr")
+	onlyIssue := boolFlag(cmd, "issue")
+	labels, _ := cmd.Flags().GetStringArray("label")
+	query, err := inboxSearchQuery(onlyPR, onlyIssue, stringFlag(cmd, "state"), labels, stringFlag(cmd, "query"))
 	if err != nil {
 		return err
 	}
 
-	issues, err := client.SearchIssues(ctx, query)
+	if boolFlag(cmd, "web") {
+		return openGitHubSearch(cmd, query)
+	}
+
+	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
 	}
-	links, _ := cmd.Flags().GetBool("links")
-	showURL, _ := cmd.Flags().GetBool("url")
-	return emitGitHubList(cmd, "involves:@me", query, issues, links, showURL)
+
+	if boolFlag(cmd, "pick") {
+		return pickGitHubItem(cmd, issues)
+	}
+	return emitGitHubList(cmd, "involves:@me", query, issues, boolFlag(cmd, "links"), boolFlag(cmd, "url"))
 }
 
 // inboxSearchQuery builds the involves:@me query for `gk inbox`, applying the
-// --pr/--issue type narrowing. It errors on the mutually-exclusive
-// combination. Split out from runInbox so this validation is unit-testable
-// without a token or network.
-func inboxSearchQuery(onlyPR, onlyIssue bool, state string) (string, error) {
+// --pr/--issue type narrowing plus any label/raw qualifiers. It errors on the
+// mutually-exclusive combination. Split out from runInbox so this validation is
+// unit-testable without a token or network.
+func inboxSearchQuery(onlyPR, onlyIssue bool, state string, labels []string, raw string) (string, error) {
 	if onlyPR && onlyIssue {
 		return "", fmt.Errorf("--pr and --issue are mutually exclusive")
 	}
-	typeFilter := ""
+	f := githubSearchFilters{state: state, labels: labels, raw: raw}
 	switch {
 	case onlyPR:
-		typeFilter = "is:pr"
+		f.typeFilter = "is:pr"
 	case onlyIssue:
-		typeFilter = "is:issue"
+		f.typeFilter = "is:issue"
 	}
-	return buildSearchQuery("involves:@me", typeFilter, state, false), nil
+	return buildSearchQuery("involves:@me", f), nil
 }

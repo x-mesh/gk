@@ -3826,7 +3826,17 @@ gk pr --mine         # only PRs you opened
 |------|---------|-------------|
 | `--org [name]` | — | Search the whole org/account instead of the current repo. Owner priority: the value you pass > `github.owner` in config > origin's owner. `--org` and `--org=acme`/`--org acme` both work. |
 | `--mine` | false | Restrict to items you authored (`author:@me`; needs a token) |
+| `--review` | false | Only PRs awaiting your review (`review-requested:@me`; needs a token) |
+| `--assigned` | false | Only items assigned to you (`assignee:@me`; needs a token) |
+| `--author <user>` | — | Only items opened by `<user>` |
+| `--assignee <user>` | — | Only items assigned to `<user>` |
+| `--label <name>` | — | Filter by label (repeatable; `label:<name>`) |
+| `-q, --query <raw>` | — | Extra raw GitHub search qualifiers, appended verbatim (e.g. `is:draft`) |
+| `--sort <key>` | `updated` | Sort key: `updated`, `created`, or `comments` |
+| `--limit <n>` | 0 | Cap the number of results (0 = no cap) |
 | `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
+| `--web` | false | Open the results in the browser as a github.com search instead of listing |
+| `--pick` | false | Pick an item interactively (TUI), then open it in the browser |
 | `--links` | false | Make the `PR#`/`issue#` token a clickable terminal hyperlink (OSC 8) to its URL; ignored on pipes/non-TTY. The URL is always in `--json`. |
 | `--url` | false | Show the full item URL as a trailing column. A bare `https://` URL is auto-linked by virtually every terminal (including ones that don't support `--links`' OSC 8, e.g. Warp). |
 | `--json` | false | Emit the machine-readable list (agent envelope under `GK_AGENT=1`) |
@@ -3851,8 +3861,45 @@ gk pr --org acme          # a specific org/account
 # Only the PRs you opened, closed ones included
 gk pr --mine --state all
 
+# Daily triage: what needs my review, what's assigned to me
+gk pr --review
+gk pr --assigned
+
+# Filter by author / label / raw qualifier, sorted and capped
+gk pr --org --author octocat --label bug --sort created --limit 20
+gk issue -q 'is:draft'
+
+# Open the results in the browser, or pick one to open
+gk pr --org --web
+gk pr --pick
+
 # Machine-readable for an agent
 GK_AGENT=1 gk pr --json
+```
+
+`gk issue` and `gk inbox` take the same query/output flags (`--label`, `-q`,
+`--sort`, `--limit`, `--web`, `--pick`, `--links`, `--url`, `--json`); the
+scope-relative filters (`--review`, `--assigned`, `--author`, `--assignee`) are
+`gk pr`/`gk issue` only.
+
+---
+
+### gk pr checkout
+
+Fetch a pull request's branch and switch to it locally.
+
+```
+gk pr checkout <number> [--branch <name>] [--remote <name>]
+```
+
+Fetches the PR head via GitHub's `refs/pull/<n>/head` — which exists for every
+PR, **including forks** — into a local branch (default `pr/<n>`) and switches to
+it. Uses **git only**: no GitHub API call and no token (git's own SSH/credential
+auth applies), so it works on private repos without `GH_TOKEN`.
+
+```bash
+gk pr checkout 98                 # → local branch pr/98
+gk pr checkout 98 --branch review # custom local branch name
 ```
 
 ---

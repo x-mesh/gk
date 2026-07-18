@@ -41,13 +41,24 @@ const searchMaxPages = 10
 // A token is required for `@me` qualifiers and to see private repos;
 // unauthenticated callers get public results only, under the stricter
 // 10/min search bucket (vs 30/min authenticated).
-func (c *Client) SearchIssues(ctx context.Context, query string) ([]Issue, error) {
+//
+// sort is the API sort key ("updated" | "created" | "comments"); "" defaults
+// to "updated". limit caps the number of rows returned (0 = no cap, up to the
+// 1000-result API ceiling).
+func (c *Client) SearchIssues(ctx context.Context, query, sort string, limit int) ([]Issue, error) {
+	if sort == "" {
+		sort = "updated"
+	}
+	perPage := 100
+	if limit > 0 && limit < perPage {
+		perPage = limit
+	}
 	var all []Issue
 	for page := 1; page <= searchMaxPages; page++ {
 		q := url.Values{}
 		q.Set("q", query)
-		q.Set("per_page", "100")
-		q.Set("sort", "updated")
+		q.Set("per_page", fmt.Sprintf("%d", perPage))
+		q.Set("sort", sort)
 		q.Set("order", "desc")
 		q.Set("page", fmt.Sprintf("%d", page))
 
@@ -56,7 +67,11 @@ func (c *Client) SearchIssues(ctx context.Context, query string) ([]Issue, error
 			return nil, err
 		}
 		all = append(all, batch...)
-		if len(batch) < 100 || len(all) >= total {
+		if limit > 0 && len(all) >= limit {
+			all = all[:limit]
+			break
+		}
+		if len(batch) < perPage || len(all) >= total {
 			break
 		}
 	}

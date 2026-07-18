@@ -47,7 +47,7 @@ func TestSearchIssuesParsesPRsAndIssues(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{APIBase: srv.URL}
-	issues, err := c.SearchIssues(context.Background(), "repo:x-mesh/gk is:open")
+	issues, err := c.SearchIssues(context.Background(), "repo:x-mesh/gk is:open", "", 0)
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
@@ -63,6 +63,29 @@ func TestSearchIssuesParsesPRsAndIssues(t *testing.T) {
 	}
 	if issues[1].IsPR {
 		t.Fatalf("row 1 should be an issue, not a PR: %+v", issues[1])
+	}
+}
+
+func TestSearchIssuesLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("per_page"); got != "3" {
+			t.Errorf("per_page = %q, want 3 (== limit when < 100)", got)
+		}
+		items := make([]map[string]any, 0, 3)
+		for i := 0; i < 3; i++ {
+			items = append(items, searchItem("x-mesh", "gk", i+1, "row", ""))
+		}
+		writeJSON(t, w, map[string]any{"total_count": 50, "items": items})
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	issues, err := c.SearchIssues(context.Background(), "org:x-mesh is:open", "created", 3)
+	if err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	if len(issues) != 3 {
+		t.Fatalf("limit not applied: got %d, want 3", len(issues))
 	}
 }
 
@@ -84,7 +107,7 @@ func TestSearchIssuesPaginates(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{APIBase: srv.URL}
-	issues, err := c.SearchIssues(context.Background(), "org:x-mesh is:open")
+	issues, err := c.SearchIssues(context.Background(), "org:x-mesh is:open", "", 0)
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
@@ -105,7 +128,7 @@ func TestSearchIssuesRateLimited(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{APIBase: srv.URL}
-	_, err := c.SearchIssues(context.Background(), "org:x-mesh is:open")
+	_, err := c.SearchIssues(context.Background(), "org:x-mesh is:open", "", 0)
 	if err == nil {
 		t.Fatal("expected a rate-limit error, got nil")
 	}
@@ -184,7 +207,7 @@ func TestSearchIssues429(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{APIBase: srv.URL}
-	_, err := c.SearchIssues(context.Background(), "org:x-mesh is:open")
+	_, err := c.SearchIssues(context.Background(), "org:x-mesh is:open", "", 0)
 	if err == nil || !strings.Contains(err.Error(), "rate-limited") {
 		t.Fatalf("429 should be a rate-limit error, got %v", err)
 	}
@@ -202,7 +225,7 @@ func TestSearchIssues403PermissionNotRateLimit(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{APIBase: srv.URL}
-	_, err := c.SearchIssues(context.Background(), "org:secret is:open")
+	_, err := c.SearchIssues(context.Background(), "org:secret is:open", "", 0)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

@@ -208,8 +208,8 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 	var buf strings.Builder
 	renderGitHubTable(&buf, "org:x-mesh", issues)
 	out := buf.String()
-	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "#4") || !strings.Contains(out, "#128") {
-		t.Fatalf("table missing expected content:\n%s", out)
+	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "PR#4") || !strings.Contains(out, "issue#128") {
+		t.Fatalf("table missing expected glued ref tokens:\n%s", out)
 	}
 	if !strings.Contains(out, "bug, docs") {
 		t.Errorf("labels should appear in the table, got:\n%s", out)

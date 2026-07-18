@@ -233,3 +233,31 @@ func TestSearchIssues403PermissionNotRateLimit(t *testing.T) {
 		t.Fatalf("403 with quota remaining must NOT be labeled rate-limited, got %v", err)
 	}
 }
+
+func TestSearchIssuesWithTotalPreservesExactCountWhenLimited(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("per_page = %q, want 100", got)
+		}
+		items := make([]map[string]any, 100)
+		for i := range items {
+			items[i] = searchItem("x-mesh", "gk", i+1, "row", "")
+		}
+		writeJSON(t, w, map[string]any{"total_count": 275, "items": items})
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	issues, total, err := c.SearchIssuesWithTotal(context.Background(), "repo:x-mesh/gk is:open", "", 100)
+	if err != nil {
+		t.Fatalf("SearchIssuesWithTotal: %v", err)
+	}
+	if len(issues) != 100 || total != 275 {
+		t.Fatalf("len/total = %d/%d, want 100/275", len(issues), total)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want one bounded request", calls)
+	}
+}

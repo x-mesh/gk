@@ -53,7 +53,8 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Interactive by default in a terminal (same gate as gk pr / gk issue).
-	if boolFlag(cmd, "pick") || (promptAllowed() && !boolFlag(cmd, "list")) {
+	explicitPick := boolFlag(cmd, "pick")
+	if shouldRunGHPicker(explicitPick, boolFlag(cmd, "list"), promptAllowed()) {
 		cfg, _ := config.Load(cmd.Flags())
 		if cfg == nil {
 			cfg = &config.Config{}
@@ -66,7 +67,7 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 			f.typeFilter = "is:issue"
 		}
 		runner := &git.ExecRunner{Dir: RepoFlag()}
-		return newGHPicker(cmd, client, runner, cfg, onlyPR, "inbox", f).run(ctx)
+		return newGHPicker(cmd, client, runner, cfg, onlyPR, "inbox", f).runForEnvironment(ctx, explicitPick)
 	}
 
 	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))

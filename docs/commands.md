@@ -413,7 +413,7 @@ Each linked worktree carries its own status: `current` (the worktree this call r
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
-`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, stage blobs, and `symbols` — the enclosing function/entity of each conflict marker, weave-style: "`process` 양쪽 수정" beats "app.py 충돌"), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (what is still unreleased: when a release branch resolves, the commits on HEAD not yet on it — `origin/<base>..HEAD` — plus the since-tag total and `already_on_base` so squash-merged work already shipped no longer inflates the count; falls back to since-tag-only when no base resolves, and still appears when the repo has no tags but a base does). A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (the last 5 commits), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, stage blobs, and `symbols` — the enclosing function/entity of each conflict marker, weave-style: "`process` 양쪽 수정" beats "app.py 충돌"), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (what is still unreleased: when a release branch resolves, the commits on HEAD not yet on it — `origin/<base>..HEAD` — plus the since-tag total and `already_on_base` so squash-merged work already shipped no longer inflates the count; falls back to since-tag-only when no base resolves, and still appears when the repo has no tags but a base does). One more section, `github`, counts the repo's open PRs/issues (plus PRs awaiting your review) via the GitHub search API. `gk context` (bare) shows it by default, and `--include=github` is an explicit refresh; it stays **excluded from `all`**. All GitHub-count surfaces (`gk context`, `gk status --vis github`) share one on-disk cache (`.git/gk-github-cache`) governed by a per-surface policy in `github.counts` — `off` | `cache` (never fetch) | `ttl` (fetch when older than `ttl_minutes`, default 3) | `force` (always fetch). Defaults keep bare `gk context` and `gk status` offline (`cache`) and let `--include=github` refresh on the TTL (`ttl`); `gk pr`/`gk issue` on the current repo warm the cache for free. Fetches run under a 5s timeout; `github.as_of` records the fetch time. A section that cannot be collected degrades to a `notes` entry instead of failing the call.
 
 `--delta` answers a **repeat** orientation with only what moved: the first call in a worktree returns the full document tagged `delta:"baseline"` (and records the snapshot under `~/.gk/context-ledger/`, keyed by the normalized worktree path); an unchanged repeat collapses to `{delta:"unchanged", unchanged:true, delta_base}`; a changed repeat carries just the core fields that differ (a field that vanished — e.g. `in_progress` after a rebase finishes — surfaces as `null` rather than silently disappearing). `--include` sections are never delta'd: they ride along fresh on every call. Any ledger problem (missing, corrupt, unwritable home) silently degrades to the full response, and the ledger directory is swept with a 7-day TTL on every save. The non-delta output is byte-identical to before.
 
@@ -423,6 +423,8 @@ gk context --json                           # agent contract
 gk context --include=diff,log,precheck      # fuse follow-up probes (or --include=all)
 gk context --include=conflict --json         # unmerged paths + stages + hunk counts
 gk context --include=remotes --json         # per-remote drift + asymmetric push URLs
+gk context --include=github --json           # open PR/issue counts (opt-in, network, cache-first)
+gk status --vis github                       # same counts on a status line — cache-only, never fetches
 gk context --delta --json                   # repeat orientation: only what changed since the last call
 ```
 
@@ -3802,12 +3804,66 @@ See the "AI commit" section in the main `README.md` for provider install/auth in
 
 ### gk pr
 
-Generate a structured PR description from the current branch's commits relative to the base branch.
+List open pull requests via the GitHub search API. (The AI PR-description
+generator moved to `gk pr new` — see below.)
+
+Auth is resolved from `GH_TOKEN` / `GITHUB_TOKEN` / a prior `gh auth login`
+(read from `~/.config/gh/hosts.yml`; no `gh` binary is invoked). Without a
+token only public results show, under a lower rate limit. When `gh` stored
+its token in the OS keyring, expose it with `export GH_TOKEN=$(gh auth token)`.
 
 #### Synopsis
 
 ```
-gk pr [flags]
+gk pr [flags]        # open PRs in the current repo (owner/repo from origin)
+gk pr --org [name]   # open PRs across a whole org/account, one search
+gk pr --mine         # only PRs you opened
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--org [name]` | — | Search the whole org/account instead of the current repo. Owner priority: the value you pass > `github.owner` in config > origin's owner. `--org` and `--org=acme`/`--org acme` both work. |
+| `--mine` | false | Restrict to items you authored (`author:@me`; needs a token) |
+| `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
+| `--json` | false | Emit the machine-readable list (agent envelope under `GK_AGENT=1`) |
+
+#### What it does
+
+One `/search/issues` call resolves the whole scope server-side — an org
+query spans every repo without a per-repo loop. The search API has its own
+rate bucket (30/min authenticated, 10/min anonymous), separate from the core
+5000/hour, so interactive listing never trips a 429.
+
+#### Examples
+
+```bash
+# Open PRs in the current repo
+gk pr
+
+# Every open PR across the org (owner from config or origin)
+gk pr --org
+gk pr --org acme          # a specific org/account
+
+# Only the PRs you opened, closed ones included
+gk pr --mine --state all
+
+# Machine-readable for an agent
+GK_AGENT=1 gk pr --json
+```
+
+---
+
+### gk pr new
+
+Generate a structured PR description from the current branch's commits
+relative to the base branch. (This was `gk pr` before listing took that name.)
+
+#### Synopsis
+
+```
+gk pr new [flags]
 ```
 
 #### Flags
@@ -3832,16 +3888,53 @@ If the current branch has no commits ahead of the base branch, prints a message 
 
 ```bash
 # Generate PR description to stdout
-gk pr
+gk pr new
 
 # Copy to clipboard
-gk pr --output clipboard
+gk pr new --output clipboard
 
 # Preview the prompt without calling the provider
-gk pr --dry-run
+gk pr new --dry-run
 
 # Use a specific provider and language
-gk pr --provider nvidia --lang ko
+gk pr new --provider nvidia --lang ko
+```
+
+---
+
+### gk issue
+
+List open issues via the GitHub search API. Same scope flags as `gk pr`
+(`--org [name]`, `--mine`, `--state`, `--json`); only the type differs.
+
+```bash
+gk issue                 # open issues in the current repo
+gk issue --org acme      # across a whole org/account
+gk issue --mine          # only issues you opened
+```
+
+---
+
+### gk inbox
+
+Everything on GitHub that involves you — open PRs and issues you authored,
+are assigned, are requested to review, or are mentioned on — across every
+repository, in a single `involves:@me` search. Requires a token to resolve
+`@me`.
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pr` | false | Only pull requests |
+| `--issue` | false | Only issues |
+| `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
+| `--json` | false | Machine-readable list |
+
+```bash
+gk inbox                 # all open PRs + issues involving you
+gk inbox --pr            # just the PRs
+GK_AGENT=1 gk inbox --json
 ```
 
 ---
@@ -4068,9 +4161,55 @@ overlap.
 | `--run` | — | hook command run via `sh -c` on each change |
 | `--discard-dirty` | `false` | allow the hard reset to discard uncommitted local changes (DESTRUCTIVE) |
 | `--once` | `false` | run exactly one cycle (check, maybe update+hook) then exit |
+| `--engine` | config `follow.engine`, else `auto` | change-detection engine: `ref` (git ls-remote) \| `events` (GitHub PR/issue) \| `auto` |
+| `--on` | — | GitHub event trigger for the events engine (repeatable) |
 
 Hook precedence: a trailing `-- <cmd> args...` wins over `--run`. With neither,
-the cycle still mirrors but runs no hook.
+the cycle still mirrors (ref) / logs (events) but runs no hook.
+
+### Engines: ref vs events
+
+The default `ref` engine watches a **branch SHA** via `git ls-remote` — git-native,
+needs no GitHub token (SSH/credential-helper authenticates), and always reads the
+true current tip. It answers "where is the branch now?".
+
+The `events` engine (opt in with `--on`) polls the repo's **GitHub Events API** —
+PR/issue/review activity that never touches a branch SHA (opened, labeled,
+reviewed, issue closed…). It answers "what happened?". It uses a conditional
+**ETag** (a 304 is free), persists a cursor so a restart never re-fires past
+events, and **baselines** on first run so it does not fire the hook on the
+existing backlog.
+
+`--on <trigger>` (repeatable, matches any):
+
+```
+pr:merged          pr:opened      pr:closed      pr:label=<name>   pr:review[=state]
+issue:opened       issue:closed   issue:label=<name>              issue:comment
+```
+
+Default trigger (no `--on` in events mode) is `pr:merged`. A branch argument
+filters `pr:merged` to that base and enables **mirror-on-merge**:
+
+```bash
+# deploy when a PR merges into main: mirror main, then run the hook
+gk follow main --on pr:merged -- ./deploy.sh
+
+# notify on any PR labeled "deploy" (no branch = event→hook, non-destructive)
+gk follow --on pr:label=deploy --run './notify.sh'
+```
+
+The hook receives the event as environment variables: `GK_TRIGGER`,
+`GK_EVENT_TYPE`, `GK_EVENT_ACTION`, `GK_ACTOR`, `GK_PR_NUMBER` / `GK_PR_TITLE` /
+`GK_PR_BASE` / `GK_PR_HEAD` / `GK_PR_MERGED`, `GK_ISSUE_NUMBER` / `GK_ISSUE_TITLE`,
+`GK_LABEL`, `GK_REVIEW_STATE`.
+
+**`auto` engine + token fallback.** With no `--on`, `auto` is the ref engine (no
+token needed). With `--on` and a token, it is the events engine. With `--on` and
+**no token**, it falls back to the ref engine for merge-only triggers (watching
+the branch for any advance — a loud warning notes the lost PR-level granularity),
+and for API-only triggers (labels/issues/reviews) it uses the events engine but
+warns it works on public repos only. Auth comes from `GH_TOKEN` / `GITHUB_TOKEN`
+/ `gh auth login`.
 
 ### Safety
 

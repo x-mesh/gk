@@ -26,6 +26,20 @@ type Config struct {
 	AI         AIConfig        `mapstructure:"ai"          yaml:"ai"`
 	Output     OutputConfig    `mapstructure:"output"      yaml:"output"`
 	Fleet      FleetConfig     `mapstructure:"fleet"       yaml:"fleet"`
+	GitHub     GitHubConfig    `mapstructure:"github"      yaml:"github"`
+	Follow     FollowConfig    `mapstructure:"follow"      yaml:"follow"`
+}
+
+// FollowConfig tunes `gk follow`. Engine picks how changes are detected:
+//   - "ref"    — poll a remote branch via git ls-remote (the original engine;
+//     no token, works on any git host, always sees the true current tip)
+//   - "events" — poll the GitHub repo Events API (PR/issue/review events; needs
+//     a token for private repos)
+//   - "auto"   — ref when no --on trigger is given; otherwise events when a
+//     token/public repo allows, else fall back to ref for merge triggers
+//     (`--engine` overrides this per run)
+type FollowConfig struct {
+	Engine string `mapstructure:"engine" yaml:"engine"`
 }
 
 // FleetConfig configures multi-repo `gk fleet`. Repos lists explicit repo paths;
@@ -53,6 +67,37 @@ type FleetConfig struct {
 	// stuck). Unset keeps the mode default: active in multi-repo, all in
 	// single-repo. Same as --filter.
 	Filter string `mapstructure:"filter" yaml:"filter,omitempty"`
+}
+
+// GitHubConfig holds the default GitHub account/org the PR and issue
+// listing commands (`gk pr`, `gk issue`) query when no --org flag is given.
+// Owner is intentionally NOT omitempty: `gk config set github.owner` only
+// accepts keys that appear as a leaf in the marshaled Defaults(), and an
+// empty omitempty field would vanish from that schema.
+type GitHubConfig struct {
+	Owner  string             `mapstructure:"owner"  yaml:"owner"`
+	Counts GitHubCountsConfig `mapstructure:"counts" yaml:"counts"`
+}
+
+// GitHubCountsConfig tunes the open PR/issue counts surfaced by `gk context`
+// and `gk status --vis github`. All three display surfaces read/refresh a
+// shared on-disk cache (.git/gk-github-cache); the per-surface policy decides
+// whether that surface may hit the network.
+//
+// Policy values (per surface):
+//   - "off"   — do not show this surface at all
+//   - "cache" — show cached counts only; NEVER fetch (safe on hot paths)
+//   - "ttl"   — show cached; fetch when older than TTLMinutes
+//   - "force" — always fetch (ignores the TTL)
+//
+// Fields are NOT omitempty so every leaf stays settable via `gk config set`
+// (same reasoning as GitHubConfig.Owner).
+type GitHubCountsConfig struct {
+	TTLMinutes int    `mapstructure:"ttl_minutes"  yaml:"ttl_minutes"`  // freshness window for "ttl"
+	Context    string `mapstructure:"context"      yaml:"context"`      // `gk context` (bare)
+	Include    string `mapstructure:"include"      yaml:"include"`      // `gk context --include=github`
+	Status     string `mapstructure:"status"       yaml:"status"`       // `gk status --vis github`
+	WarmOnList bool   `mapstructure:"warm_on_list" yaml:"warm_on_list"` // `gk pr`/`gk issue` refresh the cache
 }
 
 // SnapshotConfig controls the refs/wip/* safety-net snapshots.
@@ -946,6 +991,18 @@ func Defaults() Config {
 			Lang:  "ko",
 			Emoji: true,
 			Hints: "verbose",
+		},
+		GitHub: GitHubConfig{
+			Counts: GitHubCountsConfig{
+				TTLMinutes: 3,
+				Context:    "cache",
+				Include:    "ttl",
+				Status:     "cache",
+				WarmOnList: true,
+			},
+		},
+		Follow: FollowConfig{
+			Engine: "auto",
 		},
 	}
 }

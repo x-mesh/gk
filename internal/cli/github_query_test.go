@@ -1,0 +1,209 @@
+package cli
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/git"
+	ghapi "github.com/x-mesh/gk/internal/github"
+)
+
+// ghScopeCmd builds a command carrying the shared scope flags, with --org
+// optionally set (empty orgVal + set=true reproduces a bare `--org`).
+func ghScopeCmd(t *testing.T, set bool, orgVal string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "pr"}
+	addGitHubScopeFlags(cmd)
+	if set {
+		if err := cmd.Flags().Set("org", orgVal); err != nil {
+			t.Fatalf("set --org: %v", err)
+		}
+	}
+	return cmd
+}
+
+// userTypeServer returns an httptest server answering /users/{name} with the
+// given GitHub account type ("Organization" or "User").
+func userTypeServer(t *testing.T, accountType string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/users/") {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"` + accountType + `"}`))
+	}))
+}
+
+// TestResolveGitHubScopeOrgExplicit: `--org acme` → org: qualifier.
+func TestResolveGitHubScopeOrgExplicit(t *testing.T) {
+	srv := userTypeServer(t, "Organization")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, "acme")
+
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:acme" {
+		t.Errorf("prefix = %q, want org:acme", prefix)
+	}
+}
+
+// TestResolveGitHubScopeUserQualifier: a personal account flips to user:.
+func TestResolveGitHubScopeUserQualifier(t *testing.T) {
+	srv := userTypeServer(t, "User")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, "octocat")
+
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "user:octocat" {
+		t.Errorf("prefix = %q, want user:octocat", prefix)
+	}
+}
+
+// TestResolveGitHubScopeOrgFromConfig: bare --org falls back to github.owner.
+func TestResolveGitHubScopeOrgFromConfig(t *testing.T) {
+	srv := userTypeServer(t, "Organization")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, orgFlagSentinel) // bare --org
+
+	cfg := config.Config{GitHub: config.GitHubConfig{Owner: "acme"}}
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, cfg, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:acme" {
+		t.Errorf("prefix = %q, want org:acme (from config)", prefix)
+	}
+}
+
+// TestResolveGitHubScopeOrgFromOrigin: bare --org, no config → origin's owner.
+func TestResolveGitHubScopeOrgFromOrigin(t *testing.T) {
+	srv := userTypeServer(t, "Organization")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, orgFlagSentinel)
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {Stdout: "git@github.com:x-mesh/gk.git\n"},
+	}}
+
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, runner, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:x-mesh" {
+		t.Errorf("prefix = %q, want org:x-mesh (from origin)", prefix)
+	}
+}
+
+// TestResolveGitHubScopeOrgSpaceForm: `--org acme` space form (arg via NoOptDefVal).
+func TestResolveGitHubScopeOrgSpaceForm(t *testing.T) {
+	srv := userTypeServer(t, "Organization")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, orgFlagSentinel) // bare --org; name arrives as arg
+
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, []string{"acme"}, config.Config{}, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:acme" {
+		t.Errorf("prefix = %q, want org:acme (space form)", prefix)
+	}
+}
+
+// TestResolveGitHubScopeOrgNoOwner: bare --org, no config, no origin → error.
+func TestResolveGitHubScopeOrgNoOwner(t *testing.T) {
+	cmd := ghScopeCmd(t, true, orgFlagSentinel)
+	// FakeRunner with no responses → remoteURL empty → no origin owner.
+	_, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, &git.FakeRunner{}, &ghapi.Client{})
+	if err == nil {
+		t.Fatal("expected an error when no org can be resolved")
+	}
+}
+
+// TestRunGitHubListRejectsBarePositional guards L2: `gk pr acme` (positional,
+// no --org) errors instead of silently listing the current repo.
+func TestRunGitHubListRejectsBarePositional(t *testing.T) {
+	cmd := ghScopeCmd(t, false, "")
+	err := runGitHubList(cmd, []string{"acme"}, true)
+	if err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+		t.Errorf("expected unexpected-argument error, got %v", err)
+	}
+}
+
+func TestBuildSearchQuery(t *testing.T) {
+	cases := []struct {
+		name       string
+		prefix     string
+		typeFilter string
+		state      string
+		mine       bool
+		want       string
+	}{
+		{"repo pr open", "repo:x-mesh/gk", "is:pr", "open", false, "repo:x-mesh/gk is:pr is:open"},
+		{"org issue all mine", "org:acme", "is:issue", "all", true, "org:acme is:issue author:@me"},
+		{"repo pr closed", "repo:x-mesh/gk", "is:pr", "closed", false, "repo:x-mesh/gk is:pr is:closed"},
+		{"inbox untyped open", "involves:@me", "", "open", false, "involves:@me is:open"},
+		{"unknown state defaults open", "repo:x-mesh/gk", "is:pr", "weird", false, "repo:x-mesh/gk is:pr is:open"},
+	}
+	for _, tc := range cases {
+		if got := buildSearchQuery(tc.prefix, tc.typeFilter, tc.state, tc.mine); got != tc.want {
+			t.Errorf("%s: buildSearchQuery = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestResolveGitHubScopeRepo covers the no-flag path: scope from origin.
+func TestResolveGitHubScopeRepo(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {Stdout: "git@github.com:x-mesh/gk.git\n"},
+	}}
+	cmd := &cobra.Command{Use: "pr"}
+	addGitHubScopeFlags(cmd)
+
+	// --org not passed → repo scope; client is unused on this path.
+	prefix, label, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, runner, nil)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "repo:x-mesh/gk" || label != prefix {
+		t.Fatalf("prefix = %q, label = %q, want repo:x-mesh/gk", prefix, label)
+	}
+}
+
+// TestResolveGitHubScopeRepoNonGitHub errors clearly on a non-github origin.
+func TestResolveGitHubScopeRepoNonGitHub(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {Stdout: "git@gitlab.com:x-mesh/gk.git\n"},
+	}}
+	cmd := &cobra.Command{Use: "pr"}
+	addGitHubScopeFlags(cmd)
+
+	if _, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, runner, nil); err == nil {
+		t.Fatal("expected an error for a non-github.com origin")
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("hello", 10); got != "hello" {
+		t.Errorf("short string should pass through, got %q", got)
+	}
+	long := truncate("abcdefghij", 5)
+	if r := []rune(long); len(r) != 5 {
+		t.Errorf("truncated len = %d, want 5 (got %q)", len(r), long)
+	}
+}

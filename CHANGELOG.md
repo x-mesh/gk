@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk follow` gained a GitHub **events engine** alongside the original
+  ref (ls-remote) engine, selected by `--engine ref|events|auto` (config
+  `follow.engine`, default `auto`):
+  - `--on <trigger>` fires the hook on GitHub activity (repeatable, OR):
+    `pr:merged`, `pr:opened`, `pr:closed`, `pr:label=<name>`,
+    `pr:review[=state]`, `issue:opened`, `issue:closed`, `issue:label=<name>`,
+    `issue:comment`. Default trigger is `pr:merged`.
+  - Polls the repo Events API with an **ETag** (304s are free), persists a
+    cursor so restarts never re-fire, and **baselines** on first run (no
+    deploy of the existing backlog).
+  - The hook receives event context as env: `GK_EVENT_TYPE`, `GK_EVENT_ACTION`,
+    `GK_ACTOR`, `GK_PR_NUMBER/TITLE/BASE/HEAD/MERGED`, `GK_ISSUE_NUMBER/TITLE`,
+    `GK_LABEL`, `GK_REVIEW_STATE`, `GK_TRIGGER`.
+  - `gk follow <branch> --on pr:merged` composes: mirror `<branch>` (the shared
+    destructive-but-recoverable reset), then run the hook — deploy on merge.
+  - `auto` picks the engine from token presence: no `--on` → ref; `--on` with a
+    token → events; **no token** falls back to the ref engine for merge-only
+    triggers (loud warning, PR filters lost) and warns that API-only triggers
+    (labels/issues/reviews) need a token or a public repo. ref mode
+    authenticates via SSH/credential-helper, so "deploy on merge" works on
+    private repos with no GitHub token.
+
+- `gk pr` now **lists open pull requests** via the GitHub search API — the
+  current repo by default, a whole org/account with `--org [name]`, or only
+  yours with `--mine`. `--state open|closed|all` and `--json` supported. One
+  search resolves an org scope server-side, with no per-repo loop.
+- `gk issue` — the same listing for issues (`--org`, `--mine`, `--state`, `--json`).
+- `gk inbox` — every open PR and issue involving you (`involves:@me`) across
+  all repositories in a single search. Requires a token to resolve `@me`.
+- GitHub open PR/issue counts across `gk context` and `gk status`, backed by a
+  shared on-disk cache (`.git/gk-github-cache`) with a per-surface fetch policy
+  (`off` | `cache` | `ttl` | `force`), configurable under `github.counts`:
+  - `gk context` (bare) now shows the counts by default — policy `cache`, so it
+    stays read-only and offline (shown only when the cache is warm, with an
+    `as_of` age).
+  - `gk context --include=github` — explicit refresh, policy `ttl` (default
+    3-minute freshness window); still excluded from `--include=all`.
+  - `gk status --vis github` (opt-in via `--vis`/`status.vis`) — policy `cache`
+    by default, so the hot path never fetches or spends the search rate limit.
+  - `gk pr` / `gk issue` on the current repo warm the cache for free
+    (`warm_on_list`, partial: PR listing refreshes the PR count, issue the
+    issue count).
+  - Every surface's policy is independently settable, e.g.
+    `gk config set github.counts.include force`,
+    `gk config set github.counts.ttl_minutes 5`.
+- `github.owner` config key — the default org/account `gk pr --org` and
+  `gk issue --org` use when no name is given (falls back to origin's owner).
+  Auth is reused from `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth login`.
+
+### Changed
+
+- **BREAKING:** the AI PR-description generator moved from `gk pr` to
+  **`gk pr new`** (same flags: `--output`, `--dry-run`, `--provider`,
+  `--lang`). Bare `gk pr` now lists PRs.
+
 ## [0.124.0] - 2026-07-17
 
 ### Added

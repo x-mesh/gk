@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -93,6 +94,7 @@ type contextJSON struct {
 	Conflict *contextConflictJSON `json:"conflict,omitempty"`
 	Remotes  []contextRemoteJSON  `json:"remotes,omitempty"`
 	Release  *contextReleaseJSON  `json:"release,omitempty"`
+	GitHub   *contextGitHubJSON   `json:"github,omitempty"`
 	// Notes records sections that were requested but degraded (e.g.
 	// precheck with no upstream) — absence of a section plus its note is
 	// the contract for "asked, not available".
@@ -161,6 +163,25 @@ type contextRemoteJSON struct {
 // every entry.
 var contextIncludeValues = []string{"diff", "log", "precheck", "conflict", "remotes", "release"}
 
+// contextNetworkIncludes are opt-in sections that hit the network. They are
+// valid --include values but deliberately NOT part of "all" — context is
+// otherwise a read-only, no-network call, and `--include=all` must stay fast
+// and offline. Only an explicit `--include=github` triggers them.
+var contextNetworkIncludes = []string{"github"}
+
+// contextGitHubJSON is the opt-in GitHub orientation: open PR/issue counts
+// for the current repo, plus how many PRs await the token owner's review
+// (0 and omitted without a token). Counts only — the listing lives in
+// `gk pr` / `gk issue`. AsOf carries the fetch time so a cache-served value is
+// honestly stale-tagged (same "as of last fetch" contract as remotes/release).
+type contextGitHubJSON struct {
+	Repo            string `json:"repo"` // owner/name
+	OpenPRs         int    `json:"open_prs"`
+	OpenIssues      int    `json:"open_issues"`
+	ReviewRequested int    `json:"review_requested,omitempty"`
+	AsOf            string `json:"as_of,omitempty"` // RFC3339 fetch time
+}
+
 func init() {
 	cmd := &cobra.Command{
 		Use:     "context",
@@ -187,13 +208,15 @@ replaces the usual status/branch/log/worktree probe sequence.
   remotes   every registered remote with the current branch's drift as of
             the last fetch, plus asymmetric push URLs (see gk doctor)
   release   commits since the latest tag (tag..HEAD) — "what hasn't shipped?"
+  github    open PR/issue counts for this repo (+ PRs awaiting your review);
+            hits the network, so it is opt-in only and NOT part of "all"
 
 A requested section that cannot be collected (e.g. precheck with no
 upstream) degrades to a note instead of failing the whole call.`,
 		RunE: runContext,
 	}
 	cmd.Flags().StringSlice("include", nil,
-		"extra sections to fuse into the result: diff, log, precheck, remotes, release, or all")
+		"extra sections to fuse into the result: diff, log, precheck, remotes, release, all — or github (opt-in, network)")
 	cmd.Flags().Bool("delta", false,
 		"emit only the core fields that changed since the last context call for this worktree")
 	rootCmd.AddCommand(cmd)
@@ -308,6 +331,18 @@ func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 			}
 			out.Worktrees = append(out.Worktrees, wj)
 		}
+	}
+
+	// Default GitHub counts (bare `gk context`) honor the `context` policy —
+	// "cache" by default, so this stays read-only and offline unless the user
+	// opts into ttl/force. An explicit --include=github overrides this later
+	// with the `include` policy.
+	if gh, gerr := collectContextGitHub(ctx, runner, cfg, cfg.GitHub.Counts.Context); gerr == nil {
+		if gh != nil {
+			out.GitHub = gh
+		}
+	} else {
+		out.Notes = append(out.Notes, "github skipped: "+gerr.Error())
 	}
 
 	out.NextActions = contextNextActions(out)
@@ -541,6 +576,14 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 		}
 		fmt.Fprintln(w, line)
 	}
+	if c.GitHub != nil {
+		gh := c.GitHub
+		line := fmt.Sprintf("github %s: %d open PR(s), %d open issue(s)", gh.Repo, gh.OpenPRs, gh.OpenIssues)
+		if gh.ReviewRequested > 0 {
+			line += fmt.Sprintf(" · %d awaiting your review", gh.ReviewRequested)
+		}
+		fmt.Fprintln(w, line)
+	}
 	for _, n := range c.Notes {
 		fmt.Fprintln(w, cellFaint("note: "+n))
 	}
@@ -571,9 +614,17 @@ func parseContextIncludes(cmd *cobra.Command) (map[string]bool, error) {
 					break
 				}
 			}
+			// Network-only sections (e.g. github) are valid on their own but
+			// excluded from "all", so they never fire unless asked for by name.
+			for _, k := range contextNetworkIncludes {
+				if v == k {
+					known = true
+					break
+				}
+			}
 			if !known {
-				return nil, fmt.Errorf("context: unknown --include section %q (valid: %s, all)",
-					v, strings.Join(contextIncludeValues, ", "))
+				return nil, fmt.Errorf("context: unknown --include section %q (valid: %s, %s, all)",
+					v, strings.Join(contextIncludeValues, ", "), strings.Join(contextNetworkIncludes, ", "))
 			}
 			includes[v] = true
 		}
@@ -630,6 +681,38 @@ func collectContextIncludes(ctx context.Context, runner *git.ExecRunner, cfg *co
 			out.Notes = append(out.Notes, "release skipped: "+rerr.Error())
 		}
 	}
+	if includes["github"] {
+		// Explicit --include=github uses the `include` policy (default ttl).
+		if gh, gerr := collectContextGitHub(ctx, runner, cfg, cfg.GitHub.Counts.Include); gerr == nil {
+			if gh != nil {
+				out.GitHub = gh
+			}
+		} else {
+			out.Notes = append(out.Notes, "github skipped: "+gerr.Error())
+		}
+	}
+}
+
+// collectContextGitHub resolves the current repo's open PR/issue counts for a
+// context surface, honoring the given policy (off | cache | ttl | force). The
+// fetch/cache mechanics live in githubCountsResolve; this only adapts the
+// result into the context JSON shape. Returns (nil, nil) when there is nothing
+// to show (policy off, no GitHub origin, or a cache-policy cold cache).
+func collectContextGitHub(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, policy string) (*contextGitHubJSON, error) {
+	counts, err := githubCountsResolve(ctx, runner, cfg, policy)
+	if err != nil {
+		return nil, err
+	}
+	if counts == nil {
+		return nil, nil
+	}
+	return &contextGitHubJSON{
+		Repo:            counts.Repo,
+		OpenPRs:         counts.OpenPRs,
+		OpenIssues:      counts.OpenIssues,
+		ReviewRequested: counts.ReviewRequested,
+		AsOf:            counts.FetchedAt.Format(time.RFC3339),
+	}, nil
 }
 
 // collectContextRemotes reports every registered remote with the current

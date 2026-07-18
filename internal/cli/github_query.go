@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
-	"text/tabwriter"
+	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -254,40 +256,138 @@ func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issu
 	return nil
 }
 
-// renderGitHubTable prints a compact aligned table. Rows carry the repo
-// column so it reads correctly for org/inbox scopes that span repos.
-func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
-	if len(issues) == 0 {
-		fmt.Fprintf(w, "no matching items (%s)\n", scope)
-		return
-	}
-	fmt.Fprintf(w, "%s — %d item(s)\n", scope, len(issues))
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "TYPE\tITEM\tTITLE\tAUTHOR\tUPDATED")
-	for _, is := range issues {
-		typ := "issue"
-		if is.IsPR {
-			typ = "PR"
-			if is.Draft {
-				typ = "PR·draft"
-			}
-		}
-		updated := "-"
-		if !is.UpdatedAt.IsZero() {
-			updated = is.UpdatedAt.Format("2006-01-02")
-		}
-		fmt.Fprintf(tw, "%s\t%s#%d\t%s\t@%s\t%s\n",
-			typ, is.Owner+"/"+is.Repo, is.Number, truncate(is.Title, 60), is.Author, updated)
-	}
-	_ = tw.Flush()
+// maxGitHubTitleWidth caps the title column's display width so the author and
+// age columns stay aligned even when a title is very long.
+const maxGitHubTitleWidth = 72
+
+// ghCol is one output column: the plain cell text (for width math) paired with
+// its colored rendering (which carries invisible ANSI bytes).
+type ghCol struct {
+	rightAlign bool
+	plain      []string
+	colored    []string
 }
 
-// truncate shortens s to max runes, adding an ellipsis when cut. max < 1 is
-// treated as "no limit" so the ellipsis slice can never go negative.
-func truncate(s string, max int) string {
-	r := []rune(s)
-	if max < 1 || len(r) <= max {
+func (c *ghCol) add(plain, colored string) {
+	c.plain = append(c.plain, plain)
+	c.colored = append(c.colored, colored)
+}
+
+func (c *ghCol) width() int {
+	max := 0
+	for _, s := range c.plain {
+		if w := runewidth.StringWidth(s); w > max {
+			max = w
+		}
+	}
+	return max
+}
+
+// renderGitHubTable prints an aligned, colored list. Alignment is computed on
+// the PLAIN text (runewidth, ANSI-blind) and the color is applied afterward, so
+// the escape bytes never skew the columns. The repo column is shown only for
+// org/inbox scopes that span repositories — it is redundant under a repo scope.
+func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
+	if len(issues) == 0 {
+		fmt.Fprintln(w, cellFaint(fmt.Sprintf("no matching items · %s", scope)))
+		return
+	}
+
+	fmt.Fprintf(w, "%s  %s\n\n", cellBold(humanGitHubScope(scope)), cellFaint(fmt.Sprintf("· %d item(s)", len(issues))))
+
+	showRepo := !strings.HasPrefix(scope, "repo:")
+	typeCol := &ghCol{}
+	repoCol := &ghCol{}
+	numCol := &ghCol{rightAlign: true}
+	titleCol := &ghCol{}
+	authorCol := &ghCol{}
+	ageCol := &ghCol{}
+
+	for _, is := range issues {
+		closed := is.State == "closed"
+
+		typ := "issue"
+		typColored := cellCyan("issue")
+		if is.IsPR {
+			if is.Draft {
+				typ, typColored = "draft", cellFaint("draft")
+			} else {
+				typ, typColored = "PR", cellGreen("PR")
+			}
+		}
+		if closed {
+			typColored = cellFaint(typ) // de-emphasize closed rows
+		}
+		typeCol.add(typ, typColored)
+
+		if showRepo {
+			repo := is.Owner + "/" + is.Repo
+			repoCol.add(repo, cellFaint(repo))
+		}
+
+		num := "#" + strconv.Itoa(is.Number)
+		numCol.add(num, cellCyan(num))
+
+		title := runewidth.Truncate(is.Title, maxGitHubTitleWidth, "…")
+		titleColored := title
+		if closed {
+			titleColored = cellFaint(title)
+		}
+		titleCol.add(title, titleColored)
+
+		author := "@" + is.Author
+		authorCol.add(author, cellFaint(author))
+
+		age := "-"
+		if !is.UpdatedAt.IsZero() {
+			age = relativeTime(time.Since(is.UpdatedAt))
+		}
+		ageCol.add(age, cellFaint(age))
+	}
+
+	cols := []*ghCol{typeCol}
+	if showRepo {
+		cols = append(cols, repoCol)
+	}
+	cols = append(cols, numCol, titleCol, authorCol, ageCol)
+
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		widths[i] = c.width()
+	}
+
+	for r := range issues {
+		var b strings.Builder
+		b.WriteString("  ")
+		for i, c := range cols {
+			b.WriteString(padGitHubCell(c.colored[r], runewidth.StringWidth(c.plain[r]), widths[i], c.rightAlign))
+			if i < len(cols)-1 {
+				b.WriteString("   ")
+			}
+		}
+		fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
+	}
+}
+
+// padGitHubCell pads a colored cell with plain spaces so its VISIBLE width
+// (plainWidth) reaches width. Padding is added after (left-align) or before
+// (right-align) the colored content, never inside it, so ANSI resets stay put.
+func padGitHubCell(colored string, plainWidth, width int, rightAlign bool) string {
+	if width <= plainWidth {
+		return colored
+	}
+	pad := strings.Repeat(" ", width-plainWidth)
+	if rightAlign {
+		return pad + colored
+	}
+	return colored + pad
+}
+
+// humanGitHubScope trims the "repo:" prefix for the header (the repo is obvious
+// from the single-repo listing); org:/user:/involves: scopes are kept verbatim.
+func humanGitHubScope(scope string) string {
+	if s, ok := strings.CutPrefix(scope, "repo:"); ok {
 		return s
 	}
-	return string(r[:max-1]) + "…"
+	return scope
 }

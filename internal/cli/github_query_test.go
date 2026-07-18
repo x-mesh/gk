@@ -198,12 +198,29 @@ func TestResolveGitHubScopeRepoNonGitHub(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
-		t.Errorf("short string should pass through, got %q", got)
+func TestRenderGitHubTableAligns(t *testing.T) {
+	// Two repos (org scope) → repo column shown; verify columns align on the
+	// PLAIN text even though the output carries ANSI color.
+	issues := []ghapi.Issue{
+		{Number: 4, Title: "short", State: "open", Owner: "x-mesh", Repo: "gk", Author: "a", IsPR: true},
+		{Number: 128, Title: "a much longer title here", State: "open", Owner: "x-mesh", Repo: "term-mesh", Author: "bb", IsPR: false},
 	}
-	long := truncate("abcdefghij", 5)
-	if r := []rune(long); len(r) != 5 {
-		t.Errorf("truncated len = %d, want 5 (got %q)", len(r), long)
+	var buf strings.Builder
+	renderGitHubTable(&buf, "org:x-mesh", issues)
+	out := buf.String()
+	if !strings.Contains(out, "x-mesh/gk") || !strings.Contains(out, "#4") || !strings.Contains(out, "#128") {
+		t.Fatalf("table missing expected content:\n%s", out)
+	}
+	if strings.Contains(out, "repo:") {
+		t.Errorf("header should humanize the scope, got:\n%s", out)
+	}
+}
+
+func TestHumanGitHubScope(t *testing.T) {
+	if got := humanGitHubScope("repo:x-mesh/gk"); got != "x-mesh/gk" {
+		t.Errorf("repo scope should drop prefix, got %q", got)
+	}
+	if got := humanGitHubScope("org:acme"); got != "org:acme" {
+		t.Errorf("org scope should be kept, got %q", got)
 	}
 }

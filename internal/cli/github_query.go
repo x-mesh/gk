@@ -300,9 +300,8 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 	fmt.Fprintf(w, "%s  %s\n\n", cellBold(humanGitHubScope(scope)), cellFaint(fmt.Sprintf("· %d item(s)", len(issues))))
 
 	showRepo := !strings.HasPrefix(scope, "repo:")
-	typeCol := &ghCol{}
+	refCol := &ghCol{}
 	repoCol := &ghCol{}
-	numCol := &ghCol{rightAlign: true}
 	titleCol := &ghCol{}
 	labelCol := &ghCol{}
 	authorCol := &ghCol{}
@@ -312,6 +311,8 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 	for _, is := range issues {
 		closed := is.State == "closed"
 
+		// One copy-friendly token: <type>#<num> (e.g. PR#4, issue#128). Type
+		// keeps its color, the #number is cyan; a closed item dims the whole.
 		typ := "issue"
 		typColored := cellCyan("issue")
 		if is.IsPR {
@@ -321,18 +322,18 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 				typ, typColored = "PR", cellGreen("PR")
 			}
 		}
+		num := "#" + strconv.Itoa(is.Number)
+		ref := typ + num
+		refColored := typColored + cellCyan(num)
 		if closed {
-			typColored = cellFaint(typ) // de-emphasize closed rows
+			refColored = cellFaint(ref)
 		}
-		typeCol.add(typ, typColored)
+		refCol.add(ref, refColored)
 
 		if showRepo {
 			repo := is.Owner + "/" + is.Repo
 			repoCol.add(repo, cellFaint(repo))
 		}
-
-		num := "#" + strconv.Itoa(is.Number)
-		numCol.add(num, cellCyan(num))
 
 		title := runewidth.Truncate(is.Title, maxGitHubTitleWidth, "…")
 		titleColored := title
@@ -361,11 +362,11 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 		ageCol.add(age, cellFaint(age))
 	}
 
-	cols := []*ghCol{typeCol}
+	cols := []*ghCol{refCol}
 	if showRepo {
 		cols = append(cols, repoCol)
 	}
-	cols = append(cols, numCol, titleCol)
+	cols = append(cols, titleCol)
 	if anyLabels { // only reserve the label column when something has labels
 		cols = append(cols, labelCol)
 	}

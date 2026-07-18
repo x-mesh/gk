@@ -216,3 +216,40 @@ func (c *Client) fetchPage(ctx context.Context, pathWithQuery string) ([]Repo, e
 	}
 	return repos, nil
 }
+
+// ViewerLogin returns the login of the token's owner, or "" when
+// unauthenticated (or the lookup failed). Memoized for the client's lifetime.
+func (c *Client) ViewerLogin(ctx context.Context) string {
+	return c.authenticatedLogin(ctx)
+}
+
+// ListMyOrgs returns the organization logins the token's user belongs to
+// (GET /user/orgs). It needs a token: unauthenticated callers get an empty
+// list and no error, so a scope picker can simply offer fewer choices.
+func (c *Client) ListMyOrgs(ctx context.Context) ([]string, error) {
+	if c.Token == "" {
+		return nil, nil
+	}
+	resp, err := c.get(ctx, "/user/orgs?per_page=100")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("github orgs returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var payload []struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode orgs: %w", err)
+	}
+	out := make([]string, 0, len(payload))
+	for _, o := range payload {
+		if o.Login != "" {
+			out = append(out, o.Login)
+		}
+	}
+	return out, nil
+}

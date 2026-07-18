@@ -3853,7 +3853,7 @@ filter; the typed filter survives an action and the picker re-opens on it.
 | `enter` | Open the item in the browser |
 | `c` | Check out the PR locally (`gk pr checkout`) |
 | `y` | Copy the item URL |
-| `o` | Cycle scope: repo → org → inbox |
+| `o` | Open the **scope layer** — pick this repo, your own account, any org you belong to, or the inbox |
 | `a` | Toggle state: open ↔ all |
 
 Non-interactive runs are untouched: `--json`, `GK_AGENT=1`, a pipe, or CI all

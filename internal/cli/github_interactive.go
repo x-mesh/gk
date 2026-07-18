@@ -31,8 +31,15 @@ type ghPicker struct {
 	sort    string
 	limit   int
 
+	// orgName is the account the "org" scope points at. It starts from
+	// --org/github.owner/origin and is re-pointed by the scope picker, so an
+	// explicit `--org acme` is never silently replaced by origin's owner.
+	orgName string
+	// orgIsUser marks orgName as a personal account, selecting the user:
+	// qualifier instead of org:.
+	orgIsUser bool
+
 	repoPrefix string // resolved lazily, then cached
-	orgPrefix  string
 }
 
 // scopePrefix resolves the search prefix for the current scope, caching the
@@ -42,21 +49,23 @@ func (p *ghPicker) scopePrefix(ctx context.Context) (string, error) {
 	case "inbox":
 		return "involves:@me", nil
 	case "org":
-		if p.orgPrefix == "" {
-			owner := p.cfg.GitHub.Owner
-			if owner == "" {
-				owner = originOwner(ctx, *p.cfg, p.runner)
+		if p.orgName == "" {
+			p.orgName = p.cfg.GitHub.Owner
+			if p.orgName == "" {
+				p.orgName = originOwner(ctx, *p.cfg, p.runner)
 			}
-			if owner == "" {
+			if p.orgName == "" {
 				return "", errors.New("no org to search: set github.owner or run inside a repo whose origin is on GitHub")
 			}
-			qualifier := "org"
-			if typ, err := p.client.OwnerType(ctx, owner); err == nil && typ == "User" {
-				qualifier = "user"
+			if typ, err := p.client.OwnerType(ctx, p.orgName); err == nil && typ == "User" {
+				p.orgIsUser = true
 			}
-			p.orgPrefix = qualifier + ":" + owner
 		}
-		return p.orgPrefix, nil
+		qualifier := "org"
+		if p.orgIsUser {
+			qualifier = "user"
+		}
+		return qualifier + ":" + p.orgName, nil
 	default:
 		if p.repoPrefix == "" {
 			owner, repo, err := currentRepoSlug(ctx, *p.cfg, p.runner)
@@ -69,21 +78,82 @@ func (p *ghPicker) scopePrefix(ctx context.Context) (string, error) {
 	}
 }
 
-// cycleScope advances repo → org → inbox → repo, skipping inbox when there is
-// no token (involves:@me cannot resolve without one).
-func (p *ghPicker) cycleScope() {
-	switch p.kind {
-	case "repo":
-		p.kind = "org"
-	case "org":
-		if p.client.Token == "" {
-			p.kind = "repo"
-			return
-		}
-		p.kind = "inbox"
-	default:
-		p.kind = "repo"
+// chooseScope opens the scope layer: a second picker listing this repository,
+// the viewer's own account, every org they belong to, and the inbox. Selecting
+// one re-points the listing. Aborting leaves the current scope untouched.
+//
+// Org discovery needs a token; without one the layer still offers the repo and
+// whatever owner config/origin resolved, so it degrades instead of vanishing.
+func (p *ghPicker) chooseScope(ctx context.Context) error {
+	items := []ui.PickerItem{}
+	add := func(key, label, note string) {
+		items = append(items, ui.PickerItem{Key: key, Display: label, Cells: []string{label, note}})
 	}
+
+	if owner, repo, err := currentRepoSlug(ctx, *p.cfg, p.runner); err == nil {
+		add("repo", fmt.Sprintf("%s/%s", owner, repo), "this repository")
+	}
+	if login := p.client.ViewerLogin(ctx); login != "" {
+		add("user:"+login, login, "your account")
+	}
+	orgs, _ := p.client.ListMyOrgs(ctx) // best-effort: empty without a token
+	for _, o := range orgs {
+		add("org:"+o, o, "organization")
+	}
+	// Whatever config/origin points at, in case it is not in the org list
+	// (e.g. no token, or an org the viewer is not a member of).
+	fallback := p.cfg.GitHub.Owner
+	if fallback == "" {
+		fallback = originOwner(ctx, *p.cfg, p.runner)
+	}
+	if fallback != "" && !ghScopeListed(items, fallback) {
+		add("org:"+fallback, fallback, "from config/origin")
+	}
+	if p.client.Token != "" {
+		add("inbox", "involves:@me", "everything involving you")
+	}
+	if len(items) == 0 {
+		return errors.New("no scopes available: run inside a GitHub repo or set github.owner")
+	}
+
+	picker := &ui.TablePicker{
+		Headers:  []string{"SCOPE", "WHAT"},
+		Subtitle: "pick a scope — enter select · esc keep current",
+	}
+	choice, err := picker.Pick(ctx, "scope", items)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return nil // keep the current scope
+		}
+		return err
+	}
+
+	switch {
+	case choice.Key == "repo":
+		p.kind = "repo"
+	case choice.Key == "inbox":
+		p.kind = "inbox"
+	case strings.HasPrefix(choice.Key, "user:"):
+		p.kind, p.orgName, p.orgIsUser = "org", strings.TrimPrefix(choice.Key, "user:"), true
+	case strings.HasPrefix(choice.Key, "org:"):
+		name := strings.TrimPrefix(choice.Key, "org:")
+		p.kind, p.orgName, p.orgIsUser = "org", name, false
+		// A config/origin fallback may actually be a personal account.
+		if typ, err := p.client.OwnerType(ctx, name); err == nil && typ == "User" {
+			p.orgIsUser = true
+		}
+	}
+	return nil
+}
+
+// ghScopeListed reports whether a scope row for name is already present.
+func ghScopeListed(items []ui.PickerItem, name string) bool {
+	for _, it := range items {
+		if it.Key == "org:"+name || it.Key == "user:"+name {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *ghPicker) fetch(ctx context.Context) ([]ghapi.Issue, string, error) {
@@ -239,7 +309,9 @@ func (p *ghPicker) run(ctx context.Context) error {
 			return nil
 
 		case "o":
-			p.cycleScope()
+			if err := p.chooseScope(ctx); err != nil {
+				return err
+			}
 			continue
 
 		case "a":
@@ -261,6 +333,23 @@ func (p *ghPicker) title() string {
 		return "pr"
 	default:
 		return "issue"
+	}
+}
+
+// setScopeFromPrefix seeds the live scope from an already-resolved search
+// prefix (what resolveGitHubScope produced for this invocation). Using the
+// resolved value — instead of re-deriving it — is what keeps an explicit
+// `--org acme` from being replaced by config/origin's owner.
+func (p *ghPicker) setScopeFromPrefix(prefix string) {
+	switch {
+	case strings.HasPrefix(prefix, "org:"):
+		p.kind, p.orgName, p.orgIsUser = "org", strings.TrimPrefix(prefix, "org:"), false
+	case strings.HasPrefix(prefix, "user:"):
+		p.kind, p.orgName, p.orgIsUser = "org", strings.TrimPrefix(prefix, "user:"), true
+	case strings.HasPrefix(prefix, "repo:"):
+		p.kind, p.repoPrefix = "repo", prefix
+	case prefix == "involves:@me":
+		p.kind = "inbox"
 	}
 }
 

@@ -260,6 +260,10 @@ func emitGitHubList(cmd *cobra.Command, scope, query string, issues []ghapi.Issu
 // age columns stay aligned even when a title is very long.
 const maxGitHubTitleWidth = 72
 
+// maxGitHubLabelWidth caps the joined labels column so a heavily-labeled item
+// cannot blow the row width.
+const maxGitHubLabelWidth = 30
+
 // ghCol is one output column: the plain cell text (for width math) paired with
 // its colored rendering (which carries invisible ANSI bytes).
 type ghCol struct {
@@ -300,8 +304,10 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 	repoCol := &ghCol{}
 	numCol := &ghCol{rightAlign: true}
 	titleCol := &ghCol{}
+	labelCol := &ghCol{}
 	authorCol := &ghCol{}
 	ageCol := &ghCol{}
+	anyLabels := false
 
 	for _, is := range issues {
 		closed := is.State == "closed"
@@ -335,6 +341,16 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 		}
 		titleCol.add(title, titleColored)
 
+		label := runewidth.Truncate(strings.Join(is.Labels, ", "), maxGitHubLabelWidth, "…")
+		if label != "" {
+			anyLabels = true
+		}
+		labelColored := cellYellow(label)
+		if closed {
+			labelColored = cellFaint(label)
+		}
+		labelCol.add(label, labelColored)
+
 		author := "@" + is.Author
 		authorCol.add(author, cellFaint(author))
 
@@ -349,7 +365,11 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue) {
 	if showRepo {
 		cols = append(cols, repoCol)
 	}
-	cols = append(cols, numCol, titleCol, authorCol, ageCol)
+	cols = append(cols, numCol, titleCol)
+	if anyLabels { // only reserve the label column when something has labels
+		cols = append(cols, labelCol)
+	}
+	cols = append(cols, authorCol, ageCol)
 
 	widths := make([]int, len(cols))
 	for i, c := range cols {

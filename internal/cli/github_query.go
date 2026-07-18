@@ -346,13 +346,14 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	// Interactive by default in a terminal — the same convention as gk switch /
 	// gk worktree / gk clone. promptAllowed() keeps agent/--json/CI/piped runs
 	// on the static list; --list forces it off, --pick forces it on.
-	if boolFlag(cmd, "pick") || (promptAllowed() && !boolFlag(cmd, "list")) {
+	explicitPick := boolFlag(cmd, "pick")
+	if shouldRunGHPicker(explicitPick, boolFlag(cmd, "list"), promptAllowed()) {
 		p := newGHPicker(cmd, client, runner, cfg, isPR, "repo", filters)
 		p.setScopeFromPrefix(prefix) // reuse the scope already resolved above
-		return p.run(ctx)
+		return p.runForEnvironment(ctx, explicitPick)
 	}
 
-	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
+	issues, total, err := client.SearchIssuesWithTotal(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
 	}
@@ -362,7 +363,7 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 	// count, issue the issue count). Any extra filter (label/author/@me/limit)
 	// makes the count non-representative, so skip warming then.
 	if cfg.GitHub.Counts.WarmOnList && filters.isPlainOpen() && intFlag(cmd, "limit") == 0 && strings.HasPrefix(label, "repo:") {
-		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, len(issues))
+		warmGitHubCountFromList(ctx, runner, strings.TrimPrefix(label, "repo:"), isPR, total)
 	}
 
 	return emitGitHubList(cmd, label, query, issues, boolFlag(cmd, "links"), boolFlag(cmd, "url"))

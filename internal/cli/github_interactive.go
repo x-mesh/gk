@@ -23,7 +23,7 @@ import (
 type ghPicker struct {
 	cmd     *cobra.Command
 	client  *ghapi.Client
-	runner  *git.ExecRunner
+	runner  git.Runner
 	cfg     *config.Config
 	isPR    bool
 	kind    string // live scope: "repo" | "org" | "inbox"
@@ -40,7 +40,18 @@ type ghPicker struct {
 	orgIsUser bool
 
 	repoPrefix string // resolved lazily, then cached
+	fetchCache map[string]ghPickerFetch
+	openURL    func(string) error // test seam; defaults to openBrowser
 }
+
+type ghPickerFetch struct {
+	issues []ghapi.Issue
+	total  int
+}
+
+// ghInteractiveLimit keeps a single picker query inside one Search API page.
+// Static --list/JSON output retains its existing pagination behavior.
+const ghInteractiveLimit = 100
 
 // scopePrefix resolves the search prefix for the current scope, caching the
 // repo/org lookups so a scope cycle doesn't re-resolve them every redraw.
@@ -156,17 +167,42 @@ func ghScopeListed(items []ui.PickerItem, name string) bool {
 	return false
 }
 
-func (p *ghPicker) fetch(ctx context.Context) ([]ghapi.Issue, string, error) {
+func (p *ghPicker) interactiveLimit() int {
+	if p.limit > 0 && p.limit < ghInteractiveLimit {
+		return p.limit
+	}
+	return ghInteractiveLimit
+}
+
+func (p *ghPicker) fetch(ctx context.Context) ([]ghapi.Issue, string, int, error) {
 	prefix, err := p.scopePrefix(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	query := buildSearchQuery(prefix, p.filters)
-	issues, err := p.client.SearchIssues(ctx, query, p.sort, p.limit)
-	if err != nil {
-		return nil, query, fmt.Errorf("github search: %w", err)
+	limit := p.interactiveLimit()
+	key := fmt.Sprintf("%s\x00%s\x00%d", query, p.sort, limit)
+	if cached, ok := p.fetchCache[key]; ok {
+		return cached.issues, query, cached.total, nil
 	}
-	return issues, query, nil
+
+	issues, total, err := p.client.SearchIssuesWithTotal(ctx, query, p.sort, limit)
+	if err != nil {
+		return nil, query, 0, fmt.Errorf("github search: %w", err)
+	}
+	if p.fetchCache == nil {
+		p.fetchCache = make(map[string]ghPickerFetch)
+	}
+	p.fetchCache[key] = ghPickerFetch{issues: issues, total: total}
+
+	// The picker fetch is intentionally capped, so len(issues) is not a safe
+	// repository count. total_count remains exact and lets the default
+	// interactive path warm the same cache as a static plain-open listing.
+	if p.cfg != nil && p.cfg.GitHub.Counts.WarmOnList && p.limit == 0 &&
+		p.filters.isPlainOpen() && strings.HasPrefix(prefix, "repo:") {
+		warmGitHubCountFromList(ctx, p.runner, strings.TrimPrefix(prefix, "repo:"), p.isPR, total)
+	}
+	return issues, query, total, nil
 }
 
 var ghPickerHeaders = []string{"ITEM", "REPO", "TITLE", "LABELS", "AUTHOR", "AGE"}
@@ -220,12 +256,61 @@ func (p *ghPicker) extras() []ui.TablePickerExtraKey {
 	}
 }
 
-func (p *ghPicker) subtitle(scope string, n int) string {
+func (p *ghPicker) subtitle(scope string, shown, total int) string {
 	state := p.filters.state
 	if state == "" {
 		state = "open"
 	}
-	return fmt.Sprintf("%s · %s · %d item(s)  —  enter open · c checkout · y copy url · o scope · a open/all", scope, state, n)
+	count := fmt.Sprintf("%d item(s)", shown)
+	if total > shown {
+		count = fmt.Sprintf("%d of %d item(s) · capped at %d", shown, total, p.interactiveLimit())
+	}
+	return fmt.Sprintf("%s · %s · %s  —  enter open · c checkout · y copy url · o scope · a open/all", scope, state, count)
+}
+
+func shouldRunGHPicker(explicitPick, list, promptsAllowed bool) bool {
+	return explicitPick || (promptsAllowed && !list)
+}
+
+// runForEnvironment preserves the default non-TTY list behavior while making
+// an explicit --pick request use the numbered fallback picker.
+func (p *ghPicker) runForEnvironment(ctx context.Context, explicit bool) error {
+	if explicit && !ui.IsTerminal() {
+		return p.runFallback(ctx)
+	}
+	return p.run(ctx)
+}
+
+func (p *ghPicker) runFallback(ctx context.Context) error {
+	issues, _, _, err := p.fetch(ctx)
+	if err != nil {
+		return err
+	}
+	items, byKey := p.rows(issues)
+	picker := &ui.FallbackPicker{In: p.cmd.InOrStdin(), Out: p.cmd.ErrOrStderr()}
+	choice, err := picker.Pick(ctx, p.title(), items)
+	if err != nil {
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return nil
+		}
+		return err
+	}
+	picked, ok := byKey[choice.Key]
+	if !ok {
+		return nil
+	}
+	return p.openPicked(picked)
+}
+
+func (p *ghPicker) openPicked(picked ghapi.Issue) error {
+	opener := p.openURL
+	if opener == nil {
+		opener = openBrowser
+	}
+	if err := opener(picked.URL); err != nil {
+		fmt.Fprintln(p.cmd.OutOrStdout(), picked.URL)
+	}
+	return nil
 }
 
 // run is the interactive loop. An aborted picker (Esc/Ctrl-C) exits quietly.
@@ -234,7 +319,7 @@ func (p *ghPicker) run(ctx context.Context) error {
 	filter := ""
 
 	for {
-		issues, _, err := p.fetch(ctx)
+		issues, _, total, err := p.fetch(ctx)
 		if err != nil {
 			return err
 		}
@@ -254,7 +339,7 @@ func (p *ghPicker) run(ctx context.Context) error {
 		picker := &ui.TablePicker{
 			Headers:        ghPickerHeaders,
 			Extras:         p.extras(),
-			Subtitle:       p.subtitle(scope, len(byKey)),
+			Subtitle:       p.subtitle(scope, len(byKey), total),
 			InitialFilter:  filter,
 			ColumnPriority: ghPickerColumnPriority(),
 		}
@@ -273,10 +358,7 @@ func (p *ghPicker) run(ctx context.Context) error {
 			if !hasPick {
 				continue // placeholder row
 			}
-			if err := openBrowser(picked.URL); err != nil {
-				fmt.Fprintln(out, picked.URL)
-			}
-			return nil
+			return p.openPicked(picked)
 
 		case "y":
 			if !hasPick {
@@ -297,11 +379,11 @@ func (p *ghPicker) run(ctx context.Context) error {
 				fmt.Fprintf(errOut, "not a pull request: #%d — checkout applies to PRs only\n", picked.Number)
 				continue
 			}
-			remote := p.cfg.Remote
-			if remote == "" {
-				remote = "origin"
+			source, local, err := prCheckoutTarget(ctx, p.runner, *p.cfg, picked.Owner, picked.Repo, picked.Number)
+			if err != nil {
+				return err
 			}
-			msg, err := prCheckoutWith(ctx, p.runner, remote, fmt.Sprintf("pr/%d", picked.Number), picked.Number)
+			msg, err := prCheckoutWith(ctx, p.runner, source, local, picked.Number)
 			if err != nil {
 				return err
 			}
@@ -354,7 +436,7 @@ func (p *ghPicker) setScopeFromPrefix(prefix string) {
 }
 
 // newGHPicker assembles a picker session from the resolved command state.
-func newGHPicker(cmd *cobra.Command, client *ghapi.Client, runner *git.ExecRunner, cfg *config.Config, isPR bool, kind string, filters githubSearchFilters) *ghPicker {
+func newGHPicker(cmd *cobra.Command, client *ghapi.Client, runner git.Runner, cfg *config.Config, isPR bool, kind string, filters githubSearchFilters) *ghPicker {
 	return &ghPicker{
 		cmd:     cmd,
 		client:  client,

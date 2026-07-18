@@ -46,6 +46,14 @@ const searchMaxPages = 10
 // to "updated". limit caps the number of rows returned (0 = no cap, up to the
 // 1000-result API ceiling).
 func (c *Client) SearchIssues(ctx context.Context, query, sort string, limit int) ([]Issue, error) {
+	issues, _, err := c.SearchIssuesWithTotal(ctx, query, sort, limit)
+	return issues, err
+}
+
+// SearchIssuesWithTotal is SearchIssues plus the exact total_count reported by
+// GitHub. Callers that cap the returned rows (for example an interactive
+// picker) can still distinguish a complete result from a truncated one.
+func (c *Client) SearchIssuesWithTotal(ctx context.Context, query, sort string, limit int) ([]Issue, int, error) {
 	if sort == "" {
 		sort = "updated"
 	}
@@ -54,6 +62,7 @@ func (c *Client) SearchIssues(ctx context.Context, query, sort string, limit int
 		perPage = limit
 	}
 	var all []Issue
+	totalCount := 0
 	for page := 1; page <= searchMaxPages; page++ {
 		q := url.Values{}
 		q.Set("q", query)
@@ -64,8 +73,9 @@ func (c *Client) SearchIssues(ctx context.Context, query, sort string, limit int
 
 		batch, total, err := c.searchPage(ctx, "/search/issues?"+q.Encode())
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
+		totalCount = total
 		all = append(all, batch...)
 		if limit > 0 && len(all) >= limit {
 			all = all[:limit]
@@ -75,7 +85,7 @@ func (c *Client) SearchIssues(ctx context.Context, query, sort string, limit int
 			break
 		}
 	}
-	return all, nil
+	return all, totalCount, nil
 }
 
 // SearchCount returns just the total number of matches for a query, without

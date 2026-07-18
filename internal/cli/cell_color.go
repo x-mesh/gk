@@ -86,3 +86,10 @@ func cellFaint(s string) string {
 	}
 	return ansiFaint + s + ansiResetBold
 }
+
+func cellBold(s string) string {
+	if colorOff() {
+		return s
+	}
+	return ansiBold + s + ansiResetBold
+}

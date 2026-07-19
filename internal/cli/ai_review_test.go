@@ -357,3 +357,29 @@ func TestAIReviewCoreProviderNotSummarizer(t *testing.T) {
 		t.Errorf("error should mention Summarize, got: %v", err)
 	}
 }
+
+// Cross-vendor review caught this: the footer was built from the provider
+// HANDLE (chain head, cached hardcoded false) instead of the answer, so a
+// failover credited a provider that never ran. The Fake reports a different
+// provider than the handle to prove the answer wins.
+func TestAIReviewCreditsTheAnsweringProvider(t *testing.T) {
+	fake := provider.NewFake()
+	fake.NameVal = "chainhead"
+	fake.SummarizeResponses = []provider.SummarizeResult{
+		{Text: "plain review text", Provider: "answered-by", Model: "m-9"},
+	}
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{"diff --cached": {Stdout: "d"}}}
+	out := &bytes.Buffer{}
+	if err := runAIReviewCore(context.Background(), aiReviewDeps{
+		Runner: runner, Provider: fake, Lang: "en", Out: out, ErrOut: &bytes.Buffer{},
+	}, aiReviewFlags{format: "text"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := stripped(out.String())
+	if !strings.Contains(s, "answered-by (m-9)") {
+		t.Errorf("footer must credit the answering provider, got:\n%s", s)
+	}
+	if strings.Contains(s, "chainhead") {
+		t.Errorf("footer must not name the chain head after a failover:\n%s", s)
+	}
+}

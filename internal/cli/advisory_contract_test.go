@@ -64,3 +64,29 @@ func TestRenderReviewFindingsRubric(t *testing.T) {
 		}
 	}
 }
+
+// The untrusted-data rule must not depend on the change shape. recent_commits
+// ships on every run — with include_shape off and on a clean tree — so gating
+// the guard on hasShape (as it was) left repo-authored text going to the model
+// with only the weaker in-payload policy behind it.
+func TestStatusAssistPromptGuardsUntrustedDataUnconditionally(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		hasShape, hasDiff bool
+	}{
+		{"no shape, no diff", false, false},
+		{"shape only", true, false},
+		{"diff only", false, true},
+		{"both", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := statusAssistSystemPrompt(tc.hasShape, tc.hasDiff, false)
+			if !strings.Contains(p, "untrusted data") {
+				t.Errorf("untrusted-data rule missing:\n%s", p)
+			}
+			if !strings.Contains(p, "commit subject") {
+				t.Errorf("guard must name commit subjects — they ship unconditionally:\n%s", p)
+			}
+		})
+	}
+}

@@ -210,7 +210,10 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 			"review":   strings.TrimSpace(text),
 		})
 	}
-	emitAIAdvice(deps.Out, "review", text, providerAttribution(deps.Provider, model, false))
+	// Credit from the ANSWER, not the provider handle: deps.Provider is the
+	// chain head (wrong after a failover) and a hardcoded cached=false drops
+	// the "· cached" marker on every cache hit.
+	emitAIAdvice(deps.Out, "review", text, answer.Attribution())
 	return nil
 }
 

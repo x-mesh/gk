@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **네트워크 대기 구간에 spinner 추가 — 침묵이 "접속 실패"로 읽히던 문제.** 인자 없는 `gk clone`은 프로필마다 REST 라운드트립을 돌리면서 picker가 뜨기 전까지 아무것도 출력하지 않아, 느린 링크에서 멈춘 것처럼 보였다. 같은 구멍이 난 곳을 함께 메웠다: `gk clone`(프로필별 repo 목록 — 조회 중인 owner를 함께 표시), `gk inbox`, `gk pr`/`gk issue`의 정적 목록과 비-TUI picker 폴백, `gk pr checkout`의 PR fetch, `gk update`의 최신 릴리스 조회(최대 15초)와 아카이브 다운로드. spinner는 stderr에만 그리고 비-TTY에선 no-op이라 `--json`/파이프 출력은 그대로다. 실제 `git clone`은 git이 자체 진행률을 stderr로 내보내므로 손대지 않았고, bubbletea picker가 화면을 잡고 있는 구간(`ghPicker.run`)도 렌더링 충돌을 피해 제외했다. `github_counts`는 캐시 기반 부가 정보라 조용한 동작이 설계 의도이므로 그대로 뒀다.
+
+### Added
+
+- **`gk agents hook install --stop-commit` — 세션 종료 체크포인트 훅.** Claude Code의 Stop 이벤트에 `gk agents hook run --stop`을 등록해, 커밋 안 된 작업을 남긴 채 세션이 끝나면 `gk commit --wip`로 체크포인트 하나를 남긴다. 나머지 두 훅과 달리 **git 히스토리에 쓰기 때문에 opt-in** — 그냥 `install`은 절대 등록하지 않고, 플래그 없이 다시 `install`하면 기존 항목을 제거한다. 핸들러는 끝까지 fail-open이라 repo가 아니거나, provider가 없거나, 타임아웃이거나, 자식이 실패해도 stderr 한 줄만 남기고 exit 0 한다(세션을 실패시키는 훅이 체크포인트를 한 번 거르는 훅보다 나쁘다). `stop_hook_active`가 켜져 있으면 즉시 빠져나와 Stop 연속 실행에서 커밋이 반복 적재되지 않는다. 체크포인트는 자식 프로세스로 돌고(cobra 전역 플래그 상태 격리 + 데드라인 강제) settings 항목의 `timeout`에 그대로 쓰이는 120초 상한이 걸려, 멈춘 provider가 세션을 붙잡지 못한다. 상한에 걸려도 파일은 워킹트리에 그대로라 다음 세션이 다시 체크포인트한다. `uninstall`은 세 훅을 함께 제거하고 `status`는 셋 다 보고한다. `--stop-only`는 체크포인트 훅만 등록하고 기존 PreToolUse/UserPromptSubmit 항목은 손대지 않는다(`--stop-commit` 함축) — Claude는 PreToolUse를 project와 global에서 병합하므로, steering 훅이 이미 다른 스코프에 있는데 repo에 또 설치하면 두 번 발화한다.
+- **`gk commit --wip` — 체크포인트 커밋 모드.** `WIP(scope): <요약>` 헤더의 커밋 하나만 만든다. 체크포인트는 정의상 한 덩어리라 classify를 통째로 건너뛰므로 provider 호출이 2회+에서 **1회**로 줄고, 그만큼 세션마다 돌릴 만큼 싸진다. 핵심 계약은 **AI 실패로 작업을 잃지 않는 것** — provider가 없거나, 타임아웃이거나, 응답이 깨져도 `WIP(scope): checkpoint — N files (no AI summary)`로 떨어뜨려 반드시 커밋한다. secret 스캔과 노이즈 가드는 그대로 적용되고, `--force`와 `--no-wip-unwrap`을 함축해 무인 실행에서 리뷰 프롬프트에 멈추거나 자기가 쌓는 체인을 되감지 않는다. 헤더 철자는 `gk commit`이 unwrap하는 WIP 패턴에 일부러 맞춰서, 체크포인트를 쌓다가 나중에 `gk commit` 한 번으로 정식 Conventional Commit으로 접는 왕복이 설정 없이 닫힌다. 에이전트 Stop 훅처럼 사람이 안 보는 자리에서 쓰라고 만든 모드.
+
 ## [0.128.0] - 2026-07-19
 
 ### Added

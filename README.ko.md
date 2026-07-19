@@ -277,6 +277,7 @@ gk commit [flags]
   -n, --no-verify                  노이즈·secret 가드와 privacy gate 임계값 우회 (검출은 보고 후 git 기록에 포함; 원격 AI payload의 redaction은 유지)
       --provider string            ai.provider 오버라이드 (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                스테이지된 변경만 대상
+      --wip                        의미 단위 히스토리 대신 WIP(scope) 체크포인트 커밋 하나만 작성. provider 호출 1회, AI를 못 쓰면 요약 없는 체크포인트 메시지로 폴백 (--force와 --no-wip-unwrap 포함)
   -y, --yes                        모든 프롬프트 자동 수락 (비-TTY에선 --force 별칭)
 ```
 

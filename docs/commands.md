@@ -441,9 +441,9 @@ Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the *
 | `gk agents install --global [--full]` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
-| `gk agents hook install [--mode block\|collapse\|warn] [--no-prompt] [--global] [--dry-run]` | Register the Claude Code hooks in `settings.json`: a PreToolUse(Bash) hook that steers raw git to git-kit at the moment a command runs, plus a UserPromptSubmit prefetch hook that injects git orientation for a git-action prompt (`--no-prompt` opts out of the latter). Default `.claude/settings.json`; `--global` for `~/.claude/settings.json` |
-| `gk agents hook uninstall [--global] [--dry-run]` | Remove the gk-managed hook (revert), preserving every other hook |
-| `gk agents hook status` | Report hook install state + mode for local and global settings |
+| `gk agents hook install [--mode block\|collapse\|warn] [--no-prompt] [--stop-commit] [--stop-only] [--global] [--dry-run]` | Register the Claude Code hooks in `settings.json`: a PreToolUse(Bash) hook that steers raw git to git-kit at the moment a command runs, plus a UserPromptSubmit prefetch hook that injects git orientation for a git-action prompt (`--no-prompt` opts out of the latter), plus — with `--stop-commit` — a Stop hook that checkpoints the session with `gk commit --wip`. `--stop-only` registers *just* the checkpoint and leaves the other two events untouched. Default `.claude/settings.json`; `--global` for `~/.claude/settings.json` |
+| `gk agents hook uninstall [--global] [--dry-run]` | Remove every gk-managed hook (revert), preserving all other hooks |
+| `gk agents hook status` | Report install state + mode for all three events, local and global |
 
 With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`, `drift`, `absent`, `needs_install`, and `install_commands`. Explicit missing targets report `state:"blocked"` in that result so agents can install or stop without parsing a second error envelope. `install` reports each target's `action` (`created`, `updated`, `unchanged`) and version.
 
@@ -452,6 +452,14 @@ With `--json` / `GK_AGENT=1`, `check` emits one structured result with `files[]`
 `gk agents hook` is the **enforcement** companion to the **instruction** block above: where the contract block (a markdown paragraph) advises, the hook acts at the point of a tool call. It is Claude Code specific (settings.json), unlike the contract block which any markdown-reading agent inherits. The registered command invokes `gk agents hook run`, which classifies the pending Bash command with the same mapping `gk session audit` and `gk hint` use. Three modes: **warn** (default — the command still runs, a note is surfaced to the agent via `additionalContext`), **collapse** (`--mode collapse` — a lone covered command is still only advised, but a second same-group probe is *denied*: the repeated orientation the audit shows is the biggest turn sink is blocked so the agent folds it into one git-kit call, while a one-off `git status` stays cheap), and **block** (`--mode block` — every covered raw git is denied so the agent retries with git-kit). Edits are surgical (tidwall sjson/gjson): only the gk entry is added or removed, all other hooks and settings are preserved byte-for-byte, a `.bak` is written first, file permissions are kept, and `--dry-run` previews without writing. The handler is fail-open — a non-Bash tool, a command with no git-kit equivalent, read-only plumbing, an empty command, or unreadable stdin all defer silently to the normal permission flow. (Claude merges PreToolUse hooks from project + global settings, so install into one scope, not both.) Beyond the single-command mapping, the handler reads the live session transcript (Claude passes its path on stdin) and, when the pending command continues a recent same-group raw run, adds a real-time **collapse nudge** — fold it and the prior call(s) into one git-kit call — the prevention companion to [`gk session audit --metric=turns`](#turn-reduction-metric---metricturns). Advisories are deduped per session: a given finding kind is injected at most once per session (a stateless transcript-tail check), so a repeated raw command doesn't repeat the same note — the collapse nudge is never deduped, and a missing/unreadable transcript keeps the old always-advise behavior. In `collapse`/`block` mode a deny's reason is a single line naming the replacement command.
 
 **Prompt prefetch (UserPromptSubmit).** `install` also registers `gk agents hook run --prompt` on the UserPromptSubmit event (skip with `--no-prompt`; `uninstall` removes both, `status` reports both). Where the PreToolUse hook reacts to a tool call the agent already chose, this one fires earlier — before the model starts thinking. If the prompt reads as an explicit git-action request (a conservative bilingual gate: "커밋해줘" / "rebase develop" fire; "commit to this plan" / questions about git never do — unclear input does nothing), it injects a one-line orientation (branch, upstream ↑↓, dirty counts, any paused operation with its resume command) as `additionalContext`, capped at 800 chars, so the agent's first tool call doesn't have to re-derive it. The payload is built from lightweight probes (measured warm p95 ~29ms firing, ~18ms passing — it never runs the full `gk context` collector), a `[gk prefetch]` marker in the transcript tail suppresses duplicate injections within a session, and every failure path emits nothing and exits 0 — the hook can never block a prompt.
+
+**Session checkpoint (Stop).** `--stop-commit` registers a third hook, `gk agents hook run --stop`, on the Stop event: when a session ends with uncommitted work it runs [`gk commit --wip`](#checkpoint-mode---wip), leaving one `WIP(scope): <summary>` commit that a later `gk commit` folds into real Conventional Commits. It is **opt-in** because, unlike the other two, it writes to git history — a plain `install` never registers it, and re-running `install` without the flag removes an existing one.
+
+The handler is fail-open in the strictest sense: no repo, no provider, a compose timeout, a non-zero exit — every path prints at most one stderr line and exits 0, because a session-end hook that can fail the session is worse than one that occasionally skips a checkpoint. It bails immediately when `stop_hook_active` is set, so a Stop-driven continuation cannot append one commit per loop. The checkpoint runs as a child process (clean cobra flag state, enforceable deadline) under a 120s ceiling written into the settings entry's own `timeout`, so a hung provider cannot hold the session open; hitting it loses nothing, since the files remain in the working tree for the next session to checkpoint.
+
+`--stop-only` registers the checkpoint and nothing else: existing PreToolUse/UserPromptSubmit entries — gk's own or anyone else's — are left byte-for-byte alone, and no new ones are added. This is the right form when the steering hook already lives in another scope, since Claude merges PreToolUse across project and global settings and installing it in both double-fires it. It implies `--stop-commit`.
+
+Scope note: the checkpoint inherits `gk commit`'s default scope (staged + unstaged + untracked), so files created during the session are included. Machine-local files that should never be committed belong in `.gitignore` or `ai.commit.deny_paths`.
 
 ## gk hint
 
@@ -3727,10 +3735,34 @@ gk commit [flags]
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
 | `--plan <file\|->` | — | Create commits from a JSON plan instead of the AI: `{"commits":[{"message","files":[...]}]}` — deterministic, no LLM call. See "Curated plan mode" below |
 | `--plan-template` | false | Emit the current working-tree changes as a commit-plan draft (JSON) and exit |
+| `--wip` | false | Write **one** checkpoint commit headed `WIP(scope): <summary>` instead of a semantic history. Skips classification (one commit by definition) so it costs a single provider call, and never fails on the AI — no provider, a timeout, or a bad response all degrade to `WIP(scope): checkpoint — N files (no AI summary)` rather than refusing to commit. Implies `--force` and `--no-wip-unwrap`; the secret scan and noise guard still apply. See "Checkpoint mode" below |
 | `--no-wip-unwrap` | false | Skip detection/unwrap of WIP-like commits in the HEAD chain |
 | `--force-wip` | false | Unwrap the WIP chain even when some commits are already pushed (rewrites pushed history; rerun `git push --force-with-lease` afterward) |
 | `--ci` | false | CI mode — require `--force` or `--dry-run`, never prompt |
 | `-y`, `--yes` | false | Accept every prompt (alias for `--force` when non-TTY) |
+
+#### Checkpoint mode (`--wip`)
+
+`--wip` is the cheap half of a two-step history. It saves the current state as one labelled checkpoint now; a later plain `gk commit` folds the whole chain into real Conventional Commits.
+
+```bash
+gk commit --wip     # WIP(remote): trace why a pane's cwd falls back to the spawn dir
+gk commit --wip     # WIP(retrieval): log when a PWD action drops on a missing surface
+# …later, once the work has a shape:
+gk commit -f        # unwraps both and rewrites them as feat/fix commits
+```
+
+Why it exists: an unattended checkpoint (an agent Stop hook, a pre-switch save) has different constraints from a real commit. It must be cheap enough to run every time, and it must never lose work.
+
+| | `gk wip` | `gk commit --wip` | `gk commit` |
+|---|---|---|---|
+| Message | fixed `--wip-- [skip ci]` | `WIP(scope): <AI summary>` | full Conventional Commit |
+| Provider calls | 0 | 1 (compose only) | 2+ (classify + compose per group) |
+| Commits written | 1 | 1 | N, grouped semantically |
+| Secret scan | no (`--no-verify`) | yes | yes |
+| On AI failure | n/a | commits with a plain message | aborts |
+
+The header spelling is deliberate: `WIP(...)` matches the WIP-chain patterns `gk commit` unwraps, so the round trip closes without configuration. Because `--wip` implies `--no-wip-unwrap`, repeated checkpoints stack instead of rewriting each other.
 
 #### Curated plan mode (`--plan` / `--plan-template`)
 

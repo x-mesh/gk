@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,12 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrOwnerNotFound reports that GET /users/{owner} answered 404 — the login
+// does not exist on GitHub, or is invisible to the token in use. Callers
+// surface this early instead of letting the later search 422 with a cryptic
+// "cannot be searched" validation error.
+var ErrOwnerNotFound = errors.New("github owner not found")
 
 // Issue is one row from the GitHub issue/PR search index. GitHub models
 // pull requests as issues, so a single /search/issues query returns both;
@@ -109,6 +116,9 @@ func (c *Client) searchPage(ctx context.Context, pathWithQuery string) ([]Issue,
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		return nil, 0, rateLimitError(resp)
 	}
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil, 0, scopeError(resp)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, 0, fmt.Errorf("github search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -176,6 +186,9 @@ func (c *Client) OwnerType(ctx context.Context, owner string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("%w: %s", ErrOwnerNotFound, owner)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("github user lookup returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -222,4 +235,20 @@ func rateLimitError(resp *http.Response) error {
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("github search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+}
+
+// scopeError turns a 422 search response into an actionable message. GitHub
+// answers "cannot be searched" when a repo:/org:/user: qualifier names
+// something the token cannot see — the resource doesn't exist, was renamed,
+// or is private to this token — which reads as a cryptic validation failure
+// without that context. Other 422s (a malformed qualifier from --query)
+// keep the raw body only.
+func scopeError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	msg := strings.TrimSpace(string(body))
+	if strings.Contains(msg, "cannot be searched") {
+		const hint = "the repo:/org:/user: target doesn't exist or your token can't see it — check `git remote get-url origin` and which token gk resolved (GH_TOKEN > GITHUB_TOKEN > gh hosts.yml)"
+		return fmt.Errorf("github search returned %s: %s — %s", resp.Status, msg, hint)
+	}
+	return fmt.Errorf("github search returned %s: %s", resp.Status, msg)
 }

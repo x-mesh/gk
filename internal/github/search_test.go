@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -259,5 +260,59 @@ func TestSearchIssuesWithTotalPreservesExactCountWhenLimited(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls = %d, want one bounded request", calls)
+	}
+}
+
+// TestSearchIssues422ScopeHint: a "cannot be searched" 422 (nonexistent or
+// token-invisible repo:/org:/user: target) carries the diagnosis hint.
+func TestSearchIssues422ScopeHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"message":"Validation Failed","errors":[{"message":"The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.","resource":"Search","field":"q","code":"invalid"}]}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	_, err := c.SearchIssues(context.Background(), "repo:ghost/none is:open", "", 0)
+	if err == nil {
+		t.Fatal("expected a scope error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "doesn't exist or your token can't see it") {
+		t.Fatalf("error = %q, want the scope hint", got)
+	}
+}
+
+// TestSearchIssues422OtherKeepsRawBody: a 422 that is NOT the scope failure
+// (e.g. a malformed qualifier from --query) must not get the scope hint.
+func TestSearchIssues422OtherKeepsRawBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply","code":"invalid"}]}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	_, err := c.SearchIssues(context.Background(), "bogus:qualifier", "", 0)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if got := err.Error(); strings.Contains(got, "doesn't exist or your token can't see it") {
+		t.Fatalf("error = %q, must not carry the scope hint", got)
+	}
+}
+
+// TestOwnerTypeNotFound: a 404 surfaces as ErrOwnerNotFound so callers can
+// fail early with a clear message instead of a later search 422.
+func TestOwnerTypeNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	_, err := c.OwnerType(context.Background(), "no-such-owner")
+	if !errors.Is(err, ErrOwnerNotFound) {
+		t.Fatalf("err = %v, want ErrOwnerNotFound", err)
 	}
 }

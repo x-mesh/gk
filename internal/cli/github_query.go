@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -182,9 +183,19 @@ func resolveGitHubScope(ctx context.Context, cmd *cobra.Command, args []string, 
 		return "", "", fmt.Errorf("no org to search: pass --org <name>, set github.owner in config, or run inside a repo whose origin is on GitHub")
 	}
 
+	// Search treats org:/user: leniently, so a wrong guess still finds the
+	// repos — but a nonexistent owner would 422 later with a cryptic
+	// "cannot be searched" error, so surface a 404 here where the fix
+	// (check the name / the token) is still obvious. Transient lookup
+	// failures keep the org fallback: better a working search than a
+	// blocked one.
 	qualifier := "org"
-	if typ, err := client.OwnerType(ctx, owner); err == nil && typ == "User" {
+	typ, terr := client.OwnerType(ctx, owner)
+	switch {
+	case terr == nil && typ == "User":
 		qualifier = "user"
+	case errors.Is(terr, ghapi.ErrOwnerNotFound):
+		return "", "", fmt.Errorf("owner %q not found on GitHub (or not visible to your token) — check the name, or which token gk resolved (GH_TOKEN > GITHUB_TOKEN > gh hosts.yml)", owner)
 	}
 	s := qualifier + ":" + owner
 	return s, s, nil

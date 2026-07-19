@@ -257,3 +257,42 @@ func TestOSC8Link(t *testing.T) {
 		t.Errorf("empty url should be plain, got %q", got)
 	}
 }
+
+// TestResolveGitHubScopeOwnerNotFound: a 404 on the owner lookup fails fast
+// with a clear message instead of letting the search 422 later.
+func TestResolveGitHubScopeOwnerNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, "no-such-owner")
+
+	_, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, &git.FakeRunner{}, client)
+	if err == nil {
+		t.Fatal("expected an owner-not-found error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "not found on GitHub") {
+		t.Fatalf("error = %q, want it to mention not found on GitHub", got)
+	}
+}
+
+// TestResolveGitHubScopeLookupErrorFallsBack: a transient lookup failure
+// (not a 404) keeps the org: fallback — search accepts it leniently.
+func TestResolveGitHubScopeLookupErrorFallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cmd := ghScopeCmd(t, true, "acme")
+
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, config.Config{}, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:acme" {
+		t.Errorf("prefix = %q, want org:acme (fallback on transient error)", prefix)
+	}
+}

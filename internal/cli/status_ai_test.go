@@ -117,10 +117,20 @@ func TestFlagDangerousMentions(t *testing.T) {
 
 func TestEmitStatusAssistAppendsDangerFooter(t *testing.T) {
 	var buf bytes.Buffer
-	emitStatusAssist(&buf, "Next: gk reset --hard to drop everything.")
+	emitStatusAssist(&buf, "Next: gk reset --hard to drop everything.", "")
 	out := stripped(buf.String())
 	if !strings.Contains(out, "hard-to-undo") {
 		t.Fatalf("expected danger footer, got:\n%s", out)
+	}
+}
+
+// The attribution rides in the same section as the answer, so a reader who
+// keeps the output still knows what wrote it.
+func TestEmitStatusAssistShowsAttribution(t *testing.T) {
+	var buf bytes.Buffer
+	emitStatusAssist(&buf, "WHAT: tidy-up.", "openai (gpt-4o)")
+	if out := stripped(buf.String()); !strings.Contains(out, "openai (gpt-4o)") {
+		t.Fatalf("expected attribution footer, got:\n%s", out)
 	}
 }
 

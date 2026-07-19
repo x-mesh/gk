@@ -174,7 +174,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		result = easyEngine.TranslateTerms(result)
 	}
 
-	emitAIAdvice(cmd.OutOrStdout(), "ask", result)
+	emitAIAdvice(cmd.OutOrStdout(), "ask", result, providerAttribution(prov, "", false))
 	return nil
 }
 

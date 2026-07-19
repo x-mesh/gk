@@ -192,7 +192,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	emitAIAdvice(cmd.OutOrStdout(), "explain", result)
+	emitAIAdvice(cmd.OutOrStdout(), "explain", result, providerAttribution(prov, "", false))
 	return nil
 }
 

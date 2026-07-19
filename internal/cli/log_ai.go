@@ -391,7 +391,8 @@ func emitLogAssist(out io.Writer, outcome *logAIOutcome) {
 	if outcome == nil {
 		return
 	}
-	emitAIAdvice(out, "ai log summary", outcome.Text)
+	emitAIAdvice(out, "ai log summary", outcome.Text,
+		aiAttribution(outcome.Provider, outcome.Model, outcome.Cached))
 }
 
 func logAIFlagsRequested(cmd *cobra.Command) (ai bool, providerOverride, langOverride string) {

@@ -608,3 +608,43 @@ func TestProviderModel_UnknownStaysNA(t *testing.T) {
 		t.Errorf("providerModel(gemini) = %q, want %q", got, "n/a")
 	}
 }
+
+// The attribution footer is what survives after the spinner disappears, so
+// it must say which model produced the text — and must never credit a model
+// for text replayed from cache, whose key does not fold in the model.
+func TestAIAttribution(t *testing.T) {
+	cases := []struct {
+		name            string
+		provider, model string
+		cached          bool
+		want            string
+	}{
+		{"provider and model", "openai", "gpt-4o", false, "openai (gpt-4o)"},
+		{"cache hit keeps model unnamed", "openai", "", true, "openai · cached"},
+		{"cli adapter has no model", "gemini", "", false, "gemini"},
+		{"n/a is not a model", "gemini", "n/a", false, "gemini"},
+		{"unknown provider yields nothing", "", "gpt-4o", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aiAttribution(tc.provider, tc.model, tc.cached); got != tc.want {
+				t.Errorf("aiAttribution(%q,%q,%v) = %q, want %q", tc.provider, tc.model, tc.cached, got, tc.want)
+			}
+		})
+	}
+}
+
+// A fallback chain can answer with a different model than its head planned,
+// so the result's model wins when the call reported one.
+func TestProviderAttributionPrefersResultModel(t *testing.T) {
+	p := &provider.OpenAI{Model: "gpt-4o-mini"}
+	if got := providerAttribution(p, "gpt-4o", false); got != "openai (gpt-4o)" {
+		t.Errorf("result model must win, got %q", got)
+	}
+	if got := providerAttribution(p, "", false); got != "openai (gpt-4o-mini)" {
+		t.Errorf("no result model → fall back to the adapter's, got %q", got)
+	}
+	if got := providerAttribution(nil, "gpt-4o", false); got != "" {
+		t.Errorf("nil provider yields nothing, got %q", got)
+	}
+}

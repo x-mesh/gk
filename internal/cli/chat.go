@@ -837,7 +837,10 @@ func renderChatOneShotSuccess(cmd *cobra.Command, engine *chat.Engine, prov prov
 		// Just terminate the streamed line before the stats footer.
 		fmt.Fprintln(out)
 	} else {
-		emitAIAdvice(out, "gk chat", res.Text)
+		// No per-turn attribution: chat names its provider+model once in
+		// the welcome banner and prints a stats footer after every turn,
+		// so repeating it each answer is noise in a REPL.
+		emitAIAdvice(out, "gk chat", res.Text, "")
 	}
 	fmt.Fprintln(out, color.New(color.Faint).Sprint(turnStatsLine(turnUI, res)))
 	fmt.Fprintln(out, stylizeHintLine("hint: gk chat --continue 로 이 대화를 이어갈 수 있습니다"))
@@ -1225,10 +1228,10 @@ func chatSpinnerMessage(lang, providerName string) string {
 func printChatWelcome(w io.Writer, prov provider.Provider, sess *chat.Session, ko bool) {
 	faint := color.New(color.Faint).SprintFunc()
 	if ko {
-		fmt.Fprintf(w, "gk chat — 저장소와 대화합니다 (provider: %s)\n", prov.Name())
+		fmt.Fprintf(w, "gk chat — 저장소와 대화합니다 (provider: %s)\n", providerLabel(prov))
 		fmt.Fprintln(w, faint("  /help 명령 목록 · /exit 종료 · Ctrl-C 현재 턴 취소 · 세션 "+sess.ID))
 	} else {
-		fmt.Fprintf(w, "gk chat — talk to your repository (provider: %s)\n", prov.Name())
+		fmt.Fprintf(w, "gk chat — talk to your repository (provider: %s)\n", providerLabel(prov))
 		fmt.Fprintln(w, faint("  /help commands · /exit to quit · Ctrl-C cancels the turn · session "+sess.ID))
 	}
 }

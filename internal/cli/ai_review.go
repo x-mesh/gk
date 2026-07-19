@@ -240,7 +240,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 			"review":   strings.TrimSpace(text),
 		})
 	}
-	emitAIAdvice(deps.Out, "review", text)
+	emitAIAdvice(deps.Out, "review", text, providerAttribution(deps.Provider, model, false))
 	return nil
 }
 

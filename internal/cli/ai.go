@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
@@ -311,7 +312,12 @@ func writeAICache(ctx context.Context, runner git.Runner, kind, key, text string
 // chrome and the same post-hoc safety guard. Paste-oriented outputs (pr,
 // changelog) deliberately stay raw — section chrome would pollute content
 // the user copies elsewhere.
-func emitAIAdvice(out io.Writer, title, text string) {
+//
+// attr is the attribution footer from aiAttribution ("" to omit it). The
+// answer outlives the spinner that named the provider, and a cached answer
+// never had one, so without this the reader cannot tell which model wrote
+// what they are reading — or that nothing was called at all.
+func emitAIAdvice(out io.Writer, title, text, attr string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -322,11 +328,48 @@ func emitAIAdvice(out io.Writer, title, text string) {
 			"⚠ mentions hard-to-undo commands: "+strings.Join(danger, ", ")+
 				" — verify before running.")
 	}
+	if attr != "" {
+		faint := color.New(color.Faint).SprintFunc()
+		lines = append(lines, "", faint("— "+attr))
+	}
 	fmt.Fprintln(out)
 	fmt.Fprint(out, ui.RenderSection(title, "", lines, ui.SectionOpts{
 		Layout: ui.SectionLayoutBar,
 		Color:  ui.SectionInfo,
 	}))
+}
+
+// aiAttribution renders the credit footer for an AI answer:
+// "openai (gpt-4o-mini)", with " · cached" when the text was replayed from
+// the on-disk cache rather than generated now. Returns "" for an unknown
+// provider so callers can pass it through unconditionally.
+func aiAttribution(providerName, model string, cached bool) string {
+	if providerName == "" {
+		return ""
+	}
+	s := providerName
+	if model != "" && model != "n/a" {
+		s += " (" + model + ")"
+	}
+	if cached {
+		s += " · cached"
+	}
+	return s
+}
+
+// providerAttribution builds the footer from a live provider, preferring the
+// model the RESULT reports over the one the adapter planned to call: after a
+// fallback failover those differ, and the answer must credit whoever actually
+// produced it. Pass resultModel="" when the call reported none.
+func providerAttribution(p provider.Provider, resultModel string, cached bool) string {
+	if p == nil {
+		return ""
+	}
+	model := resultModel
+	if model == "" {
+		model = providerModel(p)
+	}
+	return aiAttribution(p.Name(), model, cached)
 }
 
 // writeAIJSON marshals v as indented JSON to w. Backs the `--format json`

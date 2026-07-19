@@ -706,7 +706,11 @@ func renderStatusAssist(
 	if cacheOn {
 		if cached, hit := readStatusAssistCache(ctx, runner, key); hit {
 			Dbg("status --ai: cache hit (key=%s, provider=%s) — no AI call; clear with: rm $(git rev-parse --git-path gk-ai-cache)/status/%s", key, prov.Name(), key)
-			emitStatusAssist(out, cached)
+			// No model on a cache hit: the key folds in the provider but
+			// not the model, so the stored text may predate a model
+			// change. Naming the CURRENT model would credit one that
+			// never wrote it — "· cached" is the honest disclosure.
+			emitStatusAssist(out, cached, aiAttribution(prov.Name(), "", true))
 			return nil
 		}
 		Dbg("status --ai: cache miss (key=%s) — querying provider=%s", key, prov.Name())
@@ -758,7 +762,7 @@ func renderStatusAssist(
 	if cacheOn {
 		writeStatusAssistCache(ctx, runner, key, text)
 	}
-	emitStatusAssist(out, text)
+	emitStatusAssist(out, text, providerAttribution(prov, result.Model, false))
 	return nil
 }
 
@@ -767,8 +771,9 @@ func renderStatusAssist(
 // The model is grounded ("use only recommended_commands") but never
 // trusted blindly — this is the post-hoc guard against a hallucinated
 // `reset --hard`.
-func emitStatusAssist(out io.Writer, text string) {
-	emitAIAdvice(out, "ai status", text)
+// attr credits the provider/model behind the answer; see emitAIAdvice.
+func emitStatusAssist(out io.Writer, text, attr string) {
+	emitAIAdvice(out, "ai status", text, attr)
 }
 
 // statusAssistDangerPatterns are substrings whose presence in an AI answer

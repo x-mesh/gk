@@ -356,7 +356,7 @@ func runLogAssist(
 	defer cancel()
 
 	Dbg("log --ai: querying provider=%s model=%s", prov.Name(), providerModel(prov))
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s — summarizing via %s", label, prov.Name()))
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s — summarizing via %s", label, providerLabel(prov)))
 	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 		Kind:         "log",
 		SystemPrompt: logAssistSystemPrompt(EasyEngine().IsEnabled()),

@@ -164,7 +164,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 	// Spinner during the provider round-trip (see ai_ask.go for the rationale).
 	stopSpin := func() {}
 	if !flagDebug {
-		stopSpin = ui.StartBubbleSpinner(explainSpinnerMessage(lang, prov.Name()))
+		stopSpin = ui.StartBubbleSpinner(explainSpinnerMessage(lang, providerLabel(prov)))
 	}
 	var result string
 	if flags.last {

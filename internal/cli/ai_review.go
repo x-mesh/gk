@@ -207,7 +207,7 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 	} else {
 		callCtx, cancel := aiCallContext(ctx, deps.AI)
 		defer cancel()
-		stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", deps.Provider.Name()))
+		stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", providerLabel(deps.Provider)))
 		result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 			Kind:      "review",
 			Diff:      redactedDiff,

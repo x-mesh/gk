@@ -158,7 +158,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// non-TTY stderr, so piped/JSON output stays clean.
 	stopSpin := func() {}
 	if !flagDebug {
-		stopSpin = ui.StartBubbleSpinner(askSpinnerMessage(lang, prov.Name()))
+		stopSpin = ui.StartBubbleSpinner(askSpinnerMessage(lang, providerLabel(prov)))
 	}
 	result, err := engine.Answer(ctx, redactedQuestion)
 	stopSpin()

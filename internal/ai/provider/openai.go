@@ -48,6 +48,12 @@ func NewOpenAI() *OpenAI {
 func (o *OpenAI) Name() string       { return "openai" }
 func (o *OpenAI) Locality() Locality { return LocalityRemote }
 
+// ModelID implements ModelIdentifier. It resolves through the same
+// toNvidia() path every request takes, so the reported id is the one that
+// will actually be called — including the shared default an unset Model
+// falls through to.
+func (o *OpenAI) ModelID() string { return o.toNvidia().model() }
+
 func (o *OpenAI) Available(_ context.Context) error {
 	if o.apiKey() == "" {
 		return fmt.Errorf("%w: OPENAI_API_KEY not set", ErrUnauthenticated)

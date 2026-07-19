@@ -200,7 +200,7 @@ func runAIChangelogCore(ctx context.Context, deps aiChangelogDeps, flags aiChang
 	} else {
 		callCtx, cancel := aiCallContext(ctx, deps.AI)
 		defer cancel()
-		stop := ui.StartBubbleSpinner(fmt.Sprintf("changelog — drafting via %s", deps.Provider.Name()))
+		stop := ui.StartBubbleSpinner(fmt.Sprintf("changelog — drafting via %s", providerLabel(deps.Provider)))
 		result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 			Kind:      "changelog",
 			Commits:   redactedCommits,

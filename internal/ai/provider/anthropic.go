@@ -57,6 +57,9 @@ func NewAnthropic() *Anthropic {
 func (a *Anthropic) Name() string       { return "anthropic" }
 func (a *Anthropic) Locality() Locality { return LocalityRemote }
 
+// ModelID implements ModelIdentifier.
+func (a *Anthropic) ModelID() string { return a.modelOrDefault() }
+
 func (a *Anthropic) Available(_ context.Context) error {
 	if a.apiKey() == "" {
 		return fmt.Errorf("%w: ANTHROPIC_API_KEY not set", ErrUnauthenticated)

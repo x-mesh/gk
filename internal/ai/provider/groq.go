@@ -47,6 +47,12 @@ func NewGroq() *Groq {
 func (g *Groq) Name() string       { return "groq" }
 func (g *Groq) Locality() Locality { return LocalityRemote }
 
+// ModelID implements ModelIdentifier. It resolves through the same
+// toNvidia() path every request takes, so the reported id is the one that
+// will actually be called — including the shared default an unset Model
+// falls through to.
+func (g *Groq) ModelID() string { return g.toNvidia().model() }
+
 func (g *Groq) Available(_ context.Context) error {
 	if g.apiKey() == "" {
 		return fmt.Errorf("%w: GROQ_API_KEY not set", ErrUnauthenticated)

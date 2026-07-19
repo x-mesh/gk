@@ -185,7 +185,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 	// non-TTY stderr (pipes/CI), so scripted output stays clean.
 	stopSpin := func() {}
 	if !flagDebug {
-		stopSpin = ui.StartBubbleSpinner(doSpinnerMessage(lang, prov.Name()))
+		stopSpin = ui.StartBubbleSpinner(doSpinnerMessage(lang, providerLabel(prov)))
 	}
 	plan, err := parser.Parse(ctx, redactedInput)
 	stopSpin()
@@ -242,7 +242,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 	// --debug timeline showed this before). Kept off stdout so `--json` and
 	// piped plans stay machine-clean.
 	if !flags.json {
-		renderDoPlanHeader(cmd.ErrOrStderr(), prov.Name(), lang, flags.dryRun, len(plan.Commands))
+		renderDoPlanHeader(cmd.ErrOrStderr(), providerLabel(prov), lang, flags.dryRun, len(plan.Commands))
 	}
 
 	result, err := executor.Execute(ctx, plan, opts)

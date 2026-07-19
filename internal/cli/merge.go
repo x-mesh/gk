@@ -718,9 +718,15 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 			reason = fmt.Sprintf("provider %q failed: %v", deps.Provider.Name(), err)
 			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
 		} else if strings.TrimSpace(result.Text) != "" {
-			providerName := deps.Provider.Name()
+			// Prefer what the RESULT reports: after a fallback failover the
+			// provider that answered — and its model — differ from the head
+			// of the chain, and the header must name the one that actually ran.
+			providerName := providerLabel(deps.Provider)
 			if result.Provider != "" {
 				providerName = result.Provider
+				if result.Model != "" {
+					providerName += " (" + result.Model + ")"
+				}
 			}
 			summary := decorateMergePlanSummary(cleanMergePlanSummary(result.Text), len(conflicts), !NoColorFlag())
 			// renderAIMergePlanHeader emits a complete bar section

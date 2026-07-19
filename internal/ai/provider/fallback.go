@@ -35,6 +35,21 @@ func (fc *FallbackChain) Name() string {
 	return "fallback"
 }
 
+// ModelID implements ModelIdentifier by reporting the FIRST provider's
+// model — the one a chain actually calls unless it fails over. Returns ""
+// (unknown) for an empty chain, or when the head is a CLI adapter that
+// does not know its model up front; a later failover can change the model,
+// so callers must not treat this as a guarantee.
+func (fc *FallbackChain) ModelID() string {
+	if len(fc.Providers) == 0 {
+		return ""
+	}
+	if m, ok := fc.Providers[0].(ModelIdentifier); ok {
+		return m.ModelID()
+	}
+	return ""
+}
+
 // Locality returns LocalityRemote when ANY provider in the chain is
 // remote (or the chain is empty). This is deliberately conservative for
 // privacy: a local-first chain can fail over to a remote provider at

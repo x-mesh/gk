@@ -168,6 +168,20 @@ type Provider interface {
 	Compose(ctx context.Context, in ComposeInput) (ComposeResult, error)
 }
 
+// ModelIdentifier is the optional interface for adapters that know which
+// model they will call BEFORE the request is sent — the HTTP providers.
+// ModelID reports the EFFECTIVE model id: the configured override when one
+// is set, otherwise the adapter's own default. Callers use it to display
+// or log the model without duplicating each adapter's default constant.
+//
+// CLI adapters (gemini / qwen / kiro) deliberately do NOT implement it:
+// they own their model selection and only learn the id from the response.
+// Callers must treat a missing implementation, and an empty return, as
+// "unknown" rather than assuming a default.
+type ModelIdentifier interface {
+	ModelID() string
+}
+
 // Sentinel errors adapters wrap so callers can branch on failure type.
 var (
 	ErrNotInstalled     = errors.New("provider binary not installed")

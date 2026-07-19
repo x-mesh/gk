@@ -312,9 +312,9 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// on the AI CLI, not stuck, and counts down against the classify timeout so
 	// an imminent deadline (the cause of "context deadline exceeded") is visible
 	// rather than waiting blind.
-	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), prov.Name())
+	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), providerLabel(prov))
 	classifyBudget := parseDurationOrDefault(ai.Commit.Timeout, 0)
-	stopClassify := ui.StartBubbleSpinnerWithBudget(fmt.Sprintf("classify — %s", prov.Name()), classifyBudget)
+	stopClassify := ui.StartBubbleSpinnerWithBudget(fmt.Sprintf("classify — %s", providerLabel(prov)), classifyBudget)
 	classifyStart := time.Now()
 	res, err := aicommit.Classify(ctx, prov, files, aicommit.ClassifyOptions{
 		AllowedTypes:    cfg.Commit.Types,
@@ -387,13 +387,13 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	if heuristicN > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"commit: composing %d message(s) (%d via heuristic, %d via %s; %s)...\n",
-			len(groups), heuristicN, llmN, prov.Name(), dispatch)
+			len(groups), heuristicN, llmN, providerLabel(prov), dispatch)
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"commit: composing %d message(s) via %s (%s)...\n",
-			len(groups), prov.Name(), dispatch)
+			len(groups), providerLabel(prov), dispatch)
 	}
-	stopCompose := ui.StartBubbleSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), prov.Name()))
+	stopCompose := ui.StartBubbleSpinner(fmt.Sprintf("compose — %d group(s) via %s", len(groups), providerLabel(prov)))
 	composeStart := time.Now()
 	messages, err := aicommit.ComposeAll(ctx, prov, groups, diffs, aicommit.ComposeOptions{
 		MaxAttempts:      3,
@@ -573,6 +573,12 @@ func runCommitDryRunPreview(
 	fmt.Fprintln(out, "commit: dry-run — cost preview (no LLM call made)")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Provider:  %s\n", prov.Name())
+	// The cost preview is a key/value block, so the model gets its own row
+	// rather than a parenthetical. Omitted entirely for CLI providers, which
+	// pick their model themselves — an "n/a" row would just be noise.
+	if model := providerModel(prov); model != "n/a" {
+		fmt.Fprintf(out, "Model:     %s\n", model)
+	}
 	fmt.Fprintf(out, "Language:  %s\n", fallbackStr(ai.Lang, "en"))
 	fmt.Fprintf(out, "Files:     %d in scope", len(files))
 	if deniedN > 0 {
@@ -1166,35 +1172,34 @@ func filterKept(messages []aicommit.Message, decisions []aicommit.ReviewDecision
 	return out
 }
 
-// providerModel returns the model identifier for debug logging across the
-// HTTP adapters (so `-d` shows the effective model, including a
-// commit.model / --model override). CLI providers return "n/a" — they own
-// their model selection. FallbackChain reports its first provider.
+// providerModel returns the effective model identifier (including a
+// commit.model / --model override) for debug logging and the progress
+// lines. CLI providers return "n/a" — they own their model selection and
+// only learn the id from the response. FallbackChain reports its head.
+//
+// The per-adapter defaults live with the adapters (provider.ModelIdentifier)
+// rather than being restated here: a default that drifts out of sync would
+// make gk claim a model it never called.
 func providerModel(p provider.Provider) string {
-	switch v := p.(type) {
-	case *provider.Nvidia:
-		if v.Model != "" {
-			return v.Model
-		}
-		return "meta/llama-3.1-8b-instruct"
-	case *provider.OpenAI:
-		if v.Model != "" {
-			return v.Model
-		}
-	case *provider.Groq:
-		if v.Model != "" {
-			return v.Model
-		}
-	case *provider.Anthropic:
-		if v.Model != "" {
-			return v.Model
-		}
-	case *provider.FallbackChain:
-		if len(v.Providers) > 0 {
-			return providerModel(v.Providers[0])
+	if m, ok := p.(provider.ModelIdentifier); ok {
+		if id := m.ModelID(); id != "" {
+			return id
 		}
 	}
 	return "n/a"
+}
+
+// providerLabel renders the "who is answering" string for user-facing
+// progress output: "openai (gpt-4o-mini)" when the model is knowable up
+// front, plain "gemini" when it is not. Display only — the machine-readable
+// provider field, the AI-Assisted-By trailer, and cache keys all keep using
+// bare Name() so this stays a purely cosmetic change.
+func providerLabel(p provider.Provider) string {
+	name := p.Name()
+	if m := providerModel(p); m != "n/a" {
+		return name + " (" + m + ")"
+	}
+	return name
 }
 
 // composeDispatchLabel describes how the LLM groups will be composed,

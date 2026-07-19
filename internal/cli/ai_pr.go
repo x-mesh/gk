@@ -253,7 +253,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	// Call Summarize, bounded by the chat timeout.
 	callCtx, cancel := aiCallContext(ctx, deps.AI)
 	defer cancel()
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("pr — drafting summary via %s", deps.Provider.Name()))
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("pr — drafting summary via %s", providerLabel(deps.Provider)))
 	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
 		Kind:      "pr",
 		Diff:      redactedDiff,

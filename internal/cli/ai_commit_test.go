@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
@@ -564,5 +565,46 @@ func TestRootedCommitRunnerResolvesSubdirectoryToRepoRoot(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "web/x.ts" {
 		t.Fatalf("staged files = %q, want %q", strings.TrimSpace(string(out)), "web/x.ts")
+	}
+}
+
+// providerLabel is what every AI progress line shows. HTTP adapters must
+// name the effective model so `gk status --ai` reveals which model answered;
+// CLI adapters own their model selection and stay bare.
+func TestProviderLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		prov provider.Provider
+		want string
+	}{
+		{"openai default", provider.NewOpenAI(), "openai (gpt-4o-mini)"},
+		{"openai override", &provider.OpenAI{Model: "gpt-4o"}, "openai (gpt-4o)"},
+		{"anthropic default", provider.NewAnthropic(), "anthropic (claude-sonnet-4-5-20250929)"},
+		// CLI adapter: model unknown until the response comes back.
+		{"cli adapter stays bare", &provider.Gemini{}, "gemini"},
+		// The chain reports its head — the provider a call actually reaches
+		// unless it fails over.
+		{"fallback reports head", &provider.FallbackChain{
+			Providers: []provider.Provider{&provider.OpenAI{Model: "gpt-4o"}, &provider.Gemini{}},
+		}, "openai (gpt-4o)"},
+		{"fallback with cli head", &provider.FallbackChain{
+			Providers: []provider.Provider{&provider.Gemini{}},
+		}, "gemini"},
+		{"empty chain", &provider.FallbackChain{}, "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := providerLabel(tc.prov); got != tc.want {
+				t.Errorf("providerLabel = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// providerModel must never invent a model for an adapter that does not know
+// one — a fabricated id in the progress line would misreport what ran.
+func TestProviderModel_UnknownStaysNA(t *testing.T) {
+	if got := providerModel(&provider.Gemini{}); got != "n/a" {
+		t.Errorf("providerModel(gemini) = %q, want %q", got, "n/a")
 	}
 }

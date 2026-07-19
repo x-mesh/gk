@@ -88,6 +88,9 @@ func NewNvidia() *Nvidia {
 // Name implements Provider.
 func (n *Nvidia) Name() string { return "nvidia" }
 
+// ModelID implements ModelIdentifier.
+func (n *Nvidia) ModelID() string { return n.model() }
+
 // Locality implements Provider. NVIDIA uploads prompts to NVIDIA's API.
 func (n *Nvidia) Locality() Locality { return LocalityRemote }
 

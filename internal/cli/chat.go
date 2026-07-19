@@ -492,7 +492,7 @@ func runFirstChatTurn(cmd *cobra.Command, engine *chat.Engine, candidates []chat
 	var reasons []string
 	for i, c := range candidates {
 		engine.Caller = remoteGuardedCaller{inner: c.caller, prov: c.prov, flags: cmd.Flags()}
-		turnUI = &chatTurnUI{out: cmd.OutOrStdout(), label: chatSpinnerMessage(lang, c.prov.Name())}
+		turnUI = &chatTurnUI{out: cmd.OutOrStdout(), label: chatSpinnerMessage(lang, providerLabel(c.prov))}
 		res, err = runChatTurn(cmd, engine, turnUI, input)
 		if err == nil {
 			return res, c.prov, turnUI, nil
@@ -800,7 +800,7 @@ func formatChatTokens(n int64, approx bool) string {
 }
 
 func runChatOneShot(cmd *cobra.Command, engine *chat.Engine, prov provider.Provider, sess *chat.Session, lang, question string) error {
-	turnUI := &chatTurnUI{out: cmd.OutOrStdout(), label: chatSpinnerMessage(lang, prov.Name())}
+	turnUI := &chatTurnUI{out: cmd.OutOrStdout(), label: chatSpinnerMessage(lang, providerLabel(prov))}
 	res, err := runChatTurn(cmd, engine, turnUI, question)
 	if err != nil {
 		return chatOneShotFailure(cmd, engine, prov, sess, turnUI, lang, question, err)
@@ -1174,7 +1174,7 @@ func runChatREPL(cmd *cobra.Command, engine *chat.Engine, candidates []chatCandi
 				}
 			}
 		} else {
-			turnUI = &chatTurnUI{out: out, label: chatSpinnerMessage(lang, prov.Name())}
+			turnUI = &chatTurnUI{out: out, label: chatSpinnerMessage(lang, providerLabel(prov))}
 			res, err = runChatTurn(cmd, engine, turnUI, line)
 		}
 		if err != nil {

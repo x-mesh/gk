@@ -655,13 +655,23 @@ See [`gk ship`](commands.md#gk-ship) for the full pipeline.
 | | |
 |-|-|
 | Type | object |
-| Default | `mode: off`, `status: true`, `include_diff: false` |
+| Default | `mode: off`, `status: true`, `include_shape: true`, `include_diff: false`, `recent_commits: 5` |
 | Env var | `GK_AI_ASSIST_MODE`, `GK_AI_ASSIST_STATUS` |
-| CLI flag | `--ai` on `gk status` forces one run regardless of mode |
+| CLI flag | `--ai` on `gk status` forces one run regardless of mode; `--no-cache` ignores a cached answer for one run |
 
 Controls AI help attached to existing commands. `gk next` and
 `gk status --ai` always try the configured AI provider first and fall
 back to a local next-step plan if no provider is available.
+
+`include_shape` adds the **change shape** — per-file added/deleted counts plus
+the declarations git names in its own `@@ … @@` hunk context. It ships no line
+of code body, which is why it defaults on while `include_diff` (the full,
+truncated diff) defaults off. With both off the assistant sees file *names*
+only and can do no better than restate the file count.
+
+`recent_commits` is how many recent commit subjects to send, giving the
+assistant a time axis — whether the working tree continues the last commit's
+theme or starts something new. `0` disables it.
 
 Valid `mode` values:
 
@@ -676,7 +686,9 @@ ai:
   assist:
     mode: suggest
     status: true
+    include_shape: true
     include_diff: false
+    recent_commits: 5
 ```
 
 ### `ai.chat`

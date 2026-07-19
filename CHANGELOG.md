@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every `--ai` surface now names the **model that actually answered**, not just
+  the provider. Progress lines read `via openai (kiro/claude-haiku-4.5)`, and the
+  answer itself carries a credit footer — an OpenAI-compatible endpoint can be
+  pointed at any model, so `via openai` alone was true and uninformative.
+  - A cache hit is credited `openai · cached` with **no model named**: the cache
+    key folds in the provider but not the model, so the stored text may predate a
+    model change.
+  - After a fallback failover the credit names the provider that actually ran,
+    not the head of the chain.
+- `--no-cache` on `gk status --ai`, `gk log --ai`, `gk pr new`, `gk review`,
+  `gk changelog`, and `gk merge`. Previously only `gk log` could re-ask, and the
+  alternative was deleting `.git/gk-ai-cache` by hand. It suppresses the cache
+  **read** only — a fresh answer still populates the cache.
+- `gk status --ai` sends a **change shape**: per-file added/deleted counts plus
+  the declarations git names in its own `@@ … @@` hunk context. Without it the
+  assistant saw file *names* only and could do no better than restate the file
+  count. It ships no code body, so it stays far cheaper and narrower than
+  `include_diff`, which keeps its default of `false`.
+  - New config: `ai.assist.include_shape` (default `true`) and
+    `ai.assist.recent_commits` (default `5`).
+- `gk log --ai` gains a time axis and magnitude: commit dates and a span
+  sentence ("20 commits spanning 11 hours"), hotspot files ranked by touch count
+  and tagged `code`/`docs`, and a `merge_state` sentence naming both sides.
+
+### Changed
+
+- `gk status --ai` leads with **what the change is**, not which command to run.
+  gk already computes the recommended commands with their reasons, so asking the
+  model to pick one and justify it produced a translation of a table gk already
+  had. The contract is now `WHAT` / `WATCH` (only on a real problem) / `NEXT`.
+- `gk log --ai` moves from one dense paragraph to `STORY` / `SHAPE` / `WATCH`,
+  where `SHAPE` reads the commit-type mix against the span rather than reciting
+  it.
+- All six `--ai` surfaces run through one shared query pipeline. They had drifted
+  apart — two different privacy/cache orderings, so two different cache-key
+  inputs, and a fix made on one surface could not reach the others.
+  - Cache keys are now derived from the redacted payload on every surface, so
+    existing cached answers miss once and repopulate.
+
+### Fixed
+
+- A fenced plain-text response from a CLI provider (gemini / qwen / kiro /
+  anthropic) lost its real subject: the fallback parser ran on the unstripped
+  text, so the opening ``` became the commit subject and the actual subject line
+  was dropped.
+- `gk merge --ai` passed the caller's context straight to the provider, so a slow
+  or wedged provider hung the whole merge with no recourse but Ctrl-C. It is now
+  bounded by `ai.chat.timeout`, and gained `--show-prompt` support along with the
+  rest of the pipeline.
+- `gk review` credited its answer to the provider handle rather than the answer,
+  so cache hits lost the `· cached` marker and a failover named a provider that
+  never ran.
+- `gk status --ai` gated its untrusted-data instruction on the change shape, but
+  recent commit subjects ship on every run — including with `include_shape` off
+  and on a clean tree. The guard is now unconditional.
+
 ## [0.127.0] - 2026-07-19
 
 ### Changed

@@ -1063,6 +1063,7 @@ gk slog [revisions] [-- <path>...] [flags]
 | `--ai` | false | Explain the shown commit range in plain language with AI, appended below the list — a reading companion for whatever range/pathspec `gk log` already selected, not a release-note generator (that's `gk changelog`). Grounded in the same deterministic signals `--hotspots`/`--wip`/`--breaking`/`--cc` compute (hotspot files, WIP chains, breaking commits, CC type tally, merged/unmerged vs base) so the model cites facts instead of inventing them. Composes with every other flag (`--graph`, `--lanes`, viz layers, `--json`). Large ranges are capped at 150 commits sent to the model (aggregate signals still cover the full range); a note is printed when truncated. |
 | `--provider <name>` | | Override `ai.provider` for `--ai` |
 | `--lang <code>` | | Override the AI summary language for `--ai` (`en`, `ko`, ...) — defaults to `output.lang` |
+| `--no-cache` | false | With `--ai`, ignore any cached answer and query the provider again. Suppresses the cache *read* only — the fresh answer is still stored. Also available on `gk status`, `gk pr new`, `gk review`, `gk changelog`, and `gk merge`. |
 
 ### `gk log --ai`
 
@@ -1070,7 +1071,7 @@ Reads whatever commits `gk log`'s own filters selected (`--since`/`--limit`/path
 
 The facts sent to the model are structured, not raw commit text: commit subjects/authors (capped at the 150 most recent when the range is larger — aggregate counts below still reflect the full range), Conventional Commit type tally, breaking-commit count + sample subjects, squash/WIP-chain counts, hotspot files (skipped when a pathspec narrows the range, so a scoped `gk log -- path --ai` never leaks unrelated file names), and merged/unmerged counts against the resolved base (skipped when the current branch *is* the base, matching `--merged`'s own guard). This keeps the summary honest — it cites what's in the payload rather than inferring from bare subjects the way a plain "summarize these commits" prompt would.
 
-Standard AI pipeline: `ai.commit.allow_remote` gates remote providers (skips gracefully with a stderr note, not a hard failure — `gk log` itself never fails because `--ai` couldn't run), the privacy gate redacts secrets/`deny_paths` before any remote payload, and answers are cached under `.git/gk-ai-cache/log/` keyed on the facts + language + provider + Easy Mode state.
+Standard AI pipeline: `ai.commit.allow_remote` gates remote providers (skips gracefully with a stderr note, not a hard failure — `gk log` itself never fails because `--ai` couldn't run), the privacy gate redacts secrets/`deny_paths` before any remote payload, and answers are cached under `.git/gk-ai-cache/log/` keyed on the redacted payload + language + provider + Easy Mode state. Every `--ai` surface shares this pipeline, so `--no-cache` and the provider/model credit footer behave identically across them.
 
 ```bash
 gk log --ai                        # summarize the default range

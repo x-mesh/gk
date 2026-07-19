@@ -380,7 +380,9 @@ ai:
   assist:
     mode: "off"              # off | suggest | auto
     status: true             # enables gk status --ai / gk next surfaces
+    include_shape: true      # per-file +/- counts and git's @@ hunk context (no code body)
     include_diff: false      # add the (truncated, privacy-gated) diff so the assistant reasons about WHAT changed
+    recent_commits: 5        # recent commit subjects sent for a time axis; 0 disables
     diff_budget: 8000        # max diff bytes when include_diff is on
     max_tokens: 1200         # response cap
     timeout_secs: 8          # per-call timeout; falls back to local guidance on timeout

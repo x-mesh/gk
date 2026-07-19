@@ -58,6 +58,7 @@ func init() {
 	cmd.Flags().Bool("ai", false, "explain the shown commit range in plain language with AI (appended below the list; grounded in hotspot/WIP/breaking/CC signals)")
 	cmd.Flags().String("provider", "", "override ai.provider for --ai")
 	cmd.Flags().String("lang", "", "override AI log-summary language (en|ko|...)")
+	cmd.Flags().Bool("no-cache", false, "with --ai, ignore any cached summary and query the provider again")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -961,9 +962,29 @@ func collectRecentlyAmended(ctx context.Context, runner *git.ExecRunner) (map[st
 // collectHotspots returns the top-10 most-touched files in the last 90 days.
 // Cheap enough to compute on demand — no cache file yet.
 func collectHotspots(ctx context.Context, runner *git.ExecRunner) map[string]bool {
+	result := map[string]bool{}
+	for _, h := range collectHotspotCounts(ctx, runner) {
+		result[h.Path] = true
+	}
+	return result
+}
+
+// hotspotCount is one churn-ranked file. The --hotspots viz layer only needs
+// membership (collectHotspots reduces to a set), but a summarizer needs the
+// magnitude: without it a file touched 9 times reads exactly like one touched
+// 5, and the only thing left to say is to recite the list.
+type hotspotCount struct {
+	Path    string
+	Touches int
+}
+
+// collectHotspotCounts ranks files by churn over a fixed 90-day window,
+// highest first, keeping the top 10 with at least 5 touches (fewer than that
+// is usually rename noise, not a hotspot).
+func collectHotspotCounts(ctx context.Context, runner *git.ExecRunner) []hotspotCount {
 	out, _, err := runner.Run(ctx, "log", "--since=90.days.ago", "--name-only", "--format=")
 	if err != nil {
-		return map[string]bool{}
+		return nil
 	}
 	counts := map[string]int{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -973,25 +994,26 @@ func collectHotspots(ctx context.Context, runner *git.ExecRunner) map[string]boo
 		}
 		counts[line]++
 	}
-	type kv struct {
-		k string
-		v int
-	}
-	list := make([]kv, 0, len(counts))
+	list := make([]hotspotCount, 0, len(counts))
 	for k, v := range counts {
-		list = append(list, kv{k, v})
+		list = append(list, hotspotCount{Path: k, Touches: v})
 	}
-	// Partial sort via full sort — repos are small-ish.
-	// Keep only files with ≥5 touches to avoid marking trivial rename counts.
-	sort.Slice(list, func(i, j int) bool { return list[i].v > list[j].v })
-	result := map[string]bool{}
+	// Partial sort via full sort — repos are small-ish. Ties break on path so
+	// the ranking is stable across runs (map iteration order is not).
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Touches != list[j].Touches {
+			return list[i].Touches > list[j].Touches
+		}
+		return list[i].Path < list[j].Path
+	})
+	var top []hotspotCount
 	for i, item := range list {
-		if i >= 10 || item.v < 5 {
+		if i >= 10 || item.Touches < 5 {
 			break
 		}
-		result[item.k] = true
+		top = append(top, item)
 	}
-	return result
+	return top
 }
 
 // parseTrailers extracts Co-authored-by and review trailers from the commit

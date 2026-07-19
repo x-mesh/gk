@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -40,27 +42,42 @@ const logAssistMaxCommits = 150
 type logAssistCommit struct {
 	SHA     string `json:"sha"`
 	Author  string `json:"author"`
+	Date    string `json:"date,omitempty"`
 	Subject string `json:"subject"`
 }
 
+// logAssistHotspot is one churn-ranked file with its magnitude and whether it
+// is docs or code. Both matter: a bare name cannot distinguish a hub file from
+// mild churn, and a release touches every doc at once, so unlabelled docs
+// crowd out the code signal they are not competing with.
+type logAssistHotspot struct {
+	Path    string `json:"path"`
+	Touches int    `json:"touches"`
+	Kind    string `json:"kind"` // "code" | "docs"
+}
+
 type logAssistFacts struct {
-	Since          string            `json:"since,omitempty"`
-	Limit          int               `json:"limit,omitempty"`
-	Pathspec       []string          `json:"pathspec,omitempty"`
-	TotalCommits   int               `json:"total_commits"`
-	Truncated      bool              `json:"truncated,omitempty"`
-	TruncatedFrom  int               `json:"truncated_from,omitempty"`
-	Commits        []logAssistCommit `json:"commits"`
-	CCTally        map[string]int    `json:"cc_tally,omitempty"`
-	BreakingCount  int               `json:"breaking_count,omitempty"`
-	BreakingSample []string          `json:"breaking_sample,omitempty"`
-	SquashCount    int               `json:"squash_count,omitempty"`
-	WIPRuns        []int             `json:"wip_runs,omitempty"`
-	HotspotFiles   []string          `json:"hotspot_files,omitempty"`
-	Base           string            `json:"base,omitempty"`
-	MergedCount    int               `json:"merged_count,omitempty"`
-	UnmergedCount  int               `json:"unmerged_count,omitempty"`
-	PromptPolicy   string            `json:"prompt_policy"`
+	Since          string             `json:"since,omitempty"`
+	Limit          int                `json:"limit,omitempty"`
+	Pathspec       []string           `json:"pathspec,omitempty"`
+	TotalCommits   int                `json:"total_commits"`
+	Truncated      bool               `json:"truncated,omitempty"`
+	TruncatedFrom  int                `json:"truncated_from,omitempty"`
+	Commits        []logAssistCommit  `json:"commits"`
+	Span           string             `json:"span,omitempty"`
+	FirstCommitAt  string             `json:"first_commit_at,omitempty"`
+	LastCommitAt   string             `json:"last_commit_at,omitempty"`
+	CCTally        map[string]int     `json:"cc_tally,omitempty"`
+	BreakingCount  int                `json:"breaking_count,omitempty"`
+	BreakingSample []string           `json:"breaking_sample,omitempty"`
+	SquashCount    int                `json:"squash_count,omitempty"`
+	WIPRuns        []int              `json:"wip_runs,omitempty"`
+	Hotspots       []logAssistHotspot `json:"hotspots,omitempty"`
+	Base           string             `json:"base,omitempty"`
+	MergedCount    int                `json:"merged_count,omitempty"`
+	UnmergedCount  int                `json:"unmerged_count,omitempty"`
+	MergeState     string             `json:"merge_state,omitempty"`
+	PromptPolicy   string             `json:"prompt_policy"`
 }
 
 // collectLogAIFacts gathers the grounded facts payload for `gk log --ai` by
@@ -138,13 +155,12 @@ func collectLogAIFacts(ctx context.Context, runner *git.ExecRunner, cfg *config.
 	// signal entirely when a pathspec narrows the range — "no signal" beats
 	// "signal for the wrong scope".
 	if len(pathArgs) == 0 {
-		if hot := collectHotspots(ctx, runner); len(hot) > 0 {
-			files := make([]string, 0, len(hot))
-			for p := range hot {
-				files = append(files, p)
-			}
-			sort.Strings(files)
-			f.HotspotFiles = files
+		for _, h := range collectHotspotCounts(ctx, runner) {
+			f.Hotspots = append(f.Hotspots, logAssistHotspot{
+				Path:    h.Path,
+				Touches: h.Touches,
+				Kind:    hotspotKind(h.Path),
+			})
 		}
 	}
 
@@ -164,8 +180,19 @@ func collectLogAIFacts(ctx context.Context, runner *git.ExecRunner, cfg *config.
 					f.UnmergedCount++
 				}
 			}
+			// Spell the split out. Bare merged/unmerged counts invite the
+			// same directional misread that made the status advisor call an
+			// ahead branch "behind": naming the base and the totals in one
+			// sentence leaves nothing to infer.
+			f.MergeState = fmt.Sprintf("%d of %d commits in this range are already in %s; %d are not",
+				f.MergedCount, len(records), baseRes.Resolved, f.UnmergedCount)
 		}
 	}
+
+	// Time axis. 20 commits over 11 hours and 20 over six months are
+	// different stories, and without dates the model cannot tell them apart —
+	// it was summarizing a shape with no duration at all.
+	f.FirstCommitAt, f.LastCommitAt, f.Span = commitSpan(records)
 
 	// Cap the per-commit list AFTER aggregate stats are computed, so a
 	// truncated payload still reports accurate totals — most recent N,
@@ -179,10 +206,82 @@ func collectLogAIFacts(ctx context.Context, runner *git.ExecRunner, cfg *config.
 	}
 	f.Commits = make([]logAssistCommit, len(commits))
 	for i, r := range commits {
-		f.Commits[i] = logAssistCommit{SHA: r.short, Author: r.author, Subject: r.subject}
+		f.Commits[i] = logAssistCommit{
+			SHA:     r.short,
+			Author:  r.author,
+			Date:    commitDateString(r.authorTime),
+			Subject: r.subject,
+		}
 	}
 
 	return f, nil
+}
+
+// docHotspotRE matches paths whose churn is documentation rather than code.
+// A single release rewrites CHANGELOG, every README, and the docs tree at
+// once, so unlabelled they occupy the top of any churn ranking and bury the
+// code hotspots — the model then dutifully reports release bookkeeping as
+// the story of the range.
+var docHotspotRE = regexp.MustCompile(`(?i)(^|/)(docs?|documentation)/|\.(md|mdx|rst|adoc|txt)$`)
+
+func hotspotKind(path string) string {
+	if docHotspotRE.MatchString(path) {
+		return "docs"
+	}
+	return "code"
+}
+
+func commitDateString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// commitSpan reports the range's oldest and newest commit times plus a
+// human-readable duration. Records arrive newest-first from `git log`, but
+// this scans for the true min/max rather than trusting that order — a
+// --date-order or grafted history can break it.
+func commitSpan(records []commitRecord) (first, last, span string) {
+	var lo, hi time.Time
+	for _, r := range records {
+		if r.authorTime.IsZero() {
+			continue
+		}
+		if lo.IsZero() || r.authorTime.Before(lo) {
+			lo = r.authorTime
+		}
+		if hi.IsZero() || r.authorTime.After(hi) {
+			hi = r.authorTime
+		}
+	}
+	if lo.IsZero() || hi.IsZero() {
+		return "", "", ""
+	}
+	n := len(records)
+	return commitDateString(lo), commitDateString(hi),
+		fmt.Sprintf("%d %s spanning %s", n, plural2(n, "commit"), humanizeDuration(hi.Sub(lo)))
+}
+
+// humanizeDuration renders a span at the coarsest unit that still carries
+// meaning — "11 hours", "3 days", "2 months" — since the reader wants the
+// tempo of the work, not a precise interval.
+func humanizeDuration(d time.Duration) string {
+	unit := func(n int, noun string) string {
+		return fmt.Sprintf("%d %s", n, plural2(n, noun))
+	}
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return unit(int(d.Minutes()), "minute")
+	case d < 48*time.Hour:
+		return unit(int(d.Hours()), "hour")
+	case d < 60*24*time.Hour:
+		return unit(int(d.Hours()/24), "day")
+	default:
+		return unit(int(d.Hours()/24/30), "month")
+	}
 }
 
 // logAssistSystemPrompt mirrors statusAssistSystemPrompt: the role and rules
@@ -194,9 +293,17 @@ func logAssistSystemPrompt(easy bool) string {
 	if easy {
 		fmt.Fprintln(&b, "The reader is likely NOT a developer. Explain in plain, everyday language; avoid git jargon (rebase/HEAD/upstream/squash/…) or add a one-clause plain explanation when unavoidable. Keep proper nouns (branch names, file names, commands) as-is.")
 	}
+	fmt.Fprintln(&b, "Output exactly these labelled lines, in this order:")
+	fmt.Fprintln(&b, "    STORY: <2-3 lines — what this stretch of work was actually about>")
+	fmt.Fprintln(&b, "    SHAPE: <one line reading the composition: the cc_tally mix over the span>")
+	fmt.Fprintln(&b, "    WATCH: <one line — only when a listed fact supports it; otherwise OMIT the line entirely>")
 	fmt.Fprintln(&b, "Rules:")
 	fmt.Fprintln(&b, "- Ground every claim in the facts payload — cite counts, files, and subjects only if they appear there. Do not invent authors, dates, or commits.")
-	fmt.Fprintln(&b, "- Write a short narrative (a few sentences to a short paragraph): what the work was about, any notable patterns (WIP chains, a breaking change, a hotspot file touched repeatedly), and anything the reader should know before acting.")
+	fmt.Fprintln(&b, "- STORY is the point: name the themes running through the subjects, not a commit-by-commit recital.")
+	fmt.Fprintln(&b, "- SHAPE interprets the mix rather than reciting it. `span` gives the duration, so read tempo and balance: many feat with almost no fix over a short span is a feature push with little hardening; mostly fix is a stabilization stretch. Say what the mix MEANS.")
+	fmt.Fprintln(&b, "- `hotspots` are ranked by `touches` (highest first) — magnitude is the signal, so distinguish a heavily-churned file from a mildly-touched one instead of listing names. Entries with kind=\"docs\" are usually release bookkeeping: never lead with them, and mention them only when documentation IS the story.")
+	fmt.Fprintln(&b, "- For anything about the base branch, use the `merge_state` sentence verbatim as the source of truth. Do not re-derive the direction from merged_count/unmerged_count.")
+	fmt.Fprintln(&b, "- WATCH is for something the reader should act on: WIP chains left in history, breaking changes, a large unmerged backlog, or churn concentrated in one file. Nothing notable → omit the line. Never invent one to fill the slot.")
 	fmt.Fprintln(&b, "- If `truncated` is true, say the summary covers only the most recent commits shown, not the full range.")
 	fmt.Fprintln(&b, "- Do not prefix the answer with a language code or label (no \"KO:\" / \"EN:\").")
 	fmt.Fprint(&b, "- This is a read-only summary — never recommend git commands.")
@@ -325,7 +432,13 @@ func runLogAssist(
 	}
 
 	payload := buildLogAssistData(facts)
+	// --no-cache suppresses the READ but still writes: the user wants a fresh
+	// answer now, not the cache disabled from here on.
 	cacheOn := cfg.AI.Assist.Cache
+	skipCacheRead := false
+	if cmd != nil && cmd.Flags().Lookup("no-cache") != nil {
+		skipCacheRead, _ = cmd.Flags().GetBool("no-cache")
+	}
 	// Easy Mode changes logAssistSystemPrompt's wording (plain-language
 	// instruction), so it must be part of the key — otherwise toggling
 	// --easy can serve a cached summary written in the wrong register.
@@ -334,9 +447,14 @@ func runLogAssist(
 		easyTag = "1"
 	}
 	key := aiCacheKey("log", payload, lang, prov.Name(), easyTag)
-	if cacheOn {
+	if cacheOn && skipCacheRead {
+		Dbg("log --ai: --no-cache — skipping cache read (key=%s), querying provider=%s", key, prov.Name())
+	}
+	if cacheOn && !skipCacheRead {
 		if cached, hit := readAICache(ctx, runner, "log", key); hit {
-			Dbg("log --ai: cache hit (key=%s, provider=%s) — no AI call; clear with: rm $(git rev-parse --git-path gk-ai-cache)/log/%s", key, prov.Name(), key)
+			Dbg("log --ai: cache hit (key=%s, provider=%s) — no AI call; re-run with --no-cache, or clear with: rm $(git rev-parse --git-path gk-ai-cache)/log/%s", key, prov.Name(), key)
+			// No model recorded: the key folds in the provider but not the
+			// model, so the stored text may predate a model change.
 			return &logAIOutcome{Text: cached, Provider: prov.Name(), Lang: lang, Cached: true}
 		}
 		Dbg("log --ai: cache miss (key=%s) — querying provider=%s", key, prov.Name())

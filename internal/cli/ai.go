@@ -403,9 +403,15 @@ func aiChatHistoryBudget(ai config.AIConfig) int {
 // provider (including a long fallback chain). Derives the deadline from
 // ai.chat.timeout (default 30s). The caller must defer the returned cancel.
 func aiCallContext(ctx context.Context, ai config.AIConfig) (context.Context, context.CancelFunc) {
-	d := parseDurationOrDefault(ai.Chat.Timeout, 30*time.Second)
+	d := aiCallTimeout(ai)
 	if d <= 0 {
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, d)
+}
+
+// aiCallTimeout is the ai.chat.timeout bound as a duration, for callers that
+// hand the timeout to runAIQuery rather than deriving a context themselves.
+func aiCallTimeout(ai config.AIConfig) time.Duration {
+	return parseDurationOrDefault(ai.Chat.Timeout, 30*time.Second)
 }

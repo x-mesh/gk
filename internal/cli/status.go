@@ -114,6 +114,7 @@ func init() {
 	cmd.Flags().Bool("ai", false, "explain the current status and next safe actions with AI")
 	cmd.Flags().String("provider", "", "override ai.provider for --ai")
 	cmd.Flags().String("lang", "", "override AI status language (en|ko|...)")
+	addAINoCacheFlag(cmd)
 	rootCmd.AddCommand(cmd)
 }
 

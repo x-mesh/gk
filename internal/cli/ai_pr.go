@@ -13,7 +13,6 @@ import (
 	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
-	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -55,6 +54,7 @@ to copy directly.`,
 	newCmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	newCmd.Flags().String("provider", "", "override ai.provider")
 	newCmd.Flags().String("lang", "", "override ai.lang (en|ko|...)")
+	addAINoCacheFlag(newCmd)
 
 	checkoutCmd := &cobra.Command{
 		Use:   "checkout <number>",
@@ -217,58 +217,40 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 		return nil
 	}
 
-	// Remote policy: refuse to upload when allow_remote is off.
-	if err := ensureRemoteAllowed(deps.Provider, deps.AI); err != nil {
+	// A PR body is deterministic in (diff, commits, lang, provider), so a
+	// re-run on the same branch tip reuses the previous draft.
+	lang := fallbackLang(deps.Lang)
+	answer, err := runAIQuery(ctx, deps.Cmd, deps.Runner, deps.Provider, deps.AI, aiQuery{
+		Kind:        "pr",
+		Payload:     diff,
+		Lang:        lang,
+		MaxTokens:   aiChatMaxTokens(deps.AI),
+		Timeout:     aiCallTimeout(deps.AI),
+		TimeoutHint: "the provider exceeded ai.chat.timeout — raise it, or set a faster ai.<provider>.model.",
+		// The commit list is part of the question, so it has to key the
+		// cache too — the diff alone can be identical across reworded commits.
+		CacheExtra:    []string{strings.Join(commits, "\n")},
+		SpinnerLabel:  "pr — drafting summary",
+		CacheEnabled:  true,
+		SkipCacheRead: aiNoCacheRequested(deps.Cmd),
+		// NOTE: commits travel UNREDACTED here, which is pre-existing
+		// behaviour — `gk changelog` runs its commit list through the privacy
+		// gate and `gk pr` never has. Preserved rather than changed as a side
+		// effect of this refactor; it needs its own decision.
+		Input: func(redacted string) provider.SummarizeInput {
+			return provider.SummarizeInput{
+				Kind:      "pr",
+				Diff:      redacted,
+				Commits:   commits,
+				Lang:      lang,
+				MaxTokens: aiChatMaxTokens(deps.AI),
+			}
+		},
+	})
+	if err != nil {
 		return fmt.Errorf("pr: %w", err)
 	}
-
-	// Privacy Gate: redact diff for remote providers.
-	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
-	if err != nil {
-		if deps.Cmd != nil {
-			renderPrivacyFindings(deps.Cmd.ErrOrStderr(), pgFindings)
-		}
-		return fmt.Errorf("pr: privacy gate: %w", err)
-	}
-
-	// --show-prompt: display redacted payload.
-	if deps.Cmd != nil {
-		showPromptIfRequested(deps.Cmd, redactedDiff)
-	}
-
-	// Type-assert Summarizer.
-	sum, ok := deps.Provider.(provider.Summarizer)
-	if !ok {
-		return fmt.Errorf("pr: provider %q does not support Summarize", deps.Provider.Name())
-	}
-
-	// Cache: a PR body is deterministic in (diff, commits, lang, provider),
-	// so a re-run on the same branch tip reuses the previous draft.
-	lang := fallbackLang(deps.Lang)
-	cacheKey := aiCacheKey("pr", redactedDiff, strings.Join(commits, "\n"), lang, deps.Provider.Name())
-	if cached, ok := readAICache(ctx, deps.Runner, "pr", cacheKey); ok {
-		return outputPRResult(deps.Out, deps.ErrOut, cached, flags.output)
-	}
-
-	// Call Summarize, bounded by the chat timeout.
-	callCtx, cancel := aiCallContext(ctx, deps.AI)
-	defer cancel()
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("pr — drafting summary via %s", providerLabel(deps.Provider)))
-	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
-		Kind:      "pr",
-		Diff:      redactedDiff,
-		Commits:   commits,
-		Lang:      lang,
-		MaxTokens: aiChatMaxTokens(deps.AI),
-	})
-	stop()
-	if err != nil {
-		return fmt.Errorf("pr: summarize: %w", err)
-	}
-	writeAICache(ctx, deps.Runner, "pr", cacheKey, result.Text)
-
-	// Output.
-	return outputPRResult(deps.Out, deps.ErrOut, result.Text, flags.output)
+	return outputPRResult(deps.Out, deps.ErrOut, answer.Text, flags.output)
 }
 
 func outputPRResult(out, errOut io.Writer, text, mode string) error {

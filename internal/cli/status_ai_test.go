@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,17 +135,50 @@ func TestEmitStatusAssistShowsAttribution(t *testing.T) {
 	}
 }
 
-func TestStatusAssistCacheKeyStableAcrossTimestamp(t *testing.T) {
+// The shared pipeline keys its cache on the payload, so the payload must be
+// stable for an unchanged tree. GeneratedAt moves every second: leaving it in
+// would make `gk status --ai` miss the cache on every single invocation. The
+// bespoke key used to zero it; buildStatusAssistData now does.
+func TestStatusAssistDataStableAcrossTimestamp(t *testing.T) {
 	a := statusAssistFacts{Branch: "feat/x", GeneratedAt: "2026-05-23T00:00:00Z"}
 	b := statusAssistFacts{Branch: "feat/x", GeneratedAt: "2030-01-01T00:00:00Z"}
-	if statusAssistCacheKey(a, "diff", "en", "p") != statusAssistCacheKey(b, "diff", "en", "p") {
-		t.Fatal("cache key must ignore GeneratedAt")
+	if buildStatusAssistData(a, "diff") != buildStatusAssistData(b, "diff") {
+		t.Fatal("assist payload must not vary with GeneratedAt — the cache keys on it")
 	}
-	if statusAssistCacheKey(a, "diff", "en", "p") == statusAssistCacheKey(a, "OTHER", "en", "p") {
-		t.Fatal("cache key must change with diff")
+	if strings.Contains(buildStatusAssistData(a, "diff"), "2026-05-23") {
+		t.Error("GeneratedAt leaked into the payload")
 	}
-	if statusAssistCacheKey(a, "diff", "en", "p") == statusAssistCacheKey(a, "diff", "ko", "p") {
-		t.Fatal("cache key must change with lang")
+	if buildStatusAssistData(a, "diff") == buildStatusAssistData(a, "OTHER") {
+		t.Fatal("payload must change with the diff")
+	}
+	// Real state must still key the cache.
+	c := statusAssistFacts{Branch: "feat/y"}
+	if buildStatusAssistData(a, "diff") == buildStatusAssistData(c, "diff") {
+		t.Fatal("payload must change with the branch")
+	}
+}
+
+// The five --ai surfaces share one pipeline; these are the properties every
+// one of them now inherits, so they are asserted once here.
+func TestAIQueryCacheKeyComposition(t *testing.T) {
+	key := func(kind, redacted, lang, prov string, extra ...string) string {
+		return aiCacheKey(append([]string{kind, redacted, lang, prov}, extra...)...)
+	}
+	base := key("status", "payload", "en", "openai")
+	if base == key("log", "payload", "en", "openai") {
+		t.Error("kind must key the cache — surfaces must not collide")
+	}
+	if base == key("status", "payload", "ko", "openai") {
+		t.Error("lang must key the cache")
+	}
+	if base == key("status", "payload", "en", "gemini") {
+		t.Error("provider must key the cache")
+	}
+	// Easy Mode rewrites the answer's register without touching the payload.
+	// log folded this in; status did not, and served developer prose to a
+	// non-developer. The shared key makes it uniform.
+	if key("status", "p", "en", "openai", "easy=0") == key("status", "p", "en", "openai", "easy=1") {
+		t.Error("Easy Mode must key the cache")
 	}
 }
 
@@ -210,18 +244,28 @@ func TestNextCommandRegistered(t *testing.T) {
 	}
 }
 
+// status used to carry a private copy of the cache. It is gone, and the
+// shared helpers must land in the same place it did — .git/gk-ai-cache/status
+// — so previously-written answers stay reachable.
 func TestStatusAssistCacheRoundTrip(t *testing.T) {
 	r := testutil.NewRepo(t)
 	runner := execRunnerFor(r)
 	ctx := context.Background()
 	const key = "deadbeefcafe0001"
-	if _, ok := readStatusAssistCache(ctx, runner, key); ok {
+	if _, ok := readAICache(ctx, runner, "status", key); ok {
 		t.Fatal("unexpected cache hit on empty cache")
 	}
-	writeStatusAssistCache(ctx, runner, key, "hello answer")
-	got, ok := readStatusAssistCache(ctx, runner, key)
+	writeAICache(ctx, runner, "status", key, "hello answer")
+	got, ok := readAICache(ctx, runner, "status", key)
 	if !ok || got != "hello answer" {
 		t.Fatalf("cache round-trip failed: ok=%v got=%q", ok, got)
+	}
+	dir, ok := aiCacheDir(ctx, runner, "status")
+	if !ok {
+		t.Fatal("status cache dir unresolved")
+	}
+	if filepath.Base(dir) != "status" || filepath.Base(filepath.Dir(dir)) != "gk-ai-cache" {
+		t.Errorf("status answers must stay under .git/gk-ai-cache/status, got %q", dir)
 	}
 }
 

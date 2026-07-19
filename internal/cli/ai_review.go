@@ -34,6 +34,7 @@ text by default; use --format json for structured output.`,
 	cmd.Flags().String("format", "text", `output format: "text" (default) or "json"`)
 	cmd.Flags().Bool("dry-run", false, "show the prompt without calling the provider")
 	cmd.Flags().String("provider", "", "override ai.provider")
+	addAINoCacheFlag(cmd)
 
 	rootCmd.AddCommand(cmd)
 }
@@ -173,54 +174,23 @@ func runAIReviewCore(ctx context.Context, deps aiReviewDeps, flags aiReviewFlags
 		return nil
 	}
 
-	// Remote policy: refuse to upload when allow_remote is off.
-	if err := ensureRemoteAllowed(deps.Provider, deps.AI); err != nil {
+	// A review is deterministic in (diff, lang, provider), so it caches.
+	lang := fallbackLang(deps.Lang)
+	answer, err := runAIQuery(ctx, deps.Cmd, deps.Runner, deps.Provider, deps.AI, aiQuery{
+		Kind:          "review",
+		Payload:       diff,
+		Lang:          lang,
+		MaxTokens:     aiChatMaxTokens(deps.AI),
+		Timeout:       aiCallTimeout(deps.AI),
+		TimeoutHint:   "the provider exceeded ai.chat.timeout — raise it, or set a faster ai.<provider>.model.",
+		SpinnerLabel:  "review — analyzing diff",
+		CacheEnabled:  true,
+		SkipCacheRead: aiNoCacheRequested(deps.Cmd),
+	})
+	if err != nil {
 		return fmt.Errorf("review: %w", err)
 	}
-
-	// Privacy Gate: redact diff for remote providers.
-	redactedDiff, pgFindings, err := applyPrivacyGate(deps.Cmd, deps.Provider, diff, deps.AI)
-	if err != nil {
-		if deps.Cmd != nil {
-			renderPrivacyFindings(deps.Cmd.ErrOrStderr(), pgFindings)
-		}
-		return fmt.Errorf("review: privacy gate: %w", err)
-	}
-
-	// --show-prompt: display redacted payload.
-	if deps.Cmd != nil {
-		showPromptIfRequested(deps.Cmd, redactedDiff)
-	}
-
-	// Type-assert Summarizer.
-	sum, ok := deps.Provider.(provider.Summarizer)
-	if !ok {
-		return fmt.Errorf("review: provider %q does not support Summarize", deps.Provider.Name())
-	}
-
-	// Cache: a review is deterministic in (diff, lang, provider).
-	lang := fallbackLang(deps.Lang)
-	cacheKey := aiCacheKey("review", redactedDiff, lang, deps.Provider.Name())
-	var text, model string
-	if cached, ok := readAICache(ctx, deps.Runner, "review", cacheKey); ok {
-		text = cached
-	} else {
-		callCtx, cancel := aiCallContext(ctx, deps.AI)
-		defer cancel()
-		stop := ui.StartBubbleSpinner(fmt.Sprintf("review — analyzing diff via %s", providerLabel(deps.Provider)))
-		result, err := sum.Summarize(callCtx, provider.SummarizeInput{
-			Kind:      "review",
-			Diff:      redactedDiff,
-			Lang:      lang,
-			MaxTokens: aiChatMaxTokens(deps.AI),
-		})
-		stop()
-		if err != nil {
-			return fmt.Errorf("review: summarize: %w", err)
-		}
-		text, model = result.Text, result.Model
-		writeAICache(ctx, deps.Runner, "review", cacheKey, text)
-	}
+	text, model := answer.Text, answer.Model
 
 	// Output: prefer the actionable-findings contract; fall back to raw
 	// text when the provider didn't honour it (e.g. some CLI providers).

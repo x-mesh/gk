@@ -2,14 +2,10 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +18,6 @@ import (
 	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
-	"github.com/x-mesh/gk/internal/ui"
 )
 
 const statusAssistMaxPaths = 12
@@ -683,86 +678,32 @@ func renderStatusAssist(
 		renderLocalStatusAssist(out, facts, lang)
 		return nil
 	}
-	sum, ok := prov.(provider.Summarizer)
-	if !ok {
-		fmt.Fprintf(errOut, "%s: provider %q does not support Summarize; showing local guidance\n", label, prov.Name())
-		renderLocalStatusAssist(out, facts, lang)
-		return nil
-	}
-
-	// Remote policy: when allow_remote is off, never upload — fall back to
-	// the deterministic local guidance instead of erroring.
-	if err := ensureRemoteAllowed(prov, cfg.AI); err != nil {
+	secs := statusAssistTimeoutSecs(cfg)
+	answer, err := runAIQuery(ctx, cmd, runner, prov, cfg.AI, aiQuery{
+		Kind:         "status",
+		SystemPrompt: statusAssistSystemPrompt(len(facts.Changes) > 0, diff != "", EasyEngine().IsEnabled()),
+		Payload:      buildStatusAssistData(facts, diff),
+		Lang:         lang,
+		MaxTokens:    statusAssistMaxTokens(cfg),
+		Timeout:      time.Duration(secs) * time.Second,
+		TimeoutHint: fmt.Sprintf("the provider exceeded ai.assist.timeout_secs (%ds) — raise it, or set a faster ai.<provider>.model.",
+			secs),
+		SpinnerLabel: label + " - explaining",
+		// Easy Mode rewrites the answer's register without touching the
+		// payload, so it has to key the cache.
+		CacheExtra:    []string{easyCacheTag()},
+		CacheEnabled:  cfg.AI.Assist.Cache,
+		SkipCacheRead: aiNoCacheRequested(cmd),
+		ErrOut:        errOut,
+	})
+	// Every failure degrades to the deterministic local guidance: `gk status`
+	// must still be useful with no provider, no network, or a blocked payload.
+	if err != nil {
 		fmt.Fprintf(errOut, "%s: %v; showing local guidance\n", label, err)
 		renderLocalStatusAssist(out, facts, lang)
 		return nil
 	}
-
-	// Cache lookup before any network call. The key folds in the repo
-	// facts, the diff, the language, and the provider, so an unchanged tree
-	// reuses the answer and a changed tree misses naturally.
-	cacheOn := cfg.AI.Assist.Cache
-	key := statusAssistCacheKey(facts, diff, lang, prov.Name())
-	if cacheOn {
-		if cached, hit := readStatusAssistCache(ctx, runner, key); hit {
-			Dbg("status --ai: cache hit (key=%s, provider=%s) — no AI call; clear with: rm $(git rev-parse --git-path gk-ai-cache)/status/%s", key, prov.Name(), key)
-			// No model on a cache hit: the key folds in the provider but
-			// not the model, so the stored text may predate a model
-			// change. Naming the CURRENT model would credit one that
-			// never wrote it — "· cached" is the honest disclosure.
-			emitStatusAssist(out, cached, aiAttribution(prov.Name(), "", true))
-			return nil
-		}
-		Dbg("status --ai: cache miss (key=%s) — querying provider=%s", key, prov.Name())
-	}
-
-	payload := buildStatusAssistData(facts, diff)
-	redacted, findings, pgErr := applyPrivacyGate(cmd, prov, payload, cfg.AI)
-	if pgErr != nil {
-		renderPrivacyFindings(errOut, findings)
-		fmt.Fprintf(errOut, "%s: privacy gate blocked the provider payload; showing local guidance\n", label)
-		renderLocalStatusAssist(out, facts, lang)
-		return nil
-	}
-	if cmd != nil {
-		showPromptIfRequested(cmd, redacted)
-	}
-
-	// Bound the call so `gk status` never hangs on a slow provider.
-	callCtx := ctx
-	if secs := statusAssistTimeoutSecs(cfg); secs > 0 {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, time.Duration(secs)*time.Second)
-		defer cancel()
-	}
-
-	Dbg("status --ai: querying provider=%s model=%s", prov.Name(), providerModel(prov))
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s - explaining via %s", label, providerLabel(prov)))
-	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
-		Kind:         "status",
-		SystemPrompt: statusAssistSystemPrompt(len(facts.Changes) > 0, diff != "", EasyEngine().IsEnabled()),
-		Diff:         redacted,
-		Lang:         lang,
-		MaxTokens:    statusAssistMaxTokens(cfg),
-	})
-	stop()
-	if err != nil {
-		fmt.Fprintf(errOut, "%s: summarize: %v; showing local guidance\n", label, err)
-		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "deadline exceeded") {
-			fmt.Fprintf(errOut, "  hint: the provider exceeded ai.assist.timeout_secs (%ds) — raise it, or set a faster ai.<provider>.model.\n", statusAssistTimeoutSecs(cfg))
-		}
-		renderLocalStatusAssist(out, facts, lang)
-		return nil
-	}
-	text := strings.TrimSpace(result.Text)
-	if text == "" {
-		renderLocalStatusAssist(out, facts, lang)
-		return nil
-	}
-	if cacheOn {
-		writeStatusAssistCache(ctx, runner, key, text)
-	}
-	emitStatusAssist(out, text, providerAttribution(prov, result.Model, false))
+	emitStatusAssist(out, answer.Text, answer.Attribution())
 	return nil
 }
 
@@ -814,75 +755,11 @@ func flagDangerousMentions(text string) []string {
 	return found
 }
 
-// statusAssistCacheKey derives a 16-hex-char key from the repo state. The
-// volatile GeneratedAt timestamp is zeroed first so an unchanged tree maps
-// to a stable key (otherwise every call would miss).
-func statusAssistCacheKey(facts statusAssistFacts, diff, lang, providerName string) string {
-	fc := facts
-	fc.GeneratedAt = ""
-	data, _ := json.Marshal(fc)
-	h := sha256.New()
-	h.Write(data)
-	h.Write([]byte{0})
-	h.Write([]byte(diff))
-	h.Write([]byte{0})
-	h.Write([]byte(lang))
-	h.Write([]byte{0})
-	h.Write([]byte(providerName))
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-// statusAssistCacheDir resolves .git/gk-ai-cache/status, creating nothing.
-// Returns ok=false when the git dir cannot be located (not a repo).
-func statusAssistCacheDir(ctx context.Context, runner git.Runner) (string, bool) {
-	if runner == nil {
-		return "", false
-	}
-	out, _, err := runner.Run(ctx, "rev-parse", "--git-path", "gk-ai-cache")
-	if err != nil {
-		return "", false
-	}
-	p := strings.TrimSpace(string(out))
-	if p == "" {
-		return "", false
-	}
-	if !filepath.IsAbs(p) {
-		base := runnerDir(runner)
-		if base == "" {
-			base = RepoFlag()
-		}
-		p = filepath.Join(base, p)
-	}
-	return filepath.Join(p, "status"), true
-}
-
-func readStatusAssistCache(ctx context.Context, runner git.Runner, key string) (string, bool) {
-	dir, ok := statusAssistCacheDir(ctx, runner)
-	if !ok {
-		return "", false
-	}
-	b, err := os.ReadFile(filepath.Join(dir, key))
-	if err != nil {
-		return "", false
-	}
-	return string(b), true
-}
-
-func writeStatusAssistCache(ctx context.Context, runner git.Runner, key, text string) {
-	dir, ok := statusAssistCacheDir(ctx, runner)
-	if !ok {
-		return
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	// Write-then-rename so a concurrent reader never sees a half file.
-	tmp := filepath.Join(dir, key+".tmp")
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, filepath.Join(dir, key))
-}
+// The bespoke status cache (statusAssistCacheKey / statusAssistCacheDir /
+// readStatusAssistCache / writeStatusAssistCache) lived here and resolved to
+// .git/gk-ai-cache/status — the exact directory aiCacheDir(runner, "status")
+// already returns. It was a verbatim copy of the shared helpers, so it is
+// gone; runAIQuery handles the cache for every surface.
 
 // renderStatusAssistJSON emits the structured assist facts as JSON. Backs
 // `gk status --ai --json`, giving editors and scripts the same grounded
@@ -988,6 +865,12 @@ func statusAssistSystemPrompt(hasShape, hasDiff, easy bool) string {
 // present, the diff) sent as the Summarize user payload. The instructions
 // live in statusAssistSystemPrompt; this is data only.
 func buildStatusAssistData(facts statusAssistFacts, diff string) string {
+	// Drop the generation timestamp before marshalling. The shared pipeline
+	// keys its cache on this payload, so a field that changes every second
+	// would make an unchanged tree miss every single time — the old bespoke
+	// key zeroed it for exactly this reason. The model has no use for it
+	// either; `--json` still reports it from the facts themselves.
+	facts.GeneratedAt = ""
 	data, _ := json.MarshalIndent(facts, "", "  ")
 	var b strings.Builder
 	fmt.Fprintln(&b, "<FACTS>")

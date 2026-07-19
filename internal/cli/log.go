@@ -58,7 +58,7 @@ func init() {
 	cmd.Flags().Bool("ai", false, "explain the shown commit range in plain language with AI (appended below the list; grounded in hotspot/WIP/breaking/CC signals)")
 	cmd.Flags().String("provider", "", "override ai.provider for --ai")
 	cmd.Flags().String("lang", "", "override AI log-summary language (en|ko|...)")
-	cmd.Flags().Bool("no-cache", false, "with --ai, ignore any cached summary and query the provider again")
+	addAINoCacheFlag(cmd)
 	rootCmd.AddCommand(cmd)
 }
 

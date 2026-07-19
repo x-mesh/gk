@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -18,7 +17,6 @@ import (
 	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
-	"github.com/x-mesh/gk/internal/ui"
 )
 
 // gk log --ai is a reading companion, not a document generator (that's
@@ -431,74 +429,35 @@ func runLogAssist(
 			label, facts.TruncatedFrom, logAssistMaxCommits)
 	}
 
-	payload := buildLogAssistData(facts)
-	// --no-cache suppresses the READ but still writes: the user wants a fresh
-	// answer now, not the cache disabled from here on.
-	cacheOn := cfg.AI.Assist.Cache
-	skipCacheRead := false
-	if cmd != nil && cmd.Flags().Lookup("no-cache") != nil {
-		skipCacheRead, _ = cmd.Flags().GetBool("no-cache")
-	}
-	// Easy Mode changes logAssistSystemPrompt's wording (plain-language
-	// instruction), so it must be part of the key — otherwise toggling
-	// --easy can serve a cached summary written in the wrong register.
-	easyTag := "0"
-	if EasyEngine().IsEnabled() {
-		easyTag = "1"
-	}
-	key := aiCacheKey("log", payload, lang, prov.Name(), easyTag)
-	if cacheOn && skipCacheRead {
-		Dbg("log --ai: --no-cache — skipping cache read (key=%s), querying provider=%s", key, prov.Name())
-	}
-	if cacheOn && !skipCacheRead {
-		if cached, hit := readAICache(ctx, runner, "log", key); hit {
-			Dbg("log --ai: cache hit (key=%s, provider=%s) — no AI call; re-run with --no-cache, or clear with: rm $(git rev-parse --git-path gk-ai-cache)/log/%s", key, prov.Name(), key)
-			// No model recorded: the key folds in the provider but not the
-			// model, so the stored text may predate a model change.
-			return &logAIOutcome{Text: cached, Provider: prov.Name(), Lang: lang, Cached: true}
-		}
-		Dbg("log --ai: cache miss (key=%s) — querying provider=%s", key, prov.Name())
-	}
-
-	redacted, findings, pgErr := applyPrivacyGate(cmd, prov, payload, cfg.AI)
-	if pgErr != nil {
-		renderPrivacyFindings(errOut, findings)
-		fmt.Fprintf(errOut, "%s: privacy gate blocked the provider payload\n", label)
-		return nil
-	}
-	if cmd != nil {
-		showPromptIfRequested(cmd, redacted)
-	}
-
-	callCtx, cancel := aiCallContext(ctx, cfg.AI)
-	defer cancel()
-
-	Dbg("log --ai: querying provider=%s model=%s", prov.Name(), providerModel(prov))
-	stop := ui.StartBubbleSpinner(fmt.Sprintf("%s — summarizing via %s", label, providerLabel(prov)))
-	result, err := sum.Summarize(callCtx, provider.SummarizeInput{
+	answer, err := runAIQuery(ctx, cmd, runner, prov, cfg.AI, aiQuery{
 		Kind:         "log",
 		SystemPrompt: logAssistSystemPrompt(EasyEngine().IsEnabled()),
-		Diff:         redacted,
+		Payload:      buildLogAssistData(facts),
 		Lang:         lang,
 		MaxTokens:    aiChatMaxTokens(cfg.AI),
+		Timeout:      aiCallTimeout(cfg.AI),
+		TimeoutHint:  "the provider exceeded ai.chat.timeout — raise it, or set a faster ai.<provider>.model.",
+		SpinnerLabel: label + " — summarizing",
+		// Easy Mode rewrites the prompt's register without touching the
+		// payload, so it has to key the cache.
+		CacheExtra:    []string{easyCacheTag()},
+		CacheEnabled:  cfg.AI.Assist.Cache,
+		SkipCacheRead: aiNoCacheRequested(cmd),
+		ErrOut:        errOut,
 	})
-	stop()
+	// `gk log` already printed the commit list; a failed summary is a warning
+	// beneath it, never an error for the whole invocation.
 	if err != nil {
-		fmt.Fprintf(errOut, "%s: summarize: %v\n", label, err)
-		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "deadline exceeded") {
-			fmt.Fprintln(errOut, "  hint: the provider exceeded ai.chat.timeout — raise it, or set a faster ai.<provider>.model.")
-		}
+		fmt.Fprintf(errOut, "%s: %v\n", label, err)
 		return nil
 	}
-	text := strings.TrimSpace(result.Text)
-	if text == "" {
-		fmt.Fprintf(errOut, "%s: empty response from provider\n", label)
-		return nil
+	return &logAIOutcome{
+		Text:     answer.Text,
+		Provider: answer.Provider,
+		Model:    answer.Model,
+		Cached:   answer.Cached,
+		Lang:     lang,
 	}
-	if cacheOn {
-		writeAICache(ctx, runner, "log", key, text)
-	}
-	return &logAIOutcome{Text: text, Provider: prov.Name(), Model: result.Model, Lang: lang}
 }
 
 // emitLogAssist renders the outcome as a titled section beneath the

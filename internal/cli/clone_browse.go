@@ -30,7 +30,13 @@ func browseCloneCandidates(ctx context.Context, cfg config.CloneConfig, errOut i
 	}
 
 	client := &ghapi.Client{Token: ghapi.ResolveToken()}
+	// One REST round-trip per profile, each paginated — on a slow link this is
+	// seconds of silence before the picker appears, which reads as "it hung"
+	// or "the network is down". Name the owners being listed so the wait is
+	// legible as work.
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("listing repos for %s", strings.Join(profileOwners(profiles), ", ")))
 	items, warnings := cloneCandidateItems(ctx, client, profiles)
+	stop()
 	for _, w := range warnings {
 		fmt.Fprintf(errOut, "warn: gk clone: %s\n", w)
 	}

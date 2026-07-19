@@ -8,6 +8,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	ghapi "github.com/x-mesh/gk/internal/github"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -70,7 +71,9 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 		return newGHPicker(cmd, client, runner, cfg, onlyPR, "inbox", f).runForEnvironment(ctx, explicitPick)
 	}
 
+	stop := ui.StartBubbleSpinner("searching GitHub — involves:@me")
 	issues, err := client.SearchIssues(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
+	stop()
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
 	}

@@ -282,7 +282,11 @@ func (p *ghPicker) runForEnvironment(ctx context.Context, explicit bool) error {
 }
 
 func (p *ghPicker) runFallback(ctx context.Context) error {
+	// Non-TUI path, so a spinner is safe here (inside p.run the bubbletea
+	// program owns the screen and would fight it).
+	stop := ui.StartBubbleSpinner("searching GitHub")
 	issues, _, _, err := p.fetch(ctx)
+	stop()
 	if err != nil {
 		return err
 	}

@@ -47,6 +47,16 @@ review.
 Use --abort to restore HEAD to the backup ref created at the start of
 the most recent run.
 
+  --wip writes ONE checkpoint commit headed "WIP(scope): <summary>"
+  instead of a semantic history. It skips classification (a checkpoint is
+  one commit by definition), so it costs a single provider call, and it
+  never fails on the AI: no provider, a timeout, or a bad response all
+  degrade to "WIP(scope): checkpoint — N files (no AI summary)" rather
+  than refusing to commit. Built for unattended agent Stop hooks, where
+  losing work to a model outage is the worst outcome. The secret scan and
+  the noise guard still apply. A later plain "gk commit" detects the WIP
+  chain and folds it into real Conventional Commits.
+
   --plan applies a deterministic, AI-free commit plan instead of
   classifying with a provider. The plan is JSON that groups working-tree
   files into commits with pre-written Conventional Commit messages:
@@ -82,6 +92,7 @@ the most recent run.
 	cmd.Flags().BoolP("interactive", "i", false, "interactively group working-tree files into commits (TUI; builds a commit plan, no AI)")
 	cmd.Flags().Bool("ci", false, "CI mode — require --force or --dry-run, never prompt")
 	cmd.Flags().BoolP("yes", "y", false, "accept every prompt (alias for --force when non-TTY)")
+	cmd.Flags().Bool("wip", false, "write one WIP(scope) checkpoint commit instead of a semantic history; one provider call, and falls back to a plain checkpoint message when the AI is unavailable (implies --force and --no-wip-unwrap)")
 	cmd.Flags().Bool("no-wip-unwrap", false, "skip detection/unwrap of WIP-like commits in HEAD chain")
 	cmd.Flags().Bool("force-wip", false, "unwrap WIP chain even when some commits are already pushed (rewrites pushed history; requires force-push afterward)")
 
@@ -143,13 +154,24 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	// Resolve provider first so Preflight can query Locality / Available.
 	// Fallback Chain when no explicit provider; single provider otherwise.
+	//
+	// Under --wip a provider failure is NOT fatal: aiUnavailable records why
+	// and the checkpoint proceeds with a plain message. Every other mode still
+	// returns the error — only the checkpoint promises to commit regardless.
 	var prov provider.Provider
+	var aiUnavailable error
 	if ai.Provider == "" {
 		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
 		if fcErr != nil {
-			return fmt.Errorf("commit: %w", fcErr)
+			if !flags.wip {
+				return fmt.Errorf("commit: %w", fcErr)
+			}
+			aiUnavailable = fcErr
+		} else {
+			// Assign only on success: a typed-nil in the interface would
+			// defeat the `prov == nil` checks downstream.
+			prov = fc
 		}
-		prov = fc
 	} else {
 		opts := aiFactoryOptionsFromAI(ai)
 		// ai.commit.model, when set, overrides ai.<provider>.model for
@@ -167,22 +189,35 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		}
 		p, pErr := provider.NewProvider(ctx, opts)
 		if pErr != nil {
-			return fmt.Errorf("commit: provider: %w", pErr)
+			if !flags.wip {
+				return fmt.Errorf("commit: provider: %w", pErr)
+			}
+			aiUnavailable = pErr
+		} else {
+			prov = p
 		}
-		prov = p
 	}
-	Dbg("commit: provider=%s model=%s lang=%s scope=%s", prov.Name(), providerModel(prov), ai.Lang, ai.Commit.DenyPaths)
+	if prov != nil {
+		Dbg("commit: provider=%s model=%s lang=%s scope=%s", prov.Name(), providerModel(prov), ai.Lang, ai.Commit.DenyPaths)
 
-	if err := aicommit.Preflight(ctx, aicommit.PreflightInput{
-		Runner:      runner,
-		WorkDir:     RepoFlag(),
-		AI:          ai,
-		Provider:    prov,
-		AllowRemote: ai.Commit.AllowRemote,
-	}); err != nil {
-		return fmt.Errorf("commit: preflight: %w", err)
+		if err := aicommit.Preflight(ctx, aicommit.PreflightInput{
+			Runner:      runner,
+			WorkDir:     RepoFlag(),
+			AI:          ai,
+			Provider:    prov,
+			AllowRemote: ai.Commit.AllowRemote,
+		}); err != nil {
+			if !flags.wip {
+				return fmt.Errorf("commit: preflight: %w", err)
+			}
+			// Preflight rejected the provider (unavailable, remote not
+			// allowed, missing GPG key…). Drop it and checkpoint anyway.
+			aiUnavailable = err
+			prov = nil
+		} else {
+			Dbg("commit: preflight ok")
+		}
 	}
-	Dbg("commit: preflight ok")
 
 	wipDisabled := flags.noWIPUnwrap || !ai.Commit.WIPEnabled
 	wipCommit, err := inspectWIPCommitForAICommit(ctx, runner, ai.Commit, wipDisabled, flags.forceWIP)
@@ -290,22 +325,45 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 		Dbg("commit: secret-gate clean")
 	}
 
-	// Privacy Gate: redact payload for remote providers.
-	redactedPayload, pgFindings, pgErr := applyPrivacyGate(cmd, prov, payload, ai)
-	if pgErr != nil {
-		renderPrivacyFindings(cmd.ErrOrStderr(), pgFindings)
-		return fmt.Errorf("commit: privacy gate: %w", pgErr)
-	}
+	// Privacy Gate: redact payload for remote providers. Skipped when there is
+	// no provider at all (--wip with the AI down): nothing is leaving the
+	// machine, so there is nothing to redact.
+	if prov != nil {
+		redactedPayload, pgFindings, pgErr := applyPrivacyGate(cmd, prov, payload, ai)
+		if pgErr != nil {
+			renderPrivacyFindings(cmd.ErrOrStderr(), pgFindings)
+			return fmt.Errorf("commit: privacy gate: %w", pgErr)
+		}
 
-	// --show-prompt: display redacted payload.
-	showPromptIfRequested(cmd, redactedPayload)
+		// --show-prompt: display redacted payload.
+		showPromptIfRequested(cmd, redactedPayload)
+	}
 
 	// --dry-run is a cost preview: heuristic classify + token estimate,
 	// no LLM calls. Useful before firing a large commit run, and works
 	// even when the daily TPD quota is exhausted (the original 429
 	// scenario). Exits before Classify so no remote call is issued.
 	if flags.dryRun {
+		// The checkpoint plan is knowable without a provider — it is always
+		// exactly one commit over everything in scope — so report it directly
+		// instead of running the classify-shaped preview (which needs a
+		// provider the --wip path may not have).
+		if flags.wip {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"commit: --wip would write 1 checkpoint commit covering %d file(s), scope %q\n",
+				len(files), wipCheckpointScope(files))
+			return nil
+		}
 		return runCommitDryRunPreview(cmd, runner, ctx, prov, files, wipCommit, *cfg, ai)
+	}
+
+	// --wip short-circuits classification: a checkpoint is one commit by
+	// definition, so the grouping call has nothing to decide. That halves the
+	// provider round-trips (classify + compose → compose) and is why the mode
+	// is cheap enough to run on every session end.
+	if flags.wip {
+		messages := composeWIPCheckpoint(ctx, cmd, runner, prov, files, wipCommit, cfg, ai, aiUnavailable)
+		return applyCommitMessages(ctx, cmd, runner, messages, files, wipCommit, flags, ai, prov)
 	}
 
 	// Classify — the first provider call. The spinner advertises we are waiting
@@ -418,6 +476,30 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 	Dbg("commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
 
+	return applyCommitMessages(ctx, cmd, runner, messages, files, wipCommit, flags, ai, prov)
+}
+
+// applyCommitMessages runs the tail shared by every message-producing path:
+// review → backup ref → WIP unwrap → apply → audit → summary.
+//
+// Both callers reach it with a finished message list — the classify+compose
+// pipeline above and the single-message --wip checkpoint — so the review
+// semantics, the backup-before-unwrap ordering, and the trailer rules stay in
+// one place instead of being reimplemented per mode.
+//
+// prov may be nil (a --wip checkpoint that fell back with no provider): the
+// trailer and audit steps are skipped rather than dereferencing it.
+func applyCommitMessages(
+	ctx context.Context,
+	cmd *cobra.Command,
+	runner git.Runner,
+	messages []aicommit.Message,
+	files []aicommit.FileChange,
+	wipCommit wipCommitForAICommit,
+	flags aiCommitFlags,
+	ai config.AIConfig,
+	prov provider.Provider,
+) error {
 	// Review.
 	reviewOpts := aicommit.ReviewOptions{
 		Out:            cmd.OutOrStdout(),
@@ -457,7 +539,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	// Apply.
 	applyOpts := aicommit.ApplyOptions{DryRun: flags.dryRun, PrecapturedBackupRef: preUnwrapBackup}
-	if ai.Commit.Trailer {
+	if ai.Commit.Trailer && prov != nil {
 		applyOpts.Trailer = fmt.Sprintf("%s@%s", prov.Name(), readProviderVersion(ctx, prov))
 	}
 	result, err := aicommit.ApplyMessages(ctx, runner, kept, applyOpts)
@@ -467,7 +549,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Audit (opt-in).
-	if ai.Commit.Audit && !flags.dryRun {
+	if ai.Commit.Audit && !flags.dryRun && prov != nil {
 		_ = writeAuditEntries(ctx, runner, prov, kept, result)
 	}
 
@@ -836,6 +918,7 @@ type aiCommitFlags struct {
 	yes              bool
 	noWIPUnwrap      bool
 	forceWIP         bool
+	wip              bool
 	plan             string
 	planTemplate     bool
 	interactive      bool
@@ -871,8 +954,19 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.plan, _ = cmd.Flags().GetString("plan")
 	f.planTemplate, _ = cmd.Flags().GetBool("plan-template")
 	f.interactive, _ = cmd.Flags().GetBool("interactive")
+	f.wip, _ = cmd.Flags().GetBool("wip")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
+	}
+	if f.wip {
+		if f.plan != "" || f.planTemplate || f.interactive {
+			return f, fmt.Errorf("--wip cannot be combined with --plan/--plan-template/--interactive (those paths write their own messages)")
+		}
+		// A checkpoint runs unattended, so there is no reviewer to prompt.
+		f.force = true
+		// Unwrapping the WIP chain while WRITING to it is self-contradictory:
+		// the mode exists to append cheap saves that a later `gk commit` folds.
+		f.noWIPUnwrap = true
 	}
 	return f, nil
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // runPRCheckout backs `gk pr checkout <n>`: fetch the PR head into a local
@@ -179,7 +180,10 @@ func sanitizeGitRemoteError(err error, remote string) error {
 func prCheckoutWith(ctx context.Context, runner git.Runner, remote, local string, num int) (string, error) {
 	refspec := fmt.Sprintf("pull/%d/head:%s", num, local)
 	displayRemote := remoteDisplayName(remote)
-	if _, stderr, err := runner.Run(ctx, "fetch", remote, refspec); err != nil {
+	stop := ui.StartBubbleSpinner(fmt.Sprintf("fetching PR #%d from %s", num, displayRemote))
+	_, stderr, err := runner.Run(ctx, "fetch", remote, refspec)
+	stop()
+	if err != nil {
 		safeStderr := strings.TrimSpace(sanitizeGitRemoteText(string(stderr), remote))
 		safeErr := sanitizeGitRemoteError(err, remote)
 		return "", WithHint(

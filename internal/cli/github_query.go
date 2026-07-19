@@ -15,6 +15,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	ghapi "github.com/x-mesh/gk/internal/github"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // orgFlagSentinel is the value pflag records for a bare `--org` (no value).
@@ -364,7 +365,9 @@ func runGitHubList(cmd *cobra.Command, args []string, isPR bool) error {
 		return p.runForEnvironment(ctx, explicitPick)
 	}
 
+	stop := ui.StartBubbleSpinner("searching GitHub — " + label)
 	issues, total, err := client.SearchIssuesWithTotal(ctx, query, stringFlag(cmd, "sort"), intFlag(cmd, "limit"))
+	stop()
 	if err != nil {
 		return fmt.Errorf("github search: %w", err)
 	}

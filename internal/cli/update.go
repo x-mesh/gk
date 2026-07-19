@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/ui"
 	"github.com/x-mesh/gk/internal/update"
 )
 
@@ -75,7 +76,11 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	if target == "" {
 		ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 		defer cancel()
+		// Up to 15s against GitHub with nothing printed yet — silence here is
+		// indistinguishable from a dead connection.
+		stop := ui.StartBubbleSpinner("checking the latest gk release")
 		target, err = gh.LatestTag(ctx)
+		stop()
 		if err != nil {
 			return err
 		}
@@ -221,7 +226,12 @@ func runManualUpgrade(cmd *cobra.Command, gh *update.Client, install *update.Ins
 	// cross-filesystem case via `sudo install`.
 	stagingDir := update.PickStagingDir(install.Dir)
 	fmt.Fprintf(cmd.OutOrStdout(), "downloading %s (%s) to %s...\n", asset, tag, stagingDir)
+	// The line above records WHAT is happening on stdout; the spinner shows
+	// that it is still happening. A multi-MB archive over a slow link is a
+	// long, output-free wait otherwise.
+	stopDL := ui.StartBubbleSpinner(fmt.Sprintf("downloading %s", asset))
 	staged, err := gh.DownloadVerified(cmd.Context(), tag, asset, stagingDir)
+	stopDL()
 	if err != nil {
 		return err
 	}

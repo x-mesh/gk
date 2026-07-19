@@ -413,6 +413,8 @@ func hookInstallCmd(t *testing.T, dir string) *cobra.Command {
 	cmd.Flags().Bool("global", true, "")
 	cmd.Flags().String("mode", hookModeWarn, "")
 	cmd.Flags().Bool("no-prompt", false, "")
+	cmd.Flags().Bool("stop-commit", false, "")
+	cmd.Flags().Bool("stop-only", false, "")
 	cmd.Flags().Bool("dry-run", false, "")
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)

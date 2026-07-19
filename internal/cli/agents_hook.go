@@ -25,10 +25,11 @@ import (
 const gkHookMarker = "agents hook run"
 
 // gkHookEvents lists the Claude Code hook events gk manages: PreToolUse (raw
-// git steering, matcher "Bash") and UserPromptSubmit (git-orientation
-// prefetch, no matcher). Both carry gkHookMarker in their command string, so
-// install/uninstall/status can walk the two arrays uniformly.
-var gkHookEvents = []string{"PreToolUse", "UserPromptSubmit"}
+// git steering, matcher "Bash"), UserPromptSubmit (git-orientation prefetch,
+// no matcher), and Stop (the opt-in `gk commit --wip` checkpoint). All carry
+// gkHookMarker in their command string, so install/uninstall/status can walk
+// the arrays uniformly.
+var gkHookEvents = []string{"PreToolUse", "UserPromptSubmit", "Stop"}
 
 // hookPromptTimeoutSeconds bounds the UserPromptSubmit prefetch hook. That
 // hook must never hold up a prompt from going through, so a short ceiling
@@ -76,6 +77,8 @@ git-kit pass through.
   gk agents hook install --mode collapse deny only a repeated same-group probe
   gk agents hook install --mode block    deny every covered raw git
   gk agents hook install --no-prompt     skip the UserPromptSubmit prefetch hook
+  gk agents hook install --stop-commit   also checkpoint the session on Stop
+  gk agents hook install --stop-only     ONLY the Stop checkpoint; leave the rest as-is
   gk agents hook install --global        register in ~/.claude/settings.json (all projects)
   gk agents hook uninstall               remove the gk-managed hooks (revert)
   gk agents hook status                  report install state for local + global
@@ -83,7 +86,21 @@ git-kit pass through.
 install also registers a UserPromptSubmit hook (` + "`gk agents hook run --prompt`" + `)
 that prefetches git orientation for a detected git-action prompt, so the agent
 finds it already in context instead of probing for it — opt out with
---no-prompt. Both hooks share one gk-managed marker, so uninstall removes both.
+--no-prompt.
+
+--stop-commit adds a third hook (` + "`gk agents hook run --stop`" + `) that runs
+` + "`gk commit --wip`" + ` when a session ends with uncommitted work, leaving one
+` + "`WIP(scope): <summary>`" + ` checkpoint a later ` + "`gk commit`" + ` folds into real
+commits. It is opt-in because, unlike the other two, it writes to git history.
+The handler is fail-open (no repo, no provider, a timeout → it does nothing)
+and skips itself when stop_hook_active is set, so it cannot loop.
+
+--stop-only registers the checkpoint and NOTHING else, leaving any existing
+PreToolUse/UserPromptSubmit entries exactly as they are. Use it when the
+steering hook already lives in another scope: Claude merges PreToolUse across
+project and global settings, so installing it in both double-fires it.
+
+All three hooks share one gk-managed marker, so uninstall removes them together.
 
 settings.json edits are surgical: only the gk entries are added or removed, the
 rest of the file (other hooks, all settings) is preserved byte-for-byte, a .bak
@@ -99,6 +116,7 @@ is written first, and --dry-run previews without writing.`,
 	run.Flags().Bool("warn", false, "warn instead of block (surface a note but let the command run)")
 	run.Flags().String("mode", "", "block | collapse | warn — enforcement level (overrides --warn)")
 	run.Flags().Bool("prompt", false, "UserPromptSubmit mode: prefetch git orientation for a detected git-action prompt")
+	run.Flags().Bool("stop", false, "Stop mode: write a `gk commit --wip` checkpoint when the session ends with uncommitted work")
 	hook.AddCommand(run)
 
 	install := &cobra.Command{
@@ -109,6 +127,8 @@ is written first, and --dry-run previews without writing.`,
 	install.Flags().Bool("global", false, "install into ~/.claude/settings.json instead of the repo's .claude/settings.json")
 	install.Flags().String("mode", "warn", "block | collapse | warn — deny all covered raw git, deny only a repeated probe, or just surface a note")
 	install.Flags().Bool("no-prompt", false, "skip the UserPromptSubmit prefetch hook (PreToolUse only)")
+	install.Flags().Bool("stop-commit", false, "also register a Stop hook that runs `gk commit --wip` when a session ends with uncommitted work (opt-in: it writes to history)")
+	install.Flags().Bool("stop-only", false, "register ONLY the Stop checkpoint hook, leaving any existing PreToolUse/UserPromptSubmit entries untouched (implies --stop-commit; use when those already live in another scope)")
 	install.Flags().Bool("dry-run", false, "preview the change without writing")
 	hook.AddCommand(install)
 
@@ -140,6 +160,9 @@ is written first, and --dry-run previews without writing.`,
 func runAgentsHookRunDispatch(cmd *cobra.Command, args []string) error {
 	if prompt, _ := cmd.Flags().GetBool("prompt"); prompt {
 		return runAgentsHookPrompt(cmd, args)
+	}
+	if stop, _ := cmd.Flags().GetBool("stop"); stop {
+		return runAgentsHookStop(cmd, args)
 	}
 	return runAgentsHookRun(cmd, args)
 }
@@ -410,6 +433,8 @@ type hookActionJSON struct {
 	Command       string `json:"command,omitempty"`
 	PromptAction  string `json:"promptAction,omitempty"`  // installed | updated | removed | skipped | dry-run
 	PromptCommand string `json:"promptCommand,omitempty"` // set only when the prefetch hook is (re)installed
+	StopAction    string `json:"stopAction,omitempty"`    // installed | updated | removed | skipped | dry-run
+	StopCommand   string `json:"stopCommand,omitempty"`   // set only when the checkpoint hook is (re)installed
 }
 
 func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
@@ -417,6 +442,14 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	mode, _ := cmd.Flags().GetString("mode")
 	noPrompt, _ := cmd.Flags().GetBool("no-prompt")
+	stopCommit, _ := cmd.Flags().GetBool("stop-commit")
+	stopOnly, _ := cmd.Flags().GetBool("stop-only")
+	// --stop-only is "add the checkpoint, change nothing else": Claude merges
+	// PreToolUse across project + global settings, so a repo-scoped install
+	// would double-fire a steering hook that already lives globally.
+	if stopOnly {
+		stopCommit = true
+	}
 	if mode != hookModeBlock && mode != hookModeCollapse && mode != hookModeWarn {
 		return fmt.Errorf("gk agents hook install: --mode must be block, collapse, or warn, got %q", mode)
 	}
@@ -430,24 +463,39 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	stripped, preExisted := stripGKHookEntriesForEvent(data, "PreToolUse")
-	stripped, promptExisted := stripGKHookEntriesForEvent(stripped, "UserPromptSubmit")
-
-	hookCmd := hookCommandString(mode)
-	updated, err := sjson.SetBytes(stripped, "hooks.PreToolUse.-1", map[string]any{
-		"matcher": "Bash",
-		"hooks":   []map[string]any{{"type": "command", "command": hookCmd}},
-	})
-	if err != nil {
-		return fmt.Errorf("gk agents hook install: edit settings: %w", err)
+	// Under --stop-only the other two events are never stripped, so whatever
+	// is registered for them (gk's own entry, or nothing) survives verbatim.
+	stripped := data
+	var preExisted, promptExisted int
+	if !stopOnly {
+		stripped, preExisted = stripGKHookEntriesForEvent(data, "PreToolUse")
+		stripped, promptExisted = stripGKHookEntriesForEvent(stripped, "UserPromptSubmit")
 	}
-	action := "installed"
-	if preExisted > 0 {
-		action = "updated"
+	stripped, stopExisted := stripGKHookEntriesForEvent(stripped, "Stop")
+
+	updated := stripped
+	var hookCmd, action string
+	if stopOnly {
+		action = "skipped"
+	} else {
+		hookCmd = hookCommandString(mode)
+		updated, err = sjson.SetBytes(stripped, "hooks.PreToolUse.-1", map[string]any{
+			"matcher": "Bash",
+			"hooks":   []map[string]any{{"type": "command", "command": hookCmd}},
+		})
+		if err != nil {
+			return fmt.Errorf("gk agents hook install: edit settings: %w", err)
+		}
+		action = "installed"
+		if preExisted > 0 {
+			action = "updated"
+		}
 	}
 
 	var promptCmd, promptAction string
 	switch {
+	case stopOnly:
+		promptAction = "skipped"
 	case noPrompt && promptExisted > 0:
 		promptAction = "removed"
 	case noPrompt:
@@ -466,16 +514,54 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The Stop checkpoint hook is opt-in: unlike the other two it WRITES to
+	// git history, so it must never appear from a plain `hook install`.
+	var stopCmd, stopAction string
+	switch {
+	case !stopCommit && stopExisted > 0:
+		stopAction = "removed"
+	case !stopCommit:
+		stopAction = "skipped"
+	default:
+		stopCmd = stopHookCommandString()
+		updated, err = sjson.SetBytes(updated, "hooks.Stop.-1", map[string]any{
+			"hooks": []map[string]any{{"type": "command", "command": stopCmd, "timeout": stopHookTimeoutSeconds}},
+		})
+		if err != nil {
+			return fmt.Errorf("gk agents hook install: edit settings: %w", err)
+		}
+		stopAction = "installed"
+		if stopExisted > 0 {
+			stopAction = "updated"
+		}
+	}
+
 	if dryRun {
-		action = "dry-run"
+		if action != "skipped" {
+			action = "dry-run"
+		}
 		if promptAction != "skipped" {
 			promptAction = "dry-run"
+		}
+		if stopAction != "skipped" {
+			stopAction = "dry-run"
 		}
 	} else if err := writeSettings(path, updated); err != nil {
 		return err
 	}
 
-	human := fmt.Sprintf("%s: %s PreToolUse hook (%s mode) in %s", action, scopeLabel(scope), mode, path)
+	var human string
+	if stopOnly {
+		human = fmt.Sprintf("%s: %s Stop checkpoint hook (gk commit --wip) in %s; PreToolUse/UserPromptSubmit left untouched (--stop-only)",
+			stopAction, scopeLabel(scope), path)
+		return emitAgentResultHuman(cmd, hookActionJSON{
+			Schema: 1, Path: path, Scope: scope, Action: action,
+			PromptAction: promptAction,
+			StopAction:   stopAction, StopCommand: stopCmd,
+		}, human)
+	}
+
+	human = fmt.Sprintf("%s: %s PreToolUse hook (%s mode) in %s", action, scopeLabel(scope), mode, path)
 	switch promptAction {
 	case "installed", "updated", "dry-run":
 		human += fmt.Sprintf("; %s UserPromptSubmit prefetch hook", promptAction)
@@ -484,10 +570,17 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 	case "skipped":
 		human += "; UserPromptSubmit prefetch hook skipped (--no-prompt)"
 	}
+	switch stopAction {
+	case "installed", "updated", "dry-run":
+		human += fmt.Sprintf("; %s Stop checkpoint hook (gk commit --wip)", stopAction)
+	case "removed":
+		human += "; removed the existing Stop checkpoint hook (--stop-commit not set)"
+	}
 
 	return emitAgentResultHuman(cmd, hookActionJSON{
 		Schema: 1, Path: path, Scope: scope, Action: action, Mode: mode, Command: hookCmd,
 		PromptAction: promptAction, PromptCommand: promptCmd,
+		StopAction: stopAction, StopCommand: stopCmd,
 	}, human)
 }
 
@@ -520,7 +613,7 @@ func runAgentsHookUninstall(cmd *cobra.Command, _ []string) error {
 
 	return emitAgentResultHuman(cmd, hookActionJSON{
 		Schema: 1, Path: path, Scope: scope, Action: action,
-	}, fmt.Sprintf("%s: gk hooks (PreToolUse + UserPromptSubmit) in %s", action, path))
+	}, fmt.Sprintf("%s: gk hooks (PreToolUse + UserPromptSubmit + Stop) in %s", action, path))
 }
 
 type hookStatusFileJSON struct {
@@ -529,6 +622,7 @@ type hookStatusFileJSON struct {
 	Installed       bool   `json:"installed"`
 	Mode            string `json:"mode,omitempty"`
 	PromptInstalled bool   `json:"promptInstalled"`
+	StopInstalled   bool   `json:"stopInstalled"`
 }
 
 func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
@@ -548,8 +642,10 @@ func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
 		data, _ := readSettings(path) // absent → "{}"
 		installed, mode := gkHookState(data)
 		promptInstalled := gkPromptHookInstalled(data)
+		stopInstalled := gkStopHookInstalled(data)
 		out.Files = append(out.Files, hookStatusFileJSON{
-			Path: path, Scope: scope, Installed: installed, Mode: mode, PromptInstalled: promptInstalled,
+			Path: path, Scope: scope, Installed: installed, Mode: mode,
+			PromptInstalled: promptInstalled, StopInstalled: stopInstalled,
 		})
 	}
 
@@ -566,7 +662,12 @@ func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
 		if f.PromptInstalled {
 			promptState = "installed"
 		}
-		fmt.Fprintf(w, "%-7s %s — PreToolUse: %s, UserPromptSubmit: %s\n", scopeLabel(f.Scope), f.Path, state, promptState)
+		stopState := "not installed"
+		if f.StopInstalled {
+			stopState = "installed"
+		}
+		fmt.Fprintf(w, "%-7s %s — PreToolUse: %s, UserPromptSubmit: %s, Stop: %s\n",
+			scopeLabel(f.Scope), f.Path, state, promptState, stopState)
 	}
 	return nil
 }

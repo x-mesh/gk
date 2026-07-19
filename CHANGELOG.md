@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.129.0] - 2026-07-19
+
 ### Fixed
 
 - **네트워크 대기 구간에 spinner 추가 — 침묵이 "접속 실패"로 읽히던 문제.** 인자 없는 `gk clone`은 프로필마다 REST 라운드트립을 돌리면서 picker가 뜨기 전까지 아무것도 출력하지 않아, 느린 링크에서 멈춘 것처럼 보였다. 같은 구멍이 난 곳을 함께 메웠다: `gk clone`(프로필별 repo 목록 — 조회 중인 owner를 함께 표시), `gk inbox`, `gk pr`/`gk issue`의 정적 목록과 비-TUI picker 폴백, `gk pr checkout`의 PR fetch, `gk update`의 최신 릴리스 조회(최대 15초)와 아카이브 다운로드. spinner는 stderr에만 그리고 비-TTY에선 no-op이라 `--json`/파이프 출력은 그대로다. 실제 `git clone`은 git이 자체 진행률을 stderr로 내보내므로 손대지 않았고, bubbletea picker가 화면을 잡고 있는 구간(`ghPicker.run`)도 렌더링 충돌을 피해 제외했다. `github_counts`는 캐시 기반 부가 정보라 조용한 동작이 설계 의도이므로 그대로 뒀다.

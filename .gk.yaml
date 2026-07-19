@@ -1,0 +1,65 @@
+# Repo-local gk config for git-kit itself. Merges over the global
+# ~/.config/gk/config.yaml — only the keys below are overridden.
+
+ship:
+  # Run the post-tag pipeline. false returns right after the push and the
+  # release goes out untracked; ship then prints the skipped commands.
+  wait: true
+
+  # Blocking CI watch. The tag is already public once this runs, so a
+  # failure here means "rerun the watcher", never "re-ship the version".
+  #
+  # gk runs each command with `sh -c` and injects no version variable, so
+  # the tag is derived here. The release workflow is triggered by the tag
+  # push, and `gh run list --branch <tag>` is what selects that run rather
+  # than the branch runs the same push also starts.
+  #
+  # The retry loop exists because the run is not queryable the instant the
+  # tag lands — polling for up to 60s covers registration lag without
+  # hanging forever on a workflow that never started.
+  watch:
+    - name: release-workflow
+      command: |
+        TAG="$(git describe --tags --abbrev=0)"
+        ID=""
+        for _ in $(seq 1 30); do
+          ID="$(gh run list --branch "$TAG" --limit 1 --json databaseId -q '.[0].databaseId // empty' 2>/dev/null)"
+          [ -n "$ID" ] && break
+          sleep 2
+        done
+        if [ -z "$ID" ]; then
+          echo "no workflow run found for $TAG after 60s" >&2
+          exit 1
+        fi
+        gh run watch "$ID" --exit-status
+
+  # Post-release checks. A green workflow does not by itself prove the
+  # artifacts are reachable or that the tap moved, which is the whole
+  # point of `brew upgrade` working right after a release.
+  verify:
+    - name: release-assets
+      command: |
+        TAG="$(git describe --tags --abbrev=0)"
+        gh release view "$TAG" -R x-mesh/gk --json isDraft,assets \
+          -q 'select(.isDraft==false) | .assets | length' | grep -qE '^[1-9]'
+
+    - name: tap-cask
+      command: |
+        V="$(git describe --tags --abbrev=0)"; V="${V#v}"
+        curl -fsSL https://raw.githubusercontent.com/x-mesh/homebrew-tap/main/Casks/gk.rb \
+          | grep -q "version \"$V\""
+
+    # Cross-checks the tap's checksum against the published artifact, so a
+    # stale or half-written cask fails here instead of at `brew install`.
+    - name: cdn-checksums
+      command: |
+        TAG="$(git describe --tags --abbrev=0)"
+        REL="$(curl -fsSL "https://github.com/x-mesh/gk/releases/download/$TAG/checksums.txt" \
+          | awk '/gk_darwin_arm64\.tar\.gz/{print $1}')"
+        CASK="$(curl -fsSL https://raw.githubusercontent.com/x-mesh/homebrew-tap/main/Casks/gk.rb \
+          | awk '/sha256 "/{s=$2} /gk_darwin_arm64\.tar\.gz/{gsub(/"/,"",s); print s; exit}')"
+        if [ -z "$REL" ] || [ -z "$CASK" ]; then
+          echo "could not read checksums (release=$REL cask=$CASK)" >&2
+          exit 1
+        fi
+        [ "$REL" = "$CASK" ]

@@ -83,6 +83,35 @@ func TestParseClassify_Truncated(t *testing.T) {
 	}
 }
 
+// A CLI adapter that wraps its plain-text answer in a bare ``` fence must
+// still yield the real subject. The plain-text fallback runs on the
+// fence-stripped text, so the opening "```" never becomes the subject (which
+// would drop the real subject line entirely and commit a fenced header).
+func TestParseCompose_FencedPlainTextKeepsSubject(t *testing.T) {
+	raw := "```\nfeat(sync): propagate directory deletions\n\nleaves first, then the parent\n```"
+	res, err := parseComposeResponse([]byte(raw))
+	if err != nil {
+		t.Fatalf("fenced plain text should parse: %v", err)
+	}
+	if want := "feat(sync): propagate directory deletions"; res.Subject != want {
+		t.Errorf("subject = %q, want %q", res.Subject, want)
+	}
+	if want := "leaves first, then the parent"; res.Body != want {
+		t.Errorf("body = %q, want %q", res.Body, want)
+	}
+}
+
+// The fence-stripping fallback must not disturb unfenced plain text.
+func TestParseCompose_PlainTextUnchanged(t *testing.T) {
+	res, err := parseComposeResponse([]byte("fix(api): reject empty scope\n\nwhy it matters"))
+	if err != nil {
+		t.Fatalf("plain text should parse: %v", err)
+	}
+	if res.Subject != "fix(api): reject empty scope" || res.Body != "why it matters" {
+		t.Errorf("got subject=%q body=%q", res.Subject, res.Body)
+	}
+}
+
 // tryJSONDecode flags a truncated object distinctly from other failures.
 func TestTryJSONDecode_TruncatedSentinel(t *testing.T) {
 	var v map[string]any

@@ -148,8 +148,11 @@ func parseComposeResponse(raw []byte) (ComposeResult, error) {
 	trimmed := stripFences(strings.TrimSpace(string(raw)))
 	var parsed composeJSON
 	if err := tryJSONDecode(trimmed, &parsed); err != nil {
-		// Second-chance: plain-text fallback.
-		subject, body := splitSubjectBody(strings.TrimSpace(string(raw)))
+		// Second-chance: plain-text fallback — on the FENCE-STRIPPED text.
+		// A CLI adapter that wraps prose in a bare ``` fence would otherwise
+		// hand splitSubjectBody a leading "```" line, which becomes the
+		// subject while the real subject line is silently dropped.
+		subject, body := splitSubjectBody(trimmed)
 		if subject == "" {
 			return ComposeResult{}, fmt.Errorf("%w: %v", ErrProviderResponse, err)
 		}

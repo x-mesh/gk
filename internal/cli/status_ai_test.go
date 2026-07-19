@@ -274,3 +274,95 @@ func statusAssistActionCommands(actions []statusAssistAction) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+// hunkIsPureInsertion decides whether a hunk's context label is trustworthy.
+// Git labels a hunk with the declaration containing the insertion point, so a
+// pure insertion after a function carries the PREVIOUS function's name — a
+// plausible, wrong label the model then states as fact.
+func TestHunkIsPureInsertion(t *testing.T) {
+	cases := []struct {
+		header string
+		want   bool
+	}{
+		{"@@ -12,0 +13,5 @@ func previous() {", true}, // append → label is stale
+		{"@@ -0,0 +1,20 @@", true},                    // new file
+		{"@@ -12,3 +12,8 @@ func edited() {", false},  // real edit → label is real
+		{"@@ -12 +12,5 @@ func edited() {", false},    // omitted count means 1
+		{"@@ -1,2 +1,2 @@", false},
+		{"not a hunk header", false}, // unparseable → keep the label
+	}
+	for _, tc := range cases {
+		if got := hunkIsPureInsertion(tc.header); got != tc.want {
+			t.Errorf("hunkIsPureInsertion(%q) = %v, want %v", tc.header, got, tc.want)
+		}
+	}
+}
+
+func TestHunkContextLabel(t *testing.T) {
+	cases := []struct {
+		header string
+		want   string
+	}{
+		{"@@ -12,3 +12,8 @@ func chatSpinnerMessage(lang string) string {", "func chatSpinnerMessage(lang string) string {"},
+		{"@@ -1,2 +1,2 @@", ""},    // git emitted no context
+		{"@@ -1,2 +1,2 @@   ", ""}, // whitespace-only context
+		{"garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := hunkContextLabel(tc.header); got != tc.want {
+			t.Errorf("hunkContextLabel(%q) = %q, want %q", tc.header, got, tc.want)
+		}
+	}
+}
+
+// numstat reports renames in two shapes; both must reduce to the post-rename
+// path, which is what the hunk scan and the rest of the facts key on.
+func TestStatusChangePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"internal/cli/status.go", "internal/cli/status.go"},
+		{"old/path.go => new/path.go", "new/path.go"},
+		{"internal/{old => new}/file.go", "internal/new/file.go"},
+	}
+	for _, tc := range cases {
+		if got := statusChangePath(tc.in); got != tc.want {
+			t.Errorf("statusChangePath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The divergence sentence exists because "base_ahead: 1" is ambiguous enough
+// that models reported an ahead branch as BEHIND its base. Every clause must
+// name which side actually holds the commits.
+func TestStatusAssistDivergenceNamesTheSideHoldingCommits(t *testing.T) {
+	got := statusAssistDivergence(statusAssistFacts{
+		Branch:   "develop",
+		Upstream: "origin/develop",
+		Base:     "main",
+		// develop is AHEAD of main — the case that used to invert.
+		BaseAhead: 1,
+	})
+	if !strings.Contains(got, "develop has 1 commit that main does not") {
+		t.Errorf("ahead-of-base must name develop as the holder, got: %q", got)
+	}
+	if !strings.Contains(got, "develop is in sync with origin/develop") {
+		t.Errorf("in-sync upstream must be stated, got: %q", got)
+	}
+
+	behind := statusAssistDivergence(statusAssistFacts{
+		Branch: "feat/x", Base: "main", BaseBehind: 2,
+	})
+	if !strings.Contains(behind, "main has 2 commits that feat/x does not") {
+		t.Errorf("behind-base must name main as the holder, got: %q", behind)
+	}
+
+	diverged := statusAssistDivergence(statusAssistFacts{
+		Branch: "feat/x", Base: "main", BaseAhead: 3, BaseBehind: 2,
+	})
+	if !strings.Contains(diverged, "diverged") {
+		t.Errorf("two-sided divergence must be called out, got: %q", diverged)
+	}
+
+	if got := statusAssistDivergence(statusAssistFacts{}); got != "" {
+		t.Errorf("no branch → no divergence sentence, got %q", got)
+	}
+}

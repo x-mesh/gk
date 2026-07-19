@@ -196,10 +196,22 @@ type AICustomProviderConfig struct {
 //
 // Status gates the `gk status` surface.
 //
-// IncludeDiff adds the working-tree diff (truncated to DiffBudget bytes and
-// run through the privacy gate) to the prompt, so the assistant can reason
-// about *what* changed rather than only file counts. Off by default — it
-// raises token cost and widens the data sent to remote providers.
+// IncludeShape adds the CHANGE SHAPE to the prompt: per-file added/deleted
+// counts plus the enclosing declarations git names in its own `@@ … @@`
+// hunk context. On by default. Without it the assistant sees only file
+// NAMES and can do no better than restate the file count, which is the one
+// thing the deterministic status line already says. It ships no code body,
+// so it stays far cheaper and narrower than IncludeDiff.
+//
+// IncludeDiff adds the full working-tree diff (truncated to DiffBudget bytes
+// and run through the privacy gate), letting the assistant reason line by
+// line. Off by default — it raises token cost and widens the data sent to
+// remote providers. IncludeShape usually gets most of the benefit; turn this
+// on when you want the assistant reading actual code.
+//
+// RecentCommits is how many recent commit subjects to include (default 5),
+// giving the assistant a time axis: whether the dirty tree continues the
+// last commit's theme or starts something new. 0 disables.
 //
 // DiffBudget caps the diff size in bytes when IncludeDiff is on (default
 // 8000). MaxTokens is the advisory response cap (default 1200). TimeoutSecs
@@ -208,13 +220,15 @@ type AICustomProviderConfig struct {
 // repeated/auto invocations on an unchanged tree skip the provider entirely
 // (default true).
 type AIAssistConfig struct {
-	Mode        string `mapstructure:"mode"         yaml:"mode"`
-	Status      bool   `mapstructure:"status"       yaml:"status"`
-	IncludeDiff bool   `mapstructure:"include_diff" yaml:"include_diff"`
-	DiffBudget  int    `mapstructure:"diff_budget"  yaml:"diff_budget"`
-	MaxTokens   int    `mapstructure:"max_tokens"   yaml:"max_tokens"`
-	TimeoutSecs int    `mapstructure:"timeout_secs" yaml:"timeout_secs"`
-	Cache       bool   `mapstructure:"cache"        yaml:"cache"`
+	Mode          string `mapstructure:"mode"           yaml:"mode"`
+	Status        bool   `mapstructure:"status"         yaml:"status"`
+	IncludeShape  bool   `mapstructure:"include_shape"  yaml:"include_shape"`
+	IncludeDiff   bool   `mapstructure:"include_diff"   yaml:"include_diff"`
+	RecentCommits int    `mapstructure:"recent_commits" yaml:"recent_commits"`
+	DiffBudget    int    `mapstructure:"diff_budget"    yaml:"diff_budget"`
+	MaxTokens     int    `mapstructure:"max_tokens"     yaml:"max_tokens"`
+	TimeoutSecs   int    `mapstructure:"timeout_secs"   yaml:"timeout_secs"`
+	Cache         bool   `mapstructure:"cache"          yaml:"cache"`
 }
 
 // AIChatConfig controls the AI chat subcommands (`gk do`, `gk explain`,
@@ -948,13 +962,15 @@ func Defaults() Config {
 			// still-empty value into "en" at the call site.
 			Lang: "",
 			Assist: AIAssistConfig{
-				Mode:        "off",
-				Status:      true,
-				IncludeDiff: false,
-				DiffBudget:  8000,
-				MaxTokens:   1200,
-				TimeoutSecs: 8,
-				Cache:       true,
+				Mode:          "off",
+				Status:        true,
+				IncludeShape:  true,
+				IncludeDiff:   false,
+				RecentCommits: 5,
+				DiffBudget:    8000,
+				MaxTokens:     1200,
+				TimeoutSecs:   8,
+				Cache:         true,
 			},
 			Chat: AIChatConfig{
 				Timeout:              "30s",

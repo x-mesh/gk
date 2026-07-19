@@ -148,7 +148,9 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	// still applies before that fallback runs.
 	v.SetDefault("ai.assist.mode", defaults.AI.Assist.Mode)
 	v.SetDefault("ai.assist.status", defaults.AI.Assist.Status)
+	v.SetDefault("ai.assist.include_shape", defaults.AI.Assist.IncludeShape)
 	v.SetDefault("ai.assist.include_diff", defaults.AI.Assist.IncludeDiff)
+	v.SetDefault("ai.assist.recent_commits", defaults.AI.Assist.RecentCommits)
 	v.SetDefault("ai.assist.diff_budget", defaults.AI.Assist.DiffBudget)
 	v.SetDefault("ai.assist.max_tokens", defaults.AI.Assist.MaxTokens)
 	v.SetDefault("ai.assist.timeout_secs", defaults.AI.Assist.TimeoutSecs)

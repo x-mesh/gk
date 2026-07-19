@@ -109,7 +109,7 @@ func (a *aiAnswer) Attribution() string {
 // requires — status falls back to deterministic local guidance, log prints
 // and continues, pr/review/changelog return the error to the user.
 var (
-	errAIUnsupported    = errors.New("provider does not support Summarize")
+	errAIUnsupported    = errors.New("does not support Summarize")
 	errAIPrivacyBlocked = errors.New("privacy gate blocked the provider payload")
 	errAIEmptyAnswer    = errors.New("empty response from provider")
 )
@@ -208,7 +208,14 @@ func runAIQuery(
 	if q.CacheEnabled {
 		writeAICache(ctx, runner, q.Kind, key, text)
 	}
-	return &aiAnswer{Text: text, Provider: prov.Name(), Model: result.Model}, nil
+	// Credit whoever actually answered. A FallbackChain stamps the provider
+	// that succeeded onto the result, which differs from the chain head after
+	// a failover — reporting the head would name a provider that never ran.
+	name := prov.Name()
+	if result.Provider != "" {
+		name = result.Provider
+	}
+	return &aiAnswer{Text: text, Provider: name, Model: result.Model}, nil
 }
 
 // isDeadlineError also matches by string: provider adapters that shell out

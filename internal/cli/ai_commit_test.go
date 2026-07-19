@@ -648,3 +648,24 @@ func TestProviderAttributionPrefersResultModel(t *testing.T) {
 		t.Errorf("nil provider yields nothing, got %q", got)
 	}
 }
+
+// A FallbackChain stamps the provider that actually succeeded onto the
+// result. Reporting the chain head instead would credit a provider that
+// never ran — `gk merge --ai` is the surface that surfaces this in its
+// plan header.
+func TestAIAnswerAttributionUsesAnsweringProvider(t *testing.T) {
+	// Head failed over to a second provider, which answered.
+	a := &aiAnswer{Text: "x", Provider: "gemini", Model: "gemini-2.0"}
+	if got := a.Attribution(); got != "gemini (gemini-2.0)" {
+		t.Errorf("Attribution() = %q, want the answering provider", got)
+	}
+	// Cache hits name no model — the key does not fold one in.
+	c := &aiAnswer{Text: "x", Provider: "openai", Cached: true}
+	if got := c.Attribution(); got != "openai · cached" {
+		t.Errorf("cached Attribution() = %q", got)
+	}
+	var nilAnswer *aiAnswer
+	if got := nilAnswer.Attribution(); got != "" {
+		t.Errorf("nil answer must render nothing, got %q", got)
+	}
+}

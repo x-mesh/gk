@@ -48,6 +48,7 @@ By default gk refuses to start with tracked working-tree changes. Use
 	cmd.Flags().Bool("plan-only", false, "print the merge plan without running git merge")
 	cmd.Flags().String("into", "", "merge the source branch into this branch's checked-out worktree")
 	cmd.Flags().String("provider", "", "override ai.provider for the merge plan")
+	addAINoCacheFlag(cmd)
 	rootCmd.AddCommand(cmd)
 }
 
@@ -689,54 +690,53 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 	}
 	text := fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
 	if deps.Provider != nil {
-		if err := ensureRemoteAllowed(deps.Provider, deps.Config.AI); err != nil {
-			reason = err.Error()
-			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
-			goto writePlan
-		}
-		redacted, _, err := applyPrivacyGate(deps.Cmd, deps.Provider, payload, deps.Config.AI)
-		if err != nil {
-			reason = fmt.Sprintf("privacy gate: %v", err)
-			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
-			goto writePlan
-		}
-		sum, ok := deps.Provider.(provider.Summarizer)
-		if !ok {
-			reason = fmt.Sprintf("provider %q does not support merge-plan summaries", deps.Provider.Name())
-			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
-			goto writePlan
-		}
-		stopSpinner := ui.StartBubbleSpinner(fmt.Sprintf("merge plan — %s", deps.Provider.Name()))
-		result, err := sum.Summarize(ctx, provider.SummarizeInput{
+		lang := fallbackLang(deps.Config.AI.Lang)
+		answer, err := runAIQuery(ctx, deps.Cmd, deps.Runner, deps.Provider, deps.Config.AI, aiQuery{
 			Kind:    "merge-plan",
-			Diff:    redacted,
-			Commits: commits,
-			Lang:    fallbackLang(deps.Config.AI.Lang),
-		})
-		stopSpinner()
-		if err != nil {
-			reason = fmt.Sprintf("provider %q failed: %v", deps.Provider.Name(), err)
-			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
-		} else if strings.TrimSpace(result.Text) != "" {
-			// Prefer what the RESULT reports: after a fallback failover the
-			// provider that answered — and its model — differ from the head
-			// of the chain, and the header must name the one that actually ran.
-			providerName := providerLabel(deps.Provider)
-			if result.Provider != "" {
-				providerName = result.Provider
-				if result.Model != "" {
-					providerName += " (" + result.Model + ")"
+			Payload: payload,
+			Lang:    lang,
+			// This call had NO timeout before, so a slow provider hung the
+			// whole `gk merge` with no way out but Ctrl-C.
+			Timeout:     aiCallTimeout(deps.Config.AI),
+			TimeoutHint: "the provider exceeded ai.chat.timeout — raise it, or set a faster ai.<provider>.model.",
+			// The commit list is part of the question, so it keys the cache
+			// alongside the redacted payload.
+			CacheExtra:    []string{strings.Join(commits, "\n")},
+			SpinnerLabel:  "merge plan —",
+			CacheEnabled:  true,
+			SkipCacheRead: aiNoCacheRequested(deps.Cmd),
+			ErrOut:        deps.ErrOut,
+			// The merge plan sends commits alongside the diff and sets no
+			// MaxTokens, so it builds its own input.
+			Input: func(redacted string) provider.SummarizeInput {
+				return provider.SummarizeInput{
+					Kind:    "merge-plan",
+					Diff:    redacted,
+					Commits: commits,
+					Lang:    lang,
 				}
+			},
+		})
+		// Any failure degrades to the deterministic local plan with the reason
+		// attached — `gk merge` must still print a usable plan without AI.
+		if err != nil {
+			// The pipeline's errors already name the provider; the capability
+			// case keeps merge's own wording, which says WHICH capability is
+			// missing in this context rather than the generic Summarize.
+			reason = err.Error()
+			if errors.Is(err, errAIUnsupported) {
+				reason = fmt.Sprintf("provider %q does not support merge-plan summaries", deps.Provider.Name())
 			}
-			summary := decorateMergePlanSummary(cleanMergePlanSummary(result.Text), len(conflicts), !NoColorFlag())
+			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
+		} else {
+			summary := decorateMergePlanSummary(cleanMergePlanSummary(answer.Text), len(conflicts), !NoColorFlag())
 			// renderAIMergePlanHeader emits a complete bar section
 			// (header + trailing blank line); decorateMergePlanSummary
 			// already starts with the indented body so they concatenate
 			// without an explicit separator.
-			text = renderAIMergePlanHeader(target, current, providerName, len(conflicts), !NoColorFlag()) + summary
+			text = renderAIMergePlanHeader(target, current, answer.Attribution(), len(conflicts), !NoColorFlag()) + summary
 		}
 	}
-writePlan:
 	if deps.ErrOut != nil {
 		fmt.Fprintln(deps.ErrOut, text)
 	}

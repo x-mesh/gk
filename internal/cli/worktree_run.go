@@ -246,7 +246,10 @@ func reclaimRunWorktree(ctx context.Context, runner *git.ExecRunner, path, branc
 		return errors.New(strings.TrimSpace(string(stderr)))
 	}
 	if createdBranch {
-		_, _, _ = runner.Run(ctx, "branch", "-D", branch)
+		// SelfCreated: createdBranch means this same run made the branch,
+		// so no protected-name coincidence can make it worth keeping.
+		_ = deleteBranchGuarded(ctx, runner, nil, branch,
+			branchDeleteOpts{Force: true, SelfCreated: true})
 	}
 	return nil
 }

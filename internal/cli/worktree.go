@@ -1507,8 +1507,12 @@ func maybeDeleteOrphanBranch(ctx context.Context, runner git.Runner, stderr io.W
 	if !drop {
 		return nil
 	}
-	if _, berr, err := runner.Run(ctx, "branch", "-D", entry.Branch); err != nil {
-		fmt.Fprintf(stderr, "warn: branch -D %s: %s\n", entry.Branch, strings.TrimSpace(string(berr)))
+	// AllowProtected: the protected names were already filtered out above,
+	// so reaching here means this branch is not one of them. Passing the
+	// list twice would need cfg plumbed in for no added safety.
+	if err := deleteBranchGuarded(ctx, runner, nil, entry.Branch,
+		branchDeleteOpts{Force: true, AllowProtected: true}); err != nil {
+		fmt.Fprintf(stderr, "warn: %v\n", err)
 		return nil
 	}
 	fmt.Fprintf(stderr, "deleted branch %s\n", entry.Branch)
@@ -1576,7 +1580,13 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		if branchInUse(ctx, runner, branchName) {
 			return fmt.Errorf("branch %q is checked out in another worktree — pick a different name or remove that worktree first", branchName)
 		}
-		resolution, err := promptOrphanBranchResolution(branchName, orphanBranchTip(ctx, runner, branchName))
+		// A protected branch is never offered for deletion here: "delete
+		// and recreate" is about clearing debris from a failed add, and
+		// trunk is not debris. Hiding the choice beats confirming it —
+		// the safest option cannot be mis-selected if it is not shown.
+		nameProtected := isProtectedBranchName(branchName, protectedBranchNames(cfg))
+		resolution, err := promptOrphanBranchResolution(branchName,
+			orphanBranchTip(ctx, runner, branchName), nameProtected)
 		if err != nil {
 			return err
 		}
@@ -1587,8 +1597,9 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 			// `worktree add <path> <branch>` when createBranch=false.
 			createBranch = false
 		case orphanDelete:
-			if _, berr, err := runner.Run(ctx, "branch", "-D", branchName); err != nil {
-				return fmt.Errorf("branch -D %s: %s: %w", branchName, strings.TrimSpace(string(berr)), err)
+			if err := deleteBranchGuarded(ctx, runner, cfg, branchName,
+				branchDeleteOpts{Force: true}); err != nil {
+				return err
 			}
 		case orphanCancel:
 			return nil
@@ -1626,7 +1637,10 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		// next attempt is not blocked by a phantom branch. --track
 		// creates a branch too, so it needs the same cleanup.
 		if (createBranch || trackRef != "") && branchExists(ctx, runner, branchName) && !branchInUse(ctx, runner, branchName) {
-			_, _, _ = runner.Run(ctx, "branch", "-D", branchName)
+			// SelfCreated: this branch exists only because the command we
+			// are unwinding asked git to make it.
+			_ = deleteBranchGuarded(ctx, runner, cfg, branchName,
+				branchDeleteOpts{Force: true, SelfCreated: true})
 		}
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(gitErr)), err)
 	}
@@ -1657,8 +1671,14 @@ const (
 // (e.g. "a12bc3f4 fix: something · 2h") helps decide whether it is safe
 // to delete. On a non-TTY session this returns orphanCancel so callers
 // surface a clear error rather than guessing.
-func promptOrphanBranchResolution(name, tip string) (orphanResolution, error) {
+// protected suppresses the destructive choice entirely rather than
+// guarding it behind a confirm: this prompt exists to clear debris from a
+// failed add, and a protected branch is never that.
+func promptOrphanBranchResolution(name, tip string, protected bool) (orphanResolution, error) {
 	if !promptAllowed() {
+		if protected {
+			return orphanCancel, fmt.Errorf("branch %q already exists and is protected — pick another branch name", name)
+		}
 		return orphanCancel, fmt.Errorf("branch %q already exists (orphan) — re-run interactively to resolve, or delete with `git branch -D %s`", name, name)
 	}
 	title := fmt.Sprintf("branch %q already exists (orphan — no worktree uses it)", name)
@@ -1668,9 +1688,16 @@ func promptOrphanBranchResolution(name, tip string) (orphanResolution, error) {
 	}
 	items := []ui.PickerItem{
 		{Key: "reuse", Display: "check out the existing branch in the new worktree"},
-		{Key: "delete", Display: fmt.Sprintf("delete %q and create a fresh branch", name)},
-		{Key: "cancel", Display: "cancel"},
 	}
+	if protected {
+		title = fmt.Sprintf("branch %q already exists and is protected", name)
+		desc = "delete is not offered for protected branches"
+	} else {
+		items = append(items, ui.PickerItem{
+			Key: "delete", Display: fmt.Sprintf("delete %q and create a fresh branch", name),
+		})
+	}
+	items = append(items, ui.PickerItem{Key: "cancel", Display: "cancel"})
 	picker := &ui.TablePicker{Headers: []string{title + " — " + desc}}
 	choice, err := picker.Pick(context.Background(), "orphan branch", items)
 	if err != nil {

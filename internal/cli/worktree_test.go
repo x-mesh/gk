@@ -480,7 +480,7 @@ func TestCleanupFinishedWorktree_RemovesLinkedAndRefusesMain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("main worktree path: %v", err)
 	}
-	if _, _, err := cleanupFinishedWorktree(ctx, runner, mainPath, "main", false); err == nil {
+	if _, _, err := cleanupFinishedWorktree(ctx, runner, nil, mainPath, "main", false); err == nil {
 		t.Fatal("expected refusal to remove the main worktree")
 	}
 	if _, statErr := os.Stat(mainPath); statErr != nil {
@@ -492,7 +492,7 @@ func TestCleanupFinishedWorktree_RemovesLinkedAndRefusesMain(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("worktree add: %v\nout: %s", err, buf.String())
 	}
-	removed, branchDeleted, err := cleanupFinishedWorktree(ctx, runner, wtPath, "feat-finish", true)
+	removed, branchDeleted, err := cleanupFinishedWorktree(ctx, runner, nil, wtPath, "feat-finish", true)
 	if err != nil {
 		t.Fatalf("cleanupFinishedWorktree: %v", err)
 	}
@@ -989,7 +989,7 @@ func TestOrphanBranchTip_EmptyOnError(t *testing.T) {
 func TestPromptOrphanBranchResolution_NonTTYSurfacesError(t *testing.T) {
 	// Tests run without a real TTY, so the interactive path short-
 	// circuits with a helpful error pointing at `git branch -D`.
-	_, err := promptOrphanBranchResolution("ai-commit", "tip: abc  feat: X  · 2h")
+	_, err := promptOrphanBranchResolution("ai-commit", "tip: abc  feat: X  · 2h", false)
 	if err == nil {
 		t.Fatal("expected non-TTY error, got nil")
 	}

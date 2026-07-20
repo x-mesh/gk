@@ -782,7 +782,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 				dirty = loadWorktreeDirtyStates(ctx, wt)
 				continue
 			}
-			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, protected, merged); err != nil {
+			if err := handleDeleteAction(ctx, runner, cfg, w, choice, cur, defaultBr, protected, merged); err != nil {
 				if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, errSwitchActionRetry) {
 					continue
 				}
@@ -1392,7 +1392,7 @@ func (e *forceableError) Is(target error) bool { return target == errDeleteNeeds
 // A guard rejection git could still honour with -D (unmerged, protected,
 // default) does not bounce the user out: it promotes the confirm to a
 // force prompt carrying the reason, and -D runs only if they accept.
-func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, protected, merged map[string]bool) error {
+func handleDeleteAction(ctx context.Context, r git.Runner, cfg *config.Config, w io.Writer, choice ui.PickerItem, current, defaultBr string, protected, merged map[string]bool) error {
 	target := decodeBranchTarget(choice)
 	force := false
 	forceReason := ""
@@ -1425,12 +1425,16 @@ func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice u
 		return errSwitchActionRetry
 	}
 
-	flag := "-d"
-	if force {
-		flag = "-D"
-	}
-	if _, stderr, err := r.Run(ctx, "branch", flag, target.Name); err != nil {
-		fmt.Fprintln(w, "✗ delete failed: "+strings.TrimSpace(string(stderr)))
+	// AllowProtected: guardDelete already applied the protected policy and
+	// the user answered the force prompt for this exact branch, which is
+	// the explicit approval the flag is meant to represent.
+	if err := deleteBranchGuarded(ctx, r, cfg, target.Name, branchDeleteOpts{
+		Force: force, AllowProtected: force,
+	}); err != nil {
+		fmt.Fprintln(w, "✗ delete failed: "+err.Error())
+		if h := HintFrom(err); h != "" {
+			fmt.Fprintln(w, "  hint: "+h)
+		}
 		return errSwitchActionRetry
 	}
 	fmt.Fprintf(w, "deleted %s\n", target.Name)

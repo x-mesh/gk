@@ -517,8 +517,8 @@ func executeGatedFinish(ctx context.Context, runner *git.ExecRunner, spec *gateS
 // finishCleanup runs the worktree removal (and optional branch delete),
 // mirroring the pre-gate inline logic: a removal that succeeds but whose
 // branch delete fails is reported as such, not swallowed.
-func finishCleanup(ctx context.Context, runner *git.ExecRunner, res *worktreeFinishJSON, path, branch string, deleteBranch bool) error {
-	removed, branchDeleted, cerr := cleanupFinishedWorktree(ctx, runner, path, branch, deleteBranch)
+func finishCleanup(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, res *worktreeFinishJSON, path, branch string, deleteBranch bool) error {
+	removed, branchDeleted, cerr := cleanupFinishedWorktree(ctx, runner, cfg, path, branch, deleteBranch)
 	res.Removed = removed
 	res.BranchDeleted = branchDeleted
 	if cerr != nil {

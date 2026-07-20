@@ -229,7 +229,7 @@ func runWorktreeFinish(cmd *cobra.Command, args []string) error {
 				)
 			}
 			res.To = acceptTarget
-			if cerr := finishCleanup(ctx, runner, &res, path, branch, deleteBranch); cerr != nil {
+			if cerr := finishCleanup(ctx, runner, cfg, &res, path, branch, deleteBranch); cerr != nil {
 				return cerr
 			}
 		}
@@ -287,7 +287,7 @@ func runWorktreeFinish(cmd *cobra.Command, args []string) error {
 	}
 
 	if cleanup {
-		if cerr := finishCleanup(ctx, runner, &res, path, branch, deleteBranch); cerr != nil {
+		if cerr := finishCleanup(ctx, runner, cfg, &res, path, branch, deleteBranch); cerr != nil {
 			return cerr
 		}
 	}
@@ -356,7 +356,7 @@ func finishBaseBranch(ctx context.Context, runner git.Runner, cfg *config.Config
 	return ""
 }
 
-func cleanupFinishedWorktree(ctx context.Context, runner *git.ExecRunner, path, branch string, deleteBranch bool) (removed, branchDeleted bool, err error) {
+func cleanupFinishedWorktree(ctx context.Context, runner *git.ExecRunner, cfg *config.Config, path, branch string, deleteBranch bool) (removed, branchDeleted bool, err error) {
 	mainPath, mainErr := mainWorktreePath(ctx, runner)
 	if mainErr != nil {
 		return false, false, fmt.Errorf("worktree finish cleanup: locate main worktree: %w", mainErr)
@@ -370,8 +370,11 @@ func cleanupFinishedWorktree(ctx context.Context, runner *git.ExecRunner, path, 
 	}
 	removed = true
 	if deleteBranch {
-		if _, stderr, derr := mainRunner.Run(ctx, "branch", "-d", branch); derr != nil {
-			return removed, false, fmt.Errorf("worktree finish cleanup: delete branch %s: %s: %w", branch, strings.TrimSpace(string(stderr)), derr)
+		// -d, not -D: an unmerged branch must survive a finish. The
+		// protected check is redundant with the caller's own skip list,
+		// and deliberately so — this is the last gate before the delete.
+		if derr := deleteBranchGuarded(ctx, mainRunner, cfg, branch, branchDeleteOpts{}); derr != nil {
+			return removed, false, fmt.Errorf("worktree finish cleanup: %w", derr)
 		}
 		branchDeleted = true
 	}

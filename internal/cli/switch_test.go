@@ -483,32 +483,71 @@ func TestGuardDelete_Protected_BlockedThenForced(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "protected") {
 		t.Errorf("protected without force: want 'protected' error, got %v", err)
 	}
-	if h := HintFrom(err); !strings.Contains(h, "D to force") {
-		t.Errorf("protected hint should mention D, got %q", h)
+	if !errors.Is(err, errDeleteNeedsForce) {
+		t.Errorf("protected rejection should be forceable, got %v", err)
 	}
-	// with force (D): protected branch may be deleted
+	if h := HintFrom(err); !strings.Contains(h, "force prompt") {
+		t.Errorf("protected hint should point at the force prompt, got %q", h)
+	}
+	// with force: protected branch may be deleted
 	if err := guardDelete(targetBranchInfo{Name: "develop"}, "feat/x", "main", protected, merged, true); err != nil {
 		t.Errorf("protected with force: want pass, got %v", err)
 	}
 }
 
-func TestGuardDelete_Unmerged_BlockedOnSmallD(t *testing.T) {
+func TestGuardDelete_Unmerged_BlockedWithoutForce(t *testing.T) {
 	t.Parallel()
 	merged := map[string]bool{} // feat/y NOT merged
 	err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", nil, merged, false)
 	if err == nil || !strings.Contains(err.Error(), "unmerged") {
-		t.Errorf("unmerged + d: want 'unmerged' error, got %v", err)
+		t.Errorf("unmerged without force: want 'unmerged' error, got %v", err)
 	}
-	if h := HintFrom(err); !strings.Contains(h, "D to force") {
-		t.Errorf("unmerged + d: hint should mention D, got %q", h)
+	if !errors.Is(err, errDeleteNeedsForce) {
+		t.Errorf("unmerged rejection should be forceable, got %v", err)
+	}
+	if h := HintFrom(err); !strings.Contains(h, "force prompt") {
+		t.Errorf("unmerged hint should point at the force prompt, got %q", h)
 	}
 }
 
-func TestGuardDelete_Unmerged_AllowedOnBigD(t *testing.T) {
+func TestGuardDelete_Unmerged_AllowedWithForce(t *testing.T) {
 	t.Parallel()
 	merged := map[string]bool{}
 	if err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", nil, merged, true); err != nil {
-		t.Errorf("unmerged + D: want pass, got %v", err)
+		t.Errorf("unmerged with force: want pass, got %v", err)
+	}
+}
+
+// Hard rejections must NOT be forceable — promoting them to a force
+// prompt would offer the user an operation git will refuse anyway (or,
+// for the current branch, one that must never be offered).
+func TestGuardDelete_HardRejections_NotForceable(t *testing.T) {
+	t.Parallel()
+	cases := map[string]error{
+		"placeholder": guardDelete(targetBranchInfo{Placeholder: true}, "main", "main", nil, nil, false),
+		"remote":      guardDelete(targetBranchInfo{Name: "foo", IsRemote: true}, "main", "main", nil, nil, false),
+		"current":     guardDelete(targetBranchInfo{Name: "main"}, "main", "main", nil, nil, false),
+		"noCursor":    guardDelete(targetBranchInfo{Name: ""}, "main", "main", nil, nil, false),
+	}
+	for name, err := range cases {
+		if err == nil {
+			t.Errorf("%s: want rejection, got nil", name)
+			continue
+		}
+		if errors.Is(err, errDeleteNeedsForce) {
+			t.Errorf("%s: must not be forceable, got %v", name, err)
+		}
+	}
+}
+
+// The force prompt shows the guard's own wording, so the user learns why
+// force is needed instead of a generic "unmerged work will be lost".
+func TestForceableError_CarriesPlainReason(t *testing.T) {
+	t.Parallel()
+	merged := map[string]bool{}
+	err := guardDelete(targetBranchInfo{Name: "feat/y"}, "main", "main", nil, merged, false)
+	if got := err.Error(); got != `branch "feat/y" has unmerged commits` {
+		t.Errorf("reason should stay plain for the prompt, got %q", got)
 	}
 }
 

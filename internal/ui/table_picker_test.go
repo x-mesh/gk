@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -369,6 +370,106 @@ func newTablePickerWithExtras(items []PickerItem, extras []TablePickerExtraKey) 
 	m.extras = extras
 	m.all = items
 	return m
+}
+
+// The reported bug: with the filter focused, a bare action letter was
+// swallowed as filter text, so the action was unreachable without esc.
+// The ctrl alias fires instead, and ExtraAction still reports the plain
+// Key so callers keep one dispatch name.
+func TestTablePicker_FilterAliasFiresWhileTyping(t *testing.T) {
+	items := []PickerItem{
+		{Key: "a", Display: "alpha"},
+		{Key: "b", Display: "beta"},
+	}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", FilterKey: "ctrl+r", Help: "r remotes", Exit: true},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if got.chosenItem.ExtraAction != "r" {
+		t.Errorf("ctrl alias should fire in filter mode, got ExtraAction=%q",
+			got.chosenItem.ExtraAction)
+	}
+	if cmd == nil {
+		t.Error("Exit alias should quit the picker")
+	}
+	if v := got.filterInput.Value(); v != "" {
+		t.Errorf("alias must not leak into the filter text, got %q", v)
+	}
+}
+
+// The filter-mode help bar is the only place the aliases are advertised,
+// so it must list them rather than just telling the user to press esc.
+func TestTablePicker_FilterHelpAdvertisesAliases(t *testing.T) {
+	m := newTablePickerWithExtras([]PickerItem{{Key: "a", Display: "alpha"}},
+		[]TablePickerExtraKey{
+			{Key: "r", FilterKey: "ctrl+r", Help: "r remotes", Exit: true},
+			{Key: "n", Help: "n new", Exit: true}, // no alias → not advertised
+		})
+	m.filterActive = true
+
+	view := m.View()
+	if !strings.Contains(view, "ctrl+r remotes") {
+		t.Errorf("filter help should advertise the alias, got:\n%s", view)
+	}
+	if strings.Contains(view, "ctrl+ new") || strings.Contains(view, "n new") {
+		t.Errorf("alias-less extras must not appear in filter help, got:\n%s", view)
+	}
+}
+
+// The plain letter must keep feeding the filter box — that is the whole
+// reason the alias exists, so it must not regress into a hotkey.
+func TestTablePicker_PlainKeyStillTypesWhileFiltering(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", FilterKey: "ctrl+r", Help: "r remotes", Exit: true},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+
+	got, _ := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if got.chosenItem.ExtraAction != "" {
+		t.Errorf("bare letter must not fire the action, got %q", got.chosenItem.ExtraAction)
+	}
+	if v := got.filterInput.Value(); v != "r" {
+		t.Errorf("bare letter should reach the filter box, got %q", v)
+	}
+}
+
+// In nav mode both forms work, so learning the ctrl form is not a
+// one-way door back to the plain letter.
+func TestTablePicker_AliasAlsoWorksInNavMode(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", FilterKey: "ctrl+r", Help: "r remotes", Exit: true},
+	})
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if got.chosenItem.ExtraAction != "r" || cmd == nil {
+		t.Errorf("nav-mode alias should fire, got ExtraAction=%q cmd=%v",
+			got.chosenItem.ExtraAction, cmd != nil)
+	}
+}
+
+// A bare rune in FilterKey is a misconfiguration — honouring it would
+// make that character impossible to type into the filter.
+func TestTablePicker_PlainRuneAliasIgnoredInFilter(t *testing.T) {
+	items := []PickerItem{{Key: "r", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", FilterKey: "x", Help: "r remotes", Exit: true},
+	})
+	m.filterActive = true
+	m.filterInput.Focus()
+
+	got, _ := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if got.chosenItem.ExtraAction != "" {
+		t.Errorf("plain-rune alias must not fire in filter mode, got %q",
+			got.chosenItem.ExtraAction)
+	}
+	if v := got.filterInput.Value(); v != "x" {
+		t.Errorf("plain-rune alias should stay filter text, got %q", v)
+	}
 }
 
 func TestTablePicker_ExitHotkeyCarriesExtraAction(t *testing.T) {

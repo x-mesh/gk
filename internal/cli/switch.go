@@ -579,17 +579,17 @@ func canonPath(p string) string {
 // included with a star marker for context) and remote-only branches
 // (toggled by `r`). Selecting a branch checked out in another
 // worktree triggers a smart handoff to that worktree's subshell —
-// since git would refuse the switch otherwise. Hotkeys (n/d/D) exit
+// since git would refuse the switch otherwise. Hotkeys (n/d/f/r) exit
 // the picker so we can drive sub-prompts (text input, confirm),
 // then re-enter on the next iteration.
 func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Client, cfg *config.Config, w io.Writer, cmd *cobra.Command, showRemotes bool) (switchPick, error) {
 
 	// Hoist loop-invariant probes outside the picker re-entry loop.
-	// `cur` and `defaultBr` don't change across n/d/D actions (n exits the
-	// loop entirely; d/D never delete the current branch). `wt`/`dirty` are
+	// `cur` and `defaultBr` don't change across n/d actions (n exits the
+	// loop entirely; d never deletes the current branch). `wt`/`dirty` are
 	// likewise reused per iteration to avoid a per-worktree `git status`
 	// stall on every render — the one action that DOES mutate worktree
-	// topology (d/D on a branch parked in another worktree → worktree
+	// topology (d on a branch parked in another worktree → worktree
 	// removal) reloads both before it re-lists. Refreshing them every
 	// iteration was the dominant source of post-action stalls.
 	cur, _ := client.CurrentBranch(ctx)
@@ -615,7 +615,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 	// Dirty state derives from wt and is expensive (per-worktree git
 	// status). Compute once — concurrent editor edits between picker
 	// renders won't reflect, but that's an informational signal, not
-	// a correctness gate. After d/D, dirty entries for the deleted
+	// a correctness gate. After a delete, dirty entries for the removed
 	// branch are simply unused.
 	dirty := loadWorktreeDirtyStates(ctx, wt)
 
@@ -765,10 +765,10 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 				return pick, nil
 			}
 			continue
-		case "d", "D":
+		case "d":
 			// A branch checked out in another worktree can't be removed with
 			// `git branch -d` — git refuses it ("cannot delete branch 'x' used
-			// by worktree at ..."). Pressing d/D on such a row means "get rid
+			// by worktree at ..."). Pressing d on such a row means "get rid
 			// of that worktree", so redirect to the worktree-removal flow
 			// (lock/dirty-aware, then offers to drop the now-freed branch).
 			// This mutates worktree topology, so refresh the hoisted wt/dirty
@@ -782,8 +782,7 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 				dirty = loadWorktreeDirtyStates(ctx, wt)
 				continue
 			}
-			force := choice.ExtraAction == "D"
-			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, protected, merged, force); err != nil {
+			if err := handleDeleteAction(ctx, runner, w, choice, cur, defaultBr, protected, merged); err != nil {
 				if errors.Is(err, ui.ErrPickerAborted) || errors.Is(err, errSwitchActionRetry) {
 					continue
 				}
@@ -1223,17 +1222,22 @@ func switchDisplayRow(marker, branch, source, worktree, hash, age string, wtCol 
 		marker, branch, source, hash, age)
 }
 
-// buildSwitchExtras wires the n/d/D/r/f hotkeys. All of them exit the
+// buildSwitchExtras wires the n/d/r/f hotkeys. All of them exit the
 // picker so the caller can drive prompts/confirms (and, for r/f, a fetch
 // spinner) outside the bubbletea program, then re-enter on the next loop
 // iteration with a freshly enumerated branch list.
+//
+// Each carries a ctrl alias so the action is still reachable while the
+// filter prompt is focused, where bare letters are swallowed as filter
+// text. There is deliberately no force-delete key: ctrl cannot encode
+// the d/D case distinction in a terminal, so `d` on a branch git refuses
+// promotes to a force prompt instead (see handleDeleteAction).
 func buildSwitchExtras() []ui.TablePickerExtraKey {
 	return []ui.TablePickerExtraKey{
-		{Key: "n", Help: "n new", Exit: true},
-		{Key: "d", Help: "d delete", Exit: true},
-		{Key: "D", Help: "D force", Exit: true},
-		{Key: "f", Help: "f fetch", Exit: true},
-		{Key: "r", Help: "r remotes", Exit: true},
+		{Key: "n", FilterKey: "ctrl+n", Help: "n new", Exit: true},
+		{Key: "d", FilterKey: "ctrl+d", Help: "d delete", Exit: true},
+		{Key: "f", FilterKey: "ctrl+f", Help: "f fetch", Exit: true},
+		{Key: "r", FilterKey: "ctrl+r", Help: "r remotes", Exit: true},
 	}
 }
 
@@ -1311,7 +1315,7 @@ func decodeBranchTarget(choice ui.PickerItem) targetBranchInfo {
 	}
 }
 
-// worktreeDeleteTarget reports whether a d/D cursor row targets a branch
+// worktreeDeleteTarget reports whether a d cursor row targets a branch
 // that lives in ANOTHER worktree. git refuses `branch -d` on such a branch
 // ("used by worktree at ..."), and the user's real intent is to remove that
 // worktree — so the picker routes these to the worktree-removal flow instead
@@ -1349,40 +1353,66 @@ func guardDelete(target targetBranchInfo, current, defaultBr string, protected, 
 	}
 	if !force {
 		if defaultBr != "" && target.Name == defaultBr {
-			return WithHint(fmt.Errorf("refusing to delete default branch %q", target.Name),
-				"press D to force delete")
+			return WithHint(&forceableError{fmt.Sprintf("refusing to delete default branch %q", target.Name)},
+				"confirm the force prompt to delete it anyway")
 		}
 		if protected[target.Name] {
-			return WithHint(fmt.Errorf("branch %q is protected", target.Name),
-				"press D to force delete")
+			return WithHint(&forceableError{fmt.Sprintf("branch %q is protected", target.Name)},
+				"confirm the force prompt to delete it anyway")
 		}
 		if !merged[target.Name] {
-			return WithHint(fmt.Errorf("branch %q has unmerged commits", target.Name),
-				"press D to force delete (unmerged work will be lost)")
+			return WithHint(&forceableError{fmt.Sprintf("branch %q has unmerged commits", target.Name)},
+				"confirm the force prompt to delete it anyway (unmerged work will be lost)")
 		}
 	}
 	return nil
 }
 
-// handleDeleteAction runs the d/D action end-to-end: guard → confirm →
+// errDeleteNeedsForce marks a guardDelete rejection that `git branch -D`
+// could still carry out. handleDeleteAction turns those into an in-place
+// force prompt: the user already pressed `d` on this row, so the useful
+// question is about the consequence, not about finding a second hotkey.
+// Terminals cannot encode `ctrl+D` distinctly from `ctrl+d`, so a
+// separate force key could not survive the move to modifier aliases.
+var errDeleteNeedsForce = errors.New("force required")
+
+// forceableError is a guardDelete rejection matching errDeleteNeedsForce
+// while keeping Error() as the plain human reason, so the same string can
+// be shown verbatim in the force prompt.
+type forceableError struct{ reason string }
+
+func (e *forceableError) Error() string        { return e.reason }
+func (e *forceableError) Is(target error) bool { return target == errDeleteNeedsForce }
+
+// handleDeleteAction runs the d action end-to-end: guard → confirm →
 // `git branch -d|-D`. Returns nil on success (caller re-lists),
 // errSwitchActionRetry when the user cancelled the confirm or the
 // guard rejected, and a real error only on git failure.
-func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, protected, merged map[string]bool, force bool) error {
+//
+// A guard rejection git could still honour with -D (unmerged, protected,
+// default) does not bounce the user out: it promotes the confirm to a
+// force prompt carrying the reason, and -D runs only if they accept.
+func handleDeleteAction(ctx context.Context, r git.Runner, w io.Writer, choice ui.PickerItem, current, defaultBr string, protected, merged map[string]bool) error {
 	target := decodeBranchTarget(choice)
-	if err := guardDelete(target, current, defaultBr, protected, merged, force); err != nil {
-		fmt.Fprintln(w, "✗ "+err.Error())
-		if h := HintFrom(err); h != "" {
-			fmt.Fprintln(w, "  hint: "+h)
+	force := false
+	forceReason := ""
+	if err := guardDelete(target, current, defaultBr, protected, merged, false); err != nil {
+		if !errors.Is(err, errDeleteNeedsForce) {
+			fmt.Fprintln(w, "✗ "+err.Error())
+			if h := HintFrom(err); h != "" {
+				fmt.Fprintln(w, "  hint: "+h)
+			}
+			return errSwitchActionRetry
 		}
-		return errSwitchActionRetry
+		force = true
+		forceReason = err.Error()
 	}
 
 	title := fmt.Sprintf("Delete branch %q?", target.Name)
 	desc := "merged into " + defaultBr
 	if force {
 		title = fmt.Sprintf("FORCE delete %q?", target.Name)
-		desc = "unmerged work will be lost — this cannot be undone"
+		desc = forceReason + " — this cannot be undone"
 	}
 	ok, err := ui.ConfirmTUI(ctx, title, desc, false)
 	if err != nil {

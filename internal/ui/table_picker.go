@@ -26,8 +26,8 @@ func cellAllocWidth(s string) int { return runewidth.StringWidth(s) }
 // TablePickerExtraKey binds a custom keystroke to a callback that
 // can replace the entire data set on the fly — items + headers. Use
 // it for actions that change *what's listed* (e.g. "g toggle global").
-// The user must press the key while the filter prompt is *not*
-// focused; filter typing always wins.
+// Key is a plain keystroke and only fires while the filter prompt is
+// *not* focused; filter typing always wins over bare letters.
 //
 // When Exit is true, OnPress is ignored: pressing the key quits the
 // picker and surfaces the cursor row's PickerItem with ExtraAction set
@@ -35,10 +35,45 @@ func cellAllocWidth(s string) int { return runewidth.StringWidth(s) }
 // (open a confirm dialog, prompt for input) — the caller dispatches on
 // ExtraAction and re-enters the picker on the next loop iteration.
 type TablePickerExtraKey struct {
-	Key     string
-	Help    string
-	OnPress func() (items []PickerItem, headers []string, err error)
-	Exit    bool
+	Key string
+	// FilterKey is an optional second keystroke for the same action that
+	// fires *even while the filter prompt is focused*. It must be a
+	// modifier combo ("ctrl+r", "alt+r") — a plain rune would be
+	// indistinguishable from filter text and become untypable. Both forms
+	// work in nav mode, and ExtraAction always reports Key, so callers
+	// dispatch on one name regardless of which was pressed.
+	//
+	// This intentionally shadows any same-combo binding inside the filter
+	// textinput (e.g. ctrl+f's cursor-forward): reaching the action beats
+	// an emacs editing shortcut on a one-line filter box.
+	FilterKey string
+	Help      string
+	OnPress   func() (items []PickerItem, headers []string, err error)
+	Exit      bool
+}
+
+// extraKeyMatches reports whether s triggers ex in nav mode — either the
+// plain keystroke or its modifier alias, so a user who learns the ctrl
+// form never has to switch back.
+func extraKeyMatches(ex TablePickerExtraKey, s string) bool {
+	return s == ex.Key || (ex.FilterKey != "" && s == ex.FilterKey)
+}
+
+// firesInFilter reports whether s triggers ex while the filter prompt is
+// focused. Only modifier combos qualify — binding a bare rune here would
+// make that character impossible to type into the filter.
+func firesInFilter(ex TablePickerExtraKey, s string) bool {
+	if ex.FilterKey == "" || s != ex.FilterKey {
+		return false
+	}
+	return strings.HasPrefix(s, "ctrl+") || strings.HasPrefix(s, "alt+")
+}
+
+// extraLabel strips the leading keystroke from Help ("r remotes" →
+// "remotes") so the same wording can be re-prefixed with the alias when
+// the filter-mode help line is rendered.
+func extraLabel(ex TablePickerExtraKey) string {
+	return strings.TrimSpace(strings.TrimPrefix(ex.Help, ex.Key))
 }
 
 // TablePicker is the default in-process bubbletea picker — no fzf,
@@ -138,6 +173,19 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.t, cmd = m.t.Update(msg)
 				return m, cmd
 			}
+			// Modifier aliases reach their action without leaving typing
+			// mode. Checked before the textinput sees the key so the
+			// action wins over any editing binding on the same combo.
+			for _, ex := range m.extras {
+				if !firesInFilter(ex, msg.String()) {
+					continue
+				}
+				cmd, handled := m.runExtra(ex)
+				if !handled {
+					continue
+				}
+				return m, cmd
+			}
 			// Forward everything else to the textinput, then refresh
 			// the filtered row set.
 			var cmd tea.Cmd
@@ -173,37 +221,14 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			s := msg.String()
 			for _, ex := range m.extras {
-				if s != ex.Key {
+				if !extraKeyMatches(ex, s) {
 					continue
 				}
-				if ex.Exit {
-					// Capture cursor row (if any) and quit. ExtraAction tells
-					// the caller which key fired; chosenItem is the row the
-					// user was on, so handlers can act on it (delete THIS).
-					m.selectCursorItem()
-					m.chosenItem.ExtraAction = ex.Key
-					return m, tea.Quit
-				}
-				if ex.OnPress == nil {
+				cmd, handled := m.runExtra(ex)
+				if !handled {
 					continue
 				}
-				items, headers, err := ex.OnPress()
-				if err != nil {
-					m.errMsg = err.Error()
-					return m, nil
-				}
-				m.errMsg = ""
-				m.all = items
-				if headers != nil {
-					// New column structure: re-fit it to the current width
-					// (reflow rebuilds rows too). With no size yet, width 0
-					// makes fitColumns keep every column.
-					m.headers = headers
-					m.reflowColumns(m.width)
-				} else {
-					m.applyFilter()
-				}
-				return m, nil
+				return m, cmd
 			}
 		}
 	case tea.WindowSizeMsg:
@@ -223,6 +248,39 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.t, cmd = m.t.Update(msg)
 	return m, cmd
+}
+
+// runExtra executes ex and reports whether it consumed the keystroke.
+// An Exit extra captures the cursor row (so handlers can act on THIS
+// branch), tags it with ExtraAction and quits; an OnPress extra swaps
+// the data set in place. A non-Exit extra with no callback is inert —
+// (nil, false) lets the caller keep scanning for another binding.
+func (m *tablePickerModel) runExtra(ex TablePickerExtraKey) (tea.Cmd, bool) {
+	if ex.Exit {
+		m.selectCursorItem()
+		m.chosenItem.ExtraAction = ex.Key
+		return tea.Quit, true
+	}
+	if ex.OnPress == nil {
+		return nil, false
+	}
+	items, headers, err := ex.OnPress()
+	if err != nil {
+		m.errMsg = err.Error()
+		return nil, true
+	}
+	m.errMsg = ""
+	m.all = items
+	if headers != nil {
+		// New column structure: re-fit it to the current width (reflow
+		// rebuilds rows too). With no size yet, width 0 makes fitColumns
+		// keep every column.
+		m.headers = headers
+		m.reflowColumns(m.width)
+	} else {
+		m.applyFilter()
+	}
+	return nil, true
 }
 
 // applyFilter rebuilds the visible row list from the filter query.
@@ -453,9 +511,22 @@ func (m tablePickerModel) View() string {
 	}
 	var helpLine string
 	if m.filterActive {
-		// While typing, single-letter hotkeys feed the filter box, so the
-		// action keys are inert. Tell the user esc unlocks them.
-		helpLine = "↑/↓ navigate · enter select · esc → then action keys on results · ctrl+c cancel"
+		// While typing, single-letter hotkeys feed the filter box. Any
+		// action carrying a modifier alias still works, so advertise those
+		// instead of only telling the user esc unlocks the plain letters.
+		var aliases []string
+		for _, ex := range m.extras {
+			if ex.FilterKey == "" {
+				continue
+			}
+			aliases = append(aliases, ex.FilterKey+" "+extraLabel(ex))
+		}
+		if len(aliases) > 0 {
+			helpLine = strings.Join(aliases, " · ") +
+				" · ↑/↓ navigate · enter select · esc nav mode · ctrl+c cancel"
+		} else {
+			helpLine = "↑/↓ navigate · enter select · esc → then action keys on results · ctrl+c cancel"
+		}
 	} else {
 		if m.filterInput.Value() != "" {
 			helpLine = "↑/↓ navigate · enter select · / edit filter · esc clear filter · q cancel"

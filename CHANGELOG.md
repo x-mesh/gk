@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk local --all` — "이 머신에 갇힌 작업이 있나"를 저장소 전체에 묻는다.** 지금까지 `gk local`은 서 있는 브랜치만 봤는데, 정작 위험한 건 **한 번도 push되지 않아 어디서도 보이지 않는 브랜치**다. 그래서 깨끗한 trunk 위에서는 미push 브랜치 두 개와 stash가 옆에 앉아 있어도 "이상 없음"이라고 답했다. `--all`은 모든 로컬 브랜치와 worktree를 훑고 `branches[]` 분해를 덧붙이며, `clean`을 저장소 전체 판정으로 바꾼다. 새 `scope` 필드가 그 `clean`이 어떤 질문에 답한 것인지 밝히는데, 브랜치 하나만 본 clean은 나머지에 대해 아무 말도 하지 않기 때문이다. **확인하지 못한 것은 절대 clean이라 부르지 않는다** — 디스크에서 사라진 worktree나 status 실패는 `unknown`으로 표시되고 clean을 false로 끌어내린다. 같은 이유로 picker용 `loadWorktreeDirtyStates`를 재사용하지 않았다: 그쪽은 200ms에서 끊고 타임아웃을 clean으로 읽으며 untracked를 노이즈로 버리는데, 여기서는 그 untracked 파일이 바로 잃어버릴 작업이다. 미push 판정은 `@{upstream}` 대신 `--not --remotes`로 센다 — upstream이 없는 브랜치도 답을 받아야 하고, "어떤 리모트 ref에서든 닿는가"가 다른 머신이 그 작업을 볼 수 있는지를 결정하는 기준이다.
+
+### Fixed
+
+- **`branch.protected`에 적은 브랜치가 `gk worktree add`의 고아 정리 경로로 지워질 수 있던 문제.** protected 검사가 호출 지점마다 따로 있었고, 나중에 붙은 worktree add 경로는 그 검사를 빠뜨린 채 "지우고 새로 만들기"를 제안했다 — 조건은 worktree가 물고 있는지 하나뿐이었다. 그래서 작업이 develop에서 도는 저장소의 `main`처럼 **아무 데도 체크아웃돼 있지 않은 protected 브랜치**가 `branch -D`로 사라질 수 있었다. 이제 이 패키지의 모든 `git branch -d/-D`가 `deleteBranchGuarded` 한 곳을 지나므로, 앞으로 추가되는 삭제 경로가 정책을 빠뜨리는 식으로 어긋날 수 없다. force는 `-D`를 고를 뿐 **보호를 걷어내지는 않는다** — git의 merged 검사를 무시하는 것과 사용자가 직접 적어 둔 규칙을 무시하는 것은 다른 일이다. 후자는 브랜치 이름을 짚는 확인을 거친 `AllowProtected`만 할 수 있다. 롤백과 `--cleanup`은 `SelfCreated`로 검사를 건너뛰는데, 같은 명령이 방금 만든 브랜치는 지킬 가치가 있는 브랜치일 수 없기 때문이다. base 브랜치는 목록에 없어도 protected로 친다 — 잃으면 ahead/behind와 머지 대상 계산이 전부 무너진다. 고아 프롬프트는 protected 이름에 대해 삭제 항목을 확인으로 감싸는 대신 **아예 보여주지 않는다**: 뜨지 않는 선택지는 잘못 눌릴 수 없고, 실패한 add의 잔해를 치우는 일이 trunk를 삭제 후보로 내놓을 이유는 되지 않는다.
+- **`gk merge --into` 뒤 존재하지 않는 명령을 안내하던 힌트.** 완전히 머지된 source에 대해 "also: `gk branch delete <source>`"가 떴는데, `gk branch delete`라는 verb는 애초에 없어서 그대로 따라 하면 실패했다. 이제 실제로 있는 `gk branch clean`을 안내하고, 그 명령은 해당 브랜치를 후보로 집어 올린다. 또 이 권유가 "머지됨"만 보고 발화해서 develop을 main으로 승격하면 develop을 지우라고 말했다 — 사용자가 적어 둔 `branch.protected`와 정면으로 어긋나는 안내였다. 머지 여부는 필요조건이지 충분조건이 아니므로 `mergeSourceCleanable`이 `deleteBranchGuarded`와 같은 정책을 적용한다. 검사가 cli 계층에 있는 이유는 easy 패키지는 힌트 텍스트를 그리는 곳이지 어떤 브랜치를 지워도 되는지에 의견을 갖는 곳이 아니어서다.
+- **`gk ship`의 릴리스 후 verify가 이미 갱신된 tap을 옛 버전으로 읽던 오탐.** `raw.githubusercontent.com`은 push 후 몇 분간 캐시된 사본을 내주는데, 그 창이 정확히 릴리스 직후 verify가 도는 구간이다. v0.130.0에서 tap이 이미 넘어간 뒤에도 `tap-cask`와 `cdn-checksums`가 이전 버전을 보고해서 멀쩡한 릴리스가 실패처럼 보였다. contents API는 현재 파일을 돌려준다. `gh` 바이너리도 필요 없어서(공개 저장소에 대한 순수 `curl`) git과 curl만 깔린 곳에서도 검사가 그대로 돈다. 토큰이 있으면 rate limit 때문에 쓰고, 없으면 빈 bearer를 보내는 대신 헤더 자체를 뺀다.
+- **v0.128.0부터 `golangci-lint`를 붉게 만들던 죽은 함수 제거(`aiCallContext`).** 모든 `--ai` 표면을 한 질의 파이프라인으로 모으면서 데드라인이 `runAIQuery` 안으로 들어갔고, 이제 모든 호출 지점이 `Timeout: aiCallTimeout(...)`을 넘기므로 호출 지점용 context 헬퍼는 호출자가 남지 않았다. 동작은 바뀌지 않는다 — 이 함수가 걸던 타임아웃은 한 층 아래에서 여전히 걸린다.
+
+### Changed
+
+- **릴리스 preflight가 `lint`와 `test`를 통과해야 태그를 만든다.** v0.128.0부터 v0.130.0까지 세 번의 릴리스 동안 `golangci-lint`가 붉은 채였고 파이프라인의 어느 단계도 그걸 보지 않았다. 내장 `commit-lint`는 커밋 메시지를 볼 뿐 코드를 보지 않고, ship의 watch는 태그가 띄우는 릴리스 워크플로를 따라가는데 그건 브랜치 `ci` 워크플로가 깨진 동안에도 초록이었다. 검사를 앞으로 당기는 이유가 바로 그 비대칭이다: **preflight 실패는 아직 태그가 없으므로 공짜지만, 태그가 공개된 뒤에 발견한 red CI는 수습만 가능하고 되돌릴 수는 없다.** 단계를 명시하면 내장 세트를 대체하므로 기본 세 개를 함께 적어 뒀고, lint를 test보다 먼저 둬서 뻔한 파손이 전체 스위트를 다 돌린 뒤가 아니라 1초 만에 걸리게 했다. 이 저장소 실측으로 lint 1.3초, test 1분 48초, 게이트 전체 1분 50초다.
+
 ## [0.130.0] - 2026-07-20
 
 ### Added

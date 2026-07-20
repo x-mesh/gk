@@ -305,13 +305,16 @@ var enMessages = map[string]map[Mode]string{
 		ModeNormal: "gk push --from %s",
 		ModeEasy:   "gk push --from %s",
 	},
+	// gk has no single-branch delete verb; `gk branch clean` is the real
+	// path and picks this branch up as a merged candidate. Keep exactly
+	// one %s per string — a second one leaks as `%!(EXTRA string=...)`.
 	"hint.merge.into.cleanup_source": {
-		ModeNormal: "also: gk branch delete %s (fully merged)",
-		ModeEasy:   "※ cleanup: gk branch delete %s — fully merged",
+		ModeNormal: "also: gk branch clean — %s is fully merged",
+		ModeEasy:   "※ cleanup: gk branch clean — %s is fully merged",
 	},
 	"hint.merge.into.cleanup_source.minimal": {
-		ModeNormal: "gk branch delete %s",
-		ModeEasy:   "gk branch delete %s",
+		ModeNormal: "gk branch clean  # %s",
+		ModeEasy:   "gk branch clean  # %s",
 	},
 
 	// ── Push summary ────────────────────────────────────────────────────

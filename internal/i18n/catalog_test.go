@@ -330,10 +330,14 @@ func TestNewHintKeys_EasyModeBothLangs(t *testing.T) {
 			wantMarkerPrefix: "↑",
 		},
 		{
-			key:              "hint.merge.into.cleanup_source",
-			args:             []interface{}{"feat/x", "feat/x"},
-			wantContainsEn:   "gk branch delete feat/x",
-			wantContainsKo:   "gk branch delete feat/x",
+			key: "hint.merge.into.cleanup_source",
+			// One arg, matching the real call: the string carries a single
+			// %s. Passing two used to slip through because the assertion
+			// is a substring match, so the trailing `%!(EXTRA string=…)`
+			// went unnoticed.
+			args:             []interface{}{"feat/x"},
+			wantContainsEn:   "gk branch clean",
+			wantContainsKo:   "gk branch clean",
 			wantMarkerPrefix: "※",
 		},
 		{
@@ -397,6 +401,12 @@ func TestNewHintKeys_EasyModeBothLangs(t *testing.T) {
 		}
 		if !contains(got, marker) {
 			t.Errorf("[%s] %s: got %q, want Unicode marker %q", lang, key, got, marker)
+		}
+		// A verb/placeholder mismatch surfaces as `%!(EXTRA …)` or
+		// `%!s(MISSING)` appended to otherwise correct text, which a
+		// substring assertion happily ignores. Catch it explicitly.
+		if contains(got, "%!") {
+			t.Errorf("[%s] %s: got %q, which carries a fmt verb mismatch", lang, key, got)
 		}
 		for _, e := range emoji {
 			if contains(got, e) {

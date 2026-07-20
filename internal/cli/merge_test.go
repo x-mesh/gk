@@ -10,6 +10,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/ai/provider"
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
 
@@ -896,4 +897,38 @@ func (s *sequenceRunner) Run(ctx context.Context, args ...string) ([]byte, []byt
 		return []byte(resp.Stdout), []byte(resp.Stderr), resp.Err
 	}
 	return s.FakeRunner.Run(ctx, args...)
+}
+
+// The cleanup nudge used to fire on "fully merged" alone, so promoting
+// develop into main suggested deleting develop — a branch the user had
+// listed as protected. Being merged is necessary, not sufficient.
+func TestMergeSourceCleanable_SkipsProtectedSource(t *testing.T) {
+	cfg := &config.Config{BaseBranch: "main"}
+	cfg.Branch.Protected = []string{"main", "develop"}
+
+	cases := []struct {
+		name             string
+		source, receiver string
+		want             bool
+	}{
+		{"ordinary feature branch", "feat/x", "main", true},
+		{"protected source", "develop", "main", false},
+		{"base branch as source", "main", "release", false},
+		{"source equals receiver", "main", "main", false},
+		{"empty source", "", "main", false},
+	}
+	for _, c := range cases {
+		if got := mergeSourceCleanable(cfg, c.source, c.receiver); got != c.want {
+			t.Errorf("%s: mergeSourceCleanable(%q → %q) = %v, want %v",
+				c.name, c.source, c.receiver, got, c.want)
+		}
+	}
+}
+
+// A repo with no configured policy still gets the nudge for ordinary
+// branches — the filter must not fail closed on a nil config.
+func TestMergeSourceCleanable_NilConfigStillOffers(t *testing.T) {
+	if !mergeSourceCleanable(nil, "feat/x", "main") {
+		t.Error("nil cfg should not suppress the cleanup hint")
+	}
 }

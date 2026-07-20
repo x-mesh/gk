@@ -860,10 +860,15 @@ two indented hint lines to stderr:
 
 ```
   next: gk push --from <receiver>
-  also: gk branch delete <source> (fully merged)
+  also: gk branch clean — <source> is fully merged
 ```
 
-The cleanup hint is suppressed when source equals receiver. Hints render
+The cleanup hint is suppressed when source equals receiver, and when
+`<source>` is a protected branch (`branch.protected`, plus the resolved
+base branch) — being fully merged does not make trunk worth deleting.
+It points at `gk branch clean` rather than naming a per-branch delete
+verb, because gk has none; the merged source shows up as one of its
+candidates. Hints render
 in normal mode too; Easy Mode swaps the wording for a friendlier
 description with emoji. Pass `--no-easy` to disable Easy Mode rendering;
 the hints themselves still print using the normal-mode catalog.

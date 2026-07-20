@@ -373,7 +373,7 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 		return WithHint(err, hint)
 	}
 	if deps.ErrOut != nil {
-		renderMergeIntoNextHint(deps.ErrOut, source, flags.into)
+		renderMergeIntoNextHint(deps.ErrOut, deps.Config, source, flags.into)
 	}
 	return nil
 }
@@ -506,7 +506,7 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 
 	if deps.ErrOut != nil {
 		renderMergeSummary(ctx, deps.ErrOut, deps.Runner, receiverSHA, newSHA, source, receiver, flags)
-		renderMergeIntoNextHint(deps.ErrOut, source, receiver)
+		renderMergeIntoNextHint(deps.ErrOut, deps.Config, source, receiver)
 	}
 	return nil
 }
@@ -514,14 +514,30 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 // renderMergeIntoNextHint prints the post-merge next-step nudge for both
 // the bare and worktree paths of `gk merge --into <receiver>`. After a
 // successful merge the source branch is, by definition, an ancestor of
-// the receiver — so the cleanup hint is always applicable when source
-// differs from receiver.
-func renderMergeIntoNextHint(out io.Writer, source, receiver string) {
+// the receiver — so the cleanup hint applies whenever source differs from
+// receiver *and* deleting it would be allowed. A protected source (trunk
+// promoted into another trunk, say) is fully merged too, and nudging the
+// user to delete it contradicts their own config.
+//
+// The policy check lives here rather than in the easy package, which
+// renders hint text and holds no opinion about which branches may go.
+// mergeSourceCleanable decides whether the post-merge nudge should offer
+// to delete source. Being fully merged is not sufficient: a protected
+// source is merged too, and telling the user to delete it contradicts the
+// policy they configured — the same policy deleteBranchGuarded enforces.
+func mergeSourceCleanable(cfg *config.Config, source, receiver string) bool {
+	if source == "" || source == receiver {
+		return false
+	}
+	return !isProtectedBranchName(source, protectedBranchNames(cfg))
+}
+
+func renderMergeIntoNextHint(out io.Writer, cfg *config.Config, source, receiver string) {
 	e := EasyEngine()
 	if e == nil {
 		return
 	}
-	for _, line := range e.MergeIntoNextHint(receiver, source != receiver, source) {
+	for _, line := range e.MergeIntoNextHint(receiver, mergeSourceCleanable(cfg, source, receiver), source) {
 		if line == "" {
 			continue
 		}

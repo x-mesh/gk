@@ -430,7 +430,7 @@ func TestHintGenerator_MergeIntoNextHint(t *testing.T) {
 		if !strings.Contains(got[0], "push --from main") {
 			t.Fatalf("first should be push: %q", got[0])
 		}
-		if !strings.Contains(got[1], "branch delete feat/x") {
+		if !strings.Contains(got[1], "branch clean") {
 			t.Fatalf("second should be cleanup: %q", got[1])
 		}
 	})

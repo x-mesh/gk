@@ -305,13 +305,16 @@ var koMessages = map[string]map[Mode]string{
 		ModeNormal: "gk push --from %s",
 		ModeEasy:   "gk push --from %s",
 	},
+	// gk has no single-branch delete verb; `gk branch clean` is the real
+	// path and picks this branch up as a merged candidate. Keep exactly
+	// one %s per string — a second one leaks as `%!(EXTRA string=...)`.
 	"hint.merge.into.cleanup_source": {
-		ModeNormal: "also: gk branch delete %s (fully merged)",
-		ModeEasy:   "※ 정리: gk branch delete %s — 이미 머지된 브랜치",
+		ModeNormal: "also: gk branch clean — %s is fully merged",
+		ModeEasy:   "※ 정리: gk branch clean — %s는 이미 머지된 브랜치",
 	},
 	"hint.merge.into.cleanup_source.minimal": {
-		ModeNormal: "gk branch delete %s",
-		ModeEasy:   "gk branch delete %s",
+		ModeNormal: "gk branch clean  # %s",
+		ModeEasy:   "gk branch clean  # %s",
 	},
 
 	// ── Push summary ────────────────────────────────────────────────────

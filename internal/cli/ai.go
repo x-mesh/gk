@@ -399,19 +399,10 @@ func aiChatHistoryBudget(ai config.AIConfig) int {
 	return 32768
 }
 
-// aiCallContext bounds a single AI call so a command never hangs on a slow
-// provider (including a long fallback chain). Derives the deadline from
-// ai.chat.timeout (default 30s). The caller must defer the returned cancel.
-func aiCallContext(ctx context.Context, ai config.AIConfig) (context.Context, context.CancelFunc) {
-	d := aiCallTimeout(ai)
-	if d <= 0 {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, d)
-}
-
-// aiCallTimeout is the ai.chat.timeout bound as a duration, for callers that
-// hand the timeout to runAIQuery rather than deriving a context themselves.
+// aiCallTimeout is the ai.chat.timeout bound as a duration (default 30s).
+// Callers hand it to runAIQuery, which derives the bounded context itself
+// (see ai_query.go) — that central application replaced the per-call-site
+// context helper this used to sit next to.
 func aiCallTimeout(ai config.AIConfig) time.Duration {
 	return parseDurationOrDefault(ai.Chat.Timeout, 30*time.Second)
 }

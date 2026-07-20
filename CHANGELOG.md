@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.131.0] - 2026-07-20
+
 ### Added
 
 - **`gk local --all` — "이 머신에 갇힌 작업이 있나"를 저장소 전체에 묻는다.** 지금까지 `gk local`은 서 있는 브랜치만 봤는데, 정작 위험한 건 **한 번도 push되지 않아 어디서도 보이지 않는 브랜치**다. 그래서 깨끗한 trunk 위에서는 미push 브랜치 두 개와 stash가 옆에 앉아 있어도 "이상 없음"이라고 답했다. `--all`은 모든 로컬 브랜치와 worktree를 훑고 `branches[]` 분해를 덧붙이며, `clean`을 저장소 전체 판정으로 바꾼다. 새 `scope` 필드가 그 `clean`이 어떤 질문에 답한 것인지 밝히는데, 브랜치 하나만 본 clean은 나머지에 대해 아무 말도 하지 않기 때문이다. **확인하지 못한 것은 절대 clean이라 부르지 않는다** — 디스크에서 사라진 worktree나 status 실패는 `unknown`으로 표시되고 clean을 false로 끌어내린다. 같은 이유로 picker용 `loadWorktreeDirtyStates`를 재사용하지 않았다: 그쪽은 200ms에서 끊고 타임아웃을 clean으로 읽으며 untracked를 노이즈로 버리는데, 여기서는 그 untracked 파일이 바로 잃어버릴 작업이다. 미push 판정은 `@{upstream}` 대신 `--not --remotes`로 센다 — upstream이 없는 브랜치도 답을 받아야 하고, "어떤 리모트 ref에서든 닿는가"가 다른 머신이 그 작업을 볼 수 있는지를 결정하는 기준이다.

@@ -1601,7 +1601,7 @@ Alias: `gk lo`.
 ### Synopsis
 
 ```
-gk local [-n N] [--json]
+gk local [-n N] [--all] [--json]
 ```
 
 ### Flags
@@ -1609,7 +1609,35 @@ gk local [-n N] [--json]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-n`, `--limit` | `10` | Max commits/files to list per section (`0` = unlimited). |
+| `--all` | off | Scan every local branch and worktree instead of just the current branch. |
 | `--json` | off | Emit a structured report instead of the text view. |
+
+### `--all` — repo scope
+
+The default scope is the current branch, which **cannot answer "is any work stranded on this machine"**: a branch that was never pushed is invisible from where you stand, and from every other machine too. `--all` widens the scan to every local branch and every worktree.
+
+`--json` reports `scope` (`"branch"` or `"repo"`) so a caller knows what `clean` covers, and under `--all` adds a `branches[]` breakdown. `clean` becomes the repo-wide rollup: false if any branch has unpushed commits, any worktree is dirty, the stash is non-empty, or any branch's state could not be determined.
+
+Anything unverifiable is never reported clean. A branch whose worktree is missing from disk, or whose status failed, is marked `unknown: true` and forces `clean: false` — a reassuring answer that was never checked is worse than admitting the gap. For the same reason `--all` does not reuse the picker's dirty-state helper: that one caps itself at 200 ms and treats a timeout as clean, and it drops untracked files as noise. Here an untracked file *is* the stranded work.
+
+```bash
+# Before switching machines: is anything stuck here?
+gk local --all
+
+# One boolean for a script or a handoff gate
+gk local --all --json | jq .clean
+```
+
+```
+LOCAL  — 4 branch(es) scanned, repo-wide
+  cleanup-branch                     no upstream · 2 unpushed  (cleanup-branch)
+  develop                            1 unstaged  (gk)
+  wt/init-guards                     no upstream · 1 unpushed
+  (stash)                            1 entr(ies)
+  hint: push what should travel — gk push --set-upstream — before switching machines
+```
+
+Only branches with something stranded are listed; a roster of clean branches would bury the answer. `--json` still carries every branch.
 
 ### Unpushed resolution
 

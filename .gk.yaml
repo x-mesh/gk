@@ -1,6 +1,35 @@
 # Repo-local gk config for git-kit itself. Merges over the global
 # ~/.config/gk/config.yaml — only the keys below are overridden.
 
+# Pre-tag gate. Listing steps replaces the built-in set, so the three
+# defaults are repeated here.
+#
+# lint and test were added after golangci-lint sat red from v0.128.0
+# through v0.130.0 — three releases — without ship noticing. Nothing in
+# the pipeline looked: the built-in `commit-lint` checks the commit
+# *message*, and ship's watch follows the tag-triggered release workflow,
+# which stayed green while the branch `ci` workflow failed. A preflight
+# failure costs nothing (no tag exists yet); a red CI discovered after the
+# tag is public can only be remediated, never un-shipped.
+#
+# Cost on this repo: lint ~1s warm, test ~95s (internal/cli is ~85s of
+# it). Against a pipeline that already blocks minutes on the CI watch,
+# moving the same failures before the tag is worth the wall time.
+preflight:
+  steps:
+    - name: commit-lint
+      command: commit-lint
+    - name: branch-check
+      command: branch-check
+    - name: no-conflict
+      command: no-conflict
+    # Ordered cheapest-first so an obvious break fails in a second
+    # rather than after the full test run.
+    - name: lint
+      command: golangci-lint run
+    - name: test
+      command: go test ./...
+
 ship:
   # Run the post-tag pipeline. false returns right after the push and the
   # release goes out untracked; ship then prints the skipped commands.

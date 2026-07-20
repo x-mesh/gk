@@ -1096,8 +1096,9 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			Headers:        headers,
 			ColumnPriority: worktreeColumnPriority(),
 			Extras: []ui.TablePickerExtraKey{{
-				Key:  "g",
-				Help: "g toggle global",
+				Key:       "g",
+				FilterKey: "ctrl+g",
+				Help:      "g toggle global",
 				OnPress: func() ([]ui.PickerItem, []string, error) {
 					global = !global
 					rs2, gErr := loadRows()
@@ -1409,7 +1410,7 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 // the action menu — a second No-by-default prompt feels redundant.
 //
 // runner/w are interface-typed (not *ExecRunner/*cobra.Command) so the
-// flow is reusable outside the worktree TUI — `gk switch`'s d/D action
+// flow is reusable outside the worktree TUI — `gk switch`'s d action
 // redirects here when the targeted branch lives in another worktree.
 // `protected` is forwarded to the orphan-branch offer so a protected branch
 // is never casually -D'd; it is the caller's repo-correct list.
@@ -1527,6 +1528,11 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		head = br
 	}
 	inputs, err := runWorktreeAddTUI(ctx, head)
+	if errors.Is(err, errAddPickExisting) {
+		// The user chose "existing": resolve the branch (and the name it
+		// implies) through the picker instead of the form.
+		inputs, err = collectExistingBranchInputs(ctx, runner, cfg, os.Stderr)
+	}
 	if err != nil {
 		if errors.Is(err, errAddCancelled) {
 			return nil
@@ -1537,6 +1543,7 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 	createBranch := inputs.CreateBranch
 	branchName := inputs.BranchName
 	fromRef := inputs.FromRef
+	trackRef := inputs.TrackRef
 
 	resolved, err := resolveWorktreePath(ctx, runner, cfg, name)
 	if err != nil {
@@ -1588,13 +1595,27 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		}
 	}
 
+	// A remote-only pick has no local branch yet. Racing another process
+	// (or a fetch-and-checkout elsewhere) can create it between the pick
+	// and now; a plain checkout is then correct, not a duplicate create.
+	if trackRef != "" && branchExists(ctx, runner, branchName) {
+		trackRef = ""
+	}
+
 	gitArgs := []string{"worktree", "add"}
-	if createBranch {
+	switch {
+	case createBranch:
 		gitArgs = append(gitArgs, "-b", branchName, resolved)
 		if fromRef != "" {
 			gitArgs = append(gitArgs, fromRef)
 		}
-	} else {
+	case trackRef != "":
+		// Mirror what `gk sw` does for a remote row: materialise the local
+		// branch with its upstream wired up, in the same command that
+		// creates the worktree. Explicit --track beats git's DWIM, which
+		// is ambiguous when several remotes carry the same branch name.
+		gitArgs = append(gitArgs, "--track", "-b", branchName, resolved, trackRef)
+	default:
 		gitArgs = append(gitArgs, resolved, branchName)
 	}
 	if _, gitErr, err := runner.Run(ctx, gitArgs...); err != nil {
@@ -1602,8 +1623,9 @@ func worktreeTUIAdd(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		// an unexpected git failure can still leave a new branch behind.
 		// If we asked git to create the branch and it was left dangling
 		// (no worktree entry points at it), remove it so the user's
-		// next attempt is not blocked by a phantom branch.
-		if createBranch && branchExists(ctx, runner, branchName) && !branchInUse(ctx, runner, branchName) {
+		// next attempt is not blocked by a phantom branch. --track
+		// creates a branch too, so it needs the same cleanup.
+		if (createBranch || trackRef != "") && branchExists(ctx, runner, branchName) && !branchInUse(ctx, runner, branchName) {
 			_, _, _ = runner.Run(ctx, "branch", "-D", branchName)
 		}
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(gitErr)), err)

@@ -43,20 +43,37 @@ ship:
         gh release view "$TAG" -R x-mesh/gk --json isDraft,assets \
           -q 'select(.isDraft==false) | .assets | length' | grep -qE '^[1-9]'
 
+    # The cask is read through the contents API, not raw.githubusercontent.com:
+    # the raw CDN serves a cached copy for minutes after a push, which is
+    # exactly the window this check runs in. In the v0.130.0 release it
+    # reported the previous version long after the tap had already moved.
+    #
+    # No `gh` needed — plain curl against a public repo. A token is used when
+    # one is around (higher rate limit); `-H "Authorization:"` with an empty
+    # value is curl's way of *removing* the header, so the unauthenticated
+    # path sends no broken "Bearer " either.
     - name: tap-cask
       command: |
         V="$(git describe --tags --abbrev=0)"; V="${V#v}"
-        curl -fsSL https://raw.githubusercontent.com/x-mesh/homebrew-tap/main/Casks/gk.rb \
+        T="${GH_TOKEN:-$GITHUB_TOKEN}"
+        if [ -n "$T" ]; then AUTH="Authorization: Bearer $T"; else AUTH="Authorization:"; fi
+        curl -fsSL -H 'Accept: application/vnd.github.raw' -H "$AUTH" \
+          https://api.github.com/repos/x-mesh/homebrew-tap/contents/Casks/gk.rb \
           | grep -q "version \"$V\""
 
     # Cross-checks the tap's checksum against the published artifact, so a
     # stale or half-written cask fails here instead of at `brew install`.
+    # Same contents-API read as tap-cask, for the same cache reason — against
+    # the raw CDN this compared a fresh release to a stale cask and failed.
     - name: cdn-checksums
       command: |
         TAG="$(git describe --tags --abbrev=0)"
+        T="${GH_TOKEN:-$GITHUB_TOKEN}"
+        if [ -n "$T" ]; then AUTH="Authorization: Bearer $T"; else AUTH="Authorization:"; fi
         REL="$(curl -fsSL "https://github.com/x-mesh/gk/releases/download/$TAG/checksums.txt" \
           | awk '/gk_darwin_arm64\.tar\.gz/{print $1}')"
-        CASK="$(curl -fsSL https://raw.githubusercontent.com/x-mesh/homebrew-tap/main/Casks/gk.rb \
+        CASK="$(curl -fsSL -H 'Accept: application/vnd.github.raw' -H "$AUTH" \
+          https://api.github.com/repos/x-mesh/homebrew-tap/contents/Casks/gk.rb \
           | awk '/sha256 "/{s=$2} /gk_darwin_arm64\.tar\.gz/{gsub(/"/,"",s); print s; exit}')"
         if [ -z "$REL" ] || [ -z "$CASK" ]; then
           echo "could not read checksums (release=$REL cask=$CASK)" >&2

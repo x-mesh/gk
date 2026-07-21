@@ -354,8 +354,8 @@ func TestIsLowEntropySecret(t *testing.T) {
 		{"ghp_abcdefghij1234567890ABCDEFGHIJ123456", false}, // ~30 distinct
 	}
 	for _, tt := range tests {
-		if got := isLowEntropySecret(tt.value); got != tt.want {
-			t.Errorf("isLowEntropySecret(%q) = %v, want %v", tt.value, got, tt.want)
+		if got := IsLowEntropySecret(tt.value); got != tt.want {
+			t.Errorf("IsLowEntropySecret(%q) = %v, want %v", tt.value, got, tt.want)
 		}
 	}
 }

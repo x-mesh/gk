@@ -164,20 +164,55 @@ func renderPrivacyFindings(w io.Writer, findings []aicommit.RedactFinding) {
 		rows := byFile[fp]
 		fmt.Fprintf(w, "  %s\n", fp)
 		for _, r := range rows {
-			fmt.Fprintf(w, "    %s  %s:%d  pattern=%s  sample=%s\n",
-				r.f.Placeholder, fp, r.f.FileLine, displayPattern(r.f.Pattern), r.f.Original)
+			fmt.Fprintf(w, "    %s  %s:%d  pattern=%s  sample=%s%s\n",
+				r.f.Placeholder, fp, r.f.FileLine, displayPattern(r.f.Pattern), r.f.Original, untalliedNote(r.f))
 		}
 	}
 	if len(noFile) > 0 {
 		fmt.Fprintln(w, "  (no source file)")
 		for _, r := range noFile {
-			fmt.Fprintf(w, "    %s  payload-line=%d  pattern=%s  sample=%s\n",
-				r.f.Placeholder, r.f.Line, displayPattern(r.f.Pattern), r.f.Original)
+			fmt.Fprintf(w, "    %s  payload-line=%d  pattern=%s  sample=%s%s\n",
+				r.f.Placeholder, r.f.Line, displayPattern(r.f.Pattern), r.f.Original, untalliedNote(r.f))
 		}
 	}
-	fmt.Fprintln(w, stylizeHintLine("hint: edit the offending lines, narrow with --staged-only,"+
-		" raise ai.commit.privacy.max_secrets in .gk.yaml,"+
-		" or pass --skip-privacy to bypass the threshold (redaction still applies)"))
+	// Say which findings actually spent threshold budget. Without this the
+	// report reads as "N secrets" while the error names a smaller number, and
+	// the user cannot tell which lines they are being asked to look at.
+	if counted, skipped := tallySplit(findings); skipped > 0 {
+		fmt.Fprintf(w, "  counted %d of %d against the threshold (%d not counted: example/placeholder values and repeats of a value already counted; all findings above are still redacted)\n",
+			counted, counted+skipped, skipped)
+	}
+	fmt.Fprintln(w, stylizeHintLine("hint: review the counted lines first — narrow with --staged-only,"+
+		" or pass --skip-privacy for this run (redaction still applies)."+
+		" Raising ai.commit.privacy.max_secrets weakens the gate for every future commit"))
+}
+
+// untalliedNote marks a finding the threshold ignored, naming why.
+func untalliedNote(f aicommit.RedactFinding) string {
+	if !f.Untallied {
+		return ""
+	}
+	if f.Reason == "" {
+		return "  (not counted)"
+	}
+	return "  (not counted: " + f.Reason + ")"
+}
+
+// tallySplit reports how many secret findings spent threshold budget versus
+// how many were exempted. Path findings never count toward the secret
+// threshold, so they are excluded from both totals.
+func tallySplit(findings []aicommit.RedactFinding) (counted, skipped int) {
+	for _, f := range findings {
+		if f.Kind != "secret" {
+			continue
+		}
+		if f.Untallied {
+			skipped++
+			continue
+		}
+		counted++
+	}
+	return counted, skipped
 }
 
 func displayPattern(p string) string {

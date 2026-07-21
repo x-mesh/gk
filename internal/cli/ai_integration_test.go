@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -209,15 +210,14 @@ func TestIntegration_PrivacyGateAbortOnTooManySecrets(t *testing.T) {
 	fake.LocalityVal = provider.LocalityRemote
 	fake.SummarizeResponses = []provider.SummarizeResult{{Text: "should not reach"}}
 
-	// Build a diff with >10 secrets.
+	// Build a diff with >10 secrets. The values must be DISTINCT and
+	// high-entropy: the gate's threshold counts distinct real candidates, so a
+	// repeated value or a monotonous fake (AKIAAAAA…) is deliberately exempt
+	// and would never reach the abort no matter how many lines carried it.
 	var sb strings.Builder
 	sb.WriteString("diff --git a/secrets.go b/secrets.go\n")
 	for i := 0; i < 12; i++ {
-		sb.WriteString("+api_key = \"AKIA")
-		for j := 0; j < 16; j++ {
-			sb.WriteByte('A' + byte(i))
-		}
-		sb.WriteString("\"\n")
+		fmt.Fprintf(&sb, "+api_key = \"AKIA%02dQX7RT9VB2ZN6KP\"\n", i)
 	}
 	secretDiff := sb.String()
 

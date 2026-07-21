@@ -457,3 +457,112 @@ func TestPropertySecretThreshold(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Threshold tally: distinct real candidates only
+// ---------------------------------------------------------------------------
+
+// TestRedactDocExampleKeyNotTallied reproduces the aic-rust report: a repo with
+// redaction tests carries AWS's published example key in several fixtures, and
+// counting each occurrence saturated the threshold with zero real credentials.
+func TestRedactDocExampleKeyNotTallied(t *testing.T) {
+	const exampleKey = "AKIAIOSFODNN7EXAMPLE"
+	var lines []string
+	for i := 0; i < 6; i++ {
+		lines = append(lines, fmt.Sprintf("    assert!(redacted.contains(%q)); // example fixture %d", exampleKey, i))
+	}
+	payload := strings.Join(lines, "\n")
+
+	redacted, findings, err := Redact(payload, PrivacyGateOptions{})
+	if err != nil {
+		t.Fatalf("documented example key must not trip the threshold: %v", err)
+	}
+	if strings.Contains(redacted, exampleKey) {
+		t.Error("exempting a value from the tally must not stop it being redacted")
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected the example key to still be reported as a finding")
+	}
+	for _, f := range findings {
+		if !f.Untallied {
+			t.Errorf("finding %s should be untallied, got tallied", f.Placeholder)
+		}
+		if f.Reason == "" {
+			t.Errorf("finding %s is untallied but names no reason", f.Placeholder)
+		}
+	}
+}
+
+// TestRedactDuplicateValueTalliedOnce pins the semantic the threshold is meant
+// to express: one value in twelve places is one secret, not twelve.
+func TestRedactDuplicateValueTalliedOnce(t *testing.T) {
+	const val = "sk_live_9f3aQx72Lm4Rt8Vb1Zn6"
+	var lines []string
+	for i := 0; i < 12; i++ {
+		lines = append(lines, fmt.Sprintf("api_key = %q", val))
+	}
+	payload := strings.Join(lines, "\n")
+
+	redacted, findings, err := Redact(payload, PrivacyGateOptions{})
+	if err != nil {
+		t.Fatalf("one repeated value must not exceed the threshold: %v", err)
+	}
+	if strings.Contains(redacted, val) {
+		t.Error("redacted output still contains the secret value")
+	}
+	tallied := 0
+	for _, f := range findings {
+		if !f.Untallied {
+			tallied++
+			continue
+		}
+		if f.Reason != "duplicate" {
+			t.Errorf("repeat of a counted value should read reason=duplicate, got %q", f.Reason)
+		}
+	}
+	if tallied != 1 {
+		t.Errorf("tallied = %d, want 1 (the first occurrence)", tallied)
+	}
+	if len(findings) != 12 {
+		t.Errorf("findings = %d, want 12 — every occurrence stays reported", len(findings))
+	}
+}
+
+// TestRedactDistinctRealSecretsStillAbort guards the other direction: the
+// exemptions must not become a hole that lets genuine material through.
+func TestRedactDistinctRealSecretsStillAbort(t *testing.T) {
+	var lines []string
+	for i := 0; i < 11; i++ {
+		lines = append(lines, fmt.Sprintf("api_key = \"sk_live_%02dQx72Lm4Rt8Vb1Zn6Kp\"", i))
+	}
+	payload := strings.Join(lines, "\n")
+
+	_, _, err := Redact(payload, PrivacyGateOptions{})
+	if err == nil {
+		t.Fatal("11 distinct real-looking secrets must still abort")
+	}
+	if !strings.Contains(err.Error(), "11 secrets") {
+		t.Errorf("error should tally 11 distinct secrets, got: %v", err)
+	}
+}
+
+// TestRedactPEMExemptFromPlaceholderHeuristic keeps the carve-out the push
+// scanner also makes: a PEM header is an unambiguous signature, so a nearby
+// "example" must not stop it counting.
+func TestRedactPEMExemptFromPlaceholderHeuristic(t *testing.T) {
+	payload := `# example key material for the docs
+-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAx3f8Kq2vL9nR4tB7wZ1cY6mP0sJ5hG3dV8aN2eQ7uT4rX9oI
+-----END RSA PRIVATE KEY-----`
+
+	_, findings, err := Redact(payload, PrivacyGateOptions{})
+	if err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(findings))
+	}
+	if findings[0].Untallied {
+		t.Error("a PEM block must count toward the threshold even beside the word example")
+	}
+}

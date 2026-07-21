@@ -37,6 +37,13 @@ type RedactFinding struct {
 	File        string `json:"file,omitempty"`      // resolved source file (may be "")
 	FileLine    int    `json:"file_line,omitempty"` // 1-based line within File
 	Pattern     string `json:"pattern,omitempty"`   // regex/source that matched
+	// Untallied marks a finding that was redacted but deliberately left out
+	// of the abort threshold: a documented example value, an obvious
+	// placeholder, or a repeat of a value already counted. Reason names which.
+	// The finding is still reported and still redacted — this only records
+	// that it did not spend threshold budget.
+	Untallied bool   `json:"untallied,omitempty"`
+	Reason    string `json:"reason,omitempty"` // "placeholder" | "duplicate"
 }
 
 // namedPattern pairs a regex with a stable label so findings can carry
@@ -77,10 +84,58 @@ var builtinMultiLinePatterns = []namedPattern{
 // file boundaries.
 var payloadFileHeaderRE = secrets.PayloadFileHeaderRE
 
+// secretCounter separates two things the gate used to conflate: the running
+// [SECRET_N] label, which advances on every redaction so each replacement in
+// the payload stays individually traceable, and the tally compared against
+// MaxSecrets.
+//
+// The tally counts DISTINCT, non-placeholder values, because that is what the
+// threshold is actually asking — "how much unreviewed credential material is
+// in this payload". One value repeated six times is one secret in six places,
+// and a documented example key is not a secret at all. Counting matches
+// instead let false positives spend the budget, which is the failure that
+// matters: a saturated threshold blocks the commit AND teaches the user to
+// reach for --skip-privacy or a higher max_secrets, disarming the gate against
+// the real credential it exists to catch.
+type secretCounter struct {
+	labels  int             // next [SECRET_N] index — one per match
+	tally   int             // threshold-relevant count — distinct real candidates
+	counted map[string]bool // values already tallied
+}
+
+func newSecretCounter() *secretCounter {
+	return &secretCounter{counted: map[string]bool{}}
+}
+
+// next assigns the label for one match and decides whether it spends threshold
+// budget. value is the credential itself (not the surrounding `key = "…"`),
+// and line is the full source line — placeholder giveaways usually sit beside
+// the value rather than inside it. exempt skips the placeholder check for
+// kinds that carry their own unambiguous signature (PEM blocks).
+func (c *secretCounter) next(line, value string, exempt bool) (label int, untallied bool, reason string) {
+	c.labels++
+	switch {
+	case !exempt && (secrets.IsPlaceholderLine(line) || secrets.IsLowEntropySecret(value)):
+		return c.labels, true, "placeholder"
+	case c.counted[value]:
+		return c.labels, true, "duplicate"
+	}
+	c.counted[value] = true
+	c.tally++
+	return c.labels, false, ""
+}
+
 // Redact scans payload for deny_paths matches and secret patterns,
 // replacing each with a numbered placeholder. Returns the redacted
 // payload, a slice of findings, and an error if the secret count
 // exceeds MaxSecrets.
+//
+// Every match is redacted, including the ones exempted from the threshold:
+// the gate's job is to keep raw values out of a remote provider's payload,
+// and the placeholder heuristic reads the whole line, so it is deliberately
+// broader than "definitely not a credential". Redacting a documented example
+// key costs nothing; forwarding a real one that happened to sit next to the
+// word "example" does not.
 //
 // When the threshold is exceeded, the returned findings slice is still
 // populated so callers can render a detailed report. Set MaxSecrets to
@@ -98,17 +153,20 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 	allPatterns := append(builtinSecretPatterns[:len(builtinSecretPatterns):len(builtinSecretPatterns)], custom...)
 
 	var findings []RedactFinding
-	secretIdx, pathIdx := 0, 0
+	counter := newSecretCounter()
+	pathIdx := 0
 
 	// Phase 1: multi-line patterns (e.g. PEM blocks) on the full payload.
+	// A PEM header is an unambiguous signature, so these are exempt from the
+	// placeholder heuristic — the same carve-out the push/ship scanner makes.
 	for _, pat := range builtinMultiLinePatterns {
 		matches := pat.re.FindAllString(payload, -1)
 		for _, m := range matches {
 			if !strings.Contains(payload, m) {
 				continue
 			}
-			secretIdx++
-			placeholder := fmt.Sprintf("[SECRET_%d]", secretIdx)
+			idx, untallied, reason := counter.next(m, m, true)
+			placeholder := fmt.Sprintf("[SECRET_%d]", idx)
 			// Determine the line number of the match start.
 			lineNum := strings.Count(payload[:strings.Index(payload, m)], "\n") + 1
 			payload = strings.Replace(payload, m, placeholder, 1)
@@ -118,6 +176,8 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 				Placeholder: placeholder,
 				Line:        lineNum,
 				Pattern:     pat.name,
+				Untallied:   untallied,
+				Reason:      reason,
 			}
 			findings = append(findings, f)
 		}
@@ -148,11 +208,11 @@ func Redact(payload string, opts PrivacyGateOptions) (string, []RedactFinding, e
 		}
 
 		// Check secret patterns (built-in + custom).
-		lines[i], findings, secretIdx = redactSecrets(lines[i], lineNum, allPatterns, findings, secretIdx, currentFile, currentFileLine)
+		lines[i], findings = redactSecrets(lines[i], lineNum, allPatterns, findings, counter, currentFile, currentFileLine)
 
 		// Abort early if too many secrets.
-		if maxSecrets >= 0 && secretIdx > maxSecrets {
-			return "", findings, fmt.Errorf("aicommit: privacy gate: %d secrets detected (threshold %d) — aborting", secretIdx, maxSecrets)
+		if maxSecrets >= 0 && counter.tally > maxSecrets {
+			return "", findings, fmt.Errorf("aicommit: privacy gate: %d secrets detected (threshold %d) — aborting", counter.tally, maxSecrets)
 		}
 	}
 
@@ -232,14 +292,22 @@ func redactPaths(line string, lineNum int, denyPaths []string, findings []Redact
 }
 
 // redactSecrets replaces secret pattern matches with [SECRET_N] placeholders.
-func redactSecrets(line string, lineNum int, patterns []namedPattern, findings []RedactFinding, idx int, file string, fileLine int) (string, []RedactFinding, int) {
+//
+// The threshold decision needs the credential alone, so matches are taken as
+// submatches and reduced with secrets.SecretValue: these patterns capture the
+// value separately from the `api_key = ` boilerplate, and weighing the whole
+// match would both defeat the entropy check and make two occurrences of one
+// key look distinct because their keyword spelling differed.
+func redactSecrets(line string, lineNum int, patterns []namedPattern, findings []RedactFinding, counter *secretCounter, file string, fileLine int) (string, []RedactFinding) {
+	original := line
 	for _, pat := range patterns {
-		matches := pat.re.FindAllString(line, -1)
-		for _, m := range matches {
+		matches := pat.re.FindAllStringSubmatch(line, -1)
+		for _, sm := range matches {
+			m := sm[0]
 			if !strings.Contains(line, m) {
 				continue // already replaced by a previous pattern
 			}
-			idx++
+			idx, untallied, reason := counter.next(original, secrets.SecretValue(sm), false)
 			placeholder := fmt.Sprintf("[SECRET_%d]", idx)
 			line = strings.Replace(line, m, placeholder, 1)
 			findings = append(findings, RedactFinding{
@@ -250,10 +318,12 @@ func redactSecrets(line string, lineNum int, patterns []namedPattern, findings [
 				File:        file,
 				FileLine:    fileLine,
 				Pattern:     pat.name,
+				Untallied:   untallied,
+				Reason:      reason,
 			})
 		}
 	}
-	return line, findings, idx
+	return line, findings
 }
 
 // extractPathTokens splits a line into tokens that look like file paths.

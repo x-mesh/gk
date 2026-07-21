@@ -74,18 +74,18 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 		}
 		for _, p := range BuiltinPatterns {
 			if sm := p.Regex.FindStringSubmatch(line); sm != nil {
-				val := secretValue(sm)
+				val := SecretValue(sm)
 				// Drop fixture/example credentials. Applied to every kind
 				// except private-key, whose PEM header is an unambiguous
-				// signature with no value to weigh. isPlaceholder catches a
-				// line carrying example/dummy/test words — AWS docs ship
+				// signature with no value to weigh. IsPlaceholderLine catches
+				// a line carrying example/dummy/test words — AWS docs ship
 				// AKIAIOSFODNN7EXAMPLE, and a ghp_ token sitting next to
-				// "example" is fixture data; isLowEntropySecret catches
+				// "example" is fixture data; IsLowEntropySecret catches
 				// monotonous fakes like ghp_0000…0000 that name no such word
 				// but cannot be a real high-entropy token. Without this, every
 				// fixed-prefix kind (github-token, openai-key, …) flagged its
 				// own placeholders.
-				if p.Kind != "private-key" && (isPlaceholder(line) || isLowEntropySecret(val)) {
+				if p.Kind != "private-key" && (IsPlaceholderLine(line) || IsLowEntropySecret(val)) {
 					continue
 				}
 				out = append(out, newFinding(p.Kind, i+1, header, curFile, val))
@@ -97,7 +97,7 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 				if len(label) > 12 {
 					label = label[:12]
 				}
-				out = append(out, newFinding("custom-"+strings.TrimSpace(label), i+1, header, curFile, secretValue(sm)))
+				out = append(out, newFinding("custom-"+strings.TrimSpace(label), i+1, header, curFile, SecretValue(sm)))
 			}
 		}
 	}
@@ -117,14 +117,18 @@ func newFinding(kind string, blobLine, header int, file, match string) Finding {
 	return Finding{Kind: kind, Line: blobLine, File: file, FileLine: fileLine, Sample: mask(match)}
 }
 
-// secretValue returns the substring worth masking for display. Patterns
+// SecretValue returns the substring worth masking for display. Patterns
 // like generic-secret (group 1 = keyword, group 2 = value) or aws-secret-key
 // (group 1 = value) capture the credential separately from surrounding
 // boilerplate; we mask the last non-empty capture group so the sample shows
 // the value's prefix (e.g. "dev-****") instead of the keyword ("secr****"),
 // which is what a reader needs to judge a false positive. Patterns with no
 // capture groups fall back to the full match.
-func secretValue(sm []string) string {
+//
+// Exported so the aicommit privacy gate identifies the credential inside its
+// own (differently-grouped) patterns the same way, rather than weighing the
+// whole `key = "value"` match as if it were the secret.
+func SecretValue(sm []string) string {
 	for i := len(sm) - 1; i >= 1; i-- {
 		if sm[i] != "" {
 			return sm[i]
@@ -149,10 +153,16 @@ var placeholderKeywords = []string{
 // tokens before matching against placeholderKeywords.
 var placeholderSeps = strings.NewReplacer("-", "", "_", "")
 
-// isPlaceholder returns true when the line contains an example/placeholder
+// IsPlaceholderLine returns true when the line contains an example/placeholder
 // value (example/dummy/test/changeme/…). Applied to every kind except
 // private-key.
-func isPlaceholder(line string) bool {
+//
+// Judged on the whole LINE, not the value alone, because the giveaway usually
+// sits beside the credential — a comment, a variable name, an assert. That
+// breadth is why callers that BLOCK on a hit (the push/ship scanner) drop the
+// finding outright, while callers that merely REDACT (the aicommit privacy
+// gate) keep redacting and only exempt the value from their abort threshold.
+func IsPlaceholderLine(line string) bool {
 	norm := placeholderSeps.Replace(strings.ToLower(line))
 	for _, kw := range placeholderKeywords {
 		if strings.Contains(norm, kw) {
@@ -169,7 +179,7 @@ func isPlaceholder(line string) bool {
 // judged, so the distinct-rune floor never trips a real key: any real base62
 // token that long clears 8 distinct characters with overwhelming probability,
 // while reproduction-by-hand fakes do not.
-func isLowEntropySecret(value string) bool {
+func IsLowEntropySecret(value string) bool {
 	if len(value) < 20 {
 		return false
 	}
@@ -206,7 +216,7 @@ func MaskLine(line string) string {
 	out := line
 	for _, p := range BuiltinPatterns {
 		out = p.Regex.ReplaceAllStringFunc(out, func(m string) string {
-			v := secretValue(p.Regex.FindStringSubmatch(m))
+			v := SecretValue(p.Regex.FindStringSubmatch(m))
 			if v == "" || v == m {
 				return mask(m)
 			}

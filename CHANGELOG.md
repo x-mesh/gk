@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **며칠 띄워 둔 `gk watch`가 파일 디스크립터를 계속 쌓아 프로세스 한도를 잠식하던 문제.** 두 갈래로 샜다. 하나는 **분배** 쪽 — 활성 worktree n개에 예산을 나누면서 최소 64디렉터리 floor를 보장했는데, floor는 정의상 예산을 무시하므로 worktree가 늘어날수록 합계가 프로세스 몫을 넘겼다. 다른 하나는 **회계** 쪽 — watcher는 시작할 때 트리를 걸어 상한을 지켰지만, 시작한 뒤 새로 생긴 디렉터리는 아무 비용도 물지 않고 그대로 등록했다. 빌드 산출물이나 캐시가 계속 만들어지는 저장소에서는 시작 시점엔 상한 안이던 watcher가 실행 중에 조용히 자란다. 두 구멍이 겹쳐 장기 세션 하나가 디스크립터를 만 단위로 물고 있었다. 이제 할당은 예산이 허용하는 수만큼의 worktree만 고른다 — watcher 하나가 최소 1단위를 쓰므로 그보다 많이 선택하는 건 처음부터 지킬 수 없는 약속이다. 런타임에 생긴 서브트리는 **시작 때와 똑같은 상한에 과금되고** 같은 skip 규칙(중첩 `.git`, gitignore)을 적용받는다 — 갓 만들어진 부모는 Create 이벤트가 처리되기도 전에 이미 무시할 자식을 품고 있을 수 있다. 상한을 넘긴 디렉터리는 watcher를 죽이지 않고 그 아래만 heartbeat 폴링에 맡긴다: 부분 커버리지가 커버리지 없음보다 낫다. EMFILE/ENFILE만은 다르게 다룬다 — 그 시점엔 **이미 쥐고 있는 디스크립터가 나머지 전부를 굶기는 원인**이므로, 반쯤 자란 watcher를 붙들지 않고 통째로 놓아 준 뒤 그 트리 전체를 폴링으로 내린다. dashboard 푸터는 그 강등을 눈에 보이게 만든다 — `watch 3/7 · polling fallback · budget …`처럼 감시 중인 수와 자격 있는 수를 함께 적는다. 그전에는 "fs events" 한 줄뿐이라 실제로 몇 개가 감시되는지 알 수 없었고, 조용한 강등은 "이벤트가 안 온다"로만 보였다. 마지막으로 비-TTY `gk status --watch`가 닫힌 fsnotify 채널에서 무한히 수신하며 CPU를 태우던 자리도 함께 막았다 — watcher가 스스로 물러난 직후가 정확히 그 조건이다.
+- **에이전트 계약이 `git show`까지 git-kit으로 갈아타라는 뜻으로 읽히던 문제(v25), 그리고 상한 없이 매달릴 수 있던 PreToolUse 훅.** 계약에는 "raw git 대신 git-kit verb를 쓰라"만 적혀 있어서, 대응하는 verb가 애초에 없는 **객체 조회까지** 규칙 적용 대상으로 읽혔다. 그 결과 에이전트가 `git show <sha>`를 `gk context`로 대체하려다 답을 얻지 못하는 일이 생겼다 — `gk context`는 orientation 수집기이지 객체 조회기가 아니다. v25 블록은 대응 verb가 없을 때 raw git이 정답임을 명시하고, `git show <object>`와 임의 `git log` 형태를 그 예로 못박는다. 함께 설치되는 PreToolUse 훅 항목에 5초 `timeout`을 넣었다 — UserPromptSubmit 쪽에만 걸려 있었는데, 정작 도구 호출마다 발화하는 쪽은 상한이 없어서 훅이 멈추면 에이전트도 같이 멈췄다.
+
 ## [0.131.0] - 2026-07-20
 
 ### Added

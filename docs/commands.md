@@ -2780,6 +2780,10 @@ fleet:
 
 `j`/`k` (or ↓/↑) move the cursor · `enter` cycles the cursor panel (status fields → that worktree's own live change feed → off; the fields view shows recent events and, for a land-ready branch, the suggested `gk worktree remove`) · `w` zooms into the selected worktree's live feed **in place** — the embedded `gk status --watch` view, where `esc` (or `w`) pops back to the table, `[` / `]` hop to the previous/next worktree, and `q` quits; fleet keeps gathering in the background so the table is fresh the moment you pop back · `e` toggles the change feed · `f` cycles the view filter (all→active→busy→stuck; multi-repo starts on active) · `s` cycles the sort (default→activity→status) · `r` refreshes now · `q` (or esc) quits. In multi-repo mode `space` folds/unfolds a repo group (clean repos start folded), and `enter` cycles the same cursor panel for worktree rows.
 
+### Watcher allocation
+
+Filesystem watchers cost descriptors, so they are a finite, process-wide budget rather than something every worktree gets. Active worktrees (plus the zoomed one, which you are staring at) are granted watchers up to that budget; the rest — and any subtree that outgrows its share while watch is running — still refresh on the heartbeat poll, so a shortage degrades the *cadence*, never the data. The footer states the split: `watch <watched>/<eligible> · budget <used>/<total>`, with `polling fallback` when an eligible worktree has no watcher and `saturated` when demand exceeds the budget outright. On descriptor exhaustion (`EMFILE`/`ENFILE`) a watcher releases everything it holds and its worktree drops to polling — the descriptors it was holding are what starves the rest of the process.
+
 With `--json` / `GK_AGENT=1` the result is an array of `{repo, repo_root, path, branch, current, ahead, behind, dirty, status, last_change, files, added, removed, …}` (one snapshot, no polling; `added`/`removed` are 0 under `--feed-stats=false`). A non-TTY shell (pipe/redirect/CI) prints a static one-shot table — grouped by repo in multi-repo mode — instead of starting the interactive program.
 
 ---

@@ -58,7 +58,7 @@ func TestRewriteRebaseTodoMissingPrepared(t *testing.T) {
 func newRebaseCmd(t *testing.T, repoDir string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	out, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
-	cmd := &cobra.Command{Use: "rebase", Args: cobra.NoArgs, RunE: runRebasePlan, SilenceUsage: true, SilenceErrors: true}
+	cmd := &cobra.Command{Use: "rebase", Args: rebasePlanArgs, RunE: runRebasePlan, SilenceUsage: true, SilenceErrors: true}
 	cmd.Flags().String("plan", "", "")
 	cmd.Flags().Bool("plan-template", false, "")
 	cmd.Flags().String("onto", "", "")
@@ -130,6 +130,68 @@ func TestRebasePlanTemplate(t *testing.T) {
 	}
 	if tpl.Commits[0].Subject != "feat: one" {
 		t.Errorf("subject = %q, want %q", tpl.Commits[0].Subject, "feat: one")
+	}
+}
+
+func TestRebasePlanRoundTripsTemplateOntoWithoutFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	base := repo.RunGit("rev-parse", "HEAD")
+	repo.WriteFile("a.txt", "one\n")
+	c1 := repo.Commit("feat: one")
+
+	plan, err := json.Marshal(rebaseTemplateJSON{
+		Schema:  1,
+		Onto:    base,
+		Commits: []rebasePlanEntry{{Action: "pick", Commit: c1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevDry := flagDryRun
+	flagDryRun = true
+	t.Cleanup(func() { flagDryRun = prevDry })
+	prevJSON := flagJSON
+	flagJSON = true
+	t.Cleanup(func() { flagJSON = prevJSON })
+	cmd, out, _ := newRebaseCmd(t, repo.Dir)
+	cmd.SetIn(bytes.NewReader(plan))
+	cmd.SetArgs([]string{"--plan", "-"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("round-trip plan: %v", err)
+	}
+	var result rebaseResultJSON
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, out.String())
+	}
+	if result.Onto != base {
+		t.Errorf("result onto = %q, want %q", result.Onto, base)
+	}
+}
+
+func TestRebasePlanRejectsConflictingOnto(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	base := repo.RunGit("rev-parse", "HEAD")
+	repo.WriteFile("other.txt", "other\n")
+	other := repo.Commit("other base")
+	plan := `{"onto":"` + base + `","commits":[{"action":"pick","commit":"deadbeef"}]}`
+	cmd, _, _ := newRebaseCmd(t, repo.Dir)
+	cmd.SetIn(strings.NewReader(plan))
+	cmd.SetArgs([]string{"--plan", "-", "--onto", other})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disagrees with plan onto") {
+		t.Fatalf("want conflicting onto error, got %v", err)
+	}
+}
+
+func TestRebasePlanRangeArgumentHasOntoHint(t *testing.T) {
+	cmd, _, _ := newRebaseCmd(t, t.TempDir())
+	cmd.SetArgs([]string{"--plan-template", "base..HEAD"})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(HintFrom(err), "--onto <base>") {
+		t.Fatalf("want --onto hint, got %v", err)
 	}
 }
 

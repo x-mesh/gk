@@ -190,7 +190,7 @@ func runAgentsHookRun(cmd *cobra.Command, _ []string) error {
 	tail, nudge := hookTailAndNudge(data, command, res.Covered)
 	hintSeen := res.Covered && len(tail) > 0 && bytes.Contains(tail, []byte(hookHintMarker(res)))
 	decision, reason, addl := hookDecide(mode, res, nudge, hintSeen)
-	if decision == "" {
+	if decision == "" && addl == "" {
 		return nil // nothing to say → defer to the normal permission flow
 	}
 	return emitHookDecision(cmd.OutOrStdout(), decision, reason, addl)
@@ -229,10 +229,10 @@ func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.Co
 		return "deny", hookDenyReason(res, nudge), ""
 	}
 	if nudge != nil {
-		return "defer", "", hookNoteText(res, nudge)
+		return "", "", hookNoteText(res, nudge)
 	}
 	if res.Covered && !hintSeen {
-		return "defer", "", hookNoteText(res, nil)
+		return "", "", hookNoteText(res, nil)
 	}
 	return "", "", ""
 }
@@ -403,13 +403,15 @@ func hookHintMarker(res sessionaudit.HintResult) string {
 	return fmt.Sprintf("use %s instead of raw git.", strings.Join(res.CoveredBy, " / "))
 }
 
-// emitHookDecision writes the Claude Code PreToolUse decision JSON to stdout.
-// permissionDecision "deny" blocks with the reason; "defer" leaves the normal
-// flow intact and only injects additionalContext for the agent to read.
+// emitHookDecision writes the Claude Code PreToolUse output JSON to stdout.
+// Only deny carries permissionDecision: an advisory must not trigger a
+// permission flow, especially in a headless/background agent. Its
+// additionalContext is enough to surface the guidance while allowing the
+// command to proceed.
 func emitHookDecision(w io.Writer, decision, reason, additionalContext string) error {
 	type spec struct {
 		HookEventName            string `json:"hookEventName"`
-		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecision       string `json:"permissionDecision,omitempty"`
 		PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
 		AdditionalContext        string `json:"additionalContext,omitempty"`
 	}

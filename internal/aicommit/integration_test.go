@@ -113,7 +113,7 @@ func TestIntegrationAbortRestoresHEADFromBackupRef(t *testing.T) {
 	}
 
 	// Reset the runner and invoke AbortRestore — it should write a safety-net
-	// ref at current HEAD, then execute `git reset --hard <ref>`.
+	// ref at current HEAD, then execute `git reset --mixed <ref>`.
 	fake2 := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
@@ -130,12 +130,12 @@ func TestIntegrationAbortRestoresHEADFromBackupRef(t *testing.T) {
 	}
 	var sawReset bool
 	for _, c := range fake2.Calls {
-		if c.Args[0] == "reset" && c.Args[1] == "--hard" {
+		if c.Args[0] == "reset" && c.Args[1] == "--mixed" {
 			sawReset = true
 		}
 	}
 	if !sawReset {
-		t.Errorf("abort did not reset --hard: %+v", fake2.Calls)
+		t.Errorf("abort did not reset --mixed: %+v", fake2.Calls)
 	}
 }
 

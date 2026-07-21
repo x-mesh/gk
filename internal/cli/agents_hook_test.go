@@ -52,10 +52,11 @@ func TestAgentsHookRun_Decisions(t *testing.T) {
 		t.Errorf("deny reason missing suggestion: %s", out)
 	}
 
-	// Covered raw git, warn mode → defer with additionalContext, never denies.
+	// Covered raw git, warn mode → additionalContext only, never enters a
+	// permission flow (background agents cannot answer one).
 	out = hookRunOutput(t, `{"tool_name":"Bash","tool_input":{"command":"git add ."}}`, true)
-	if gjson.Get(out, "hookSpecificOutput.permissionDecision").String() != "defer" {
-		t.Errorf("warn decision = %q, want defer: %s", gjson.Get(out, "hookSpecificOutput.permissionDecision").String(), out)
+	if gjson.Get(out, "hookSpecificOutput.permissionDecision").Exists() {
+		t.Errorf("warn must omit permissionDecision: %s", out)
 	}
 	if !strings.Contains(gjson.Get(out, "hookSpecificOutput.additionalContext").String(), "git-kit commit") {
 		t.Errorf("warn context missing suggestion: %s", out)
@@ -108,9 +109,9 @@ func TestHookDecide(t *testing.T) {
 		hintSeen     bool
 		wantDecision string
 	}{
-		{"warn/single", hookModeWarn, covered, nil, false, "defer"},
-		{"warn/reprobe", hookModeWarn, covered, nudge, false, "defer"},
-		{"collapse/single-advisory", hookModeCollapse, covered, nil, false, "defer"},
+		{"warn/single", hookModeWarn, covered, nil, false, ""},
+		{"warn/reprobe", hookModeWarn, covered, nudge, false, ""},
+		{"collapse/single-advisory", hookModeCollapse, covered, nil, false, ""},
 		{"collapse/reprobe-denied", hookModeCollapse, covered, nudge, false, "deny"},
 		{"block/single-denied", hookModeBlock, covered, nil, false, "deny"},
 		{"block/reprobe-denied", hookModeBlock, covered, nudge, false, "deny"},
@@ -118,7 +119,7 @@ func TestHookDecide(t *testing.T) {
 		// hintSeen dedupes only the hint-only advisory; nudges and denies are
 		// unaffected.
 		{"warn/hint-seen-silent", hookModeWarn, covered, nil, true, ""},
-		{"warn/hint-seen-nudge-still-fires", hookModeWarn, covered, nudge, true, "defer"},
+		{"warn/hint-seen-nudge-still-fires", hookModeWarn, covered, nudge, true, ""},
 		{"collapse/hint-seen-silent", hookModeCollapse, covered, nil, true, ""},
 		{"block/hint-seen-still-denies", hookModeBlock, covered, nil, true, "deny"},
 	}
@@ -133,13 +134,12 @@ func TestHookDecide(t *testing.T) {
 				if reason == "" || addl != "" {
 					t.Errorf("deny must carry reason, no additionalContext: reason=%q addl=%q", reason, addl)
 				}
-			case "defer":
-				if addl == "" || reason != "" {
-					t.Errorf("defer must carry additionalContext, no reason: reason=%q addl=%q", reason, addl)
-				}
 			case "":
-				if reason != "" || addl != "" {
-					t.Errorf("no-op must be empty: reason=%q addl=%q", reason, addl)
+				if tc.res.Covered && !tc.hintSeen && addl == "" {
+					t.Errorf("advisory must carry additionalContext: reason=%q addl=%q", reason, addl)
+				}
+				if reason != "" {
+					t.Errorf("advisory/no-op must not carry a reason: reason=%q addl=%q", reason, addl)
 				}
 			}
 		})
@@ -156,11 +156,11 @@ func TestAgentsHookRun_CollapseModeDeniesReprobe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A lone covered command in collapse mode is advisory (defer), not blocked —
+	// A lone covered command in collapse mode is advisory, not blocked —
 	// a one-off `git status` must stay cheap.
 	single := `{"tool_name":"Bash","tool_input":{"command":"git status --short"}}`
-	if out := hookRunOutputMode(t, single, hookModeCollapse); gjson.Get(out, "hookSpecificOutput.permissionDecision").String() != "defer" {
-		t.Errorf("collapse mode, lone command should defer, got: %s", out)
+	if out := hookRunOutputMode(t, single, hookModeCollapse); gjson.Get(out, "hookSpecificOutput.permissionDecision").Exists() {
+		t.Errorf("collapse mode, lone command should omit permissionDecision, got: %s", out)
 	}
 
 	// The second same-group probe (pending git diff --stat continues the context
@@ -225,8 +225,8 @@ func TestAgentsHookRun_NoRetryOnSettledTranscript(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > hookRaceRetryDelay {
 		t.Errorf("settled transcript should skip retry entirely, took %v", elapsed)
 	}
-	if got := gjson.Get(out, "hookSpecificOutput.permissionDecision").String(); got != "defer" {
-		t.Fatalf("lone covered command should advise, got decision=%q out=%s", got, out)
+	if got := gjson.Get(out, "hookSpecificOutput.permissionDecision"); got.Exists() {
+		t.Fatalf("lone covered command should advise without a decision, got out=%s", out)
 	}
 }
 

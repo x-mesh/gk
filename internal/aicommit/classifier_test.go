@@ -17,6 +17,29 @@ func classifyGroups(ctx context.Context, p provider.Provider, files []FileChange
 	return res.Groups, err
 }
 
+func TestClassifyPassesLineDeltasToProvider(t *testing.T) {
+	p := provider.NewFake()
+	p.ClassifyResponses = []provider.ClassifyResult{{
+		Groups: []provider.Group{{Type: "feat", Files: []string{"src/large.go", "src/small.go"}}},
+	}}
+	var got []provider.FileChange
+	p.OnClassify = func(in provider.ClassifyInput) { got = in.Files }
+
+	_, err := Classify(context.Background(), p, []FileChange{
+		{Path: "src/large.go", Status: "modified", Added: 312, Deleted: 17},
+		{Path: "src/small.go", Status: "modified", Added: 1, Deleted: 1},
+	}, ClassifyOptions{AllowedTypes: []string{"feat"}, HybridFileLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("provider files = %d, want 2", len(got))
+	}
+	if got[0].Added != 312 || got[0].Deleted != 17 || got[1].Added != 1 || got[1].Deleted != 1 {
+		t.Fatalf("line deltas lost: %+v", got)
+	}
+}
+
 func TestHeuristicType(t *testing.T) {
 	cases := []struct {
 		path string

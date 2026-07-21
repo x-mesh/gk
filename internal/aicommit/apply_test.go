@@ -643,7 +643,7 @@ func TestAbortRestoreEmptyBackupIsNoop(t *testing.T) {
 	}
 }
 
-func TestAbortRestoreRunsHardReset(t *testing.T) {
+func TestAbortRestoreRunsMixedReset(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"symbolic-ref --quiet --short HEAD": {Stdout: "main\n"},
@@ -674,14 +674,13 @@ func TestAbortRestoreRunsHardReset(t *testing.T) {
 		t.Fatalf("no reset call among: %+v", fake.Calls)
 	}
 	args := resetCall.Args
-	want := []string{"reset", "--hard", "refs/gk/ai-commit-backup/main/123"}
+	want := []string{"reset", "--mixed", "refs/gk/ai-commit-backup/main/123"}
 	for i, w := range want {
 		if args[i] != w {
 			t.Errorf("args[%d]: want %q, got %q", i, w, args[i])
 		}
 	}
-	// A clean tree must not stash — pushing an empty stash would make the
-	// subsequent pop fail and misreport a conflict that never happened.
+	// Mixed reset preserves the working tree and needs no stash dance.
 	if stashCall != nil {
 		t.Errorf("expected no stash call on a clean tree, got %+v", *stashCall)
 	}
@@ -704,13 +703,8 @@ func TestAbortRestoreRunsHardReset(t *testing.T) {
 	}
 }
 
-// TestAbortRestorePreservesDirtyWorkingTree is the regression test for the
-// data-loss defect (memory aba7d613): `gk commit --plan` failed partway
-// through (e.g. its path-normalization bug) without creating a commit, and
-// `gk commit --abort` — a raw `git reset --hard` back to the pre-run backup
-// ref, which happens to equal current HEAD here since nothing was committed
-// — permanently destroyed the user's unrelated uncommitted edit. It must
-// now autostash dirty tracked-file changes across the reset.
+// TestAbortRestorePreservesDirtyWorkingTree proves mixed abort preserves an
+// unrelated uncommitted edit even when no AI commit was created.
 func TestAbortRestorePreservesDirtyWorkingTree(t *testing.T) {
 	dir := t.TempDir()
 	runner := &git.ExecRunner{Dir: dir}
@@ -770,9 +764,8 @@ func TestAbortRestorePreservesDirtyWorkingTree(t *testing.T) {
 
 // TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit covers the case
 // where the AI commit DID land (HEAD moved past backupRef) and the user then
-// made an uncommitted edit to a file the AI commit never touched — abort
-// must still land HEAD back at backupRef without disturbing that edit or
-// hitting a stash conflict.
+// made an uncommitted edit to a file the AI commit never touched — abort must
+// land HEAD back at backupRef while preserving both sets of work unstaged.
 func TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit(t *testing.T) {
 	dir := t.TempDir()
 	runner := &git.ExecRunner{Dir: dir}
@@ -806,7 +799,11 @@ func TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit(t *testing.T) {
 	if err := os.WriteFile(dir+"/committed.txt", []byte("v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run("commit", "-q", "-am", "ai commit")
+	if err := os.WriteFile(dir+"/new-from-ai.txt", []byte("new work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "committed.txt", "new-from-ai.txt")
+	run("commit", "-q", "-m", "ai commit")
 
 	// Separately, an uncommitted edit to the untouched file.
 	if err := os.WriteFile(dir+"/other.txt", []byte("other v1 + my edit\n"), 0o644); err != nil {
@@ -825,8 +822,15 @@ func TestAbortRestoreResetsPastCommitAndKeepsUnrelatedEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotCommitted) != "v1\n" {
-		t.Fatalf("committed.txt not reset to backup content: got %q", string(gotCommitted))
+	if string(gotCommitted) != "v2\n" {
+		t.Fatalf("AI commit content must remain unstaged after abort: got %q", string(gotCommitted))
+	}
+	gotNew, err := os.ReadFile(dir + "/new-from-ai.txt")
+	if err != nil {
+		t.Fatalf("new file from AI commit was removed: %v", err)
+	}
+	if string(gotNew) != "new work\n" {
+		t.Fatalf("new file content = %q, want preserved AI work", string(gotNew))
 	}
 	gotOther, err := os.ReadFile(dir + "/other.txt")
 	if err != nil {

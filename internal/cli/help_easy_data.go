@@ -84,7 +84,7 @@ func init() {
 		"gk status --watch":                  "어떤 파일이 바뀌는지 실시간 타임라인(체인지 피드) — 나(또는 AI 에이전트)가 편집하는 걸 지켜보는 모드. 파일이 바뀔 때마다 new/re-touched/cleared 이벤트를 쌓고, 위에는 압축 상태 머리글. fsnotify로 즉시 반응(안 되면 폴링). [s]를 누르면 전체 상태 대시보드로 전환",
 		"gk status --watch-interval":         "--watch의 폴링 대체/heartbeat 간격(기본 2초). fsnotify가 되면 느린 안전망 주기로만 쓰임",
 		"gk status --xy-style":               "각 항목의 상태 칸 표시 방식: 'labels'(new/mod/staged/conflict, 기본), 'glyphs'(+ ~ ● ⚔ #), 'raw'(git 원본 두 글자 코드 ??/.M/UU)",
-		"gk commit --abort":                  "가장 최근 ai-commit 백업 지점으로 HEAD를 되돌리고 종료",
+		"gk commit --abort":                  "가장 최근 ai-commit 백업 지점으로 HEAD만 되돌리고, 되돌린 작업은 unstaged로 남김",
 		"gk commit --allow-secret-kind":      "지정한 종류의 비밀정보 경고 무시(반복 지정 가능; 특수값 'all'은 모든 경고를 무시하고 커밋 강행)",
 		"gk commit --ci":                     "CI 모드 — --force 또는 --dry-run 필수, 사용자에게 묻지 않음",
 		"gk commit --dry-run":                "묶음 계획과 예상 토큰 비용 미리보기, AI 호출 안 함",

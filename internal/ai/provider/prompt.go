@@ -25,6 +25,7 @@ func buildClassifyUserPrompt(in ClassifyInput, aggregateDiff string) string {
 	fmt.Fprintf(&b, "Task: classify the following working-tree changes into 1..%d semantic commit groups.\n", defaultMaxGroups(in))
 	fmt.Fprintln(&b, "Prefer FEWER groups — only split when files serve clearly different purposes.")
 	fmt.Fprintln(&b, "Related changes (e.g. implementation + its config + its docs) belong in ONE group.")
+	fmt.Fprintln(&b, "Use each file's +added/-deleted size as evidence: do not let many tiny adjustments hide an unrelated dominant change.")
 	fmt.Fprintf(&b, "Language for rationale: %s\n", fallback(in.Lang, "en"))
 	fmt.Fprintf(&b, "Allowed Conventional Commit types: %s\n", strings.Join(in.AllowedTypes, ", "))
 	if len(in.AllowedScopes) > 0 {
@@ -37,9 +38,9 @@ func buildClassifyUserPrompt(in ClassifyInput, aggregateDiff string) string {
 	fmt.Fprintln(&b, "\nFiles (numbered — reference them by index):")
 	for i, f := range in.Files {
 		if f.OrigPath != "" {
-			fmt.Fprintf(&b, "%d. %s [%s from %s]\n", i+1, f.Path, f.Status, f.OrigPath)
+			fmt.Fprintf(&b, "%d. %s [%s, +%d/-%d from %s]\n", i+1, f.Path, f.Status, f.Added, f.Deleted, f.OrigPath)
 		} else {
-			fmt.Fprintf(&b, "%d. %s [%s]\n", i+1, f.Path, f.Status)
+			fmt.Fprintf(&b, "%d. %s [%s, +%d/-%d]\n", i+1, f.Path, f.Status, f.Added, f.Deleted)
 		}
 	}
 	fmt.Fprintln(&b, "\nRespond with JSON of the form:")

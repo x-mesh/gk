@@ -45,7 +45,7 @@ review.
   when the daily token quota is exhausted.
 
 Use --abort to restore HEAD to the backup ref created at the start of
-the most recent run.
+the most recent run, leaving the reverted changes unstaged for regrouping.
 
   --wip writes ONE checkpoint commit headed "WIP(scope): <summary>"
   instead of a semantic history. It skips classification (a checkpoint is
@@ -86,7 +86,7 @@ the most recent run.
 	cmd.Flags().Bool("include-noise", false, "include build output / dependency / cache files normally excluded (node_modules, __pycache__, *.db, …); skips the .gitignore guard")
 	cmd.Flags().StringSliceP("allow-secret-kind", "S", nil, "suppress secret findings of the given kind (repeatable); the special value 'all' bypasses every finding")
 	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret guards and the privacy-gate abort threshold (bypassed secrets are reported, then committed; payload redaction to remote AI still applies)")
-	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref and exit")
+	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref; leave reverted changes unstaged")
 	cmd.Flags().String("plan", "", "JSON commit plan: a file path, or '-' for stdin (deterministic, no AI)")
 	cmd.Flags().Bool("plan-template", false, "emit current working-tree changes as a commit-plan draft (JSON) and exit")
 	cmd.Flags().BoolP("interactive", "i", false, "interactively group working-tree files into commits (TUI; builds a commit plan, no AI)")
@@ -370,6 +370,13 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// on the AI CLI, not stuck, and counts down against the classify timeout so
 	// an imminent deadline (the cause of "context deadline exceeded") is visible
 	// rather than waiting blind.
+	// Reuse the exact diff digest already shown in review so classification can
+	// distinguish a dominant implementation from a cluster of tiny mechanical
+	// adjustments in the same directory. Failure is non-fatal: zero deltas are
+	// still a valid classification input for binary or unavailable diffs.
+	classifyStats := commitDisplayStats(ctx, runner, files, wipCommit)
+	files = withFileChangeStats(files, classifyStats)
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "commit: classifying %d file(s) via %s...\n", len(files), providerLabel(prov))
 	classifyBudget := parseDurationOrDefault(ai.Commit.Timeout, 0)
 	stopClassify := ui.StartBubbleSpinnerWithBudget(fmt.Sprintf("classify — %s", providerLabel(prov)), classifyBudget)
@@ -409,6 +416,7 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	// full picture for one commit (e.g. switch.go + switch_test.go →
 	// one feat/chore commit instead of two).
 	groups = aicommit.PairTestProdGroups(groups)
+	groups = aicommit.PairRustModuleGroups(groups, files, collectCommitDiff(ctx, runner, files, wipCommit))
 
 	// Compose (per group) with commitlint retry.
 	diffs, err := collectGroupDiffs(ctx, runner, groups, wipCommit)
@@ -643,6 +651,7 @@ func runCommitDryRunPreview(
 	// Mirror the merge pass that the real run will perform — keeps
 	// preview aligned with actual output for paired Go test/prod files.
 	groups = aicommit.PairTestProdGroups(groups)
+	groups = aicommit.PairRustModuleGroups(groups, files, collectCommitDiff(ctx, runner, files, wipCommit))
 
 	diffs, err := collectGroupDiffs(ctx, runner, groups, wipCommit)
 	if err != nil {
@@ -889,7 +898,7 @@ func runAICommitAbort(ctx context.Context, cmd *cobra.Command, runner git.Runner
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), successLinef("commit: restored HEAD", "to %s", latest))
+	fmt.Fprintln(cmd.OutOrStdout(), successLinef("commit: restored HEAD", "to %s; reverted changes are unstaged", latest))
 	if result.SafetyRef != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine(fmt.Sprintf(
 			"hint: the state before this abort is saved at %s (git reset --hard %s to bring it back)", result.SafetyRef, result.SafetyRef)))
@@ -1167,37 +1176,11 @@ func collectGroupDiffs(ctx context.Context, runner git.Runner, groups []provider
 // file so the preview totals are exact. Any failure returns nil so the
 // preview falls back to the plain file list rather than blocking commit.
 func commitDisplayStats(ctx context.Context, runner git.Runner, files []aicommit.FileChange, wipCommit wipCommitForAICommit) map[string]aicommit.FileStat {
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		paths = append(paths, f.Path)
-	}
-	if len(paths) == 0 {
+	changeDiff := collectCommitDiff(ctx, runner, files, wipCommit)
+	if changeDiff == "" {
 		return nil
 	}
-
-	var b strings.Builder
-	if wipCommit.Present {
-		depth := wipCommit.ChainLen
-		if depth <= 0 {
-			depth = 1
-		}
-		args := append([]string{"diff", fmt.Sprintf("HEAD~%d..HEAD", depth), "--"}, paths...)
-		if d, _, err := runner.Run(ctx, args...); err == nil {
-			b.Write(d)
-			if len(d) > 0 && !strings.HasSuffix(string(d), "\n") {
-				b.WriteByte('\n')
-			}
-		}
-	}
-	cached, _, _ := runner.Run(ctx, append([]string{"diff", "--cached", "--"}, paths...)...)
-	unstaged, _, _ := runner.Run(ctx, append([]string{"diff", "--"}, paths...)...)
-	b.Write(cached)
-	if len(cached) > 0 && !strings.HasSuffix(string(cached), "\n") {
-		b.WriteByte('\n')
-	}
-	b.Write(unstaged)
-
-	res, err := diff.ParseUnifiedDiff(strings.NewReader(b.String()))
+	res, err := diff.ParseUnifiedDiff(strings.NewReader(changeDiff))
 	if err != nil || res == nil {
 		return nil
 	}
@@ -1227,6 +1210,60 @@ func commitDisplayStats(ctx context.Context, runner git.Runner, files []aicommit
 		}
 	}
 	return stats
+}
+
+// collectCommitDiff returns the complete changed-file diff used by both the
+// review digest and atomic-group checks. Individual diff failures remain
+// best-effort, matching the previous review-stat behavior.
+func collectCommitDiff(ctx context.Context, runner git.Runner, files []aicommit.FileChange, wipCommit wipCommitForAICommit) string {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	if wipCommit.Present {
+		depth := wipCommit.ChainLen
+		if depth <= 0 {
+			depth = 1
+		}
+		args := append([]string{"diff", fmt.Sprintf("HEAD~%d..HEAD", depth), "--"}, paths...)
+		if d, _, err := runner.Run(ctx, args...); err == nil {
+			b.Write(d)
+			if len(d) > 0 && !strings.HasSuffix(string(d), "\n") {
+				b.WriteByte('\n')
+			}
+		}
+	}
+	cached, _, _ := runner.Run(ctx, append([]string{"diff", "--cached", "--"}, paths...)...)
+	unstaged, _, _ := runner.Run(ctx, append([]string{"diff", "--"}, paths...)...)
+	b.Write(cached)
+	if len(cached) > 0 && !strings.HasSuffix(string(cached), "\n") {
+		b.WriteByte('\n')
+	}
+	b.Write(unstaged)
+
+	return b.String()
+}
+
+// withFileChangeStats carries the exact diff digest into classification without
+// making a missing digest fatal. The copy prevents the caller's gathered WIP
+// slice from being mutated behind its back.
+func withFileChangeStats(files []aicommit.FileChange, stats map[string]aicommit.FileStat) []aicommit.FileChange {
+	if len(files) == 0 || len(stats) == 0 {
+		return files
+	}
+	out := append([]aicommit.FileChange(nil), files...)
+	for i := range out {
+		if stat, ok := stats[out[i].Path]; ok {
+			out[i].Added = stat.Added
+			out[i].Deleted = stat.Deleted
+		}
+	}
+	return out
 }
 
 // groupKeyLocal mirrors internal/aicommit.groupKey; we duplicate rather

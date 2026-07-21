@@ -34,8 +34,12 @@ const (
 // short set returned by `git status --porcelain=v2` normalised to one
 // of: "added", "modified", "deleted", "renamed", "untracked".
 type FileChange struct {
-	Path     string
-	Status   string
+	Path   string
+	Status string
+	// Added and Deleted are exact text line deltas when available. They are
+	// advisory classification context; zero is also valid for binary files.
+	Added    int
+	Deleted  int
 	IsBinary bool
 	// OrigPath is the source path for rename/copy operations. Empty for
 	// all other status values.

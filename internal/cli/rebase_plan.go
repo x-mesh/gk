@@ -37,6 +37,9 @@ type rebasePlanEntry struct {
 
 type rebasePlan struct {
 	Entries []rebasePlanEntry
+	// Onto is emitted by --plan-template and, when present, fixes the exact
+	// range that the plan was drafted for.
+	Onto string
 }
 
 var rebasePlanActions = map[string]bool{
@@ -54,7 +57,10 @@ func parseRebasePlan(r io.Reader) (rebasePlan, error) {
 	if trimmed == "" {
 		return rebasePlan{}, fmt.Errorf("rebase: plan is empty")
 	}
-	var entries []rebasePlanEntry
+	var (
+		entries []rebasePlanEntry
+		onto    string
+	)
 	if strings.HasPrefix(trimmed, "[") {
 		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
 			return rebasePlan{}, fmt.Errorf("rebase: parse plan: %w", err)
@@ -62,16 +68,18 @@ func parseRebasePlan(r io.Reader) (rebasePlan, error) {
 	} else {
 		var doc struct {
 			Commits []rebasePlanEntry `json:"commits"`
+			Onto    string            `json:"onto"`
 		}
 		if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
 			return rebasePlan{}, fmt.Errorf("rebase: parse plan: %w", err)
 		}
 		entries = doc.Commits
+		onto = doc.Onto
 	}
 	if len(entries) == 0 {
 		return rebasePlan{}, fmt.Errorf("rebase: plan has no entries")
 	}
-	return rebasePlan{Entries: entries}, nil
+	return rebasePlan{Entries: entries, Onto: onto}, nil
 }
 
 // rebaseRangeCommit is one commit of the real onto..HEAD range, oldest first.

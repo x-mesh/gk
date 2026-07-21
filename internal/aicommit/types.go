@@ -25,8 +25,15 @@ package aicommit
 // 8KiB of the worktree file. Binary files are forwarded to the
 // provider as stats-only stubs.
 type FileChange struct {
-	Path     string
-	Status   string
+	Path   string
+	Status string
+	// Added and Deleted are the exact line deltas when the caller has a
+	// diff digest available. They let classification distinguish a small
+	// signature adjustment from the feature that dominates the change.
+	// Zero values mean the caller could not compute a text diff (for example
+	// a binary file), not that the file is unchanged.
+	Added    int
+	Deleted  int
 	Staged   bool
 	Unstaged bool
 	IsBinary bool

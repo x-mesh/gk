@@ -65,7 +65,7 @@ addressed exactly once (dropping is explicit), merge commits are rejected,
 and rewriting already-pushed commits requires --allow-pushed. A snapshot
 backup ref is written before anything moves; on conflict the standard
 contract applies (gk resolve --ai, gk continue / gk abort).`,
-		Args: cobra.NoArgs,
+		Args: rebasePlanArgs,
 		RunE: runRebasePlan,
 	}
 	cmd.Flags().String("plan", "", "JSON plan: a file path, or '-' for stdin")
@@ -124,17 +124,16 @@ func runRebasePlan(cmd *cobra.Command, args []string) error {
 	ontoFlag, _ := cmd.Flags().GetString("onto")
 	allowPushed, _ := cmd.Flags().GetBool("allow-pushed")
 
-	onto, err := resolveRebaseOnto(ctx, runner, cmd, ontoFlag)
-	if err != nil {
-		return err
-	}
-	rng, err := loadRebaseRange(ctx, runner, onto)
-	if err != nil {
-		return err
-	}
-	pushed, pushedKnown := collectPushedShas(ctx, runner)
-
 	if template {
+		onto, err := resolveRebaseOnto(ctx, runner, cmd, ontoFlag)
+		if err != nil {
+			return err
+		}
+		rng, err := loadRebaseRange(ctx, runner, onto)
+		if err != nil {
+			return err
+		}
+		pushed, pushedKnown := collectPushedShas(ctx, runner)
 		tpl := rebaseTemplateJSON{Schema: 1, Onto: onto, Commits: make([]rebasePlanEntry, 0, len(rng))}
 		for _, c := range rng {
 			tpl.Commits = append(tpl.Commits, rebasePlanEntry{
@@ -166,6 +165,15 @@ func runRebasePlan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	onto, err := resolveRebasePlanOnto(ctx, runner, cmd, ontoFlag, plan.Onto)
+	if err != nil {
+		return err
+	}
+	rng, err := loadRebaseRange(ctx, runner, onto)
+	if err != nil {
+		return err
+	}
+	pushed, pushedKnown := collectPushedShas(ctx, runner)
 	validated, err := validateRebasePlan(plan, rng, pushed, pushedKnown, allowPushed)
 	if err != nil {
 		return err
@@ -247,6 +255,19 @@ func runRebasePlan(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// rebasePlanArgs keeps a common range-shaped invocation from degrading into
+// Cobra's generic "unknown command" error. A plan always replays onto one
+// base, so --onto is the unambiguous spelling.
+func rebasePlanArgs(_ *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return WithHint(
+		fmt.Errorf("rebase: unexpected range argument %q", args[0]),
+		"use `gk rebase --plan-template --onto <base>`; plans always replay <base>..HEAD",
+	)
+}
+
 // resolveRebaseOnto mirrors pull's upstream resolution so "the range" means
 // the same thing everywhere: explicit --onto, else @{u}, else remote base.
 func resolveRebaseOnto(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, flag string) (string, error) {
@@ -279,6 +300,28 @@ func resolveRebaseOnto(ctx context.Context, runner *git.ExecRunner, cmd *cobra.C
 		return candidate, nil
 	}
 	return base, nil
+}
+
+// resolveRebasePlanOnto gives a round-tripped plan's onto field the same
+// authority as --onto when no CLI base was supplied. A contradictory explicit
+// flag is rejected instead of silently widening or changing the rewrite range.
+func resolveRebasePlanOnto(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, flag, planOnto string) (string, error) {
+	planOnto = strings.TrimSpace(planOnto)
+	if planOnto != "" {
+		if err := guardRef(planOnto); err != nil {
+			return "", fmt.Errorf("rebase: invalid plan onto: %w", err)
+		}
+		if flag != "" && flag != planOnto {
+			return "", WithHint(
+				fmt.Errorf("rebase: --onto %q disagrees with plan onto %q", flag, planOnto),
+				"use one base consistently, or remove the plan's onto field to resolve it from the current branch",
+			)
+		}
+		if flag == "" {
+			return planOnto, nil
+		}
+	}
+	return resolveRebaseOnto(ctx, runner, cmd, flag)
 }
 
 // newGitRebaseCmd builds the `git rebase -i <onto>` invocation with stdio

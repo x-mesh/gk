@@ -257,20 +257,10 @@ type AbortResult struct {
 	StashConflict string
 }
 
-// AbortRestore resets HEAD back to the given backup ref.
-// Intended for `gk commit --abort` after partial failure — but the run may
-// just as well have fully succeeded (the commit(s) landed cleanly) and the
-// user aborts anyway to redo the message or grouping. `--hard` discards
-// tracked-file changes in the working tree, not just the commit: a plain
-// `git reset --hard` here would silently destroy any edits the user made
-// after (or during) the AI commit run, with no git object to recover them
-// from — they were never staged or committed. So when the tree carries
-// tracked-file changes, the reset is wrapped in gitsafe's autostash dance
-// (stash push --include-untracked -> reset --hard -> stash pop), the same
-// safety net every other HEAD-moving gk command (undo/wipe/timemachine)
-// already gets. A clean tree skips the stash step entirely — stashing
-// nothing would make the subsequent pop fail and misreport a conflict that
-// never happened.
+// AbortRestore resets HEAD back to the given backup ref while preserving the
+// working tree. An abort means "uncommit so I can regroup/reword", not
+// "discard the work": StrategyMixed moves HEAD and resets the index, leaving
+// both successful AI commits and any later edits as unstaged changes.
 //
 // Before resetting, a safety-net ref is also written at the CURRENT HEAD
 // (refs/gk/ai-commit-abort-backup/<branch>/<unix>, pruned the same
@@ -285,13 +275,8 @@ func AbortRestore(ctx context.Context, runner git.Runner, backupRef string) (Abo
 	}
 	branch, _ := currentBranch(ctx, runner)
 
-	var opts []gitsafe.RestoreOption
-	if dirty, derr := git.NewClient(runner).IsDirty(ctx); derr == nil && dirty {
-		opts = append(opts, gitsafe.WithAutostash(true))
-	}
-
 	restorer := gitsafe.NewRestorer(runner, time.Now, "ai-commit-abort")
-	res, rerr := restorer.Restore(ctx, branch, gitsafe.Target{SHA: backupRef}, gitsafe.StrategyHard, opts...)
+	res, rerr := restorer.Restore(ctx, branch, gitsafe.Target{SHA: backupRef}, gitsafe.StrategyMixed)
 	if rerr != nil {
 		return AbortResult{SafetyRef: res.BackupRef}, fmt.Errorf("aicommit: abort restore: %w", rerr)
 	}

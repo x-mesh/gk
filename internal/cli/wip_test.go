@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -122,5 +123,97 @@ func TestStagingIsEmpty(t *testing.T) {
 	}
 	if empty2 {
 		t.Error("expected non-empty staging after git add")
+	}
+}
+
+func TestPlanBuriedWIPRepairFindsNearestLinearUnpushedWIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("wip.txt", "checkpoint\n")
+	wipSHA := repo.Commit(wipMarker)
+	repo.WriteFile("later.txt", "semantic work\n")
+	repo.Commit("feat: later work")
+
+	patterns, err := aicommit.CompileWIPPatterns(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planBuriedWIPRepair(context.Background(), &git.ExecRunner{Dir: repo.Dir}, patterns, "")
+	if err != nil {
+		t.Fatalf("plan buried WIP repair: %v", err)
+	}
+	if plan.Commit != wipSHA {
+		t.Errorf("commit = %s, want %s", plan.Commit, wipSHA)
+	}
+	if plan.Descendants != 1 {
+		t.Errorf("descendants = %d, want 1", plan.Descendants)
+	}
+}
+
+func TestPlanBuriedWIPRepairSkipsHEADWIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("buried.txt", "older checkpoint\n")
+	wipSHA := repo.Commit(wipMarker)
+	repo.WriteFile("normal.txt", "normal work\n")
+	repo.Commit("feat: normal work")
+	repo.WriteFile("head.txt", "new checkpoint\n")
+	repo.Commit(wipMarker)
+
+	patterns, err := aicommit.CompileWIPPatterns(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planBuriedWIPRepair(context.Background(), &git.ExecRunner{Dir: repo.Dir}, patterns, "")
+	if err != nil {
+		t.Fatalf("plan buried WIP repair: %v", err)
+	}
+	if plan.Commit != wipSHA {
+		t.Errorf("commit = %s, want buried %s", plan.Commit, wipSHA)
+	}
+}
+
+func TestWIPRepairDryRunAllowsDirtyTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("wip.txt", "checkpoint\n")
+	repo.Commit(wipMarker)
+	repo.WriteFile("later.txt", "semantic work\n")
+	repo.Commit("feat: later work")
+	repo.WriteFile("dirty.txt", "uncommitted\n")
+
+	prevDry := flagDryRun
+	flagDryRun = true
+	t.Cleanup(func() { flagDryRun = prevDry })
+	cmd := newWIPRepairCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+	if err := runWIPRepair(cmd, nil); err != nil {
+		t.Fatalf("dry-run must inspect a dirty tree without refusing: %v", err)
+	}
+}
+
+func TestPlanBuriedWIPRepairExplainsHEADOnlyWIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("head.txt", "checkpoint\n")
+	repo.Commit(wipMarker)
+	patterns, err := aicommit.CompileWIPPatterns(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = planBuriedWIPRepair(context.Background(), &git.ExecRunner{Dir: repo.Dir}, patterns, "")
+	if err == nil || !strings.Contains(HintFrom(err), "gk commit -f") {
+		t.Fatalf("want HEAD-WIP commit hint, got %v", err)
 	}
 }

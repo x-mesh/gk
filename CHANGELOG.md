@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.132.0] - 2026-07-21
+
 ### Added
 
 - **`gk wip repair` — 일반 커밋 경로가 더 이상 손댈 수 없는, 파묻힌 WIP 커밋을 AI 커밋으로 다시 쓴다.** 지금까지 WIP를 되돌리는 길은 HEAD에 있을 때뿐이었다 — `gk commit -f`가 그 체인을 풀어준다. 그 위에 다른 커밋이 여러 개 쌓이면 WIP는 first-parent 히스토리에 파묻혀 더는 손댈 방법이 없었다. `gk wip repair [commit]`은 그 WIP 하나만 골라 임시 worktree에서 diff를 드러내고 `gk commit -f`의 AI 경로로 의미 있는 커밋들로 다시 쓴 뒤, 그 위에 있던 나머지 로컬 커밋들을 `rebase --onto`로 그대로 재생한다. 대상과 그 후손은 전부 로컬(미push)이어야 하고 후손 쪽에 머지 커밋이 있으면 거부한다 — rebase-merges 없이는 안전하게 재생할 수 없기 때문이다. `--yes` 없이는 정확한 재작성 계획만 보여주고, 실행 전 백업 ref를 남겨 실패해도 원래 tip으로 돌아갈 수 있다.

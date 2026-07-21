@@ -31,10 +31,12 @@ const gkHookMarker = "agents hook run"
 // the arrays uniformly.
 var gkHookEvents = []string{"PreToolUse", "UserPromptSubmit", "Stop"}
 
-// hookPromptTimeoutSeconds bounds the UserPromptSubmit prefetch hook. That
-// hook must never hold up a prompt from going through, so a short ceiling
-// acts as a safety net against a hang (e.g. a slow git call in a huge repo).
-const hookPromptTimeoutSeconds = 5
+// Hook timeouts keep Claude responsive if a hook binary or its filesystem
+// probe stalls. The handlers are normally millisecond-scale.
+const (
+	hookPreToolUseTimeoutSeconds = 5
+	hookPromptTimeoutSeconds     = 5
+)
 
 // Hook enforcement levels, from least to most strict:
 //
@@ -481,7 +483,7 @@ func runAgentsHookInstall(cmd *cobra.Command, _ []string) error {
 		hookCmd = hookCommandString(mode)
 		updated, err = sjson.SetBytes(stripped, "hooks.PreToolUse.-1", map[string]any{
 			"matcher": "Bash",
-			"hooks":   []map[string]any{{"type": "command", "command": hookCmd}},
+			"hooks":   []map[string]any{{"type": "command", "command": hookCmd, "timeout": hookPreToolUseTimeoutSeconds}},
 		})
 		if err != nil {
 			return fmt.Errorf("gk agents hook install: edit settings: %w", err)

@@ -442,6 +442,9 @@ func TestAgentsHookInstall_Idempotent(t *testing.T) {
 	if n := gjson.GetBytes(data, "hooks.UserPromptSubmit.#").Int(); n != 1 {
 		t.Fatalf("UserPromptSubmit entries after first install = %d, want 1", n)
 	}
+	if to := gjson.GetBytes(data, "hooks.PreToolUse.0.hooks.0.timeout").Int(); to != hookPreToolUseTimeoutSeconds {
+		t.Errorf("PreToolUse timeout = %d, want %d", to, hookPreToolUseTimeoutSeconds)
+	}
 
 	// Re-running install must refresh in place, not duplicate.
 	cmd = hookInstallCmd(t, dir)

@@ -26,7 +26,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 24
+const agentsContractVersion = 25
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -50,6 +50,7 @@ Minimum rules:
 - Orient with ` + "`git-kit context`" + ` before git work; add ` + "`--include=diff,log,precheck,remotes,release`" + ` instead of separate status/log/diff probes.
 - Prefer git-kit verbs over raw git: ` + "`commit`" + `, ` + "`land`" + `, ` + "`pull --with-base`" + `, ` + "`sync`" + `, ` + "`merge`" + `, ` + "`rebase --plan`" + `, ` + "`diff --digest`" + `, ` + "`diff --raw-patch --json`" + `, ` + "`find`" + `, ` + "`worktree ...`" + `, ` + "`ship`" + `, ` + "`batch --plan -`" + `.
 - Keep read-only plumbing raw when needed: ` + "`git rev-parse`" + `, ` + "`git config --get`" + `, ` + "`git cat-file`" + `, ` + "`git ls-files`" + `.
+- Use raw git when git-kit has no equivalent, including ` + "`git show <object>`" + ` and arbitrary ` + "`git log`" + ` forms; do not substitute ` + "`git-kit context`" + ` for object inspection.
 - For commit + pull + push, use ` + "`git-kit land`" + `; for local-only integration use ` + "`git-kit promote`" + `; for releases inspect ` + "`git-kit ship --dry-run --json`" + ` before ` + "`git-kit ship -y`" + `.
 - Agent-mode output is ` + "`{state, ok, result, error}`" + `. Branch on ` + "`state`" + `, not prose: ` + "`ok`" + `, ` + "`paused`" + `, ` + "`blocked`" + `, ` + "`error`" + `; ` + "`ok`" + ` is only ` + "`state==\"ok\"`" + `.
 - A paused merge/rebase/conflict is not done. Use the resume/abort command in the result. When explicitly asked to resolve conflicts, use ` + "`git-kit resolve`" + `; otherwise report the paused state and await direction.
@@ -73,7 +74,7 @@ const agentsFullContractBody = `## Git workflow (git-kit)
 | git … && git … && git … (multi-step chains) | git-kit batch --plan - (one transaction) |
 | the short gk (shadowed by shell aliases) | git-kit (always the full name) |
 
-Read-only plumbing stays raw — git-kit does not wrap git rev-parse, git config --get, git cat-file, git ls-files, and the like.
+Read-only plumbing stays raw — git-kit does not wrap git rev-parse, git config --get, git cat-file, git ls-files, and the like. Use raw git too whenever no git-kit verb matches the exact task: ` + "`git show <object>`" + ` is object inspection, and arbitrary ` + "`git log`" + ` forms (for example a two-ref range) are not orientation probes. Do not replace either with ` + "`git-kit context`" + `.
 
 ### Detail
 

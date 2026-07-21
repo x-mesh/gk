@@ -2196,6 +2196,57 @@ gk unwip              # restore the working tree
 
 ---
 
+## gk wip repair
+
+Rewrite one buried, unpushed WIP commit as AI-generated commits.
+
+`gk wip` / `gk unwip` only reach a WIP commit sitting at HEAD. Once other
+commits land on top, the WIP is buried in the first-parent history and
+neither command can touch it. `gk wip repair` finds that buried WIP,
+rebuilds only its diff into semantic commits through `gk commit`'s AI path,
+then replays the later commits on top.
+
+### Synopsis
+
+```
+gk wip repair [commit] [--yes] [--provider <name>] [--model <name>] [--lang <name>]
+```
+
+### What it does
+
+1. Walks HEAD's first-parent history looking for a WIP-subject commit that is *not* HEAD itself (a HEAD WIP belongs to `gk commit -f`, not this command).
+2. Refuses if the target or any commit between it and HEAD is already on a remote branch — rewriting pushed history is out of scope here.
+3. Refuses if a merge commit sits between the target and HEAD — replaying merges would need rebase-merges, which this command intentionally does not support.
+4. Without `--yes`, prints the plan (commit, subject, number of later commits to replay) and stops.
+5. With `--yes`: writes a backup ref, checks out the WIP's parent in a throwaway detached worktree, runs `gk commit -f --no-wip-unwrap` there through the normal AI classify/apply path, then `git rebase --onto` the result to replay every later commit on the current branch.
+
+### Flags
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `-y, --yes` | false | Perform the rewrite after showing the plan. Without it, `wip repair` only prints the plan |
+| `--provider <name>` | | AI provider forwarded to the temporary `gk commit` run |
+| `--model <name>` | | AI model forwarded to the temporary `gk commit` run |
+| `--lang <name>` | | AI output language forwarded to the temporary `gk commit` run |
+
+### Examples
+
+```bash
+# Show the rewrite plan for the nearest buried WIP
+gk wip repair
+
+# Target a specific WIP commit and execute
+gk wip repair a1b2c3d --yes
+```
+
+### Notes
+
+- The working tree must be clean before `--yes` runs.
+- A backup ref is written before the branch moves, so a failed replay leaves the original tip recoverable.
+- Merge descendants and already-pushed commits are refused outright rather than attempted and rolled back.
+
+---
+
 ## gk unstage
 
 Drop files from the staging area without touching their working-tree

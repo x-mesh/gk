@@ -243,6 +243,7 @@ gk ship dry-run           # preview squash/version/changelog/tag/push plan
 | `gk abort` | | Abort interrupted rebase/merge/cherry-pick |
 | `gk bisect` | | Find the commit that introduced a regression by binary search, run in a throwaway detached worktree so your tree/HEAD stay untouched. Automatic with `--good <ref> --bad <ref> -- <command>` (delegates to `git bisect run`, returns the culprit), or manual: omit `--` to pause on each candidate and step with `gk bisect good\|bad\|skip` (`reset` to end). `gk context`/`gk watch` surface an active bisect. |
 | `gk wip` / `gk unwip` | | Quick throwaway WIP commit for context switching; `unwip` restores changes to the working tree |
+| `gk wip repair [commit]` | | Rewrite one buried, unpushed WIP commit (no longer reachable by `gk wip`/`gk unwip` once other commits landed on top) as AI-generated semantic commits, then replay the later commits on top; `--yes` executes after showing the plan, backed by a pre-rewrite backup ref |
 | `gk snapshot` / `gk snapshots` | | Non-destructive safety-net snapshot of the working tree to `refs/wip/<branch>` (untracked included, `.gitignore` respected); never touches HEAD/index, never pushes. `restore [n]` brings one back, auto-backing-up a dirty tree first. `diff [n]` compares a snapshot against the tree; `prune` + `snapshot.retention_days` expire old entries; `hook install` wires a Claude Code Stop hook so every AI turn auto-snapshots (`-q` suits any other trigger) |
 
 ### Continuous

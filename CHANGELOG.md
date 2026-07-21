@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk wip repair` — 일반 커밋 경로가 더 이상 손댈 수 없는, 파묻힌 WIP 커밋을 AI 커밋으로 다시 쓴다.** 지금까지 WIP를 되돌리는 길은 HEAD에 있을 때뿐이었다 — `gk commit -f`가 그 체인을 풀어준다. 그 위에 다른 커밋이 여러 개 쌓이면 WIP는 first-parent 히스토리에 파묻혀 더는 손댈 방법이 없었다. `gk wip repair [commit]`은 그 WIP 하나만 골라 임시 worktree에서 diff를 드러내고 `gk commit -f`의 AI 경로로 의미 있는 커밋들로 다시 쓴 뒤, 그 위에 있던 나머지 로컬 커밋들을 `rebase --onto`로 그대로 재생한다. 대상과 그 후손은 전부 로컬(미push)이어야 하고 후손 쪽에 머지 커밋이 있으면 거부한다 — rebase-merges 없이는 안전하게 재생할 수 없기 때문이다. `--yes` 없이는 정확한 재작성 계획만 보여주고, 실행 전 백업 ref를 남겨 실패해도 원래 tip으로 돌아갈 수 있다.
+
+### Fixed
+
+- **`gk commit --abort`가 커밋이 성공한 직후에는 그 작업까지 통째로 지우던 문제.** abort는 `reset --hard` 뒤 dirty 트리만 autostash로 감싸는 방식이었는데, 이 경로가 지우는 대상에는 "다시 하고 싶은 실수"만이 아니라 **이미 성공한 AI 커밋의 내용**까지 들어 있었다. HEAD가 백업 ref를 지나 이미 이동해 있으면 그 사이 생긴 커밋은 하드 리셋으로 그냥 사라졌고, autostash는 워킹트리 변경만 지켰지 커밋된 스냅샷은 지키지 못했다. 이제 리셋은 `--mixed`로 바뀐다 — HEAD와 인덱스만 백업 ref로 되돌리고 워킹트리는 그대로 둔다. 성공한 AI 커밋의 변경분과 그 뒤에 만든 편집 모두 unstaged 상태로 남아 abort 후에도 그대로 보인다. abort의 원래 의도가 "커밋을 취소하고 그룹핑/메시지를 다시 손보고 싶다"였지 "작업을 버리고 싶다"가 아니었으므로, 이쪽이 원래 의도에 맞는 동작이다.
+- **`gk rebase --plan`이 `--plan-template`이 내준 `onto` 필드를 무시하던 문제.** 템플릿은 계획을 짤 때 쓴 base를 `onto` 필드에 적어 내보내지만, 그 계획을 다시 먹이는 실행 경로는 이 필드를 읽지 않고 항상 현재 브랜치에서 base를 새로 추론했다. 템플릿을 뜬 시점과 실행 시점 사이에 upstream이 바뀌거나 다른 브랜치에서 실행하면, 계획은 A 위에서 짰지만 실제로는 B 위에서 재생되는 조용한 불일치가 생겼다. 이제 plan의 `onto`가 CLI `--onto`와 같은 권한을 갖는다 — 둘이 다르면 어느 쪽이 맞는지 사용자가 정하게 에러로 막고, plan에만 있으면 그걸 따른다. 곁다리로, 계획은 항상 base 하나 위로만 재생되므로 위치 인자로 range를 넘기는 흔한 습관(`gk rebase --plan main..HEAD`)이 Cobra의 "unknown command" 오류로 흘러가지 않고 `--onto` 사용법을 알려주는 에러로 바로 잡힌다.
+- **agents hook의 조언(advisory)이 background 서브에이전트의 git 호출을 막던 문제.** `--mode warn`이 힌트를 보여줄 때 `permissionDecision: "defer"`를 반환했는데, defer는 Claude Code의 정상 권한 플로우로 넘긴다는 뜻이라 상호작용으로 승인/거부를 받을 사람이 없는 background 서브에이전트에서는 그 흐름 자체가 멈췄다. 실제로 막아야 하는 건 `deny`뿐이고, 조언은 명령을 막지 않으면서 `additionalContext`로 안내만 실어야 한다. 이제 `permissionDecision`은 deny일 때만 채워지고(`omitempty`), advisory는 빈 decision + additionalContext만 내보내 정상 흐름을 그대로 통과시킨다.
+- **AI commit 그룹핑이 파일 하나를 다른 파일보다 우선할 근거 없이 섞던 두 가지 갭.** 하나는 분류기 프롬프트가 파일마다 상태(added/modified/...)만 보고 크기는 몰랐던 것 — 같은 디렉터리에서 한 줄짜리 사소한 조정 여러 개와 파일 하나를 통째로 갈아엎는 변경이 뒤섞이면, 작은 조정들의 개수에 묻혀 큰 변경이 어느 그룹에 속하는지 신호를 못 받았다. 이제 파일 목록에 `+added/-deleted` 줄 수를 함께 실어 분류기가 "지배적인 변경"을 근거로 판단하게 한다. 다른 하나는 Rust 전용 문제로, 새 모듈 파일과 그걸 참조하는 `pub mod x;` 선언이 서로 다른 커밋 그룹에 떨어지면 중간 커밋이 컴파일되지 않는 히스토리가 생겼다. `PairRustModuleGroups`가 diff에서 새로 추가된 `mod` 선언을 찾아 그게 가리키는 새 모듈 파일을 선언이 있는 그룹으로 옮긴다 — 대상은 추가되거나 untracked인 파일뿐이라 기존 파일이나 무관한 형제 파일은 분류기의 판단을 그대로 따른다.
+
 ## [0.131.2] - 2026-07-21
 
 ### Fixed

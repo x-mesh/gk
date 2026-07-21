@@ -476,14 +476,31 @@ func runChangeWatchPlain(cmd *cobra.Command, runner *git.ExecRunner, interval ti
 	}
 	snap() // initial baseline
 	for {
-		select {
-		case <-cmd.Context().Done():
-			return cmd.Context().Err()
-		case <-ticker.C:
-			snap()
-		case <-fsCh:
+		next, trigger, err := nextPlainWatchTrigger(cmd.Context(), ticker.C, fsCh)
+		fsCh = next
+		if err != nil {
+			return err
+		}
+		if trigger {
 			snap()
 		}
+	}
+}
+
+// nextPlainWatchTrigger waits for one plain-watch wake-up. A closed fsnotify
+// channel is retired by returning nil, because receiving from it forever would
+// otherwise make the outer select spin after a watcher falls back to polling.
+func nextPlainWatchTrigger(ctx context.Context, tick <-chan time.Time, fsCh <-chan struct{}) (<-chan struct{}, bool, error) {
+	select {
+	case <-ctx.Done():
+		return fsCh, false, ctx.Err()
+	case <-tick:
+		return fsCh, true, nil
+	case _, ok := <-fsCh:
+		if !ok {
+			return nil, false, nil
+		}
+		return fsCh, true, nil
 	}
 }
 

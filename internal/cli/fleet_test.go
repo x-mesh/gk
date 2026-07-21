@@ -585,8 +585,8 @@ func TestFleetWatchBudget(t *testing.T) {
 	if got := fleetWatchBudget(4); got != total/4 {
 		t.Errorf("budget(4) = %d, want %d", got, total/4)
 	}
-	if got := fleetWatchBudget(10 * total); got != 64 {
-		t.Errorf("budget(huge N) = %d, want the 64 floor", got)
+	if got := fleetWatchBudget(10 * total); got != 1 {
+		t.Errorf("budget(huge N) = %d, want the one-unit floor", got)
 	}
 	if got := fleetWatchBudget(0); got != total {
 		t.Errorf("budget(0) = %d, want %d", got, total)
@@ -611,6 +611,28 @@ func TestFleetTickInterval(t *testing.T) {
 	}
 	if got := fleetTickInterval(30*time.Second, ws); got != 30*time.Second {
 		t.Errorf("slow interval: %v, want 30s (respected)", got)
+	}
+}
+
+func TestFleetWatchHealthFooter(t *testing.T) {
+	ws := &fleetWatchSet{
+		watchers: map[string]*fsWatcher{"/watched": nil},
+		health: fleetWatchHealth{
+			Eligible:  3,
+			Budget:    12,
+			DirCap:    4,
+			Saturated: true,
+		},
+	}
+	health := ws.snapshotHealth()
+	if health.Watched != 1 || !health.PollingFallback {
+		t.Fatalf("health = %+v, want one watched worktree with polling fallback", health)
+	}
+	label := fleetWatchHealthLabel(health, 2*time.Second)
+	for _, want := range []string{"watch 1/3", "polling fallback", "budget 4/12", "saturated"} {
+		if !strings.Contains(label, want) {
+			t.Errorf("footer %q missing %q", label, want)
+		}
 	}
 }
 

@@ -40,9 +40,9 @@ func TestFleetEntryActive(t *testing.T) {
 }
 
 // TestPlanFleetWatchers covers the allocation policy: only active entries are
-// granted, the budget divides among actives (not headcount), idle holders are
-// grandfathered without pressure and revoked under it, and a forced path (the
-// zoomed worktree) counts as active regardless of signals.
+// granted, the budget divides among actives (not headcount), inactive holders
+// are retired whenever a replacement can be considered, and a forced path
+// (the zoomed worktree) counts as active regardless of signals.
 func TestPlanFleetWatchers(t *testing.T) {
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
 	stale := now.Add(-3 * time.Hour)
@@ -65,15 +65,14 @@ func TestPlanFleetWatchers(t *testing.T) {
 		t.Errorf("one active gets the whole budget, dirCap = %d", plan.dirCap)
 	}
 
-	// Idle holder without pressure (active already has its watcher): kept.
+	// An inactive holder is obsolete and is retired even without a new grant.
 	have := map[string]bool{"/w/active": true, "/w/idle1": true}
 	plan = planFleetWatchers(entries, have, nil, nil, now)
-	if len(plan.grant) != 0 || len(plan.revoke) != 0 {
-		t.Errorf("steady state must be a no-op, got grant=%v revoke=%v", plan.grant, plan.revoke)
+	if len(plan.grant) != 0 || len(plan.revoke) != 1 || plan.revoke[0] != "/w/idle1" {
+		t.Errorf("inactive holder must be retired, got grant=%v revoke=%v", plan.grant, plan.revoke)
 	}
 
-	// Pressure: a second entry becomes active while an idle one holds a
-	// watcher → the idle holder is revoked to free budget.
+	// A second entry becomes active while an idle one holds a watcher.
 	entries[1].lastActive = now // idle1 wakes up
 	have = map[string]bool{"/w/active": true, "/w/idle2": true}
 	plan = planFleetWatchers(entries, have, nil, nil, now)
@@ -98,6 +97,29 @@ func TestPlanFleetWatchers(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("forced path must be granted, grant = %v", plan.grant)
+	}
+}
+
+// TestPlanFleetWatchers_ReservationsStayWithinBudget locks the process-wide
+// invariant. Even a fleet larger than the budget gets only as many one-unit
+// reservations as fit; forced worktrees take the available slots first.
+func TestPlanFleetWatchers_ReservationsStayWithinBudget(t *testing.T) {
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	budget := fsWatchCostBudget()
+	entries := make([]fleetEntryJSON, budget+2)
+	for i := range entries {
+		entries[i] = fleetEntryJSON{Path: fmt.Sprintf("/w/%04d", i), lastActive: now}
+	}
+	forced := map[string]bool{entries[len(entries)-1].Path: true}
+	plan := planFleetWatchers(entries, nil, forced, nil, now)
+	if got := len(plan.grant) * plan.dirCap; got > budget {
+		t.Fatalf("reservations = %d, budget = %d", got, budget)
+	}
+	if len(plan.grant) != budget {
+		t.Fatalf("grants = %d, want budget-sized %d", len(plan.grant), budget)
+	}
+	if plan.grant[0] != entries[len(entries)-1].Path {
+		t.Fatalf("forced path must get the first reservation, got %q", plan.grant[0])
 	}
 }
 
@@ -276,6 +298,72 @@ func TestFleetWatchSyncConcurrentGrantsDedupe(t *testing.T) {
 	ws.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("one worktree must hold exactly one watcher, got %d", n)
+	}
+}
+
+func TestFleetWatchForwardRemovesStoppedWatcher(t *testing.T) {
+	fw := &fsWatcher{events: make(chan struct{})}
+	ws := newTestWatchSet()
+	ws.watchers["/w"] = fw
+	ws.health = fleetWatchHealth{Eligible: 1}
+	finished := make(chan struct{})
+	go func() {
+		ws.forward("/w", fw)
+		close(finished)
+	}()
+	close(fw.events) // loop closes this after an EMFILE/ENFILE fallback
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("forward did not release a stopped watcher")
+	}
+	if ws.hasWatcher("/w") || ws.hasAny() {
+		t.Fatal("stopped watcher must not remain live in the set")
+	}
+	health := ws.snapshotHealth()
+	if health.Watched != 0 || !health.PollingFallback {
+		t.Fatalf("health after watcher stop = %+v, want watched=0 polling fallback", health)
+	}
+	plan := planFleetWatchers([]fleetEntryJSON{{Path: "/w", Current: true}}, map[string]bool{}, nil, nil, time.Now())
+	if len(plan.grant) != 1 || plan.grant[0] != "/w" {
+		t.Fatalf("next sync must reacquire stopped watcher, grant=%v", plan.grant)
+	}
+}
+
+// A newly active worktree must not be added beside an old full-budget watcher.
+// sync retires and rebuilds the equal split, then retires the obsolete watcher
+// again when the fleet shrinks.
+func TestFleetWatchSyncRebalancesAndRetiresInactive(t *testing.T) {
+	first := testutil.NewRepo(t)
+	second := testutil.NewRepo(t)
+	first.WriteFile("a.txt", "x")
+	second.WriteFile("b.txt", "x")
+	ws := newTestWatchSet()
+	defer ws.Close()
+
+	ws.sync(context.Background(), []fleetEntryJSON{{Path: first.Dir, Current: true}})
+	ws.sync(context.Background(), []fleetEntryJSON{
+		{Path: first.Dir, Current: true},
+		{Path: second.Dir, Current: true},
+	})
+
+	ws.mu.Lock()
+	if got := len(ws.watchers); got != 2 {
+		ws.mu.Unlock()
+		t.Fatalf("watchers after rebalance = %d, want 2", got)
+	}
+	reserved := 0
+	for _, fw := range ws.watchers {
+		reserved += fw.costCap
+	}
+	ws.mu.Unlock()
+	if reserved > fsWatchCostBudget() {
+		t.Fatalf("reservations = %d, budget = %d", reserved, fsWatchCostBudget())
+	}
+
+	ws.sync(context.Background(), []fleetEntryJSON{{Path: first.Dir, Current: true}})
+	if ws.hasWatcher(second.Dir) {
+		t.Fatal("inactive watcher must be retired on sync")
 	}
 }
 

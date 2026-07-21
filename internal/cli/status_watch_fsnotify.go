@@ -97,6 +97,15 @@ type fsWatcher struct {
 	// created AFTER startup (the `ignored` set is only the startup snapshot).
 	runner git.Runner
 	ctx    context.Context
+	// cost is owned by loop, like w. It includes every startup watch and every
+	// runtime directory admitted afterwards, so a tree that grows while watch
+	// is running cannot silently spend past its original share.
+	cost    int
+	costCap int
+	// tree and add are test seams for the runtime admission path. Production
+	// uses fsWatchTree and w.Add respectively.
+	tree func(string, int) (int, []string, error)
+	add  func(string) error
 }
 
 // newFSWatcher sets up a watcher over the repo's working tree. costCap bounds
@@ -167,7 +176,7 @@ func newFSWatcher(ctx context.Context, runner *git.ExecRunner, debounce time.Dur
 	fw := &fsWatcher{
 		w: w, events: make(chan struct{}, 1),
 		done: make(chan struct{}), closed: make(chan struct{}), ignored: ignored,
-		runner: runner, ctx: ctx,
+		runner: runner, ctx: ctx, cost: count, costCap: costCap,
 	}
 	go fw.loop(debounce)
 	return fw, true
@@ -200,7 +209,12 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 			if ev.Op&fsnotify.Create != 0 {
 				if fi, serr := os.Stat(ev.Name); serr == nil && fi.IsDir() &&
 					!fw.ignored[ev.Name] && !fw.isIgnored(ev.Name) {
-					_ = fw.w.Add(ev.Name)
+					if err := fw.admitRuntimeDir(ev.Name); isFDExhausted(err) {
+						// Keep no half-grown watcher after hitting the process fd
+						// wall. Closing it releases its descriptors and lets the
+						// caller's heartbeat polling take over completely.
+						return
+					}
 				}
 			}
 			if timer == nil {
@@ -230,6 +244,91 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 			return
 		}
 	}
+}
+
+// admitRuntimeDir applies the same cost cap used during startup before adding
+// a directory created after the watcher began. A cap miss deliberately leaves
+// the existing watcher alive: the feed's heartbeat poll then observes changes
+// below that directory. Descriptor exhaustion is returned to loop so it can
+// release all watcher descriptors and fall back to polling for the whole tree.
+func (fw *fsWatcher) admitRuntimeDir(path string) error {
+	if fw.cost >= fw.costCap {
+		return errTooManyDirs
+	}
+	cost, dirs, err := fw.runtimeWatchTree(path, fw.costCap-fw.cost)
+	if err != nil {
+		return err
+	}
+	if fw.cost+cost > fw.costCap {
+		return errTooManyDirs
+	}
+	add := fw.add
+	if add == nil {
+		add = fw.w.Add
+	}
+	for _, dir := range dirs {
+		if err := add(dir); err != nil {
+			if isFDExhausted(err) {
+				return err
+			}
+			// Match startup's best-effort behavior for ordinary per-directory
+			// failures. Reserve the cost nevertheless: a failed Add can have
+			// opened descriptors before returning, and undercounting is unsafe.
+		}
+	}
+	fw.cost += cost
+	return nil
+}
+
+// runtimeWatchTree keeps runtime subtree growth subject to the same skip rules
+// as startup. In particular, a newly-created parent can already contain an
+// ignored child or nested .git directory before its Create event is handled.
+func (fw *fsWatcher) runtimeWatchTree(root string, limit int) (int, []string, error) {
+	if fw.tree != nil {
+		return fw.tree(root, limit)
+	}
+	return fsWatchTree(root, limit, fw.skipRuntimeDir)
+}
+
+// fsWatchTree returns the startup-equivalent cost and all directories that
+// must be added for a newly-created subtree. limit is the remaining budget;
+// stopping the walk early avoids scanning a huge generated directory that is
+// going to use polling anyway.
+func fsWatchTree(root string, limit int, skipDir func(string) bool) (int, []string, error) {
+	cost := 0
+	dirs := make([]string, 0, 1)
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if isFDExhausted(err) {
+				return err
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skipDir != nil && skipDir(path) {
+				return filepath.SkipDir
+			}
+			dirs = append(dirs, path)
+			cost++
+		} else if fsWatchCostPerFile {
+			cost++
+		}
+		if cost > limit {
+			return errTooManyDirs
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	return cost, dirs, nil
+}
+
+func (fw *fsWatcher) skipRuntimeDir(path string) bool {
+	if filepath.Base(path) == ".git" {
+		return true
+	}
+	return fw.ignored[path] || fw.isIgnored(path)
 }
 
 // isIgnored reports whether path is gitignored, via `git check-ignore -q`

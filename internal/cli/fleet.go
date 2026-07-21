@@ -1715,10 +1715,7 @@ func (m fleetModel) View() string {
 			Render("refresh failed: " + m.lastErr.Error()))
 		tail.WriteString("\n")
 	}
-	cadence := fmt.Sprintf("polling every %s", m.interval)
-	if m.ws.hasAny() {
-		cadence = fmt.Sprintf("fs events · heartbeat %s", fleetTickInterval(m.interval, m.ws))
-	}
+	cadence := fleetWatchHealthLabel(m.ws.snapshotHealth(), m.interval)
 	if m.filter != fleetFilterAll || m.sortMode != fleetSortDefault {
 		cadence += fmt.Sprintf(" · filter:%s sort:%s", fleetFilterName(m.filter), fleetSortName(m.sortMode))
 	}
@@ -1734,6 +1731,29 @@ func (m fleetModel) View() string {
 		}
 	}
 	return body + pad + tail.String()
+}
+
+// fleetWatchHealthLabel keeps watcher allocation visible without making the
+// footer read mutable watcher state itself. A watcher shortage is explicit:
+// those eligible worktrees still refresh on the regular polling fallback.
+func fleetWatchHealthLabel(health fleetWatchHealth, interval time.Duration) string {
+	label := fmt.Sprintf("polling every %s", interval)
+	if health.Watched > 0 {
+		heartbeat := fsHeartbeatInterval
+		if interval > heartbeat {
+			heartbeat = interval
+		}
+		label = fmt.Sprintf("fs events · heartbeat %s", heartbeat)
+	}
+	label += fmt.Sprintf(" · watch %d/%d", health.Watched, health.Eligible)
+	if health.PollingFallback {
+		label += " · polling fallback"
+	}
+	label += fmt.Sprintf(" · budget %d/%d", health.Watched*health.DirCap, health.Budget)
+	if health.Saturated {
+		label += " · saturated"
+	}
+	return label
 }
 
 // uptime is how long watch has been running — the Δ reading's denominator.

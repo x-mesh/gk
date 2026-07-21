@@ -2,14 +2,109 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+// TestFSWatcherRuntimeAdmissionCap verifies that a directory created after
+// startup cannot spend past the watcher's original share. The caller keeps the
+// existing watcher and its heartbeat poll covers the declined directory.
+func TestFSWatcherRuntimeAdmissionCap(t *testing.T) {
+	added := false
+	fw := &fsWatcher{
+		cost: 3, costCap: 3,
+		tree: func(string, int) (int, []string, error) {
+			t.Fatal("tree walk must not run after the cap is exhausted")
+			return 0, nil, nil
+		},
+		add: func(string) error {
+			added = true
+			return nil
+		},
+	}
+	if err := fw.admitRuntimeDir("/new"); !errors.Is(err, errTooManyDirs) {
+		t.Fatalf("runtime cap error = %v, want errTooManyDirs", err)
+	}
+	if added {
+		t.Fatal("over-budget runtime directory must not be added")
+	}
+}
+
+// TestFSWatcherRuntimeAdmissionFDExhausted verifies that an EMFILE from a
+// runtime Add is returned to loop, which tears the watcher down and leaves the
+// feed on its polling fallback instead of retaining a descriptor-starved watch.
+func TestFSWatcherRuntimeAdmissionFDExhausted(t *testing.T) {
+	fw := &fsWatcher{
+		costCap: 10,
+		tree: func(string, int) (int, []string, error) {
+			return 1, []string{"/new"}, nil
+		},
+		add: func(string) error { return syscall.EMFILE },
+	}
+	err := fw.admitRuntimeDir("/new")
+	if !isFDExhausted(err) {
+		t.Fatalf("runtime Add error = %v, want descriptor exhaustion", err)
+	}
+	if fw.cost != 0 {
+		t.Fatalf("failed runtime admission cost = %d, want 0", fw.cost)
+	}
+}
+
+func TestFSWatcherRuntimeTreeSkipsNestedIgnoredAndGitDirs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gitignore", "new/ignored/\n")
+	repo.RunGit("add", ".gitignore")
+	repo.Commit("ignore nested runtime directory")
+
+	root := filepath.Join(repo.Dir, "new")
+	for _, dir := range []string{
+		filepath.Join(root, "ignored", "child"),
+		filepath.Join(root, ".git", "objects"),
+		filepath.Join(root, "kept"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	fw := &fsWatcher{runner: &git.ExecRunner{Dir: repo.Dir}, ctx: context.Background(), ignored: map[string]bool{}}
+	_, dirs, err := fw.runtimeWatchTree(root, fsWatchMaxDirs)
+	if err != nil {
+		t.Fatalf("runtime tree: %v", err)
+	}
+	for _, dir := range dirs {
+		if dir == filepath.Join(root, "ignored") || dir == filepath.Join(root, "ignored", "child") ||
+			dir == filepath.Join(root, ".git") || dir == filepath.Join(root, ".git", "objects") {
+			t.Fatalf("runtime tree must skip %s, dirs=%v", dir, dirs)
+		}
+	}
+}
+
+func TestNextPlainWatchTriggerRetiresClosedFSChannel(t *testing.T) {
+	fsCh := make(chan struct{})
+	close(fsCh)
+	next, trigger, err := nextPlainWatchTrigger(context.Background(), nil, fsCh)
+	if err != nil || trigger || next != nil {
+		t.Fatalf("closed fs channel = next:%v trigger:%v err:%v, want nil/false/nil", next, trigger, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, trigger, err = nextPlainWatchTrigger(ctx, nil, next)
+	if err != context.Canceled || trigger {
+		t.Fatalf("retired channel must wait for another source, got trigger:%v err:%v", trigger, err)
+	}
+}
 
 // TestFSWatcher_FiresOnChange verifies the fsnotify trigger wakes on a write
 // and that the burst is debounced into a signal on fw.events.

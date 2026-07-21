@@ -37,25 +37,57 @@ type fleetWatchSet struct {
 	watchers map[string]*fsWatcher
 	events   chan string
 	dirCap   int
+	health   fleetWatchHealth
 	closed   bool
+	// syncing serializes allocation rounds. The slow filesystem walk remains
+	// unlocked, but only one round may reserve the process-wide budget at a
+	// time; otherwise two concurrent rounds can each spend the whole budget.
+	syncing bool
 	// denied records grant failures (path → when), enforcing the retry
 	// cooldown so an over-budget worktree isn't re-walked every poll.
 	denied map[string]time.Time
 }
 
+// fleetWatchHealth is the lock-protected watcher allocation snapshot rendered
+// by the dashboard footer. Eligible is the full active demand before the
+// process-wide reservation cap is applied; watched is filled at read time from
+// the live watcher map so a completed grant or Close is visible immediately.
+type fleetWatchHealth struct {
+	Watched         int
+	Eligible        int
+	Budget          int
+	DirCap          int
+	PollingFallback bool
+	Saturated       bool
+}
+
+// snapshotHealth returns a consistent, render-safe copy of watcher health.
+// Keep this as the only footer-facing reader of fleetWatchSet state: sync and
+// Close run in background goroutines while View runs on Bubble Tea's loop.
+func (ws *fleetWatchSet) snapshotHealth() fleetWatchHealth {
+	if ws == nil {
+		budget := fsWatchCostBudget()
+		return fleetWatchHealth{Budget: budget, DirCap: budget}
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	health := ws.health
+	health.Watched = len(ws.watchers)
+	health.PollingFallback = health.Watched < health.Eligible
+	return health
+}
+
 // fleetWatchBudget splits the process watch budget (fd-aware on kqueue
-// platforms — see fsWatchCostBudget) across n ACTIVE worktrees. The floor
-// keeps a tiny share from making every watcher fail its walk when many
-// worktrees are active at once — better a few over-budget worktrees on the
-// heartbeat than none watched at all.
+// platforms — see fsWatchCostBudget) across n active worktrees. A watcher
+// costs at least one unit, so callers must select no more than the budget's
+// worth of worktrees before using this value.
 func fleetWatchBudget(n int) int {
 	if n <= 0 {
-		n = 1
+		return fsWatchCostBudget()
 	}
 	per := fsWatchCostBudget() / n
-	const floor = 64
-	if per < floor {
-		return floor
+	if per < 1 {
+		return 1
 	}
 	return per
 }
@@ -91,46 +123,81 @@ func fleetEntryActive(e fleetEntryJSON, now time.Time) bool {
 // fleetWatchPlan is one sync's allocation decision, computed as a pure
 // function so the policy is testable without filesystem watchers.
 type fleetWatchPlan struct {
-	grant  []string // active worktrees that should gain a watcher
-	revoke []string // idle worktrees whose watcher should be freed (pressure)
-	dirCap int      // per-watcher directory budget for this round's grants
+	grant    []string // active worktrees that should gain a watcher
+	revoke   []string // idle worktrees whose watcher should be freed (pressure)
+	dirCap   int      // per-watcher directory budget for this round's grants
+	cooling  bool     // a missing active watcher is still in retry cooldown
+	eligible int      // active demand before the process-wide reservation cap
+	budget   int      // process-wide directory/file-cost budget
 }
 
 // planFleetWatchers allocates the directory budget by activity. Active
 // entries (plus any forced path — e.g. the zoomed worktree, which the user is
-// staring at) divide the whole budget; idle entries get no new watcher. An
-// idle entry that already HOLDS a watcher keeps it while there's no pressure
-// (an established watcher costs nothing to keep), but the moment an active
-// entry is missing one, every idle-held watcher is revoked to free budget —
-// the re-walk cost lands on the idle side, where a heartbeat-paced feed is
-// already the accepted service level. denied carries the retry cooldown:
-// a path that failed a recent grant is not grantable this round, and —
-// critically — exerts no pressure either, so cooldown-blocked misses never
-// revoke idle holders for a grant that won't even be attempted.
+// staring at) divide the whole budget; forced paths are selected first. Idle
+// and obsolete holders are retired on sync, except for a cooldown-only round
+// that cannot install a replacement. denied carries the retry cooldown: a
+// path that failed a recent grant is not grantable this round.
 func planFleetWatchers(entries []fleetEntryJSON, have map[string]bool, forced map[string]bool, denied map[string]time.Time, now time.Time) fleetWatchPlan {
-	var missing, idleHolding []string
-	activeCount := 0
+	active := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	appendActive := func(path string) {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			active = append(active, path)
+		}
+	}
+	// Forced paths win the finite reservation slots.
+	for _, e := range entries {
+		if e.Status != "error" && forced[e.Path] {
+			appendActive(e.Path)
+		}
+	}
 	for _, e := range entries {
 		if e.Status == "error" || e.Path == "" {
 			continue
 		}
 		if fleetEntryActive(e, now) || forced[e.Path] {
-			activeCount++
-			if have[e.Path] {
-				continue
-			}
-			if t, ok := denied[e.Path]; ok && now.Sub(t) < fleetWatchRetryCooldown {
-				continue // cooling down — not grantable, not pressure
-			}
-			missing = append(missing, e.Path)
-		} else if have[e.Path] {
-			idleHolding = append(idleHolding, e.Path)
+			appendActive(e.Path)
 		}
 	}
-	plan := fleetWatchPlan{grant: missing, dirCap: fleetWatchBudget(activeCount)}
-	if len(missing) > 0 {
-		plan.revoke = idleHolding
+	budget := fsWatchCostBudget()
+	eligible := len(active)
+	// Never assign more one-unit reservations than the process budget.
+	if len(active) > budget {
+		active = active[:budget]
 	}
+	selected := make(map[string]bool, len(active))
+	for _, path := range active {
+		selected[path] = true
+	}
+	plan := fleetWatchPlan{
+		dirCap:   fleetWatchBudget(len(active)),
+		eligible: eligible,
+		budget:   budget,
+	}
+	cooling := false
+	for _, path := range active {
+		if have[path] {
+			continue
+		}
+		if t, ok := denied[path]; ok && now.Sub(t) < fleetWatchRetryCooldown {
+			cooling = true
+			continue
+		}
+		plan.grant = append(plan.grant, path)
+	}
+	// A cooldown-blocked round does not install a replacement, so it must not
+	// shed an otherwise live idle watcher just to retry nothing. Once the
+	// cooldown expires (or any active grant is attemptable), stale holders are
+	// reconciled away normally.
+	if !cooling || len(plan.grant) > 0 {
+		for path := range have {
+			if !selected[path] {
+				plan.revoke = append(plan.revoke, path)
+			}
+		}
+	}
+	plan.cooling = cooling
 	return plan
 }
 
@@ -197,16 +264,36 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 
 	// --- decide (locked) -----------------------------------------------------
 	ws.mu.Lock()
-	if ws.closed {
+	if ws.closed || ws.syncing {
 		ws.mu.Unlock()
 		return
 	}
+	ws.syncing = true
 	have := make(map[string]bool, len(ws.watchers))
 	for path := range ws.watchers {
 		have[path] = true
 	}
 	plan := planFleetWatchers(entries, have, forcedSet, ws.denied, time.Now())
+	// Existing watchers were admitted using the previous equal split. When the
+	// active set changes, retire and rebuild that split before granting anyone:
+	// an old full-budget watcher plus a new half-budget watcher is still an
+	// over-budget reservation even if their trees happen to be small today.
+	if len(ws.watchers) > 0 && ws.dirCap != plan.dirCap && !plan.cooling {
+		retire := append([]string(nil), plan.revoke...)
+		for path := range have {
+			retire = append(retire, path)
+			delete(have, path)
+		}
+		plan = planFleetWatchers(entries, have, forcedSet, ws.denied, time.Now())
+		plan.revoke = retire
+	}
 	ws.dirCap = plan.dirCap
+	ws.health = fleetWatchHealth{
+		Eligible:  plan.eligible,
+		Budget:    plan.budget,
+		DirCap:    plan.dirCap,
+		Saturated: plan.eligible > plan.budget,
+	}
 	dirCap := plan.dirCap
 
 	// Detach everything this round retires — revoked holders and worktrees that
@@ -276,6 +363,7 @@ func (ws *fleetWatchSet) sync(ctx context.Context, entries []fleetEntryJSON, for
 			ws.denied[path] = now
 		}
 	}
+	ws.syncing = false
 	ws.mu.Unlock()
 
 	for _, fw := range orphans {
@@ -293,6 +381,15 @@ func (ws *fleetWatchSet) forward(path string, fw *fsWatcher) {
 		default:
 		}
 	}
+	// A watcher can tear itself down on EMFILE/ENFILE. Its events channel then
+	// closes, which is the authoritative liveness signal: remove this exact
+	// instance so health/ticks fall back to polling and the next sync can grant
+	// a fresh watcher for the worktree.
+	ws.mu.Lock()
+	if ws.watchers[path] == fw {
+		delete(ws.watchers, path)
+	}
+	ws.mu.Unlock()
 }
 
 // hasWatcher reports whether this worktree has its own fs watcher — i.e. its
@@ -315,11 +412,15 @@ func (ws *fleetWatchSet) Close() {
 		return
 	}
 	ws.mu.Lock()
-	defer ws.mu.Unlock()
 	ws.closed = true
+	watchers := make([]*fsWatcher, 0, len(ws.watchers))
 	for path, fw := range ws.watchers {
-		fw.Close()
+		watchers = append(watchers, fw)
 		delete(ws.watchers, path)
+	}
+	ws.mu.Unlock()
+	for _, fw := range watchers {
+		fw.Close()
 	}
 }
 

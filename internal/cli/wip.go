@@ -173,7 +173,7 @@ func planBuriedWIPRepair(ctx context.Context, runner git.Runner, patterns []*reg
 	if err != nil {
 		return wipRepairPlan{}, fmt.Errorf("wip repair: count descendants: %w", err)
 	}
-	fmt.Sscanf(strings.TrimSpace(string(count)), "%d", &candidate.Descendants)
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(count)), "%d", &candidate.Descendants)
 	return candidate, nil
 }
 
@@ -186,7 +186,7 @@ func applyWIPRepair(ctx context.Context, cmd *cobra.Command, runner *git.ExecRun
 	if err != nil {
 		return fmt.Errorf("wip repair: create temporary worktree: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	if _, stderr, err := runner.Run(ctx, "worktree", "add", "--detach", tmp, plan.Commit); err != nil {
 		return fmt.Errorf("wip repair: create temporary worktree: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}

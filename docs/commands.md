@@ -2717,27 +2717,49 @@ With `--json` (or `GK_AGENT=1`) the result is
 
 ### List columns
 
-`gk worktree list` mirrors `gk sw`'s information density:
+`gk worktree list` is built around one question — *can I delete this worktree?*
+Each row pairs the branch's tip with its parent and the distance between them:
 
 ```
-█  WORKTREES   5 entries
-     BRANCH           SOURCE                DIFF  AGE  PATH
-   ★ main             ⇄ origin/main               2h   /Users/jinwoo/work/project/agentic/gk
-     fix-bug          from main@e18d988           10d  /Users/jinwoo/.gk/worktree/gk/fix-bug
-     improve-ux       ⇄ origin/improve-ux   ↑52   11d  /Users/jinwoo/.gk/worktree/gk/improve-ux
+█  WORKTREES   4 entries
+     BRANCH          HEAD     PARENT   VS PARENT  AGE  PATH
+   ★ main            559ceab  -        -          2h   /Users/jinwoo/work/project/agentic/gk [dirty +2]
+     fix-bug         559ceab  main     ● same     10d  /Users/jinwoo/.gk/worktree/gk/fix-bug
+     old-spike       a1b2c3d  main     ● merged   3w   /Users/jinwoo/.gk/worktree/gk/old-spike
+     improve-ux      d6c5d89  main     ↑2 ↓66     11d  /Users/jinwoo/.gk/worktree/gk/improve-ux
 ```
 
 | Column | Meaning |
 |---|---|
 | `★` | The worktree this invocation runs from. |
 | `BRANCH` | Local branch checked out in the worktree (or `(detached HEAD)` / `(bare)`). |
-| `SOURCE` | `⇄ <upstream>` when an upstream is tracked, otherwise `from <parent>@<sha>` for the resolved fork point, otherwise blank for purely local branches. The fork anchor is the recorded `gk-parent` when one is set (`gk branch set-parent`), falling back to the default branch — stacked branches show their real parent instead of `from main@…`. |
-| `DIFF` | Ahead/behind versus the upstream (`↑3 ↓1`). Empty when in sync or when no upstream is tracked. |
+| `HEAD` | The worktree's checked-out commit, 7 chars — same form `gk log` and `gk context` print. Shown for detached and bare worktrees too. |
+| `PARENT` | The branch this one is measured against: the recorded `gk-parent` (`gk branch set-parent`, or whatever `gk wt add` recorded), else a parent inferred from history — inferred ones render faint. `-` when neither resolves. |
+| `VS PARENT` | Standing against `PARENT`. `● same` (green) — the two tips are the same commit. `● merged` (green) — the parent has everything this branch has and moved on. `↑2` / `↑2 ↓66` (yellow) — commits that live only here. `-` when the parent is unknown or its ref is gone. |
 | `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
 | `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |
-| `FLAGS` | `[locked]` / `[prunable]` markers when present. |
+| `FLAGS` | `[dirty +N]` (uncommitted paths), `[locked]`, `[prunable]`. |
 
-The interactive TUI (run `gk worktree` with no subcommand) carries the same `BRANCH | SOURCE | PATH | FLAGS` columns.
+Green `VS PARENT` means the branch holds no commit its parent lacks — the
+precondition for reclaiming the worktree. It is not the whole verdict:
+`[dirty +N]` marks work that was never committed at all, and a green row with
+that flag still has something to lose. `gk worktree cleanup` applies the full
+check (dirty, locks, protected branches) and is the safe way to act in bulk.
+
+`--json` adds `parent`, `parent_source` (`explicit` / `inferred`),
+`parent_ahead`, `parent_behind`, and `parent_state`
+(`same` / `merged` / `ahead` / `diverged`) alongside the existing
+upstream-relative `ahead` / `behind`.
+
+The interactive TUI (run `gk worktree` with no subcommand) carries the same
+reading: `BRANCH | PARENT | VS PARENT | HASH | AGE | PATH | FLAGS`. It is the
+screen where `[d]` actually removes a worktree, so the standing is on every
+row before the cursor gets there, and the removal prompt states it again —
+a branch holding commits its parent lacks flips that confirm to default-No.
+On a narrowing terminal `VS PARENT` outranks `AGE`: age only hints that a
+worktree is abandoned, the parent standing says whether removing it loses
+anything. `--global` (`g`) drops both parent columns — another project's
+parents aren't resolvable from this repo.
 
 ### Examples
 

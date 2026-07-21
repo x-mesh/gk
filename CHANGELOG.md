@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`gk worktree list`가 "이 worktree 지워도 되나"에 답하도록 컬럼을 다시 짰다.** 기존 `SOURCE`/`DIFF`는 upstream 기준이라 push 여부는 알려줬지만, 정작 판단에 필요한 "이 브랜치가 부모에 없는 걸 들고 있나"는 답하지 못했다. 이제 `BRANCH | HEAD | PARENT | VS PARENT | AGE | PATH`로, 각 worktree의 체크아웃된 커밋(7자, `gk log`·`gk context`와 같은 형식)과 그 브랜치가 측정 기준으로 삼는 부모, 그리고 둘 사이 거리를 나란히 보여준다. `VS PARENT`는 네 가지다 — `● same`(두 tip이 같은 커밋), `● merged`(부모가 이미 다 갖고 부모만 더 나아감), `↑2` / `↑2 ↓66`(여기에만 있는 커밋). 앞의 둘은 초록, 뒤는 노랑이라 스캔 한 번으로 갈린다. 부모는 기록된 `gk-parent`를 우선 쓰고 없으면 히스토리에서 추론하되, 추론된 부모는 흐리게 렌더해 "merged"가 추측 위에 서 있을 때를 구분한다. 부모 ref가 사라졌거나 측정 불가면 `-`로 남긴다 — 조용히 trunk 기준으로 다시 재서 "merged"라고 말하지 않는다. 곁들여 `[dirty +N]` 플래그가 붙는다: 부모와 같아도 커밋되지 않은 작업은 그대로 남아 있고, 그 표시가 없으면 초록 줄이 정확히 잘못된 삭제를 부른다. `--json`에는 `parent_source`/`parent_ahead`/`parent_behind`/`parent_state`가 추가되고 기존 upstream 기준 `ahead`/`behind`는 그대로다.
+- **`gk wt` 대화형 화면도 같은 판정을 들고, 삭제 프롬프트가 그걸 말한다.** 목록은 보기만 하고 끝나지만 실제로 worktree를 지우는 건 TUI의 `[d]`라서, 정작 판단 근거가 필요한 자리는 이쪽이었다. `SOURCE` 컬럼을 `PARENT`/`VS PARENT`로 바꿔 커서를 옮기기 전에 각 줄의 상태가 보이고, 삭제 확인 프롬프트는 묻기 전에 그 브랜치의 처지를 한 줄로 말한다 — 부모에 없는 커밋이 있으면 노랑으로 경고하면서 **확인 기본값을 No로 뒤집는다**. 습관적으로 Enter를 눌러 어디에도 없는 작업을 날리는 경우가 정확히 그 한 경우이기 때문이다. 좁은 터미널에서는 `VS PARENT`가 `AGE`보다 먼저 살아남는다(나이는 방치됐다는 힌트일 뿐이고, 부모 대비는 지웠을 때 잃는 게 있는지를 말한다). TUI는 키 입력마다 목록을 다시 그리므로 측정 결과는 비교한 두 커밋으로 키를 만들어 캐시한다 — tip이 움직이면 키가 달라지니 stale 답이 나올 수 없고, 움직이지 않는 동안은 subprocess가 0이다. `--global` 모드는 두 컬럼이 빠진다(다른 프로젝트의 부모는 이 저장소에서 못 잰다).
+
 ## [0.132.0] - 2026-07-21
 
 ### Added

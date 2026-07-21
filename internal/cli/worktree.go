@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -187,6 +190,14 @@ type worktreeListEntryJSON struct {
 	Ahead    int               `json:"ahead,omitempty"`
 	Behind   int               `json:"behind,omitempty"`
 	Dirty    *contextDirtyJSON `json:"dirty,omitempty"`
+	// Parent standing, measured against Parent (not the upstream that
+	// Ahead/Behind describe): parent_state is same | merged | ahead |
+	// diverged, and same/merged mean the branch holds no commit its parent
+	// lacks — the precondition for reclaiming the worktree.
+	ParentSource string `json:"parent_source,omitempty"` // explicit | inferred
+	ParentAhead  int    `json:"parent_ahead,omitempty"`
+	ParentBehind int    `json:"parent_behind,omitempty"`
+	ParentState  string `json:"parent_state,omitempty"`
 }
 
 func runWorktreeList(cmd *cobra.Command, args []string) error {
@@ -203,6 +214,11 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	// enrichment rather than aborting the whole list.
 	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
 	currentPath := currentWorktreePath(cmd.Context(), runner)
+	// Parent standing is measured only for the branches actually checked out
+	// in a worktree — the map is keyed by branch, and a repo's other local
+	// branches would each cost a rev-list nobody reads here.
+	parentRels := loadWorktreeParentRels(cmd.Context(), runner,
+		worktreeBranchNames(entries), worktreeBranchTips(branchMeta))
 
 	if JSONOut() {
 		enriched := make([]worktreeListEntryJSON, 0, len(entries))
@@ -215,6 +231,12 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			if !e.Bare {
 				if m, ok := branchMeta[e.Branch]; ok {
 					j.Upstream, j.Ahead, j.Behind, j.Parent = m.Upstream, m.Ahead, m.Behind, m.ForkBranch
+				}
+				// The measured parent supersedes the fork-point anchor: it is
+				// the branch the ahead/behind counts are actually against.
+				if rel, ok := parentRels[e.Branch]; ok && rel.Resolved {
+					j.Parent, j.ParentSource = rel.Parent, string(rel.Source)
+					j.ParentAhead, j.ParentBehind, j.ParentState = rel.Ahead, rel.Behind, rel.State()
 				}
 				j.Dirty = worktreeDirtyAt(cmd.Context(), e.Path)
 			}
@@ -243,6 +265,15 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			branchLabel = "-"
 		}
 		marks := ""
+		// Uncommitted work is flagged beside the parent standing because the
+		// two disagree constantly: a branch level with its parent still holds
+		// everything that was never committed, and a row reading "● same"
+		// without this marker would invite exactly the wrong deletion.
+		if !e.Bare {
+			if d := worktreeDirtyAt(cmd.Context(), e.Path); d != nil {
+				marks += fmt.Sprintf(" [dirty +%d]", d.Staged+d.Unstaged+d.Untracked+d.Conflicts)
+			}
+		}
 		if e.Locked {
 			marks += " [locked]"
 			locked++
@@ -252,15 +283,19 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			prunable++
 		}
 		meta := branchMeta[e.Branch]
+		rel := parentRels[e.Branch]
 		isCurrent := currentPath != "" && filepath.Clean(e.Path) == filepath.Clean(currentPath)
 		rows = append(rows, worktreeRow{
-			Current: isCurrent,
-			Branch:  branchLabel,
-			Source:  worktreeSourceLabel(meta),
-			Diff:    formatSwitchDiff(meta.Ahead, meta.Behind),
-			Age:     ifZeroTime(meta.LastCommit),
-			Path:    e.Path,
-			Flags:   marks,
+			Current:        isCurrent,
+			Branch:         branchLabel,
+			Head:           shortWorktreeHead(e.Head),
+			Parent:         orDash(rel.Parent),
+			ParentInferred: rel.Source == branchparent.SourceInferred,
+			Rel:            orDash(worktreeParentLabel(rel)),
+			RelSafe:        rel.Safe(),
+			Age:            ifZeroTime(meta.LastCommit),
+			Path:           e.Path,
+			Flags:          marks,
 		})
 	}
 	body = append(body, renderWorktreeRows(rows)...)
@@ -287,9 +322,13 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 // the worktree-list renderer. Keeping it narrow keeps the test fixtures
 // small and lets us evolve listLocalBranches independently.
 type worktreeBranchMeta struct {
-	Upstream   string
-	Ahead      int
-	Behind     int
+	Upstream string
+	Ahead    int
+	Behind   int
+	// Hash is the branch tip. It comes free with the branch listing and is
+	// what lets parent-standing results be memoised by content — see
+	// worktreeParentRelCache.
+	Hash       string
 	ForkBranch string
 	ForkPoint  string
 	LastCommit time.Time
@@ -324,6 +363,7 @@ func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner)
 			Upstream:   b.Upstream,
 			Ahead:      b.Ahead,
 			Behind:     b.Behind,
+			Hash:       b.Hash,
 			ForkBranch: b.ForkBranch,
 			ForkPoint:  b.ForkPoint,
 			LastCommit: b.LastCommit,
@@ -370,21 +410,252 @@ func currentWorktreePath(ctx context.Context, runner *git.ExecRunner) string {
 	return p
 }
 
-// worktreeSourceLabel collapses upstream / fork-parent / local-only into
-// a single SOURCE-column string mirroring `gk sw`:
-//
-//	"⇄ origin/main"          — upstream tracked
-//	"from main@abc1234"      — no upstream, fork point known
-//	"(local)"                — neither
-func worktreeSourceLabel(m worktreeBranchMeta) string {
+// worktreeParentRel is one worktree branch's standing against its parent
+// branch. It answers the question the list exists to answer — "can I delete
+// this worktree?" — because a branch that is level with (or fully absorbed
+// into) its parent holds nothing the parent doesn't already have.
+type worktreeParentRel struct {
+	Parent   string              // parent branch name ("" when unresolvable)
+	Source   branchparent.Source // explicit gk-parent vs inferred
+	Ahead    int                 // commits on the branch the parent lacks
+	Behind   int                 // commits on the parent the branch lacks
+	Resolved bool                // false → parent unknown or its ref is gone
+}
+
+// State collapses the divergence counts into the four cases the table
+// colours by. Callers treat "same"/"merged" as safe-to-remove and
+// "ahead"/"diverged" as carrying work that only lives here.
+func (r worktreeParentRel) State() string {
 	switch {
-	case m.Upstream != "":
-		return "⇄ " + m.Upstream
-	case m.ForkPoint != "":
-		return fmt.Sprintf("from %s@%s", m.ForkBranch, m.ForkPoint)
+	case !r.Resolved:
+		return ""
+	case r.Ahead == 0 && r.Behind == 0:
+		return "same"
+	case r.Ahead == 0:
+		return "merged"
+	case r.Behind == 0:
+		return "ahead"
+	default:
+		return "diverged"
+	}
+}
+
+// Safe reports whether the branch holds no commit its parent lacks. It is
+// deliberately narrower than `gk worktree cleanup`'s verdict — it says
+// nothing about uncommitted work, locks, or protection — so the VS PARENT
+// column never reads as a blanket "safe to delete".
+func (r worktreeParentRel) Safe() bool {
+	s := r.State()
+	return s == "same" || s == "merged"
+}
+
+// worktreeParentLabel renders the VS PARENT cell:
+//
+//	"● same"     — branch tip and parent tip are the same commit
+//	"● merged"   — parent has everything this branch has (and moved on)
+//	"↑2"         — 2 commits live only here
+//	"↑2 ↓66"     — diverged both ways
+//	""           — parent unresolvable, nothing to say
+func worktreeParentLabel(r worktreeParentRel) string {
+	switch r.State() {
+	case "same":
+		return "● same"
+	case "merged":
+		return "● merged"
+	case "ahead", "diverged":
+		return formatSwitchDiff(r.Ahead, r.Behind)
 	default:
 		return ""
 	}
+}
+
+// worktreeBranchNames collects the distinct branch names checked out across
+// the given worktrees. Bare and detached entries contribute nothing — they
+// have no branch whose parent could be measured.
+func worktreeBranchNames(entries []WorktreeEntry) []string {
+	seen := make(map[string]bool, len(entries))
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Bare || e.Detached || e.Branch == "" || seen[e.Branch] {
+			continue
+		}
+		seen[e.Branch] = true
+		names = append(names, e.Branch)
+	}
+	return names
+}
+
+// orDash renders an empty cell as "-". An absent parent and an unmeasurable
+// distance are different from a zero distance, and a blank cell reads as the
+// latter — the dash says "gk has no answer here", not "nothing to report".
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// worktreeBranchTips projects the branch listing down to name → tip sha, the
+// form loadWorktreeParentRels needs to key its cache by content.
+func worktreeBranchTips(meta map[string]worktreeBranchMeta) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	tips := make(map[string]string, len(meta))
+	for name, m := range meta {
+		if m.Hash != "" {
+			tips[name] = m.Hash
+		}
+	}
+	return tips
+}
+
+// shortWorktreeHead trims a worktree's HEAD to the 7-char form the rest of
+// gk prints (fork points, `gk log`, `gk context`), so the same commit reads
+// identically wherever it appears.
+func shortWorktreeHead(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// worktreeParentRelCache memoises the ahead/behind measurement by its inputs:
+// the two commits compared. Keyed by content, so an entry can never go stale —
+// a moved tip is a different key, not a wrong answer. It exists for the
+// worktree TUI, which rebuilds its rows on every keystroke and would otherwise
+// re-fork one `rev-list` per worktree per frame.
+var worktreeParentRelCache sync.Map // key → worktreeParentRel
+
+// worktreeParentRelKey builds that content key. Both tips must be known:
+// without them a hit could answer for commits that have since moved, so the
+// caller measures instead of caching.
+func worktreeParentRelKey(runner *git.ExecRunner, branch, branchTip, parent, parentTip string) (string, bool) {
+	if branch == "" || branchTip == "" || parent == "" || parentTip == "" {
+		return "", false
+	}
+	return strings.Join([]string{runner.Dir, branch, branchTip, parent, parentTip}, "\x00"), true
+}
+
+// measureParentRel resolves one branch's parent and measures the divergence
+// between the two tips. explicitParent short-circuits the resolver when the
+// caller already batch-read the gk-parent config; pass "" to resolve from
+// scratch (explicit config first, then history inference).
+//
+// Runner is interface-typed so single-branch callers outside the list — the
+// TUI's remove confirmation, for one — can reuse it.
+//
+// Any failure returns the zero value, i.e. Resolved=false: a parent that
+// resolves to nothing, a ref that no longer exists, a rev-list that times
+// out. Callers must not read that as "no divergence".
+func measureParentRel(ctx context.Context, runner git.Runner, branch, explicitParent string) worktreeParentRel {
+	if branch == "" {
+		return worktreeParentRel{}
+	}
+	parent, source := explicitParent, branchparent.SourceExplicit
+	if parent == "" || parent == branch {
+		p, s, ok := branchparent.NewResolver(git.NewClient(runner)).ResolveParent(ctx, branch)
+		if !ok {
+			return worktreeParentRel{}
+		}
+		parent, source = p, s
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	// left...right: left-only commits are what the branch is behind by,
+	// right-only what it is ahead by. An unknown ref (deleted parent) errors
+	// here, which is exactly the unresolved case.
+	stdout, _, err := runner.Run(callCtx, "rev-list", "--left-right", "--count", parent+"..."+branch)
+	if err != nil {
+		return worktreeParentRel{}
+	}
+	fields := strings.Fields(string(stdout))
+	if len(fields) != 2 {
+		return worktreeParentRel{}
+	}
+	behind, err1 := strconv.Atoi(fields[0])
+	ahead, err2 := strconv.Atoi(fields[1])
+	if err1 != nil || err2 != nil {
+		return worktreeParentRel{}
+	}
+	return worktreeParentRel{
+		Parent: parent, Source: source,
+		Ahead: ahead, Behind: behind, Resolved: true,
+	}
+}
+
+// loadWorktreeParentRels resolves each branch's parent and measures the
+// divergence in one pass. Explicit gk-parent metadata is read as a single
+// batch (AllParents) and only the branches it misses fall through to
+// reflog inference, so the common case costs one config read plus one
+// rev-list per worktree rather than a resolver walk per worktree.
+//
+// tips maps branch name → tip sha (the branch listing already has them).
+// Supplying it makes results cacheable; passing nil just means every call
+// measures afresh.
+//
+// Every failure degrades to an unresolved relationship: a missing parent
+// ref, a timed-out rev-list, or a detached worktree simply leaves the
+// VS PARENT column blank instead of failing the listing.
+func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branches []string, tips map[string]string) map[string]worktreeParentRel {
+	if len(branches) == 0 {
+		return nil
+	}
+	explicit, _ := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+
+	type result struct {
+		branch string
+		rel    worktreeParentRel
+	}
+	out := make(chan result, len(branches))
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for _, name := range branches {
+		if name == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(branch string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Only the explicit path is cacheable: an inferred parent isn't
+			// known until measureParentRel resolves it, and without the
+			// parent's name there is no tip to key on. Explicit dominates in
+			// practice — `gk wt add` records a parent for every branch it
+			// creates — so the TUI's repeated rebuilds still hit.
+			parent := explicit[branch]
+			key, cacheable := "", false
+			if parent != "" && parent != branch {
+				key, cacheable = worktreeParentRelKey(runner, branch, tips[branch], parent, tips[parent])
+				if cacheable {
+					if hit, found := worktreeParentRelCache.Load(key); found {
+						if rel, valid := hit.(worktreeParentRel); valid {
+							out <- result{branch, rel}
+							return
+						}
+					}
+				}
+			}
+			rel := measureParentRel(ctx, runner, branch, parent)
+			if !rel.Resolved {
+				return
+			}
+			if cacheable {
+				worktreeParentRelCache.Store(key, rel)
+			}
+			out <- result{branch, rel}
+		}(name)
+	}
+	wg.Wait()
+	close(out)
+
+	rels := make(map[string]worktreeParentRel, len(branches))
+	for r := range out {
+		rels[r.branch] = r.rel
+	}
+	return rels
 }
 
 // ifZeroTime renders LastCommit as a compact age, or "" when the
@@ -401,11 +672,17 @@ func ifZeroTime(t time.Time) string {
 type worktreeRow struct {
 	Current bool
 	Branch  string
-	Source  string
-	Diff    string
-	Age     string
-	Path    string
-	Flags   string
+	Head    string
+	Parent  string
+	// ParentInferred marks a parent gk guessed from history rather than one
+	// recorded by `gk wt add` / `gk branch --parent`. Rendered faint so a
+	// guessed anchor never reads as authoritative when the row says "merged".
+	ParentInferred bool
+	Rel            string
+	RelSafe        bool
+	Age            string
+	Path           string
+	Flags          string
 }
 
 // renderWorktreeRows formats rows as fixed-width columns. Widths are
@@ -413,33 +690,41 @@ type worktreeRow struct {
 // paths are middle-ellipsised once we exceed a generous cap so the
 // table doesn't blow out narrow terminals. ANSI codes are applied
 // after width computation to keep alignment intact.
+//
+// The column set is chosen for one question — "is this worktree still
+// holding work?" — so it pairs each branch's tip with its parent and the
+// distance between them, rather than the upstream/push view `gk sw` gives.
 func renderWorktreeRows(rows []worktreeRow) []string {
 	const pathCap = 60
-	wBranch, wSource, wDiff, wAge := len("BRANCH"), len("SOURCE"), len("DIFF"), len("AGE")
+	wBranch, wHead, wParent := len("BRANCH"), len("HEAD"), len("PARENT")
+	wRel, wAge := len("VS PARENT"), len("AGE")
 	for _, r := range rows {
 		if w := runeLen(r.Branch); w > wBranch {
 			wBranch = w
 		}
-		if w := runeLen(r.Source); w > wSource {
-			wSource = w
+		if w := runeLen(r.Head); w > wHead {
+			wHead = w
 		}
-		if w := runeLen(r.Diff); w > wDiff {
-			wDiff = w
+		if w := runeLen(r.Parent); w > wParent {
+			wParent = w
+		}
+		if w := runeLen(r.Rel); w > wRel {
+			wRel = w
 		}
 		if w := runeLen(r.Age); w > wAge {
 			wAge = w
 		}
 	}
 	faint := color.New(color.Faint).SprintFunc()
-	cyan := color.CyanString
+	green := color.GreenString
 	yellow := color.YellowString
-	header := fmt.Sprintf("  %s  %s  %s  %s  %s%s",
+	header := fmt.Sprintf("  %s  %s  %s  %s  %s  %s",
 		padRight("BRANCH", wBranch),
-		padRight("SOURCE", wSource),
-		padRight("DIFF", wDiff),
+		padRight("HEAD", wHead),
+		padRight("PARENT", wParent),
+		padRight("VS PARENT", wRel),
 		padRight("AGE", wAge),
 		"PATH",
-		"",
 	)
 	out := make([]string, 0, len(rows)+1)
 	out = append(out, faint(header))
@@ -450,23 +735,30 @@ func renderWorktreeRows(rows []worktreeRow) []string {
 			marker = yellow("★") + " "
 			branchCell = yellow(r.Branch)
 		}
-		sourceCell := r.Source
+		parentCell := r.Parent
+		if r.ParentInferred || parentCell == "-" {
+			parentCell = faint(parentCell)
+		}
+		relCell := r.Rel
 		switch {
-		case strings.HasPrefix(sourceCell, "⇄"):
-			sourceCell = cyan(sourceCell)
-		case strings.HasPrefix(sourceCell, "from "):
-			sourceCell = faint(sourceCell)
+		case relCell == "" || relCell == "-":
+			relCell = faint(relCell)
+		case r.RelSafe:
+			relCell = green(relCell)
+		default:
+			relCell = yellow(relCell)
 		}
 		pathDisplay := compactPath(r.Path, pathCap)
 		flags := r.Flags
 		if flags != "" {
 			flags = faint(flags)
 		}
-		line := fmt.Sprintf("%s%s  %s  %s  %s  %s%s",
+		line := fmt.Sprintf("%s%s  %s  %s  %s  %s  %s%s",
 			marker,
 			padRightVisible(branchCell, wBranch),
-			padRightVisible(sourceCell, wSource),
-			padRightVisible(r.Diff, wDiff),
+			padRightVisible(faint(r.Head), wHead),
+			padRightVisible(parentCell, wParent),
+			padRightVisible(relCell, wRel),
 			padRightVisible(r.Age, wAge),
 			pathDisplay,
 			flags,
@@ -991,8 +1283,23 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		return loadWorktreeBranchMeta(ctx, runner)
 	}
 
+	// loadParentRels measures each listed branch against its parent — the
+	// signal that answers "is this worktree still holding work?" at the exact
+	// moment the user is about to press [d]. Skipped in global mode, where
+	// another project's parents aren't resolvable from this repo. Results are
+	// memoised by commit pair, so the rebuild this runs on every keystroke
+	// costs no subprocess until a tip actually moves.
+	loadParentRels := func(rs rowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
+		if global {
+			return nil
+		}
+		return loadWorktreeParentRels(ctx, runner,
+			worktreeBranchNames(rs.entries), worktreeBranchTips(meta))
+	}
+
 	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
 		meta := loadBranchMeta()
+		parentRels := loadParentRels(rs, meta)
 		appendDiff := func(branch string) string {
 			m, ok := meta[branch]
 			if !ok {
@@ -1004,12 +1311,26 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 			return branch + "  " + suffix
 		}
-		sourceFor := func(branch string) string {
-			m, ok := meta[branch]
-			if !ok {
-				return ""
+		// parentCellsFor renders the PARENT / VS PARENT pair for one branch.
+		// Inside picker cells we must use cell* helpers, not fatih color
+		// helpers, because fatih emits `\x1b[0m` (full reset) which clobbers
+		// bubbles/table's cursor-row background mid-cell — leaving a torn
+		// highlight bar plus poor contrast on the active row. The cell*
+		// helpers reset only the foreground / bold bit they set.
+		parentCellsFor := func(branch string) (parentCell, relCell string) {
+			rel, ok := parentRels[branch]
+			if !ok || !rel.Resolved {
+				return cellFaint("-"), cellFaint("-")
 			}
-			return worktreeSourceLabel(m)
+			parentCell = rel.Parent
+			if rel.Source == branchparent.SourceInferred {
+				parentCell = cellFaint(parentCell)
+			}
+			label := worktreeParentLabel(rel)
+			if rel.Safe() {
+				return parentCell, cellGreen(label)
+			}
+			return parentCell, cellYellow(label)
 		}
 		// ageFor reads the branch tip's commit age from the bulk-loaded meta
 		// (empty for detached worktrees and in global mode, where cross-project
@@ -1020,7 +1341,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			return ifZeroTime(meta[branch].LastCommit)
 		}
 		hashFor := func(e WorktreeEntry) string {
-			return shortSHA(e.Head)
+			return shortWorktreeHead(e.Head)
 		}
 		if global {
 			// No AGE column here: across projects the branch meta isn't loaded
@@ -1047,27 +1368,18 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			})
 			return items, headers
 		}
-		headers = []string{"BRANCH", "SOURCE", "HASH", "AGE", "PATH", "FLAGS"}
+		headers = []string{"BRANCH", "PARENT", "VS PARENT", "HASH", "AGE", "PATH", "FLAGS"}
 		items = make([]ui.PickerItem, 0, len(rs.entries)+2)
 		for _, e := range rs.entries {
 			branch, flagsPlain := worktreeRowPartsPlain(e)
-			source := sourceFor(e.Branch)
-			// Inside picker cells we must use cellCyan/cellFaint, not
-			// fatih color helpers, because fatih emits `\x1b[0m` (full
-			// reset) which clobbers bubbles/table's cursor-row purple
-			// background mid-cell — leaving a torn highlight bar plus
-			// poor contrast on the active row. The cell* helpers reset
-			// only the foreground / bold bit they set.
-			switch {
-			case strings.HasPrefix(source, "⇄"):
-				source = cellCyan(source)
-			case strings.HasPrefix(source, "from "):
-				source = cellFaint(source)
-			}
+			parentCell, relCell := parentCellsFor(e.Branch)
 			items = append(items, ui.PickerItem{
 				Display: worktreeTUILabel(e, bold, faint),
-				Cells:   []string{appendDiff(branch), source, hashFor(e), ageFor(e.Branch), e.Path, flagsPlain},
-				Key:     e.Path,
+				Cells: []string{
+					appendDiff(branch), parentCell, relCell,
+					hashFor(e), ageFor(e.Branch), e.Path, flagsPlain,
+				},
+				Key: e.Path,
 			})
 		}
 		items = append(items,
@@ -1275,11 +1587,16 @@ func worktreeColumnPriority() map[string]int {
 	return map[string]int{
 		"BRANCH":  100,
 		"PROJECT": 90,
-		"AGE":     80,
-		"PATH":    60,
-		"SOURCE":  40,
-		"FLAGS":   30,
-		"HASH":    10,
+		// VS PARENT outranks AGE: age only hints that a worktree is
+		// abandoned, whereas the parent standing says whether removing it
+		// would lose anything. PARENT itself sits lower — it names the
+		// yardstick, and the reading survives losing the name.
+		"VS PARENT": 85,
+		"AGE":       80,
+		"PATH":      60,
+		"PARENT":    50,
+		"FLAGS":     30,
+		"HASH":      10,
 	}
 }
 
@@ -1407,7 +1724,10 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 // After a successful removal we also offer to delete the branch that
 // was checked out, but only when no other worktree still owns it.
 // Confirm defaults to yes because the user already picked "remove" in
-// the action menu — a second No-by-default prompt feels redundant.
+// the action menu — a second No-by-default prompt feels redundant. The
+// exception is a branch carrying commits its parent lacks: there the
+// default flips to No, because that is the one case where confirming out
+// of habit loses work that exists nowhere else.
 //
 // runner/w are interface-typed (not *ExecRunner/*cobra.Command) so the
 // flow is reusable outside the worktree TUI — `gk switch`'s d action
@@ -1421,7 +1741,23 @@ func worktreeTUIRemove(ctx context.Context, runner git.Runner, w io.Writer, entr
 		return fmt.Errorf("cannot remove the bare/main worktree: %s", entry.Path)
 	}
 
-	ok, err := ui.Confirm(fmt.Sprintf("remove %s?", entry.Path), true)
+	// State the branch's standing against its parent before asking. The
+	// worktree is about to go, and this is the last point where "it holds
+	// two commits nobody else has" is still actionable.
+	defaultYes := true
+	if rel := measureParentRel(ctx, runner, entry.Branch, ""); rel.Resolved {
+		switch {
+		case rel.Ahead > 0:
+			fmt.Fprintf(stderr, "%s\n", color.YellowString(
+				"%s has %d commit(s) %s doesn't have", entry.Branch, rel.Ahead, rel.Parent))
+			defaultYes = false
+		default:
+			fmt.Fprintf(stderr, "%s\n", color.New(color.Faint).Sprintf(
+				"%s holds nothing %s lacks", entry.Branch, rel.Parent))
+		}
+	}
+
+	ok, err := ui.Confirm(fmt.Sprintf("remove %s?", entry.Path), defaultYes)
 	if err != nil || !ok {
 		return nil
 	}

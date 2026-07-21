@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -1042,26 +1043,7 @@ func TestResolveWorktreePath_RejectsProjectWithSeparator(t *testing.T) {
 	}
 }
 
-// --- worktree list helpers (sw-style columns) ---
-
-func TestWorktreeSourceLabel(t *testing.T) {
-	cases := []struct {
-		name string
-		meta worktreeBranchMeta
-		want string
-	}{
-		{"upstream wins", worktreeBranchMeta{Upstream: "origin/main", ForkBranch: "main", ForkPoint: "abc1234"}, "⇄ origin/main"},
-		{"fork fallback", worktreeBranchMeta{ForkBranch: "main", ForkPoint: "abc1234"}, "from main@abc1234"},
-		{"local only", worktreeBranchMeta{}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := worktreeSourceLabel(tc.meta); got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
+// --- worktree list helpers ---
 
 // Creating a branch via worktree add must record its fork parent so
 // SOURCE / gk status / gk land --promote resolve against the real base.
@@ -1208,15 +1190,15 @@ func TestCompactPathShortStaysIntact(t *testing.T) {
 
 func TestRenderWorktreeRowsHeaderAndCurrentMarker(t *testing.T) {
 	rows := []worktreeRow{
-		{Current: true, Branch: "main", Source: "⇄ origin/main", Path: "/repo"},
-		{Branch: "feat/x", Source: "from main@abc1234", Diff: "↑3", Age: "2h", Path: "/repo/wt"},
+		{Current: true, Branch: "main", Head: "abc1234", Parent: "-", Rel: "-", Path: "/repo"},
+		{Branch: "feat/x", Head: "def5678", Parent: "main", Rel: "↑3", Age: "2h", Path: "/repo/wt"},
 	}
 	out := renderWorktreeRows(rows)
 	if len(out) < 3 {
 		t.Fatalf("expected header + 2 rows, got %d lines", len(out))
 	}
 	header := stripANSIForWidth(out[0])
-	for _, want := range []string{"BRANCH", "SOURCE", "DIFF", "AGE", "PATH"} {
+	for _, want := range []string{"BRANCH", "HEAD", "PARENT", "VS PARENT", "AGE", "PATH"} {
 		if !strings.Contains(header, want) {
 			t.Errorf("header missing %q\n%s", want, header)
 		}
@@ -1226,6 +1208,262 @@ func TestRenderWorktreeRowsHeaderAndCurrentMarker(t *testing.T) {
 	}
 	if strings.Contains(out[2], "★") {
 		t.Errorf("non-current row should not carry ★\n%s", out[2])
+	}
+}
+
+// --- parent standing (VS PARENT column) ---
+
+func TestWorktreeParentRelStateLabelAndSafety(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		rel       worktreeParentRel
+		wantState string
+		wantLabel string
+		wantSafe  bool
+	}{
+		{
+			name:      "unresolved parent says nothing",
+			rel:       worktreeParentRel{},
+			wantState: "", wantLabel: "", wantSafe: false,
+		},
+		{
+			name:      "level with parent",
+			rel:       worktreeParentRel{Parent: "develop", Resolved: true},
+			wantState: "same", wantLabel: "● same", wantSafe: true,
+		},
+		{
+			name:      "parent moved on, nothing unique here",
+			rel:       worktreeParentRel{Parent: "develop", Behind: 66, Resolved: true},
+			wantState: "merged", wantLabel: "● merged", wantSafe: true,
+		},
+		{
+			name:      "unique commits only here",
+			rel:       worktreeParentRel{Parent: "develop", Ahead: 3, Resolved: true},
+			wantState: "ahead", wantLabel: "↑3", wantSafe: false,
+		},
+		{
+			name:      "diverged both ways",
+			rel:       worktreeParentRel{Parent: "develop", Ahead: 2, Behind: 66, Resolved: true},
+			wantState: "diverged", wantLabel: "↑2 ↓66", wantSafe: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rel.State(); got != tc.wantState {
+				t.Errorf("State() = %q, want %q", got, tc.wantState)
+			}
+			if got := worktreeParentLabel(tc.rel); got != tc.wantLabel {
+				t.Errorf("label = %q, want %q", got, tc.wantLabel)
+			}
+			if got := tc.rel.Safe(); got != tc.wantSafe {
+				t.Errorf("Safe() = %v, want %v", got, tc.wantSafe)
+			}
+		})
+	}
+}
+
+func TestWorktreeBranchNamesSkipsBareDetachedAndDupes(t *testing.T) {
+	t.Parallel()
+	entries := []WorktreeEntry{
+		{Path: "/repo", Branch: "main"},
+		{Path: "/bare", Branch: "main", Bare: true}, // bare — no branch to measure
+		{Path: "/det", Branch: "", Detached: true},  // detached — no branch
+		{Path: "/wt/a", Branch: "feat/a"},           //
+		{Path: "/wt/a2", Branch: "feat/a"},          // duplicate — one rev-list is enough
+	}
+	got := worktreeBranchNames(entries)
+	want := []string{"main", "feat/a"}
+	if len(got) != len(want) {
+		t.Fatalf("names = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("names[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestLoadWorktreeParentRels_MeasuresAgainstRecordedParent covers the four
+// states against a real repo: the counts must come from the recorded
+// gk-parent, not from the trunk, or a stacked branch would read as "ahead"
+// of a base it never forked from.
+func TestLoadWorktreeParentRels_MeasuresAgainstRecordedParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop base")
+	setParent := func(branch string) {
+		repo.RunGit("config", "branch."+branch+".gk-parent", "develop")
+	}
+
+	// Forked before develop advances, so it ends up behind as well as ahead.
+	// Created first because every later case must see a develop that no
+	// longer moves — otherwise one case's merge shifts the others' counts.
+	repo.CreateBranch("feat/diverged")
+	setParent("feat/diverged")
+
+	// merged: absorbed into develop, which is then ahead by the merge commit
+	// alone — the work itself already lives on this branch.
+	repo.Checkout("develop")
+	repo.CreateBranch("feat/merged")
+	setParent("feat/merged")
+	repo.WriteFile("m.txt", "m")
+	repo.Commit("merged work")
+	repo.Checkout("develop")
+	repo.RunGit("merge", "--no-ff", "-m", "merge feat/merged", "feat/merged")
+
+	// same: forked from the settled develop tip and left untouched.
+	repo.CreateBranch("feat/same")
+	setParent("feat/same")
+
+	// ahead: two commits the parent lacks, none the other way.
+	repo.Checkout("develop")
+	repo.CreateBranch("feat/ahead")
+	setParent("feat/ahead")
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("ahead 1")
+	repo.WriteFile("a2.txt", "a2")
+	repo.Commit("ahead 2")
+
+	repo.Checkout("feat/diverged")
+	repo.WriteFile("v.txt", "v")
+	repo.Commit("diverged work")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	rels := loadWorktreeParentRels(context.Background(),
+		runner, []string{"feat/same", "feat/ahead", "feat/merged", "feat/diverged"}, nil)
+
+	for _, tc := range []struct {
+		branch     string
+		wantState  string
+		wantAhead  int
+		wantBehind int
+	}{
+		{"feat/same", "same", 0, 0},
+		{"feat/ahead", "ahead", 2, 0},
+		{"feat/merged", "merged", 0, 1},
+		{"feat/diverged", "diverged", 1, 2},
+	} {
+		rel, ok := rels[tc.branch]
+		if !ok || !rel.Resolved {
+			t.Errorf("%s: unresolved, want %s", tc.branch, tc.wantState)
+			continue
+		}
+		if rel.Parent != "develop" {
+			t.Errorf("%s: parent = %q, want develop", tc.branch, rel.Parent)
+		}
+		if rel.Source != branchparent.SourceExplicit {
+			t.Errorf("%s: source = %q, want explicit", tc.branch, rel.Source)
+		}
+		if got := rel.State(); got != tc.wantState {
+			t.Errorf("%s: state = %q, want %q (↑%d ↓%d)", tc.branch, got, tc.wantState, rel.Ahead, rel.Behind)
+		}
+		if rel.Ahead != tc.wantAhead || rel.Behind != tc.wantBehind {
+			t.Errorf("%s: ↑%d ↓%d, want ↑%d ↓%d",
+				tc.branch, rel.Ahead, rel.Behind, tc.wantAhead, tc.wantBehind)
+		}
+	}
+}
+
+// The TUI re-measures on every keystroke, so results are memoised by the
+// commit pair they compare. A key that ignored the tips would keep serving
+// "● same" for a branch that has since gained commits — the exact reading
+// that invites deleting unfinished work.
+func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop base")
+	repo.CreateBranch("feat/moving")
+	repo.RunGit("config", "branch.feat/moving.gk-parent", "develop")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	tipsNow := func() map[string]string {
+		return worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner))
+	}
+
+	first := loadWorktreeParentRels(ctx, runner, []string{"feat/moving"}, tipsNow())
+	if got := first["feat/moving"].State(); got != "same" {
+		t.Fatalf("before the commit: state = %q, want same", got)
+	}
+
+	repo.WriteFile("w.txt", "w")
+	repo.Commit("work that must not be hidden by a cache hit")
+
+	second := loadWorktreeParentRels(ctx, runner, []string{"feat/moving"}, tipsNow())
+	if got := second["feat/moving"].State(); got != "ahead" {
+		t.Errorf("after the commit: state = %q, want ahead (stale cache hit?)", got)
+	}
+	if got := second["feat/moving"].Ahead; got != 1 {
+		t.Errorf("after the commit: ahead = %d, want 1", got)
+	}
+}
+
+// The removal prompt states the branch's parent standing before asking,
+// because that prompt is the last point where "this holds commits nobody
+// else has" can still stop the removal. Non-TTY makes ui.Confirm return
+// ErrNonInteractive, so nothing is actually removed here — the warning is
+// written before the prompt and is what we assert on.
+func TestWorktreeTUIRemove_StatesParentStandingBeforeAsking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop base")
+
+	repo.CreateBranch("feat/unique")
+	repo.RunGit("config", "branch.feat/unique.gk-parent", "develop")
+	repo.WriteFile("u.txt", "u")
+	repo.Commit("work only here")
+
+	repo.Checkout("develop")
+	repo.CreateBranch("feat/level")
+	repo.RunGit("config", "branch.feat/level.gk-parent", "develop")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	for _, tc := range []struct {
+		branch string
+		want   string
+	}{
+		{"feat/unique", "has 1 commit(s) develop doesn't have"},
+		{"feat/level", "holds nothing develop lacks"},
+	} {
+		var buf bytes.Buffer
+		entry := WorktreeEntry{Path: filepath.Join(repo.Dir, "wt"), Branch: tc.branch}
+		if err := worktreeTUIRemove(context.Background(), runner, &buf, entry, nil); err != nil {
+			t.Fatalf("%s: %v", tc.branch, err)
+		}
+		if got := stripANSIForWidth(buf.String()); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: prompt missing %q\ngot: %s", tc.branch, tc.want, got)
+		}
+	}
+}
+
+// A branch whose recorded parent ref no longer exists must degrade to an
+// unresolved relationship — a blank VS PARENT cell — rather than being
+// silently re-measured against the trunk and reported as "merged".
+func TestLoadWorktreeParentRels_MissingParentRefStaysUnresolved(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("feat/orphan")
+	repo.RunGit("config", "branch.feat/orphan.gk-parent", "gone-branch")
+
+	rels := loadWorktreeParentRels(context.Background(),
+		&git.ExecRunner{Dir: repo.Dir}, []string{"feat/orphan"}, nil)
+	if rel, ok := rels["feat/orphan"]; ok && rel.Resolved {
+		t.Errorf("expected unresolved, got %+v", rel)
 	}
 }
 
@@ -1269,15 +1507,24 @@ func TestWorktreeDiffsFromBranches_EmptyInputs(t *testing.T) {
 // TestWorktreeColumnPriority pins the responsive-drop intent for `gk wt`:
 // BRANCH is the identity column (highest weight), AGE outranks HASH so a
 // narrowing terminal sheds the bare SHA before the glanceable age, and HASH
-// is the first to go.
+// is the first to go. VS PARENT sits above AGE: age only hints that a
+// worktree is abandoned, while the parent standing says whether removing it
+// loses anything — the narrower the terminal, the more that matters.
 func TestWorktreeColumnPriority(t *testing.T) {
 	p := worktreeColumnPriority()
 	if p["BRANCH"] <= p["AGE"] || p["AGE"] <= p["HASH"] {
 		t.Fatalf("want BRANCH > AGE > HASH, got BRANCH=%d AGE=%d HASH=%d",
 			p["BRANCH"], p["AGE"], p["HASH"])
 	}
+	if p["VS PARENT"] <= p["AGE"] {
+		t.Errorf("VS PARENT (%d) should outrank AGE (%d)", p["VS PARENT"], p["AGE"])
+	}
+	if p["VS PARENT"] <= p["PARENT"] {
+		t.Errorf("VS PARENT (%d) should outrank PARENT (%d) — the reading survives losing the yardstick's name",
+			p["VS PARENT"], p["PARENT"])
+	}
 	// HASH must be the lowest of the data columns so it drops first.
-	for _, k := range []string{"BRANCH", "PROJECT", "AGE", "PATH", "SOURCE", "FLAGS"} {
+	for _, k := range []string{"BRANCH", "PROJECT", "AGE", "PATH", "PARENT", "VS PARENT", "FLAGS"} {
 		if p[k] <= p["HASH"] {
 			t.Errorf("%s (%d) should outrank HASH (%d)", k, p[k], p["HASH"])
 		}

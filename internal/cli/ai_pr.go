@@ -68,7 +68,37 @@ git only — no GitHub API or token required (git's own auth applies).`,
 	checkoutCmd.Flags().String("branch", "", "local branch name (default: pr/<number>)")
 	checkoutCmd.Flags().String("remote", "", "remote to fetch from (default: config remote, else origin)")
 
-	prCmd.AddCommand(newCmd, checkoutCmd)
+	createCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Open a pull request for the current branch on GitHub",
+		Long: `Opens a pull request from the current branch against the base branch.
+
+The base comes from --base, config base_branch, or the remote's default
+branch. The branch must already be pushed — gk stops with the 'gk push'
+remedy rather than pushing for you, so the pre-push secret scan and the
+protected-branch guards are never bypassed.
+
+Title defaults to the commit subject when the branch holds a single commit,
+otherwise to the branch name; body defaults to the commit list. --ai drafts
+the body with the same generator as 'gk pr new'. --dry-run shows what would
+be opened without calling the API.
+
+Needs a token that can write to the repository: GH_TOKEN / GITHUB_TOKEN, or
+a prior 'gh auth login'.`,
+		Args: cobra.NoArgs,
+		RunE: runPRCreate,
+	}
+	createCmd.Flags().String("base", "", "branch to merge into (default: base_branch, else the remote's default)")
+	createCmd.Flags().String("head", "", "branch to merge from (default: the current branch)")
+	createCmd.Flags().StringP("title", "t", "", "pull request title")
+	createCmd.Flags().StringP("body", "b", "", "pull request body")
+	createCmd.Flags().String("body-file", "", `read the body from a file ("-" reads stdin)`)
+	createCmd.Flags().Bool("draft", false, "open as a draft pull request")
+	createCmd.Flags().Bool("ai", false, "draft the body with AI (same generator as 'gk pr new')")
+	createCmd.Flags().Bool("web", false, "open the created pull request in the browser")
+	createCmd.Flags().Bool("dry-run", false, "show what would be opened without calling the API")
+
+	prCmd.AddCommand(newCmd, checkoutCmd, createCmd)
 	rootCmd.AddCommand(prCmd)
 }
 
@@ -112,20 +142,9 @@ func runAIPR(cmd *cobra.Command, _ []string) error {
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 
-	// Fallback Chain when no explicit provider; single provider otherwise.
-	var prov provider.Provider
-	if ai.Provider == "" {
-		fc, fcErr := buildFallbackChain(nil, provider.ExecRunner{})
-		if fcErr != nil {
-			return fmt.Errorf("pr: %w", fcErr)
-		}
-		prov = fc
-	} else {
-		p, pErr := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
-		if pErr != nil {
-			return fmt.Errorf("pr: provider: %w", pErr)
-		}
-		prov = p
+	prov, err := buildPRProvider(ctx, ai)
+	if err != nil {
+		return err
 	}
 
 	return runAIPRCore(ctx, aiPRDeps{
@@ -141,6 +160,24 @@ func runAIPR(cmd *cobra.Command, _ []string) error {
 	}, flags)
 }
 
+// buildPRProvider resolves the AI provider for the PR description path:
+// the fallback chain when no provider is configured, the named one otherwise.
+// Shared with `gk pr create --ai`, which drafts its body the same way.
+func buildPRProvider(ctx context.Context, ai config.AIConfig) (provider.Provider, error) {
+	if ai.Provider == "" {
+		fc, err := buildFallbackChain(nil, provider.ExecRunner{})
+		if err != nil {
+			return nil, fmt.Errorf("pr: %w", err)
+		}
+		return fc, nil
+	}
+	p, err := provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
+	if err != nil {
+		return nil, fmt.Errorf("pr: provider: %w", err)
+	}
+	return p, nil
+}
+
 // aiPRDeps holds injectable dependencies for testability.
 type aiPRDeps struct {
 	Runner   git.Runner
@@ -148,14 +185,24 @@ type aiPRDeps struct {
 	Lang     string
 	BaseCfg  string // config base_branch; empty = auto-detect
 	Remote   string // config remote; empty = "origin"
-	AI       config.AIConfig
-	Cmd      *cobra.Command // for --show-prompt; nil in tests
-	Out      io.Writer
-	ErrOut   io.Writer
+	// Head is the branch to summarize; empty means HEAD. `gk pr new` always
+	// describes the checkout, but `gk pr create --head <other>` opens a PR for
+	// a branch that is not checked out — the summary has to follow the branch
+	// the PR is actually for, or the description describes the wrong work.
+	Head   string
+	AI     config.AIConfig
+	Cmd    *cobra.Command // for --show-prompt; nil in tests
+	Out    io.Writer
+	ErrOut io.Writer
 }
 
 func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	client := git.NewClient(deps.Runner)
+
+	head := deps.Head
+	if head == "" {
+		head = "HEAD"
+	}
 
 	// Resolve base branch.
 	base := deps.BaseCfg
@@ -173,24 +220,24 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	Dbg("pr: base_branch=%s", base)
 
 	// Compute merge-base.
-	mbOut, _, err := deps.Runner.Run(ctx, "merge-base", "HEAD", base)
+	mbOut, _, err := deps.Runner.Run(ctx, "merge-base", head, base)
 	if err != nil {
 		return fmt.Errorf("pr: merge-base: %w", err)
 	}
 	mergeBase := strings.TrimSpace(string(mbOut))
 	if mergeBase == "" {
-		return fmt.Errorf("pr: could not determine merge-base between HEAD and %s", base)
+		return fmt.Errorf("pr: could not determine merge-base between %s and %s", head, base)
 	}
 	Dbg("pr: merge_base=%s", mergeBase)
 
 	// Collect diff and commits.
-	diffOut, _, err := deps.Runner.Run(ctx, "diff", mergeBase+"..HEAD")
+	diffOut, _, err := deps.Runner.Run(ctx, "diff", mergeBase+".."+head)
 	if err != nil {
 		return fmt.Errorf("pr: diff: %w", err)
 	}
 	diff := string(diffOut)
 
-	logOut, _, err := deps.Runner.Run(ctx, "log", "--oneline", mergeBase+"..HEAD")
+	logOut, _, err := deps.Runner.Run(ctx, "log", "--oneline", mergeBase+".."+head)
 	if err != nil {
 		return fmt.Errorf("pr: log: %w", err)
 	}
@@ -203,7 +250,7 @@ func runAIPRCore(ctx context.Context, deps aiPRDeps, flags aiPRFlags) error {
 	}
 
 	commits := strings.Split(commitLines, "\n")
-	Dbg("pr: %d commit(s) in range %s..HEAD", len(commits), mergeBase[:minLen(len(mergeBase), 8)])
+	Dbg("pr: %d commit(s) in range %s..%s", len(commits), mergeBase[:minLen(len(mergeBase), 8)], head)
 
 	// Dry-run: show what would be sent.
 	if flags.dryRun {

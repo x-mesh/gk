@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk pr create` — PR을 실제로 연다.** 그동안 `gk pr`은 목록을 보여주고 `gk pr new`는 설명문만 만들어줬을 뿐, 정작 PR을 여는 마지막 한 걸음은 GitHub 웹이나 `gh`의 몫이었다. 이제 현재 브랜치에서 base로 가는 PR을 한 명령으로 연다. base는 `--base` > `base_branch` > 원격 기본 브랜치 순으로 정해지고, 제목은 커밋이 하나면 그 subject를, 여럿이면 브랜치 이름을 Conventional Commit 형태로 옮겨 쓴다(`feat/pr-create` → `feat: pr create`). 본문은 기본이 커밋 목록이고, `--ai`를 주면 `gk pr new`와 같은 생성기로 초안을 뽑는다. `--title`/`--body`/`--body-file`(`-`는 stdin)로 언제든 덮어쓸 수 있고, `--draft`·`--web`·`--dry-run`이 따라온다. 토큰은 기존 체인 그대로 — `GH_TOKEN` / `GITHUB_TOKEN` / 이전 `gh auth login`의 저장분을 읽는다.
+- **브랜치와 원격이 정확히 같은 커밋일 때만 연다.** GitHub는 자기가 볼 수 있는 브랜치로만 PR을 열 수 있어서, 미push 브랜치는 알아보기 힘든 422로 튕긴다. 그래서 로컬에서 먼저 확인하는데, 양쪽 방향을 다 본다 — PR의 **내용**은 원격에서 오지만 제목과 본문은 **로컬**에서 계산되기 때문이다. 로컬이 앞서면(`branch_ahead_remote`) 방금 쓴 작업이 PR에서 빠지고, 원격이 앞서면(`branch_behind_remote`) 제목·본문이 본 적 없는 커밋이 PR에 딸려 들어간다. 셋 다 — 원격에 아예 없는 경우(`branch_not_pushed`)까지 — `state:"blocked"`로 멈추고 각각 `gk push` / `gk pull`을 remedy로 준다. 대신 push해주지 않는 이유는, 몰래 push해버리면 push 경로에 붙은 비밀정보 스캔과 protected 브랜치 가드가 조용히 사라지기 때문이다. 이미 열린 PR이 있으면 충돌을 보고하는 대신 그 PR을 찾아 번호와 URL을 돌려준다(`created:false`) — 같은 브랜치라도 base가 다르면 다른 PR이므로 head와 base를 함께 걸어 찾는다.
+
 ### Changed
 
 - **`gk worktree list`가 "이 worktree 지워도 되나"에 답하도록 컬럼을 다시 짰다.** 기존 `SOURCE`/`DIFF`는 upstream 기준이라 push 여부는 알려줬지만, 정작 판단에 필요한 "이 브랜치가 부모에 없는 걸 들고 있나"는 답하지 못했다. 이제 `BRANCH | HEAD | PARENT | VS PARENT | AGE | PATH`로, 각 worktree의 체크아웃된 커밋(7자, `gk log`·`gk context`와 같은 형식)과 그 브랜치가 측정 기준으로 삼는 부모, 그리고 둘 사이 거리를 나란히 보여준다. `VS PARENT`는 네 가지다 — `● same`(두 tip이 같은 커밋), `● merged`(부모가 이미 다 갖고 부모만 더 나아감), `↑2` / `↑2 ↓66`(여기에만 있는 커밋). 앞의 둘은 초록, 뒤는 노랑이라 스캔 한 번으로 갈린다. 부모는 기록된 `gk-parent`를 우선 쓰고 없으면 히스토리에서 추론하되, 추론된 부모는 흐리게 렌더해 "merged"가 추측 위에 서 있을 때를 구분한다. 부모 ref가 사라졌거나 측정 불가면 `-`로 남긴다 — 조용히 trunk 기준으로 다시 재서 "merged"라고 말하지 않는다. 곁들여 `[dirty +N]` 플래그가 붙는다: 부모와 같아도 커밋되지 않은 작업은 그대로 남아 있고, 그 표시가 없으면 초록 줄이 정확히 잘못된 삭제를 부른다. `--json`에는 `parent_source`/`parent_ahead`/`parent_behind`/`parent_state`가 추가되고 기존 upstream 기준 `ahead`/`behind`는 그대로다.

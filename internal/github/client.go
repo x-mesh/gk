@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,8 +60,11 @@ func (c *Client) apiBase() string {
 	return "https://api.github.com"
 }
 
-func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase()+path, nil)
+// newRequest builds an API request with the headers every endpoint needs.
+// Both get and post go through it so the Accept/version/auth headers can
+// never drift apart between read and write paths.
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.apiBase()+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +73,30 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
+	return req, nil
+}
+
+func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.doer().Do(req)
+}
+
+// post sends payload as a JSON body. Unlike get, this mutates state on
+// GitHub, so every caller must have already established that it has a token —
+// an anonymous POST fails with a 401 that reads like a bug.
+func (c *Client) post(ctx context.Context, path string, payload any) (*http.Response, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	return c.doer().Do(req)
 }
 

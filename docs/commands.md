@@ -1894,14 +1894,27 @@ Switch to another branch. When no name is given, opens an interactive picker tha
 ### Picker layout
 
 ```
-●  feature/api-v2       → origin/feature/api-v2    2d    ← local branch (filled green)
-●  hotfix/login          -                          5h    ← local, no upstream
-○  release/v2            (from origin)              3d    ← remote-only (hollow cyan)
-○  experimental          (from origin)              1w
+BRANCH                     UPSTREAM                  HASH      AGE
+★ develop                  ↑ origin/develop          bcc060c   2h
+● feature/api-v2 ↑2        ↑ origin/feature/api-v2   4a1bcbc   2d
+● hotfix/login             (local)                   9f21e07   5h
+◌ scratch                  (local)                   1c0de11   1d
+⊘ old/thing                (gone)                    77ab310   3w
+○ release/v2               remote: origin            0b91f42   3d
 ```
 
-- `●` — local branch. Pass to `git switch <name>` directly.
+The marker encodes **where the branch lives**, so the distinction survives a
+terminal too narrow to keep the UPSTREAM column:
+
+- `★` — the branch you are on.
+- `●` — local **and** remote. Covers a configured upstream and the branch pushed without `--set-upstream` (gk checks the remote for a same-named ref, so "published but untracked" does not read as local-only).
+- `◌` — local only, never pushed. Nothing on the remote would survive deleting it.
+- `⊘` — an upstream was configured but is gone from the remote (typically merged and deleted server-side).
 - `○` — exists only on a remote. `gk sw` auto-runs `git switch --track <remote>/<name>` to create the local tracking branch.
+
+(`gk wt add`'s picker spends `⊗` on "already checked out in another worktree", which is why gone uses `⊘` here.)
+
+A faint key line sits under the subtitle naming only the markers this listing actually uses — a `⊘` entry appears when a branch's upstream is gone, and `○` joins once `r` reveals the remote rows. When the terminal cannot hold the full wording it switches to a compact form (`★ here · ● both · ◌ local · ○ remote`) rather than truncating the last entry, and the line disappears entirely when every row shares one state (nothing to tell apart).
 - Remote entries whose short name already matches a local branch are hidden (avoid duplicate picks).
 - `refs/remotes/<remote>/HEAD` aliases are filtered.
 - Sorted recent-first within each group; local first, then remote-only.

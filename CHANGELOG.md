@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.133.0] - 2026-07-23
+
 ### Added
 
 - **`gk pr create` — PR을 실제로 연다.** 그동안 `gk pr`은 목록을 보여주고 `gk pr new`는 설명문만 만들어줬을 뿐, 정작 PR을 여는 마지막 한 걸음은 GitHub 웹이나 `gh`의 몫이었다. 이제 현재 브랜치에서 base로 가는 PR을 한 명령으로 연다. base는 `--base` > `base_branch` > 원격 기본 브랜치 순으로 정해지고, 제목은 커밋이 하나면 그 subject를, 여럿이면 브랜치 이름을 Conventional Commit 형태로 옮겨 쓴다(`feat/pr-create` → `feat: pr create`). 본문은 기본이 커밋 목록이고, `--ai`를 주면 `gk pr new`와 같은 생성기로 초안을 뽑는다. `--title`/`--body`/`--body-file`(`-`는 stdin)로 언제든 덮어쓸 수 있고, `--draft`·`--web`·`--dry-run`이 따라온다. 토큰은 기존 체인 그대로 — `GH_TOKEN` / `GITHUB_TOKEN` / 이전 `gh auth login`의 저장분을 읽는다.

@@ -107,6 +107,7 @@ type branchInfo struct {
 	Behind           int    // commits upstream has that this branch lacks
 	Gone             bool   // upstream configured but missing on remote
 	UpstreamInferred bool   // Upstream filled by same-named remote fallback
+	Published        bool   // a same-named ref exists on the remote (upstream may be unset)
 	ForkBranch       string // base branch of the fork (e.g. "main")
 	ForkPoint        string // 7-char short hash of the merge-base with ForkBranch
 }

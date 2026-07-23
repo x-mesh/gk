@@ -348,14 +348,21 @@ type remoteBranchInfo struct {
 // the user hasn't already checked out. HEAD aliases (e.g.
 // refs/remotes/origin/HEAD → origin/main) are skipped since they'd be
 // duplicates of the real ref they point at.
-func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInfo) ([]remoteBranchInfo, error) {
+//
+// The second return value is the set of LOCAL branch names that a remote
+// does publish under the same name — the exact complement of the returned
+// list. Callers use it to tell "local only, never pushed" apart from
+// "exists on both sides" even when the branch has no upstream configured
+// (a `git switch -c` + `git push` without `--set-upstream` leaves the
+// upstream empty yet the branch is very much published).
+func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInfo) ([]remoteBranchInfo, map[string]bool, error) {
 	stdout, stderr, err := r.Run(ctx,
 		"for-each-ref",
 		"--format=%(refname:short)%00%(committerdate:unix)%00%(symref)%00%(objectname:short)",
 		"refs/remotes",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("for-each-ref refs/remotes: %s: %w",
+		return nil, nil, fmt.Errorf("for-each-ref refs/remotes: %s: %w",
 			strings.TrimSpace(string(stderr)), err)
 	}
 
@@ -365,6 +372,7 @@ func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInf
 	}
 
 	var out []remoteBranchInfo
+	published := make(map[string]bool, len(local))
 	for _, line := range strings.Split(strings.TrimRight(string(stdout), "\n"), "\n") {
 		if line == "" {
 			continue
@@ -391,6 +399,7 @@ func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInf
 		// should pick the local one (or create a differently-named
 		// branch explicitly via `gk sw -c <name>`).
 		if _, dup := localSet[shortName]; dup {
+			published[shortName] = true
 			continue
 		}
 		ts, _ := strconv.ParseInt(parts[1], 10, 64)
@@ -406,7 +415,7 @@ func listRemoteOnlyBranches(ctx context.Context, r git.Runner, local []branchInf
 			Hash:       hash,
 		})
 	}
-	return out, nil
+	return out, published, nil
 }
 
 // Key format distinguishes row types without requiring the picker UI
@@ -647,9 +656,15 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		// "N remote hidden (r)" hint even when not displaying them.
 		// Sorted once here so the `r` toggle's first press shows
 		// recency-ordered rows just like a re-entered loop would.
-		allRemotes, rerr := listRemoteOnlyBranches(ctx, runner, local)
+		allRemotes, published, rerr := listRemoteOnlyBranches(ctx, runner, local)
 		if rerr != nil {
-			allRemotes = nil
+			allRemotes, published = nil, nil
+		}
+		// Mark which locals the remote also carries, so the row marker can
+		// separate "on both sides" from "local only, never pushed" without
+		// depending on the UPSTREAM column (which a narrow terminal drops).
+		for i := range local {
+			local[i].Published = published[local[i].Name]
 		}
 		sort.Slice(allRemotes, func(i, j int) bool {
 			return allRemotes[i].LastCommit.After(allRemotes[j].LastCommit)
@@ -712,10 +727,13 @@ func pickBranchForSwitch(ctx context.Context, runner git.Runner, client *git.Cli
 		if wtCol {
 			headers = []string{"BRANCH", "UPSTREAM", "WORKTREE", "HASH", "AGE"}
 		}
+		legend, legendCompact := buildSwitchLegend(local, remotes, cur)
 		picker := &ui.TablePicker{
 			Headers:        headers,
 			Extras:         extras,
 			Subtitle:       subtitle,
+			Legend:         legend,
+			LegendCompact:  legendCompact,
 			FilterItems:    filterItems,
 			InitialFilter:  currentFilter,
 			ColumnPriority: switchColumnPriority(),
@@ -1106,27 +1124,25 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		// info: upstream / inferred / fork / gone / nothing. Worktree
 		// occupancy is NOT mixed in here — it gets its own WORKTREE
 		// column so UPSTREAM stays a pure source descriptor.
-		var coreSource, coreColored string
+		var source, coloredSource string
 		switch {
 		case b.Gone:
-			coreSource = "(gone)"
-			coreColored = cellFaint(coreSource)
+			source = "(gone)"
+			coloredSource = cellFaint(source)
 		case b.Upstream != "":
 			prefix := "↑ "
 			if b.UpstreamInferred {
 				prefix = "~ "
 			}
-			coreSource = prefix + b.Upstream
-			coreColored = coreSource
+			source = prefix + b.Upstream
+			coloredSource = source
 		case b.ForkPoint != "":
-			coreSource = fmt.Sprintf("from %s@%s", b.ForkBranch, b.ForkPoint)
-			coreColored = coreSource
+			source = fmt.Sprintf("from %s@%s", b.ForkBranch, b.ForkPoint)
+			coloredSource = source
 		default:
-			coreSource = "(local)"
-			coreColored = cellFaint(coreSource)
+			source = "(local)"
+			coloredSource = cellFaint(source)
 		}
-		source := coreSource
-		coloredSource := coreColored
 		// WORKTREE cell: the basename of the worktree holding this
 		// branch elsewhere (e.g. main checked out in the "improve-ui"
 		// worktree). Empty for branches not locked to another worktree.
@@ -1134,25 +1150,16 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		if locked {
 			wtLabel = filepath.Base(entry.Path)
 		}
-		// Display marker stays via fatih/color — it's only used by
-		// the FallbackPicker path which doesn't have row-level styles.
-		displayMarker := color.GreenString("●")
-		cellMarker := cellGreen("●")
-		if isCurrent {
-			displayMarker = color.YellowString("★")
-			cellMarker = cellYellow("★")
-		}
-		coloredDirtyTag := ""
+		displayMarker, cellMarker := switchBranchMarker(b, isCurrent)
+		dirtyTag, coloredDirtyTag := "", ""
 		if d, ok := dirty[b.Name]; ok {
+			dirtyTag = " " + formatDirtyMarker(d)
 			coloredDirtyTag = " " + colorDirtyMarker(d)
 		}
-		diffPlain := formatSwitchDiff(b.Ahead, b.Behind)
-		diffCell := colorSwitchDiff(b.Ahead, b.Behind)
-		diffSuffix := ""
-		coloredDiffSuffix := ""
-		if diffPlain != "" {
+		diffSuffix, coloredDiffSuffix := "", ""
+		if diffPlain := formatSwitchDiff(b.Ahead, b.Behind); diffPlain != "" {
 			diffSuffix = " " + diffPlain
-			coloredDiffSuffix = " " + diffCell
+			coloredDiffSuffix = " " + colorSwitchDiff(b.Ahead, b.Behind)
 		}
 		age := shortAge(b.LastCommit)
 		branchCell := cellMarker + " " + b.Name + coloredDirtyTag + coloredDiffSuffix
@@ -1164,15 +1171,14 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		items = append(items, ui.PickerItem{
 			Key:     keyLocalPrefix + b.Name,
 			Cells:   cells,
-			Display: switchDisplayRow(displayMarker, b.Name+coloredDirtyTag+diffSuffix, source, wtLabel, b.Hash, age, wtCol),
+			Display: switchDisplayRow(displayMarker, b.Name+dirtyTag+diffSuffix, source, wtLabel, b.Hash, age, wtCol),
 		})
 	}
 
 	for _, r := range remotes {
 		age := shortAge(r.LastCommit)
 		source := "remote: " + r.Remote
-		coloredSource := cellCyan("remote: ") + r.Remote
-		cells := []string{cellCyan("○") + " " + r.Name, coloredSource}
+		cells := []string{cellCyan(markerRemoteOnly) + " " + r.Name, cellCyan("remote: ") + r.Remote}
 		if wtCol {
 			cells = append(cells, "")
 		}
@@ -1180,10 +1186,95 @@ func buildSwitchItems(local []branchInfo, remotes []remoteBranchInfo, cur string
 		items = append(items, ui.PickerItem{
 			Key:     keyRemotePrefix + r.TrackRef,
 			Cells:   cells,
-			Display: switchDisplayRow(color.CyanString("○"), r.Name, source, "", r.Hash, age, wtCol),
+			Display: switchDisplayRow(color.CyanString(markerRemoteOnly), r.Name, source, "", r.Hash, age, wtCol),
 		})
 	}
 	return items
+}
+
+// Row markers encode *where a branch lives* in a single glyph, so the
+// distinction survives a narrow terminal dropping the UPSTREAM column:
+//
+//	★  current branch
+//	●  local and remote both have it
+//	◌  local only — never pushed
+//	⊘  upstream was configured but is gone from the remote
+//	○  remote only (press `r` to reveal these rows)
+//
+// The glyphs stay inside the circle family so the column reads as one
+// scale. ⊗ is deliberately NOT reused here — `gk wt add` already spends it
+// on "occupied by another worktree".
+const (
+	markerCurrent    = "★"
+	markerBothSides  = "●"
+	markerLocalOnly  = "◌"
+	markerGone       = "⊘"
+	markerRemoteOnly = "○"
+)
+
+// buildSwitchLegend spells out the row markers *this* listing actually
+// uses. The glyphs are the only place "where does this branch live" is
+// stated once the UPSTREAM column drops, and nobody memorises five circle
+// variants — so the key is always one faint line above the table. Markers
+// absent from the current rows are left out: a key for glyphs that aren't
+// on screen is noise, and the line has to survive a narrow terminal.
+// It returns the key twice — full wording and a compact one — so a narrow
+// terminal drops words instead of clipping the last entry into nonsense.
+func buildSwitchLegend(local []branchInfo, remotes []remoteBranchInfo, cur string) (full, compact string) {
+	var current, both, localOnly, gone bool
+	for _, b := range local {
+		switch {
+		case b.Name == cur:
+			current = true
+		case b.Gone:
+			gone = true
+		case b.Upstream != "" || b.Published:
+			both = true
+		default:
+			localOnly = true
+		}
+	}
+	longParts := make([]string, 0, 5)
+	shortParts := make([]string, 0, 5)
+	add := func(on bool, glyph, long, short string) {
+		if !on {
+			return
+		}
+		longParts = append(longParts, glyph+" "+long)
+		shortParts = append(shortParts, glyph+" "+short)
+	}
+	add(current, markerCurrent, "current", "here")
+	add(both, markerBothSides, "local + remote", "both")
+	add(localOnly, markerLocalOnly, "local only", "local")
+	add(gone, markerGone, "remote gone", "gone")
+	add(len(remotes) > 0, markerRemoteOnly, "remote only", "remote")
+	if len(longParts) < 2 {
+		// One state means there is nothing to tell apart.
+		return "", ""
+	}
+	return strings.Join(longParts, "  ·  "), strings.Join(shortParts, " · ")
+}
+
+// switchBranchMarker returns the row glyph for a local branch, in both the
+// fatih/color flavour used by the plain-text FallbackPicker (display) and
+// the fg-only-reset flavour used inside table Cells (cell), which keeps the
+// selected row's background intact.
+//
+// "Both sides" covers a configured upstream AND the upstream-less branch
+// that a remote nevertheless publishes under the same name (Published) —
+// `git switch -c x` + `git push` without `--set-upstream` is common enough
+// that calling it "local only" would be a lie.
+func switchBranchMarker(b branchInfo, isCurrent bool) (display, cell string) {
+	switch {
+	case isCurrent:
+		return color.YellowString(markerCurrent), cellYellow(markerCurrent)
+	case b.Gone:
+		return color.RedString(markerGone), cellRed(markerGone)
+	case b.Upstream != "" || b.Published:
+		return color.GreenString(markerBothSides), cellGreen(markerBothSides)
+	default:
+		return color.New(color.Faint).Sprint(markerLocalOnly), cellFaint(markerLocalOnly)
+	}
 }
 
 // switchHasWorktreeCol reports whether any local branch is checked out in

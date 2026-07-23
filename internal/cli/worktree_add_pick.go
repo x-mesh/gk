@@ -82,7 +82,7 @@ func loadWorktreeBranchRows(ctx context.Context, runner git.Runner) (local, remo
 	if err != nil {
 		return nil, nil, err
 	}
-	remotes, rerr := listRemoteOnlyBranches(ctx, runner, locals)
+	remotes, _, rerr := listRemoteOnlyBranches(ctx, runner, locals)
 	if rerr != nil {
 		remotes = nil
 	}

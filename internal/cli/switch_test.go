@@ -206,7 +206,7 @@ func TestListRemoteOnlyBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listLocalBranches: %v", err)
 	}
-	remotes, err := listRemoteOnlyBranches(context.Background(), runner, locals)
+	remotes, published, err := listRemoteOnlyBranches(context.Background(), runner, locals)
 	if err != nil {
 		t.Fatalf("listRemoteOnlyBranches: %v", err)
 	}
@@ -219,6 +219,14 @@ func TestListRemoteOnlyBranches(t *testing.T) {
 	// HEAD alias → excluded. Only feature/new remains.
 	if len(got) != 1 || got["feature/new"] != "origin/feature/new" {
 		t.Errorf("unexpected remote-only set: %+v", got)
+	}
+	// The excluded locals are exactly the published set — that's the signal
+	// the ● (both sides) vs ◌ (local only) marker rides on.
+	if !published["main"] || !published["hotfix"] {
+		t.Errorf("main and hotfix are on the remote → published, got %+v", published)
+	}
+	if published["feature/new"] {
+		t.Errorf("feature/new has no local branch → must not be in the published set: %+v", published)
 	}
 }
 
@@ -1107,6 +1115,87 @@ func TestLoadWorktreeDirtyStates_CleanIsAbsent(t *testing.T) {
 	}
 }
 
+// TestBuildSwitchItems_MarkerEncodesWhereBranchLives pins the marker
+// vocabulary. It is the only signal that survives a terminal narrow enough
+// to drop the UPSTREAM column, so each state must map to its own glyph.
+func TestBuildSwitchItems_MarkerEncodesWhereBranchLives(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "main", Hash: "aaa1111", LastCommit: now(), Upstream: "origin/main"},
+		{Name: "tracked", Hash: "bbb2222", LastCommit: now(), Upstream: "origin/tracked"},
+		// Pushed without --set-upstream: no upstream, but origin has it.
+		{Name: "pushed-untracked", Hash: "ccc3333", LastCommit: now(), Published: true},
+		{Name: "never-pushed", Hash: "ddd4444", LastCommit: now()},
+		{Name: "orphaned", Hash: "eee5555", LastCommit: now(), Upstream: "origin/orphaned", Gone: true},
+	}
+	remotes := []remoteBranchInfo{
+		{Name: "theirs", TrackRef: "origin/theirs", Remote: "origin", Hash: "fff6666", LastCommit: now()},
+	}
+	want := map[string]string{
+		"local:main":             markerCurrent,
+		"local:tracked":          markerBothSides,
+		"local:pushed-untracked": markerBothSides,
+		"local:never-pushed":     markerLocalOnly,
+		"local:orphaned":         markerGone,
+		"remote:origin/theirs":   markerRemoteOnly,
+	}
+	items := buildSwitchItems(local, remotes, "main", switchWorktreeMap{}, nil)
+	if len(items) != len(want) {
+		t.Fatalf("expected %d rows, got %d", len(want), len(items))
+	}
+	for _, it := range items {
+		marker, ok := want[it.Key]
+		if !ok {
+			t.Fatalf("unexpected row %q", it.Key)
+		}
+		if got := stripANSI(it.Cells[0]); !strings.HasPrefix(got, marker+" ") {
+			t.Errorf("%s: marker = %q, want %q", it.Key, got, marker)
+		}
+	}
+}
+
+func TestBuildSwitchLegend_OnlyMarkersOnScreen(t *testing.T) {
+	t.Parallel()
+	local := []branchInfo{
+		{Name: "main", Upstream: "origin/main"},
+		{Name: "feat/x", Upstream: "origin/feat/x"},
+		{Name: "scratch"},
+	}
+	got, compact := buildSwitchLegend(local, nil, "main")
+	for _, want := range []string{markerCurrent, markerBothSides, markerLocalOnly} {
+		if !strings.Contains(got, want) {
+			t.Errorf("legend %q should explain %q", got, want)
+		}
+		if !strings.Contains(compact, want) {
+			t.Errorf("compact legend %q should explain %q", compact, want)
+		}
+	}
+	// No gone branch and no remote rows → those keys stay out.
+	for _, absent := range []string{markerGone, markerRemoteOnly} {
+		if strings.Contains(got, absent) {
+			t.Errorf("legend %q must not explain %q — no such row is listed", got, absent)
+		}
+	}
+	// The compact form exists to fit narrower terminals.
+	if len([]rune(compact)) >= len([]rune(got)) {
+		t.Errorf("compact legend %q should be shorter than %q", compact, got)
+	}
+	// Remote rows revealed → the ○ key joins.
+	withRemotes, _ := buildSwitchLegend(local, []remoteBranchInfo{{Name: "theirs"}}, "main")
+	if !strings.Contains(withRemotes, markerRemoteOnly) {
+		t.Errorf("legend %q should explain %q once remote rows are shown", withRemotes, markerRemoteOnly)
+	}
+}
+
+func TestBuildSwitchLegend_SingleStateIsSilent(t *testing.T) {
+	t.Parallel()
+	// Only the current branch: nothing to tell apart, so no key line.
+	got, compact := buildSwitchLegend([]branchInfo{{Name: "main"}}, nil, "main")
+	if got != "" || compact != "" {
+		t.Errorf("one marker state → no legend, got %q / %q", got, compact)
+	}
+}
+
 // stripANSI removes ANSI SGR escape sequences so cell-content
 // assertions are robust to fatih/color.NoColor flips by other tests
 // in the package (log_test/pull_test cleanups reset to false instead
@@ -1331,8 +1420,9 @@ func TestBuildSwitchItems_AllBranchesVisible_CurrentMarked(t *testing.T) {
 				t.Errorf("main is not worktree-locked → WORKTREE cell should be empty, got %q", c2)
 			}
 		case "local:feat/free":
-			if !strings.Contains(c0, "●") {
-				t.Errorf("normal branch should have ● marker, got %q", c0)
+			// No upstream and not published → local-only marker.
+			if !strings.Contains(c0, "◌") {
+				t.Errorf("unpushed branch should have ◌ marker, got %q", c0)
 			}
 		case "local:feat/locked":
 			// UPSTREAM is now a pure source descriptor; worktree

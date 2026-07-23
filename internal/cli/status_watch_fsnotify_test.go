@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -249,5 +250,76 @@ func TestFSWatcherIsIgnored(t *testing.T) {
 	}
 	if fw.isIgnored(filepath.Join(repo.Dir, "internal")) {
 		t.Errorf("a non-ignored path must not be reported ignored")
+	}
+}
+
+// openFDCount counts the descriptors this process holds by asking fcntl about
+// each slot. Neither shortcut works here: Go's ReadDir cannot list macOS's
+// fdesc /dev/fd, and "open one and read its number" only finds the lowest free
+// slot — which a leak sitting above a hole would hide.
+func openFDCount() int {
+	n := 0
+	for fd := range 4096 {
+		if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0); errno == 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// TestFSWatcherCloseReleasesDescriptors is the regression guard for the fd
+// leak that let a long-lived `gk watch` starve itself into EMFILE.
+//
+// On kqueue platforms one directory watch opens a descriptor per FILE in that
+// directory, so a watcher that does not hand them all back on Close leaks in
+// proportion to the tree. fsnotify ≤1.9.0 did exactly that — its Close marked
+// the watcher closed *before* removing the watches, and every Remove then
+// short-circuited on isClosed() (upstream #732). Watchers are recreated
+// whenever the active worktree set changes, so the leak compounded until every
+// later git subprocess died with "too many open files".
+func TestFSWatcherCloseReleasesDescriptors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	before := openFDCount()
+	if before <= 0 {
+		t.Skip("cannot count descriptors here")
+	}
+	repo := testutil.NewRepo(t)
+	// Enough files that a leak is unmistakable next to normal test noise.
+	const files = 120
+	for i := range files {
+		repo.WriteFile(filepath.Join("tree", "f"+strconv.Itoa(i)+".txt"), "x")
+	}
+	repo.RunGit("add", "-A")
+	repo.Commit("tree to watch")
+
+	// Recreate the watcher several times, the way a live dashboard does every
+	// time its active worktree set changes. One round could hide a leak behind
+	// a low free descriptor; rounds of it cannot.
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	const rounds = 5
+	during := before
+	for i := range rounds {
+		fw, ok := newFSWatcher(context.Background(), runner, fsWatchDebounce, fsWatchCostBudget())
+		if !ok {
+			t.Skip("fsnotify unavailable here")
+		}
+		if i == 0 {
+			during = openFDCount()
+		}
+		fw.Close()
+	}
+	after := openFDCount()
+
+	// The watcher must have cost descriptors, or the test proves nothing.
+	if fsWatchCostPerFile && during-before < files/2 {
+		t.Skipf("watch held %d descriptors for %d files — not the per-file backend", during-before, files)
+	}
+	// Slack for pipes the git subprocesses in this test left behind. A real
+	// leak is `files` per round, orders of magnitude above this.
+	if slack := after - before; slack > 32 {
+		t.Errorf("after %d watcher rounds, %d descriptors were never returned (before=%d during=%d after=%d)",
+			rounds, slack, before, during, after)
 	}
 }

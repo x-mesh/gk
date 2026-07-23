@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk watch`가 며칠 돌면 "too many open files"로 무너지던 문제 — 원인은 fsnotify의 watcher 해제 누수였다.** macOS/BSD의 kqueue에서는 디렉터리를 하나 감시하면 그 안의 **파일마다** 디스크립터가 하나씩 열린다. 그래서 watcher를 놓아줄 때 전부 반납되는지가 결정적인데, fsnotify 1.9.0의 `Close()`는 자기가 먼저 "닫힘" 표시를 세운 뒤 각 watch를 `Remove`했고, 그 `Remove`는 닫힌 watcher에서 즉시 no-op으로 빠져나갔다(upstream [#732](https://github.com/fsnotify/fsnotify/issues/732)). 결과적으로 kqueue 핸들만 반납되고 파일·디렉터리 디스크립터는 그대로 남았다. `gk watch`는 활성 워크트리 집합이 바뀔 때마다 watcher를 다시 만들기 때문에 이 누수가 계속 쌓인다 — 실측한 프로세스는 fd 상한 10000 중 9989를 붙들고 있었고(같은 파일을 fd 3~4개가 중복 보유), 그 뒤로 모든 git 서브프로세스가 EMFILE로 죽어 대시보드는 "저장소가 전부 unreachable"인 것처럼 보였다. fsnotify를 1.10.1로 올려 해결한다. 회귀는 watcher 생성·해제를 5회 반복한 뒤 반납되지 않은 디스크립터를 세는 테스트로 고정했다 — 1.9.0에서는 627개가 남고 1.10.1에서는 0이다. gk의 fd 예산 로직(soft limit의 1/3, 워크트리별 균등 분배) 자체는 정상이었다.
+
 ## [0.133.0] - 2026-07-23
 
 ### Added

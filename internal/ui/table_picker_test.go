@@ -5,23 +5,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func newTablePickerModelForTest(items []PickerItem) tablePickerModel {
-	cols := []table.Column{{Title: "X", Width: 12}}
-	rows := make([]table.Row, len(items))
+	cols := []tableColumn{{Title: "X", Width: 12}}
+	rows := make([]tableRow, len(items))
 	for i, it := range items {
-		rows[i] = table.Row{pickerCell(it, 0)}
+		rows[i] = tableRow{pickerCell(it, 0)}
 	}
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(len(rows)+1),
-	)
+	t := newTableView(cols, rows, len(rows))
 	filter := textinput.New()
 	filter.Prompt = ""
 	return tablePickerModel{t: t, items: items, all: items, chosen: -1, filterInput: filter}
@@ -309,7 +304,7 @@ func TestPickerCell_UsesCellsWhenSet(t *testing.T) {
 }
 
 func TestDistributeColumnWidths_ProportionalSplit(t *testing.T) {
-	cols := []table.Column{
+	cols := []tableColumn{
 		{Title: "A", Width: 5},
 		{Title: "B", Width: 20},
 		{Title: "C", Width: 8},
@@ -337,7 +332,7 @@ func TestDistributeColumnWidths_ProportionalSplit(t *testing.T) {
 }
 
 func TestDistributeColumnWidths_EvenSplitWhenAllZero(t *testing.T) {
-	cols := []table.Column{
+	cols := []tableColumn{
 		{Title: "A", Width: 0},
 		{Title: "B", Width: 0},
 	}
@@ -349,7 +344,7 @@ func TestDistributeColumnWidths_EvenSplitWhenAllZero(t *testing.T) {
 }
 
 func TestDistributeColumnWidths_NoSlack(t *testing.T) {
-	cols := []table.Column{{Title: "A", Width: 50}}
+	cols := []tableColumn{{Title: "A", Width: 50}}
 	out := distributeColumnWidths(cols, 20)
 	if out[0].Width != 50 {
 		t.Fatalf("expected unchanged when total < sum, got %d", out[0].Width)
@@ -552,6 +547,63 @@ func TestTablePicker_SubtitleRenderedAboveFilter(t *testing.T) {
 	}
 }
 
+func TestTablePicker_LegendSitsBetweenSubtitleAndFilter(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	m.subtitle = "on: main"
+	m.legend = "★ current  ·  ● local + remote  ·  ○ remote only"
+	view := m.View()
+	subIdx, legIdx, filterIdx := strIdx(view, "▸ on: main"), strIdx(view, "★ current"), strIdx(view, "press / to filter")
+	if legIdx < 0 {
+		t.Fatalf("legend missing; got view: %q", view)
+	}
+	if subIdx >= legIdx || legIdx >= filterIdx {
+		t.Errorf("legend must sit under the subtitle and above the filter; sub=%d leg=%d filter=%d",
+			subIdx, legIdx, filterIdx)
+	}
+}
+
+func TestTablePicker_LegendFallsBackToCompactThenClips(t *testing.T) {
+	const (
+		full    = "★ current  ·  ● local + remote  ·  ◌ local only  ·  ⊘ remote gone"
+		compact = "★ here · ● both · ◌ local · ⊘ gone"
+	)
+	cases := []struct {
+		name  string
+		width int
+		want  string
+	}{
+		{"wide keeps the full wording", 100, full},
+		{"too narrow for full → compact", 40, compact},
+		{"unknown width bets on full", 0, full},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+			m.legend, m.legendCompact, m.width = full, compact, tc.width
+			if got := m.legendLine(); got != tc.want {
+				t.Errorf("legend at width %d = %q, want %q", tc.width, got, tc.want)
+			}
+		})
+	}
+	// Narrower than even the compact form: clip, but keep the leading keys.
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	m.legend, m.legendCompact, m.width = full, compact, 20
+	line := m.legendLine()
+	if lipgloss.Width(line) > 20 {
+		t.Errorf("legend = %d cols, must fit 20: %q", lipgloss.Width(line), line)
+	}
+	if !strings.HasPrefix(line, "★ here") {
+		t.Errorf("clipping should keep the leading entries, got %q", line)
+	}
+}
+
+func TestTablePicker_NoLegendHidesLine(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	if got := strIdx(m.View(), "★"); got >= 0 {
+		t.Errorf("no legend configured → no legend line, got view: %q", m.View())
+	}
+}
+
 func TestTablePicker_NoSubtitleHidesLine(t *testing.T) {
 	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
 	view := m.View()
@@ -574,15 +626,11 @@ func strIdx(haystack, needle string) int {
 // the WindowSizeMsg thresholds are deterministic.
 func newResponsiveModelForTest(items []PickerItem, headers []string, prio map[string]int) tablePickerModel {
 	colCount := len(headers)
-	cols := make([]table.Column, colCount)
+	cols := make([]tableColumn, colCount)
 	for i := range cols {
-		cols[i] = table.Column{Title: headers[i], Width: 8}
+		cols[i] = tableColumn{Title: headers[i], Width: 8}
 	}
-	tbl := table.New(
-		table.WithColumns(cols),
-		table.WithFocused(true),
-		table.WithHeight(len(items)+1),
-	)
+	tbl := newTableView(cols, nil, len(items))
 	filter := textinput.New()
 	filter.Prompt = ""
 	return tablePickerModel{

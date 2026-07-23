@@ -7,21 +7,18 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 )
 
-// cellAllocWidth measures a cell for column-width allocation. We use
-// runewidth.StringWidth (ANSI-blind — counts each escape byte as
-// visible) instead of lipgloss.Width so the resulting column width is
-// large enough that bubbles/table's runewidth.Truncate never fires
-// mid-escape on coloured cells. The allocation is a few cells wider
-// than the truly visible content; that slack is harmless and beats
-// broken ANSI rendering.
-func cellAllocWidth(s string) int { return runewidth.StringWidth(s) }
+// cellAllocWidth measures a cell for column-width allocation: the columns
+// it will actually occupy on screen, with colour escapes excluded. This is
+// only safe because tableView clips cells ANSI-aware (see truncateVisible);
+// bubbles/table's ANSI-blind Truncate forced the opposite trade — inflate
+// every column by its escape bytes, waste that many screen columns, and
+// drop columns on narrow terminals that would have fit.
+func cellAllocWidth(s string) int { return lipgloss.Width(s) }
 
 // TablePickerExtraKey binds a custom keystroke to a callback that
 // can replace the entire data set on the fly — items + headers. Use
@@ -96,6 +93,17 @@ type TablePicker struct {
 	Extras      []TablePickerExtraKey
 	Subtitle    string
 	FilterItems []PickerItem
+	// Legend is a one-line glyph key rendered faintly under the subtitle —
+	// for listings whose rows carry markers the user is not expected to
+	// have memorised. Callers should list only the markers actually on
+	// screen; a key for glyphs that aren't there is noise.
+	//
+	// LegendCompact is the same key in fewer words, used when the terminal
+	// cannot hold Legend. Clipping is the last resort: a key whose final
+	// entry reads "○ remot…" has lost the thing it was there to explain,
+	// so shortening every entry beats truncating the line.
+	Legend        string
+	LegendCompact string
 	// InitialFilter pre-seeds the filter query so the picker opens with
 	// the list already narrowed (in nav mode, not typing mode). Callers
 	// that re-enter the picker in a loop use it to restore the residual
@@ -116,20 +124,22 @@ type TablePicker struct {
 }
 
 type tablePickerModel struct {
-	t            table.Model
-	items        []PickerItem // visible rows after filtering
-	all          []PickerItem // original list — kept verbatim for re-filter
-	filterOnly   []PickerItem // hidden unless a filter query matches
-	chosen       int          // index into items at the moment of selection
-	chosenItem   PickerItem   // resolved item (so we don't have to re-index)
-	aborted      bool
-	width        int
-	filterInput  textinput.Model
-	filterActive bool // true while the user is typing into the filter box
-	extras       []TablePickerExtraKey
-	headers      []string
-	errMsg       string
-	subtitle     string
+	t             tableView
+	items         []PickerItem // visible rows after filtering
+	all           []PickerItem // original list — kept verbatim for re-filter
+	filterOnly    []PickerItem // hidden unless a filter query matches
+	chosen        int          // index into items at the moment of selection
+	chosenItem    PickerItem   // resolved item (so we don't have to re-index)
+	aborted       bool
+	width         int
+	filterInput   textinput.Model
+	filterActive  bool // true while the user is typing into the filter box
+	extras        []TablePickerExtraKey
+	headers       []string
+	errMsg        string
+	subtitle      string
+	legend        string
+	legendCompact string
 	// priorityByHeader maps a header title to its keep-weight (see
 	// TablePicker.ColumnPriority). visibleCols holds the indices (into
 	// headers / item Cells) currently shown, in left-to-right order — the
@@ -169,9 +179,11 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Quit
 			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
-				var cmd tea.Cmd
-				m.t, cmd = m.t.Update(msg)
-				return m, cmd
+				// Navigation keys stay live while typing; letter bindings
+				// (j/k/g/G) belong to the filter text, so they are not
+				// forwarded here.
+				m.t.handleKey(msg)
+				return m, nil
 			}
 			// Modifier aliases reach their action without leaving typing
 			// mode. Checked before the textinput sees the key so the
@@ -245,9 +257,10 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to fill. Widening restores dropped columns the same way.
 		m.reflowColumns(msg.Width)
 	}
-	var cmd tea.Cmd
-	m.t, cmd = m.t.Update(msg)
-	return m, cmd
+	if key, ok := msg.(tea.KeyMsg); ok {
+		m.t.handleKey(key)
+	}
+	return m, nil
 }
 
 // runExtra executes ex and reports whether it consumed the keystroke.
@@ -312,9 +325,9 @@ func (m *tablePickerModel) applyFilter() {
 	if len(vc) == 0 {
 		vc = identityCols(len(m.t.Columns()))
 	}
-	rows := make([]table.Row, len(m.items))
+	rows := make([]tableRow, len(m.items))
 	for i, it := range m.items {
-		row := make(table.Row, len(vc))
+		row := make(tableRow, len(vc))
 		for k, ci := range vc {
 			row[k] = pickerCell(it, ci)
 		}
@@ -347,9 +360,9 @@ func (m *tablePickerModel) selectCursorItem() bool {
 // header list, sized to fit the widest cell content per column. Used
 // by ExtraKey callbacks that replace the column structure (e.g. local
 // vs global modes that surface different column sets).
-func buildColumnsFromHeaders(items []PickerItem, headers []string) []table.Column {
+func buildColumnsFromHeaders(items []PickerItem, headers []string) []tableColumn {
 	colCount := len(headers)
-	cols := make([]table.Column, colCount)
+	cols := make([]tableColumn, colCount)
 	for i := 0; i < colCount; i++ {
 		w := cellAllocWidth(headers[i])
 		for _, it := range items {
@@ -360,7 +373,7 @@ func buildColumnsFromHeaders(items []PickerItem, headers []string) []table.Colum
 		if w < 6 {
 			w = 6
 		}
-		cols[i] = table.Column{Title: headers[i], Width: w}
+		cols[i] = tableColumn{Title: headers[i], Width: w}
 	}
 	return cols
 }
@@ -435,7 +448,7 @@ func fitColumns(widths []int, priority []int, total int) []int {
 
 // colWidths extracts the allocation widths from a column slice — the input
 // fitColumns measures against.
-func colWidths(cols []table.Column) []int {
+func colWidths(cols []tableColumn) []int {
 	out := make([]int, len(cols))
 	for i, c := range cols {
 		out[i] = c.Width
@@ -463,27 +476,46 @@ func (m *tablePickerModel) resolvePriority() []int {
 // the survivors to fill, and rebuild the rows through the new projection.
 func (m *tablePickerModel) reflowColumns(width int) {
 	full := buildColumnsFromHeaders(m.all, m.headers)
-	// Fit by the allocation widths the renderer will actually use — those
-	// equal on-screen occupancy (bubbles pads each cell to col.Width).
-	// Resolve each column's weight from its header title so a layout swap
-	// (e.g. the global toggle) keeps priorities aligned to the right columns.
+	// Fit by the allocation widths the renderer will actually use — with
+	// tableView those are visible widths, so a column survives whenever its
+	// content genuinely fits. Resolve each column's weight from its header
+	// title so a layout swap (e.g. the global toggle) keeps priorities
+	// aligned to the right columns.
 	m.visibleCols = fitColumns(colWidths(full), m.resolvePriority(), width)
 	m.hiddenCols = len(full) - len(m.visibleCols)
-	shown := make([]table.Column, len(m.visibleCols))
+	shown := make([]tableColumn, len(m.visibleCols))
 	for k, ci := range m.visibleCols {
 		shown[k] = full[ci]
 	}
 	if width > 0 {
 		shown = distributeColumnWidths(shown, width)
 	}
-	// Clear the rows before swapping columns: bubbles/table re-renders inside
-	// SetColumns, and renderRow indexes m.cols by each row cell — so a stale
-	// wide row against a freshly narrowed column set panics. Empty rows make
-	// the swap safe in both directions; applyFilter then repopulates them
-	// projected through the new visibleCols.
+	// Clear the rows before swapping columns so no render ever sees a stale
+	// wide row against a freshly narrowed column set; applyFilter repopulates
+	// them projected through the new visibleCols.
 	m.t.SetRows(nil)
 	m.t.SetColumns(shown)
 	m.applyFilter()
+}
+
+// legendLine picks the widest glyph key that fits: the full wording, then
+// the compact one, then a clip of whichever was shorter. Width 0 (no
+// WindowSizeMsg yet) means "unknown", where the full line is the right bet.
+func (m tablePickerModel) legendLine() string {
+	if m.legend == "" {
+		return m.legendCompact
+	}
+	if m.width <= 0 || lipgloss.Width(m.legend) <= m.width {
+		return m.legend
+	}
+	if m.legendCompact != "" && lipgloss.Width(m.legendCompact) <= m.width {
+		return m.legendCompact
+	}
+	shortest := m.legend
+	if m.legendCompact != "" && lipgloss.Width(m.legendCompact) < lipgloss.Width(shortest) {
+		shortest = m.legendCompact
+	}
+	return clipToWidth(shortest, m.width)
 }
 
 func itemMatchesFilter(it PickerItem, q string) bool {
@@ -554,6 +586,9 @@ func (m tablePickerModel) View() string {
 		}
 		out += line + "\n"
 	}
+	if line := m.legendLine(); line != "" {
+		out += hintStyle.Render(line) + "\n"
+	}
 	out += filterLine + "\n" + m.t.View() + "\n" + help
 	if m.errMsg != "" {
 		out += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
@@ -586,7 +621,7 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 	headers := make([]string, colCount)
 	copy(headers, p.Headers)
 
-	cols := make([]table.Column, colCount)
+	cols := make([]tableColumn, colCount)
 	for i := 0; i < colCount; i++ {
 		w := cellAllocWidth(headers[i])
 		for _, it := range items {
@@ -597,12 +632,12 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		if w < 6 {
 			w = 6
 		}
-		cols[i] = table.Column{Title: headers[i], Width: w}
+		cols[i] = tableColumn{Title: headers[i], Width: w}
 	}
 
-	rows := make([]table.Row, len(items))
+	rows := make([]tableRow, len(items))
 	for i, it := range items {
-		row := make(table.Row, colCount)
+		row := make(tableRow, colCount)
 		for j := 0; j < colCount; j++ {
 			row[j] = pickerCell(it, j)
 		}
@@ -616,24 +651,8 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 			height = 12
 		}
 	}
-
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(height),
-	)
-
-	styles := table.DefaultStyles()
-	styles.Header = styles.Header.
-		Bold(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderBottom(true)
-	styles.Selected = styles.Selected.
-		Foreground(lipgloss.Color("231")).
-		Background(lipgloss.Color("99")).
-		Bold(true)
-	t.SetStyles(styles)
+	// Height counts the header line too; the table takes the row count.
+	t := newTableView(cols, rows, height-1)
 
 	filter := textinput.New()
 	filter.Placeholder = "type to filter…"
@@ -651,6 +670,8 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		extras:           p.Extras,
 		headers:          headers,
 		subtitle:         p.Subtitle,
+		legend:           p.Legend,
+		legendCompact:    p.LegendCompact,
 		priorityByHeader: p.ColumnPriority,
 		// Start 1:1 (all columns); the first WindowSizeMsg reflows to the
 		// fitted set once the terminal width is known.
@@ -710,13 +731,13 @@ func pickerCell(it PickerItem, idx int) string {
 // derived) width so a wide BRANCH column also expands when UPSTREAM is
 // the longest — instead of one column hoarding the slack. The last
 // column absorbs any rounding remainder so widths sum exactly to total.
-// Honours bubbles/table's per-cell padding.
-func distributeColumnWidths(cols []table.Column, total int) []table.Column {
+// Honours the renderer's per-cell padding.
+func distributeColumnWidths(cols []tableColumn, total int) []tableColumn {
 	if total <= 0 || len(cols) == 0 {
 		return cols
 	}
-	const padding = 2
-	out := make([]table.Column, len(cols))
+	const padding = cellPadding
+	out := make([]tableColumn, len(cols))
 	copy(out, cols)
 
 	sum := 0

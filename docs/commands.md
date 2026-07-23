@@ -4085,6 +4085,49 @@ gk pr checkout 98 --branch review # custom local branch name
 
 ---
 
+### gk pr create
+
+Open a pull request from the current branch against the base branch.
+
+#### Synopsis
+
+```
+gk pr create [flags]
+```
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--base <branch>` | `base_branch`, else the remote's default | Branch to merge into |
+| `--head <branch>` | current branch | Branch to merge from |
+| `-t, --title <text>` | commit subject (single commit), else the branch name | Pull request title |
+| `-b, --body <text>` | commit list | Pull request body |
+| `--body-file <path>` | — | Read the body from a file (`-` reads stdin) |
+| `--ai` | false | Draft the body with the same generator as `gk pr new` |
+| `--draft` | false | Open as a draft pull request |
+| `--web` | false | Open the created pull request in the browser |
+| `--dry-run` | false | Show what would be opened without calling the API |
+
+#### What it does
+
+1. Resolves the base: `--base` > `base_branch` > the remote's default branch.
+2. Requires the branch and its remote counterpart to be at the **same commit**. The PR's contents come from the remote while its title and body are computed locally, so drift either way is wrong: local ahead (`branch_ahead_remote`) leaves the work you just wrote out of the PR, remote ahead (`branch_behind_remote`) drags commits the title never saw into it. Those two and "not on the remote at all" (`branch_not_pushed`) stop with `state:"blocked"` and a `gk push` / `gk pull` remedy — gk does not push for you, because pushing silently would bypass the pre-push secret scan and the protected-branch guards.
+3. Derives the title from the branch name in Conventional Commit form when the branch holds several commits (`feat/pr-create` → `feat: pr create`).
+4. Returns an already-open PR instead of failing when one exists for this head **and** base (`created:false` with its number and URL).
+
+Needs a token that can write to the repository: `GH_TOKEN` / `GITHUB_TOKEN`, or a prior `gh auth login`.
+
+#### Examples
+
+```bash
+gk pr create                            # base from config/remote, title+body from the commits
+gk pr create --base develop --draft     # draft PR against develop
+gk pr create --ai --web                 # AI-drafted body, then open it in the browser
+gk pr create --body-file - < notes.md   # body from stdin
+gk pr create --dry-run                  # what would be opened, no API call
+```
+
 ### gk pr new
 
 Generate a structured PR description from the current branch's commits

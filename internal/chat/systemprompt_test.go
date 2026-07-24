@@ -44,3 +44,37 @@ func TestSystemPrompt_RepoMapEscapesEmbeddedTag(t *testing.T) {
 		t.Errorf("embedded closing tag in repoMap must be escaped so only the fence closes: %s", sp)
 	}
 }
+
+// The suggestion rules are what keep a follow-up action grounded (look it up,
+// never recall it) and rare (one, only when useful). Both are load-bearing:
+// without the first the model invents commands, without the second every turn
+// grows an advertisement.
+func TestSystemPrompt_SuggestionRules(t *testing.T) {
+	sp := SystemPrompt("", "", "en", false)
+	if !strings.Contains(sp, "gk_suggest") {
+		t.Error("prompt must route gk command names through gk_suggest")
+	}
+	if !strings.Contains(sp, "at most ONE follow-up action") {
+		t.Error("prompt must cap follow-up suggestions at one")
+	}
+	if !strings.Contains(sp, "Omit it entirely") {
+		t.Error("prompt must allow omitting the suggestion when there is no useful next step")
+	}
+}
+
+// A live run showed the model opening a CODE question with gk_suggest
+// ("inspect why Dispatch wraps errors"), burning a round on a tool that
+// cannot read the repository at all. The negative framing is what stops it:
+// naming the exploration tools that DO answer such questions gives the model
+// somewhere else to go instead of just a prohibition.
+func TestSystemPrompt_SuggestIsNotAnExplorationTool(t *testing.T) {
+	sp := SystemPrompt("", "", "en", false)
+	if !strings.Contains(sp, "gk_suggest is not an exploration tool") {
+		t.Error("prompt must state gk_suggest is not for exploration")
+	}
+	for _, tool := range []string{"git_grep", "file_read", "git_log"} {
+		if !strings.Contains(sp, tool) {
+			t.Errorf("prompt must point code questions at %s instead", tool)
+		}
+	}
+}

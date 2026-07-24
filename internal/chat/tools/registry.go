@@ -100,7 +100,14 @@ func (r *Registry) Dispatch(ctx context.Context, call provider.ToolCall) (res pr
 		return res
 	}
 
-	out, err := t.Handler(ctx, call.Input)
+	input, err := UnwrapEnvelope(call.Name, call.Input)
+	if err != nil {
+		res.Content = r.redact(err.Error())
+		res.IsError = true
+		return res
+	}
+
+	out, err := t.Handler(ctx, input)
 	if err != nil {
 		// Error text is model-visible; redact it too — a sandbox denial
 		// echoes the requested path, and git errors can quote content.

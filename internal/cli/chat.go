@@ -266,6 +266,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 	tools.RegisterContextTools(registry, func(ctx context.Context) (string, error) {
 		return chatContextJSONString(ctx, runner, cfg, deny)
 	})
+	// gk_suggest reads gk's own cobra tree, not the repository, so it needs
+	// neither the sandbox nor the runner — but it still goes through the
+	// registry's redact+cap stages like every other tool.
+	tools.RegisterSuggestTools(registry, chatSuggestLookup(cmd))
 
 	// REPO_CONTEXT is gk context's own collector (collectContext), projected
 	// down to a token-budget-sensitive core — branch, upstream, ahead/
@@ -611,15 +615,18 @@ func openChatSession(ctx context.Context, runner git.Runner, cont bool, sessionI
 // round's usage arrives (atomics — the label callback runs on the
 // spinner's render goroutine).
 type chatTurnUI struct {
-	out      io.Writer
-	spin     func()
-	spinning bool
-	label    string
-	calls    []chatToolCallLog
-	start    time.Time
-	tokens   atomic.Int64
-	rounds   atomic.Int64
-	approx   atomic.Bool
+	out io.Writer
+	// toolStart is when the currently open tool line began; onToolResult
+	// closes that line with the elapsed time.
+	toolStart time.Time
+	spin      func()
+	spinning  bool
+	label     string
+	calls     []chatToolCallLog
+	start     time.Time
+	tokens    atomic.Int64
+	rounds    atomic.Int64
+	approx    atomic.Bool
 	// streamed accumulates text delivered via onTextDelta for the round
 	// CURRENTLY in flight. onToolCall resets it: engine.RunTurn's only
 	// text-only (no tool_calls) round is always the LAST one of a turn
@@ -710,18 +717,46 @@ func (u *chatTurnUI) onToolCall(call provider.ToolCall) {
 		fmt.Fprintln(u.out)
 		u.streamed.Reset()
 	}
+	// The line is opened here and closed in onToolResult, so the call and
+	// what it returned share one row. Engine dispatch is strictly
+	// call-then-result per tool (engine.go's ToolCalls loop), so the two
+	// halves can never interleave. Leaving the row unterminated also means
+	// no cursor tricks are needed to join them — which keeps the output
+	// identical when stdout is a pipe rather than a terminal.
 	if !JSONOut() {
 		faint := color.New(color.Faint).SprintFunc()
-		fmt.Fprintln(u.out, faint("  ▸ "+call.Name+" "+compactJSON(call.Input, 80)))
+		fmt.Fprint(u.out, faint("  ▸ "+padToolCell(call.Name, toolNameWidth)+" "+
+			padToolCell(summarizeToolArgs(call.Name, call.Input), toolArgsWidth)))
+		u.toolStart = time.Now()
 	}
 }
 
 func (u *chatTurnUI) onToolResult(call provider.ToolCall, res provider.ToolResult) {
-	if res.IsError && !JSONOut() {
-		fmt.Fprintln(u.out, color.New(color.Faint, color.FgYellow).Sprint("    ✕ "+firstLine(res.Content)))
+	if !JSONOut() {
+		// The duration gets its own column too. Left-ragged timings defeat the
+		// reason they were added: you read them to spot the ONE slow call, and
+		// that comparison needs the numbers stacked.
+		dur := faintDim(fmt.Sprintf(" %5s", formatToolDuration(time.Since(u.toolStart))))
+		if res.IsError {
+			// The failure replaces the size summary: an error has no size.
+			// It is clipped to the result column's width because a tool error
+			// can run to a paragraph (the envelope-mismatch message names two
+			// tools and how to fix the call), and letting one wrap would break
+			// the alignment every other row depends on. Nothing is lost — the
+			// model receives the full text, and --debug prints it.
+			fmt.Fprintln(u.out, color.New(color.Faint, color.FgYellow).Sprint(" ✕ "+
+				padToolCell(firstLine(res.Content), resultWidth()))+dur)
+		} else {
+			fmt.Fprintln(u.out, faintDim(" → "+
+				padToolCell(summarizeToolResult(call.Name, res.Content), resultWidth()))+dur)
+		}
 	}
 	u.calls = append(u.calls, chatToolCallLog{Name: call.Name, Input: call.Input, IsError: res.IsError})
 	u.startSpin()
+}
+
+func faintDim(s string) string {
+	return color.New(color.Faint).Sprint(s)
 }
 
 // runChatTurn executes one turn with Ctrl-C canceling ONLY the turn: the

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.134.0] - 2026-07-25
+
 <!-- review: 아래 Added/Changed 세 항목은 451cb3d·f9cdfc5·3723856의 코드와 주석에서 옮겨 적은 것이다. 의도를 잘못 읽은 곳이 있으면 작성자가 고쳐 주기 바란다. -->
 
 ### Added

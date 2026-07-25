@@ -381,13 +381,23 @@ func (ws *fleetWatchSet) forward(path string, fw *fsWatcher) {
 		default:
 		}
 	}
-	// A watcher can tear itself down on EMFILE/ENFILE. Its events channel then
+	// A watcher can tear itself down — on EMFILE/ENFILE, or when files appearing
+	// under it push its descriptor cost past the budget. Its events channel then
 	// closes, which is the authoritative liveness signal: remove this exact
-	// instance so health/ticks fall back to polling and the next sync can grant
-	// a fresh watcher for the worktree.
+	// instance so health/ticks fall back to polling.
+	//
+	// Removal alone would let the very next sync grant a replacement, which
+	// walks the same tree into the same wall — a rebuild/teardown churn that
+	// burns descriptors in a loop and never converges. A self-teardown is a
+	// grant failure discovered late, so it earns the same retry cooldown: the
+	// worktree rides the heartbeat until the cause (fd pressure, a build
+	// writing files) has had time to pass.
 	ws.mu.Lock()
 	if ws.watchers[path] == fw {
 		delete(ws.watchers, path)
+		if !ws.closed {
+			ws.denied[path] = time.Now()
+		}
 	}
 	ws.mu.Unlock()
 }

@@ -139,8 +139,8 @@ func TestIsFDExhausted(t *testing.T) {
 func TestFSWatchCostBudget(t *testing.T) {
 	got := fsWatchCostBudget()
 	if fsWatchCostPerFile {
-		if got < 256 || got > 1<<16 {
-			t.Errorf("kqueue budget out of bounds: %d", got)
+		if got < 256 || got > fsWatchMaxCost {
+			t.Errorf("kqueue budget out of bounds: %d (ceiling %d)", got, fsWatchMaxCost)
 		}
 	} else if got != fsWatchMaxDirs {
 		t.Errorf("non-kqueue budget = %d, want %d", got, fsWatchMaxDirs)
@@ -324,9 +324,23 @@ func TestFleetWatchForwardRemovesStoppedWatcher(t *testing.T) {
 	if health.Watched != 0 || !health.PollingFallback {
 		t.Fatalf("health after watcher stop = %+v, want watched=0 polling fallback", health)
 	}
-	plan := planFleetWatchers([]fleetEntryJSON{{Path: "/w", Current: true}}, map[string]bool{}, nil, nil, time.Now())
-	if len(plan.grant) != 1 || plan.grant[0] != "/w" {
-		t.Fatalf("next sync must reacquire stopped watcher, grant=%v", plan.grant)
+	// A self-teardown is a grant failure found late, so it must arm the retry
+	// cooldown: rebuilding immediately would walk the same tree into the same
+	// wall, over and over. The worktree polls until the cooldown expires.
+	entries := []fleetEntryJSON{{Path: "/w", Current: true}}
+	ws.mu.Lock()
+	denied := ws.denied
+	ws.mu.Unlock()
+	if _, ok := denied["/w"]; !ok {
+		t.Fatal("a stopped watcher must arm the retry cooldown, not invite an instant rebuild")
+	}
+	if plan := planFleetWatchers(entries, map[string]bool{}, nil, denied, time.Now()); len(plan.grant) != 0 {
+		t.Fatalf("sync during cooldown must not rebuild, grant=%v", plan.grant)
+	}
+	// Once the cooldown expires the worktree is eligible again.
+	after := time.Now().Add(fleetWatchRetryCooldown + time.Second)
+	if plan := planFleetWatchers(entries, map[string]bool{}, nil, denied, after); len(plan.grant) != 1 || plan.grant[0] != "/w" {
+		t.Fatalf("sync after cooldown must reacquire stopped watcher, grant=%v", plan.grant)
 	}
 }
 

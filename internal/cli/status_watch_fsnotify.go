@@ -35,6 +35,17 @@ const (
 	// a watch costs one descriptor per DIRECTORY (inotify). kqueue platforms
 	// derive a larger, fd-aware budget instead — see fsWatchCostBudget.
 	fsWatchMaxDirs = 2048
+	// fsWatchMaxCost ceilings the fd-derived budget on kqueue platforms. The
+	// derivation (a third of the fd soft limit) is circular on its own: the
+	// process raises that limit itself, and a shell can hand it a soft limit of
+	// 1<<20, which made the old 1<<16 ceiling the real number — a licence for
+	// ONE watcher to hold 65k descriptors. Real trees are nowhere near that
+	// (this repo watches ~900 paths), a watcher's value does not scale with
+	// tree size, and its cost is systemic: descriptors held here are the ones
+	// every later git subprocess needs. Beyond this, polling is the better
+	// trade, so the ceiling reflects what a watcher should ever be worth
+	// rather than what the process could technically afford.
+	fsWatchMaxCost = 8192
 	// fsHeartbeatInterval is the safety-net poll cadence while fsnotify drives
 	// the feed — slow, because events do the real work; this only catches the
 	// rare change no watched path observed.
@@ -62,8 +73,8 @@ func fsWatchCostBudget() int {
 		return fsWatchMaxDirs
 	}
 	budget := int(soft / 3)
-	if budget > 1<<16 {
-		budget = 1 << 16
+	if budget > fsWatchMaxCost {
+		budget = fsWatchMaxCost
 	}
 	if budget < 256 {
 		budget = 256
@@ -207,15 +218,43 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 			// re-check with `git check-ignore`. Children of a dir we decline to
 			// Add never fire events, so this stays one check per new top dir.
 			if ev.Op&fsnotify.Create != 0 {
-				if fi, serr := os.Stat(ev.Name); serr == nil && fi.IsDir() &&
-					!fw.ignored[ev.Name] && !fw.isIgnored(ev.Name) {
-					if err := fw.admitRuntimeDir(ev.Name); isFDExhausted(err) {
-						// Keep no half-grown watcher after hitting the process fd
-						// wall. Closing it releases its descriptors and lets the
-						// caller's heartbeat polling take over completely.
-						return
+				fi, serr := os.Stat(ev.Name)
+				switch {
+				case serr != nil:
+					// Gone before we could look — an editor's temp file, or an
+					// atomic write's staging name. fsnotify's own open raced the
+					// same removal, so charging it would inflate the cost with
+					// descriptors nobody holds.
+				case fi.IsDir():
+					if !fw.ignored[ev.Name] && !fw.isIgnored(ev.Name) {
+						if err := fw.admitRuntimeDir(ev.Name); isFDExhausted(err) {
+							// Keep no half-grown watcher after hitting the process fd
+							// wall. Closing it releases its descriptors and lets the
+							// caller's heartbeat polling take over completely.
+							return
+						}
+					}
+				default:
+					// A FILE appearing inside a directory we already watch. On
+					// kqueue fsnotify opens a descriptor for it behind our back
+					// (dirChange → sendCreateIfNew → internalWatch), so this is
+					// the only place the cost can be charged — the startup walk
+					// is long past and admitRuntimeDir only ever sees new
+					// directories. Left uncharged, a repo that keeps producing
+					// files (a build, a test run, an agent) grows the watcher's
+					// descriptor set without bound until EMFILE takes down every
+					// git subprocess in the process.
+					if fw.chargeRuntimeFile() {
+						return // over budget — release everything, fall back to polling
 					}
 				}
+			}
+			// Removal hands the descriptor back: fsnotify's kqueue backend closes
+			// the fd in remove() before it forgets the path. Crediting it keeps a
+			// create/delete churn (temp files, atomic writes) from ratcheting the
+			// cost up to the cap on a tree that never actually grows.
+			if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				fw.releaseRuntimeCost()
 			}
 			if timer == nil {
 				timer = time.NewTimer(debounce)
@@ -243,6 +282,33 @@ func (fw *fsWatcher) loop(debounce time.Duration) {
 			}
 			return
 		}
+	}
+}
+
+// chargeRuntimeFile books one descriptor for a file fsnotify started watching
+// on its own, and reports whether that pushed the watcher past its budget.
+// Only kqueue platforms pay per file; elsewhere a file costs nothing and the
+// call is free.
+//
+// This is detection, not prevention: fsnotify opens the descriptor before the
+// event reaches us, so a burst can overshoot before the loop drains it. Bounded
+// overshoot followed by a full release is the guarantee — the same one the
+// EMFILE path already makes — and it is what keeps the steady state finite.
+func (fw *fsWatcher) chargeRuntimeFile() bool {
+	if !fsWatchCostPerFile {
+		return false
+	}
+	fw.cost++
+	return fw.cost > fw.costCap
+}
+
+// releaseRuntimeCost credits back the descriptor a removed or renamed path
+// held. It floors at zero: events for paths that never cost anything (files on
+// inotify, a path removed twice during a rename) must not drive the count
+// negative and hand out budget the watcher never had.
+func (fw *fsWatcher) releaseRuntimeCost() {
+	if fw.cost > 0 {
+		fw.cost--
 	}
 }
 

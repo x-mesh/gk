@@ -323,3 +323,74 @@ func TestFSWatcherCloseReleasesDescriptors(t *testing.T) {
 			rounds, slack, before, during, after)
 	}
 }
+
+// TestFSWatcherLiveFileCreationRespectsBudget is the regression guard for the
+// leak the cost cap never covered: files created inside an ALREADY-watched
+// directory while the watcher runs.
+//
+// On kqueue every watched file holds a descriptor, and fsnotify opens them
+// itself — a NOTE_WRITE on a watched directory sends it through dirChange →
+// sendCreateIfNew → internalWatch, one addWatch per new file. That path is
+// inside fsnotify, so neither the startup walk nor admitRuntimeDir (which only
+// sees new DIRECTORIES) ever counts it. fw.cost stays frozen at its startup
+// value while the real descriptor count climbs with every file a build, a test
+// run, or an agent writes — unbounded, until EMFILE takes down every git
+// subprocess in the process.
+func TestFSWatcherLiveFileCreationRespectsBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	if !fsWatchCostPerFile {
+		t.Skip("descriptor-per-file leak only exists on kqueue platforms")
+	}
+	repo := testutil.NewRepo(t)
+	tree := filepath.Join(repo.Dir, "tree")
+	repo.WriteFile(filepath.Join("tree", "keep.txt"), "x") // git needs a file to track the dir
+	repo.RunGit("add", "-A")
+	repo.Commit("near-empty tree to watch")
+
+	const costCap = 64
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	before := openFDCount()
+	fw, ok := newFSWatcher(context.Background(), runner, 20*time.Millisecond, costCap)
+	if !ok {
+		t.Skip("fsnotify unavailable in this environment")
+	}
+	defer fw.Close()
+
+	// Going over budget makes the loop tear itself down, which closes fw.events.
+	// That close is the observable contract, so watch for it rather than
+	// sleeping: fsnotify's WatchList() reports only explicitly-Added paths
+	// (listPaths(userOnly)), so the internal per-file watches this test is
+	// about are invisible through it.
+	torndown := make(chan struct{})
+	go func() {
+		defer close(torndown)
+		for range fw.events {
+		}
+	}()
+
+	// Write far more files than the cap into the directory the watcher already
+	// holds. Each one reaches fsnotify's dirChange path.
+	const files = 500
+	for i := range files {
+		p := filepath.Join(tree, "f"+strconv.Itoa(i)+".txt")
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	select {
+	case <-torndown:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("watcher never tore down after %d live file creations under a cost cap of %d "+
+			"(holding %d descriptors) — runtime file watches escape the budget",
+			files, costCap, openFDCount()-before)
+	}
+
+	// Teardown must return the descriptors, not merely stop counting them.
+	held := openFDCount() - before
+	if held > costCap {
+		t.Errorf("watcher still held %d descriptors after tearing down under a cost cap of %d",
+			held, costCap)
+	}
+}

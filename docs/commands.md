@@ -1218,10 +1218,13 @@ itself — `git_log`, `git_show`, `git_diff` (digest-first), `git_blame`,
 `git_grep`, `file_read`, `file_list`, `git_status` (structured dirty/
 staged/conflict/stash/in-progress-op summary), `git_snapshot_list` /
 `git_snapshot_diff` (gk's `refs/wip` safety net — see `gk snapshot`, not
-`git stash`), and `git_context` (re-collects the same repo-orientation
+`git stash`), `git_context` (re-collects the same repo-orientation
 snapshot the system prompt starts with, for when state may have drifted
-mid-conversation) — to investigate before answering, and every tool call
-is shown as a one-line feed. Ask "when and why did this function
+mid-conversation), and `gk_suggest` (looks a gk command up in this
+build's own command tree before naming it, so a suggested command cannot
+be one that does not exist; it reads the CLI, never the repository) — to
+investigate before answering, and every tool call is shown as a one-line
+feed with its arguments and result summarized in aligned columns. Ask "when and why did this function
 change?" and it chains log → blame → file reads on its own, citing the
 SHAs and `file:line` evidence it actually saw.
 

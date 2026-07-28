@@ -564,7 +564,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only", "")
+	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "origin/main", "ff-only", "")
 
 	got := buf.String()
 	if !strings.Contains(got, "Already up to date  abc1234") {
@@ -575,7 +575,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 func TestRenderPullSummary_EmptyRefsStaySilent(t *testing.T) {
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "ff-only", "")
+	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "origin/main", "ff-only", "")
 	if buf.Len() != 0 {
 		t.Errorf("expected silence when pre is empty, got %q", buf.String())
 	}
@@ -603,7 +603,7 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, r, "deadbee0", "facef00", "rebase", "")
+	renderPullSummary(cmd, r, "deadbee0", "facef00", "facef00", "rebase", "")
 
 	got := buf.String()
 	for _, want := range []string{
@@ -618,6 +618,97 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderPullSummary_FFOnlyIgnoresUpstreamParam verifies ff-only (and by
+// extension merge) never switches to the pre..upstream range: only rebase
+// rewrites SHAs, so those strategies must keep using pre..post regardless
+// of what upstream is passed. upstream is deliberately set to a ref with no
+// registered FakeResponse — if ff-only mistakenly used it, the commit list
+// and count would come back empty instead of matching pre..post.
+func TestRenderPullSummary_FFOnlyIgnoresUpstreamParam(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	ts := time.Now().Add(-10 * time.Minute).Unix()
+	logOut := fmt.Sprintf("f00d123\x1ffeat: ff commit\x1fcarol\x1f%d\n", ts)
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --count local000..local111": {Stdout: "1\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..local111", pullCommitLimit): {Stdout: logOut},
+			"diff --shortstat local000..local111": {Stdout: " 1 file changed, 1 insertion(+)\n"},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, r, "local000", "local111", "unregistered-upstream-ref", "ff-only", "")
+
+	got := buf.String()
+	for _, want := range []string{
+		"updated local000 → local111",
+		"(+1 commit · ff-only)",
+		"f00d123",
+		"feat: ff commit",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderPullSummary_RebaseUsesUpstreamRangeNotPost guards the rebase
+// summary bug: rebase rewrites the SHAs of local commits that were ahead,
+// so pre (old local tip) is no longer an ancestor of post (rebased tip).
+// pre..post would then span both the newly-fetched upstream commits and
+// the user's own rewritten commits, and its count would read
+// ahead+behind instead of behind. The fixture registers deliberately wrong
+// responses for the old pre..post range (containing a fake "leaked" local
+// commit and a count of 3) — if renderPullSummary regressed to using that
+// range for a rebase, this test would surface the leaked commit and the
+// wrong count.
+func TestRenderPullSummary_RebaseUsesUpstreamRangeNotPost(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	ts := time.Now().Add(-30 * time.Minute).Unix()
+	upstreamLog := fmt.Sprintf("up1abcd\x1ffeat: upstream change\x1falice\x1f%d\n", ts)
+	leakedLog := fmt.Sprintf("badc0de1\x1frewritten: local commit leaked\x1fbob\x1f%d\n", ts)
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			// Correct range: pre..upstream — only the incoming commit.
+			"rev-list --count local000..origin000": {Stdout: "1\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..origin000", pullCommitLimit): {Stdout: upstreamLog},
+			"diff --shortstat local000..local999": {Stdout: " 1 file changed, 1 insertion(+)\n"},
+			// Wrong (pre-fix) range: pre..post — would leak the user's own
+			// rewritten commit and inflate the count to ahead+behind.
+			"rev-list --count local000..local999": {Stdout: "3\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..local999", pullCommitLimit): {Stdout: leakedLog},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, r, "local000", "local999", "origin000", "rebase", "")
+
+	got := buf.String()
+	for _, want := range []string{
+		"updated local000 → local999",
+		"(+1 commit · rebase)",
+		"up1abcd",
+		"feat: upstream change",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"badc0de1", "leaked", "(+3 commits"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("output leaked the pre..post range (%q found), want pre..upstream only:\n%s", unwanted, got)
 		}
 	}
 }
@@ -686,7 +777,7 @@ func TestRenderPullSummary_TopoOrderAcrossMerge(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.ExecRunner{Dir: repo.Dir}, pre, post, "merge", "")
+	renderPullSummary(cmd, &git.ExecRunner{Dir: repo.Dir}, pre, post, "origin/main", "merge", "")
 	got := buf.String()
 
 	type hit struct {

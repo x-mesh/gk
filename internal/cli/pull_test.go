@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -593,7 +596,7 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"rev-list --count deadbee0..facef00": {Stdout: "2\n"},
-			fmt.Sprintf("log --max-count=%d --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at deadbee0..facef00", pullCommitLimit): {Stdout: logOut},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at deadbee0..facef00", pullCommitLimit): {Stdout: logOut},
 			"diff --shortstat deadbee0..facef00": {Stdout: " 3 files changed, 12 insertions(+), 4 deletions(-)\n"},
 		},
 	}
@@ -616,6 +619,96 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+// commitAtOffset writes file with msg as content, commits it, and pins both
+// author and committer date to a fixed epoch + offsetSeconds so tests can
+// construct commit graphs with a known, non-real-time date ordering.
+func commitAtOffset(t *testing.T, repo *testutil.Repo, file, msg string, offsetSeconds int) {
+	t.Helper()
+	repo.WriteFile(file, msg+"\n")
+
+	add := exec.Command("git", "add", ".")
+	add.Dir = repo.Dir
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	date := time.Unix(1700000000+int64(offsetSeconds), 0).UTC().Format(time.RFC3339)
+	commit := exec.Command("git", "commit", "-m", msg)
+	commit.Dir = repo.Dir
+	commit.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"LC_ALL=C",
+		"LANG=C",
+		"GIT_AUTHOR_DATE="+date,
+		"GIT_COMMITTER_DATE="+date,
+	)
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+}
+
+// TestRenderPullSummary_TopoOrderAcrossMerge reproduces the bug this test
+// guards against: a merge joining two branches whose commit dates
+// interleave. Plain/date-order git log interleaves the branches by
+// timestamp; --topo-order keeps each branch's commits contiguous. The
+// renderPullSummary commit list must match the topo-order sequence, not
+// the interleaved default-order one.
+func TestRenderPullSummary_TopoOrderAcrossMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	repo := testutil.NewRepo(t)
+	pre := repo.RunGit("rev-parse", "HEAD")
+
+	repo.CreateBranch("gk-test-side")
+	commitAtOffset(t, repo, "side1.txt", "chore: side 1", 10)
+	commitAtOffset(t, repo, "side2.txt", "chore: side 2", 40)
+
+	repo.Checkout("main")
+	commitAtOffset(t, repo, "main1.txt", "chore: main 1", 20)
+	commitAtOffset(t, repo, "main2.txt", "chore: main 2", 30)
+
+	repo.RunGit("merge", "--no-ff", "-m", "Merge branch 'gk-test-side'", "gk-test-side")
+	post := repo.RunGit("rev-parse", "HEAD")
+
+	defaultOrder := strings.Fields(repo.RunGit("log", "--pretty=format:%h", pre+".."+post))
+	topoOrder := strings.Fields(repo.RunGit("log", "--topo-order", "--pretty=format:%h", pre+".."+post))
+	if strings.Join(defaultOrder, ",") == strings.Join(topoOrder, ",") {
+		t.Fatalf("fixture did not produce a default-order vs topo-order divergence: %v", defaultOrder)
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, &git.ExecRunner{Dir: repo.Dir}, pre, post, "merge", "")
+	got := buf.String()
+
+	type hit struct {
+		sha string
+		idx int
+	}
+	hits := make([]hit, 0, len(topoOrder))
+	for _, sha := range topoOrder {
+		idx := strings.Index(got, sha)
+		if idx == -1 {
+			t.Fatalf("expected commit %s in output, got:\n%s", sha, got)
+		}
+		hits = append(hits, hit{sha, idx})
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].idx < hits[j].idx })
+
+	gotOrder := make([]string, len(hits))
+	for i, h := range hits {
+		gotOrder[i] = h.sha
+	}
+	if strings.Join(gotOrder, ",") != strings.Join(topoOrder, ",") {
+		t.Errorf("renderPullSummary order = %v, want topo order %v (default order was %v)", gotOrder, topoOrder, defaultOrder)
 	}
 }
 

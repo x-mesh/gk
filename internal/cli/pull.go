@@ -1085,6 +1085,7 @@ func printDivergenceRefusal(w io.Writer, runner git.Runner, ctx context.Context,
 	// section would over-fragment what is conceptually one warning.
 	if commits, _, err := runner.Run(ctx, "log",
 		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--topo-order",
 		"--pretty=format:%h %s",
 		upstream+"..HEAD",
 	); err == nil {
@@ -1621,6 +1622,7 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 	// subjects containing tabs/pipes do not split mid-row.
 	commits, _, err := runner.Run(ctx, "log",
 		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--topo-order",
 		"--pretty=format:%h\x1f%s\x1f%an\x1f%at",
 		pre+".."+post,
 	)

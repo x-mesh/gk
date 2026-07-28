@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -561,7 +564,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "ff-only", "")
+	renderPullSummary(cmd, &git.FakeRunner{}, "abc1234", "abc1234", "origin/main", "ff-only", "")
 
 	got := buf.String()
 	if !strings.Contains(got, "Already up to date  abc1234") {
@@ -572,7 +575,7 @@ func TestRenderPullSummary_AlreadyUpToDate(t *testing.T) {
 func TestRenderPullSummary_EmptyRefsStaySilent(t *testing.T) {
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "ff-only", "")
+	renderPullSummary(cmd, &git.FakeRunner{}, "", "abc1234", "origin/main", "ff-only", "")
 	if buf.Len() != 0 {
 		t.Errorf("expected silence when pre is empty, got %q", buf.String())
 	}
@@ -593,14 +596,14 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 	r := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"rev-list --count deadbee0..facef00": {Stdout: "2\n"},
-			fmt.Sprintf("log --max-count=%d --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at deadbee0..facef00", pullCommitLimit): {Stdout: logOut},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at deadbee0..facef00", pullCommitLimit): {Stdout: logOut},
 			"diff --shortstat deadbee0..facef00": {Stdout: " 3 files changed, 12 insertions(+), 4 deletions(-)\n"},
 		},
 	}
 
 	buf := &bytes.Buffer{}
 	cmd := summaryCmd(buf)
-	renderPullSummary(cmd, r, "deadbee0", "facef00", "rebase", "")
+	renderPullSummary(cmd, r, "deadbee0", "facef00", "facef00", "rebase", "")
 
 	got := buf.String()
 	for _, want := range []string{
@@ -616,6 +619,187 @@ func TestRenderPullSummary_WithCommits(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+// TestRenderPullSummary_FFOnlyIgnoresUpstreamParam verifies ff-only (and by
+// extension merge) never switches to the pre..upstream range: only rebase
+// rewrites SHAs, so those strategies must keep using pre..post regardless
+// of what upstream is passed. upstream is deliberately set to a ref with no
+// registered FakeResponse — if ff-only mistakenly used it, the commit list
+// and count would come back empty instead of matching pre..post.
+func TestRenderPullSummary_FFOnlyIgnoresUpstreamParam(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	ts := time.Now().Add(-10 * time.Minute).Unix()
+	logOut := fmt.Sprintf("f00d123\x1ffeat: ff commit\x1fcarol\x1f%d\n", ts)
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-list --count local000..local111": {Stdout: "1\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..local111", pullCommitLimit): {Stdout: logOut},
+			"diff --shortstat local000..local111": {Stdout: " 1 file changed, 1 insertion(+)\n"},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, r, "local000", "local111", "unregistered-upstream-ref", "ff-only", "")
+
+	got := buf.String()
+	for _, want := range []string{
+		"updated local000 → local111",
+		"(+1 commit · ff-only)",
+		"f00d123",
+		"feat: ff commit",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderPullSummary_RebaseUsesUpstreamRangeNotPost guards the rebase
+// summary bug: rebase rewrites the SHAs of local commits that were ahead,
+// so pre (old local tip) is no longer an ancestor of post (rebased tip).
+// pre..post would then span both the newly-fetched upstream commits and
+// the user's own rewritten commits, and its count would read
+// ahead+behind instead of behind. The fixture registers deliberately wrong
+// responses for the old pre..post range (containing a fake "leaked" local
+// commit and a count of 3) — if renderPullSummary regressed to using that
+// range for a rebase, this test would surface the leaked commit and the
+// wrong count.
+func TestRenderPullSummary_RebaseUsesUpstreamRangeNotPost(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	ts := time.Now().Add(-30 * time.Minute).Unix()
+	upstreamLog := fmt.Sprintf("up1abcd\x1ffeat: upstream change\x1falice\x1f%d\n", ts)
+	leakedLog := fmt.Sprintf("badc0de1\x1frewritten: local commit leaked\x1fbob\x1f%d\n", ts)
+
+	r := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			// Correct range: pre..upstream — only the incoming commit.
+			"rev-list --count local000..origin000": {Stdout: "1\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..origin000", pullCommitLimit): {Stdout: upstreamLog},
+			"diff --shortstat local000..local999": {Stdout: " 1 file changed, 1 insertion(+)\n"},
+			// Wrong (pre-fix) range: pre..post — would leak the user's own
+			// rewritten commit and inflate the count to ahead+behind.
+			"rev-list --count local000..local999": {Stdout: "3\n"},
+			fmt.Sprintf("log --max-count=%d --topo-order --pretty=format:%%h\x1f%%s\x1f%%an\x1f%%at local000..local999", pullCommitLimit): {Stdout: leakedLog},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, r, "local000", "local999", "origin000", "rebase", "")
+
+	got := buf.String()
+	for _, want := range []string{
+		"updated local000 → local999",
+		"(+1 commit · rebase)",
+		"up1abcd",
+		"feat: upstream change",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"badc0de1", "leaked", "(+3 commits"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("output leaked the pre..post range (%q found), want pre..upstream only:\n%s", unwanted, got)
+		}
+	}
+}
+
+// commitAtOffset writes file with msg as content, commits it, and pins both
+// author and committer date to a fixed epoch + offsetSeconds so tests can
+// construct commit graphs with a known, non-real-time date ordering.
+func commitAtOffset(t *testing.T, repo *testutil.Repo, file, msg string, offsetSeconds int) {
+	t.Helper()
+	repo.WriteFile(file, msg+"\n")
+
+	add := exec.Command("git", "add", ".")
+	add.Dir = repo.Dir
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	date := time.Unix(1700000000+int64(offsetSeconds), 0).UTC().Format(time.RFC3339)
+	commit := exec.Command("git", "commit", "-m", msg)
+	commit.Dir = repo.Dir
+	commit.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"LC_ALL=C",
+		"LANG=C",
+		"GIT_AUTHOR_DATE="+date,
+		"GIT_COMMITTER_DATE="+date,
+	)
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+}
+
+// TestRenderPullSummary_TopoOrderAcrossMerge reproduces the bug this test
+// guards against: a merge joining two branches whose commit dates
+// interleave. Plain/date-order git log interleaves the branches by
+// timestamp; --topo-order keeps each branch's commits contiguous. The
+// renderPullSummary commit list must match the topo-order sequence, not
+// the interleaved default-order one.
+func TestRenderPullSummary_TopoOrderAcrossMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	repo := testutil.NewRepo(t)
+	pre := repo.RunGit("rev-parse", "HEAD")
+
+	repo.CreateBranch("gk-test-side")
+	commitAtOffset(t, repo, "side1.txt", "chore: side 1", 10)
+	commitAtOffset(t, repo, "side2.txt", "chore: side 2", 40)
+
+	repo.Checkout("main")
+	commitAtOffset(t, repo, "main1.txt", "chore: main 1", 20)
+	commitAtOffset(t, repo, "main2.txt", "chore: main 2", 30)
+
+	repo.RunGit("merge", "--no-ff", "-m", "Merge branch 'gk-test-side'", "gk-test-side")
+	post := repo.RunGit("rev-parse", "HEAD")
+
+	defaultOrder := strings.Fields(repo.RunGit("log", "--pretty=format:%h", pre+".."+post))
+	topoOrder := strings.Fields(repo.RunGit("log", "--topo-order", "--pretty=format:%h", pre+".."+post))
+	if strings.Join(defaultOrder, ",") == strings.Join(topoOrder, ",") {
+		t.Fatalf("fixture did not produce a default-order vs topo-order divergence: %v", defaultOrder)
+	}
+
+	buf := &bytes.Buffer{}
+	cmd := summaryCmd(buf)
+	renderPullSummary(cmd, &git.ExecRunner{Dir: repo.Dir}, pre, post, "origin/main", "merge", "")
+	got := buf.String()
+
+	type hit struct {
+		sha string
+		idx int
+	}
+	hits := make([]hit, 0, len(topoOrder))
+	for _, sha := range topoOrder {
+		idx := strings.Index(got, sha)
+		if idx == -1 {
+			t.Fatalf("expected commit %s in output, got:\n%s", sha, got)
+		}
+		hits = append(hits, hit{sha, idx})
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].idx < hits[j].idx })
+
+	gotOrder := make([]string, len(hits))
+	for i, h := range hits {
+		gotOrder[i] = h.sha
+	}
+	if strings.Join(gotOrder, ",") != strings.Join(topoOrder, ",") {
+		t.Errorf("renderPullSummary order = %v, want topo order %v (default order was %v)", gotOrder, topoOrder, defaultOrder)
 	}
 }
 

@@ -340,6 +340,11 @@ func TestNormalizeSince(t *testing.T) {
 }
 
 // TestParseJSONLog verifies that raw git log output is parsed into LogEntry slices correctly.
+//
+// The fixture reproduces what `git log -z` actually writes: -z terminates every
+// record with its own \x00 AFTER our \x1e, so each record past the first starts
+// with a stray NUL. An earlier fixture omitted those terminators, which is why
+// the one-slot field shift they caused shipped green.
 func TestParseJSONLog(t *testing.T) {
 	// Build a raw byte slice with 2 records separated by \x1e, fields by \x00.
 	raw := "" +
@@ -349,19 +354,29 @@ func TestParseJSONLog(t *testing.T) {
 		"alice@example.com" + "\x00" +
 		"2024-01-01T00:00:00+00:00" + "\x00" +
 		"First commit" + "\x00" +
-		"" + "\x1e" +
+		"" + "\x1e" + "\x00" +
 		"def456abc123def456abc123def456abc123def4" + "\x00" +
 		"def456a" + "\x00" +
 		"Bob" + "\x00" +
 		"bob@example.com" + "\x00" +
 		"2024-01-02T00:00:00+00:00" + "\x00" +
 		"Second commit" + "\x00" +
-		"some body text" + "\x1e"
+		"some body text\nspanning two lines" + "\x1e" + "\x00" +
+		// Trailing record with an EMPTY body: its final \x00 is the body
+		// separator, not padding, so trimming it would drop this record to six
+		// fields and silently lose the oldest commit of every range.
+		"0123456789abcdef0123456789abcdef01234567" + "\x00" +
+		"0123456" + "\x00" +
+		"Carol" + "\x00" +
+		"carol@example.com" + "\x00" +
+		"2024-01-03T00:00:00+00:00" + "\x00" +
+		"Third commit" + "\x00" +
+		"" + "\x1e"
 
 	entries := parseJSONLog([]byte(raw))
 
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
 
 	e0 := entries[0]
@@ -384,15 +399,41 @@ func TestParseJSONLog(t *testing.T) {
 		t.Errorf("entry[0].Body = %q, want empty", e0.Body)
 	}
 
+	// Every field of the second record is asserted: a leaked -z terminator
+	// shifts them all one slot right, and checking only Author/Subject/Body
+	// let exactly that shift through.
 	e1 := entries[1]
+	if e1.SHA != "def456abc123def456abc123def456abc123def4" {
+		t.Errorf("entry[1].SHA = %q", e1.SHA)
+	}
+	if e1.ShortSHA != "def456a" {
+		t.Errorf("entry[1].ShortSHA = %q", e1.ShortSHA)
+	}
 	if e1.Author != "Bob" {
 		t.Errorf("entry[1].Author = %q", e1.Author)
+	}
+	if e1.Email != "bob@example.com" {
+		t.Errorf("entry[1].Email = %q", e1.Email)
+	}
+	if e1.Date != "2024-01-02T00:00:00+00:00" {
+		t.Errorf("entry[1].Date = %q", e1.Date)
 	}
 	if e1.Subject != "Second commit" {
 		t.Errorf("entry[1].Subject = %q", e1.Subject)
 	}
-	if e1.Body != "some body text" {
+	if e1.Body != "some body text\nspanning two lines" {
 		t.Errorf("entry[1].Body = %q", e1.Body)
+	}
+
+	e2 := entries[2]
+	if e2.SHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Errorf("entry[2].SHA = %q", e2.SHA)
+	}
+	if e2.Subject != "Third commit" {
+		t.Errorf("entry[2].Subject = %q", e2.Subject)
+	}
+	if e2.Body != "" {
+		t.Errorf("entry[2].Body = %q, want empty", e2.Body)
 	}
 }
 

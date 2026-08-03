@@ -1881,14 +1881,26 @@ type LogEntry struct {
 }
 
 // parseJSONLog splits raw output on %x1e (record sep) and %x00 (field sep).
+//
+// The log call passes -z, so git terminates every commit record with its own
+// NUL on top of our %x1e — the stream reads `…%s\x00%b` + \x1e + \x00 + next
+// %H. Splitting on \x1e therefore leaves that terminator as a LEADING \x00 on
+// every record after the first; without trimming it, the field split yields an
+// empty fields[0] and shifts the whole record one slot right (sha empty,
+// short_sha holding the full sha, body holding the subject). Bodies may hold
+// newlines but never NUL, so SplitN keeps a multi-line body in one field.
 func parseJSONLog(raw []byte) []LogEntry {
+	// The trailing cutset must NOT include \x00: the last record ends with its
+	// own empty-body separator, and trimming that drops the record to six
+	// fields and out of the parse entirely.
 	records := strings.Split(strings.TrimRight(string(raw), "\x1e\n"), "\x1e")
 	out := make([]LogEntry, 0, len(records))
 	for _, rec := range records {
+		rec = strings.TrimLeft(rec, "\x00\n")
 		if rec == "" {
 			continue
 		}
-		fields := strings.Split(rec, "\x00")
+		fields := strings.SplitN(rec, "\x00", 7)
 		if len(fields) < 7 {
 			continue
 		}

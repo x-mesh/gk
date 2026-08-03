@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/diff"
@@ -403,4 +405,79 @@ func TestPlainEventLine(t *testing.T) {
 	if strings.Contains(clean, "+0") {
 		t.Errorf("zero-stat line must not print +0 -0: %q", clean)
 	}
+}
+
+// TestChangeWatchFeedScroll walks the feed's scroll contract: paging back
+// leaves the live tail, an arriving event does NOT yank the view out from
+// under the reader, and [end] goes home.
+func TestChangeWatchFeedScroll(t *testing.T) {
+	var evs []changeEvent
+	for i := 0; i < 60; i++ {
+		evs = append(evs, changeEvent{
+			ts: time.Unix(int64(1000+i), 0), path: fmt.Sprintf("f%02d.go", i),
+			label: "mod", added: 1,
+		})
+	}
+	m := &changeWatchModel{
+		width: 100, height: 20, events: evs,
+		head: headInfo{branch: "develop", sha: "abc1234", subject: "x"},
+		now:  func() time.Time { return time.Unix(9000, 0) },
+	}
+	page := m.feedBudget()
+	if page <= 0 {
+		t.Fatalf("feed budget = %d, want a positive page size", page)
+	}
+	if v := m.View(); !strings.Contains(v, "f59.go") {
+		t.Fatalf("a live feed must show the newest event\n%s", v)
+	}
+
+	m.handleKey(tea.KeyMsg{Type: tea.KeyPgUp})
+	v := m.View()
+	if strings.Contains(v, "f59.go") {
+		t.Errorf("pgup must leave the live tail\n%s", v)
+	}
+	if !strings.Contains(v, "↓") || !strings.Contains(v, "[end] live") {
+		t.Errorf("a scrolled feed must say so on the divider\n%s", v)
+	}
+	held := firstFeedPath(t, v)
+
+	// An arrival while scrolled: the position tracks the end, so the same
+	// lines stay on screen and the new event waits below.
+	m.Update(changeFrameMsg{
+		curr:   map[string]fileSig{},
+		head:   m.head, // an unchanged header keeps the pane the same height
+		events: []changeEvent{{ts: time.Unix(2000, 0), path: "arrived.go", label: "new", note: "new"}},
+		ts:     time.Unix(2000, 0),
+	})
+	v = m.View()
+	if strings.Contains(v, "arrived.go") {
+		t.Errorf("an arrival must not scroll a held view\n%s", v)
+	}
+	if got := firstFeedPath(t, v); got != held {
+		t.Errorf("held view drifted: top row %q → %q", held, got)
+	}
+
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnd})
+	v = m.View()
+	if !strings.Contains(v, "arrived.go") {
+		t.Errorf("[end] must return to the live tail\n%s", v)
+	}
+	if strings.Contains(v, "[end] live") {
+		t.Errorf("a live divider must not advertise the way back\n%s", v)
+	}
+}
+
+// firstFeedPath returns the *.go path on the first feed row of a rendered
+// frame — the anchor a held view must not lose.
+func firstFeedPath(t *testing.T, view string) string {
+	t.Helper()
+	for _, line := range strings.Split(view, "\n") {
+		for _, f := range strings.Fields(line) {
+			if strings.HasSuffix(f, ".go") {
+				return f
+			}
+		}
+	}
+	t.Fatalf("no feed row found in frame:\n%s", view)
+	return ""
 }

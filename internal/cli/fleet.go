@@ -1369,6 +1369,11 @@ type fleetModel struct {
 	feed      []fleetFeedEvent
 	showFeed  bool
 	feedStats bool
+	// feedOffset scrolls the pane back from the live tail (0 = following it).
+	// The pane holds far more history than fits on screen, and an agent working
+	// at speed can push a burst past the top between glances — so the tail has
+	// to be readable, not just visible while it happens.
+	feedOffset int
 
 	// churn is the volume of work seen since startedAt — the header's Δ, and
 	// the one reading a commit doesn't erase.
@@ -1562,7 +1567,9 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Churn reads the signature state this poll is about to replace,
 			// so it has to run before applyFeedDiff swaps it out.
 			m.churn.accumulate(m.prevSigs, m.entries)
-			m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, m.entries, m.feed, m.now)
+			var grew int
+			m.feed, m.prevSigs, grew = applyFeedDiff(m.prevSigs, m.entries, m.feed, m.now)
+			m.feedOffset = holdFeedScroll(m.feedOffset, grew)
 			if m.multi {
 				m.rebuildRows()
 			} else if n := len(m.viewEntries()); m.cursor >= n {
@@ -1642,6 +1649,32 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail = (m.detail + 1) % fleetDetailModes
 		case "e":
 			m.showFeed = !m.showFeed
+			m.feedOffset = 0 // a re-opened pane opens live, not where it was left
+		// Feed scrolling. j/k belong to the table cursor, so the pane takes the
+		// shifted pair plus the page keys; 'end' is the way back to the live
+		// tail, and the rule advertises it while scrolled.
+		case "K", "shift+up":
+			if m.showFeed {
+				m = m.scrollFeed(-1)
+			}
+		case "J", "shift+down":
+			if m.showFeed {
+				m = m.scrollFeed(1)
+			}
+		case "pgup":
+			if m.showFeed {
+				m = m.scrollFeed(-m.feedViewport())
+			}
+		case "pgdown":
+			if m.showFeed {
+				m = m.scrollFeed(m.feedViewport())
+			}
+		case "home":
+			if m.showFeed {
+				m = m.scrollFeed(-len(m.feed))
+			}
+		case "end":
+			m.feedOffset = 0
 		case "f":
 			m.filter = (m.filter + 1) % fleetFilterModes
 			m.cursor = 0
@@ -1679,31 +1712,18 @@ func (m fleetModel) View() string {
 		return m.zoomBreadcrumb() + "\n" + m.zoom.View()
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	footer := "j/k move · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
-	var dash string
+	footer := "j/k move · enter panel · w zoom · e feed · pgup scroll · f/s view · r refresh · q quit · %s"
 	if m.multi {
-		dash = renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed,
-			m.totalRepoCount(), len(m.entries), m.churn, m.uptime())
-		footer = "j/k move · space fold · enter panel · w zoom · e feed · f/s view · r refresh · q quit · %s"
-	} else {
-		dash = renderFleet(fleetView{
-			entries: m.viewEntries(),
-			cursor:  m.cursor,
-			now:     m.now,
-			width:   m.width,
-			detail:  m.detail,
-			feed:    m.feed,
-			churn:   m.churn,
-			since:   m.uptime(),
-		})
+		footer = "j/k move · space fold · enter panel · w zoom · e feed · pgup scroll · f/s view · r refresh · q quit · %s"
 	}
+	dash := m.dashPane()
 
 	var b strings.Builder
 	b.WriteString(dash)
 	if m.showFeed {
 		// Size the feed against what the dashboard actually drew — the detail
 		// panel can be taller than the table, and a row count would miss that.
-		if pane := renderFleetFeed(m.feed, m.width, m.feedPaneLines(lipgloss.Height(dash)), m.multi); pane != "" {
+		if pane := renderFleetFeed(m.feed, m.width, m.feedPaneLines(lipgloss.Height(dash)), m.feedOffset, m.multi); pane != "" {
 			b.WriteString("\n" + pane)
 		}
 	}
@@ -1764,6 +1784,41 @@ func (m fleetModel) uptime() time.Duration {
 	return m.now.Sub(m.startedAt)
 }
 
+// dashPane renders everything above the feed — the worktree table (grouped in
+// multi-repo mode) and the cursor's detail panel. Extracted from View because
+// the key handler needs the same frame: the panel's height is data-dependent,
+// so sizing a page-scroll off anything but the real frame scrolls by the wrong
+// amount.
+func (m fleetModel) dashPane() string {
+	if m.multi {
+		return renderFleetGrouped(m.rows, m.cursor, m.now, m.width, m.detail, m.feed,
+			m.totalRepoCount(), len(m.entries), m.churn, m.uptime())
+	}
+	return renderFleet(fleetView{
+		entries: m.viewEntries(),
+		cursor:  m.cursor,
+		now:     m.now,
+		width:   m.width,
+		detail:  m.detail,
+		feed:    m.feed,
+		churn:   m.churn,
+		since:   m.uptime(),
+	})
+}
+
+// feedViewport is how many feed lines are on screen right now — the page size
+// for pgup/pgdn, and the ceiling on how far back the pane can scroll.
+func (m fleetModel) feedViewport() int {
+	return m.feedPaneLines(lipgloss.Height(m.dashPane()))
+}
+
+// scrollFeed moves the pane by n lines (negative = back into history) and
+// returns the model with the position clamped to what actually exists.
+func (m fleetModel) scrollFeed(n int) fleetModel {
+	m.feedOffset = clampFeedOffset(m.feedOffset-n, len(m.feed), m.feedViewport())
+	return m
+}
+
 // feedPaneLines sizes the feed pane: it fills whatever height the dashboard
 // (dashH: header + rule + the taller of table/detail panel) leaves, since the
 // alt screen is ours either way and a longer tail is strictly more history.
@@ -1801,7 +1856,7 @@ func runFleetTUI(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner
 		notify: fleetNotifyConfig(),
 	}
 	defer m.ws.Close()
-	m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, initial, nil, m.now)
+	m.feed, m.prevSigs, _ = applyFeedDiff(m.prevSigs, initial, nil, m.now)
 	prog := tea.NewProgram(
 		m,
 		tea.WithContext(ctx),

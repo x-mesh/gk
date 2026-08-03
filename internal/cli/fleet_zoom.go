@@ -79,7 +79,10 @@ func (m fleetModel) handleZoomKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.openZoom(path)
 		}
 		return m, nil
-	case "r", "p", " ", "c", "s":
+	case "r", "p", " ", "c", "s",
+		// Feed scrolling belongs to the embedded view: the fleet cursor is not
+		// on screen here, so the arrows are free to move through its history.
+		"up", "down", "k", "j", "shift+up", "shift+down", "pgup", "pgdown", "home", "end":
 		_, cmd := m.zoom.Update(msg)
 		return m, cmd
 	}

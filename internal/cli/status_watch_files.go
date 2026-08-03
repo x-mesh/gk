@@ -537,8 +537,12 @@ type changeWatchModel struct {
 	interval time.Duration
 	fs       *fsWatcher // non-nil → fsnotify drives refreshes; tick is a heartbeat
 
-	prev       map[string]fileSig
-	events     []changeEvent
+	prev   map[string]fileSig
+	events []changeEvent
+	// feedOffset scrolls the feed back from the newest event (0 = following the
+	// live tail). The ring holds far more than one screen, and a burst of agent
+	// edits can scroll past between glances — so history has to be reachable.
+	feedOffset int
 	head       headInfo // compact-status header (branch/upstream/HEAD commit)
 	files      int      // distinct dirty files in the latest snapshot
 	added      int      // total +/- across the latest snapshot
@@ -777,6 +781,9 @@ func (m *changeWatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.events) > changeFeedCap {
 				m.events = m.events[len(m.events)-changeFeedCap:]
 			}
+			// A reader scrolled back keeps the lines they are reading; only a
+			// feed that is following the tail moves with it.
+			m.feedOffset = holdFeedScroll(m.feedOffset, len(msg.events))
 		}
 		m.files, m.added, m.removed = rollupSnapshot(msg.curr)
 		return m, nil
@@ -795,6 +802,27 @@ func (m *changeWatchModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "c":
 		m.events = nil
+		m.feedOffset = 0
+		return m, nil
+	// Feed scrolling. Nothing else in this view owns the arrows, so they take
+	// the single-line step; 'end' returns to the live tail.
+	case "up", "k", "shift+up":
+		m.scrollFeed(-1)
+		return m, nil
+	case "down", "j", "shift+down":
+		m.scrollFeed(1)
+		return m, nil
+	case "pgup":
+		m.scrollFeed(-m.feedBudget())
+		return m, nil
+	case "pgdown":
+		m.scrollFeed(m.feedBudget())
+		return m, nil
+	case "home":
+		m.scrollFeed(-len(m.events))
+		return m, nil
+	case "end":
+		m.feedOffset = 0
 		return m, nil
 	case "s":
 		// Toggle the full status dashboard; refresh immediately to capture
@@ -837,18 +865,32 @@ func (m *changeWatchModel) View() string {
 	}
 
 	header := m.compactHeader()
-	divider := m.divider()
-	keybar := m.keyBar()
-	// Rows consumed by chrome: header lines + a blank + the divider + the
-	// keybar. The feed gets whatever height is left.
-	budget := 0
-	if m.height > 0 {
-		budget = m.height - (strings.Count(header, "\n") + 1) - 3
-		if budget < 1 {
-			budget = 1
-		}
+	budget := m.feedBudget()
+	// Clamp before anything renders: the divider reports the scroll position,
+	// so it must not announce a position the body is about to correct.
+	m.feedOffset = clampFeedOffset(m.feedOffset, len(m.events), budget)
+	return header + "\n\n" + m.divider() + "\n" + m.feedBody(budget) + "\n" + m.keyBar()
+}
+
+// feedBudget is how many feed rows fit under the header — the render height,
+// and the page size for pgup/pgdn. Rows consumed by chrome: the header lines +
+// a blank + the divider + the keybar. Zero means the height is unknown, and
+// the feed renders uncapped.
+func (m *changeWatchModel) feedBudget() int {
+	if m.height <= 0 {
+		return 0
 	}
-	return header + "\n\n" + divider + "\n" + m.feedBody(budget) + "\n" + keybar
+	budget := m.height - (strings.Count(m.compactHeader(), "\n") + 1) - 3
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
+}
+
+// scrollFeed moves the feed by n rows (negative = back into history), clamped
+// to what exists above the current window.
+func (m *changeWatchModel) scrollFeed(n int) {
+	m.feedOffset = clampFeedOffset(m.feedOffset-n, len(m.events), m.feedBudget())
 }
 
 // compactHeader renders the orientation block above the feed: line 1 is repo ·
@@ -933,18 +975,27 @@ func (m *changeWatchModel) compactHeader() string {
 func (m *changeWatchModel) divider() string {
 	dim := lipgloss.NewStyle().Faint(true)
 	livedot := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	clock := m.nowFn().Format("15:04:05")
 	label := "─── live changes "
+	// Scrolled back: say how much newer material is hidden below and how to get
+	// back to it. The clock keeps ticking beside it — the feed is still live,
+	// it is the view that stepped off the tail.
+	scroll := ""
+	if m.feedOffset > 0 {
+		scroll = fmt.Sprintf("↓ %d newer · [end] live  ", m.feedOffset)
+	}
 	tail := "● " + clock // visible width used for fill math
 	w := m.width
 	if w <= 0 || w > 80 {
 		w = 80
 	}
-	fill := w - runewidth.StringWidth(label) - runewidth.StringWidth(tail) - 1
+	fill := w - runewidth.StringWidth(label) - runewidth.StringWidth(scroll) - runewidth.StringWidth(tail) - 1
 	if fill < 3 {
 		fill = 3
 	}
-	return dim.Render(label+strings.Repeat("─", fill)+" ") + livedot.Render("●") + dim.Render(" "+clock)
+	return dim.Render(label+strings.Repeat("─", fill)+" ") + warn.Render(scroll) +
+		livedot.Render("●") + dim.Render(" "+clock)
 }
 
 func (m *changeWatchModel) feedBody(budget int) string {
@@ -955,10 +1006,16 @@ func (m *changeWatchModel) feedBody(budget int) string {
 		}
 		return "   " + dim.Render("working tree clean — waiting for changes…")
 	}
-	// Show the tail that fits the budget — newest at the bottom.
+	// Show the window that fits the budget — the newest events at the bottom,
+	// or the slice the reader scrolled back to.
 	visible := m.events
 	if budget > 0 && len(visible) > budget {
-		visible = visible[len(visible)-budget:]
+		end := len(visible) - clampFeedOffset(m.feedOffset, len(visible), budget)
+		start := end - budget
+		if start < 0 {
+			start = 0
+		}
+		visible = visible[start:end]
 	}
 	var b strings.Builder
 	for i, e := range visible {
@@ -1047,8 +1104,8 @@ func (m *changeWatchModel) keyBar() string {
 	// above; the interval keys are dropped because fleet drives the cadence.
 	if m.embedded {
 		return lipgloss.NewStyle().Faint(true).
-			Render("   [s] status  [r] refresh  [p] pause  [c] clear")
+			Render("   [s] status  [r] refresh  [p] pause  [c] clear  [↑↓] scroll")
 	}
 	return lipgloss.NewStyle().Faint(true).
-		Render("   [s] status  [r] refresh  [p] pause  [c] clear  [+/-] interval  [q] quit")
+		Render("   [s] status  [r] refresh  [p] pause  [c] clear  [↑↓] scroll  [+/-] interval  [q] quit")
 }

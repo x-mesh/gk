@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -525,7 +526,7 @@ func TestApplyFeedDiff(t *testing.T) {
 	}
 
 	// Poll 1: baseline — already-dirty files produce NO events.
-	feed, state := applyFeedDiff(map[string]map[string]fileSig{},
+	feed, state, _ := applyFeedDiff(map[string]map[string]fileSig{},
 		[]fleetEntryJSON{wt("/a", "feat/x", map[string]fileSig{"f.go": {xy: " M", mtime: 1}})},
 		nil, now)
 	if len(feed) != 0 {
@@ -533,7 +534,7 @@ func TestApplyFeedDiff(t *testing.T) {
 	}
 
 	// Poll 2: f.go re-touched, g.go new — two events tagged with the branch.
-	feed, state = applyFeedDiff(state,
+	feed, state, _ = applyFeedDiff(state,
 		[]fleetEntryJSON{wt("/a", "feat/x", map[string]fileSig{
 			"f.go": {xy: " M", mtime: 2},
 			"g.go": {xy: "??", mtime: 2},
@@ -549,7 +550,7 @@ func TestApplyFeedDiff(t *testing.T) {
 
 	// Poll 3: worktree went clean — both files clear; a second worktree with a
 	// nil scan (error entry) must not fabricate a baseline reset.
-	feed, state = applyFeedDiff(state,
+	feed, state, _ = applyFeedDiff(state,
 		[]fleetEntryJSON{
 			wt("/a", "feat/x", map[string]fileSig{}),
 			{Path: "/b", Branch: "feat/y", Status: "error"},
@@ -568,7 +569,7 @@ func TestApplyFeedDiff(t *testing.T) {
 	}
 
 	// Poll 4: worktree /a vanished from the fleet — state drops it.
-	_, state = applyFeedDiff(state, nil, feed, now.Add(3*time.Second))
+	_, state, _ = applyFeedDiff(state, nil, feed, now.Add(3*time.Second))
 	if len(state) != 0 {
 		t.Errorf("state should be empty after all worktrees vanish: %v", state)
 	}
@@ -738,7 +739,7 @@ func TestFleetFeedRingCap(t *testing.T) {
 	}
 	prev := map[string]map[string]fileSig{"/a": {"f.go": {xy: " M", mtime: 1}}}
 	entries := []fleetEntryJSON{{Path: "/a", Branch: "b", sigs: map[string]fileSig{"f.go": {xy: " M", mtime: 2}}}}
-	feed, _ = applyFeedDiff(prev, entries, feed, time.Now())
+	feed, _, _ = applyFeedDiff(prev, entries, feed, time.Now())
 	if len(feed) != fleetFeedCap {
 		t.Errorf("feed length = %d, want capped at %d", len(feed), fleetFeedCap)
 	}
@@ -857,5 +858,112 @@ func TestFleetStaleCooldownIgnored(t *testing.T) {
 	fm := got.(fleetModel)
 	if fm.polling || cmd != nil {
 		t.Error("a cooldown from a superseded chain must not poll")
+	}
+}
+
+// TestFeedScrollMath locks the two rules the scrollable feed rests on: a
+// position is a distance from the NEWEST event, and it survives arrivals.
+func TestFeedScrollMath(t *testing.T) {
+	// A feed shorter than the pane has nowhere to go.
+	if got := clampFeedOffset(5, 3, 10); got != 0 {
+		t.Errorf("clamp on a short feed = %d, want 0", got)
+	}
+	// The ceiling is what does not fit on screen.
+	if got := clampFeedOffset(99, 50, 10); got != 40 {
+		t.Errorf("clamp = %d, want 40 (50 events − 10 rows)", got)
+	}
+	if got := clampFeedOffset(7, 50, 10); got != 7 {
+		t.Errorf("clamp must leave an in-range offset alone, got %d", got)
+	}
+	// Following the tail keeps following; a scrolled-back view moves with the
+	// end so the lines being read stay put.
+	if got := holdFeedScroll(0, 4); got != 0 {
+		t.Errorf("a live feed must stay live, got offset %d", got)
+	}
+	if got := holdFeedScroll(6, 4); got != 10 {
+		t.Errorf("scrolled feed = %d, want 10 (6 + 4 arrivals)", got)
+	}
+}
+
+// TestRenderFleetFeedScrollWindow proves the pane draws the slice the offset
+// asks for, and says on the rule that it is no longer live.
+func TestRenderFleetFeedScrollWindow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var feed []fleetFeedEvent
+	for i := 0; i < 6; i++ {
+		feed = append(feed, fleetFeedEvent{
+			ts: now, branch: "b", wt: "/wt/a", path: fmt.Sprintf("f%d.go", i), glyph: "~",
+		})
+	}
+
+	live := renderFleetFeed(feed, 100, 3, 0, false)
+	if !strings.Contains(live, "f5.go") || strings.Contains(live, "f2.go") {
+		t.Errorf("live pane must show the newest 3\n%s", live)
+	}
+	if strings.Contains(live, "newer") {
+		t.Errorf("a live pane must not advertise hidden events\n%s", live)
+	}
+
+	back := renderFleetFeed(feed, 100, 3, 2, false)
+	for _, want := range []string{"f1.go", "f2.go", "f3.go", "↓ 2 newer", "[end] live"} {
+		if !strings.Contains(back, want) {
+			t.Errorf("scrolled pane missing %q\n%s", want, back)
+		}
+	}
+	if strings.Contains(back, "f5.go") {
+		t.Errorf("scrolled pane must hide the newest events\n%s", back)
+	}
+
+	// Past the top the view pins to the oldest window rather than emptying.
+	oldest := renderFleetFeed(feed, 100, 3, 99, false)
+	if !strings.Contains(oldest, "f0.go") || strings.Contains(oldest, "f4.go") {
+		t.Errorf("over-scroll must pin to the oldest window\n%s", oldest)
+	}
+}
+
+// TestFleetFeedScrollKeys walks the dashboard's scroll keys: page back, step
+// forward, and 'end' as the way home. The pane must be open for any of it.
+func TestFleetFeedScrollKeys(t *testing.T) {
+	now := time.Unix(1000, 0)
+	var feed []fleetFeedEvent
+	for i := 0; i < 200; i++ {
+		feed = append(feed, fleetFeedEvent{ts: now, branch: "b", wt: "/wt/a", path: "f.go", glyph: "~"})
+	}
+	m := fleetModel{
+		entries:   []fleetEntryJSON{{Path: "/wt/a", Branch: "b", Status: "clean"}},
+		now:       now,
+		startedAt: now,
+		width:     120,
+		height:    40,
+		showFeed:  true,
+		feed:      feed,
+	}
+	page := m.feedViewport()
+	if page <= 0 {
+		t.Fatalf("feed viewport = %d, want a positive page size", page)
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = got.(fleetModel)
+	if m.feedOffset != page {
+		t.Errorf("pgup moved %d rows, want one page (%d)", m.feedOffset, page)
+	}
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftDown})
+	m = got.(fleetModel)
+	if m.feedOffset != page-1 {
+		t.Errorf("shift+down = %d, want %d", m.feedOffset, page-1)
+	}
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = got.(fleetModel)
+	if m.feedOffset != 0 {
+		t.Errorf("[end] must return to the live tail, got %d", m.feedOffset)
+	}
+
+	// Closed pane: the keys have nothing to scroll, and reopening starts live.
+	m.showFeed = false
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = got.(fleetModel)
+	if m.feedOffset != 0 {
+		t.Errorf("a closed pane must not scroll, got %d", m.feedOffset)
 	}
 }

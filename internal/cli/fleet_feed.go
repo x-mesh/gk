@@ -244,8 +244,11 @@ func (c *fleetChurn) accumulate(prevSigs map[string]map[string]fileSig, entries 
 // from now on, not a dump of everything already dirty at startup.
 
 // fleetFeedCap bounds the in-memory timeline. Old events beyond the cap are
-// dropped from the front — the feed is a live tail, not a log file.
-const fleetFeedCap = 200
+// dropped from the front — the feed is a live tail, not a log file. The cap is
+// generous because the pane scrolls: what the terminal pushed past the top is
+// still reachable, so history above the fold has a reader. One event is a
+// handful of strings; a thousand of them is noise next to a single poll.
+const fleetFeedCap = 1000
 
 // fleetFeedEvent is one line in the merged timeline.
 type fleetFeedEvent struct {
@@ -263,11 +266,18 @@ type fleetFeedEvent struct {
 }
 
 // applyFeedDiff diffs the fresh entries against prevSigs, appends the resulting
-// events to feed (ring-capped), and returns the updated feed plus the new
-// signature state. A worktree absent from prevSigs is a baseline: recorded,
-// no events. Worktrees that vanished from the fleet are dropped from the state.
-func applyFeedDiff(prevSigs map[string]map[string]fileSig, entries []fleetEntryJSON, feed []fleetFeedEvent, now time.Time) ([]fleetFeedEvent, map[string]map[string]fileSig) {
+// events to feed (ring-capped), and returns the updated feed, the new signature
+// state, and how many events were appended. A worktree absent from prevSigs is
+// a baseline: recorded, no events. Worktrees that vanished from the fleet are
+// dropped from the state.
+//
+// The append count is what a scrolled-back viewer needs: the ring cap makes
+// len(feed) a liar (a full feed grows by zero while its tail moves), so a
+// reader holding a position measured from the end has to be told how far the
+// end moved.
+func applyFeedDiff(prevSigs map[string]map[string]fileSig, entries []fleetEntryJSON, feed []fleetFeedEvent, now time.Time) ([]fleetFeedEvent, map[string]map[string]fileSig, int) {
 	next := make(map[string]map[string]fileSig, len(entries))
+	added := 0
 	for _, e := range entries {
 		if e.sigs == nil {
 			// Error/synthetic entries carry no scan — keep prior state so a
@@ -288,12 +298,45 @@ func applyFeedDiff(prevSigs map[string]map[string]fileSig, entries []fleetEntryJ
 				glyph: changeGlyph(ev), note: ev.note, cleared: ev.cleared,
 				added: ev.added, removed: ev.removed, symbols: ev.symbols,
 			})
+			added++
 		}
 	}
 	if len(feed) > fleetFeedCap {
 		feed = append([]fleetFeedEvent(nil), feed[len(feed)-fleetFeedCap:]...)
 	}
-	return feed, next
+	return feed, next, added
+}
+
+// holdFeedScroll keeps a scrolled-back view pinned to the events it is already
+// showing as new ones land. The position is measured from the end, so an end
+// that moved by n moves the position by n; a view still following the tail
+// (offset 0) keeps following. Without this, reading back through a burst would
+// be impossible — every arriving event would slide the text out from under the
+// reader.
+func holdFeedScroll(offset, grew int) int {
+	if offset <= 0 || grew <= 0 {
+		return offset
+	}
+	return offset + grew
+}
+
+// clampFeedOffset bounds a feed scroll position. An offset is a distance from
+// the NEWEST event — 0 follows the live tail — because that is the end the feed
+// grows from: measuring from the front would make every arriving event shift
+// the view the reader is holding still. The ceiling is whatever cannot fit on
+// screen; a feed shorter than the pane has nowhere to scroll.
+func clampFeedOffset(offset, total, lines int) int {
+	if offset <= 0 || lines <= 0 {
+		return 0
+	}
+	max := total - lines
+	if max < 0 {
+		max = 0
+	}
+	if offset > max {
+		return max
+	}
+	return offset
 }
 
 // --- view filtering & sorting ---------------------------------------------------
@@ -432,9 +475,10 @@ func fleetFeedStatLabel(ev fleetFeedEvent) string {
 	return "  " + strings.Join(parts, " ")
 }
 
-// renderFleetFeed draws the newest `lines` events, oldest first, under a rule —
-// the fleet-wide file timeline. multi controls whether the repo label is shown.
-func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string {
+// renderFleetFeed draws `lines` events, oldest first, under a rule — the
+// fleet-wide file timeline. offset scrolls back from the newest event (0 =
+// live tail); multi controls whether the repo label is shown.
+func renderFleetFeed(feed []fleetFeedEvent, width, lines, offset int, multi bool) string {
 	if len(feed) == 0 || lines <= 0 {
 		return ""
 	}
@@ -448,13 +492,15 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 	const feedTail = 34 + 26                 // symbols + stats + note
 	pathW := min(max(width-feedHead-feedTail, 40), 80)
 
-	start := len(feed) - lines
+	offset = clampFeedOffset(offset, len(feed), lines)
+	end := len(feed) - offset
+	start := end - lines
 	if start < 0 {
 		start = 0
 	}
 	var b strings.Builder
-	b.WriteString(dim.Render(strings.Repeat("─", width)))
-	for _, ev := range feed[start:] {
+	b.WriteString(feedRule(width, offset))
+	for _, ev := range feed[start:end] {
 		who := ev.branch
 		if multi && ev.repo != "" {
 			who = ev.repo + ":" + ev.branch
@@ -475,4 +521,22 @@ func renderFleetFeed(feed []fleetFeedEvent, width, lines int, multi bool) string
 		b.WriteString("\n" + line)
 	}
 	return b.String()
+}
+
+// feedRule draws the pane's top rule, and says so on it when the pane is
+// scrolled back. Without that, a feed that has stopped following the newest
+// event is indistinguishable from a feed where nothing is happening — the one
+// reading a live dashboard must never have to guess.
+func feedRule(width, offset int) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	if offset <= 0 {
+		return dim.Render(strings.Repeat("─", width))
+	}
+	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	tag := fmt.Sprintf(" ↓ %d newer · [end] live ", offset)
+	fill := width - lipgloss.Width(tag)
+	if fill < 4 {
+		return warn.Render(tag)
+	}
+	return dim.Render(strings.Repeat("─", fill)) + warn.Render(tag)
 }

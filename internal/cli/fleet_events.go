@@ -136,7 +136,7 @@ func runFleetEvents(ctx context.Context, cmd *cobra.Command, gather func(context
 		return err
 	}
 	// First gather is the baseline: state is recorded, nothing is emitted.
-	_, sigState := applyFeedDiff(map[string]map[string]fileSig{}, entries, nil, time.Now())
+	_, sigState, _ := applyFeedDiff(map[string]map[string]fileSig{}, entries, nil, time.Now())
 	prev := entries
 
 	ws := newFleetWatchSet(ctx, entries)
@@ -172,7 +172,7 @@ func runFleetEvents(ctx context.Context, cmd *cobra.Command, gather func(context
 		}
 		now := time.Now()
 		var feed []fleetFeedEvent
-		feed, sigState = applyFeedDiff(sigState, entries, nil, now)
+		feed, sigState, _ = applyFeedDiff(sigState, entries, nil, now)
 		evs := append(fleetTransitions(prev, entries, now), feedEventsToStream(feed)...)
 		for _, ev := range evs {
 			if err := enc.Encode(ev); err != nil {

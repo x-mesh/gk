@@ -350,7 +350,7 @@ func runFleetMultiTUI(ctx context.Context, cmd *cobra.Command, repos []repoIdent
 		notify:    fleetNotifyConfig(),
 	}
 	defer m.ws.Close()
-	m.feed, m.prevSigs = applyFeedDiff(m.prevSigs, initial, nil, m.now)
+	m.feed, m.prevSigs, _ = applyFeedDiff(m.prevSigs, initial, nil, m.now)
 	m.rebuildRows()
 	prog := tea.NewProgram(
 		m,

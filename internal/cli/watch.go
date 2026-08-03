@@ -45,6 +45,13 @@ off), w zooms into that worktree's live feed in place (esc pops back,
 (multi-repo), f/s cycle the view filter (all→busy→stuck) and sort
 (default→activity→status), r refreshes, q quits.
 
+The feed pane scrolls: pgup/pgdn page through the history it holds beyond
+the visible rows, shift+↑/↓ (or J/K) step a line, home jumps to the oldest
+event it still has, and end returns to the live tail. While scrolled the
+rule says how many newer events are waiting below, and arriving events no
+longer move the lines being read — inside the zoom or 'gk status --watch'
+the plain arrows do the same.
+
 Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
 snapshot — always the dashboard contract, regardless of worktree count.
 --events streams changes as NDJSON instead — file-changed / status-changed /

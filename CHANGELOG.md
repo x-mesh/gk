@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk log --json`이 첫 커밋을 뺀 모든 레코드의 필드를 한 칸씩 밀어서 내보내던 문제.** `sha`는 빈 문자열, `short_sha`에는 40자 전체 SHA, `author`에는 짧은 SHA, `date`에는 이메일, `subject`에는 ISO 날짜가 들어가고 진짜 제목은 `body`로 밀려나 있었다 — `-n 1`만 우연히 멀쩡했다. 원인은 이 호출이 `-z`를 함께 넘긴다는 것이다: 그러면 git이 우리가 넣은 `%x1e` **뒤에** 자기 몫의 NUL을 하나 더 붙이므로, `\x1e`로 자른 두 번째 이후 레코드는 전부 NUL로 시작하고 필드 분리에서 맨 앞에 빈 칸이 하나 생긴다. 이제 레코드마다 선행 구분자를 벗겨낸 뒤 자른다. 잘못된 JSON은 조용해서 더 나쁘다 — 파싱은 성공하고 값만 틀리므로, 이 출력을 믿는 에이전트는 틀렸다는 사실을 알아차리는 데만 왕복을 쓴다. 회귀 테스트의 픽스처가 `-z`가 실제로 쓰는 종료자를 빠뜨리고 있었던 것이 이 버그가 초록불로 출하된 이유라, 픽스처를 진짜 출력 모양으로 바꾸고 두 번째 레코드의 **모든** 필드를 검사하게 했다(제목과 본문만 보면 한 칸 밀림이 그대로 통과한다). 마지막 레코드의 빈 본문 구분자까지 함께 깎으면 필드가 여섯 개로 줄어 그 커밋이 통째로 사라지므로, 그 경우도 픽스처에 넣어 고정했다.
+
+- **`git show <객체>`를 `gk diff`가 커버한다고 주장하던 문제.** `gk diff`는 두 상태를 **비교**한다. 그런데 `git show <커밋>`은 그 커밋 자신의 패치를, `git show <ref>:<경로>`는 특정 시점의 파일 내용을 출력한다 — 둘 다 비교가 아니고, `gk diff <sha>`는 아예 다른 질문(작업 트리 vs 그 커밋)에 답한다. 실제로 확인해 보면 `git show 7346c8f --stat`은 그 커밋이 바꾼 2개 파일을, `gk diff 7346c8f --stat`은 커밋되지 않은 내 변경 전부를 보여준다. 이 저장소의 자체 계약(CLAUDE.md)도 `git show <object>`를 raw git 영역으로 명시하고 있었다. 이제 `isRawFullDiff`에서 `show`를 빼서 힌트가 침묵한다(`rawGitNonGap`에는 그대로 둔다 — 객체 조회는 빠진 동사가 아니라 원래 git의 일이다). 부수 효과로 최근 7일 턴 절감이 17 → 16으로 줄었는데, **이건 개선이다** — gk가 실제로 줄일 수 없는 턴 하나를 절감분에서 뺐다.
+
+- **`git branch --show-current`를 `gk branch list`로 안내하던 문제.** 이건 브랜치 목록 조사가 아니라 "나 지금 어디 있나"를 묻는 질문이고, 답은 이름 한 줄이다. `gk context`가 가장 먼저 보고하는 것이 바로 그 값이라, 옆에 있는 `git status`·`git log`와 함께 **한 번의 `gk context` 호출로 접힌다** — 반면 `gk branch list`로 보내면 한 줄짜리 질문에 표를 돌려주고 접히지도 않는다(1:1 스왑이라 턴 절감 0). 웃기게도 `raw-branch-list`의 안내 문구 스스로가 "gk context는 현재 브랜치를 보고하지 브랜치 집합을 보고하지 않는다"라고 적고 있었다 — 그 문장이 바로 이 형태를 제외해야 하는 이유였다. 최근 7일 기준 19건이 `raw-branch-list`에서 `raw-context-probes`로 옮겨 갔다.
+
+- **`integration` 그룹이 어떤 런에든 `git-kit pull`을 대체재로 지목하던 문제 — 브랜치 머지에는 틀린 답이었다.** 이 그룹 하나가 pull, fetch+merge, fetch+rebase를 다 덮는데 그룹당 문자열이 하나뿐이라 늘 pull이 나갔다. 실제 세션에서 가장 흔한 모양은 `git fetch origin --prune` 다음 턴에 `git merge --no-ff origin/fix/…`인 fan-in 머지인데, **`gk pull`은 upstream을 합치지 지목한 브랜치를 합치지 않는다** — 안내를 따르면 요청하지 않은 브랜치가 합쳐진다. 훅은 gk의 권위를 달고 나가므로 자신 있는 오답은 침묵보다 비싸다. 이제 런의 마지막 merge/rebase가 동사를 정한다(fetch는 그것을 먹였을 뿐이므로 뒤에 오는 것이 실제로 일어난 통합이다): `git-kit merge origin/fix/169-g5-routing`처럼 ref까지 붙는다. `git rebase <upstream>`은 **`gk sync`로 보낸다 — `gk rebase`가 아니다.** `gk rebase`는 `rebase -i`를 대신하는 히스토리 재작성 플래너라 위치 인자를 아예 받지 않아서, 그걸 지목하면 파싱조차 안 되는 명령을 쥐여 주는 꼴이다. 같은 이유로 `raw-integration`의 커버 목록에서도 `git-kit rebase`를 뺐다. `gk sync`는 base 브랜치 기준이라 ref를 받지 않으므로 ref를 붙이지 않는다 — 없는 문법을 지어내지 않기 위해서다. 세션 요약(reprobe digest)은 그룹 안 런들이 서로 다른 동사로 갈리면 특정 동사를 고르지 않고 그룹 기본값으로 남는다.
+
+- **`gk session audit`과 `gk hint`가 `git log A..B`를 "gk에 대응 명령 없음"으로 답하던 문제.** `gk log`는 리비전을 위치 인자로 받으므로 `gk log main..develop`이 정확히 그 질문의 답인데, 분류기는 이 항목을 capability gap으로 들고 있었다. 두 가지가 동시에 틀어졌다: 감사의 `uncovered_raw_hits`가 몇 배로 부풀어(최근 7일 기준 143 → 20) 진짜 빈 구멍이 허수에 파묻혔고, 더 나쁘게는 `gitSegmentFinding`이 `gk hint`와 같은 소스라서 **PreToolUse 훅이 gk가 처리하는 명령에 대고 raw git을 승인**하고 있었다. 훅은 에이전트가 실제로 읽는 유일한 실시간 지침이므로, 거기 실린 오답은 감사의 숫자보다 비싸다. 다만 이 항목은 `collapseGroupForKind`에 넣지 않았다 — 범위 질의 하나는 질문 하나라서 명령 1:1 교체이고, 턴을 줄이지 않는 교체가 절감을 주장하면 그거야말로 이 지표가 없애려던 허수다.
+
 ## [0.135.0] - 2026-08-03
 
 ### Added

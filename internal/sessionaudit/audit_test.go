@@ -912,13 +912,29 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		{"branch contains", "branch", []string{"--contains", "abc1234"}, "raw-history-search"},
 
 		// A range is NOT a search — gk find cannot answer "what is in B that is
-		// not in A", so it stays its own gap rather than being folded in.
+		// not in A", so it stays its own kind rather than being folded in. Its
+		// answer is gk log A..B.
 		{"log range", "log", []string{"--oneline", "origin/main..HEAD"}, "raw-range-compare"},
 		{"log sha range", "log", []string{"--oneline", "ce6cd4a~1..ce6cd4a"}, "raw-range-compare"},
+
+		// --show-current asks for ONE name, the branch you are on. That is the
+		// first thing gk context reports, so it folds into the context run
+		// beside git status — it is not a branch survey, and answering it with
+		// `gk branch list` would hand back a table for a one-line question.
+		{"branch show-current", "branch", []string{"--show-current"}, "raw-context-probes"},
 
 		// A branch mutation is neither a survey nor a search.
 		{"branch delete", "branch", []string{"-d", "feature"}, ""},
 		{"branch create", "branch", []string{"feature"}, ""},
+
+		// gk diff compares two states. `git show` prints one object — a commit's
+		// own patch, or a file's contents at a ref — which gk deliberately does
+		// not wrap, and `gk diff <sha>` answers a DIFFERENT question (worktree
+		// vs that commit). Claiming it would point the agent at the wrong output.
+		{"show commit", "show", []string{"9855920"}, ""},
+		{"show file at ref", "show", []string{"v0.170.2:Sources/PeerProto.swift"}, ""},
+		{"show bare", "show", nil, ""},
+		{"diff is still covered", "diff", []string{"--", "internal/cli/log.go"}, "raw-full-diff"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -930,17 +946,32 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 }
 
 // A gap has no replacement to suggest, so the hint (and the PreToolUse hook built
-// on it) must stay silent rather than nag with an empty "use  instead".
+// on it) must stay silent rather than nag with an empty "use  instead" — but a
+// kind that DOES have a verb has to name it, or the hook teaches agents that raw
+// git is fine.
 func TestHint_GapKindsStaySilent(t *testing.T) {
-	// A ref-range comparison has no gk verb — gk find searches, it does not diff
-	// two refs, and saying otherwise is the over-claim this split exists to kill.
+	// Raw git with no gk mapping at all: the hook has nothing to say.
 	for _, cmd := range []string{
-		"git log --oneline origin/main..HEAD",
-		"git log --oneline ce6cd4a~1..ce6cd4a",
+		"git remote add origin https://example.invalid/x.git",
+		"git revert --no-edit abc1234",
+		"git checkout 9db1c86 -- .goreleaser.yaml",
 	} {
 		if res := Hint(cmd); res.Covered {
 			t.Errorf("Hint(%q).Covered = true (CoveredBy=%v) — a capability gap has nothing to recommend",
 				cmd, res.CoveredBy)
+		}
+	}
+	// A ref-range comparison IS covered: gk log takes revisions positionally, so
+	// gk log A..B is the direct answer. Reporting it as a gap made the hook
+	// answer "no git-kit replacement" for a command gk handles.
+	for _, cmd := range []string{
+		"git log --oneline origin/main..HEAD",
+		"git log --oneline ce6cd4a~1..ce6cd4a",
+		"git rev-list --count develop..main",
+	} {
+		res := Hint(cmd)
+		if !res.Covered || !containsString(res.CoveredBy, "git-kit log A..B") {
+			t.Errorf("Hint(%q) = %+v, want covered by git-kit log A..B", cmd, res)
 		}
 	}
 	// The search family now DOES have an answer, and the hint must name it.

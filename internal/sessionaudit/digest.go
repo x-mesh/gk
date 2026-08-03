@@ -452,12 +452,26 @@ func unfinishedSignal(events []TurnEvent) *UnfinishedSignal {
 // so the digest and the audit's turn metric never disagree.
 func reprobeDigests(events []TurnEvent) []ReprobeDigest {
 	saved := map[string]int{}
+	// Per-run gk commands can differ inside one group (integration spans pull,
+	// merge and rebase). The digest names the specific verb only when every run
+	// in the group agreed on it; otherwise it stays with the group default
+	// rather than picking one run's answer to stand for the rest.
+	perGroup := map[string]string{}
+	mixed := map[string]bool{}
 	for _, run := range DetectCollapsibleRuns(events, collapseMaxGap) {
 		saved[run.Group] += run.TurnsSaved
+		if prev, seen := perGroup[run.Group]; seen && prev != run.GkCommand {
+			mixed[run.Group] = true
+		}
+		perGroup[run.Group] = run.GkCommand
 	}
 	out := make([]ReprobeDigest, 0, len(saved))
 	for group, n := range saved {
-		out = append(out, ReprobeDigest{Group: group, TurnsSaved: n, GkCommand: gkForGroup[group]})
+		gk := perGroup[group]
+		if gk == "" || mixed[group] {
+			gk = gkForGroup[group]
+		}
+		out = append(out, ReprobeDigest{Group: group, TurnsSaved: n, GkCommand: gk})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].TurnsSaved != out[j].TurnsSaved {

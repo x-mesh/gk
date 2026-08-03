@@ -171,6 +171,83 @@ func TestCollapseNudgeFor(t *testing.T) {
 	}
 }
 
+// The integration group spans pull, fetch+merge and fetch+rebase, so the run
+// decides the verb. Saying "git-kit pull" for a merge of a sibling branch would
+// send the agent to integrate the UPSTREAM instead — a wrong verb is worse than
+// no advice, because the hook carries gk's authority.
+func TestGkCommandForRun_IntegrationNamesTheActualVerb(t *testing.T) {
+	cases := []struct {
+		name string
+		cmds []string
+		want string
+	}{
+		{
+			name: "fetch then merge names the merged ref",
+			cmds: []string{
+				`git fetch origin --prune 2>&1 | tail -10; git branch --show-current`,
+				`git merge --no-ff --no-edit origin/fix/169-g5-routing 2>&1 | tail -10`,
+			},
+			want: "git-kit merge origin/fix/169-g5-routing",
+		},
+		{
+			name: "merge with no ref still names merge",
+			cmds: []string{`git fetch origin`, `git merge --ff-only`},
+			want: "git-kit merge",
+		},
+		{
+			// gk rebase is the history-rewrite planner and takes no ref; the
+			// verb that rebases onto the base is gk sync, which takes none
+			// either — so the ref must be dropped, not carried over.
+			name: "fetch then rebase names sync, not gk rebase",
+			cmds: []string{`git fetch origin`, `git rebase origin/main`},
+			want: "git-kit sync",
+		},
+		{
+			name: "plain fetch/pull run keeps the default",
+			cmds: []string{`git fetch origin --prune`, `git pull --ff-only`},
+			want: "git-kit pull",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gkCommandForRun("integration", tc.cmds); got != tc.want {
+				t.Errorf("gkCommandForRun(integration, %v) = %q, want %q", tc.cmds, got, tc.want)
+			}
+		})
+	}
+	// Every other group maps 1:1 and must be left exactly as gkForGroup has it.
+	if got := gkCommandForRun("context", []string{"git status", "git merge origin/x"}); got != "git-kit context" {
+		t.Errorf("non-integration group must not be refined, got %q", got)
+	}
+}
+
+// A redirection survives segment splitting as an operand-shaped token; reporting
+// `2>&1` back to the agent as the branch to merge would be nonsense.
+func TestFirstRefOperand_SkipsShellNoise(t *testing.T) {
+	if got := firstRefOperand([]string{"--no-ff", "2>&1", "origin/feature"}); got != "origin/feature" {
+		t.Errorf("firstRefOperand = %q, want origin/feature", got)
+	}
+	if got := firstRefOperand([]string{"--ff-only"}); got != "" {
+		t.Errorf("firstRefOperand with no operand = %q, want empty", got)
+	}
+}
+
+// The nudge names the verb of the run it is interrupting, and the PENDING
+// command is the one that decides it — a fetch last turn plus a pending merge
+// is a merge, not a pull.
+func TestCollapseNudgeFor_IntegrationNamesPendingVerb(t *testing.T) {
+	recent, last := SessionTurnsWithLast(session(
+		asst("m1", "t1", "git fetch origin --prune"),
+	))
+	n := CollapseNudgeFor("git merge --no-ff --no-edit origin/fix/169-g5-routing", recent, last, collapseMaxGap+1)
+	if n == nil || n.Group != "integration" {
+		t.Fatalf("expected integration nudge, got %+v", n)
+	}
+	if n.GkCommand != "git-kit merge origin/fix/169-g5-routing" {
+		t.Errorf("nudge GkCommand = %q, want git-kit merge origin/fix/169-g5-routing", n.GkCommand)
+	}
+}
+
 func TestCollapseNudgeFor_RepoAndPagingGuards(t *testing.T) {
 	lookback := collapseMaxGap + 1
 

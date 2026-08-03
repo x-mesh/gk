@@ -35,12 +35,14 @@ var collapseGroupForKind = map[string]string{
 	// The history hunt is a real collapse, not a 1:1 swap: the agent pays a turn
 	// per GUESS (--grep, then the pickaxe, then a path scope), and gk find runs
 	// all of them in one call. raw-branch-list and raw-range-compare are absent
-	// on purpose — the first IS a 1:1 swap (gk branch list) and the second has no
-	// verb at all, so neither may claim turn savings.
+	// on purpose — both are covered by a 1:1 swap (gk branch list, gk log A..B),
+	// and one raw command replaced by one gk command saves no turn.
 	"raw-history-search": "find",
 }
 
-// gkForGroup is the single git-kit call a run of the group collapses into.
+// gkForGroup is the default git-kit call a run of the group collapses into.
+// Every group but "integration" maps 1:1; see gkCommandForRun for why that one
+// has to be read off the run instead.
 var gkForGroup = map[string]string{
 	"context":     "git-kit context",
 	"commit":      "git-kit commit",
@@ -51,6 +53,76 @@ var gkForGroup = map[string]string{
 	"stash":       "git-kit stash",
 	"apply":       "git-kit apply",
 	"find":        "git-kit find",
+}
+
+// gkCommandForRun names the git-kit call for THIS run, refining gkForGroup with
+// what the run actually did.
+//
+// Only "integration" needs it, and it needs it badly: the group spans pull,
+// fetch+merge and fetch+rebase, which are different operations on different
+// refs. Answering "git-kit pull" for a `git merge origin/feature` run is worse
+// than answering nothing — gk pull integrates the UPSTREAM, so an agent that
+// follows the nudge merges a branch it never asked for. Naming the wrong verb
+// is the same defect class as reporting a covered command as a gap: the hook
+// speaks with gk's authority, so a confident wrong answer costs more than
+// silence.
+//
+// The LAST explicit merge/rebase in the run wins: a run reads fetch-then-merge,
+// so the trailing verb is the integration that actually happened while the
+// fetch only fed it. With no such verb the run really is a pull, and the
+// default stands.
+//
+// `git rebase <upstream>` maps to gk sync, NOT gk rebase: gk rebase is the
+// history-rewrite planner (the `rebase -i` replacement) and takes no positional
+// ref at all, so naming it would hand the agent a command that cannot parse.
+// gk sync rebases HEAD onto the BASE branch and likewise takes no ref, so the
+// ref is dropped there — it is only the right answer when the rebase target is
+// the base, and inventing `gk sync <ref>` would be a syntax that does not exist.
+func gkCommandForRun(group string, cmds []string) string {
+	base := gkForGroup[group]
+	if group != "integration" {
+		return base
+	}
+	out := base
+	for _, cmd := range cmds {
+		for _, seg := range classifyCommand(cmd).Segments {
+			if seg.Tool != "git" {
+				continue
+			}
+			sc, args, ok := gitSubcommand(seg.Text)
+			if !ok {
+				continue
+			}
+			switch sc {
+			case "merge":
+				out = "git-kit merge"
+				if ref := firstRefOperand(args); ref != "" {
+					out += " " + ref
+				}
+			case "rebase":
+				out = "git-kit sync"
+			}
+		}
+	}
+	return out
+}
+
+// firstRefOperand returns the leading non-flag operand of a git segment — the
+// ref a merge/rebase names. Shell redirections (`2>&1`) and pipes survive
+// segment splitting as operand-shaped tokens, so anything carrying shell
+// metacharacters is skipped rather than reported back as a branch name.
+func firstRefOperand(args []string) string {
+	for _, a := range args {
+		a = trimShellToken(a)
+		if a == "" || a == "--" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		if strings.ContainsAny(a, "<>|&;()") {
+			continue
+		}
+		return a
+	}
+	return ""
 }
 
 // CollapseGroups returns the collapse group keys (gkForGroup's domain), sorted.
@@ -361,7 +433,7 @@ func DetectCollapsibleRuns(events []TurnEvent, maxGap int) []CollapsibleRun {
 			}
 			runs = append(runs, CollapsibleRun{
 				Group:      group,
-				GkCommand:  gkForGroup[group],
+				GkCommand:  gkCommandForRun(group, cmds),
 				Repo:       run[0].repo,
 				Turns:      turns,
 				Commands:   cmds,
@@ -485,7 +557,16 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 	if len(prior) == 0 {
 		return nil
 	}
-	return &CollapseNudge{Group: g, GkCommand: gkForGroup[g], PriorTurns: len(prior), Recent: prior}
+	// prior was collected newest-first; gkCommandForRun's "last verb wins" rule
+	// needs the run in the order it happened, with the pending command last —
+	// in a fetch-then-merge shape that pending command IS the merge, and it is
+	// what decides which git-kit verb the nudge may name.
+	run := make([]string, 0, len(prior)+1)
+	for i := len(prior) - 1; i >= 0; i-- {
+		run = append(run, prior[i])
+	}
+	run = append(run, current)
+	return &CollapseNudge{Group: g, GkCommand: gkCommandForRun(g, run), PriorTurns: len(prior), Recent: prior}
 }
 
 // splitRuns breaks an ordered slice of distinct-turn hits into maximal runs:

@@ -211,11 +211,15 @@ var findingSpecs = map[string]findingSpec{
 		coveredBy:      []string{"git-kit commit", "git-kit commit --plan -"},
 	},
 	"raw-integration": {
-		kind:           "raw-integration",
-		severity:       "medium",
-		status:         "covered",
-		recommendation: "Use git-kit pull/sync/merge/rebase so paused and blocked states stay in the agent envelope.",
-		coveredBy:      []string{"git-kit pull", "git-kit sync", "git-kit merge", "git-kit rebase"},
+		kind:     "raw-integration",
+		severity: "medium",
+		status:   "covered",
+		// git-kit rebase is NOT on this list: it is the history-rewrite planner
+		// (the `rebase -i` replacement) and takes no positional ref, so offering
+		// it for `git rebase <upstream>` hands the agent a command that cannot
+		// even parse. Rebasing onto the base is git-kit sync.
+		recommendation: "Use git-kit pull (fetch+integrate the upstream), git-kit sync (rebase onto the base branch) or git-kit merge <ref> (integrate another branch) so paused and blocked states stay in the agent envelope.",
+		coveredBy:      []string{"git-kit pull", "git-kit sync", "git-kit merge"},
 	},
 	"raw-branch-switch": {
 		kind:           "raw-branch-switch",
@@ -282,16 +286,21 @@ var findingSpecs = map[string]findingSpec{
 		coveredBy:      []string{"git-kit find"},
 	},
 	// A range comparison is NOT a search — `git log A..B` asks "what is in B that
-	// is not in A". gk log --ahead/--behind --base answers the upstream/base
-	// spellings of that question, but an arbitrary two-ref range has no verb, so
-	// this stays an honest gap rather than being folded into gk find (which
-	// cannot answer it) or gk context (which never could).
+	// is not in A", which gk find cannot answer and gk context never could. It is
+	// covered all the same: `gk log` takes [revisions] positionally, so `gk log
+	// A..B` is the direct spelling, with --ahead/--behind --base as the shorthand
+	// for the upstream/base cases. This was misreported as a gap, which mattered
+	// twice over — it inflated uncovered_raw_hits several-fold, and gitSegmentFinding
+	// is shared with `gk hint`, so the PreToolUse hook was answering "no git-kit
+	// replacement" for a command gk does handle. It stays OUT of
+	// collapseGroupForKind: one range is one question, so this is a 1:1 swap that
+	// may not claim turn savings.
 	"raw-range-compare": {
 		kind:           "raw-range-compare",
 		severity:       "low",
-		status:         "gap",
-		recommendation: "Ref-range comparison (git log A..B). gk log --ahead/--behind --base covers the upstream/base cases; an arbitrary two-ref range has no git-kit verb yet.",
-		gap:            "git-kit has no arbitrary ref-range comparison (git log A..B)",
+		status:         "covered",
+		recommendation: "Use git-kit log A..B — gk log takes revision ranges positionally (--json for machine use). git-kit log --ahead/--behind --base is the shorthand when the range is against the upstream or the base branch.",
+		coveredBy:      []string{"git-kit log A..B"},
 	},
 	"raw-reset-hard": {
 		kind:           "raw-reset-hard",
@@ -380,7 +389,8 @@ var findingSpecs = map[string]findingSpec{
 // here — their read-only invocations are suppressed by isRawReadOnlyForm so the
 // mutating forms still surface as signals.
 var rawGitNonGap = map[string]bool{
-	// diff/show domain — covered conceptually; guard against false gaps.
+	// diff is covered by gk diff; show is object inspection gk deliberately does
+	// not wrap (see isRawFullDiff). Neither is a missing-verb signal.
 	"diff": true, "show": true,
 	// read-only inspection / plumbing.
 	"rev-parse": true, "config": true, "cat-file": true, "symbolic-ref": true,
@@ -1401,6 +1411,11 @@ func isRawContextProbe(subcmd string, args []string) bool {
 	case "diff", "show":
 		statish := hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
 		return statish && !hasHexCommitOperand(args)
+	case "branch":
+		// `git branch --show-current` is "where am I", not "what branches exist"
+		// — gk context leads with the current branch, so this probe folds into
+		// the same one call as git status / git log beside it.
+		return hasArg(args, "--show-current")
 	default:
 		return false
 	}
@@ -1458,6 +1473,13 @@ func isRawBranchList(subcmd string, args []string) bool {
 		if strings.HasPrefix(name, "--contains") || strings.HasPrefix(name, "--no-contains") {
 			return false // a history question — isRawHistorySearch owns it
 		}
+		if name == "--show-current" {
+			// Not a survey at all — it asks for ONE name, the branch you are on,
+			// which is the first thing gk context reports. Routing it to
+			// `gk branch list` contradicted this function's own reasoning and
+			// answered a one-line question with a table.
+			return false
+		}
 		if branchValueFlags[name] && !hasValue {
 			skipNext = true
 		}
@@ -1510,10 +1532,11 @@ func isRawHistorySearch(subcmd string, args []string) bool {
 }
 
 // isRawRangeCompare matches `git log A..B` — "what is in B that is not in A".
-// It is NOT a search, and gk find cannot answer it, so it must not be folded in:
-// over-claiming coverage is exactly what made the old context group's numbers
-// fiction. gk log --ahead/--behind --base answers the upstream/base spellings;
-// an arbitrary two-ref range still has no verb, and stays a gap.
+// It is NOT a search, so it must stay its own kind rather than folding into
+// raw-history-search: over-claiming coverage is exactly what made the old
+// context group's numbers fiction. `gk log A..B` is its replacement (gk log
+// takes revisions positionally), with --ahead/--behind --base as the
+// upstream/base shorthand — a 1:1 swap, so it claims no turn savings.
 func isRawRangeCompare(subcmd string, args []string) bool {
 	switch subcmd {
 	case "log", "rev-list":
@@ -1819,17 +1842,13 @@ func isRawFullDiff(subcmd string, args []string) bool {
 			"--summary",
 			"--cc",
 		)
-	case "show":
-		return !hasAnyArg(args,
-			"--stat",
-			"--shortstat",
-			"--name-only",
-			"--name-status",
-			"--quiet",
-			"--raw",
-			"--numstat",
-			"--summary",
-		)
+	// `show` is deliberately absent. gk diff compares two states; `git show
+	// <commit>` prints THAT commit's own patch and `git show <ref>:<path>` prints
+	// a file's contents at a ref — neither is a comparison, and `gk diff <sha>`
+	// answers a different question (worktree vs that commit). This repo's own
+	// contract lists `git show <object>` as raw-git territory, so claiming it
+	// pointed agents at a command that would have shown them the wrong thing.
+	// It stays in rawGitNonGap: object inspection is not a missing verb.
 	default:
 		return false
 	}

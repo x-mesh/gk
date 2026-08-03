@@ -537,3 +537,138 @@ func TestCollapse_CommitSequence(t *testing.T) {
 		t.Fatalf("add+commit across turns want 1 saved: %+v", runs)
 	}
 }
+
+// --- the git-kit lens -------------------------------------------------------
+
+func gkRunsFor(data []byte) []CollapsibleRun {
+	return DetectGkReprobeRuns(SessionTurns(data), collapseMaxGap)
+}
+
+// The two lenses must never see each other's work. This is the invariant that
+// keeps estimated_turns_saved meaning what it meant in every recorded history
+// entry: a session of pure gk calls adds nothing to the adoption number, and a
+// session of pure raw git adds nothing to the re-probe number.
+func TestGkReprobe_LensesAreDisjoint(t *testing.T) {
+	gkOnly := session(
+		asst("m1", "t1", "git-kit status"),
+		asst("m2", "t2", "git-kit context"),
+		asst("m3", "t3", "gk status"),
+	)
+	if n := totalSaved(runsFor(gkOnly)); n != 0 {
+		t.Errorf("gk-only session must add 0 to the adoption metric, got %d", n)
+	}
+	if n := totalSaved(gkRunsFor(gkOnly)); n != 2 {
+		t.Errorf("three gk context reads want 2 re-probe turns saved, got %d", n)
+	}
+
+	gitOnly := session(
+		asst("m1", "t1", "git status"),
+		asst("m2", "t2", "git log --oneline -5"),
+	)
+	if n := totalSaved(runsFor(gitOnly)); n != 1 {
+		t.Errorf("raw git run want 1 saved, got %d", n)
+	}
+	if n := totalSaved(gkRunsFor(gitOnly)); n != 0 {
+		t.Errorf("raw-git-only session must add 0 to the re-probe metric, got %d", n)
+	}
+}
+
+// A gk write between two gk reads changes the repo, so the reads observe
+// different states and one call cannot answer both.
+func TestGkReprobe_MutatingGkVerbSeversTheRun(t *testing.T) {
+	runs := gkRunsFor(session(
+		asst("m1", "t1", "git-kit status"),
+		asst("m2", "t2", "git-kit commit -m wip"),
+		asst("m3", "t3", "git-kit status"),
+	))
+	if n := totalSaved(runs); n != 0 {
+		t.Errorf("a commit between probes must sever the run, got %d saved: %+v", n, runs)
+	}
+}
+
+// Raw git is payload for this lens: folding the gk read away does not remove a
+// turn that also had to run git show.
+func TestGkReprobe_RawGitCountsAsPayload(t *testing.T) {
+	runs := gkRunsFor(session(
+		asst("m1", "t1", "git-kit context"),
+		asst("m2", "t2", "git-kit context && git show 9855920"),
+	))
+	if n := totalSaved(runs); n != 0 {
+		t.Errorf("a turn that also runs raw git is not saveable, got %d saved: %+v", n, runs)
+	}
+}
+
+func TestGkCollapseGroup(t *testing.T) {
+	cases := []struct {
+		name string
+		verb string
+		args []string
+		want string
+	}{
+		{"status", "status", nil, "context"},
+		{"short status alias", "st", nil, "context"},
+		{"context", "context", []string{"--include=diff,log"}, "context"},
+		{"bare log", "log", []string{"-n", "5"}, "context"},
+		// A range or a path scope is its own question — gk context never answers
+		// "what is in B that is not in A", exactly as on the raw-git side.
+		{"log range", "log", []string{"main..develop"}, ""},
+		{"log path scoped", "log", []string{"--", "internal/cli"}, ""},
+		// A value-taking flag's argument is not a revision: `gk log -n 5` is
+		// still "where am I", and reading 5 as an operand would discard it.
+		{"log limit long form", "log", []string{"--limit", "20"}, "context"},
+		{"log since", "log", []string{"--since", "1w"}, "context"},
+		{"diff", "diff", []string{"--stat"}, "diff"},
+		// Already one call per question: repeats are different questions, so
+		// neither may claim a collapse.
+		{"branch list", "branch", []string{"list"}, ""},
+		{"find", "find", []string{"peer"}, ""},
+		{"write verb", "commit", []string{"-m", "x"}, ""},
+		// Help reads no repo state, so it can never be part of a probe run —
+		// `gk diff --help` then `gk diff --digest` is learn-then-use.
+		{"help long", "diff", []string{"--help"}, ""},
+		{"help short", "status", []string{"-h"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gkCollapseGroup(tc.verb, tc.args); got != tc.want {
+				t.Errorf("gkCollapseGroup(%q, %v) = %q, want %q", tc.verb, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// Unknown verbs must read as mutating, not read-only: giving up a saving is
+// cheap, claiming a collapse across a state change is not.
+func TestGkSegmentMutates_UnknownVerbIsMutating(t *testing.T) {
+	if !gkSegmentMutates("some-new-verb", nil) {
+		t.Error("an unrecognized gk verb must default to mutating")
+	}
+	if gkSegmentMutates("status", nil) {
+		t.Error("gk status must not read as mutating")
+	}
+	if !gkSegmentMutates("doctor", []string{"--fix"}) {
+		t.Error("gk doctor --fix mutates")
+	}
+}
+
+// The paging guard applies to gk too: inspecting two different files is not a
+// re-probe of the same question.
+func TestGkReprobe_PagingGuard(t *testing.T) {
+	runs := gkRunsFor(session(
+		asst("m1", "t1", "git-kit diff -- a.go"),
+		asst("m2", "t2", "git-kit diff -- b.go"),
+	))
+	if n := totalSaved(runs); n != 0 {
+		t.Errorf("different diff targets are not collapsible, got %d saved: %+v", n, runs)
+	}
+}
+
+func TestGkSubcommand_SkipsGlobalFlags(t *testing.T) {
+	verb, args, ok := gkSubcommand("git-kit --repo /tmp/x --json status --short")
+	if !ok || verb != "status" {
+		t.Fatalf("gkSubcommand = (%q, %v, %v), want status", verb, args, ok)
+	}
+	if _, _, ok := gkSubcommand("git status"); ok {
+		t.Error("raw git must not parse as a gk segment")
+	}
+}

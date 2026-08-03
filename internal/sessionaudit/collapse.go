@@ -229,6 +229,260 @@ func commandPayloadTrivial(cmd string) bool {
 	return true
 }
 
+// --- the git-kit lens -------------------------------------------------------
+//
+// Everything above answers ONE question: how many turns would reaching for gk
+// remove? By construction it cannot see a second kind of waste — three `gk
+// context` calls across three turns are two wasted round-trips, but
+// commandPayloadTrivial discounts any turn that already ran git-kit, so the
+// number is zero by design.
+//
+// That blind spot grows exactly as adoption rises, so the remaining waste
+// migrates into the part the metric cannot see. The lens below measures it,
+// and it is kept STRICTLY SEPARATE from the adoption number: merging them would
+// silently re-baseline ~/.gk/audit-history.jsonl, and that file already carries
+// two classifier discontinuities readers are warned not to compare across.
+
+// isGkTool reports whether a shell segment's leading tool is git-kit. Both
+// spellings count — `gk` is the short alias the contract discourages, but it
+// runs the same binary.
+func isGkTool(tool string) bool { return tool == "gk" || tool == "git-kit" }
+
+// gkSubcommand extracts the git-kit verb and its arguments from one segment,
+// mirroring gitSubcommand: skip the global flags that may precede the verb
+// (--repo, --json, -d …) and require the verb to be shaped like a subcommand.
+func gkSubcommand(segment string) (string, []string, bool) {
+	fields := shellFields(segment)
+	for i := 0; i < len(fields); i++ {
+		if !isGkTool(trimShellToken(fields[i])) {
+			continue
+		}
+		args := fields[i+1:]
+		for len(args) > 0 {
+			head := trimShellToken(args[0])
+			if head == "" {
+				args = args[1:]
+				continue
+			}
+			if head == "--repo" || head == "--provider" || head == "--lang" {
+				if len(args) >= 2 {
+					args = args[2:]
+					continue
+				}
+				return "", nil, false
+			}
+			if strings.HasPrefix(head, "-") {
+				args = args[1:]
+				continue
+			}
+			if !isGitSubcommandToken(head) {
+				return "", nil, false
+			}
+			return head, args[1:], true
+		}
+		return "", nil, false
+	}
+	return "", nil, false
+}
+
+// gkReadOnlyVerbs are the git-kit verbs that only observe. Everything absent
+// counts as mutating, which is the safe default here: a false "mutating" only
+// severs a probe run and gives up a saving, while a false "read-only" would
+// claim a collapse across a state change that never existed.
+var gkReadOnlyVerbs = map[string]bool{
+	"status": true, "st": true, "context": true, "log": true, "slog": true,
+	"diff": true, "find": true, "local": true, "next": true, "explain": true,
+	"ask": true, "hint": true, "precheck": true, "snapshots": true,
+	"prompt-info": true, "doctor": true, "session": true, "issue": true,
+	"inbox": true, "changelog": true, "lint-commit": true, "branch-check": true,
+}
+
+// gkCollapseGroup maps a git-kit read verb to the group whose run one single
+// call absorbs — the same groups the raw-git lens uses, so both views agree on
+// what "one gk call" means.
+//
+// Deliberately absent, for the same reasons their raw counterparts are:
+//   - branch/find: `gk branch list` and `gk find` are already one call per
+//     question, so repeats are DIFFERENT questions, not a re-probe.
+//   - `gk log` carrying an operand: a revision range or a path scope is its own
+//     question, which `gk context` never answers.
+func gkCollapseGroup(verb string, args []string) string {
+	// `gk diff --help` does not read the repo at all. Learning a verb's surface
+	// and then querying with it are two different questions, and folding them
+	// together would invent a saving that could not exist — the measured corpus
+	// had exactly one candidate run and this was it.
+	if hasArg(args, "--help") || hasArg(args, "-h") {
+		return ""
+	}
+	switch verb {
+	case "status", "st", "context":
+		return "context"
+	case "log", "slog":
+		if gkLogHasOperand(args) {
+			return "" // a range or path scope — not "where am I"
+		}
+		return "context"
+	case "diff":
+		return "diff"
+	default:
+		return ""
+	}
+}
+
+// gkLogValueFlags are `gk log` flags whose value is the NEXT token. Without
+// them `gk log -n 5` reads 5 as a revision operand and the probe is discarded —
+// the flag's argument is not the question being asked.
+var gkLogValueFlags = map[string]bool{
+	"-n": true, "--limit": true, "--since": true, "--format": true,
+	"--lang": true, "--provider": true, "--vis": true,
+	"-U": true, "--context": true,
+}
+
+// gkLogHasOperand reports whether `gk log` was given a revision or path — the
+// forms that ask their own question rather than "where am I".
+func gkLogHasOperand(args []string) bool {
+	skipNext := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "" {
+			continue
+		}
+		if a == "--" {
+			return true // pathspecs follow — a scoped history question
+		}
+		if strings.HasPrefix(a, "-") {
+			name, _, hasValue := strings.Cut(a, "=")
+			if gkLogValueFlags[name] && !hasValue {
+				skipNext = true
+			}
+			continue
+		}
+		if strings.ContainsAny(a, "<>|&;()") {
+			continue // shell noise that survived segment splitting
+		}
+		return true
+	}
+	return false
+}
+
+// gkSegmentMutates reports whether one git-kit segment changes repo state.
+func gkSegmentMutates(verb string, args []string) bool {
+	if !gkReadOnlyVerbs[verb] {
+		return true
+	}
+	// The read-only verbs with a mutating subcommand form.
+	if verb == "session" || verb == "doctor" {
+		return hasArg(args, "--fix")
+	}
+	return false
+}
+
+// gkCommandGroups returns the collapse groups a command's git-kit segments
+// belong to — the gk-lens twin of commandGroups.
+func gkCommandGroups(cmd string) map[string]bool {
+	groups := map[string]bool{}
+	for _, seg := range classifyCommand(cmd).Segments {
+		if !isGkTool(seg.Tool) {
+			continue
+		}
+		verb, args, ok := gkSubcommand(seg.Text)
+		if !ok {
+			continue
+		}
+		if g := gkCollapseGroup(verb, args); g != "" {
+			groups[g] = true
+		}
+	}
+	return groups
+}
+
+// gkCommandMutates reports whether any git-kit segment of cmd mutates state.
+// A raw git mutation counts too: the barrier is "did the repo change between
+// these probes", and it does not matter which binary changed it.
+func gkCommandMutates(cmd string) bool {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if isGkTool(seg.Tool) {
+			if verb, args, ok := gkSubcommand(seg.Text); ok && gkSegmentMutates(verb, args) {
+				return true
+			}
+			continue
+		}
+		if seg.Tool == "git" {
+			if subcmd, args, ok := gitSubcommand(seg.Text); ok && gitSegmentMutates(subcmd, args) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gkPayloadTrivial mirrors commandPayloadTrivial with the roles swapped: for
+// this lens the git-kit segments are the work, so RAW GIT counts as payload —
+// folding `gk context` away does not remove a turn that also ran `git show`.
+func gkPayloadTrivial(cmd string) bool {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if isGkTool(seg.Tool) {
+			continue
+		}
+		if !trivialPayloadTools[seg.Tool] {
+			return false
+		}
+	}
+	return true
+}
+
+// gkGroupTarget is groupTarget for git-kit segments, feeding the same paging
+// guard: `gk diff a.go` then `gk diff b.go` inspects different objects and one
+// call cannot replace both.
+func gkGroupTarget(cmd, group string) (subcmd, target string) {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if !isGkTool(seg.Tool) {
+			continue
+		}
+		verb, args, ok := gkSubcommand(seg.Text)
+		if !ok {
+			continue
+		}
+		if gkCollapseGroup(verb, args) == group {
+			return verb, operandSig(args)
+		}
+	}
+	return "", ""
+}
+
+// collapseLens is the per-command judgement set the run detector needs. Both
+// lenses share every rule that follows (gap tolerance, mutation barriers, the
+// paging guard, primary-group attribution) and differ only in which binary's
+// segments they read — so the two numbers stay comparable in meaning while
+// never being summed.
+type collapseLens struct {
+	name    string
+	groups  func(string) map[string]bool
+	mutates func(string) bool
+	trivial func(string) bool
+	target  func(string, string) (string, string)
+}
+
+var gitLens = collapseLens{
+	name:    "git",
+	groups:  commandGroups,
+	mutates: commandMutates,
+	trivial: commandPayloadTrivial,
+	target:  groupTarget,
+}
+
+var gkLens = collapseLens{
+	name:    "git-kit",
+	groups:  gkCommandGroups,
+	mutates: gkCommandMutates,
+	trivial: gkPayloadTrivial,
+	target:  gkGroupTarget,
+}
+
 // CollapsibleRun is a maximal run of same-group git commands spread across
 // distinct turns that one git-kit call would have replaced. TurnsSaved is the
 // number of agent round-trips removed: a run touching N distinct turns folds to
@@ -291,7 +545,7 @@ type turnAttr struct {
 // is discounted entirely when any command carries non-trivial non-git payload
 // (`git log -1; cargo clippy` — the turn exists for cargo). Failed calls
 // (IsError) are dropped: a failed attempt is not a turn gk would have saved.
-func attributeTurns(events []TurnEvent) []turnAttr {
+func attributeTurns(events []TurnEvent, lens collapseLens) []turnAttr {
 	type accum struct {
 		groups     map[string]bool
 		mutating   bool
@@ -315,9 +569,9 @@ func attributeTurns(events []TurnEvent) []turnAttr {
 			a.repo = ev.Repo
 		}
 		a.cmds = append(a.cmds, ev.Cmd)
-		a.mutating = a.mutating || commandMutates(ev.Cmd)
-		a.discounted = a.discounted || !commandPayloadTrivial(ev.Cmd)
-		for g := range commandGroups(ev.Cmd) {
+		a.mutating = a.mutating || lens.mutates(ev.Cmd)
+		a.discounted = a.discounted || !lens.trivial(ev.Cmd)
+		for g := range lens.groups(ev.Cmd) {
 			a.groups[g] = true
 		}
 	}
@@ -332,9 +586,9 @@ func attributeTurns(events []TurnEvent) []turnAttr {
 		}
 		if ta.group != "" {
 			for _, c := range a.cmds {
-				if commandGroups(c)[ta.group] {
+				if lens.groups(c)[ta.group] {
 					ta.cmd = c
-					ta.subcmd, ta.target = groupTarget(c, ta.group)
+					ta.subcmd, ta.target = lens.target(c, ta.group)
 					break
 				}
 			}
@@ -401,7 +655,19 @@ func operandSig(args []string) string {
 // boundary, and read-only probe runs additionally break on any interleaved
 // mutating turn. maxGap is the interleave tolerance (see collapseMaxGap).
 func DetectCollapsibleRuns(events []TurnEvent, maxGap int) []CollapsibleRun {
-	attrs := attributeTurns(events)
+	return detectRuns(events, maxGap, gitLens)
+}
+
+// DetectGkReprobeRuns is DetectCollapsibleRuns read through the git-kit lens:
+// runs of gk's own read verbs that one gk call would have answered. It measures
+// waste that survives adoption, so its result must never be added to
+// DetectCollapsibleRuns' — the two answer different questions.
+func DetectGkReprobeRuns(events []TurnEvent, maxGap int) []CollapsibleRun {
+	return detectRuns(events, maxGap, gkLens)
+}
+
+func detectRuns(events []TurnEvent, maxGap int, lens collapseLens) []CollapsibleRun {
+	attrs := attributeTurns(events, lens)
 	var mutatingTurns []int // ascending, for the read-only barrier check
 	byGroup := map[string][]turnHit{}
 	for _, ta := range attrs {
@@ -461,24 +727,45 @@ type TurnMetrics struct {
 	Rate                float64          `json:"rate"`
 	ByGroup             map[string]int   `json:"by_group,omitempty"`
 	Runs                []CollapsibleRun `json:"runs,omitempty"`
+	// GkReprobe is the SECOND, independent number: waste that survives adoption.
+	// It is reported beside the fields above and never folded into them —
+	// EstimatedTurnsSaved answers "what would adopting gk remove", this answers
+	// "what would using gk better remove". Summing them would double-count
+	// nothing and mean nothing, and it would re-baseline the recorded history.
+	GkReprobe *GkReprobeMetrics `json:"gk_reprobe,omitempty"`
+}
+
+// GkReprobeMetrics counts turns an already-adopted session spent re-asking gk
+// a question one gk call answers. GkTurns is its own denominator: turns that
+// ran git-kit at all.
+type GkReprobeMetrics struct {
+	GkTurns    int              `json:"gk_turns"`
+	TurnsSaved int              `json:"turns_saved"`
+	Rate       float64          `json:"rate"`
+	ByGroup    map[string]int   `json:"by_group,omitempty"`
+	Runs       []CollapsibleRun `json:"runs,omitempty"`
 }
 
 // turnEventsContribution computes one session's distinct git-turn count and its
 // collapsible runs from already-parsed turn events. Git turns are the
 // denominator for the rate: a turn counts once no matter how many git commands
-// it ran.
-func turnEventsContribution(events []TurnEvent) (gitTurns int, runs []CollapsibleRun) {
-	seenTurn := map[int]bool{}
+// it ran. The git-kit lens gets the same treatment in its own return values.
+func turnEventsContribution(events []TurnEvent) (gitTurns int, runs []CollapsibleRun, gkTurns int, gkRuns []CollapsibleRun) {
+	seenGit := map[int]bool{}
+	seenGk := map[int]bool{}
 	for _, ev := range events {
-		if seenTurn[ev.Turn] {
-			continue
-		}
-		if classifyCommand(ev.Cmd).RawGit > 0 {
-			seenTurn[ev.Turn] = true
+		c := classifyCommand(ev.Cmd)
+		if c.RawGit > 0 && !seenGit[ev.Turn] {
+			seenGit[ev.Turn] = true
 			gitTurns++
 		}
+		if (c.GitKit > 0 || c.GKShort > 0) && !seenGk[ev.Turn] {
+			seenGk[ev.Turn] = true
+			gkTurns++
+		}
 	}
-	return gitTurns, DetectCollapsibleRuns(events, collapseMaxGap)
+	return gitTurns, DetectCollapsibleRuns(events, collapseMaxGap),
+		gkTurns, DetectGkReprobeRuns(events, collapseMaxGap)
 }
 
 // sortRunsBySaved orders runs by turns saved (desc), then group, then first
@@ -532,7 +819,10 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 	curRepo := repoScope(current)
 	curSub, curTgt := groupTarget(current, g)
 
-	attrs := attributeTurns(recent)
+	// The nudge stays on the git lens: it fires on a PENDING raw git command,
+	// telling the agent to reach for gk. Nagging someone who already ran `gk
+	// context` twice is a different message and not this hook's job.
+	attrs := attributeTurns(recent, gitLens)
 	pending := lastTurn + 1 // the turn the pending command will occupy
 	var prior []string
 	for i := len(attrs) - 1; i >= 0; i-- {

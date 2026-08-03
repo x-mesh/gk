@@ -449,7 +449,11 @@ func Audit(opts Options) (Report, error) {
 	var turns *TurnMetrics
 	skippedUnknown := 0
 	if wantTurns {
-		turns = &TurnMetrics{Source: "claude,codex", ByGroup: map[string]int{}}
+		turns = &TurnMetrics{
+			Source:    "claude,codex",
+			ByGroup:   map[string]int{},
+			GkReprobe: &GkReprobeMetrics{ByGroup: map[string]int{}},
+		}
 	}
 
 	// Parse phase — each file's read + JSON/turn extraction is independent, so
@@ -503,6 +507,12 @@ func Audit(opts Options) (Report, error) {
 				turns.ByGroup[r.Group] += r.TurnsSaved
 				turns.Runs = append(turns.Runs, r)
 			}
+			turns.GkReprobe.GkTurns += o.gkTurns
+			for _, r := range o.gkRuns {
+				turns.GkReprobe.TurnsSaved += r.TurnsSaved
+				turns.GkReprobe.ByGroup[r.Group] += r.TurnsSaved
+				turns.GkReprobe.Runs = append(turns.GkReprobe.Runs, r)
+			}
 		}
 	}
 	report.Findings = sortedFindings(aggregate)
@@ -516,6 +526,15 @@ func Audit(opts Options) (Report, error) {
 		sortRunsBySaved(turns.Runs)
 		if len(turns.Runs) > maxTurnRuns {
 			turns.Runs = turns.Runs[:maxTurnRuns]
+		}
+		if gk := turns.GkReprobe; gk != nil {
+			if gk.GkTurns > 0 {
+				gk.Rate = float64(gk.TurnsSaved) / float64(gk.GkTurns)
+			}
+			sortRunsBySaved(gk.Runs)
+			if len(gk.Runs) > maxTurnRuns {
+				gk.Runs = gk.Runs[:maxTurnRuns]
+			}
 		}
 		if skippedUnknown > 0 {
 			report.Notes = append(report.Notes, fmt.Sprintf("turn metric: Claude + Codex sessions (%d session(s) of unknown shape excluded)", skippedUnknown))
@@ -631,6 +650,8 @@ type fileOutcome struct {
 	commands          []string
 	gitTurns          int
 	runs              []CollapsibleRun
+	gkTurns           int
+	gkRuns            []CollapsibleRun
 	unknownTurnSource bool
 	err               error
 }
@@ -666,7 +687,7 @@ func processFile(path string, wantTurns bool) fileOutcome {
 		o.unknownTurnSource = true
 		return o
 	}
-	o.gitTurns, o.runs = turnEventsContribution(events)
+	o.gitTurns, o.runs, o.gkTurns, o.gkRuns = turnEventsContribution(events)
 	return o
 }
 

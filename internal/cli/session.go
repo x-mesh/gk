@@ -110,6 +110,10 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 			AdoptionRate:        report.Adoption.Rate,
 			ByGroup:             report.Turns.ByGroup,
 		}
+		if gk := report.Turns.GkReprobe; gk != nil {
+			entry.GkTurns = gk.GkTurns
+			entry.GkReprobeSaved = gk.TurnsSaved
+		}
 		if werr := sessionaudit.AppendHistory(sessionaudit.HistoryPath(home), entry); werr != nil {
 			report.Notes = append(report.Notes, fmt.Sprintf("record: %v", werr))
 		}
@@ -265,11 +269,20 @@ type sessionAuditSummaryJSON struct {
 
 // sessionAuditSummaryTurns is TurnMetrics without the runs[] evidence.
 type sessionAuditSummaryTurns struct {
-	Source              string         `json:"source"`
-	GitTurns            int            `json:"git_turns"`
-	EstimatedTurnsSaved int            `json:"estimated_turns_saved"`
-	Rate                float64        `json:"rate"`
-	ByGroup             map[string]int `json:"by_group,omitempty"`
+	Source              string            `json:"source"`
+	GitTurns            int               `json:"git_turns"`
+	EstimatedTurnsSaved int               `json:"estimated_turns_saved"`
+	Rate                float64           `json:"rate"`
+	ByGroup             map[string]int    `json:"by_group,omitempty"`
+	GkReprobe           *summaryGkReprobe `json:"gk_reprobe,omitempty"`
+}
+
+// summaryGkReprobe is GkReprobeMetrics without the runs[] evidence.
+type summaryGkReprobe struct {
+	GkTurns    int            `json:"gk_turns"`
+	TurnsSaved int            `json:"turns_saved"`
+	Rate       float64        `json:"rate"`
+	ByGroup    map[string]int `json:"by_group,omitempty"`
 }
 
 // sessionAuditSummaryFinding is a Finding without the evidence[] samples.
@@ -300,6 +313,14 @@ func summarizeSessionReport(report sessionaudit.Report) sessionAuditSummaryJSON 
 			EstimatedTurnsSaved: tm.EstimatedTurnsSaved,
 			Rate:                tm.Rate,
 			ByGroup:             tm.ByGroup,
+		}
+		if gk := tm.GkReprobe; gk != nil && gk.GkTurns > 0 {
+			s.Turns.GkReprobe = &summaryGkReprobe{
+				GkTurns:    gk.GkTurns,
+				TurnsSaved: gk.TurnsSaved,
+				Rate:       gk.Rate,
+				ByGroup:    gk.ByGroup,
+			}
 		}
 	}
 	for _, f := range report.Findings {
@@ -434,6 +455,23 @@ func renderSessionAudit(w io.Writer, report sessionaudit.Report) {
 			fmt.Fprintf(w, "  e.g. turns %s → %s (saves %d)\n",
 				formatTurnList(r.Turns), r.GkCommand, r.TurnsSaved)
 			break
+		}
+		// Printed as its own line, never added to the number above: that one is
+		// what ADOPTING gk would save, this is what USING it better would.
+		if gk := tm.GkReprobe; gk != nil && gk.GkTurns > 0 {
+			fmt.Fprintf(w, "gk re-probes: ~%d of %d git-kit turns saveable (%.1f%%) by collapsing repeated gk reads into one call\n",
+				gk.TurnsSaved, gk.GkTurns, gk.Rate*100)
+			if len(gk.ByGroup) > 0 {
+				fmt.Fprintf(w, "  most turns saved by: %s\n", formatSubcommandBreakdown(gk.ByGroup))
+			}
+			for _, r := range gk.Runs {
+				if r.TurnsSaved <= 0 {
+					continue
+				}
+				fmt.Fprintf(w, "  e.g. turns %s → %s (saves %d)\n",
+					formatTurnList(r.Turns), r.GkCommand, r.TurnsSaved)
+				break
+			}
 		}
 	}
 

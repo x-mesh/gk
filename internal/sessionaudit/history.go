@@ -19,6 +19,13 @@ type HistoryEntry struct {
 	Rate                float64        `json:"rate"`
 	AdoptionRate        float64        `json:"adoption_rate"`
 	ByGroup             map[string]int `json:"by_group,omitempty"`
+	// The git-kit lens, recorded alongside rather than folded in — the fields
+	// above must keep meaning exactly what they meant in older entries, or the
+	// trend readers comparing across runs get a third silent re-baseline. Absent
+	// on every entry written before this existed, which is the honest signal
+	// that the number was not measured then.
+	GkTurns        int `json:"gk_turns,omitempty"`
+	GkReprobeSaved int `json:"gk_reprobe_saved,omitempty"`
 }
 
 // HistoryPath is where recorded runs accumulate. The audit is global (it scans

@@ -38,11 +38,17 @@ Every `gk ...` below means `./bin/gk ...`.
 
 `--metric=both` gives the occurrence findings AND the turn-reduction view in one
 pass. `--full` is required here: the default JSON is token-lean and caps
-`result.turns.runs[].commands` and `result.findings[].evidence` (the very
-samples this skill cites as evidence) — `--full` restores the uncapped payload.
-Raise `--max-files` to cover the whole corpus (the run is local, read-only,
-and cheap). Parse the `{state, ok, result}` envelope: `result.adoption`,
-`result.findings[]`, `result.turns`, `result.totals`, `result.notes`.
+`turns.runs[].commands` and `findings[].evidence` (the very samples this skill
+cites as evidence) — `--full` collects and emits the uncapped payload. (Note:
+before the collection-cap fix landed, covered findings carried at most 5
+evidence samples even under `--full`; on an older binary, back distribution
+claims with a corpus grep instead of the samples.) Raise `--max-files` to cover
+the whole corpus (the run is local, read-only, and cheap).
+
+Output shape: with plain `--json` the report is the TOP-LEVEL object — parse
+`.adoption`, `.findings[]`, `.turns`, `.totals`, `.notes` directly. The
+`{state, ok, result}` envelope wraps it only under `GK_AGENT=1`; with the
+redirect above you are reading the bare report, and `jq .result` returns null.
 
 ## Phase 1b — TREND (historical trajectory, read when available)
 
@@ -54,12 +60,18 @@ run (fields: `ts`, `files`, `git_turns`, `estimated_turns_saved`, `rate`,
 cat ~/.gk/audit-history.jsonl   # JSONL, oldest → newest
 ```
 
-`gk session audit --trend --json` also works: the envelope carries the recorded
-history as `result.trend[]` (same entry shape as the JSONL lines). Either path
-is fine — the file read is simplest when you only want the history; the flag
-fuses it into the same call as the audit. (`--viz` remains human-only by design:
-its turn graph is just an ASCII rendering of `result.turns.runs`, which the JSON
-already carries.)
+`gk session audit --trend --json` also works: the report carries the recorded
+history as top-level `trend[]` (same entry shape as the JSONL lines; under
+`GK_AGENT=1` it sits at `result.trend[]`). Either path is fine — the file read
+is simplest when you only want the history; the flag fuses it into the same
+call as the audit. (`--viz` remains human-only by design: its turn graph is
+just an ASCII rendering of `turns.runs`, which the JSON already carries.)
+
+Entries recorded after the gk-reprobe lens shipped also carry `gk_turns` /
+`gk_reprobe_saved` — waste measured INSIDE gk usage, reported beside (never
+summed into) `estimated_turns_saved`. Absent fields mean the run predates the
+lens, not a zero measurement. Measured at introduction: ~0, and that null
+result is the finding — do not read its later appearance as noise.
 
 - **< 2 entries**: no trend to report. Say so plainly. As a *report action* (not
   a finding about gk itself), recommend seeding a cadence — `gk session audit
@@ -93,25 +105,28 @@ The first entry recorded on the new ruler is **2026-07-13T04:50** (`rate` 0.3%,
 `adoption` 13.1%). Entries before it are a different measurement — reading the
 step as an adoption collapse is exactly the error the split was made to prevent.
 
-**The open question that boundary was drawn to answer:** `gk find` and `gk branch
-list` shipped in v0.122.0 to cover a workload gk previously had NO verb for. The
-test case is the `jinjjajinwoo` project — 370 session files, adoption **6%**,
-whose git usage is almost entirely `git branch` (218) + `git log` (174), i.e.
-exactly what the two new verbs answer. If its adoption does not move in the
-entries after 2026-07-13, the gap was never capability — it is adoption, and
-escalating the PreToolUse hook (`--mode warn` → `block`) finally has evidence
-behind it. Until then it does not.
+**The question that boundary was drawn to answer — ANSWERED 2026-08-04:** `gk
+find` and `gk branch list` shipped in v0.122.0 to cover a workload gk previously
+had NO verb for. The test case was the `jinjjajinwoo` project (git usage almost
+entirely `git branch` + `git log`). Measured with overlapping `--since` windows:
+adoption 5.7% (lifetime) → 7.0% (21d) → 12.9% (14d) → 15.3% (7d) → **19.7%
+(3d)**, monotonic. Verdict: the capability fix worked; do NOT escalate the
+PreToolUse hook to `block` — repeat the same lever (classifier precision + warn
+hook + contract block) on the next `by_group` target instead. Two methodology
+rules survive the question: (1) per-project lifetime rates bury recent change —
+always judge with overlapping `--since` windows; (2) re-ask this only if a later
+window breaks the monotonic trend.
 
 ## Phase 2 — INTERPRET (five signal classes)
 
 Read each class and tag every item with a **type** and a **turn-impact**.
 
-### A. Turn-reduction — the primary signal (`result.turns`)
+### A. Turn-reduction — the primary signal (`turns`)
 - `estimated_turns_saved`, `rate` — the headline: how many round-trips gk adoption would remove.
 - `by_group` — **which single gk call, if adopted, saves the most turns.** This is the ranked roadmap for *guidance/hook* work (the command already exists; agents aren't reaching for it). The top group is usually the highest-leverage action in the whole report.
 - `runs[]` — evidence: the actual collapsible turn spans + the gk call that replaces them.
 
-### B. Coverage gaps — `uncovered-raw-git` (`result.findings[].subcommands`)
+### B. Coverage gaps — `uncovered-raw-git` (`findings[].subcommands`)
 For each frequent subcommand, **check the real gk surface before judging** — never
 claim a verb is missing without confirming:
 

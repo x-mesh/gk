@@ -1783,6 +1783,48 @@ func gitSegmentFinding(subcmd string, args []string) string {
 // (`git reset a.go`) IS an unstage, but a bare token is indistinguishable
 // from a commit-ish (`git reset origin/main`) without repo state, so it is
 // deliberately left uncounted rather than misclassifying history resets.
+// discardCaution is the warning attached to the raw commands that throw
+// uncommitted work away with nothing to walk back to.
+const discardCaution = "This discards uncommitted changes to those paths with no way back, and git-kit has no verb that replaces it. Run git-kit snapshot first — it saves the working tree (untracked files included) to refs/wip without touching your files, index or history, so the discard stays recoverable."
+
+// isDestructiveDiscard matches the pathspec forms of checkout/restore: the ones
+// that overwrite files in the working tree.
+//
+// This is NOT a coverage claim — gk has no replacement, and the hint must not
+// pretend otherwise. It is the opposite case: the only frequent uncovered
+// command that destroys work irreversibly. Answering it with plain silence (the
+// correct answer for every other gap) reads as approval, and gk already ships
+// the safety net that makes the operation survivable, so the honest reply is
+// "no replacement, but snapshot first".
+//
+// Excluded: `git checkout <branch>` (moves HEAD — raw-branch-switch) and
+// `git restore --staged` alone (index only — git-kit unstage covers it, and
+// isRawUnstage already claims it).
+func isDestructiveDiscard(subcmd string, args []string) bool {
+	switch subcmd {
+	case "checkout":
+		// The pathspec form is the destructive one, and `--` is what marks it.
+		for i, raw := range args {
+			if trimShellToken(raw) != "--" {
+				continue
+			}
+			for _, p := range args[i+1:] {
+				if trimShellToken(p) != "" {
+					return true
+				}
+			}
+		}
+		return false
+	case "restore":
+		if isRawUnstage(subcmd, args) {
+			return false // index only
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func isRawUnstage(subcmd string, args []string) bool {
 	switch subcmd {
 	case "restore":

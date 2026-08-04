@@ -48,3 +48,51 @@ func TestHint(t *testing.T) {
 		})
 	}
 }
+
+// Silence is the right answer for an ordinary gap, but the wrong one for a gap
+// that destroys work: the hook reads as approval when it says nothing.
+func TestHint_DestructiveDiscardCautionsWithoutClaimingCoverage(t *testing.T) {
+	for _, cmd := range []string{
+		"git checkout -- src/a.rs",
+		"git checkout 9db1c86 -- .goreleaser.yaml",
+		"git checkout --ours -- daemon/layout.rs",
+		"git restore src/a.rs",
+		"git restore --source=HEAD~1 src/a.rs",
+	} {
+		res := Hint(cmd)
+		if res.Caution == "" {
+			t.Errorf("Hint(%q).Caution is empty — an irreversible discard must warn", cmd)
+		}
+		// The whole point: warn WITHOUT inventing a replacement.
+		if res.Covered {
+			t.Errorf("Hint(%q).Covered = true — gk has no verb for this", cmd)
+		}
+	}
+}
+
+// The caution must not leak onto commands that keep the work.
+func TestHint_NoCautionOnNonDestructiveForms(t *testing.T) {
+	for _, cmd := range []string{
+		"git checkout main", // moves HEAD
+		"git checkout -b feature origin/main",
+		"git restore --staged src/a.rs", // index only — gk unstage covers it
+		"git status",
+		"git diff -- src/a.rs",
+	} {
+		if res := Hint(cmd); res.Caution != "" {
+			t.Errorf("Hint(%q) raised a discard caution it should not: %q", cmd, res.CautionMatched)
+		}
+	}
+}
+
+// A command can be covered AND destructive; the replacement must survive the
+// caution, since consider() rewrites the result wholesale on a better match.
+func TestHint_CautionSurvivesAlongsideCoverage(t *testing.T) {
+	res := Hint("git checkout -- a.rs && git status")
+	if !res.Covered {
+		t.Fatalf("the git status segment is covered, got %+v", res)
+	}
+	if res.Caution == "" {
+		t.Error("the discard segment must still raise its caution")
+	}
+}

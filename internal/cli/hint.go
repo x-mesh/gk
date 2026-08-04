@@ -65,12 +65,23 @@ func runHint(cmd *cobra.Command, args []string) error {
 
 func renderHint(w io.Writer, res sessionaudit.HintResult) {
 	if !res.Covered {
+		// A caution is not a replacement, so it does not turn this into a "use X
+		// instead" line — but "ok:" would be the wrong word for a command that
+		// throws work away, so the caution takes the line instead of following it.
+		if res.Caution != "" {
+			fmt.Fprintln(w, "caution: irreversible — no git-kit replacement for this command")
+			fmt.Fprintf(w, "  %s\n", res.Caution)
+			return
+		}
 		fmt.Fprintln(w, "ok: no git-kit replacement for this command")
 		return
 	}
 	fmt.Fprintf(w, "use %s instead of raw git\n", strings.Join(res.CoveredBy, " / "))
 	if res.Suggestion != "" {
 		fmt.Fprintf(w, "  %s\n", res.Suggestion)
+	}
+	if res.Caution != "" {
+		fmt.Fprintf(w, "  caution: %s\n", res.Caution)
 	}
 }
 

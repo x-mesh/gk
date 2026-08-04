@@ -222,6 +222,10 @@ func hookRunMode(cmd *cobra.Command) string {
 // tokens. A collapse nudge is turn-local and actionable, so it is never
 // deduped; deny decisions are enforcement, not advice, so they always carry a
 // reason.
+// A caution never denies. There is no replacement to force the agent toward,
+// and blocking a legitimate discard would just make it retry around the hook;
+// it also skips hintSeen dedup, because the warning is about THIS command's
+// consequences, not a lesson already taught.
 func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge, hintSeen bool) (decision, reason, additionalContext string) {
 	denyCollapse := nudge != nil && (mode == hookModeCollapse || mode == hookModeBlock)
 	denySingle := res.Covered && mode == hookModeBlock
@@ -233,6 +237,9 @@ func hookDecide(mode string, res sessionaudit.HintResult, nudge *sessionaudit.Co
 	}
 	if res.Covered && !hintSeen {
 		return "", "", hookNoteText(res, nil)
+	}
+	if res.Caution != "" {
+		return "", "", hookNoteText(sessionaudit.HintResult{Caution: res.Caution, CautionMatched: res.CautionMatched}, nil)
 	}
 	return "", "", ""
 }
@@ -262,7 +269,20 @@ func hookNoteText(res sessionaudit.HintResult, nudge *sessionaudit.CollapseNudge
 	if nudge != nil {
 		parts = append(parts, collapseMessage(nudge))
 	}
+	if res.Caution != "" {
+		parts = append(parts, cautionMessage(res))
+	}
 	return strings.Join(parts, " ")
+}
+
+// cautionMessage phrases the irreversibility warning. It deliberately opens by
+// naming what the command does rather than what to run instead — there is no
+// instead, and implying one is the over-claim this whole hint path avoids.
+func cautionMessage(res sessionaudit.HintResult) string {
+	if res.CautionMatched == "" {
+		return res.Caution
+	}
+	return fmt.Sprintf("%q is irreversible — %s", res.CautionMatched, res.Caution)
 }
 
 // hookTranscriptTailBytes bounds how much of the live transcript the hook

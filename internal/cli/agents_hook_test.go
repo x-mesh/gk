@@ -634,3 +634,27 @@ func TestAgentsHookRegistered(t *testing.T) {
 		t.Errorf("resolved to %q, want install", cmd.Name())
 	}
 }
+
+// A caution is advice about consequences, not enforcement: it must reach the
+// agent even in block mode, and must never itself deny — there is no
+// replacement to force, and blocking a legitimate discard only invites a retry
+// that routes around the hook.
+func TestHookDecide_DiscardCautionAdvisesNeverDenies(t *testing.T) {
+	caution := sessionaudit.HintResult{
+		Caution:        "This discards uncommitted changes…",
+		CautionMatched: "git checkout -- a.rs",
+	}
+	for _, mode := range []string{"warn", "block", "collapse"} {
+		decision, _, addl := hookDecide(mode, caution, nil, false)
+		if decision != "" {
+			t.Errorf("mode %s: caution produced decision %q, want none", mode, decision)
+		}
+		if !strings.Contains(addl, "irreversible") {
+			t.Errorf("mode %s: caution missing from advisory: %q", mode, addl)
+		}
+	}
+	// hintSeen dedups the teaching hint, not the consequence warning.
+	if _, _, addl := hookDecide("warn", caution, nil, true); !strings.Contains(addl, "irreversible") {
+		t.Errorf("hintSeen must not suppress a discard caution, got %q", addl)
+	}
+}

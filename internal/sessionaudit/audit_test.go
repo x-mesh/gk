@@ -989,3 +989,44 @@ func TestHint_GapKindsStaySilent(t *testing.T) {
 		t.Errorf("Hint(git branch -vv) = %+v, want covered by git-kit branch list", res)
 	}
 }
+
+// --full promised "uncapped evidence" while the cap lived at collection time,
+// so the flag was uncapping a serialization of five samples. The cap and the
+// flag have to move together or the promise is false again.
+func TestAudit_UncapEvidenceCollectsPastTheDefaultCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude.jsonl")
+	n := maxEvidence + 4
+	lines := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		lines = append(lines, `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status --short"}}]}}`)
+	}
+	writeLines(t, path, lines...)
+
+	capped, err := Audit(Options{Paths: []string{path}, Home: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncapped, err := Audit(Options{Paths: []string{path}, Home: dir, UncapEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range capped.Findings {
+		if f.Kind == "raw-context-probes" && len(f.Evidence) != maxEvidence {
+			t.Errorf("default cap: evidence = %d, want %d", len(f.Evidence), maxEvidence)
+		}
+	}
+	found := false
+	for _, f := range uncapped.Findings {
+		if f.Kind != "raw-context-probes" {
+			continue
+		}
+		found = true
+		if len(f.Evidence) != n {
+			t.Errorf("uncapped: evidence = %d, want %d (one per hit)", len(f.Evidence), n)
+		}
+	}
+	if !found {
+		t.Fatal("raw-context-probes finding missing")
+	}
+}

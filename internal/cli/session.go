@@ -90,6 +90,9 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 		Paths:    args,
 		MaxFiles: maxFiles,
 		Metric:   metric,
+		// --full's "uncapped evidence" was only true of the serialization; the
+		// collection cap has to lift too, or the promised samples never exist.
+		UncapEvidence: full,
 	}
 	if window > 0 {
 		opts.Since = time.Now().Add(-window)

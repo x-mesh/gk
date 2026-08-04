@@ -38,6 +38,12 @@ type Options struct {
 	// session history, which dilutes "is adoption improving now" with sessions
 	// that predate any guidance fix.
 	Since time.Time
+	// UncapEvidence lifts the per-finding evidence sample cap (maxEvidence).
+	// The CLI sets it for --full, which always promised "uncapped evidence" —
+	// but the cap lived at COLLECTION time, so --full was only uncapping the
+	// serialization of data that had already stopped at five samples. Anyone
+	// judging a 400-count finding from those five had to re-grep the corpus.
+	UncapEvidence bool
 }
 
 type Report struct {
@@ -455,6 +461,10 @@ func Audit(opts Options) (Report, error) {
 			GkReprobe: &GkReprobeMetrics{ByGroup: map[string]int{}},
 		}
 	}
+	evidenceCap := maxEvidence
+	if opts.UncapEvidence {
+		evidenceCap = 0 // unlimited — --full promises the full payload
+	}
 
 	// Parse phase — each file's read + JSON/turn extraction is independent, so
 	// fan out across cores. The merge below stays sequential in collectFiles
@@ -494,7 +504,7 @@ func Audit(opts Options) (Report, error) {
 		pa.RawGit += o.fr.RawGit
 		pa.GitKit += o.fr.GitKit
 		pa.GKShort += o.fr.GKShort
-		addFindings(aggregate, files[i].path, o.commands)
+		addFindings(aggregate, files[i].path, o.commands, evidenceCap)
 
 		if wantTurns {
 			if o.unknownTurnSource {
@@ -1099,7 +1109,8 @@ func isEnvAssignment(s string) bool {
 	return true
 }
 
-func addFindings(findings map[string]*Finding, file string, commands []string) {
+// evidenceCap <= 0 means unlimited (Options.UncapEvidence / --full).
+func addFindings(findings map[string]*Finding, file string, commands []string, evidenceCap int) {
 	var gitTag, gitPush bool
 	var releaseEvidence string
 	for _, cmd := range commands {
@@ -1132,7 +1143,7 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 					matched = true
 				}
 				if kind := gitSegmentFinding(subcmd, args); kind != "" {
-					addFinding(findings, kind, file, seg.Text)
+					addFinding(findings, kind, file, seg.Text, evidenceCap)
 					matched = true
 				}
 				// Anything left over is raw git the audit has no git-kit mapping
@@ -1143,17 +1154,17 @@ func addFindings(findings map[string]*Finding, file string, commands []string) {
 					addGapFinding(findings, file, subcmd, seg.Text)
 				}
 			case "gk":
-				addFinding(findings, "gk-short-alias", file, seg.Text)
+				addFinding(findings, "gk-short-alias", file, seg.Text, evidenceCap)
 			}
 		}
 		if rawInChain && class.ShellChain {
-			if ev := addFinding(findings, "shell-chain", file, cmd); ev != nil {
+			if ev := addFinding(findings, "shell-chain", file, cmd, evidenceCap); ev != nil {
 				ev.Plan = synthesizeBatchPlan(cmd)
 			}
 		}
 	}
 	if gitTag && gitPush {
-		addFinding(findings, "raw-release-sequence", file, releaseEvidence)
+		addFinding(findings, "raw-release-sequence", file, releaseEvidence, evidenceCap)
 	}
 }
 
@@ -1244,7 +1255,7 @@ func batchStepForGit(subcmd string, args []string) ([]string, bool) {
 	return nil, false
 }
 
-func addFinding(findings map[string]*Finding, kind, file, command string) *Evidence {
+func addFinding(findings map[string]*Finding, kind, file, command string, evidenceCap int) *Evidence {
 	spec, ok := findingSpecs[kind]
 	if !ok {
 		return nil
@@ -1262,7 +1273,7 @@ func addFinding(findings map[string]*Finding, kind, file, command string) *Evide
 		findings[kind] = f
 	}
 	f.Count++
-	if len(f.Evidence) < maxEvidence {
+	if evidenceCap <= 0 || len(f.Evidence) < evidenceCap {
 		f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
 		return &f.Evidence[len(f.Evidence)-1]
 	}

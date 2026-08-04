@@ -472,10 +472,12 @@ echo "$TOOL_CMD" | gk hint --json
 
 | Flag | Effect |
 |------|--------|
-| `--json` (or `GK_AGENT=1`) | Emit `{covered, kind, severity, covered_by, suggestion, matched}` instead of the one human line |
+| `--json` (or `GK_AGENT=1`) | Emit `{covered, kind, severity, covered_by, suggestion, matched, caution?, caution_matched?}` instead of the one human line |
 | `--exit-code` | Exit 1 when a git-kit replacement exists (0 otherwise), so a hook script can branch on the status without parsing output |
 
 A command containing several git segments reports the highest-severity covered pattern. Read-only plumbing (`git rev-parse`, `git config --get`, `git cat-file`, …), the `git diff`/`show` family, commands already on git-kit, and non-git commands all report not-covered.
+
+One exception to that silence: the pathspec discard forms — `git checkout [-–ours|--theirs] -- <path>` and `git restore <path>` (without `--staged`) — throw away uncommitted changes with nothing to walk back to, and for those an "ok" reads as approval. They stay **not-covered** (`covered: false` — gk has no replacement verb and the hint does not invent one), but carry a `caution` telling the agent to run `gk snapshot` first so the discard stays recoverable. The hook surfaces the same caution as an advisory in every mode — it never denies, since there is no replacement to force. Branch checkouts (`git checkout main`) and index-only restores (`git restore --staged`, covered by `gk unstage`) raise no caution.
 
 ## gk session audit
 
@@ -582,6 +584,18 @@ additive: without `--metric` the occurrence output and JSON schema are
 unchanged. The same turn classification powers a real-time nudge in
 [`gk agents hook`](#gk-agents-hook): when a pending raw git command continues a
 recent raw run, the PreToolUse hook suggests folding them into one git-kit call.
+
+The turn view carries a second, independent number: `turns.gk_reprobe` runs the
+same detector (gap tolerance, mutation barriers, paging guard) over git-kit's
+own read verbs — repeated `gk context`/`gk status`/`gk diff` probes one call
+would have answered. By construction the main metric cannot see this waste (a
+turn that already runs git-kit is not a turn adoption would remove), and the
+blind spot grows exactly as adoption rises. The two numbers answer different
+questions — "what would adopting gk save" vs "what would using gk better save"
+— and are never summed; `gk_reprobe` has its own `gk_turns` denominator, and
+`--record` appends `gk_turns`/`gk_reprobe_saved` alongside the existing history
+fields (entries recorded before the lens simply lack them). `gk <verb> --help`
+calls are excluded — learning a verb's surface then using it is not a re-probe.
 
 Under `GK_AGENT=1`, the report is wrapped in the standard `{state, ok, result}`
 envelope.

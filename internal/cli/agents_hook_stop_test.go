@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/tidwall/gjson"
+	"github.com/x-mesh/gk/internal/gitstate"
+	"github.com/x-mesh/gk/internal/testutil"
 )
 
 // The Stop hook writes to git history, so a plain install must never register
@@ -165,6 +168,94 @@ func TestAgentsHookStop_MalformedStdinIsSilentSuccess(t *testing.T) {
 
 	if err := runAgentsHookStop(cmd, nil); err != nil {
 		t.Fatalf("handler returned an error on malformed stdin: %v", err)
+	}
+}
+
+// A Stop event can fire while an agent is paused on a conflict. The hook must
+// not turn conflict markers into a WIP commit or advance the operation's HEAD.
+func TestAgentsHookStop_SkipsEveryInProgressGitOperation(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker string
+		dir    bool
+	}{
+		{name: "rebase-merge", marker: "rebase-merge", dir: true},
+		{name: "rebase-apply", marker: "rebase-apply", dir: true},
+		{name: "merge", marker: "MERGE_HEAD"},
+		{name: "cherry-pick", marker: "CHERRY_PICK_HEAD"},
+		{name: "revert", marker: "REVERT_HEAD"},
+		{name: "bisect", marker: "BISECT_LOG"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := testutil.NewRepo(t)
+			t.Chdir(repo.Dir)
+			repo.WriteFile("conflicted.txt", "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> incoming\n")
+			marker := filepath.Join(repo.GitDir, tt.marker)
+			if tt.dir {
+				if err := os.MkdirAll(marker, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(marker, []byte("marker\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			headBefore := repo.RunGit("rev-parse", "HEAD")
+			cmd := stopHandlerCmd(t, "{\"session_id\":\"s\",\"stop_hook_active\":false}")
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			if err := runAgentsHookStop(cmd, nil); err != nil {
+				t.Fatalf("handler returned an error: %v", err)
+			}
+			if headAfter := repo.RunGit("rev-parse", "HEAD"); headAfter != headBefore {
+				t.Fatalf("Stop hook advanced HEAD during %s: %s -> %s", tt.name, headBefore, headAfter)
+			}
+			if out.Len() != 0 {
+				t.Errorf("skip wrote %q, want silence", out.String())
+			}
+		})
+	}
+}
+
+func TestAgentsHookStop_SkipsRealRebaseConflict(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("conflict.txt", "base\n")
+	repo.Commit("chore: add conflict fixture")
+	repo.CreateBranch("feature")
+	repo.WriteFile("conflict.txt", "feature\n")
+	repo.Commit("feat: change on feature")
+	repo.Checkout("main")
+	repo.WriteFile("conflict.txt", "main\n")
+	repo.Commit("fix: change on main")
+	repo.Checkout("feature")
+	if out, err := repo.TryGit("rebase", "main"); err == nil {
+		t.Fatalf("expected rebase conflict, got success: %s", out)
+	}
+	t.Chdir(repo.Dir)
+
+	headBefore := repo.RunGit("rev-parse", "HEAD")
+	unmergedBefore := repo.RunGit("ls-files", "-u")
+	if unmergedBefore == "" {
+		t.Fatal("fixture has no unmerged index entries")
+	}
+	cmd := stopHandlerCmd(t, "{\"session_id\":\"s\",\"stop_hook_active\":false}")
+	if err := runAgentsHookStop(cmd, nil); err != nil {
+		t.Fatalf("handler returned an error: %v", err)
+	}
+	if headAfter := repo.RunGit("rev-parse", "HEAD"); headAfter != headBefore {
+		t.Fatalf("Stop hook advanced conflicted rebase HEAD: %s -> %s", headBefore, headAfter)
+	}
+	if unmergedAfter := repo.RunGit("ls-files", "-u"); unmergedAfter != unmergedBefore {
+		t.Fatalf("Stop hook changed the unmerged index\nbefore:\n%s\nafter:\n%s", unmergedBefore, unmergedAfter)
+	}
+	state, err := gitstate.Detect(context.Background(), repo.Dir)
+	if err != nil {
+		t.Fatalf("detect rebase after Stop hook: %v", err)
+	}
+	if state.Kind != gitstate.StateRebaseMerge && state.Kind != gitstate.StateRebaseApply {
+		t.Fatalf("rebase state disappeared after Stop hook: %s", state.Kind)
 	}
 }
 

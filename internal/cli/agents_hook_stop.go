@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tidwall/gjson"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 )
 
 // stopHookTimeoutSeconds bounds the Stop hook end to end, and is written into
@@ -51,6 +52,16 @@ func runAgentsHookStop(cmd *cobra.Command, _ []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	if _, _, rerr := runner.Run(ctx, "rev-parse", "--show-toplevel"); rerr != nil {
 		return nil // not a repo — nothing to checkpoint
+	}
+	// A checkpoint commit must never advance HEAD while Git is in the middle of
+	// another operation. In particular, a rebase conflict can leave marker text
+	// in the working tree; commit --wip would stage it, conclude the conflicted
+	// pick behind Git's back, and corrupt the rebase's state machine. Bisect is
+	// included too: its detached diagnostic HEAD is not a place for session work.
+	// Detection failures remain fail-open by skipping the checkpoint.
+	state, serr := gitstate.Detect(ctx, RepoFlag())
+	if serr != nil || state == nil || state.Kind != gitstate.StateNone {
+		return nil
 	}
 
 	self, eerr := os.Executable()

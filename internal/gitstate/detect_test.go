@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/x-mesh/gk/internal/testutil"
 )
 
 // makeFile creates a file at path with the given content, creating parent dirs as needed.
@@ -270,6 +272,29 @@ func TestDetect_Smoke(t *testing.T) {
 	}
 	if s.CommonDir == "" {
 		t.Error("CommonDir should not be empty")
+	}
+}
+
+func TestDetect_LinkedWorktreeUsesWorktreeGitDir(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	linkedPath := filepath.Join(t.TempDir(), "linked")
+	repo.RunGit("worktree", "add", "-b", "linked-op", linkedPath)
+	linked := testutil.Attach(t, linkedPath)
+	linkedGitDir := linked.RunGit("rev-parse", "--absolute-git-dir")
+	makeDir(t, filepath.Join(linkedGitDir, "rebase-merge"))
+
+	state, err := Detect(context.Background(), linkedPath)
+	if err != nil {
+		t.Fatalf("Detect linked worktree: %v", err)
+	}
+	if state.Kind != StateRebaseMerge {
+		t.Fatalf("linked worktree state = %s, want rebase-merge", state.Kind)
+	}
+	if filepath.Clean(state.GitDir) != filepath.Clean(linkedGitDir) {
+		t.Errorf("GitDir = %q, want %q", state.GitDir, linkedGitDir)
+	}
+	if filepath.Clean(state.CommonDir) != filepath.Clean(repo.GitDir) {
+		t.Errorf("CommonDir = %q, want %q", state.CommonDir, repo.GitDir)
 	}
 }
 

@@ -77,7 +77,12 @@ func Detect(ctx context.Context, workDir string) (*State, error) {
 		return nil, err
 	}
 
-	state, err := DetectFromGitDir(commonDir)
+	// Operation markers belong to the worktree-specific git dir. In a normal
+	// checkout gitDir == commonDir, but a linked worktree keeps rebase-merge,
+	// MERGE_HEAD, CHERRY_PICK_HEAD, and friends under .git/worktrees/<name>.
+	// Looking only at commonDir silently reported StateNone in linked
+	// worktrees, allowing callers to mutate history mid-operation.
+	state, err := DetectFromGitDir(gitDir)
 	if err != nil {
 		return nil, err
 	}

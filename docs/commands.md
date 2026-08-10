@@ -1211,12 +1211,14 @@ git log --all -p -S "OTLPExporter" -- internal/    # found it
 ```bash
 gk find OTLPExporter                    # all three modes, every ref
 gk find "fleet watch" --since 2w        # narrow by time
-gk find tildePath --path internal/cli   # narrow to a subtree
+gk find tildePath --path internal/cli   # search for tildePath inside this subtree
 gk find --path docs/commands.md         # no query: the history of a path
 gk find OTLP --json                     # agent contract
 ```
 
 Flags: `-n/--limit` (default 20) · `--since` · `--author` · `--path` · `--ref` (search one ref instead of all) · `--no-message` / `--no-content` / `--no-path` to narrow the fan-out — `--no-content` drops the pickaxe, which is the slow mode on large repos because it must diff every commit.
+
+`--path` has two deliberately distinct forms. Without a query it asks for that path's history and follows a literal file across renames. With a query it is only a scope filter for the message/content searches; commits do not become matches merely because they touched something in that subtree. Invalid `--since` values and invocations that disable every applicable search mode fail explicitly rather than looking like trustworthy zero-result searches.
 
 A mode that fails (an unknown `--ref`, say) is reported in `failed` alongside whatever the other modes found: a partial answer beats no answer, but it must never read as a complete one.
 

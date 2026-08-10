@@ -56,7 +56,7 @@ second query. Commits that match more than one way rank first, then by recency.
 
   gk find OTLPExporter              # all three searches, every ref
   gk find "fleet watch" --since 2w  # narrow by time
-  gk find tildePath --path internal/cli   # narrow to a subtree
+  gk find tildePath --path internal/cli   # search for tildePath inside this subtree
   gk find --path docs/commands.md   # no query: the history of a path
   gk find OTLP --json               # agent contract
 
@@ -100,7 +100,7 @@ type findResult struct {
 	Modes   []string    `json:"modes"` // which searches actually ran
 	Count   int         `json:"count"`
 	Matches []findMatch `json:"matches"`
-	// Failed records a mode that errored (e.g. a bad --since). The other modes
+	// Failed records a mode that errored (e.g. an unknown --ref). The other modes
 	// still return: a partial answer beats no answer, but it must not look complete.
 	Failed map[string]string `json:"failed,omitempty"`
 }
@@ -129,13 +129,20 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+	message, content, pathMode, err := resolveFindModes(query, path, noMsg, noContent, noPath)
+	if err != nil {
+		return err
+	}
+	if err := validateFindSince(cmd.Context(), runner, since); err != nil {
+		return err
+	}
 	res := findCommits(cmd.Context(), runner, findQuery{
 		query: query, limit: limit, since: since, author: author,
 		path: path, ref: ref,
-		message: !noMsg && query != "",
-		content: !noContent && query != "",
-		// With no query, a path search IS the request ("history of this path").
-		pathMode: !noPath && (query != "" || path != ""),
+		message: message, content: content, pathMode: pathMode,
+		// --follow only has useful, well-defined semantics for the path-only
+		// form. With a query, --path is a scope filter rather than a match.
+		follow: pathMode && query == "" && isLiteralFindPath(path),
 	})
 
 	if asJSON {
@@ -143,6 +150,72 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 	renderFind(cmd.OutOrStdout(), res)
 	return nil
+}
+
+// resolveFindModes keeps the two meanings of --path separate:
+//
+//	gk find --path file.go       history of that path (path is a match)
+//	gk find needle --path dir/   message/content search scoped to dir/
+//
+// Treating the second form as a path match would return every recent commit in
+// dir/, attach a false [path] signal, and potentially push real matches beyond
+// --limit.
+func resolveFindModes(query, path string, noMessage, noContent, noPath bool) (message, content, pathMode bool, err error) {
+	message = query != "" && !noMessage
+	content = query != "" && !noContent
+	pathMode = !noPath && ((query != "" && path == "") || (query == "" && path != ""))
+	if !message && !content && !pathMode {
+		return false, false, false, fmt.Errorf("gk find: 모든 검색 모드가 비활성화되었습니다")
+	}
+	return message, content, pathMode, nil
+}
+
+// validateFindSince asks Git to parse its own approxidate syntax, then catches
+// Git's surprising fallback for nonsense input: an unrecognised string is
+// silently interpreted as "now". Explicit "now" remains valid. This keeps
+// useful forms such as "last monday" while making typos fail closed instead
+// of looking like a trustworthy zero-result search.
+func validateFindSince(ctx context.Context, runner *git.ExecRunner, since string) error {
+	if strings.TrimSpace(since) == "" {
+		return nil
+	}
+	// normalizeSince owns these documented short forms, so even a zero window
+	// is known-valid. Without this check Git's unknown-string fallback and a
+	// legitimate "0w" both resolve to now and cannot be distinguished.
+	knownShortForm := shortSinceRE.MatchString(strings.TrimSpace(since))
+	normalized := normalizeSince(since)
+	// Parse the input and "now" in one Git process. Unknown approxidates fall
+	// back to that exact now value; a legitimate nearby value such as "1 second
+	// ago" remains distinguishable without a wall-clock race.
+	stdout, stderr, err := runner.Run(ctx, "rev-parse", "--since="+normalized, "--since=now")
+	if err != nil {
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("gk find: 잘못된 --since %q: %s", since, msg)
+	}
+	const prefix = "--max-age="
+	lines := strings.Fields(string(stdout))
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], prefix) || !strings.HasPrefix(lines[1], prefix) {
+		return fmt.Errorf("gk find: 잘못된 --since %q", since)
+	}
+	seconds, parseErr := strconv.ParseInt(strings.TrimPrefix(lines[0], prefix), 10, 64)
+	if parseErr != nil {
+		return fmt.Errorf("gk find: 잘못된 --since %q", since)
+	}
+	nowSeconds, parseErr := strconv.ParseInt(strings.TrimPrefix(lines[1], prefix), 10, 64)
+	if parseErr != nil {
+		return fmt.Errorf("gk find: 잘못된 --since %q", since)
+	}
+	if seconds == nowSeconds && !knownShortForm && !strings.EqualFold(strings.TrimSpace(since), "now") {
+		return fmt.Errorf("gk find: 잘못된 --since %q (예: 2w, 2026-06-01, \"last monday\")", since)
+	}
+	return nil
+}
+
+func isLiteralFindPath(path string) bool {
+	return path != "" && !strings.ContainsAny(path, "*?[") && !strings.HasPrefix(path, ":(")
 }
 
 // findQuery is one resolved request — the flags after defaulting, so findCommits
@@ -157,6 +230,7 @@ type findQuery struct {
 	message  bool
 	content  bool
 	pathMode bool
+	follow   bool
 }
 
 // findCommits fans the query out across the enabled modes CONCURRENTLY. The
@@ -265,7 +339,7 @@ func runFindMode(ctx context.Context, runner *git.ExecRunner, q findQuery, mode 
 	// multi-mode hit could be cut before it is ever compared.
 	args = append(args, "-n", strconv.Itoa(q.limit*5))
 	if q.since != "" {
-		args = append(args, "--since="+q.since)
+		args = append(args, "--since="+normalizeSince(q.since))
 	}
 	if q.author != "" {
 		args = append(args, "--author="+q.author)
@@ -288,6 +362,9 @@ func runFindMode(ctx context.Context, runner *git.ExecRunner, q findQuery, mode 
 		default:
 			pathspec = []string{"*" + q.query + "*"}
 		}
+	}
+	if mode == findModePath && q.follow {
+		args = append(args, "--follow")
 	}
 	if q.path != "" && mode != findModePath {
 		pathspec = []string{q.path}

@@ -112,12 +112,76 @@ func TestFindCommits_PathOnlyQueryIsTheFileHistory(t *testing.T) {
 	}
 }
 
+func TestFindCommits_QueryWithPathUsesPathAsScopeNotMatch(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("internal/needle.go", "package internal\n\nconst needle = true\n")
+	repo.Commit("feat: add scoped needle")
+	repo.WriteFile("internal/unrelated.go", "package internal\n")
+	repo.Commit("chore: unrelated newer change")
+	repo.WriteFile("outside/needle.go", "package outside\n\nconst needle = true\n")
+	repo.Commit("feat: add needle outside scope")
+
+	message, content, pathMode, err := resolveFindModes("needle", "internal", false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathMode {
+		t.Fatal("query + --path must use the path only as a scope filter")
+	}
+	res := runFindQuery(t, repo, findQuery{
+		query: "needle", path: "internal", message: message, content: content, pathMode: pathMode,
+	})
+	for _, match := range res.Matches {
+		if strings.Contains(match.Subject, "unrelated") || strings.Contains(match.Subject, "outside scope") || slices.Contains(match.Matched, findModePath) {
+			t.Fatalf("scoped search returned a false path match: %+v", res.Matches)
+		}
+	}
+	if len(res.Matches) != 1 || !strings.Contains(res.Matches[0].Subject, "needle") {
+		t.Fatalf("scoped search did not return the real match: %+v", res.Matches)
+	}
+}
+
+func TestResolveFindModesRejectsNoSearches(t *testing.T) {
+	if _, _, _, err := resolveFindModes("needle", "", true, true, true); err == nil {
+		t.Fatal("disabling every mode must fail instead of reporting zero matches")
+	}
+	if _, _, _, err := resolveFindModes("", "file.go", false, false, true); err == nil {
+		t.Fatal("path-only search with --no-path must fail")
+	}
+}
+
+func TestValidateFindSinceRejectsGitNowFallback(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	for _, valid := range []string{"0w", "2w", "2026-06-01", "last monday", "1 second ago", "now"} {
+		if err := validateFindSince(context.Background(), runner, valid); err != nil {
+			t.Errorf("valid --since %q rejected: %v", valid, err)
+		}
+	}
+	if err := validateFindSince(context.Background(), runner, "definitely-not-a-date"); err == nil {
+		t.Fatal("nonsense --since must not silently become now")
+	}
+}
+
+func TestFindCommits_PathOnlyFollowsRename(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("old.go", "package renamed\n")
+	repo.Commit("feat: add original file")
+	repo.RunGit("mv", "old.go", "new.go")
+	repo.Commit("refactor: rename file")
+
+	res := runFindQuery(t, repo, findQuery{path: "new.go", pathMode: true, follow: true})
+	if len(res.Matches) != 2 {
+		t.Fatalf("path-only history must cross the rename: %+v", res.Matches)
+	}
+}
+
 // A mode that fails must SAY so. A partial answer beats no answer, but it must
 // never be dressed up as a complete one — the agent would read "no match" as
 // "not in the history".
 //
-// (A bad --since is not the failure to test with: git accepts an unparseable
-// date silently rather than erroring. An unknown ref does fail, in every mode.)
+// (Invalid --since input is rejected before fan-out. An unknown ref fails in
+// every mode and exercises the partial-result contract here.)
 func TestFindCommits_FailedModeIsReportedNotSwallowed(t *testing.T) {
 	repo := findRepo(t)
 	res := runFindQuery(t, repo, findQuery{

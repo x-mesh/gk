@@ -293,8 +293,14 @@ func TestDetect_LinkedWorktreeUsesWorktreeGitDir(t *testing.T) {
 	if filepath.Clean(state.GitDir) != filepath.Clean(linkedGitDir) {
 		t.Errorf("GitDir = %q, want %q", state.GitDir, linkedGitDir)
 	}
-	if filepath.Clean(state.CommonDir) != filepath.Clean(repo.GitDir) {
-		t.Errorf("CommonDir = %q, want %q", state.CommonDir, repo.GitDir)
+	// git reports realpaths, while repo.GitDir is built from t.TempDir(), which
+	// on macOS is the unresolved /var → /private/var symlink.
+	wantCommon := repo.GitDir
+	if resolved, err := filepath.EvalSymlinks(wantCommon); err == nil {
+		wantCommon = resolved
+	}
+	if filepath.Clean(state.CommonDir) != filepath.Clean(wantCommon) {
+		t.Errorf("CommonDir = %q, want %q", state.CommonDir, wantCommon)
 	}
 }
 

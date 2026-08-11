@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.136.1] - 2026-08-11
+
 ### Fixed
 
 - **Stop checkpoint 훅이 rebase/merge 충돌 중 conflict marker를 WIP 커밋으로 만들 수 있던 문제.** Stop 이벤트는 작업 상태와 무관하게 `gk commit --wip`를 실행했기 때문에, 충돌로 멈춘 rebase에서 마커가 남은 문서를 stage하고 HEAD를 전진시켜 Git의 operation state와 실제 히스토리를 어긋나게 만들 수 있었다. 이제 rebase·merge·cherry-pick·revert·bisect 진행 중에는 체크포인트를 조용히 건너뛴다. 함께 고친 `gitstate.Detect`는 linked worktree의 marker를 common git dir이 아니라 worktree별 git dir에서 읽으므로, 별도 worktree에서도 같은 안전 계약이 적용된다.

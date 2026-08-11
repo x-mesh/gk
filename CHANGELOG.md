@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Stop checkpoint 훅이 rebase/merge 충돌 중 conflict marker를 WIP 커밋으로 만들 수 있던 문제.** Stop 이벤트는 작업 상태와 무관하게 `gk commit --wip`를 실행했기 때문에, 충돌로 멈춘 rebase에서 마커가 남은 문서를 stage하고 HEAD를 전진시켜 Git의 operation state와 실제 히스토리를 어긋나게 만들 수 있었다. 이제 rebase·merge·cherry-pick·revert·bisect 진행 중에는 체크포인트를 조용히 건너뛴다. 함께 고친 `gitstate.Detect`는 linked worktree의 marker를 common git dir이 아니라 worktree별 git dir에서 읽으므로, 별도 worktree에서도 같은 안전 계약이 적용된다.
 - **`gk find <query> --path <scope>`가 검색어와 무관한 경로 커밋을 `[path]` 적중으로 반환하던 문제.** `--path`는 query가 있을 때 message/content 검색의 범위를 좁히는 필터인데, path 모드가 query를 버리고 그 경로의 최신 이력을 통째로 후보에 넣었다. 관련 없는 커밋이 결과를 채우고 실제 적중을 `--limit` 밖으로 밀어낼 수 있었다. 이제 query와 함께 쓴 `--path`는 순수 범위 필터이고, query 없는 `--path file`만 파일 이력 검색으로 동작하며 rename 이전까지 따라간다. 모든 적용 가능한 모드를 끈 호출과 Git이 조용히 `now`로 해석하는 잘못된 `--since`도 빈 검색 결과로 위장하지 않고 즉시 실패한다.
+- **`gk push`/`gk ship`의 시크릿 스캔이 이미 원격에 올라간 커밋을 다시 위반으로 잡던 문제.** 이력 패스가 `<upstream>..HEAD`를 커밋 단위로 재검사했는데, 그 범위에는 이 브랜치의 upstream에는 없지만 같은 원격의 다른 ref(예: `origin/develop`)에는 이미 있는 커밋이 섞여 들어온다. 결과적으로 이번 push가 게시하지도 않는 과거 이력이 새 유출처럼 보고돼, 손댈 수 없는 발견 위에서 push가 막혔다. 이제 두 패스 모두 `HEAD --not --remotes=<remote>`로 **대상 원격의 어느 tracking ref에서도 닿지 않는** 커밋만 훑는다 — 이는 `git push`가 실제로 게시할 집합과 같고, 한 커밋에서 추가했다가 다음 커밋에서 지워 net diff에서는 상쇄되지만 이력에는 남는 시크릿은 여전히 잡아낸다. 비교점이 없는 첫 push도 같은 제외 규칙을 쓰므로, 매칭되는 tracking ref가 없으면 자연히 전체 이력을 스캔한다.
 
 ## [0.136.0] - 2026-08-04
 

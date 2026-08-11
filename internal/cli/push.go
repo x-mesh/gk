@@ -132,7 +132,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 	if !skipScan {
 		base := resolveBaseForStatus(ctx, runner, client, cfg).Resolved
 		cmp := resolveScanCmp(ctx, runner, remote, branch, base)
-		findings, err := scanCommitsToPush(ctx, runner, cmp)
+		findings, err := scanCommitsToPush(ctx, runner, remote, cmp)
 		if err != nil {
 			return fmt.Errorf("secret scan: %w", err)
 		}
@@ -357,8 +357,9 @@ func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base stri
 	return ""
 }
 
-// scanCommitsToPush scans the additions this push would publish. cmp is the ref
-// to compare HEAD against (from resolveScanCmp); "" means no base is known.
+// scanCommitsToPush scans the additions this push would publish. remote is the
+// target remote; cmp is the ref to compare HEAD against (from resolveScanCmp),
+// and "" means no base is known for the current-tree diff.
 //
 // Only added (`+`) lines from non-test files are scanned. This mirrors
 // what gitleaks-style scanners do — removals already exist in the base
@@ -366,7 +367,7 @@ func resolveScanCmp(ctx context.Context, r git.Runner, remote, branch, base stri
 // contain intentional fake secrets used to verify detection logic.
 // Without these filters every fixture cleanup commit becomes a ship
 // blocker, which we hit immediately after tightening the privacy gate.
-func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets.Finding, error) {
+func scanCommitsToPush(ctx context.Context, r git.Runner, remote, cmp string) ([]secrets.Finding, error) {
 	if cmp == "" {
 		// Unborn HEAD (a brand-new repo before its first commit): there is
 		// nothing published to scan, and `git log HEAD` would fail with
@@ -376,13 +377,11 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets
 		if _, _, err := r.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 			return nil, nil
 		}
-		// No comparison point (first push of a brand-new history): scan the
-		// whole HEAD. log -p numbers hunks per-commit so lines may drift, but
-		// with no base there is nothing to anchor to. The ExitError already
-		// carries the command echo and stderr, so wrap it without splicing
-		// stderr again (the double-splice let Easy Mode translate git terms
-		// in the un-shielded prose copy).
-		stdout, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD")
+		// No comparison point (for example, the branch and configured base do
+		// not exist on the target remote): scan every HEAD commit that is not
+		// already reachable from another ref on that remote. With no matching
+		// remote-tracking refs this naturally scans the whole history.
+		stdout, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD", "--not", "--remotes="+remote)
 		if err != nil {
 			return nil, err
 		}
@@ -399,16 +398,15 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, cmp string) ([]secrets
 	}
 	findings := scanDiffAdditions(string(netOut))
 
-	// Pass B — per-commit patches across the published range (2-dot cmp..HEAD
-	// is exactly the set `git push` would publish). A secret added in one
-	// commit and removed in a later one cancels out of the net diff above, yet
-	// both commits are still pushed, leaving the secret recoverable from
-	// history — so the net diff alone would silently let it through. Pass B
-	// re-scans each commit's additions to catch those. Its hunk numbers are
-	// per-commit (the removed secret has no line in HEAD to anchor to anyway),
-	// so pass A's accurate lines win on overlap; mergeScanFindings keeps only
-	// the history-only hits.
-	histOut, _, err := r.Run(ctx, "log", "-p", "--no-color", cmp+"..HEAD")
+	// Pass B — per-commit patches that are not reachable from any tracking ref
+	// for the target remote. Comparing only cmp..HEAD is too broad: a commit
+	// absent from the feature branch's upstream may already be published on
+	// remote/develop, in which case re-scanning it creates a historical false
+	// positive. Conversely, a secret added and removed entirely in genuinely
+	// unpushed commits cancels out of the net diff above but remains recoverable
+	// from history; this pass still catches it. Its hunk numbers are per-commit,
+	// so pass A's accurate lines win on overlap.
+	histOut, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD", "--not", "--remotes="+remote)
 	if err != nil {
 		return nil, err
 	}

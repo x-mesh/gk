@@ -71,19 +71,19 @@ func TestRunShipCoreTagsAndPushes(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir+"/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Patch bug.\n\n## [1.2.3] - 2026-04-01\n")
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"status --porcelain":                      {Stdout: ""},
-		"rev-parse --abbrev-ref HEAD":             {Stdout: "main\n"},
-		"rev-parse --show-toplevel":               {Stdout: dir + "\n"},
-		"describe --tags --abbrev=0":              {Stdout: "v1.2.3\n"},
-		"log --format=%B%x1e v1.2.3..HEAD":        {Stdout: "fix: patch bug\n\x1e"},
-		"rev-parse --verify refs/tags/v1.2.4":     {ExitCode: 1, Stderr: "not found"},
-		"add -A":                                  {Stdout: ""},
-		"commit -m release: v1.2.4":               {Stdout: "[main abc123] release\n"},
-		"tag -a v1.2.4 -m Release v1.2.4":         {Stdout: ""},
-		"rev-parse --verify origin/main^{commit}": {Stdout: "abc123\n"},
-		"log -p --no-color origin/main..HEAD":     {Stdout: ""},
-		"push origin main":                        {Stdout: "branch pushed\n"},
-		"push origin v1.2.4":                      {Stdout: "tag pushed\n"},
+		"status --porcelain":                            {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":                   {Stdout: "main\n"},
+		"rev-parse --show-toplevel":                     {Stdout: dir + "\n"},
+		"describe --tags --abbrev=0":                    {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":              {Stdout: "fix: patch bug\n\x1e"},
+		"rev-parse --verify refs/tags/v1.2.4":           {ExitCode: 1, Stderr: "not found"},
+		"add -A":                                        {Stdout: ""},
+		"commit -m release: v1.2.4":                     {Stdout: "[main abc123] release\n"},
+		"tag -a v1.2.4 -m Release v1.2.4":               {Stdout: ""},
+		"rev-parse --verify origin/main^{commit}":       {Stdout: "abc123\n"},
+		"log -p --no-color HEAD --not --remotes=origin": {Stdout: ""},
+		"push origin main":                              {Stdout: "branch pushed\n"},
+		"push origin v1.2.4":                            {Stdout: "tag pushed\n"},
 	}}
 	var out bytes.Buffer
 
@@ -768,19 +768,19 @@ func TestRunShipCoreNoWaitSkipsPostHooks(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir+"/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Patch bug.\n\n## [1.2.3] - 2026-04-01\n")
 	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
-		"status --porcelain":                      {Stdout: ""},
-		"rev-parse --abbrev-ref HEAD":             {Stdout: "main\n"},
-		"rev-parse --show-toplevel":               {Stdout: dir + "\n"},
-		"describe --tags --abbrev=0":              {Stdout: "v1.2.3\n"},
-		"log --format=%B%x1e v1.2.3..HEAD":        {Stdout: "fix: patch bug\n\x1e"},
-		"rev-parse --verify refs/tags/v1.2.4":     {ExitCode: 1, Stderr: "not found"},
-		"add -A":                                  {Stdout: ""},
-		"commit -m release: v1.2.4":               {Stdout: "[main abc123] release\n"},
-		"tag -a v1.2.4 -m Release v1.2.4":         {Stdout: ""},
-		"rev-parse --verify origin/main^{commit}": {Stdout: "abc123\n"},
-		"log -p --no-color origin/main..HEAD":     {Stdout: ""},
-		"push origin main":                        {Stdout: "branch pushed\n"},
-		"push origin v1.2.4":                      {Stdout: "tag pushed\n"},
+		"status --porcelain":                            {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":                   {Stdout: "main\n"},
+		"rev-parse --show-toplevel":                     {Stdout: dir + "\n"},
+		"describe --tags --abbrev=0":                    {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":              {Stdout: "fix: patch bug\n\x1e"},
+		"rev-parse --verify refs/tags/v1.2.4":           {ExitCode: 1, Stderr: "not found"},
+		"add -A":                                        {Stdout: ""},
+		"commit -m release: v1.2.4":                     {Stdout: "[main abc123] release\n"},
+		"tag -a v1.2.4 -m Release v1.2.4":               {Stdout: ""},
+		"rev-parse --verify origin/main^{commit}":       {Stdout: "abc123\n"},
+		"log -p --no-color HEAD --not --remotes=origin": {Stdout: ""},
+		"push origin main":                              {Stdout: "branch pushed\n"},
+		"push origin v1.2.4":                            {Stdout: "tag pushed\n"},
 	}}
 	cfg := testShipConfig()
 	cfg.Ship.Watch = []config.PreflightStep{{Name: "ci", Command: "false"}}

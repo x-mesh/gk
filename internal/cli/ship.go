@@ -908,7 +908,7 @@ func confirmShip(deps shipDeps, plan shipPlan, flags shipFlags) error {
 func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan shipPlan, flags shipFlags) error {
 	if !flags.noVerify {
 		cmp := resolveScanCmp(ctx, r, plan.Remote, plan.Branch, plan.Base)
-		findings, err := scanCommitsToPush(ctx, r, cmp)
+		findings, err := scanCommitsToPush(ctx, r, plan.Remote, cmp)
 		if err != nil {
 			return fmt.Errorf("ship: secret scan: %w", err)
 		}

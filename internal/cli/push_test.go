@@ -170,7 +170,7 @@ func TestPushJSON_Schema_Ahead(t *testing.T) {
 	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":                                   {Stdout: "main\n"},
 		"rev-parse --verify origin/main^{commit}":                     {Stdout: "old111\n"},
-		"log -p --no-color origin/main..HEAD":                         {Stdout: ""},
+		"log -p --no-color HEAD --not --remotes=origin":               {Stdout: ""},
 		"rev-parse --abbrev-ref --symbolic-full-name main@{upstream}": {Stdout: "origin/main\n"},
 		"rev-list --count origin/main..main":                          {Stdout: "5\n"},
 		"rev-parse --short main":                                      {Stdout: "abc1234\n"},
@@ -349,8 +349,8 @@ func TestScanCommitsToPush_NoFindings(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			// rev-parse fails → upstream unknown → rng = "HEAD"
 			"rev-parse --verify origin/main^{commit}": {ExitCode: 128, Stderr: "unknown revision"},
-			// git log -p --no-color HEAD returns normal commit output
-			"log -p --no-color HEAD": {
+			// With no matching remote refs, the exclusion leaves the whole HEAD.
+			"log -p --no-color HEAD --not --remotes=origin": {
 				Stdout: `commit abc123
 Author: gk-test <test@example.com>
 Date:   Mon Jan 1 00:00:00 2024
@@ -365,7 +365,7 @@ diff --git a/hello.go b/hello.go
 		},
 	}
 
-	findings, err := scanCommitsToPush(context.Background(), fake, "")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,10 +381,10 @@ func TestScanCommitsToPush_UnbornHEAD(t *testing.T) {
 		Responses: map[string]git.FakeResponse{
 			"rev-parse --verify --quiet HEAD^{commit}": {ExitCode: 128, Stderr: ""},
 			// If the guard fails, this is what would run and error.
-			"log -p --no-color HEAD": {ExitCode: 128, Stderr: "fatal: ambiguous argument 'HEAD'"},
+			"log -p --no-color HEAD --not --remotes=origin": {ExitCode: 128, Stderr: "fatal: ambiguous argument 'HEAD'"},
 		},
 	}
-	findings, err := scanCommitsToPush(context.Background(), fake, "")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "")
 	if err != nil {
 		t.Fatalf("unborn HEAD must scan clean, got: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestScanCommitsToPush_UnbornHEAD(t *testing.T) {
 		t.Errorf("expected no findings, got %v", findings)
 	}
 	for _, c := range fake.Calls {
-		if strings.Join(c.Args, " ") == "log -p --no-color HEAD" {
+		if strings.HasPrefix(strings.Join(c.Args, " "), "log -p --no-color HEAD") {
 			t.Error("must NOT run `git log HEAD` on an unborn HEAD")
 		}
 	}
@@ -402,7 +402,7 @@ func TestScanCommitsToPush_Finds(t *testing.T) {
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"rev-parse --verify origin/main^{commit}": {ExitCode: 128, Stderr: "unknown revision"},
-			"log -p --no-color HEAD": {
+			"log -p --no-color HEAD --not --remotes=origin": {
 				Stdout: `commit abc123
 Author: gk-test <test@example.com>
 
@@ -416,7 +416,7 @@ diff --git a/config.go b/config.go
 		},
 	}
 
-	findings, err := scanCommitsToPush(context.Background(), fake, "")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestScanCommitsToPush_NetDiffFileLine(t *testing.T) {
 			" ctx\n" +
 			"+let gh = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\";\n"},
 	}}
-	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "origin/main")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -515,20 +515,20 @@ func TestScanCommitsToPush_NetDiffFileLine(t *testing.T) {
 // TestScanCommitsToPush_AddThenRemoveInHistory guards the add-then-removed
 // bypass: the net 3-dot diff is empty because a secret added in one commit was
 // removed in a later one, yet `git push` still publishes both commits, leaving
-// the secret in history. The per-commit pass (log -p cmp..HEAD) must surface it.
+// the secret in history. The remote-reachability history pass must surface it.
 func TestScanCommitsToPush_AddThenRemoveInHistory(t *testing.T) {
 	const gh = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		// Net diff cancels out — nothing survives into HEAD.
 		"diff --no-color origin/main...HEAD": {Stdout: ""},
 		// But the add-commit's patch still exists in the pushed range.
-		"log -p --no-color origin/main..HEAD": {Stdout: "commit deadbeef\n" +
+		"log -p --no-color HEAD --not --remotes=origin": {Stdout: "commit deadbeef\n" +
 			"diff --git a/app.go b/app.go\n" +
 			"--- a/app.go\n+++ b/app.go\n" +
 			"@@ -0,0 +1,1 @@\n" +
 			"+gh := \"" + gh + "\"\n"},
 	}}
-	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "origin/main")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -551,13 +551,13 @@ func TestScanCommitsToPush_MergesDuplicateAcrossPasses(t *testing.T) {
 			"--- a/f.go\n+++ b/f.go\n" +
 			"@@ -0,0 +42,1 @@\n" +
 			"+k := \"" + gh + "\"\n"},
-		"log -p --no-color origin/main..HEAD": {Stdout: "commit deadbeef\n" +
+		"log -p --no-color HEAD --not --remotes=origin": {Stdout: "commit deadbeef\n" +
 			"diff --git a/f.go b/f.go\n" +
 			"--- a/f.go\n+++ b/f.go\n" +
 			"@@ -0,0 +5,1 @@\n" +
 			"+k := \"" + gh + "\"\n"},
 	}}
-	findings, err := scanCommitsToPush(context.Background(), fake, "origin/main")
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "origin/main")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -566,6 +566,34 @@ func TestScanCommitsToPush_MergesDuplicateAcrossPasses(t *testing.T) {
 	}
 	if findings[0].FileLine != 42 {
 		t.Errorf("FileLine = %d, want 42 (net diff line wins over history's 5)", findings[0].FileLine)
+	}
+}
+
+// A commit absent from the feature upstream may already be published through
+// another branch on the same remote. The history pass must use all tracking
+// refs for that remote rather than re-scan origin/feature..HEAD.
+func TestScanCommitsToPush_SkipsCommitPublishedOnAnotherRemoteRef(t *testing.T) {
+	const historicalSecret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	oldRange := "commit published\n" +
+		"diff --git a/app.go b/app.go\n--- a/app.go\n+++ b/app.go\n" +
+		"@@ -0,0 +1,1 @@\n+token := \"" + historicalSecret + "\"\n"
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff --no-color origin/feature...HEAD":         {Stdout: ""},
+		"log -p --no-color HEAD --not --remotes=origin": {Stdout: ""},
+		"log -p --no-color origin/feature..HEAD":        {Stdout: oldRange},
+	}}
+
+	findings, err := scanCommitsToPush(context.Background(), fake, "origin", "origin/feature")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("already-published history must not be re-scanned, got: %+v", findings)
+	}
+	for _, call := range fake.Calls {
+		if strings.Join(call.Args, " ") == "log -p --no-color origin/feature..HEAD" {
+			t.Fatal("history scan must not use the feature-upstream-only range")
+		}
 	}
 }
 
@@ -593,7 +621,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	var findings []interface{} // just check we get an error
 
 	// scanCommitsToPush via real git
-	f, err := scanCommitsToPush(context.Background(), runner, "")
+	f, err := scanCommitsToPush(context.Background(), runner, "origin", "")
 	if err != nil {
 		// "origin/main" doesn't exist → falls back to HEAD scan which is fine
 		// but if it's a different error, fail
@@ -615,7 +643,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	fakeRunner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
 			"rev-parse --verify origin/main^{commit}": {ExitCode: 128, Stderr: "unknown"},
-			"log -p --no-color HEAD": {
+			"log -p --no-color HEAD --not --remotes=origin": {
 				Stdout: "AWS_KEY=AKIA1234567890ABCDEF\n",
 			},
 			"symbolic-ref --short HEAD": {Stdout: "main\n"},
@@ -623,7 +651,7 @@ func TestPush_BlocksOnSecret(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	found, scanErr := scanCommitsToPush(ctx, fakeRunner, "")
+	found, scanErr := scanCommitsToPush(ctx, fakeRunner, "origin", "")
 	if scanErr != nil {
 		t.Fatalf("scan error: %v", scanErr)
 	}
@@ -665,10 +693,10 @@ func TestPush_ProtectedBranchNoForce(t *testing.T) {
 	// (no extra gate). Push failure comes from git, not protection logic.
 	fake := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":               {Stdout: "main\n"},
-			"rev-parse --verify origin/main^{commit}": {ExitCode: 128, Stderr: "unknown"},
-			"log -p --no-color HEAD":                  {Stdout: "normal code\n"},
-			"push origin main":                        {ExitCode: 1, Stderr: "rejected: not fast-forward\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "main\n"},
+			"rev-parse --verify origin/main^{commit}":       {ExitCode: 128, Stderr: "unknown"},
+			"log -p --no-color HEAD --not --remotes=origin": {Stdout: "normal code\n"},
+			"push origin main":                              {ExitCode: 1, Stderr: "rejected: not fast-forward\n"},
 		},
 	}
 
@@ -687,7 +715,7 @@ func TestPush_ProtectedBranchNoForce(t *testing.T) {
 	}
 
 	// Secret scan
-	findings, err := scanCommitsToPush(ctx, fake, "")
+	findings, err := scanCommitsToPush(ctx, fake, "origin", "")
 	if err != nil {
 		t.Fatalf("scan error: %v", err)
 	}

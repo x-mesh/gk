@@ -418,6 +418,62 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 	}
 }
 
+// One sample per subcommand shows THAT a gap exists but never which FORM drives
+// it, and the form is the whole ranking: a `reset` gap of index-only --soft
+// hits is a different roadmap item than one full of worktree-destroying resets.
+// --full has to lift this cap too, or a breakdown means re-grepping the corpus.
+func TestAudit_UncapEvidenceKeepsEveryGapHit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	writeLines(t, path,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~2\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD~3\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git revert HEAD\"}"}}`,
+	)
+
+	capped, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap := findingByKind(capped, "uncovered-raw-git")
+	if gap == nil {
+		t.Fatalf("missing uncovered-raw-git finding in %+v", capped.Findings)
+	}
+	if len(gap.Evidence) != 2 {
+		t.Errorf("default cap: evidence = %d, want 2 (one per subcommand)", len(gap.Evidence))
+	}
+
+	full, err := Audit(Options{Paths: []string{path}, Home: dir, MaxFiles: 10, UncapEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap = findingByKind(full, "uncovered-raw-git")
+	if gap == nil {
+		t.Fatalf("missing uncovered-raw-git finding in %+v", full.Findings)
+	}
+	if len(gap.Evidence) != 4 {
+		t.Fatalf("uncapped: evidence = %d, want 4 (one per hit): %+v", len(gap.Evidence), gap.Evidence)
+	}
+	// The point of keeping them all: the reset gap is now splittable by form.
+	soft := 0
+	for _, ev := range gap.Evidence {
+		if strings.Contains(ev.Command, "--soft") {
+			soft++
+		}
+	}
+	if soft != 2 {
+		t.Errorf("--soft samples = %d, want 2 (form breakdown lost): %+v", soft, gap.Evidence)
+	}
+	// The count and the per-subcommand tally must not double-count the extra evidence.
+	if gap.Count != 4 {
+		t.Errorf("count = %d, want 4", gap.Count)
+	}
+	if gap.Subcommands["reset"] != 3 || gap.Subcommands["revert"] != 1 {
+		t.Errorf("subcommands = %v, want reset:3 revert:1", gap.Subcommands)
+	}
+}
+
 // The reset family splits three ways, by what gk can actually offer:
 //   - index-only forms → git-kit unstage (covered)
 //   - `--hard <ref>` → git-kit reset --to <ref> (covered: same target, backed up)

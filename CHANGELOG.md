@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk session audit --full`이 `uncovered-raw-git`만 subcommand당 1건으로 잘라내던 문제 — 로드맵 판단의 근거가 거기서 끊겼다.** 0.136.0에서 수집 상한을 `--full`과 함께 올릴 때 이 샘플링만 "상한이 아니라 의도된 설계"라며 남겨 뒀다. 의도 자체는 지금도 맞다 — 빈도 높은 subcommand가 슬롯을 독식해 희귀한 것이 예시 없이 출하되는 문제를 막는다. 틀린 것은 그 설계를 `--full`에도 적용한 부분이다. 샘플 하나는 gap이 **있다**는 것까지만 보여주고 **어떤 형태**가 그 gap을 만드는지는 못 보여주는데, 순위를 정하는 건 언제나 형태다: `checkout`은 브랜치 전환과 되돌릴 수 없는 경로 discard로 갈리고, `reset`은 인덱스만 건드리는 `--soft`와 워크트리를 통째로 날리는 bare `--hard`로 갈린다. 앞의 것은 1:1 스왑이라 턴 절감이 0이고 뒤의 것은 안전망 문제다 — 같은 count 안에 있지만 로드맵에서는 다른 항목이다. 이제 `--full`이면 gap도 모든 hit을 남긴다(기본 출력의 subcommand당 1건은 그대로).
+
+  **그리고 이 수정은 곧바로 판정 하나를 뒤집었다.** 직전 로드맵은 "경로 discard가 유일하게 빈발하는 비가역 미커버"라고 주장했고, 교차 검증 패널은 4/4로 "`isRawResetHard`가 `--hard` + 명시적 commit-ish를 요구하니 bare `git reset --hard`도 gap에 남아 있을 것"이라며 근거 부족으로 판정했다. 분류기 동작만 보면 옳은 지적이었고, 당시엔 어느 쪽도 확인할 방법이 없었다 — 정확히 이 상한 때문이다. 이제 세어 보면 gap의 `reset` 27건은 `--soft` 18 · `--mixed` 2 · 기타 7이고 **`--hard`는 0건**이다. `checkout` 27건은 전부 경로 형태, `restore` 19건은 전부 워크트리 덮어쓰기. 즉 비가역 클러스터는 46건 하나로 확정되고, 주장은 결과적으로 옳았지만 그때는 증명할 수 없었다. 덤으로 `remote` 26건도 add 11 · remove 5 · set-url 4 · set-head 3 · prune 3으로 전부 쓰기 작업임이 드러난다 — 읽기 폼이 섞였을 것이라는 가정도 함께 정리된다.
+
 ## [0.136.1] - 2026-08-11
 
 ### Fixed

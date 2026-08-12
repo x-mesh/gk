@@ -1151,7 +1151,7 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 				// the read-only invocations of mutation-capable subcommands are
 				// suppressed so the gap stays a real roadmap signal.
 				if !matched && !rawGitNonGap[subcmd] && !isRawReadOnlyForm(subcmd, args) {
-					addGapFinding(findings, file, subcmd, seg.Text)
+					addGapFinding(findings, file, subcmd, seg.Text, evidenceCap)
 				}
 			case "gk":
 				addFinding(findings, "gk-short-alias", file, seg.Text, evidenceCap)
@@ -1282,7 +1282,7 @@ func addFinding(findings map[string]*Finding, kind, file, command string, eviden
 
 // addGapFinding records one uncovered raw-git hit, accumulating the per-subcommand
 // breakdown that makes the gap finding a roadmap rather than a flat count.
-func addGapFinding(findings map[string]*Finding, file, subcmd, command string) {
+func addGapFinding(findings map[string]*Finding, file, subcmd, command string, evidenceCap int) {
 	const kind = "uncovered-raw-git"
 	spec := findingSpecs[kind]
 	f := findings[kind]
@@ -1302,12 +1302,23 @@ func addGapFinding(findings map[string]*Finding, file, subcmd, command string) {
 	// One sample per subcommand instead of a first-N-overall cap: under the cap
 	// the frequent subcommands claimed every slot and the rare ones shipped with
 	// no example at all, forcing a corpus re-grep to judge the gap.
-	if f.gapEvidenceSeen == nil {
-		f.gapEvidenceSeen = map[string]bool{}
-	}
-	if !f.gapEvidenceSeen[subcmd] {
-		f.gapEvidenceSeen[subcmd] = true
+	//
+	// --full (evidenceCap <= 0) keeps every hit instead. One sample per
+	// subcommand is enough to SEE a gap but never enough to break one down by
+	// FORM, and the form is the whole judgement: `checkout` splits into branch
+	// switches and irreversible path discards, `reset` into index-only --soft
+	// and worktree-destroying bare --hard. Ranking those from a single sample
+	// is guesswork, which is exactly what --full exists to stop.
+	if evidenceCap <= 0 {
 		f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
+	} else {
+		if f.gapEvidenceSeen == nil {
+			f.gapEvidenceSeen = map[string]bool{}
+		}
+		if !f.gapEvidenceSeen[subcmd] {
+			f.gapEvidenceSeen[subcmd] = true
+			f.Evidence = append(f.Evidence, Evidence{File: file, Command: truncateOneLine(command, 220)})
+		}
 	}
 	if oneShotGapSubcommands[subcmd] && !slices.Contains(f.OneShot, subcmd) {
 		f.OneShot = append(f.OneShot, subcmd)

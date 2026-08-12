@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk hint`와 PreToolUse 훅이 `gk context`로는 만들 수 없는 출력을 `gk context`로 안내하던 문제.** `gk context --include=log`는 **현재 브랜치의 최신 N커밋 고정 슬라이스**를 돌려준다 — 다른 ref도, 개수 지정도, 포맷·기간 지정도 없다. 그런데 `isRawContextProbe`는 sha가 안 붙은 `git log`를 전부, 그리고 `--stat`이 붙은 `git show`까지 context probe로 잡고 있었다. 이건 리포트 숫자만의 문제가 아니다 — `gitSegmentFinding`은 감사·`gk hint`·훅의 **단일 소스**라, 훅이 gk의 권위를 달고 "이 명령 대신 `git-kit context`를 쓰라"고 실시간으로 말한다. 실제로 이번 작업 중 `git log --since=2026-07-25 --pretty=%s`를 실행하자 훅이 정확히 그 오답을 띄웠다. 이제 경계는 "gk context가 실제로 답할 수 있는가"다: 다른 ref, 슬라이스보다 많은 개수, 포맷/기간 지정이 붙으면 context probe가 아니다. `HEAD`(와 `@`)는 예외로 남긴다 — 그건 현재 tip이고, 슬라이스가 보여주는 바로 그것이다.
+
+  떨어져 나온 폼은 침묵하지 않고 **`gk log`를 지목한다.** 새 finding kind `raw-log-query`가 그것들을 받는다 — `gk log`는 리비전을 위치 인자로 받고 `-n`·`--since`·`--format`을 가지므로 진짜 답을 준다. 다만 `collapseGroupForKind`에는 **넣지 않았다**: 명령 하나를 명령 하나로 바꾸는 것이라 턴은 하나도 줄지 않는다. `git log A..B`(`raw-range-compare`)에 내렸던 판단과 같다 — 정확도는 얻지만 절감은 주장하지 않는다. 그리고 `gk log`에 스펠링이 아예 없는 `--stat`·`--name-only`·`--until`은 이 kind에서도 빼서 **완전히 침묵시킨다**: 없는 플래그를 쥐여 주는 건 침묵보다 나쁘다(`git rebase <upstream>`을 `gk rebase`가 아니라 `gk sync`로 보낸 이유와 같다). `git show --stat` 역시 침묵으로 돌아간다 — v0.136.0에서 `isRawFullDiff`가 이미 내린 "객체 조회는 빠진 동사가 아니다"라는 판단이 context 경로에만 반영되지 않고 남아 있었다. 경로 지정(`-- <path>`)과 `--grep`은 그대로 `gk find`가 가져간다: 그건 1:1 스왑이 아니라 **측정된 33턴 절감**이라 넘겨주면 손해다.
+
+  **지표 불연속 — 같은 분류기 계열의 세 번째다.** `estimated_turns_saved`, `rate`, `by_group.context`가 한 단 내려간다(`~/.gk/audit-history.jsonl`). 앞선 두 번은 2026-07 턴 추정기 수정과 v0.122.0 분할(5.8% → 3.1%)이었다. **이 경계를 가로질러 비교하면 채택률 하락으로 오독된다** — 줄어든 절감분은 애초에 gk가 전달할 수 없던 몫이다. 함께 출하: 슬라이스 크기가 이름 없는 리터럴이었던 것을 `sessionaudit.ContextLogCommits`로 승격해 분류기·`gk context` 구현·도움말·agents 계약문이 모두 한 곳에서 유도되게 했고(import 방향상 상수는 `sessionaudit`에 있어야 한다), agents 계약문(v25 → v26)의 "arbitrary `git log` forms" 문구를 `gk log`가 표현 못 하는 폼으로 좁혔다 — 그 문장은 예시로 two-ref range를 들고 있었는데 그건 gk가 이미 커버하는 형태였다. `gk` 렌즈(`gkCollapseGroup`)는 의도적으로 대칭화하지 않았다: 그쪽은 "gk 사용자가 턴을 가로질러 재조회했나"를 재는 다른 질문이며, 그 차이를 코드에 명시했다.
+
 ### Added
 
 - **`gk session audit --record`가 프로젝트별 내역(`by_project`)도 남긴다 — 채택률이 흔들렸을 때 "왜"를 사후에 물을 수 있도록.** 기록된 한 줄은 그 시점의 집계만 담고 있었다: `adoption_rate`가 36.7% → 15.5%로 떨어져도, 사람들의 습관이 나빠진 것인지 **스캔 창의 구성이 바뀐 것**인지 구분할 방법이 없었다. `--record`는 최신 N개 세션 파일만 훑으므로 조용해진 프로젝트는 창에서 빠지고 새 프로젝트가 들어온다 — raw git을 많이 쓰는 미온보딩 프로젝트 하나가 창의 40%를 차지하면 아무의 습관도 변하지 않은 채로 집계가 몇 포인트씩 움직인다. 실제로 그런 급락이 한 번 있었고, 판정은 "원인 불명"으로 끝날 수밖에 없었다. 이제 항목마다 프로젝트별 `files`/`raw_git`/`git_kit`/`gk_short`가 함께 남아 두 항목을 비교하면 구성 변화가 바로 드러난다(실측 200파일 창 15개 프로젝트 = 약 1.5KB/줄, 주 1회 append).

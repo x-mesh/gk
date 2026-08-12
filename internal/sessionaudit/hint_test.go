@@ -1,6 +1,9 @@
 package sessionaudit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHint(t *testing.T) {
 	cases := []struct {
@@ -44,6 +47,79 @@ func TestHint(t *testing.T) {
 			}
 			if tc.wantCovered && len(res.CoveredBy) == 0 {
 				t.Errorf("Hint(%q) covered but CoveredBy empty", tc.command)
+			}
+		})
+	}
+}
+
+// The hook speaks with gk's authority, so a confident wrong answer costs more
+// than silence. gk context returns a fixed newest-first slice of the current
+// branch with no formatting control — it cannot produce a date-filtered,
+// custom-format, or other-ref log — and it prints no per-commit stat. Pointing
+// an agent at it for those was not a reporting error: the PreToolUse hook said
+// it out loud, mid-session. This pins what the hook may and may not claim.
+func TestHint_LogQueriesNameTheVerbThatAnswersThem(t *testing.T) {
+	cases := []struct {
+		name        string
+		command     string
+		wantKind    string
+		wantCovered bool
+	}{
+		// gk log takes revisions positionally and has -n / --since / --format.
+		{"beyond the slice", "git log --oneline -20", "raw-log-query", true},
+		{"another ref", "git log --oneline origin/main", "raw-log-query", true},
+		{"date and format", `git log --since=2026-07-25 --pretty=format:%h`, "raw-log-query", true},
+
+		// Still orientation — one gk context call answers these beside git status.
+		{"within the slice", "git log --oneline -3", "raw-context-probes", true},
+		{"bare log", "git log", "raw-context-probes", true},
+
+		// gk log has no --stat / --until, and gk wraps no object inspection.
+		// Naming a verb that would reject the flag is worse than saying nothing.
+		{"log stat", "git log --stat", "", false},
+		{"log until", "git log --until=2026-01-01", "", false},
+		{"show stat", "git show --stat HEAD", "", false},
+
+		// The hunt still wins: gk find collapses several guesses into one call,
+		// which a 1:1 gk log swap cannot match.
+		{"path scoped", "git log -20 -- internal/", "raw-history-search", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Hint(tc.command)
+			if res.Kind != tc.wantKind {
+				t.Errorf("Hint(%q).Kind = %q, want %q", tc.command, res.Kind, tc.wantKind)
+			}
+			if res.Covered != tc.wantCovered {
+				t.Errorf("Hint(%q).Covered = %v, want %v", tc.command, res.Covered, tc.wantCovered)
+			}
+			// Suggestion is the sentence the PreToolUse hook actually prints.
+			// Kind and CoveredBy follow from the spec table, so asserting only
+			// those would leave the user-visible text untested — and the text
+			// is what sent agents to the wrong command in the first place.
+			if tc.wantCovered {
+				// Every covered row asserts the verb its kind promises, so a
+				// classifier that routes to the wrong covered kind fails here
+				// too — not only the raw-log-query rows.
+				wantVerb := map[string]string{
+					"raw-log-query":      "git-kit log",
+					"raw-context-probes": "git-kit context",
+					"raw-history-search": "git-kit find",
+				}[tc.wantKind]
+				if wantVerb == "" {
+					t.Fatalf("test bug: no expected verb for kind %q", tc.wantKind)
+				}
+				if !strings.Contains(res.Suggestion, wantVerb) {
+					t.Errorf("Hint(%q).Suggestion = %q, want it to name %s", tc.command, res.Suggestion, wantVerb)
+				}
+				// The text may still MENTION context — it explains why context
+				// is the wrong tool here. What it must never do is tell the
+				// agent to run it.
+				if tc.wantKind != "raw-context-probes" && strings.Contains(res.Suggestion, "Use git-kit context") {
+					t.Errorf("Hint(%q).Suggestion still recommends context: %q", tc.command, res.Suggestion)
+				}
+			} else if res.Suggestion != "" {
+				t.Errorf("Hint(%q) should stay silent, got Suggestion %q", tc.command, res.Suggestion)
 			}
 		})
 	}

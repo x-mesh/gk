@@ -321,6 +321,15 @@ func gkCollapseGroup(verb string, args []string) string {
 		if gkLogHasOperand(args) {
 			return "" // a range or path scope — not "where am I"
 		}
+		// KNOWN ASYMMETRY with the raw lens. On the raw side, `git log -20` and
+		// `git log --since=1w` leave the context group (see logQueryBeyondContext
+		// in audit.go): gk context cannot answer them, so crediting a collapse
+		// would claim a saving that does not exist. Here the same shapes still
+		// count as context, and deliberately so — this lens measures whether a
+		// gk USER re-probed across turns, and `gk log -n 20` beside `gk status`
+		// is that same orientation habit, whatever the count says. The two
+		// lenses answer different questions, so they are not made to agree; what
+		// would be wrong is letting the difference pass unremarked.
 		return "context"
 	case "diff":
 		return "diff"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/x-mesh/gk/internal/diff"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/gitstate"
+	"github.com/x-mesh/gk/internal/sessionaudit"
 )
 
 // gk context is the one-call orientation an agent (or human) runs before any
@@ -202,7 +204,7 @@ replaces the usual status/branch/log/worktree probe sequence.
 
   diff      uncommitted changes as a digest (per-file ±lines, symbols),
             untracked files included
-  log       the last 5 commits (sha, subject, author, date)
+  log       the last ` + strconv.Itoa(sessionaudit.ContextLogCommits) + ` commits (sha, subject, author, date)
   precheck  merge-tree forecast for the next pull
   conflict  current unmerged files with operation kind, stages, and hunk counts
   remotes   every registered remote with the current branch's drift as of
@@ -644,7 +646,7 @@ func collectContextIncludes(ctx context.Context, runner *git.ExecRunner, cfg *co
 		}
 	}
 	if includes["log"] {
-		if entries, err := collectContextLog(ctx, runner, 5); err == nil {
+		if entries, err := collectContextLog(ctx, runner, sessionaudit.ContextLogCommits); err == nil {
 			out.Log = entries
 		} else {
 			out.Notes = append(out.Notes, "log skipped: "+err.Error())

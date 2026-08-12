@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,17 @@ const (
 	defaultMaxFiles = 200
 	maxEvidence     = 5
 )
+
+// ContextLogCommits is how many commits `gk context --include=log` returns, and
+// therefore the exact point where a raw `git log -n N` stops being a question
+// gk context can answer. The classifier needs that boundary, so the number has
+// to be named somewhere both sides can see it.
+//
+// It lives HERE rather than beside the context command because the dependency
+// only runs one way: internal/cli imports this package, never the reverse.
+// Anyone changing the size must change it here — a literal that drifts apart
+// from the classifier makes the audit quietly wrong instead of loudly broken.
+const ContextLogCommits = 5
 
 // Options controls how much local session history Audit reads.
 type Options struct {
@@ -307,6 +319,17 @@ var findingSpecs = map[string]findingSpec{
 		status:         "covered",
 		recommendation: "Use git-kit log A..B — gk log takes revision ranges positionally (--json for machine use). git-kit log --ahead/--behind --base is the shorthand when the range is against the upstream or the base branch.",
 		coveredBy:      []string{"git-kit log A..B"},
+	},
+	// raw-log-query is the other half of the context-probe split: a log question
+	// gk context cannot answer but `gk log` can. Like raw-range-compare it is a
+	// 1:1 command swap, so it is COVERED (the hint must name the verb that works)
+	// but stays out of collapseGroupForKind (it saves correctness, not turns).
+	"raw-log-query": {
+		kind:           "raw-log-query",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit log — it takes revisions positionally and has -n/--since/--format, so it answers the ref-scoped, longer, and shaped log queries git-kit context cannot (context returns a fixed newest-first slice of the current branch).",
+		coveredBy:      []string{"git-kit log"},
 	},
 	"raw-reset-hard": {
 		kind:           "raw-reset-hard",
@@ -1449,9 +1472,16 @@ func isRawContextProbe(subcmd string, args []string) bool {
 		return false
 	}
 	switch subcmd {
-	case "status", "log", "rev-list", "merge-base":
+	case "status", "rev-list", "merge-base":
 		return !hasHexCommitOperand(args)
-	case "diff", "show":
+	case "log":
+		// A log probe is only a context probe while gk context can actually
+		// produce the answer: its log section is a fixed, newest-first slice of
+		// the CURRENT branch (ContextLogCommits entries, no formatting control).
+		// Ask for another ref, for more commits than that, or for a specific
+		// shape, and context returns something else entirely — see isRawLogQuery.
+		return !hasHexCommitOperand(args) && !logQueryBeyondContext(args)
+	case "diff":
 		statish := hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
 		return statish && !hasHexCommitOperand(args)
 	case "branch":
@@ -1596,6 +1626,243 @@ func isRawRangeCompare(subcmd string, args []string) bool {
 		}
 	}
 	return false
+}
+
+// gkLogExpressibleFlags is an ALLOWLIST: the git log flags whose question
+// `gk log` can restate. It is an allowlist rather than a list of what gk log
+// lacks because the failure modes are not symmetric. Miss a flag here and the
+// worst case is silence on a command gk could have answered — one lost
+// recommendation. Miss it the other way and the hook hands the agent a
+// different question wearing the right verb: `git log --merges -20` answered
+// with `gk log -n 20` returns a DIFFERENT COMMIT SET, and the agent has no way
+// to see it. That is the exact failure this whole split exists to remove, so
+// an unrecognized flag must fail toward saying nothing.
+//
+// Verified against internal/cli/log.go's flag set. --decorate/--abbrev-commit
+// are listed because gk log always decorates and abbreviates: the raw flag asks
+// for what gk log already does.
+// `--no-decorate` is deliberately ABSENT: gk log's default format ends in %d and
+// always passes --decorate, so there is no way to turn it off. Listing it would
+// answer "without decoration" with output that has it.
+var gkLogExpressibleFlags = map[string]bool{
+	"--oneline": true, "--decorate": true, "--abbrev-commit": true,
+	"-n": true, "--max-count": true,
+	"--since": true, "--after": true,
+	"--pretty": true, "--format": true,
+	"--graph": true,
+}
+
+// logExpressibleByGkLog reports whether every flag in the invocation is one
+// gk log can restate. `--pretty`/`--format` carry an extra condition: gk log
+// wraps the value in `--pretty=format:`, so a PLACEHOLDER string translates but
+// a named format does not — `--pretty=short` would come back as the literal
+// word "short" on every line.
+func logExpressibleByGkLog(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := trimShellToken(args[i])
+		if a == "--" {
+			break
+		}
+		if a == "" || !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, value, hasValue := strings.Cut(a, "=")
+		// Bare counts (`-20`) and glued ones (`-n20`) are counts, not flags.
+		if len(name) > 1 && name[0] == '-' && name[1] != '-' {
+			if isAllDigits(name[1:]) {
+				continue
+			}
+			if strings.HasPrefix(name, "-n") && isAllDigits(name[2:]) {
+				continue
+			}
+		}
+		if !gkLogExpressibleFlags[name] {
+			return false
+		}
+		if name == "--pretty" || name == "--format" {
+			if !hasValue && i+1 < len(args) {
+				value = trimShellToken(args[i+1])
+			}
+			if !strings.Contains(value, "%") && !strings.HasPrefix(value, "format:") {
+				return false // a named format (short/medium/fuller), not a template
+			}
+		}
+	}
+	return true
+}
+
+// logValueFlags consume the NEXT token, so that token is a flag's value and not
+// a ref operand (`--since 1w` must not read as "the ref 1w").
+var logValueFlags = map[string]bool{
+	"--pretty": true, "--format": true, "--date": true,
+	"--since": true, "--after": true, "--until": true, "--before": true,
+	"--grep": true, "--author": true, "--committer": true,
+	"--max-count": true, "-n": true, "-S": true, "-G": true,
+}
+
+// logContextCompatibleFlags are the only flags that leave a `git log` answerable
+// by gk context's fixed slice. They ask for a rendering gk context already
+// provides (one line per commit, decorated, abbreviated) and change neither
+// WHICH commits are selected nor how many.
+//
+// Like gkLogExpressibleFlags this is an allowlist, and for the same reason:
+// commit-selection flags are open-ended (--merges, --first-parent, --skip,
+// --branches, --topo-order, --min-parents …) and a denylist that misses one
+// tells the agent that `gk context` answers a question about a commit set it
+// never looked at. An unknown flag has to mean "not orientation".
+var logContextCompatibleFlags = map[string]bool{
+	"--oneline": true, "--decorate": true, "--no-decorate": true,
+	"--abbrev-commit": true, "--no-abbrev-commit": true,
+	"--color": true, "--no-color": true, "--no-pager": true,
+	"-n": true, "--max-count": true, // the count itself is judged separately
+}
+
+// logQueryBeyondContext reports whether a `git log` asks for something outside
+// what `gk context --include=log` returns: a different ref, more commits than
+// the fixed slice, a specific shape/date window, or any other flag that changes
+// which commits come back. It is the boundary between "orientation probe"
+// (collapsible into one gk context call) and "log query" (a 1:1 swap for gk
+// log) — see isRawLogQuery.
+//
+// A bare `git log`, and any count at or below the slice, stay on the context
+// side: "show me recent history" is exactly what the slice answers.
+func logQueryBeyondContext(args []string) bool {
+	if logCountBeyondSlice(args) || logHasOtherRefOperand(args) {
+		return true
+	}
+	skipNext := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "--" {
+			break
+		}
+		if a == "" || !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(a, "=")
+		if logValueFlags[name] {
+			skipNext = !strings.Contains(a, "=")
+		}
+		// Bare and glued counts are counts, already judged above.
+		if len(name) > 1 && name[1] != '-' {
+			if isAllDigits(name[1:]) || (strings.HasPrefix(name, "-n") && isAllDigits(name[2:])) {
+				continue
+			}
+		}
+		if !logContextCompatibleFlags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// logCountBeyondSlice reports whether an explicit commit count exceeds
+// ContextLogCommits. Accepts every git spelling: `-20`, `-n 20`, `-n20`,
+// `--max-count=20`, `--max-count 20`. No count at all is NOT beyond the slice.
+func logCountBeyondSlice(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := trimShellToken(args[i])
+		if a == "--" {
+			break
+		}
+		var num string
+		switch {
+		case strings.HasPrefix(a, "--max-count="):
+			num = strings.TrimPrefix(a, "--max-count=")
+		case a == "--max-count" || a == "-n":
+			if i+1 < len(args) {
+				num = trimShellToken(args[i+1])
+			}
+		case strings.HasPrefix(a, "-n") && len(a) > 2:
+			num = a[2:]
+		case len(a) > 1 && a[0] == '-' && isAllDigits(a[1:]):
+			num = a[1:]
+		default:
+			continue
+		}
+		if n, err := strconv.Atoi(num); err == nil && n > ContextLogCommits {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// logHasOtherRefOperand reports whether a non-flag operand names a ref OTHER
+// than the current tip. `HEAD` (and `@`) are excluded on purpose: gk context's
+// log slice IS the current branch's newest commits, so `git log -3 HEAD` is a
+// question it answers. `HEAD~3` is not — it starts somewhere else — so only the
+// bare spellings are forgiven. Pathspecs after `--` are not operands, and a
+// value belonging to the preceding flag is not one either.
+func logHasOtherRefOperand(args []string) bool {
+	skipNext := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "--" {
+			break
+		}
+		if a == "" {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			if logValueFlags[a] {
+				skipNext = true
+			}
+			continue
+		}
+		if a == "HEAD" || a == "@" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isRawLogQuery claims the log forms that left the context group BECAUSE gk
+// context cannot answer them — but only those `gk log` can actually express.
+//
+// It is the mirror of the `git show` ruling: name a verb only when that verb
+// takes the same question. `--stat`, `--merges`, `--until` and every other flag
+// outside gkLogExpressibleFlags fall through to no finding at all, so the hint
+// stays quiet instead of recommending a command that errors — or worse, one
+// that succeeds while answering something else.
+//
+// Scope note: `rev-list` is NOT split the same way and stays with the plain
+// context probes above. Its forms are dominated by ranges, which
+// raw-range-compare already claims: measured 211 of 216 in the corpus, leaving
+// five non-range calls. Splitting it would add a branch almost nothing
+// exercises — but "almost" is the honest word here, not "nothing".
+//
+// Hex-sha operands are deliberately NOT claimed: sha archaeology was never a
+// context probe (hasHexCommitOperand already excluded it), so it is not part of
+// this split — widening the claim here would be a separate decision.
+func isRawLogQuery(subcmd string, args []string) bool {
+	if subcmd != "log" {
+		return false
+	}
+	if hasHexCommitOperand(args) || !logQueryBeyondContext(args) {
+		return false
+	}
+	return logExpressibleByGkLog(args)
 }
 
 // minHexOperandLen is the shortest all-hex operand treated as an explicit
@@ -1761,6 +2028,13 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-range-compare"
 	case isRawBranchList(subcmd, args):
 		return "raw-branch-list"
+	// Log queries are decided AFTER the searches above and BEFORE the context
+	// probe. After, because a path-scoped or --grep'd log is a hunt gk find
+	// collapses (a measured multi-turn saving) — claiming it here would trade
+	// that for a 1:1 swap. Before, because this is precisely the set the context
+	// probe must no longer claim.
+	case isRawLogQuery(subcmd, args):
+		return "raw-log-query"
 	case isRawContextProbe(subcmd, args):
 		return "raw-context-probes"
 	case subcmd == "add" || subcmd == "commit":

@@ -3,6 +3,7 @@ package sessionaudit
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -737,23 +738,33 @@ func TestIsRawContextProbe_ShaOperandGuard(t *testing.T) {
 		want   bool
 	}{
 		{"bare status", "status", nil, true},
+		// HEAD names the current tip, which is exactly what gk context's log
+		// slice shows — so it stays a probe. Any OTHER ref is a different
+		// question and leaves for raw-log-query.
 		{"log HEAD", "log", []string{"--oneline", "-5", "HEAD"}, true},
-		{"log branch name", "log", []string{"--oneline", "develop"}, true},
+		{"log branch name", "log", []string{"--oneline", "develop"}, false},
 		{"log sha", "log", []string{"--oneline", "8b7a4f21c"}, false},
-		{"show sha stat", "show", []string{"--stat", "4f21c8b7a"}, false},
-		{"show sha colon path", "show", []string{"--name-only", "4f21c8b7a:main.go"}, false},
+		// `show` rows used to live here. They are gone because `show` left this
+		// predicate entirely — object inspection is never a context probe now,
+		// sha or not, so a row here would pass even against a deleted sha guard.
+		// The live assertion is the `show stat HEAD` row in
+		// TestGitSegmentFinding_ContextVsSearchVsSurvey.
 		{"merge-base branches", "merge-base", []string{"main", "develop"}, true},
 		{"merge-base shas", "merge-base", []string{"8b7a4f21c", "1c8b7a4f2"}, false},
 		{"branch contains sha", "branch", []string{"-r", "--contains", "8b7a4f21c"}, false},
 		{"log sha range", "log", []string{"--oneline", "8b7a4f21c..HEAD"}, false},
 		{"log sha suffix", "log", []string{"-1", "8b7a4f21c~2"}, false},
-		// Path-scoped log is no longer a context probe at all — gk log takes no
-		// pathspec, so it routes to raw-history-search regardless of what the
-		// path is named. The sha-vs-path distinction it used to exercise is
-		// asserted directly below, on hasHexCommitOperand.
+		// Path-scoped log is no longer a context probe at all: it routes to
+		// raw-history-search regardless of what the path is named, because the
+		// hunt (grep, then pickaxe, then a path scope) is a measured multi-turn
+		// collapse that gk find owns — not because gk log lacks a pathspec (it
+		// has one). The sha-vs-path distinction it used to exercise is asserted
+		// directly below, on hasHexCommitOperand.
 		{"sha after pathspec dashdash", "log", []string{"--oneline", "--", "8b7a4f21c"}, false},
-		{"hex word without digit", "log", []string{"--oneline", "deadbeef"}, true},
-		{"short hex ref", "log", []string{"-1", "abc12"}, true},
+		// Neither token is a sha (no digit / too short), so both read as ref
+		// names — and a named ref is not the current tip.
+		{"hex word without digit", "log", []string{"--oneline", "deadbeef"}, false},
+		{"short hex ref", "log", []string{"-1", "abc12"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -990,7 +1001,72 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		{"show commit", "show", []string{"9855920"}, ""},
 		{"show file at ref", "show", []string{"v0.170.2:Sources/PeerProto.swift"}, ""},
 		{"show bare", "show", nil, ""},
+		// The statish spellings used to be claimed as context probes even though
+		// gk context prints no per-commit stat. Same ruling as the bare forms:
+		// object inspection, so no kind and no hint.
+		{"show stat HEAD", "show", []string{"--stat", "HEAD"}, ""},
+		{"show name-only HEAD", "show", []string{"--name-only", "HEAD"}, ""},
 		{"diff is still covered", "diff", []string{"--", "internal/cli/log.go"}, "raw-full-diff"},
+
+		// gk context's log section is a fixed newest-first slice of the CURRENT
+		// branch. Ask past its end, for another ref, or for a shape, and context
+		// returns something else — gk log is the verb that answers.
+		{"log beyond slice", "log", []string{"--oneline", "-20"}, "raw-log-query"},
+		{"log n flag beyond slice", "log", []string{"-n", "20"}, "raw-log-query"},
+		{"log max-count beyond slice", "log", []string{"--max-count=12"}, "raw-log-query"},
+		{"log other ref", "log", []string{"--oneline", "origin/main"}, "raw-log-query"},
+		{"log formatted", "log", []string{"--since=2026-07-25", "--pretty=format:%h %s"}, "raw-log-query"},
+		{"log format flag", "log", []string{"-3", "--format=%H"}, "raw-log-query"},
+
+		// At or below the slice, with no ref and no shape, context still answers.
+		{"log at slice edge", "log", []string{"--oneline", "-" + strconv.Itoa(ContextLogCommits)}, "raw-context-probes"},
+		{"log bare", "log", nil, "raw-context-probes"},
+		{"log HEAD within slice", "log", []string{"-3", "HEAD"}, "raw-context-probes"},
+
+		// Just past the slice must flip — pins the comparison against an
+		// off-by-one that `-20` alone would not catch.
+		{"log just past slice", "log", []string{"-" + strconv.Itoa(ContextLogCommits+1)}, "raw-log-query"},
+
+		// gk log has no spelling for these, so naming it would hand over a flag
+		// the binary rejects. Silence beats a command that errors.
+		{"log stat", "log", []string{"--stat"}, ""},
+		{"log name-only beyond slice", "log", []string{"-20", "--name-only"}, ""},
+		{"log until", "log", []string{"--until=2026-01-01"}, ""},
+		{"log date shape", "log", []string{"-20", "--date=iso"}, ""},
+
+		// Worse than a rejected flag: one gk log would ACCEPT while answering a
+		// different question. --merges/--first-parent select a different commit
+		// set and gk log has neither, so `gk log -n 20` would silently return
+		// the wrong commits. An unknown flag has to fail toward silence.
+		{"log merges", "log", []string{"--merges", "-20"}, ""},
+		{"log first-parent", "log", []string{"--first-parent", "-20"}, ""},
+		// The count is not what makes these unanswerable — the selection is.
+		// Without a count they used to fall back to "gk context answers this",
+		// which is the same wrong recommendation one gate over.
+		{"log merges no count", "log", []string{"--merges"}, ""},
+		{"log no-merges within slice", "log", []string{"--no-merges", "-3"}, ""},
+		{"log first-parent no count", "log", []string{"--first-parent"}, ""},
+		{"log branches not remotes", "log", []string{"--branches", "--not", "--remotes", "--oneline"}, ""},
+		{"log skip within slice", "log", []string{"--skip=10", "-3"}, ""},
+		// gk log HAS --graph, so topology is a query it can answer even though
+		// context cannot draw one.
+		{"log graph no count", "log", []string{"--graph", "--oneline"}, "raw-log-query"},
+		// Cosmetic flags leave it orientation: same commits, same slice.
+		{"log decorated within slice", "log", []string{"--oneline", "--decorate", "-3"}, "raw-context-probes"},
+		{"log skip separated", "log", []string{"--skip", "10"}, ""},
+		{"log skip glued", "log", []string{"--skip=10", "-20"}, ""},
+		// A NAMED pretty format is not a template: gk log wraps the value in
+		// --pretty=format:, so `short` would print as a literal on every line.
+		{"log named pretty", "log", []string{"--pretty=short", "-20"}, ""},
+		{"log template pretty", "log", []string{"--pretty=format:%h %s"}, "raw-log-query"},
+		{"log placeholder format", "log", []string{"--format=%H", "-20"}, "raw-log-query"},
+
+		// Ordering: the hunt wins over the query. A path-scoped or grepped log
+		// is a multi-turn guess gk find collapses; trading that for a 1:1 gk log
+		// swap would lose the saving.
+		{"log path scoped beyond slice", "log", []string{"-20", "--", "internal/"}, "raw-history-search"},
+		{"log grep beyond slice", "log", []string{"-20", "--grep=fix"}, "raw-history-search"},
+		{"log range beyond slice", "log", []string{"-20", "main..HEAD"}, "raw-range-compare"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -649,29 +649,36 @@ type hookStatusFileJSON struct {
 	StopInstalled   bool   `json:"stopInstalled"`
 }
 
+// collectHookStatus reads the hook wiring for both scopes. It exists so
+// `gk agents hook status` and `gk agents check` answer from the SAME read:
+// hooks merge across settings sources, so "is the nudge live here?" is only
+// answerable by looking at local AND global together — and a second
+// implementation of that lookup is how the two commands start disagreeing.
+func collectHookStatus(cmd *cobra.Command) []hookStatusFileJSON {
+	var files []hookStatusFileJSON
+	for _, global := range []bool{false, true} {
+		path, scope, err := claudeSettingsPath(cmd, global)
+		if err != nil {
+			continue
+		}
+		data, _ := readSettings(path) // absent → "{}"
+		installed, mode := gkHookState(data)
+		files = append(files, hookStatusFileJSON{
+			Path: path, Scope: scope, Installed: installed, Mode: mode,
+			PromptInstalled: gkPromptHookInstalled(data),
+			StopInstalled:   gkStopHookInstalled(data),
+		})
+	}
+	return files
+}
+
 func runAgentsHookStatus(cmd *cobra.Command, _ []string) error {
 	out := struct {
 		Schema int                  `json:"schema"`
 		Files  []hookStatusFileJSON `json:"files"`
 	}{Schema: 1}
 
-	targets := []struct {
-		global bool
-	}{{false}, {true}}
-	for _, t := range targets {
-		path, scope, err := claudeSettingsPath(cmd, t.global)
-		if err != nil {
-			continue
-		}
-		data, _ := readSettings(path) // absent → "{}"
-		installed, mode := gkHookState(data)
-		promptInstalled := gkPromptHookInstalled(data)
-		stopInstalled := gkStopHookInstalled(data)
-		out.Files = append(out.Files, hookStatusFileJSON{
-			Path: path, Scope: scope, Installed: installed, Mode: mode,
-			PromptInstalled: promptInstalled, StopInstalled: stopInstalled,
-		})
-	}
+	out.Files = collectHookStatus(cmd)
 
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), out)

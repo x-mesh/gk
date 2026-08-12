@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk agents check`가 훅 배선까지 한 번에 보고한다 — "이 저장소 온보딩됐나"의 나머지 절반.** 계약 블록은 동사를 가르치고, PreToolUse 훅은 raw git이 실행되는 순간에 잡는다. 그런데 `check`는 블록만 보고했다. 그래서 읽는 쪽이 훅을 **설정 파일 모양으로 추론**하게 되는데, 그게 두 번 틀린다: Claude Code는 훅을 스코프별로 **병합**하므로, 프로젝트 `settings.json`의 `PreToolUse`에 `Bash` matcher가 없다는 사실은 글로벌 훅이 뜨는지에 대해 **아무것도 말해주지 않는다.** 실제로 이 세션에서 그 추론으로 "훅이 없다"고 오진했고, 정답은 `gk agents hook status` 한 줄이었다 — 있는 줄 몰라서 안 썼다. 이제 `check` 출력 끝에 `raw-git hook` 섹션이 붙고(JSON은 `hooks[]` + `hook_nudge_active`), 어느 스코프에도 없으면 `gk agents hook install`을 안내한다. 조회는 `hook status`와 **같은 함수**를 쓴다 — 두 번째 구현은 두 명령이 서로 다른 답을 하기 시작하는 지점이다. 부수적으로 온보딩 확인이 2콜에서 1콜로 준다.
+
 ### Fixed
 
 - **`gk agents install --dry-run`이 파일을 실제로 고치던 문제.** 명령이 `--dry-run`을 **읽지도 않았다** — 전역 플래그는 받아들이지만 `runAgentsInstall`이 곧장 `installAgentsBlockContent`를 불러 언제나 썼다. 하필 이 명령에서 가장 나쁜 버그다: 이 블록은 사용자가 직접 쓴 지시 파일에, 때로는 **다른 저장소의 `CLAUDE.md`**에 들어간다. "무슨 일이 일어날지만 보자"는 호출이 남의 파일을 말없이 편집했다(실제로 이 세션에서 다른 프로젝트의 `CLAUDE.md`가 v14 → v26으로 바뀌었고, `git checkout --`으로 되돌렸다). 이제 판정과 쓰기를 나눠 dry-run은 쓰기만 건너뛴다 — 판정 코드는 **공유한다.** 별도 코드로 계산한 미리보기는 다른 것의 미리보기이기 때문이고, 회귀 테스트가 미리보기 결과와 실제 실행 결과가 같은지까지 확인한다. 출력도 `would updated … (--dry-run: nothing written)`으로 바뀌어 완료된 쓰기처럼 읽히지 않는다.

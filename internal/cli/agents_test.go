@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/testutil"
 )
 
 func TestInstallAgentsBlock_Lifecycle(t *testing.T) {
@@ -274,6 +276,87 @@ func TestRunAgentsCheck_AgentJSON(t *testing.T) {
 	}
 	if env.Result.Drift != 0 || env.Result.Absent != 0 {
 		t.Errorf("summary: drift=%d absent=%d", env.Result.Drift, env.Result.Absent)
+	}
+}
+
+// "Is this repo onboarded?" has two halves: the contract block teaches the
+// verbs, the PreToolUse hook catches raw git as it runs. check used to report
+// only the block, so the reader inferred the hook from settings files — and got
+// it wrong, because Claude Code MERGES hooks across scopes: a project file whose
+// PreToolUse lists only a Skill matcher says nothing about the global Bash hook
+// still firing. Reporting both from one call is what removes the guess.
+func TestRunAgentsCheck_ReportsHookWiringAlongsideTheBlock(t *testing.T) {
+	// A real repo: the local settings path is resolved through --repo and
+	// `git rev-parse --show-toplevel`, so a bare temp dir would be skipped
+	// entirely and this test would pass without reading anything.
+	repo := testutil.NewRepo(t)
+	dir := repo.Dir
+	setRepoFlagForTest(t, dir)
+	path := filepath.Join(dir, "AGENTS.md")
+	if _, err := installAgentsBlock(path); err != nil {
+		t.Fatal(err)
+	}
+	// A settings file that has PreToolUse but NO gk hook — the exact shape that
+	// invited the wrong inference.
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := `{"hooks":{"PreToolUse":[{"matcher":"Skill","hooks":[{"type":"command","command":"true"}]}]}}`
+	if err := os.WriteFile(settings, []byte(other), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "home"))
+	withAgentMode(t, true)
+
+	cmd := &cobra.Command{Use: "agents check", RunE: runAgentsCheck}
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	if err := cmd.Flags().Set("file", path); err != nil {
+		t.Fatal(err)
+	}
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agents check: %v\n%s", err, out.String())
+	}
+
+	var env struct {
+		Result struct {
+			Hooks []struct {
+				Scope     string `json:"scope"`
+				Installed bool   `json:"installed"`
+			} `json:"hooks"`
+			HookNudge bool `json:"hook_nudge_active"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("not agent JSON: %v\n%s", err, out.String())
+	}
+	if len(env.Result.Hooks) == 0 {
+		t.Fatal("check reported no hook wiring — the onboarding answer is still half")
+	}
+	// Guard against passing for the wrong reason: if the local scope is missing,
+	// the settings file written above was never read and every assertion below
+	// is vacuous. (It happened — the first draft used a non-git temp dir, so
+	// claudeSettingsPath errored out and skipped local entirely.)
+	sawLocal := false
+	for _, h := range env.Result.Hooks {
+		if h.Scope == "local" {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Fatal("local scope absent — the repo's settings.json was never read")
+	}
+	// A foreign PreToolUse entry must not read as the gk nudge.
+	for _, h := range env.Result.Hooks {
+		if h.Installed {
+			t.Errorf("scope %q counted a non-gk PreToolUse as the nudge", h.Scope)
+		}
+	}
+	if env.Result.HookNudge {
+		t.Error("hook_nudge_active true with no gk hook anywhere")
 	}
 }
 

@@ -252,6 +252,14 @@ type agentsCheckJSON struct {
 	Absent          int                    `json:"absent"`
 	NeedsInstall    bool                   `json:"needs_install,omitempty"`
 	InstallCommands []string               `json:"install_commands,omitempty"`
+	// Hooks answers the other half of "is this repo onboarded?". The contract
+	// block teaches the verbs; the PreToolUse hook is what catches raw git at
+	// the moment it runs. Reporting only the block invites the reader to infer
+	// the hook from settings files — which is wrong twice over, because hooks
+	// merge across scopes, so a local file without a Bash matcher says nothing
+	// about whether the global one fires.
+	Hooks     []hookStatusFileJSON `json:"hooks,omitempty"`
+	HookNudge bool                 `json:"hook_nudge_active"`
 }
 
 type agentsInstallJSON struct {
@@ -678,6 +686,31 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 	}
 	res.Drift = drift
 	res.Absent = absent
+
+	// The hook half. Any scope with it installed means the nudge reaches this
+	// repo, because Claude Code merges hooks across settings sources rather
+	// than letting the project file replace the user one.
+	res.Hooks = collectHookStatus(cmd)
+	for _, h := range res.Hooks {
+		if h.Installed {
+			res.HookNudge = true
+			break
+		}
+	}
+	if !JSONOut() {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, color.New(color.Faint).Sprint("raw-git hook"))
+		for _, h := range res.Hooks {
+			state := "not installed"
+			if h.Installed {
+				state = "installed (" + h.Mode + ")"
+			}
+			fmt.Fprintf(w, "  %-7s %s — PreToolUse: %s\n", h.Scope, tildePath(h.Path), state)
+		}
+		if !res.HookNudge {
+			fmt.Fprintln(w, "  · no scope steers raw git — "+selfCmd("agents hook install"))
+		}
+	}
 
 	if JSONOut() {
 		res.NeedsInstall = drift > 0 || (explicit && absent > 0)

@@ -221,10 +221,10 @@ func TestInstallAgentsBlockContent_TunedIdempotentRefreshAndPlainRevert(t *testi
 		t.Fatal(err)
 	}
 	block := agentsTunedContractBlock(line)
-	if state, ierr := installAgentsBlockContent(path, block); ierr != nil || state != "created" {
+	if state, ierr := installAgentsBlockContent(path, block, false); ierr != nil || state != "created" {
 		t.Fatalf("tuned install: state=%q err=%v", state, ierr)
 	}
-	if state, ierr := installAgentsBlockContent(path, block); ierr != nil || state != "unchanged" {
+	if state, ierr := installAgentsBlockContent(path, block, false); ierr != nil || state != "unchanged" {
 		t.Fatalf("same numbers must be idempotent: state=%q err=%v", state, ierr)
 	}
 
@@ -237,7 +237,7 @@ func TestInstallAgentsBlockContent_TunedIdempotentRefreshAndPlainRevert(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state, ierr := installAgentsBlockContent(path, agentsTunedContractBlock(line)); ierr != nil || state != "updated" {
+	if state, ierr := installAgentsBlockContent(path, agentsTunedContractBlock(line), false); ierr != nil || state != "updated" {
 		t.Fatalf("refresh with new numbers: state=%q err=%v", state, ierr)
 	}
 	b, _ := os.ReadFile(path)

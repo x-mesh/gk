@@ -49,6 +49,53 @@ func TestInstallAgentsBlock_Lifecycle(t *testing.T) {
 	}
 }
 
+// `gk agents install --dry-run` used to write the file anyway: the command
+// never read the flag. That is the worst place for it — the block lands in
+// instruction files the user did not author, sometimes in another repository,
+// so "let me just check what this would do" silently edited someone's CLAUDE.md.
+// The preview must report the SAME verdict the real run would, from the same
+// code, while leaving every byte alone.
+func TestInstallAgentsBlockContent_DryRunReportsWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	block := agentsContractBlockFor(false)
+
+	// Absent file: previewed as created, and still absent afterwards.
+	fresh := filepath.Join(dir, "AGENTS.md")
+	state, err := installAgentsBlockContent(fresh, block, true)
+	if err != nil || state != "created" {
+		t.Fatalf("dry-run on missing file: state=%q err=%v", state, err)
+	}
+	if _, serr := os.Stat(fresh); !os.IsNotExist(serr) {
+		t.Fatalf("dry-run created %s", fresh)
+	}
+
+	// Stale block: previewed as updated, bytes untouched.
+	stale := filepath.Join(dir, "CLAUDE.md")
+	cur := fmt.Sprintf("begin v%d", agentsContractVersion)
+	original := "# Theirs\n\n" + strings.Replace(block, cur, "begin v0", 1) + "\n"
+	if werr := os.WriteFile(stale, []byte(original), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+	state, err = installAgentsBlockContent(stale, block, true)
+	if err != nil || state != "updated" {
+		t.Fatalf("dry-run on stale block: state=%q err=%v", state, err)
+	}
+	got, _ := os.ReadFile(stale)
+	if string(got) != original {
+		t.Errorf("dry-run modified the file:\n%s", got)
+	}
+
+	// The preview must agree with the real run — a verdict computed by other
+	// code would be a preview of something else.
+	state, err = installAgentsBlockContent(stale, block, false)
+	if err != nil || state != "updated" {
+		t.Fatalf("real run disagreed with its own preview: state=%q err=%v", state, err)
+	}
+	if after, _ := os.ReadFile(stale); string(after) == original {
+		t.Error("real run left the stale block in place")
+	}
+}
+
 func TestInstallAgentsBlock_CreatesParentDir(t *testing.T) {
 	// --global may target ~/.codex, which often doesn't exist yet; install
 	// must create the parent chain rather than failing.

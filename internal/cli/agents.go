@@ -455,13 +455,14 @@ func runAgentsInstall(cmd *cobra.Command, args []string) error {
 	if tuned {
 		block = agentsTunedBlockOrFallback(cmd.ErrOrStderr())
 	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	w := cmd.OutOrStdout()
 	var res agentsInstallJSON
 	if JSONOut() {
 		res.Schema = 1
 	}
 	for _, t := range targets {
-		state, werr := installAgentsBlockContent(t.path, block)
+		state, werr := installAgentsBlockContent(t.path, block, dryRun)
 		if werr != nil {
 			return werr
 		}
@@ -473,6 +474,11 @@ func runAgentsInstall(cmd *cobra.Command, args []string) error {
 				Action:  state,
 				Version: agentsContractVersion,
 			})
+			continue
+		}
+		if dryRun {
+			// Never let a preview read like a completed write.
+			fmt.Fprintf(w, "would %s %s (--dry-run: nothing written)\n", state, tildePath(t.path))
 			continue
 		}
 		fmt.Fprintln(w, successLine(state, tildePath(t.path)))
@@ -492,13 +498,22 @@ func installAgentsBlock(path string) (string, error) {
 }
 
 func installAgentsBlockFor(path string, full bool) (string, error) {
-	return installAgentsBlockContent(path, agentsContractBlockFor(full))
+	return installAgentsBlockContent(path, agentsContractBlockFor(full), false)
 }
 
-func installAgentsBlockContent(path, block string) (string, error) {
+// installAgentsBlockContent decides the outcome first and writes second, so a
+// dry run reports exactly what the real run would do without touching the file.
+// The two paths MUST share the decision: a preview computed by separate code is
+// a preview of something else, and this block lands in files the user did not
+// author (another repo's CLAUDE.md), where an unasked-for write is worse than a
+// wrong answer.
+func installAgentsBlockContent(path, block string, dryRun bool) (string, error) {
 	b, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
+		if dryRun {
+			return "created", nil
+		}
 		if mkerr := os.MkdirAll(filepath.Dir(path), 0o755); mkerr != nil {
 			return "", fmt.Errorf("gk agents: mkdir %s: %w", filepath.Dir(path), mkerr)
 		}
@@ -520,6 +535,9 @@ func installAgentsBlockContent(path, block string) (string, error) {
 	}
 	if after == before {
 		return "unchanged", nil
+	}
+	if dryRun {
+		return "updated", nil
 	}
 	if werr := os.WriteFile(path, []byte(after), 0o644); werr != nil {
 		return "", fmt.Errorf("gk agents: write %s: %w", path, werr)

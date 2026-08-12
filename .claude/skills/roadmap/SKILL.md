@@ -73,6 +73,17 @@ summed into) `estimated_turns_saved`. Absent fields mean the run predates the
 lens, not a zero measurement. Measured at introduction: ~0, and that null
 result is the finding — do not read its later appearance as noise.
 
+Entries also carry **`by_project[]`** (`project`, `files`, `raw_git`, `git_kit`,
+`gk_short`) — the field that makes an `adoption_rate` swing attributable. A
+recorded run covers the newest N session files, so projects enter and leave the
+window; one un-onboarded project with heavy raw-git use moves the aggregate
+several points with nobody's habits changing. **Before calling any swing a
+regression or a win, diff `by_project` between the two entries** and check
+whether a high-volume / low-adoption project appeared or vanished. Absent on
+entries written before this shipped — for those the honest verdict on a swing is
+"cause unknown", not a composition story reconstructed from `--since` windows
+(those are a different sampling axis; see the boundary rules below).
+
 - **< 2 entries**: no trend to report. Say so plainly. As a *report action* (not
   a finding about gk itself), recommend seeding a cadence — `gk session audit
   --record` on a weekly cron/launchd job — so the next roadmap run has something

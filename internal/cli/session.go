@@ -117,6 +117,15 @@ func runSessionAudit(cmd *cobra.Command, args []string) error {
 			entry.GkTurns = gk.GkTurns
 			entry.GkReprobeSaved = gk.TurnsSaved
 		}
+		for _, p := range report.Projects {
+			entry.ByProject = append(entry.ByProject, sessionaudit.ProjectShare{
+				Project: p.Project,
+				Files:   p.Files,
+				RawGit:  p.RawGit,
+				GitKit:  p.GitKit,
+				GKShort: p.GKShort,
+			})
+		}
 		if werr := sessionaudit.AppendHistory(sessionaudit.HistoryPath(home), entry); werr != nil {
 			report.Notes = append(report.Notes, fmt.Sprintf("record: %v", werr))
 		}

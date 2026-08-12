@@ -26,6 +26,28 @@ type HistoryEntry struct {
 	// that the number was not measured then.
 	GkTurns        int `json:"gk_turns,omitempty"`
 	GkReprobeSaved int `json:"gk_reprobe_saved,omitempty"`
+	// ByProject is what the aggregate rates above cannot say: whether a swing
+	// came from behaviour changing or from the SCAN WINDOW changing. A recorded
+	// run covers the newest N session files, so a project that goes quiet drops
+	// out and a fresh one drops in — and a single un-onboarded project with
+	// heavy raw-git use can move AdoptionRate several points without anyone's
+	// habits changing. Without this the two are indistinguishable after the
+	// fact, and the honest verdict on any swing is "cause unknown". Absent on
+	// entries written before this existed — not measured then, not zero.
+	ByProject []ProjectShare `json:"by_project,omitempty"`
+}
+
+// ProjectShare is one project's slice of a recorded run. Deliberately its own
+// minimal type rather than a reuse of ProjectAdoption: this file is read ACROSS
+// time, so its shape must not drift every time the report's project row grows a
+// field. Rate is omitted because it is derivable (GitKit over the sum), and a
+// stored derived value is one more thing that can disagree with itself later.
+type ProjectShare struct {
+	Project string `json:"project"`
+	Files   int    `json:"files"`
+	RawGit  int    `json:"raw_git"`
+	GitKit  int    `json:"git_kit"`
+	GKShort int    `json:"gk_short,omitempty"`
 }
 
 // HistoryPath is where recorded runs accumulate. The audit is global (it scans

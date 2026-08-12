@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.137.0] - 2026-08-12
+
 ### Added
 
 - **`gk agents check`가 훅 배선까지 한 번에 보고한다 — "이 저장소 온보딩됐나"의 나머지 절반.** 계약 블록은 동사를 가르치고, PreToolUse 훅은 raw git이 실행되는 순간에 잡는다. 그런데 `check`는 블록만 보고했다. 그래서 읽는 쪽이 훅을 **설정 파일 모양으로 추론**하게 되는데, 그게 두 번 틀린다: Claude Code는 훅을 스코프별로 **병합**하므로, 프로젝트 `settings.json`의 `PreToolUse`에 `Bash` matcher가 없다는 사실은 글로벌 훅이 뜨는지에 대해 **아무것도 말해주지 않는다.** 실제로 이 세션에서 그 추론으로 "훅이 없다"고 오진했고, 정답은 `gk agents hook status` 한 줄이었다 — 있는 줄 몰라서 안 썼다. 이제 `check` 출력 끝에 `raw-git hook` 섹션이 붙고(JSON은 `hooks[]` + `hook_nudge_active`), 어느 스코프에도 없으면 `gk agents hook install`을 안내한다. 조회는 `hook status`와 **같은 함수**를 쓴다 — 두 번째 구현은 두 명령이 서로 다른 답을 하기 시작하는 지점이다. 부수적으로 온보딩 확인이 2콜에서 1콜로 준다.

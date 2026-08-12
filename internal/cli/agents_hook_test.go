@@ -411,7 +411,7 @@ func hookInstallCmd(t *testing.T, dir string) *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.Flags().Bool("global", true, "")
-	cmd.Flags().String("mode", hookModeWarn, "")
+	cmd.Flags().String("mode", hookModeCollapse, "")
 	cmd.Flags().Bool("no-prompt", false, "")
 	cmd.Flags().Bool("stop-commit", false, "")
 	cmd.Flags().Bool("stop-only", false, "")
@@ -596,8 +596,8 @@ func TestAgentsHookStatus_ReportsBothEvents(t *testing.T) {
 	if globalLine == "" {
 		t.Fatalf("no global status line in output: %q", out)
 	}
-	if !strings.Contains(globalLine, "PreToolUse: installed (warn)") {
-		t.Errorf("global status line = %q, want PreToolUse installed (warn)", globalLine)
+	if !strings.Contains(globalLine, "PreToolUse: installed (collapse)") {
+		t.Errorf("global status line = %q, want PreToolUse installed (collapse)", globalLine)
 	}
 	if !strings.Contains(globalLine, "UserPromptSubmit: installed") {
 		t.Errorf("global status line = %q, want UserPromptSubmit installed", globalLine)
@@ -632,6 +632,9 @@ func TestAgentsHookRegistered(t *testing.T) {
 	}
 	if cmd.Name() != "install" {
 		t.Errorf("resolved to %q, want install", cmd.Name())
+	}
+	if got, err := cmd.Flags().GetString("mode"); err != nil || got != hookModeCollapse {
+		t.Errorf("default mode = %q, %v; want collapse", got, err)
 	}
 }
 

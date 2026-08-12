@@ -68,14 +68,14 @@ to the instruction block from ` + "`gk agents install`" + `.
 
 The hook invokes ` + "`gk agents hook run`" + ` (this binary), which classifies the
 pending command with the same mapping ` + "`gk session audit`" + ` uses. Three modes:
-warn (default — the tool still runs, a note is surfaced to the agent), collapse
-(a lone covered command is only advised, but a second same-group probe — the
+warn (the tool still runs and a note is surfaced to the agent), collapse
+(default: a lone covered command is only advised, but a second same-group probe — the
 repeated orientation the audit shows is the biggest turn sink — is denied so the
 agent folds it into one git-kit call), and block (any covered raw-git call is
 denied). Read-only plumbing (rev-parse, config, …) and commands already on
 git-kit pass through.
 
-  gk agents hook install                 register in the repo's .claude/settings.json (warn)
+  gk agents hook install                 register in the repo's .claude/settings.json (collapse)
   gk agents hook install --mode collapse deny only a repeated same-group probe
   gk agents hook install --mode block    deny every covered raw git
   gk agents hook install --no-prompt     skip the UserPromptSubmit prefetch hook
@@ -127,7 +127,7 @@ is written first, and --dry-run previews without writing.`,
 		RunE:  runAgentsHookInstall,
 	}
 	install.Flags().Bool("global", false, "install into ~/.claude/settings.json instead of the repo's .claude/settings.json")
-	install.Flags().String("mode", "warn", "block | collapse | warn — deny all covered raw git, deny only a repeated probe, or just surface a note")
+	install.Flags().String("mode", hookModeCollapse, "block | collapse | warn — deny all covered raw git, deny only a repeated probe, or just surface a note")
 	install.Flags().Bool("no-prompt", false, "skip the UserPromptSubmit prefetch hook (PreToolUse only)")
 	install.Flags().Bool("stop-commit", false, "also register a Stop hook that runs `gk commit --wip` when a session ends with uncommitted work (opt-in: it writes to history)")
 	install.Flags().Bool("stop-only", false, "register ONLY the Stop checkpoint hook, leaving any existing PreToolUse/UserPromptSubmit entries untouched (implies --stop-commit; use when those already live in another scope)")

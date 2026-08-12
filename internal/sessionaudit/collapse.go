@@ -204,29 +204,174 @@ func commandMutates(cmd string) bool {
 	return false
 }
 
-// trivialPayloadTools are non-git tools that only format or page output. A
-// turn whose non-git segments all come from this set still exists for its git
-// work; anything else (cargo, go, npm, …) means the turn would survive even
-// with its git segments folded into a gk call — such turns are not saveable.
+// trivialPayloadTools are non-git tools that never do independent work. The
+// stream filters below need argument-aware handling: `git log | head -3` only
+// formats git output, while `head -3 notes.txt` reads data the gk call cannot
+// replace. `ls` is deliberately absent because it is always a separate query.
 var trivialPayloadTools = map[string]bool{
-	"echo": true, "printf": true, "grep": true, "sed": true, "head": true,
-	"tail": true, "wc": true, "sort": true, "cut": true, "tr": true,
-	"cd": true, "true": true, "ls": true,
+	"echo": true, "printf": true, "cd": true, "true": true,
+}
+
+var streamFilterTools = map[string]bool{
+	"grep": true, "sed": true, "head": true, "tail": true,
+	"wc": true, "sort": true, "cut": true, "tr": true,
 }
 
 // commandPayloadTrivial reports whether every non-git segment of cmd is
 // trivial formatting. git-kit/gk segments count as payload: a turn that
 // already runs git-kit is not a turn gk would remove.
 func commandPayloadTrivial(cmd string) bool {
+	groups := map[string]bool{}
 	for _, seg := range classifyCommand(cmd).Segments {
 		if seg.Tool == "git" {
+			subcmd, args, ok := gitSubcommand(seg.Text)
+			kind := gitSegmentFinding(subcmd, args)
+			group := collapseGroupForKind[kind]
+			if !ok || group == "" {
+				return false
+			}
+			groups[group] = true
 			continue
 		}
-		if !trivialPayloadTools[seg.Tool] {
+		if !nonGitSegmentTrivial(seg) {
 			return false
 		}
 	}
+	if len(groups) > 1 {
+		primary := primaryGroupOf(groups, commandMutates(cmd))
+		if readOnlyCollapseGroups[primary] {
+			return false
+		}
+		for group := range groups {
+			// A write plus a small orientation check is one workflow (`commit`
+			// followed by `log -1`). Exact diff/search work still survives.
+			if group != primary && group != "context" {
+				return false
+			}
+		}
+	}
 	return true
+}
+
+// nonGitSegmentTrivial distinguishes a pipe formatter from an independent
+// file query. A formatter with an explicit input file or input redirection is
+// payload: removing the neighboring git probes would not remove that turn.
+func nonGitSegmentTrivial(seg shellSegment) bool {
+	if trivialPayloadTools[seg.Tool] {
+		return true
+	}
+	if !streamFilterTools[seg.Tool] {
+		return false
+	}
+	fields := shellFields(seg.Text)
+	for _, field := range fields[1:] {
+		tok := trimShellToken(field)
+		if tok == "<" || (strings.HasPrefix(tok, "<") && !strings.HasPrefix(tok, "<<")) {
+			return false
+		}
+	}
+	return !streamFilterReadsFile(seg.Tool, fields[1:])
+}
+
+func streamFilterReadsFile(tool string, rawArgs []string) bool {
+	args := make([]string, 0, len(rawArgs))
+	for _, raw := range rawArgs {
+		a := trimShellToken(raw)
+		if a == "" || strings.ContainsAny(a, "|;&>") {
+			continue
+		}
+		args = append(args, a)
+	}
+	switch tool {
+	case "grep":
+		positional := 0
+		skipNext := false
+		for _, a := range args {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if a == "-r" || a == "-R" || strings.Contains(a, "r") && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+				return true
+			}
+			if a == "-f" || a == "--file" || strings.HasPrefix(a, "--file=") {
+				return true
+			}
+			if a == "-e" || a == "--regexp" {
+				skipNext = true
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				positional++
+			}
+		}
+		return positional > 1 // pattern plus at least one input path
+	case "sed":
+		positional := 0
+		skipNext := false
+		for _, a := range args {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if a == "-f" || strings.HasPrefix(a, "-f") && len(a) > 2 {
+				return true
+			}
+			if a == "-e" {
+				skipNext = true
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				positional++
+			}
+		}
+		return positional > 1 // script plus at least one input path
+	case "head", "tail":
+		skipNext := false
+		for _, a := range args {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if a == "-n" || a == "-c" {
+				skipNext = true
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				return true
+			}
+		}
+		return false
+	case "wc":
+		for _, a := range args {
+			if !strings.HasPrefix(a, "-") {
+				return true
+			}
+		}
+		return false
+	case "sort", "cut":
+		// These are normally pipe filters. Conservatively treat any bare operand
+		// as a path except the value consumed by their common value flags.
+		skipNext := false
+		for _, a := range args {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if a == "-k" || a == "--key" || a == "-t" || a == "--field-separator" || a == "-d" || a == "--delimiter" || a == "-f" || a == "--fields" || a == "-c" || a == "--characters" || a == "-b" || a == "--bytes" {
+				skipNext = true
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				return true
+			}
+		}
+		return false
+	case "tr":
+		return false // operands are character sets; redirection was checked above
+	default:
+		return true
+	}
 }
 
 // --- the git-kit lens -------------------------------------------------------
@@ -437,7 +582,7 @@ func gkPayloadTrivial(cmd string) bool {
 		if isGkTool(seg.Tool) {
 			continue
 		}
-		if !trivialPayloadTools[seg.Tool] {
+		if !nonGitSegmentTrivial(seg) {
 			return false
 		}
 	}

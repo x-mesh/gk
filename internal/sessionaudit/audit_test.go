@@ -67,7 +67,7 @@ func TestAudit_MarksCoveredFindings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	writeLines(t, path,
-		`{"payload":{"arguments":"{\"cmd\":\"git merge-base main develop\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git status --short\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git diff -- src/app.go\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git diff --check docs/commands.md\"}"}}`,
 	)
@@ -90,7 +90,7 @@ func TestAudit_MarksCoveredFindings(t *testing.T) {
 		t.Fatalf("diff check finding = %+v", diffCheck)
 	}
 	if hasFinding(report, "raw-integration") {
-		t.Fatalf("merge-base must not be classified as integration: %+v", report.Findings)
+		t.Fatalf("read-only probes must not be classified as integration: %+v", report.Findings)
 	}
 }
 
@@ -328,6 +328,7 @@ func TestAudit_SuppressesPlumbingAndReadOnlyNonGap(t *testing.T) {
 		`{"payload":{"arguments":"{\"cmd\":\"git checkout-index -a\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git update-index --refresh\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git cherry main\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git status --short -- internal/cli\"}"}}`,
 		// Dev-session probe of gk's own help — not a git subcommand, never a gap.
 		`{"payload":{"arguments":"{\"cmd\":\"git kit --help\"}"}}`,
 		// Read-only forms of mutation-capable subcommands — orientation, not a gap.
@@ -361,7 +362,7 @@ func TestAudit_SuppressesPlumbingAndReadOnlyNonGap(t *testing.T) {
 	}
 	for _, absent := range []string{
 		"merge-tree", "read-tree", "commit-graph", "diff-tree",
-		"checkout-index", "update-index", "cherry", "kit",
+		"checkout-index", "update-index", "cherry", "kit", "status",
 	} {
 		if _, ok := gap.Subcommands[absent]; ok {
 			t.Errorf("plumbing %q should not appear in the gap: %v", absent, gap.Subcommands)
@@ -749,7 +750,7 @@ func TestIsRawContextProbe_ShaOperandGuard(t *testing.T) {
 		// sha or not, so a row here would pass even against a deleted sha guard.
 		// The live assertion is the `show stat HEAD` row in
 		// TestGitSegmentFinding_ContextVsSearchVsSurvey.
-		{"merge-base branches", "merge-base", []string{"main", "develop"}, true},
+		{"merge-base branches", "merge-base", []string{"main", "develop"}, false},
 		{"merge-base shas", "merge-base", []string{"8b7a4f21c", "1c8b7a4f2"}, false},
 		{"branch contains sha", "branch", []string{"-r", "--contains", "8b7a4f21c"}, false},
 		{"log sha range", "log", []string{"--oneline", "8b7a4f21c..HEAD"}, false},
@@ -963,6 +964,7 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		// gk context DOES answer these: where am I, what is dirty, what is recent.
 		{"status", "status", nil, "raw-context-probes"},
 		{"status short", "status", []string{"--short"}, "raw-context-probes"},
+		{"status path scoped", "status", []string{"--short", "--", "internal/cli"}, ""},
 		{"recent log", "log", []string{"--oneline", "-5"}, "raw-context-probes"},
 
 		// gk branch list answers the survey — gk context never did.
@@ -1007,6 +1009,9 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		{"show stat HEAD", "show", []string{"--stat", "HEAD"}, ""},
 		{"show name-only HEAD", "show", []string{"--name-only", "HEAD"}, ""},
 		{"diff is still covered", "diff", []string{"--", "internal/cli/log.go"}, "raw-full-diff"},
+		{"diff stat path scoped", "diff", []string{"--stat", "--", "internal/cli"}, ""},
+		{"diff stat explicit refs", "diff", []string{"--stat", "main", "develop"}, ""},
+		{"merge base is exact archaeology", "merge-base", []string{"--is-ancestor", "main", "develop"}, ""},
 
 		// gk context's log section is a fixed newest-first slice of the CURRENT
 		// branch. Ask past its end, for another ref, or for a shape, and context

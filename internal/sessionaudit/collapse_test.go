@@ -355,6 +355,66 @@ func TestCollapse_K_NonGitPayloadDiscount(t *testing.T) {
 	}
 }
 
+func TestCollapse_K_DirectFileAndUncoveredGitPayloadDiscount(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{"grep reads files", `git status; grep -rl "func newWorktreeRenameCmd" internal/cli`},
+		{"sed reads file", `git status; sed -n '1,20p' internal/cli/root.go`},
+		{"head reads file", `git status; head -20 CHANGELOG.md`},
+		{"ls is a separate query", `git status; ls internal/cli`},
+		{"uncovered git inspection", `git status; git show HEAD:README.md`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := runsFor(session(
+				asst("m1", "t1", tc.cmd),
+				asst("m2", "t2", "git diff --stat"),
+			))
+			if n := totalSaved(runs); n != 0 {
+				t.Fatalf("turn with independent payload must not collapse, got %d: %+v", n, runs)
+			}
+		})
+	}
+}
+
+func TestCollapse_K_StreamFiltersRemainTrivial(t *testing.T) {
+	tests := []string{
+		`git log --oneline -3 | grep fix`,
+		`git log --oneline -3 | sed -n '1,2p'`,
+		`git log --oneline -3 | head -2`,
+		`git log --oneline -3 | tail -n 2`,
+		`git log --oneline -3 | wc -l`,
+	}
+	for _, cmd := range tests {
+		runs := runsFor(session(
+			asst("m1", "t1", cmd),
+			asst("m2", "t2", "git status"),
+		))
+		if n := savedForGroup(runs, "context"); n != 1 {
+			t.Errorf("pipe filter %q should stay collapsible, got %d: %+v", cmd, n, runs)
+		}
+	}
+}
+
+func TestCollapse_K_MixedReadGroupsDoNotCollapse(t *testing.T) {
+	tests := []string{
+		`git status; git diff -- README.md`,
+		`git status; git log main..HEAD --oneline`,
+		`git status; git find-does-not-exist`,
+	}
+	for _, cmd := range tests {
+		runs := runsFor(session(
+			asst("m1", "t1", cmd),
+			asst("m2", "t2", "git status"),
+		))
+		if n := totalSaved(runs); n != 0 {
+			t.Errorf("mixed read turn %q must survive, got %d: %+v", cmd, n, runs)
+		}
+	}
+}
+
 // raw git apply collapses into its own group, covered by git-kit apply.
 func TestCollapse_ApplyGroup(t *testing.T) {
 	runs := runsFor(session(

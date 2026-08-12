@@ -420,7 +420,7 @@ var findingSpecs = map[string]findingSpec{
 var rawGitNonGap = map[string]bool{
 	// diff is covered by gk diff; show is object inspection gk deliberately does
 	// not wrap (see isRawFullDiff). Neither is a missing-verb signal.
-	"diff": true, "show": true,
+	"diff": true, "show": true, "status": true,
 	// read-only inspection / plumbing.
 	"rev-parse": true, "config": true, "cat-file": true, "symbolic-ref": true,
 	"for-each-ref": true, "ls-tree": true, "ls-files": true, "show-ref": true,
@@ -1472,8 +1472,12 @@ func isRawContextProbe(subcmd string, args []string) bool {
 		return false
 	}
 	switch subcmd {
-	case "status", "rev-list", "merge-base":
-		return !hasHexCommitOperand(args)
+	case "status":
+		// context reports the whole working tree. A path-scoped status is a
+		// different question and cannot be folded into that report.
+		return !hasNonFlagOperand(args)
+	case "rev-list":
+		return !hasHexCommitOperand(args) && !hasNonFlagOperand(args)
 	case "log":
 		// A log probe is only a context probe while gk context can actually
 		// produce the answer: its log section is a fixed, newest-first slice of
@@ -1483,7 +1487,7 @@ func isRawContextProbe(subcmd string, args []string) bool {
 		return !hasHexCommitOperand(args) && !logQueryBeyondContext(args)
 	case "diff":
 		statish := hasArg(args, "--stat") || hasArg(args, "--shortstat") || hasArg(args, "--name-only") || hasArg(args, "--name-status")
-		return statish && !hasHexCommitOperand(args)
+		return statish && !hasHexCommitOperand(args) && !hasNonFlagOperand(args)
 	case "branch":
 		// `git branch --show-current` is "where am I", not "what branches exist"
 		// — gk context leads with the current branch, so this probe folds into
@@ -1492,6 +1496,22 @@ func isRawContextProbe(subcmd string, args []string) bool {
 	default:
 		return false
 	}
+}
+
+func hasNonFlagOperand(args []string) bool {
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if a == "" {
+			continue
+		}
+		if a == "--" {
+			return true
+		}
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 // branchValueFlags are `git branch` filters that consume the NEXT token, so the

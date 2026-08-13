@@ -392,8 +392,57 @@ func TestRunAgentsCheck_AgentJSONBlockedForExplicitMissing(t *testing.T) {
 	if env.State != envStateBlocked || env.OK || !env.Result.NeedsInstall || env.Result.Absent != 2 {
 		t.Fatalf("blocked envelope: %+v", env)
 	}
-	if len(env.Result.InstallCommands) != 1 || !strings.Contains(env.Result.InstallCommands[0], "agents install --global") {
+	if len(env.Result.InstallCommands) != 1 || !strings.HasSuffix(env.Result.InstallCommands[0], "agents install") {
 		t.Errorf("install commands: %+v", env.Result.InstallCommands)
+	}
+}
+
+func TestAgentsInstallTargets_DefaultsGlobalAndLocalIsExplicit(t *testing.T) {
+	claudeDir := filepath.Join(t.TempDir(), "claude")
+	codexDir := filepath.Join(t.TempDir(), "codex")
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("CODEX_HOME", codexDir)
+
+	cmd := &cobra.Command{Use: "agents install"}
+	cmd.SetContext(t.Context())
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	cmd.Flags().Bool("local", false, "")
+	targets, err := agentsInstallTargets(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].scope != "global" || targets[1].scope != "global" {
+		t.Fatalf("default targets = %+v, want two global files", targets)
+	}
+	if targets[0].path != filepath.Join(claudeDir, "CLAUDE.md") || targets[1].path != filepath.Join(codexDir, "AGENTS.md") {
+		t.Errorf("default paths = %+v", targets)
+	}
+
+	repo := testutil.NewRepo(t)
+	setRepoFlagForTest(t, repo.Dir)
+	if err := cmd.Flags().Set("local", "true"); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = agentsInstallTargets(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].scope != "local" || targets[1].scope != "local" {
+		t.Fatalf("--local targets = %+v, want two repo files", targets)
+	}
+}
+
+func TestAgentsInstallTargets_RejectsLocalAndGlobal(t *testing.T) {
+	cmd := &cobra.Command{Use: "agents install"}
+	cmd.SetContext(t.Context())
+	cmd.Flags().StringSlice("file", nil, "")
+	cmd.Flags().Bool("global", false, "")
+	cmd.Flags().Bool("local", false, "")
+	_ = cmd.Flags().Set("global", "true")
+	_ = cmd.Flags().Set("local", "true")
+	if _, err := agentsInstallTargets(cmd); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("want --local/--global conflict, got %v", err)
 	}
 }
 
@@ -404,6 +453,7 @@ func TestRunAgentsInstall_AgentJSON(t *testing.T) {
 	cmd := &cobra.Command{Use: "agents install", RunE: runAgentsInstall}
 	cmd.Flags().StringSlice("file", nil, "")
 	cmd.Flags().Bool("global", false, "")
+	cmd.Flags().Bool("local", false, "")
 	if err := cmd.Flags().Set("file", path); err != nil {
 		t.Fatal(err)
 	}

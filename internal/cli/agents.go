@@ -286,15 +286,16 @@ The paragraph is embedded in the gk binary — it always describes the
 installed gk's real surface — and is fenced with markers; nothing outside
 the block is ever modified.
 
-Two scopes: the repo root (CLAUDE.md / AGENTS.md, the default) and the
-per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
---global) that every project inherits.
+Two scopes: the per-agent global files (~/.claude/CLAUDE.md and
+~/.codex/AGENTS.md, the default) that every project inherits, and the repo
+root (CLAUDE.md / AGENTS.md, via --local).
 
   gk agents print              print the compact contract block (paste it anywhere)
   gk agents print --full       print the detailed contract block
   gk agents print --tuned      compact block + your top observed raw-git leak
-  gk agents install            insert/refresh the compact block at the repo root
-  gk agents install --global   insert/refresh ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
+  gk agents install            insert/refresh ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
+  gk agents install --global   same as the default (kept for explicit scripts)
+  gk agents install --local    insert/refresh the compact block at the repo root
   gk agents install --tuned    compact block + one guidance line naming the top
                                raw-git leak recorded by gk session audit --record
   gk agents check              report block status + version for local AND global
@@ -315,8 +316,9 @@ per-agent global files (~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, via
 		Short: "Insert or refresh the compact contract block in CLAUDE.md and AGENTS.md",
 		RunE:  runAgentsInstall,
 	}
-	install.Flags().StringSlice("file", nil, "restrict to specific files (default: CLAUDE.md and AGENTS.md at the repo root)")
-	install.Flags().Bool("global", false, "install into the per-agent global files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md) instead of the repo root")
+	install.Flags().StringSlice("file", nil, "install into specific files instead of the default global files")
+	install.Flags().Bool("global", false, "install into the default per-agent global files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md); retained for explicit scripts")
+	install.Flags().Bool("local", false, "install into CLAUDE.md and AGENTS.md at the repository root instead of the default global files")
 	install.Flags().Bool("full", false, "install the detailed contract block instead of the compact default")
 	install.Flags().Bool("tuned", false, "install the compact block plus one guidance line naming the top raw-git leak from ~/.gk/audit-history.jsonl; reinstalling without --tuned reverts to the plain compact block")
 	cmd.AddCommand(install)
@@ -395,21 +397,26 @@ func agentsCustomFiles(cmd *cobra.Command, files []string) ([]agentsFile, error)
 	return out, nil
 }
 
-// agentsInstallTargets resolves where install writes: --file wins, then
-// --global, else the repo root (an error with a --global hint when outside a
-// repo).
+// agentsInstallTargets resolves where install writes: --file wins, --local
+// selects the repo root, and global files are the default. --global remains an
+// explicit spelling of the default for scripts and discoverability.
 func agentsInstallTargets(cmd *cobra.Command) ([]agentsFile, error) {
 	if files, _ := cmd.Flags().GetStringSlice("file"); len(files) > 0 {
 		return agentsCustomFiles(cmd, files)
 	}
-	if global, _ := cmd.Flags().GetBool("global"); global {
-		return agentsGlobalFiles()
+	local, _ := cmd.Flags().GetBool("local")
+	global, _ := cmd.Flags().GetBool("global")
+	if local && global && cmd.Flags().Changed("global") {
+		return nil, fmt.Errorf("gk agents: --local and --global are mutually exclusive")
 	}
-	local, ok := agentsLocalFiles(cmd)
-	if !ok {
-		return nil, fmt.Errorf("gk agents: not inside a git repository — use --global to install into ~/.claude and ~/.codex, or --file <path>")
+	if local {
+		files, ok := agentsLocalFiles(cmd)
+		if !ok {
+			return nil, fmt.Errorf("gk agents: --local requires a git repository; use the default global install or --file <path>")
+		}
+		return files, nil
 	}
-	return local, nil
+	return agentsGlobalFiles()
 }
 
 // agentsCheckTargets resolves what check reports on: --file wins, then
@@ -735,10 +742,10 @@ func runAgentsCheck(cmd *cobra.Command, args []string) error {
 func agentsInstallCommands(scopes map[string]bool) []string {
 	var cmds []string
 	if scopes["local"] || scopes["custom"] {
-		cmds = append(cmds, selfCmd("agents install"))
+		cmds = append(cmds, selfCmd("agents install --local"))
 	}
 	if scopes["global"] {
-		cmds = append(cmds, selfCmd("agents install --global"))
+		cmds = append(cmds, selfCmd("agents install"))
 	}
 	return cmds
 }

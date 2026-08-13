@@ -432,13 +432,14 @@ gk context --delta --json                   # repeat orientation: only what chan
 
 Manages the gk usage contract inside agent instruction files (`CLAUDE.md`, `AGENTS.md`). The default contract is compact and contains only the rules agents need to route git through git-kit correctly; `--full` keeps the longer reference block available. The paragraph is embedded in the gk binary — it always matches the installed gk's real surface — and is fenced with versioned markers; nothing outside the block is touched.
 
-Two scopes: the **repo root** (`CLAUDE.md` / `AGENTS.md`, the default) and the **per-agent global files** that every project inherits — Claude's `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`) and Codex's `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), selected with `--global`.
+Two scopes: the **per-agent global files** that every project inherits — Claude's `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`) and Codex's `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) — are the default. Use `--local` for the **repo root** (`CLAUDE.md` / `AGENTS.md`); `--global` remains an explicit equivalent of the default for scripts.
 
 | Subcommand | Description |
 |------------|-------------|
 | `gk agents print [--full] [--tuned]` | Print the compact contract block to stdout; `--full` prints the detailed reference block, `--tuned` appends one data-backed line naming your top raw-git turn leak |
-| `gk agents install [--file <path>] [--full] [--tuned]` | Insert or refresh the compact block in `CLAUDE.md` + `AGENTS.md` at the repo root (idempotent); `--full` installs the detailed block, `--tuned` adds the data-backed leak line |
-| `gk agents install --global [--full]` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed |
+| `gk agents install [--global] [--full] [--tuned]` | Insert or refresh the block in the global files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`); parent dirs are created as needed. `--global` is an explicit spelling of the default |
+| `gk agents install --local [--full] [--tuned]` | Insert or refresh the compact block in repo-root `CLAUDE.md` + `AGENTS.md` (idempotent) |
+| `gk agents install --file <path> [--full] [--tuned]` | Install into explicit files instead of either built-in scope |
 | `gk agents check` | Report block status + version for **both** scopes — local (when inside a repo) and global. Version drift (an installed block from an older gk) exits non-zero with an install hint; a scope that simply isn't installed is reported but doesn't fail the default view |
 | `gk agents check --global` | Report only the global files (here a missing block also fails, since you targeted it explicitly) |
 | `gk agents hook install [--mode block\|collapse\|warn] [--no-prompt] [--stop-commit] [--stop-only] [--global] [--dry-run]` | Register the Claude Code hooks in `settings.json`: a PreToolUse(Bash) hook that steers raw git to git-kit at the moment a command runs, plus a UserPromptSubmit prefetch hook that injects git orientation for a git-action prompt (`--no-prompt` opts out of the latter), plus — with `--stop-commit` — a Stop hook that checkpoints the session with `gk commit --wip`. `--stop-only` registers *just* the checkpoint and leaves the other two events untouched. Default `.claude/settings.json`; `--global` for `~/.claude/settings.json` |

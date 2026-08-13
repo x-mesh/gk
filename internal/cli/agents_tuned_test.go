@@ -34,6 +34,7 @@ func newAgentsInstallCmd(t *testing.T, flags map[string]string) (*cobra.Command,
 	cmd := &cobra.Command{Use: "agents install", RunE: runAgentsInstall}
 	cmd.Flags().StringSlice("file", nil, "")
 	cmd.Flags().Bool("global", false, "")
+	cmd.Flags().Bool("local", false, "")
 	cmd.Flags().Bool("full", false, "")
 	cmd.Flags().Bool("tuned", false, "")
 	for k, v := range flags {

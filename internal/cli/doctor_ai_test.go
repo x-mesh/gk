@@ -7,6 +7,10 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 )
 
+func reachableAIProbe(string) (bool, int, error) {
+	return true, 401, nil
+}
+
 func TestCheckAIProviderMissingBinaryIsWarn(t *testing.T) {
 	c := checkAIProvider("nonexistent-provider-xyz")
 	if c.Status != statusWarn {
@@ -91,7 +95,7 @@ func TestAIDoctorChecksHonorsConfigAPIKey(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.AI.OpenAI.APIKey = "config-key-do-not-print"
 
-	checks := aiDoctorChecks(&cfg)
+	checks := aiDoctorChecksWithProbe(&cfg, reachableAIProbe)
 	c := findAICheck(checks, "ai api: openai")
 	if c.Name == "" {
 		t.Fatal("openai check missing")
@@ -124,7 +128,7 @@ func TestAIDoctorChecksHonorsEndpointOverride(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.AI.Anthropic.Endpoint = "http://127.0.0.1:1/anthropic-override"
 
-	checks := aiDoctorChecks(&cfg)
+	checks := aiDoctorChecksWithProbe(&cfg, reachableAIProbe)
 	c := findAICheck(checks, "ai api: anthropic")
 	if c.Name == "" {
 		t.Fatal("anthropic check missing")
@@ -141,7 +145,7 @@ func TestAIDoctorChecksFlagsDefaultProvider(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.AI.Provider = "gemini"
 
-	checks := aiDoctorChecks(&cfg)
+	checks := aiDoctorChecksWithProbe(&cfg, reachableAIProbe)
 	c := findAICheck(checks, "ai provider: gemini")
 	if c.Name == "" {
 		t.Fatal("gemini check missing")
@@ -159,7 +163,7 @@ func TestAIDoctorChecksFlagsDefaultProvider(t *testing.T) {
 // TestAIDoctorChecksNilConfig verifies the AI section still renders with
 // built-in defaults when config failed to load (nil).
 func TestAIDoctorChecksNilConfig(t *testing.T) {
-	checks := aiDoctorChecks(nil)
+	checks := aiDoctorChecksWithProbe(nil, reachableAIProbe)
 	if findAICheck(checks, "ai api: anthropic").Name == "" {
 		t.Error("nil config should still produce the anthropic row")
 	}
@@ -261,7 +265,7 @@ func TestAIDoctorChecksIncludesChatRows(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "x")
 	t.Setenv("GEMINI_API_KEY", "x")
 
-	checks := aiDoctorChecks(nil)
+	checks := aiDoctorChecksWithProbe(nil, reachableAIProbe)
 
 	anthropicChat := findAICheck(checks, "ai chat: anthropic")
 	if anthropicChat.Name == "" {
@@ -290,7 +294,7 @@ func TestAIDoctorChecksChatRowMissingKeyIsWarn(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	cfg := config.Defaults()
 
-	checks := aiDoctorChecks(&cfg)
+	checks := aiDoctorChecksWithProbe(&cfg, reachableAIProbe)
 	c := findAICheck(checks, "ai chat: anthropic")
 	if c.Name == "" {
 		t.Fatal("ai chat: anthropic row missing")
@@ -312,7 +316,7 @@ func TestAIDoctorChecksFlagsDefaultProviderChatRow(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.AI.Provider = "anthropic"
 
-	checks := aiDoctorChecks(&cfg)
+	checks := aiDoctorChecksWithProbe(&cfg, reachableAIProbe)
 	c := findAICheck(checks, "ai chat: anthropic")
 	if c.Name == "" {
 		t.Fatal("ai chat: anthropic row missing")

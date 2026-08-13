@@ -179,6 +179,166 @@ func buildSwitchCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 	return testRoot, buf
 }
 
+func TestSwitch_WorktreeConflictNamesBranchAndDirectoryAndCompletesMove(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("tracked.txt", "original")
+	repo.Commit("add tracked fixture")
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	if _, stderr, err := runner.Run(context.Background(), "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected worktree conflict")
+	}
+	body := err.Error()
+	for _, want := range []string{
+		`branch "develop"`,
+		`worktree directory "release prep"`,
+		"currently checks it out",
+		"only one worktree at a time",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("error body missing %q:\n%s", want, body)
+		}
+	}
+
+	hint := HintFrom(err)
+	quotedPath := statusShellQuote(canonPath(wtPath))
+	if !strings.Contains(hint, "continue there → cd "+quotedPath) {
+		t.Errorf("hint does not offer the existing worktree:\n%s", hint)
+	}
+	wantMove := "gk worktree remove " + quotedPath + " && gk switch develop"
+	if !strings.Contains(hint, "move it here → "+wantMove) {
+		t.Errorf("hint does not complete remove + switch:\n%s", hint)
+	}
+	remedies := RemediesFrom(err)
+	if len(remedies) != 1 || remedies[0].Command != wantMove || remedies[0].Safety != "destructive" {
+		t.Errorf("remedies = %+v, want one destructive complete move command", remedies)
+	}
+}
+
+func TestSwitch_DirtyWorktreeConflictExplainsHowToReturn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("tracked.txt", "original")
+	repo.Commit("add tracked fixture")
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release-prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	if _, stderr, err := runner.Run(context.Background(), "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "tracked.txt"), []byte("unfinished"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected worktree conflict")
+	}
+	if !strings.Contains(err.Error(), "has uncommitted changes") {
+		t.Errorf("error body should expose dirty state: %s", err)
+	}
+	want := "after commit/stash there, return here and move it → cd " + statusShellQuote(canonPath(repo.Dir)) +
+		" && gk worktree remove " + statusShellQuote(canonPath(wtPath)) + " && gk switch develop"
+	if hint := HintFrom(err); !strings.Contains(hint, want) {
+		t.Errorf("dirty hint does not explain the complete return path:\n%s", hint)
+	}
+	if remedies := RemediesFrom(err); len(remedies) != 0 {
+		t.Errorf("dirty worktree must not expose an automatic removal remedy: %+v", remedies)
+	}
+}
+
+func TestSwitch_StaleWorktreeRegistrationOffersPruneAndRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release-prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	if _, stderr, err := runner.Run(context.Background(), "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatalf("remove worktree directory fixture: %v", err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected stale worktree conflict")
+	}
+	for _, want := range []string{"stale worktree registration", `"release-prep"`, "still reserves it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error body missing %q:\n%s", want, err)
+		}
+	}
+	wantCommand := "gk worktree prune && gk switch develop"
+	if hint := HintFrom(err); !strings.Contains(hint, "clear the stale registration and retry → "+wantCommand) {
+		t.Errorf("stale hint does not complete prune + retry:\n%s", hint)
+	}
+	remedies := RemediesFrom(err)
+	if len(remedies) != 1 || remedies[0].Command != wantCommand || remedies[0].Safety != "safe" {
+		t.Errorf("remedies = %+v, want one safe prune + retry command", remedies)
+	}
+}
+
+func TestSwitch_LockedWorktreeDoesNotOfferRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release-prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if _, stderr, err := runner.Run(ctx, "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+	if _, stderr, err := runner.Run(ctx, "worktree", "lock", "--reason", "active release", wtPath); err != nil {
+		t.Fatalf("worktree lock: %s: %v", stderr, err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop")
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected locked worktree conflict")
+	}
+	if !strings.Contains(err.Error(), "(locked)") {
+		t.Errorf("error body should expose lock state: %s", err)
+	}
+	hint := HintFrom(err)
+	if !strings.Contains(hint, "finish the process using that worktree, then rerun gk switch develop") {
+		t.Errorf("locked hint should explain how to leave safely:\n%s", hint)
+	}
+	if strings.Contains(hint, "worktree remove") {
+		t.Errorf("locked hint must not suggest removal:\n%s", hint)
+	}
+	if remedies := RemediesFrom(err); len(remedies) != 0 {
+		t.Errorf("locked worktree must not expose an automatic remedy: %+v", remedies)
+	}
+}
+
 // TestListRemoteOnlyBranches verifies the picker ingredient:
 //   - HEAD aliases (refs/remotes/origin/HEAD) are filtered
 //   - entries whose short name matches an existing local branch are hidden

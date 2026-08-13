@@ -27,6 +27,8 @@ type aiCLISpec struct {
 	name string
 }
 
+type aiAPIProbe func(endpoint string) (reachable bool, status int, err error)
+
 // defaultAIAPISpecs and defaultAICLISpecs enumerate the providers gk
 // can drive. Kept as package-level data so both the live check path and
 // the tests share one source of truth.
@@ -51,6 +53,13 @@ var defaultAICLISpecs = []aiCLISpec{
 // that case the built-in defaults are used so the AI section still
 // renders.
 func aiDoctorChecks(cfg *config.Config) []doctorCheck {
+	return aiDoctorChecksWithProbe(cfg, probeAIAPI)
+}
+
+// aiDoctorChecksWithProbe keeps provider/config classification independent
+// from the network reachability mechanism. Production uses probeAIAPI; tests
+// inject a deterministic probe so unit results never depend on provider uptime.
+func aiDoctorChecksWithProbe(cfg *config.Config, probe aiAPIProbe) []doctorCheck {
 	defaultProvider := ""
 	if cfg != nil {
 		defaultProvider = strings.TrimSpace(cfg.AI.Provider)
@@ -69,7 +78,7 @@ func aiDoctorChecks(cfg *config.Config) []doctorCheck {
 			keyFromConfig = configAPIKeyFor(cfg, spec.name) != ""
 		}
 		checks = append(checks, decorateDefaultProvider(
-			checkAIAPIProvider(spec.name, spec.envKey, endpoint, overridden, keyFromConfig),
+			checkAIAPIProviderWithProbe(spec.name, spec.envKey, endpoint, overridden, keyFromConfig, probe),
 			spec.name, defaultProvider))
 
 		keyPresent := os.Getenv(spec.envKey) != "" || keyFromConfig
@@ -264,6 +273,10 @@ func checkAIProvider(name string) doctorCheck {
 //	5xx                         → endpoint is up but degraded
 //	dial / timeout / TLS errors → network blocked
 func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden, keyFromConfig bool) doctorCheck {
+	return checkAIAPIProviderWithProbe(name, envKey, endpoint, endpointOverridden, keyFromConfig, probeAIAPI)
+}
+
+func checkAIAPIProviderWithProbe(name, envKey, endpoint string, endpointOverridden, keyFromConfig bool, probe aiAPIProbe) doctorCheck {
 	endpointNote := "endpoint"
 	if endpointOverridden {
 		endpointNote = "custom endpoint"
@@ -297,7 +310,7 @@ func checkAIAPIProvider(name, envKey, endpoint string, endpointOverridden, keyFr
 		}
 	}
 
-	reachable, status, err := probeAIAPI(endpoint)
+	reachable, status, err := probe(endpoint)
 	switch {
 	case reachable:
 		return doctorCheck{

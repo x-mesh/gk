@@ -1544,32 +1544,77 @@ func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) 
 	if !locked {
 		return false, nil
 	}
+	branchArg := statusShellQuote(branch)
+	pathArg := statusShellQuote(entry.Path)
+	worktreeName := filepath.Base(filepath.Clean(entry.Path))
+	if worktreeName == "." || worktreeName == string(filepath.Separator) {
+		worktreeName = entry.Path
+	}
+
+	// A deleted worktree can remain registered until `git worktree prune`
+	// clears its administrative record. Name that case explicitly: otherwise
+	// a user who never intentionally checked out the branch in a worktree sees
+	// what looks like a false positive and is told to cd into a path that no
+	// longer exists.
+	_, statErr := os.Stat(entry.Path)
+	if entry.Prunable || os.IsNotExist(statErr) {
+		command := fmt.Sprintf("gk worktree prune && gk switch %s", branchArg)
+		return false, WithRemedy(
+			fmt.Errorf(
+				"cannot switch to branch %q here: stale worktree registration %q still reserves it\n  registered path: %s\nGit permits a local branch to be checked out in only one worktree at a time",
+				branch, worktreeName, entry.Path,
+			),
+			"clear the stale registration and retry → "+command,
+			errRemedy{Command: command, Safety: "safe"},
+		)
+	}
 	dirtyMap := loadWorktreeDirtyStates(ctx, switchWorktreeMap{
 		byBranch: map[string]WorktreeEntry{entry.Branch: entry},
 		others:   []WorktreeEntry{entry},
 	})
-	// Present BOTH paths — go there to work, or remove to switch here.
-	// Telling users only how to remove a worktree feels like the wrong
-	// answer to "I just want to switch branches" — `cd` is often the
-	// less destructive choice when their real intent is to use that branch.
+	// Present BOTH paths — go there to work, or release the branch and finish
+	// the requested switch here. Spell out that the directory name and checked
+	// out branch are separate things: a release worktree named "release-prep"
+	// can legitimately be the place currently checking out "develop".
 	_, isDirty := dirtyMap[entry.Branch]
 	state := ""
 	if isDirty {
-		state = " (has uncommitted changes there)"
+		state = "has uncommitted changes"
 	}
-	hint := fmt.Sprintf(
-		"work on it there → cd %s\n        bring it here → gk worktree remove %s",
-		entry.Path, entry.Path,
+	if entry.Locked {
+		if state != "" {
+			state += ", "
+		}
+		state += "locked"
+	}
+	pathLine := "  path: " + entry.Path
+	if state != "" {
+		pathLine += " (" + state + ")"
+	}
+	body := fmt.Errorf(
+		"cannot switch to branch %q here: worktree directory %q currently checks it out\n%s\nGit permits a local branch to be checked out in only one worktree at a time",
+		branch, worktreeName, pathLine,
 	)
-	if isDirty {
-		hint = fmt.Sprintf(
-			"work on it there → cd %s\n        bring it here → commit/stash there, then gk worktree remove %s",
-			entry.Path, entry.Path,
-		)
+	hint := fmt.Sprintf("continue there → cd %s", pathArg)
+	if entry.Locked {
+		hint += "\nto move it here → finish the process using that worktree, then rerun gk switch " + branchArg
+		return false, WithHint(body, hint)
 	}
-	return false, WithHint(
-		fmt.Errorf("branch %q is checked out in another worktree at %s%s", branch, entry.Path, state),
+	if isDirty {
+		moveCommand := fmt.Sprintf("gk worktree remove %s && gk switch %s", pathArg, branchArg)
+		if wt.current.Path != "" {
+			moveCommand = fmt.Sprintf("cd %s && %s", statusShellQuote(wt.current.Path), moveCommand)
+		}
+		hint += "\nafter commit/stash there, return here and move it → " + moveCommand
+		return false, WithHint(body, hint)
+	}
+
+	moveCommand := fmt.Sprintf("gk worktree remove %s && gk switch %s", pathArg, branchArg)
+	hint += "\nmove it here → " + moveCommand
+	return false, WithRemedy(
+		body,
 		hint,
+		errRemedy{Command: moveCommand, Safety: "destructive"},
 	)
 }
 

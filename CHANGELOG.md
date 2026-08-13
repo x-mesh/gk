@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.138.0] - 2026-08-13
+
+### Added
+
+- **agents:** default contract install to global scope
+
+### Fixed
+
+- **cli:** clarify occupied worktree recovery
+
 ## [0.137.0] - 2026-08-12
 
 ### Added

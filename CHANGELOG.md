@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **릴리즈 문서와 배포 안전망을 현재 `gk ship` 계약에 맞췄다.** 루트 MIT `LICENSE`를 배포 아카이브에 포함하고, 수동 태그·Formula 기준으로
+  남아 있던 릴리스 문서를 dry-run/CI watch/cask 검증 흐름으로 교체했다.
+  build-tag 때문에 기본 테스트에서 빠지던 E2E 스위트는 CI와 ship preflight에
+  추가했으며, 동시에 사용할 수 없는 Docker `--rm --restart=always` 예제와
+  실제로 배포되지 않는 GHCR 이미지 안내도 바로잡았다. 구현이 끝난 뒤에도
+  Draft/미릴리스로 남아 있던 설계 문서는 역사적 기록임을 표시하고 현재 명령
+  문서로 연결했다. 이 검증에서 드러난 Git 2.38/2.39 `precheck` fallback도
+  고쳤다 — 구버전 Git에 없는 `--merge-base`를 재시도하던 대신 legacy
+  three-tree 출력에서 실제 충돌 경로를 읽는다.
+
 ## [0.139.0] - 2026-08-18
 
 ### Added
@@ -34,7 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gk pr create`가 detached HEAD에서 존재하지 않는 명령을 안내하던 문제.** remedy가 `gk branch new <name>`를 지목했는데 그런 동사는 없다 — 에이전트 규약이 remedies 실행을 지시하므로 유령 명령은 루프를 즉시 깬다. 실존 경로 `gk sw -c <name>`로 교정했다.
 
 - **clean 피커의 `[ambiguous]`가 스스로를 설명한다.** cherry가 `+`/`-` 혼합(일부만 반영)이고 콘텐츠 검사도 불일치인 브랜치는 기본 미선택인데, 맨숭한 상태 토큰만으로는 왜 미선택인지 알 수 없었다. `[partially applied — verify before deleting]` 라벨이 이유를 직접 말한다.
-
 ## [0.138.0] - 2026-08-13
 
 ### Added

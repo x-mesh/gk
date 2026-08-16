@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **릴리즈 문서와 배포 안전망을 현재 `gk ship` 계약에 맞췄다.** 누락됐던
+  루트 MIT `LICENSE`를 배포 아카이브에 포함하고, 수동 태그·Formula 기준으로
+  남아 있던 릴리스 문서를 dry-run/CI watch/cask 검증 흐름으로 교체했다.
+  build-tag 때문에 기본 테스트에서 빠지던 E2E 스위트는 CI와 ship preflight에
+  추가했으며, 동시에 사용할 수 없는 Docker `--rm --restart=always` 예제와
+  실제로 배포되지 않는 GHCR 이미지 안내도 바로잡았다. 구현이 끝난 뒤에도
+  Draft/미릴리스로 남아 있던 설계 문서는 역사적 기록임을 표시하고 현재 명령
+  문서로 연결했다. 이 검증에서 드러난 Git 2.38/2.39 `precheck` fallback도
+  고쳤다 — 구버전 Git에 없는 `--merge-base`를 재시도하던 대신 legacy
+  three-tree 출력에서 실제 충돌 경로를 읽는다.
+
 ## [0.138.0] - 2026-08-13
 
 ### Added

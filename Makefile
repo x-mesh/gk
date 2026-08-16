@@ -78,9 +78,9 @@ lint:
 	golangci-lint run
 
 # `make check` mirrors what the CI jobs run end-to-end (vet → build → test
-# → lint). Run this before `gk ship` to catch lint/format regressions
+# → e2e → lint). Run this before `gk ship` to catch lint/format regressions
 # locally instead of waiting for the CI lint job to fail post-tag.
-check: vet build test lint
+check: vet build test test-e2e lint
 	@echo "check: ok"
 
 fmt:
@@ -102,7 +102,7 @@ release-snapshot:
 help:
 	@echo "Targets: build, install, install-gk, uninstall, uninstall-gk, test, test-pbt, test-provider, test-privacy, test-cli, test-integration, test-e2e, lint, fmt, vet, tidy, check, clean, release-snapshot"
 	@echo ""
-	@echo "  check             vet + build + test + lint — same gates the CI runs"
+	@echo "  check             vet + build + test + e2e + lint — same gates the CI runs"
 	@echo ""
 	@echo "  test              run all tests"
 	@echo "  test-pbt          property-based tests only (provider + privacy gate)"

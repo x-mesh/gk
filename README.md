@@ -160,7 +160,7 @@ gk hooks install --all       # wire commit-msg + pre-push + pre-commit hooks
 gk lint-commit --staged    # validate commit message vs Conventional Commits
 gk branch-check            # enforce branch naming rules
 gk preflight               # run the configured check sequence
-gk ship dry-run           # preview squash/version/changelog/tag/push plan
+gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 ```
 
 ## Commands

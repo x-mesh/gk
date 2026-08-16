@@ -16,7 +16,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gk ./cmd/gk
 # --- runtime -----------------------------------------------------------------
 # gk follow shells out to git (and ssh for private remotes), so the runtime
 # carries git + openssh-client + CA certs and nothing else. Hooks that need a
-# toolchain (make, node, …) should `FROM ghcr.io/x-mesh/gk-follow` and add it.
+# toolchain (make, node, …) should extend this locally built image (or an image
+# published by its operator) and add it. This repository does not publish a
+# container image as part of the release workflow.
 FROM alpine:3.20
 RUN apk add --no-cache git openssh-client ca-certificates
 COPY --from=build /out/gk /usr/local/bin/gk
@@ -28,5 +30,5 @@ WORKDIR /repo
 # `docker run img` → `gk follow` (the current branch). Override the branch and
 # hook at run time:
 #   docker run --rm -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
-#     ghcr.io/x-mesh/gk-follow release -- make deploy
+#     gk-follow release -- make deploy
 ENTRYPOINT ["gk", "follow"]

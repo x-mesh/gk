@@ -56,6 +56,28 @@ func TestParseMergeTreeNames_EmptyTrailingLines(t *testing.T) {
 	}
 }
 
+func TestParseLegacyMergeTreeConflicts(t *testing.T) {
+	out := []byte(`changed in both
+  base   100644 aaaaa old name.txt
+  our    100644 bbbbb old name.txt
+  their  100644 ccccc old name.txt
+@@ -1 +1,5 @@
++<<<<<<< .our
+ ours
++=======
+ theirs
++>>>>>>> .their
+added in remote
+  their  100644 ddddd clean.txt
+@@ -0,0 +1 @@
++clean
+`)
+	got := parseLegacyMergeTreeConflicts(out)
+	if len(got) != 1 || got[0] != "old name.txt" {
+		t.Fatalf("got %v, want [old name.txt]", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Unit — guardRef
 // ---------------------------------------------------------------------------
@@ -573,13 +595,18 @@ func TestPrecheckConflictDetails_FunctionNames(t *testing.T) {
 	}
 	repo := makeFuncConflictRepo(t)
 	runner := &git.ExecRunner{Dir: repo.Dir}
+	base := strings.TrimSpace(repo.RunGit("merge-base", "HEAD", "feature"))
+	scan, scanErr := scanMergeConflictsTree(context.Background(), runner, base, "HEAD", "feature")
+	if scanErr != nil {
+		t.Fatalf("scanMergeConflictsTree: %v", scanErr)
+	}
+	if scan.treeOID == "" {
+		t.Skip("git too old to expose a merged tree for symbol details")
+	}
 
 	res, err := collectPrecheck(context.Background(), runner, "feature", "")
 	if err != nil {
 		t.Fatalf("collectPrecheck: %v", err)
-	}
-	if len(res.Conflicts) == 1 && strings.HasPrefix(res.Conflicts[0], "(git <2.40") {
-		t.Skip("git too old to enumerate paths / read merge-tree blobs")
 	}
 	syms := res.symbolsFor("calc.go")
 	if len(syms) != 1 || syms[0] != "Add" {

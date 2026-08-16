@@ -28,7 +28,9 @@ preflight:
     - name: lint
       command: golangci-lint run
     - name: test
-      command: go test ./...
+      command: go test ./... -race -cover
+    - name: e2e
+      command: go test -tags e2e ./internal/e2e/ -count=1
 
 ship:
   # Run the post-tag pipeline. false returns right after the push and the

@@ -1,129 +1,112 @@
 # Releasing gk
 
-## First-time setup
+`gk ship` is the release entry point. It owns preflight checks, version
+selection, the release commit, tag and branch pushes, GitHub Actions tracking,
+and post-release artifact verification. Do not create or push release tags by
+hand during the normal release flow.
 
-### 1. Create the Homebrew tap repository
+## One-time setup
 
-Create a new GitHub repository named `homebrew-tap` under the user/org that will own the tap:
+1. The `x-mesh/homebrew-tap` repository must contain a `Casks/` directory.
+2. Create a fine-grained PAT scoped to that repository with **Contents: Read
+   and write** and **Metadata: Read-only**.
+3. Store it in this repository as `HOMEBREW_TAP_GITHUB_TOKEN`:
 
-```bash
-gh repo create <owner>/homebrew-tap --public --description "Homebrew tap for gk"
-```
+   ```bash
+   gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R x-mesh/gk
+   gh secret list -R x-mesh/gk
+   ```
 
-Initialize with a `Formula/` directory and a placeholder README.
+The release workflow uses `GITHUB_TOKEN` for the GitHub Release and the
+separate PAT to update `x-mesh/homebrew-tap/Casks/gk.rb`.
 
-> **Note**: Update `repository.owner` and `homepage` in `.goreleaser.yaml` to match your actual GitHub username/organization before releasing.
+## Prepare the release
 
-### 2. Generate a PAT for tap updates
-
-The default `GITHUB_TOKEN` cannot push to a different repository. Create a fine-grained PAT with write permissions to the tap repo:
-
-1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
-2. Repository access: only the `<owner>/homebrew-tap` repo
-3. Permissions:
-   - Contents: **Read and write**
-   - Metadata: **Read-only**
-4. Copy the generated token
-
-### 3. Add the secret to the gk repository
+Build the workspace binary once and use it for the entire release. The
+installed `gk` may be the previous release.
 
 ```bash
-gh secret set HOMEBREW_TAP_GITHUB_TOKEN --body "<token>" -R <owner>/gk
+make build
+./bin/gk ship --dry-run --json
 ```
 
-Verify the secret is set:
+The plan reports the inferred SemVer bump, target version, release range,
+CHANGELOG draft, branch/tag operations, and configured watch/verify steps. If
+the working tree is dirty, finish and commit that work before planning again.
+
+Review `CHANGELOG.md` under `[Unreleased]`. When the generated draft needs
+editing, write the final release notes there, commit the documentation change,
+then rerun the plan so it describes the exact commit that will ship.
+
+To request a specific bump or version:
 
 ```bash
-gh secret list -R <owner>/gk
+./bin/gk ship patch --dry-run --json
+./bin/gk ship minor --dry-run --json
+./bin/gk ship --version 0.137.0 --dry-run --json
 ```
 
-## Local validation
+## Publish
 
-### Install goreleaser (macOS)
+After reviewing the final plan:
 
 ```bash
-brew install goreleaser
+./bin/gk ship -y
 ```
 
-### Validate configuration
+The repository-local `.gk.yaml` defines the release gates. A successful ship:
+
+1. runs commit/branch/conflict checks, lint, unit/race tests, and E2E tests;
+2. creates the release commit and tag and performs guarded pushes;
+3. waits for `.github/workflows/release.yml`;
+4. verifies the GitHub Release assets;
+5. verifies the Homebrew cask version and published checksums.
+
+Do not use `--skip-preflight` to force a release. Fix the failure, commit it,
+and rerun the dry-run plan.
+
+## Local packaging check
+
+GoReleaser can validate packaging without publishing:
 
 ```bash
 goreleaser check
-```
-
-### Local snapshot build (no publish)
-
-```bash
 goreleaser release --snapshot --clean
-# or: make release-snapshot  (if Makefile target exists)
 ```
 
-Produces binaries in `dist/`. Good for pre-tag verification:
+Archives are written to `dist/` as lowercase, versionless stable names such as
+`gk_darwin_arm64.tar.gz` and `gk_linux_amd64.tar.gz`, together with
+`checksums.txt`. They include the `gk` binary and `LICENSE`.
 
-```
-dist/
-  gk_Darwin_arm64.tar.gz
-  gk_Darwin_x86_64.tar.gz
-  gk_Linux_arm64.tar.gz
-  gk_Linux_x86_64.tar.gz
-  checksums.txt
-```
+## Verify or resume
 
-Test the built binary:
+`gk ship -y` already waits and verifies. If an external failure interrupts the
+watch after the tag was pushed, do not create the tag again. Inspect and rerun
+the existing workflow, then execute the failed verification command printed by
+ship. Useful checks are:
 
 ```bash
-./dist/gk_darwin_arm64_v1/gk --version
+TAG="$(git describe --tags --abbrev=0)"
+gh run list --branch "$TAG" --limit 5
+gh release view "$TAG" -R x-mesh/gk
+brew info --cask x-mesh/tap/gk
 ```
 
-## Releasing
+## Failure guide
 
-### Publishing v0.1.0
+| Symptom | Action |
+|---|---|
+| preflight lint/test/E2E failure | Fix and commit the code; rerun the plan |
+| no workflow found after the discovery window | Confirm the tag exists on `origin`, then inspect Actions; do not re-ship |
+| release workflow failure | Fix the workflow cause and rerun the existing run |
+| tap-cask verification failure | Inspect GoReleaser logs and `Casks/gk.rb`; rerun verification after correction |
+| checksum mismatch | Treat as a failed release; compare the Release asset and cask SHA before installing |
+| macOS Gatekeeper removes the binary | Check the cask post-install `xattr` hook; current releases are not notarized |
 
-```bash
-# Ensure clean working tree
-git status
+## Exceptional rollback
 
-# Create and push the tag
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow (`.github/workflows/release.yml`) will automatically:
-
-1. Validate `.goreleaser.yaml` via `goreleaser check`
-2. Build darwin/linux x amd64/arm64 archives
-3. Create the GitHub Release with assets and `checksums.txt`
-4. Update `<owner>/homebrew-tap` with `Formula/gk.rb`
-
-### Verifying the release
-
-After the workflow completes:
-
-```bash
-brew tap <owner>/tap
-brew install gk
-gk --version
-```
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `403` on tap push | Default GITHUB_TOKEN used | Ensure `HOMEBREW_TAP_GITHUB_TOKEN` secret is set |
-| `not a repository` | Tap repo not created | Create `<owner>/homebrew-tap` first |
-| `checksums.txt` missing | goreleaser failed mid-run | Check Actions job logs; re-run workflow |
-| macOS Gatekeeper warning | Unsigned binary | Users install via `brew` (no quarantine) |
-| `goreleaser check` fails | Config syntax error | Run `goreleaser check` locally and fix errors |
-
-## Rolling back a release
-
-```bash
-# Delete tag locally and remote
-git tag -d v0.1.0
-git push origin :refs/tags/v0.1.0
-
-# Delete the GitHub Release via gh
-gh release delete v0.1.0 -y
-
-# Remove the formula from tap (manual PR or direct push to homebrew-tap repo)
-```
+Published tags are immutable during normal operation. Rollback deletes public
+release state and therefore requires explicit maintainer approval. Prefer a
+follow-up patch release whenever possible. If deletion is explicitly approved,
+remove the GitHub Release and remote tag deliberately and reconcile the
+Homebrew cask; never force-push `main`.

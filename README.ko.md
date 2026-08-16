@@ -140,7 +140,7 @@ gk hooks install --all       # commit-msg + pre-push + pre-commit 훅 연결
 gk lint-commit --staged    # Conventional Commits 기준으로 커밋 메시지 검증
 gk branch-check            # 브랜치 이름 규칙 적용
 gk preflight               # 설정된 검사 순서 실행
-gk ship dry-run            # squash/version/changelog/tag/push 플랜 미리보기
+gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보기
 ```
 
 ## 명령어
@@ -184,7 +184,7 @@ gk ship dry-run            # squash/version/changelog/tag/push 플랜 미리보�
 | 명령어 | 설명 |
 |---|---|
 | `gk push` | 가드된 push: 시크릿 스캔 + 보호 브랜치 적용; `--force`는 `--force-with-lease`로 라우팅; `-n`/`--skip-scan`으로 시크릿 스캔 생략. GitHub repo가 아직 없어 push가 실패하면 `--create-remote`(또는 대화형 확인 프롬프트)로 `gh`를 통해 생성하고(기본 private, `--public`으로 공개) 재시도한다 |
-| `gk ship` | 릴리즈 ship 게이트: status/dry-run/squash 모드, SemVer 추론, 버전/CHANGELOG 릴리즈 커밋, 가드된 브랜치/태그 push. 태그 push가 릴리즈 워크플로 트리거 |
+| `gk ship` | 릴리즈 ship 게이트: `--dry-run --json` 플랜, SemVer 추론, 버전/CHANGELOG 릴리즈 커밋, 가드된 브랜치/태그 push, CI watch와 아티팩트·Homebrew cask 검증 |
 | `gk precheck <target>` | `git merge-tree`로 드라이런 충돌 스캔; 충돌 시 exit 3; CI용 `--json` |
 | `gk preflight` | 설정된 검사 순서 실행 (`commit-lint`, `branch-check`, `no-conflict`, 또는 쉘 명령) |
 | `gk lint-commit` | Conventional Commits 기준으로 커밋 메시지 검증; `--staged`, `--file PATH`, `<rev-range>` |

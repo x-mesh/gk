@@ -34,7 +34,7 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `gk ship` | Interactive release: print the plan, run preflight, update metadata, commit, tag, push |
 | `gk ship auto` | Same as default, but skips confirmation (`--yes`) |
 | `gk ship status` | Read-only summary of commits since the latest tag and the inferred next tag |
-| `gk ship dry-run` | Full plan preview without preflight, metadata writes, tag, or push |
+| `gk ship --dry-run` | Full plan preview without preflight, metadata writes, tag, or push |
 | `gk ship squash` | Squash commits since the latest tag into one local commit; no bump, tag, or push |
 | `gk ship patch\|minor\|major` | Release with an explicit bump type |
 
@@ -126,7 +126,7 @@ With `wait: false` (or `--wait=false`) ship ends at the push: the release is pub
 
 ```bash
 # Preview the release without mutating anything
-gk ship dry-run
+gk ship --dry-run
 
 # Read current ship status
 gk ship status
@@ -4612,13 +4612,15 @@ root `Dockerfile` that builds a minimal image (git + ssh + gk) with
 
 ```
 docker build -t gk-follow .
-docker run --rm --restart=always \
+docker run --restart=always \
   -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
   gk-follow -- make deploy
 ```
 
 The base image is intentionally minimal; a hook that needs a toolchain
-(`make`, `node`, …) should `FROM` it and add what it needs.
+(`make`, `node`, …) should extend the local image (or an image you publish
+yourself) and add what it needs. Use `--rm` instead of `--restart=always` for a
+one-shot local run; Docker does not allow both options together.
 
 ---
 

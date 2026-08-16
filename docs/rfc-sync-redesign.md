@@ -1,8 +1,12 @@
 # RFC: `gk sync` Redesign — From Upstream-FF to Base Catch-Up
 
+> **Historical RFC.** The redesign has shipped and the command may have evolved
+> further since this proposal. See `gk sync --help`, `README.md`, and
+> `docs/commands.md` for the current contract.
+
 | Field | Value |
 |-------|-------|
-| Status | Draft |
+| Status | Implemented; retained for rationale |
 | Author | improve-ux |
 | Date | 2026-04-29 |
 | Target | v0.7 (post-rebase, pre-v1.0) |
@@ -125,7 +129,8 @@ Possible. Cleaner than (B) but requires teaching the dual-mode behaviour and the
 
 ## Migration plan (overview)
 
-Detailed in [RFC: sync migration plan](./rfc-sync-migration.md) (= deliverable (c)).
+The migration sequence is summarized below; the originally planned separate
+`rfc-sync-migration.md` was never added to the repository.
 
 - v0.7: ship new sync with `--strategy ff-only` and an `--upstream-only` flag that preserves the old behaviour byte-for-byte. Emit a one-line deprecation hint when `--upstream-only` is used.
 - v0.8: keep `--upstream-only` working but mark it deprecated in `--help`.

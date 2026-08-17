@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -120,6 +122,34 @@ func runAICommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner,
 	if err != nil {
 		return err
 	}
+	return applyCommitPlan(cmd, ctx, runner, cfg, ai, flags, plan)
+}
+
+// runAICommitMessage is the one-commit shorthand for the declarative plan
+// path. The caller supplies both pieces of judgment (message and exact files),
+// while applyCommitPlan remains the single implementation of validation,
+// guards, backup refs, application, and the agent result contract.
+func runAICommitMessage(cmd *cobra.Command, ctx context.Context, runner git.Runner, cfg *config.Config, ai config.AIConfig, flags aiCommitFlags, paths []string) error {
+	if len(paths) == 0 {
+		return WithHint(
+			fmt.Errorf("commit: --message requires at least one file after --"),
+			"use gk commit -m 'type(scope): subject' -- <file>...; unrelated dirty files stay untouched",
+		)
+	}
+
+	files := make([]string, 0, len(paths))
+	for _, path := range paths {
+		clean := filepath.ToSlash(filepath.Clean(path))
+		if filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("commit: --message file %q must be a repo-relative file path", path)
+		}
+		files = append(files, clean)
+	}
+
+	plan := commitPlanJSON{Schema: 1, Commits: []commitPlanEntryJSON{{
+		Message: strings.Join(flags.messages, "\n\n"),
+		Files:   files,
+	}}}
 	return applyCommitPlan(cmd, ctx, runner, cfg, ai, flags, plan)
 }
 

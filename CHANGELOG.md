@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gk commit`에 메시지와 파일을 이미 정한 호출자를 위한 단일 커밋 경로를 추가했다.** 이제 `gk commit -m 'fix(scope): subject' -- file...`가 임시 JSON 파일이나 AI 호출 없이 기존 deterministic plan의 commitlint·secret 검사·backup ref를 그대로 사용한다. `-m`은 본문 문단을 위해 반복할 수 있고, 파일 누락으로 작업 트리 전체를 우발적으로 담지 않도록 명시적 repo-relative 경로를 요구한다. 함께 드러난 `--plan -` 빈 stdin도 일반 JSON EOF 대신 실행 가능한 `--plan-template` remedy가 포함된 오류로 바꿨다.
+
 - **릴리즈 문서와 배포 안전망을 현재 `gk ship` 계약에 맞췄다.** 루트 MIT `LICENSE`를 배포 아카이브에 포함하고, 수동 태그·Formula 기준으로
   남아 있던 릴리스 문서를 dry-run/CI watch/cask 검증 흐름으로 교체했다.
   build-tag 때문에 기본 테스트에서 빠지던 E2E 스위트는 CI와 ship preflight에
@@ -46,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gk pr create`가 detached HEAD에서 존재하지 않는 명령을 안내하던 문제.** remedy가 `gk branch new <name>`를 지목했는데 그런 동사는 없다 — 에이전트 규약이 remedies 실행을 지시하므로 유령 명령은 루프를 즉시 깬다. 실존 경로 `gk sw -c <name>`로 교정했다.
 
 - **clean 피커의 `[ambiguous]`가 스스로를 설명한다.** cherry가 `+`/`-` 혼합(일부만 반영)이고 콘텐츠 검사도 불일치인 브랜치는 기본 미선택인데, 맨숭한 상태 토큰만으로는 왜 미선택인지 알 수 없었다. `[partially applied — verify before deleting]` 라벨이 이유를 직접 말한다.
+
 ## [0.138.0] - 2026-08-13
 
 ### Added

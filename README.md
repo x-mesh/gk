@@ -289,7 +289,7 @@ See [docs/commands.md](docs/commands.md) for full flag reference and [CHANGELOG.
 
 ## AI commit
 
-`gk commit` looks at the current working tree (staged + unstaged + untracked), asks an AI to split the changes into separate commits, and applies one Conventional Commit per group.
+`gk commit` looks at the current working tree (staged + unstaged + untracked), asks an AI to split the changes into separate commits, and applies one Conventional Commit per group. When the message and exact files are already known, `-m/--message -- <files...>` skips the AI and creates one deterministic commit through the same validation and safety gates.
 
 ### Provider setup
 
@@ -313,6 +313,7 @@ Run `gk doctor --ai` (or `gk doctor --verbose`) to verify each provider's instal
 
 ```
 gk commit [flags]
+gk commit -m 'fix(api): validate input' -- api.go api_test.go
 
       --abort                      restore HEAD to the latest ai-commit backup ref and exit
   -S, --allow-secret-kind strings  suppress secret findings of the given kind (repeatable; 'all' bypasses every finding)
@@ -322,6 +323,7 @@ gk commit [flags]
       --force-wip                  unwrap WIP chain even when some commits are already pushed (rewrites pushed history; requires force-push afterward)
       --include-unstaged           include unstaged + untracked changes (default true)
       --lang string                override ai.lang (en|ko|...)
+  -m, --message stringArray        create one deterministic commit with this message and the files after -- (repeat for body paragraphs)
   -n, --no-verify                  bypass the noise + secret guards and the privacy-gate abort threshold (secrets are reported, then committed; payload redaction to remote AI still applies)
       --no-wip-unwrap              skip detection/unwrap of WIP-like commits in HEAD chain
       --provider string            override ai.provider (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
@@ -418,6 +420,9 @@ gk commit --dry-run
 
 # Commit one-shot (no TUI).
 gk commit --force --provider gemini
+
+# The message and exact file set are already decided: no AI or plan file.
+gk commit -m 'fix(api): validate input' -- api.go api_test.go
 
 # Recover from a partial failure.
 gk commit --abort

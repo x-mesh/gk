@@ -146,6 +146,44 @@ func TestRunAICommitPlan_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunAICommitMessage_ExactFilesAndRepeatedMessage(t *testing.T) {
+	withPlanJSON(t)
+	repo := dirtyThreeFiles(t)
+	before := commitCount(t, repo)
+	cmd, stdout, _ := newPlanTestCmd(t, repo.Dir)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	flags := aiCommitFlags{messages: []string{"fix(files): commit selected files", "Keep c.txt dirty."}}
+
+	err := runAICommitMessage(cmd, context.Background(), runner, planTestCfg(), planTestAI(), flags, []string{"./a.txt", "b.txt"})
+	if err != nil {
+		t.Fatalf("runAICommitMessage: %v", err)
+	}
+	if got := commitCount(t, repo) - before; got != 1 {
+		t.Fatalf("created %d commits, want 1; output=%s", got, stdout.String())
+	}
+	status := repo.RunGit("status", "--porcelain")
+	if !strings.Contains(status, "c.txt") || strings.Contains(status, "a.txt") || strings.Contains(status, "b.txt") {
+		t.Fatalf("only c.txt should remain dirty; status:\n%s", status)
+	}
+	if got := strings.TrimSpace(repo.RunGit("log", "-1", "--format=%B")); got != "fix(files): commit selected files\n\nKeep c.txt dirty." {
+		t.Fatalf("message = %q", got)
+	}
+}
+
+func TestRunAICommitMessage_RequiresExplicitRepoRelativeFiles(t *testing.T) {
+	repo := dirtyThreeFiles(t)
+	cmd, _, _ := newPlanTestCmd(t, repo.Dir)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	flags := aiCommitFlags{messages: []string{"fix(files): subject"}}
+
+	if err := runAICommitMessage(cmd, context.Background(), runner, planTestCfg(), planTestAI(), flags, nil); err == nil || !strings.Contains(err.Error(), "requires at least one file") {
+		t.Fatalf("missing files: got %v", err)
+	}
+	if err := runAICommitMessage(cmd, context.Background(), runner, planTestCfg(), planTestAI(), flags, []string{"../outside"}); err == nil || !strings.Contains(err.Error(), "repo-relative") {
+		t.Fatalf("outside path: got %v", err)
+	}
+}
+
 func TestRunAICommitPlan_DuplicateFileRejected(t *testing.T) {
 	repo := dirtyThreeFiles(t)
 	before := commitCount(t, repo)

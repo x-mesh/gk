@@ -242,7 +242,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 
 ## AI commit
 
-`gk commit`은 현재 작업 트리(staged + unstaged + untracked)를 살펴본 뒤 AI에게 의미 단위로 묶어 달라고 요청하고, 그룹마다 Conventional Commit 하나씩 만들어 적용합니다.
+`gk commit`은 현재 작업 트리(staged + unstaged + untracked)를 살펴본 뒤 AI에게 의미 단위로 묶어 달라고 요청하고, 그룹마다 Conventional Commit 하나씩 만들어 적용합니다. 메시지와 정확한 파일 집합을 이미 정했다면 `-m/--message -- <files...>`로 AI나 임시 plan 파일 없이 같은 검증·안전장치를 거쳐 단일 커밋을 만들 수 있습니다.
 
 ### Provider 설치
 
@@ -266,6 +266,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 
 ```
 gk commit [flags]
+gk commit -m 'fix(api): validate input' -- api.go api_test.go
 
       --abort                      마지막 ai-commit 백업 ref로 HEAD 복원 후 종료
   -S, --allow-secret-kind strings  지정한 종류의 secret 검출을 무시 (반복 가능; 특수값 'all'은 모든 검출을 무시)
@@ -274,6 +275,7 @@ gk commit [flags]
   -f, --force                      대화형 리뷰 없이 바로 커밋
       --include-unstaged           unstaged + untracked 포함 (기본값)
       --lang string                ai.lang 오버라이드 (en|ko|...)
+  -m, --message stringArray        이 메시지와 -- 뒤 파일들로 deterministic 단일 커밋 작성 (본문 문단은 반복 지정)
   -n, --no-verify                  노이즈·secret 가드와 privacy gate 임계값 우회 (검출은 보고 후 git 기록에 포함; 원격 AI payload의 redaction은 유지)
       --provider string            ai.provider 오버라이드 (anthropic|openai|nvidia|groq|gemini|qwen|kiro)
       --staged-only                스테이지된 변경만 대상

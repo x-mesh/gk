@@ -129,6 +129,87 @@ func TestWorktree_AddListRemove(t *testing.T) {
 	}
 }
 
+// A squash-merged worktree branch is never an ancestor of the target, so the
+// old isAncestor-only gate skipped it as "unmerged" forever. The content
+// check must admit it as a candidate, and --delete-branches must delete the
+// branch with -D (git's -d refuses non-ancestors).
+func TestWorktreeCleanup_SquashMergedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("base.txt", "base")
+	repo.Commit("base")
+
+	wtPath := filepath.Join(t.TempDir(), "sq-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "-b", wtPath, "feat/sq")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add failed: %v\nout: %s", err, buf.String())
+	}
+
+	// Two commits inside the worktree, then a GitHub-style squash merge on
+	// main: the branch's work lands as ONE commit, so it never becomes an
+	// ancestor.
+	wt := &git.ExecRunner{Dir: wtPath}
+	if err := os.WriteFile(filepath.Join(wtPath, "f1.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, wt, "add", "-A")
+	mustRun(t, wt, "commit", "-m", "c1")
+	if err := os.WriteFile(filepath.Join(wtPath, "f2.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, wt, "add", "-A")
+	mustRun(t, wt, "commit", "-m", "c2")
+	repo.RunGit("merge", "--squash", "feat/sq")
+	repo.RunGit("commit", "-m", "feat: squashed")
+
+	// Dry-run report: the worktree must be a candidate, reasoned as
+	// squash-merged (not skipped as unmerged).
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "cleanup", "--merged", "--json")
+	t.Cleanup(func() { flagJSON = false })
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree cleanup --merged failed: %v\nout: %s", err, buf2.String())
+	}
+	var report worktreeCleanupJSON
+	if err := json.Unmarshal(buf2.Bytes(), &report); err != nil {
+		t.Fatalf("parse cleanup json: %v\nout: %s", err, buf2.String())
+	}
+	if len(report.Candidates) != 1 || report.Candidates[0].Branch != "feat/sq" {
+		t.Fatalf("candidates = %+v (skipped %+v), want the squash-merged worktree", report.Candidates, report.Skipped)
+	}
+	found := false
+	for _, r := range report.Candidates[0].Reasons {
+		if r == "squash-merged" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("reasons = %v, want squash-merged", report.Candidates[0].Reasons)
+	}
+
+	// Apply: worktree removed AND branch deleted (the -D path — -d would
+	// refuse the non-ancestor).
+	flagJSON = false
+	root3, buf3 := buildWorktreeCmd(repo.Dir, "cleanup", "--merged", "--yes", "--delete-branches")
+	if err := root3.Execute(); err != nil {
+		t.Fatalf("worktree cleanup apply failed: %v\nout: %s", err, buf3.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("worktree still exists at %s (stat err=%v)", wtPath, err)
+	}
+	if out := strings.TrimSpace(repo.RunGit("branch", "--list", "feat/sq")); out != "" {
+		t.Errorf("feat/sq still exists after cleanup: %q", out)
+	}
+}
+
+func mustRun(t *testing.T, r *git.ExecRunner, args ...string) {
+	t.Helper()
+	if _, stderr, err := r.Run(context.Background(), args...); err != nil {
+		t.Fatalf("git %v: %s: %v", args, stderr, err)
+	}
+}
+
 // TestWorktreeAdd_DryRunNoSideEffect guards the fixed bug: --dry-run must
 // describe the plan without creating a worktree or branch.
 func TestWorktreeAdd_DryRunNoSideEffect(t *testing.T) {

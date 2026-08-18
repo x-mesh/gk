@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/branchclean"
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
@@ -543,11 +544,20 @@ func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git
 				skip("target-is-self")
 				continue
 			}
-			if !isAncestor(ctx, runner, e.Branch, target) {
-				skip("unmerged")
-				continue
+			if isAncestor(ctx, runner, e.Branch, target) {
+				row.Reasons = append(row.Reasons, "merged")
+			} else {
+				// A squash merge never becomes an ancestor; the content test
+				// (merging into target changes nothing) is the proof that the
+				// work landed. Check errors degrade to the old "unmerged" skip
+				// — under-claiming keeps the worktree, never removes one.
+				ok, _ := branchclean.EffectivelyMerged(ctx, runner, target, e.Branch)
+				if !ok {
+					skip("unmerged")
+					continue
+				}
+				row.Reasons = append(row.Reasons, "squash-merged")
 			}
-			row.Reasons = append(row.Reasons, "merged")
 		}
 
 		row.Action = "remove-worktree"
@@ -584,14 +594,21 @@ func applyWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git.E
 			continue
 		}
 		if deleteBranches && c.Branch != "" {
-			// The candidate already passed isAncestor(branch, target), but git's
+			// The candidate already passed the merged gate, but git's
 			// `branch -d` checks merged-ness against this runner's HEAD (or
 			// upstream), not target — so a branch merged into a non-HEAD target
 			// would be wrongly refused. Re-confirm the merge into target and
 			// force-delete only then; otherwise fall back to -d's own backstop.
+			// The content re-check covers squash-merged candidates, which are
+			// never ancestors and would fail -d despite their work having
+			// landed in target.
 			delFlag := "-d"
-			if c.Target != "" && c.Target != c.Branch && isAncestor(ctx, runner, c.Branch, c.Target) {
-				delFlag = "-D"
+			if c.Target != "" && c.Target != c.Branch {
+				if isAncestor(ctx, runner, c.Branch, c.Target) {
+					delFlag = "-D"
+				} else if ok, _ := branchclean.EffectivelyMerged(ctx, runner, c.Target, c.Branch); ok {
+					delFlag = "-D"
+				}
 			}
 			if _, stderr, derr := runner.Run(ctx, "branch", delFlag, c.Branch); derr != nil {
 				c.Error = fmt.Sprintf("delete branch %s: %s: %v", c.Branch, strings.TrimSpace(string(stderr)), derr)

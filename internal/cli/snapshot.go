@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -185,19 +186,29 @@ func snapshotTree(ctx context.Context, runner *git.ExecRunner) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Reserve a unique path inside the git dir, then remove it so git creates
-	// a fresh empty index there. add -A against an empty index records the
-	// entire working tree as it stands right now.
+	// Reserve a unique path inside the git dir for a throwaway index.
 	tmp, err := os.CreateTemp(gitDir, "gk-snapshot-index-")
 	if err != nil {
 		return "", fmt.Errorf("create temp index: %w", err)
 	}
 	tmpPath := tmp.Name()
 	tmp.Close()
-	if rmErr := os.Remove(tmpPath); rmErr != nil {
+	defer os.Remove(tmpPath)
+	// Seed it from the real index when one exists: add -A then reuses the
+	// stat cache and rehashes only changed/untracked files, instead of
+	// re-hashing the entire working tree on every snapshot (O(repo bytes)
+	// per call — the cost that matters once callers like gk discard run a
+	// snapshot per per-path operation). The resulting tree is identical
+	// either way: add -A makes the index mirror the working tree from
+	// whichever starting point. No real index (unborn repo) → remove the
+	// placeholder so git starts from a fresh empty index, the old behavior.
+	if data, rerr := os.ReadFile(filepath.Join(gitDir, "index")); rerr == nil {
+		if werr := os.WriteFile(tmpPath, data, 0o600); werr != nil {
+			return "", fmt.Errorf("seed temp index: %w", werr)
+		}
+	} else if rmErr := os.Remove(tmpPath); rmErr != nil {
 		return "", fmt.Errorf("reset temp index: %w", rmErr)
 	}
-	defer os.Remove(tmpPath)
 
 	idx := &git.ExecRunner{Dir: runner.Dir, ExtraEnv: []string{"GIT_INDEX_FILE=" + tmpPath}}
 	if _, stderr, e := idx.Run(ctx, "add", "-A"); e != nil {

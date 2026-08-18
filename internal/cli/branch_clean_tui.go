@@ -34,6 +34,11 @@ func FormatCandidateLabel(c branchclean.CleanCandidate) string {
 	b.WriteString("  [")
 	b.WriteString(string(c.Status))
 	b.WriteString("]")
+	// ambiguous(cherry가 +/- 혼합, 콘텐츠 검사도 불일치)는 일부만 반영됐다는
+	// 뜻이다 — 기본 미선택이고, 왜 미선택인지 라벨이 직접 말한다.
+	if c.Status == branchclean.StatusAmbiguous {
+		b.WriteString("  [partially applied — verify before deleting]")
+	}
 	// worktree가 점유한 브랜치는 삭제가 불가하므로 명시한다 — 기본
 	// 미선택 상태이고, 선택해도 git이 거부한다.
 	if c.Worktree != "" {

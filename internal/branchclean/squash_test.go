@@ -179,6 +179,93 @@ func TestDetectSquashMerged_ClassifiesCorrectly(t *testing.T) {
 	}
 }
 
+// 멀티커밋 squash merge는 cherry에 전부 `+`로 보인다(합쳐진 커밋의 patch-id가
+// 원본 어느 커밋과도 불일치) — merge-tree 콘텐츠 검사가 잡아야 하고, 트리가
+// 다르거나 충돌하는 브랜치는 잡으면 안 된다.
+func TestDetectSquashMerged_ContentCheckCatchesWhatCherryCannot(t *testing.T) {
+	baseTree := strings.Repeat("a", 40)
+	otherTree := strings.Repeat("b", 40)
+	conflictTree := strings.Repeat("c", 40)
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse main^{tree}":                      {Stdout: baseTree + "\n"},
+			"cherry main feat/squashed":                  {Stdout: "+ 111\n+ 222\n"},
+			"merge-tree --write-tree main feat/squashed": {Stdout: baseTree + "\n"},
+			"cherry main feat/active":                    {Stdout: "+ 111\n"},
+			"merge-tree --write-tree main feat/active":   {Stdout: otherTree + "\n"},
+			"cherry main feat/conflict":                  {Stdout: "+ 111\n"},
+			"merge-tree --write-tree main feat/conflict": {Stdout: conflictTree + "\n\nf.txt\n", ExitCode: 1},
+			"cherry main feat/mixed":                     {Stdout: "+ 111\n- 222\n"},
+			"merge-tree --write-tree main feat/mixed":    {Stdout: otherTree + "\n"},
+		},
+	}
+	d := &SquashDetector{Runner: runner}
+
+	squashed, ambig, warnings := d.DetectSquashMerged(
+		context.Background(),
+		[]string{"feat/squashed", "feat/active", "feat/conflict", "feat/mixed"},
+		"main",
+		nil,
+	)
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(squashed) != 1 || squashed[0] != "feat/squashed" {
+		t.Fatalf("expected squashed=[feat/squashed], got %v", squashed)
+	}
+	// mixed cherry에 콘텐츠도 다르면 종전대로 ambiguous로 남는다.
+	if len(ambig) != 1 || ambig[0] != "feat/mixed" {
+		t.Fatalf("expected ambiguous=[feat/mixed], got %v", ambig)
+	}
+}
+
+// cherry가 이미 확정(all `-`)한 브랜치는 merge-tree를 부르지 않는다 —
+// 콘텐츠 검사는 미확정 브랜치에만 붙는 fork다.
+func TestDetectSquashMerged_CherryFastPathSkipsMergeTree(t *testing.T) {
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse main^{tree}": {Stdout: strings.Repeat("a", 40) + "\n"},
+			"cherry main feat/done": {Stdout: "- 111\n"},
+		},
+	}
+	d := &SquashDetector{Runner: runner}
+
+	squashed, _, _ := d.DetectSquashMerged(context.Background(), []string{"feat/done"}, "main", nil)
+	if len(squashed) != 1 || squashed[0] != "feat/done" {
+		t.Fatalf("expected squashed=[feat/done], got %v", squashed)
+	}
+	for _, call := range runner.Calls {
+		if len(call.Args) > 0 && call.Args[0] == "merge-tree" {
+			t.Fatalf("merge-tree must not run for a cherry-confirmed branch: %v", call.Args)
+		}
+	}
+}
+
+// base^{tree} 해석 실패는 경고 + cherry-only 강등이지, 전체 실패가 아니다.
+func TestDetectSquashMerged_BaseTreeFailureDegradesToCherry(t *testing.T) {
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse main^{tree}": {Err: fmt.Errorf("bad object")},
+			"cherry main feat/done": {Stdout: "- 111\n"},
+			"cherry main feat/new":  {Stdout: "+ 111\n"},
+		},
+	}
+	d := &SquashDetector{Runner: runner}
+
+	squashed, ambig, warnings := d.DetectSquashMerged(
+		context.Background(), []string{"feat/done", "feat/new"}, "main", nil)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "content check disabled") {
+		t.Fatalf("expected one content-check-disabled warning, got %v", warnings)
+	}
+	if len(squashed) != 1 || squashed[0] != "feat/done" {
+		t.Fatalf("expected squashed=[feat/done], got %v", squashed)
+	}
+	if len(ambig) != 0 {
+		t.Fatalf("unexpected ambiguous: %v", ambig)
+	}
+}
+
 func TestDetectSquashMerged_GitCherryFailure(t *testing.T) {
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{

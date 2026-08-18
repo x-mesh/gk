@@ -209,7 +209,17 @@ func (c *Cleaner) Run(ctx context.Context, opts CleanOptions) (*CleanResult, err
 			}
 			_, stderr, err = c.Runner.Run(ctx, "push", rn, "--delete", name)
 		} else {
-			_, stderr, err = c.Runner.Run(ctx, "branch", deleteFlag, name)
+			flag := deleteFlag
+			if cand.Status == StatusSquashMerged {
+				// Content-verified as already in base (cherry all-applied or
+				// the merge-tree net-zero check) but NOT an ancestor — so
+				// `git branch -d` would refuse with "not fully merged". -D
+				// rides on that verification, and it must not require --force:
+				// --force also surfaces protected branches as candidates,
+				// which is the wrong price for deleting a squash-merged one.
+				flag = "-D"
+			}
+			_, stderr, err = c.Runner.Run(ctx, "branch", flag, name)
 		}
 		if err != nil {
 			raw := strings.TrimSpace(string(stderr))

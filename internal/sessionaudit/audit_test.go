@@ -421,16 +421,16 @@ func TestAudit_GapEvidencePerSubcommandAndOneShotLabel(t *testing.T) {
 }
 
 // One sample per subcommand shows THAT a gap exists but never which FORM drives
-// it, and the form is the whole ranking: a `reset` gap of index-only --soft
-// hits is a different roadmap item than one full of worktree-destroying resets.
+// it, and the form is the whole ranking: a `reset` gap of --mixed branch moves
+// is a different roadmap item than one full of worktree-destroying resets.
 // --full has to lift this cap too, or a breakdown means re-grepping the corpus.
 func TestAudit_UncapEvidenceKeepsEveryGapHit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	writeLines(t, path,
-		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~1\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git reset --soft HEAD~2\"}"}}`,
-		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD~3\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD~1\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --mixed HEAD~2\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git reset --keep HEAD~3\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git revert HEAD\"}"}}`,
 	)
 
@@ -458,14 +458,14 @@ func TestAudit_UncapEvidenceKeepsEveryGapHit(t *testing.T) {
 		t.Fatalf("uncapped: evidence = %d, want 4 (one per hit): %+v", len(gap.Evidence), gap.Evidence)
 	}
 	// The point of keeping them all: the reset gap is now splittable by form.
-	soft := 0
+	mixed := 0
 	for _, ev := range gap.Evidence {
-		if strings.Contains(ev.Command, "--soft") {
-			soft++
+		if strings.Contains(ev.Command, "--mixed") {
+			mixed++
 		}
 	}
-	if soft != 2 {
-		t.Errorf("--soft samples = %d, want 2 (form breakdown lost): %+v", soft, gap.Evidence)
+	if mixed != 2 {
+		t.Errorf("--mixed samples = %d, want 2 (form breakdown lost): %+v", mixed, gap.Evidence)
 	}
 	// The count and the per-subcommand tally must not double-count the extra evidence.
 	if gap.Count != 4 {
@@ -476,11 +476,11 @@ func TestAudit_UncapEvidenceKeepsEveryGapHit(t *testing.T) {
 	}
 }
 
-// The reset family splits three ways, by what gk can actually offer:
+// The reset family splits four ways, by what gk can actually offer:
 //   - index-only forms → git-kit unstage (covered)
 //   - `--hard <ref>` → git-kit reset --to <ref> (covered: same target, backed up)
-//   - everything else that moves the branch (--soft, --mixed <commit>) → gap,
-//     because gk's only uncommit-but-keep-work path is an interactive picker.
+//   - `--soft [<ref>]` → git-kit undo --soft (covered: same move plus backup ref)
+//   - `--mixed <commit>` and friends → gap, no gk verb has that meaning.
 func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -511,10 +511,18 @@ func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 	if hard == nil || hard.Count != 1 {
 		t.Fatalf("raw-reset-hard = %+v, want count 1 (--hard origin/main)", hard)
 	}
-	// --soft HEAD~1 and --mixed HEAD~1 move the branch with no gk equivalent.
+	// --soft HEAD~1 is the uncommit gk undo --soft covers.
+	uncommit := findingByKind(report, "raw-uncommit")
+	if uncommit == nil || uncommit.Count != 1 {
+		t.Fatalf("raw-uncommit = %+v, want count 1 (--soft HEAD~1)", uncommit)
+	}
+	if uncommit.Status != "covered" || !containsString(uncommit.CoveredBy, "git-kit undo --soft") {
+		t.Errorf("raw-uncommit should be covered by git-kit undo --soft: %+v", uncommit)
+	}
+	// --mixed HEAD~1 moves the branch with no gk equivalent.
 	gap := findingByKind(report, "uncovered-raw-git")
-	if gap == nil || gap.Subcommands["reset"] != 2 {
-		t.Fatalf("soft/mixed history resets must stay in the gap (want reset x2): %+v", gap)
+	if gap == nil || gap.Subcommands["reset"] != 1 {
+		t.Fatalf("the mixed history reset must stay in the gap (want reset x1): %+v", gap)
 	}
 }
 
@@ -905,9 +913,17 @@ func TestGitSegmentFinding_ResetAndFsck(t *testing.T) {
 		{"bare hard", "reset", []string{"--hard"}, ""},
 		{"bare hard quiet", "reset", []string{"-q", "--hard"}, ""},
 
-		// --soft keeps the work staged. gk's only equivalent is the interactive
-		// `gk undo` picker, which an agent cannot drive — leave it a gap.
-		{"soft uncommit", "reset", []string{"--soft", "HEAD~1"}, ""},
+		// --soft keeps the work staged; gk undo --soft is the same move with a
+		// backup ref, and its non-interactive HEAD~1 default / --to <ref> make
+		// it scriptable — so the uncommit maps.
+		{"soft uncommit", "reset", []string{"--soft", "HEAD~1"}, "raw-uncommit"},
+		{"bare soft", "reset", []string{"--soft"}, "raw-uncommit"},
+		{"soft to sha", "reset", []string{"--soft", "8b7a4f21c"}, "raw-uncommit"},
+		// Colliding mode flags get the destructive reading.
+		{"soft plus hard", "reset", []string{"--soft", "--hard", "HEAD~1"}, "raw-reset-hard"},
+		// --mixed with an explicit commit moves the branch with index semantics
+		// no gk verb reproduces — still a gap.
+		{"mixed to commit", "reset", []string{"--mixed", "HEAD~1"}, ""},
 
 		// Index-only spellings still belong to unstage.
 		{"unstage paths", "reset", []string{"HEAD", "file.go"}, "raw-unstage"},

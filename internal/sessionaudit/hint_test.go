@@ -172,3 +172,17 @@ func TestHint_CautionSurvivesAlongsideCoverage(t *testing.T) {
 		t.Error("the discard segment must still raise its caution")
 	}
 }
+
+// The uncommit answers with gk undo --soft — a 1:1 swap kept out of the
+// collapse groups, but the hint (and the PreToolUse hook built on it) must
+// name the verb that records a backup ref first. covered_by[0] matters: the
+// hook tells the agent to run exactly that entry.
+func TestHint_UncommitNamesUndoSoft(t *testing.T) {
+	res := Hint("git reset --soft HEAD~1")
+	if !res.Covered || res.Kind != "raw-uncommit" {
+		t.Fatalf("Hint(reset --soft) = %+v, want covered raw-uncommit", res)
+	}
+	if len(res.CoveredBy) == 0 || res.CoveredBy[0] != "git-kit undo --soft" {
+		t.Errorf("CoveredBy = %v, want git-kit undo --soft first", res.CoveredBy)
+	}
+}

@@ -267,18 +267,22 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit diff --raw-patch --json for exact unified patch text, or git-kit diff --json for parsed hunks.",
 		coveredBy:      []string{"git-kit diff --raw-patch --json", "git-kit diff --json", "git-kit diff --digest"},
 	},
-	// `git reset --hard <ref>` and the fsck recovery hunt DO have gk verbs; the
-	// rest of the reset/restore family still does not. Mapped by target, not by
-	// verb name:
+	// `git reset --hard <ref>`, `git reset --soft` and the fsck recovery hunt DO
+	// have gk verbs; the rest of the reset/restore family still does not. Mapped
+	// by target, not by verb name:
 	//   - index-only spellings (`git reset [HEAD]`, `git restore --staged`) →
 	//     raw-unstage, via isRawUnstage.
 	//   - `git reset --hard <ref>` → raw-reset-hard (gk reset --to takes the same
 	//     target, fetches it first, and gates on a confirm — it does NOT write a
 	//     backup ref; the reflog is the only way back, via gk undo).
+	//   - `git reset --soft [<ref>]` → raw-uncommit (gk undo --soft is the same
+	//     move plus a backup ref, and it IS scriptable: non-interactive runs
+	//     default to HEAD~1 and --to <ref> reaches any other target — the old
+	//     "interactive picker only" reason to leave this a gap no longer holds).
 	//   - `git fsck --lost-found/--unreachable` → raw-lost-found (gk restore --lost).
 	// Deliberately still UNMAPPED, because no gk verb has the same meaning:
-	//   - `git reset --soft <ref>` — gk undo is an interactive reflog picker, not
-	//     a scriptable "uncommit but keep the work".
+	//   - `git reset --mixed <ref>` / `--keep <ref>` — branch moves with index
+	//     semantics no gk verb reproduces.
 	//   - `git checkout -- <paths>` / `git restore <paths>` — per-path discard.
 	//     gk wipe is whole-tree (and cleans untracked), so it is NOT this.
 	// stash maps only for the subcommands git-kit stash actually registers —
@@ -337,6 +341,16 @@ var findingSpecs = map[string]findingSpec{
 		status:         "covered",
 		recommendation: "Use git-kit reset --to <ref> — the same destructive reset, but it fetches the target first and gates on a confirm (-y to skip); the pre-reset HEAD stays in the reflog, so git-kit undo can walk it back.",
 		coveredBy:      []string{"git-kit reset --to <ref>"},
+	},
+	// The uncommit is a 1:1 swap (one reset, one undo), so like raw-branch-list
+	// and raw-range-compare it is covered but claims no collapse group: the
+	// replacement buys a backup ref, not turns.
+	"raw-uncommit": {
+		kind:           "raw-uncommit",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "Use git-kit undo --soft — the same uncommit (HEAD moves, index and working tree stay), but it records a backup ref first. Non-interactive runs default to HEAD~1; git-kit undo --soft --to <ref> reaches any other target.",
+		coveredBy:      []string{"git-kit undo --soft", "git-kit undo --soft --to <ref>"},
 	},
 	"raw-lost-found": {
 		kind:           "raw-lost-found",
@@ -2077,6 +2091,10 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-unstage"
 	case isRawResetHard(subcmd, args):
 		return "raw-reset-hard"
+	// After --hard on purpose: a command carrying both mode flags gets the
+	// destructive reading, which is the one worth warning about.
+	case isRawUncommit(subcmd, args):
+		return "raw-uncommit"
 	case isRawLostFound(subcmd, args):
 		return "raw-lost-found"
 	case subcmd == "diff" && hasArg(args, "--check"):
@@ -2180,9 +2198,9 @@ func isRawUnstage(subcmd string, args []string) bool {
 // A BARE `git reset --hard` is deliberately NOT matched. It discards the working
 // tree at HEAD, whereas a bare `gk reset` resets to the UPSTREAM remote branch —
 // same shape, different destination, and recommending it would move the branch
-// the user never asked to move. `--soft` is likewise excluded: gk's only
-// uncommit-but-keep-the-work path is the interactive `gk undo` picker, which an
-// agent cannot drive.
+// the user never asked to move. `--soft` belongs to isRawUncommit — gk undo
+// --soft is that move with a backup ref, scriptable since it gained the
+// non-interactive HEAD~1 default.
 func isRawResetHard(subcmd string, args []string) bool {
 	if subcmd != "reset" || !hasArg(args, "--hard") {
 		return false
@@ -2196,6 +2214,17 @@ func isRawResetHard(subcmd string, args []string) bool {
 		}
 	}
 	return false
+}
+
+// isRawUncommit matches `git reset --soft [<commit-ish>]` — the
+// uncommit-but-keep-the-work move. git-kit undo --soft is the same reset with
+// a backup ref recorded first, and it is scriptable: non-interactive runs
+// default to HEAD~1 and --to <ref> reaches any other target. git itself
+// rejects --soft with pathspecs, so the flag alone decides. A command that
+// also carries --hard stays with isRawResetHard — the classifier asks that
+// first, so colliding mode flags get the destructive reading.
+func isRawUncommit(subcmd string, args []string) bool {
+	return subcmd == "reset" && hasArg(args, "--soft")
 }
 
 // isRawLostFound matches the `git fsck` forms that hunt for dangling work, which

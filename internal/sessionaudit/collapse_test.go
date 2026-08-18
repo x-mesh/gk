@@ -308,13 +308,14 @@ func TestCollapse_H_WritePrimaryBeatsTrailingProbe(t *testing.T) {
 	}
 }
 
-// I: a mutating turn the classifiers cannot map (`git reset --soft HEAD~1`)
-// still terminates a read-only probe run — the probes on either side observed
-// different repo states.
+// I: a mutating turn the classifiers cannot map (`git revert HEAD`) still
+// terminates a read-only probe run — the probes on either side observed
+// different repo states. (`git reset --soft` used to be the fixture here, but
+// it now maps to raw-uncommit, so the unmappable role passes to revert.)
 func TestCollapse_I_MutatingTurnBreaksReadRun(t *testing.T) {
 	runs := runsFor(session(
 		asst("m1", "t1", "git status"),
-		asst("m2", "t2", "git reset --soft HEAD~1"),
+		asst("m2", "t2", "git revert HEAD"),
 		asst("m3", "t3", "git status"),
 	))
 	if totalSaved(runs) != 0 {

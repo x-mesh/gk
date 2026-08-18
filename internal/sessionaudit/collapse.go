@@ -34,9 +34,10 @@ var collapseGroupForKind = map[string]string{
 	"raw-apply":           "apply",
 	// The history hunt is a real collapse, not a 1:1 swap: the agent pays a turn
 	// per GUESS (--grep, then the pickaxe, then a path scope), and gk find runs
-	// all of them in one call. raw-branch-list and raw-range-compare are absent
-	// on purpose — both are covered by a 1:1 swap (gk branch list, gk log A..B),
-	// and one raw command replaced by one gk command saves no turn.
+	// all of them in one call. raw-branch-list, raw-range-compare, raw-log-query
+	// and raw-uncommit are absent on purpose — each is covered by a 1:1 swap
+	// (gk branch list, gk log A..B, gk log, gk undo --soft), and one raw command
+	// replaced by one gk command saves no turn.
 	"raw-history-search": "find",
 }
 

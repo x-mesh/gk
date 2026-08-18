@@ -74,11 +74,13 @@ func Hint(command string) HintResult {
 			if kind := gitSegmentFinding(subcmd, args); kind != "" {
 				consider(kind, seg.Text)
 			}
-			// Independent of the replacement search: a command can be both
-			// uncovered and irreversible, and that is exactly the case where
-			// staying silent reads as approval. Held aside rather than written
-			// into best, which consider() replaces wholesale on a better match.
-			if cautionMatched == "" && isDestructiveDiscard(subcmd, args) {
+			// Independent of the replacement search: the destructive forms gk
+			// discard does NOT cover (ref-source restores, conflict sides) are
+			// exactly where staying silent reads as approval. The covered
+			// subset (isRawDiscard) needs no caution — its replacement ships
+			// the snapshot built in. Held aside rather than written into best,
+			// which consider() replaces wholesale on a better match.
+			if cautionMatched == "" && isDestructiveDiscard(subcmd, args) && !isRawDiscard(subcmd, args) {
 				cautionMatched = strings.TrimSpace(seg.Text)
 			}
 		case "gk":

@@ -260,7 +260,7 @@ func TestAudit_PromotesBranchSwitchAndWorktree(t *testing.T) {
 		`{"payload":{"arguments":"{\"cmd\":\"git checkout -b feat/x\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git switch main\"}"}}`,
 		// `checkout -- <path>` is a file restore, not a branch switch — it must
-		// stay a gap, not get folded into raw-branch-switch.
+		// map to raw-discard, not get folded into raw-branch-switch.
 		`{"payload":{"arguments":"{\"cmd\":\"git checkout -- app.go\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git worktree add ../wt feat/x\"}"}}`,
 		`{"payload":{"arguments":"{\"cmd\":\"git worktree list\"}"}}`,
@@ -277,10 +277,12 @@ func TestAudit_PromotesBranchSwitchAndWorktree(t *testing.T) {
 	if f := findingByKind(report, "raw-worktree"); f == nil || f.Count != 2 {
 		t.Fatalf("raw-worktree = %+v, want count 2", f)
 	}
-	// The file-restore checkout is the only thing left uncovered.
-	gap := findingByKind(report, "uncovered-raw-git")
-	if gap == nil || gap.Subcommands["checkout"] != 1 {
-		t.Fatalf("expected checkout restore as the sole gap, got %+v", gap)
+	// The file-restore checkout lands in raw-discard, leaving no gap at all.
+	if f := findingByKind(report, "raw-discard"); f == nil || f.Count != 1 {
+		t.Fatalf("raw-discard = %+v, want count 1 (checkout -- app.go)", f)
+	}
+	if gap := findingByKind(report, "uncovered-raw-git"); gap != nil && gap.Subcommands["checkout"] != 0 {
+		t.Fatalf("checkout restore must not stay in the gap, got %+v", gap)
 	}
 }
 
@@ -830,9 +832,15 @@ func TestAudit_RestoreStagedIsUnstageCovered(t *testing.T) {
 	if unstage == nil || unstage.Count != 1 || unstage.Status != "covered" {
 		t.Fatalf("raw-unstage = %+v, want the --staged form covered once", unstage)
 	}
+	// The plain restore is an index-source discard — gk discard covers it.
+	if f := findingByKind(report, "raw-discard"); f == nil || f.Count != 1 {
+		t.Fatalf("raw-discard = %+v, want the plain restore covered once", f)
+	}
+	// --staged --worktree restores BOTH from HEAD — not what gk discard does,
+	// so that form stays the only gap.
 	gap := findingByKind(report, "uncovered-raw-git")
-	if gap == nil || gap.Subcommands["restore"] != 2 {
-		t.Fatalf("worktree/plain restore should stay a gap x2, got %+v", gap)
+	if gap == nil || gap.Subcommands["restore"] != 1 {
+		t.Fatalf("the --staged --worktree restore should stay a gap x1, got %+v", gap)
 	}
 }
 
@@ -945,20 +953,39 @@ func TestGitSegmentFinding_ResetAndFsck(t *testing.T) {
 	}
 }
 
-// Per-path discard has NO gk verb — gk wipe is whole-tree and also removes
-// untracked files, so it is not this. The gap is the finding; do not "fix" it by
-// mapping it to something destructive.
-func TestGitSegmentFinding_PerPathDiscardStaysAGap(t *testing.T) {
-	for _, tc := range []struct {
+// Per-path discard maps to gk discard — but ONLY the index-source spellings.
+// gk discard restores from the index after a refs/wip snapshot; a source ref
+// or a conflict side restores from something else, so claiming those would
+// hand the agent a verb with different semantics. They stay a gap (with the
+// snapshot-first caution on the hint side).
+func TestGitSegmentFinding_PerPathDiscardSplitsBySource(t *testing.T) {
+	covered := []struct {
 		subcmd string
 		args   []string
 	}{
 		{"checkout", []string{"--", "lib.rs"}},
 		{"restore", []string{"src/main.go"}},
 		{"restore", []string{"--worktree", "src/main.go"}},
-	} {
+	}
+	for _, tc := range covered {
+		if got := gitSegmentFinding(tc.subcmd, tc.args); got != "raw-discard" {
+			t.Errorf("gitSegmentFinding(%q, %v) = %q, want raw-discard",
+				tc.subcmd, tc.args, got)
+		}
+	}
+	refSource := []struct {
+		subcmd string
+		args   []string
+	}{
+		{"checkout", []string{"HEAD~1", "--", "lib.rs"}},
+		{"checkout", []string{"--ours", "--", "lib.rs"}},
+		{"restore", []string{"--source=HEAD~1", "src/main.go"}},
+		{"restore", []string{"-s", "HEAD~1", "src/main.go"}},
+		{"restore", []string{"--staged", "--worktree", "src/main.go"}},
+	}
+	for _, tc := range refSource {
 		if got := gitSegmentFinding(tc.subcmd, tc.args); got != "" {
-			t.Errorf("gitSegmentFinding(%q, %v) = %q, want \"\" (no gk verb discards single paths)",
+			t.Errorf("gitSegmentFinding(%q, %v) = %q, want \"\" (gk discard restores from the index, not a ref)",
 				tc.subcmd, tc.args, got)
 		}
 	}

@@ -280,11 +280,15 @@ var findingSpecs = map[string]findingSpec{
 	//     default to HEAD~1 and --to <ref> reaches any other target — the old
 	//     "interactive picker only" reason to leave this a gap no longer holds).
 	//   - `git fsck --lost-found/--unreachable` → raw-lost-found (gk restore --lost).
+	//   - `git checkout -- <paths>` / `git restore [-W] <paths>` → raw-discard
+	//     (gk discard snapshots to refs/wip first, then restores from the index).
 	// Deliberately still UNMAPPED, because no gk verb has the same meaning:
 	//   - `git reset --mixed <ref>` / `--keep <ref>` — branch moves with index
 	//     semantics no gk verb reproduces.
-	//   - `git checkout -- <paths>` / `git restore <paths>` — per-path discard.
-	//     gk wipe is whole-tree (and cleans untracked), so it is NOT this.
+	//   - ref-source discards (`checkout <ref> -- p`, `restore --source`,
+	//     --ours/--theirs) — they restore from somewhere other than the index,
+	//     which gk discard does not do; these keep the snapshot-first caution
+	//     (isDestructiveDiscard).
 	// stash maps only for the subcommands git-kit stash actually registers —
 	// gitKitStashCovers gates show/clear/branch/etc. back to a gap.
 	// The branch survey is covered — but by gk branch list, NOT by gk context.
@@ -341,6 +345,19 @@ var findingSpecs = map[string]findingSpec{
 		status:         "covered",
 		recommendation: "Use git-kit reset --to <ref> — the same destructive reset, but it fetches the target first and gates on a confirm (-y to skip); the pre-reset HEAD stays in the reflog, so git-kit undo can walk it back.",
 		coveredBy:      []string{"git-kit reset --to <ref>"},
+	},
+	// Per-path discard has a verb since gk discard: it snapshots the whole
+	// working tree to refs/wip first (untracked included) and then restores the
+	// paths from the index, so the raw form's irreversibility is exactly what
+	// the replacement fixes. Only the index-source spellings map (isRawDiscard)
+	// — a source ref or conflict side restores from something else and keeps
+	// the caution instead. A 1:1 swap: covered, no collapse group.
+	"raw-discard": {
+		kind:           "raw-discard",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit discard <paths> — the same working-tree discard, but it saves a refs/wip snapshot first (untracked files included), so the discarded work stays recoverable via git-kit snapshot restore.",
+		coveredBy:      []string{"git-kit discard <paths>"},
 	},
 	// The uncommit is a 1:1 swap (one reset, one undo), so like raw-branch-list
 	// and raw-range-compare it is covered but claims no collapse group: the
@@ -2089,6 +2106,8 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-stash"
 	case isRawUnstage(subcmd, args):
 		return "raw-unstage"
+	case isRawDiscard(subcmd, args):
+		return "raw-discard"
 	case isRawResetHard(subcmd, args):
 		return "raw-reset-hard"
 	// After --hard on purpose: a command carrying both mode flags gets the
@@ -2118,18 +2137,68 @@ func gitSegmentFinding(subcmd string, args []string) string {
 // from a commit-ish (`git reset origin/main`) without repo state, so it is
 // deliberately left uncounted rather than misclassifying history resets.
 // discardCaution is the warning attached to the raw commands that throw
-// uncommitted work away with nothing to walk back to.
-const discardCaution = "This discards uncommitted changes to those paths with no way back, and git-kit has no verb that replaces it. Run git-kit snapshot first — it saves the working tree (untracked files included) to refs/wip without touching your files, index or history, so the discard stays recoverable."
+// uncommitted work away with nothing to walk back to. Since gk discard, it
+// fires only for the forms that verb does NOT cover (see isRawDiscard).
+const discardCaution = "This discards uncommitted changes to those paths with no way back, and git-kit has no verb for this exact form — git-kit discard replaces only the plain index-source discard, and this one restores from somewhere else. Run git-kit snapshot first — it saves the working tree (untracked files included) to refs/wip without touching your files, index or history, so the discard stays recoverable."
+
+// isRawDiscard matches the index-source per-path discards gk discard replaces:
+// `git checkout -- <paths>` with nothing before the `--`, and
+// `git restore [--worktree] <paths>`. Everything else in the destructive
+// family — a source ref (`checkout <ref> -- p`, `restore --source`), a
+// conflict side (--ours/--theirs), --staged combinations — restores from
+// something OTHER than the index, which gk discard does not do; those keep
+// the no-replacement caution (isDestructiveDiscard). Under-claiming is the
+// safe direction here: a missed form falls back to the caution, while a
+// wrongly claimed one hands the agent a verb with different semantics.
+func isRawDiscard(subcmd string, args []string) bool {
+	switch subcmd {
+	case "checkout":
+		seen := false
+		for _, raw := range args {
+			tok := trimShellToken(raw)
+			switch {
+			case tok == "":
+				continue
+			case tok == "--":
+				seen = true
+			case !seen:
+				return false // any ref or flag before `--` changes the source
+			default:
+				return true // a pathspec after `--`
+			}
+		}
+		return false
+	case "restore":
+		pathspec := false
+		for _, raw := range args {
+			tok := trimShellToken(raw)
+			switch {
+			case tok == "" || tok == "--":
+				continue
+			case tok == "--worktree" || tok == "-W" || tok == "--quiet" || tok == "-q":
+				continue // explicit spellings of the default behaviour
+			case strings.HasPrefix(tok, "-"):
+				return false // --source/--staged/--ours/… change source or target
+			default:
+				pathspec = true
+			}
+		}
+		return pathspec
+	default:
+		return false
+	}
+}
 
 // isDestructiveDiscard matches the pathspec forms of checkout/restore: the ones
 // that overwrite files in the working tree.
 //
-// This is NOT a coverage claim — gk has no replacement, and the hint must not
-// pretend otherwise. It is the opposite case: the only frequent uncovered
-// command that destroys work irreversibly. Answering it with plain silence (the
-// correct answer for every other gap) reads as approval, and gk already ships
-// the safety net that makes the operation survivable, so the honest reply is
-// "no replacement, but snapshot first".
+// The plain index-source subset (isRawDiscard) is covered by gk discard; this
+// matcher deliberately stays the SUPERSET, because the remaining forms — a
+// source ref, a conflict side, --staged combinations — restore from something
+// other than the index and stay uncovered. For those, silence (the correct
+// answer for every other gap) reads as approval on the only frequent uncovered
+// command class that destroys work irreversibly, so the hint answers with the
+// snapshot-first caution instead — and never a block.
 //
 // Excluded: `git checkout <branch>` (moves HEAD — raw-branch-switch) and
 // `git restore --staged` alone (index only — git-kit unstage covers it, and

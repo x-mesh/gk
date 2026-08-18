@@ -95,7 +95,9 @@ func init() {
 	// touch the engine should not pay for that.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		installDebugHooks()
-		return nil
+		// --dry-run parses on every command but only some consume it; refuse
+		// it up front everywhere else so a "preview" can never run for real.
+		return rejectUnsupportedDryRun(cmd)
 	}
 }
 

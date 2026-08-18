@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk discard` — 경로 단위 discard에 안전망을 내장한 동사.** session audit 실측 미커버 1위(30일 44건)는 `git checkout -- <path>` / `git restore <path>`였고, 미커버 중 유일하게 흔한 **비가역** 명령이라 그동안 caution 한 줄("snapshot 먼저")로만 답해 왔다. 이제 `gk discard <path>...`가 그 자리를 채운다: 실행 전에 워킹트리 전체를 `refs/wip/<branch>`에 자동 snapshot(untracked 포함)하고, 그 다음 경로를 index 기준으로 복원한다 — `git checkout --`와 같은 동작이되, 버린 것은 언제든 `gk snapshot restore`로 돌아온다. staged 변경은 유지되고, untracked는 절대 건드리지 않고 보고만 하며, 충돌 중인 경로는 `blocked`(unmerged-paths)로 멈춰 `gk resolve`를 안내한다. 확인 프롬프트가 없는 이유가 곧 설계다: **snapshot이 실패하면 discard도 중단된다** — 안전망 없이 버리는 일은 없고, 그 abort 경로는 실제 실패 주입(객체 쓰기 차단) 테스트로 고정했다. 로컬 `--dry-run`, agent envelope(`{discarded, untracked_kept, snapshot_ref}`), porcelain `-z`의 rename origin 양측(x/y R·C) 스킵, argv가 ARG_MAX를 넘지 않도록 500개 단위 배치 checkout(`:(top,literal)` 매직으로 cwd-독립·글롭 안전)까지. 분류기에도 `raw-discard` kind가 생겨 `gk hint`와 PreToolUse 훅이 침묵+caution 대신 동사를 답한다 — 단 **index-소스 폼만**이다: `checkout <ref> -- p`·`restore --source`·`--ours/--theirs`는 index가 아닌 곳에서 복원하므로 covered를 주장하지 않고 caution이 남는다(놓친 폼은 caution으로 떨어질 뿐이지만, 과잉 주장은 의미가 다른 동사를 에이전트에 쥐여준다). 지표 불연속: uncovered gap의 checkout/restore 몫이 covered로 이동해 `uncovered_raw_hits`가 내려간다 — `estimated_turns_saved`는 collapse 그룹 밖(1:1 스왑)이라 불변.
+
+- **`git reset --soft`가 답을 얻는다 — `gk undo --soft` (신규 kind `raw-uncommit`).** 분류기는 이 폼을 "gk undo는 인터랙티브 reflog 피커라 스크립트로 못 쓴다"는 이유로 의도적으로 gap에 남겨 뒀는데, 그 전제가 낡았다: undo `--soft`는 비대화 실행에서 `HEAD~1` 기본값을 갖고 `--to <ref>`로 임의 대상에 닿으며 백업 ref까지 기록한다. 이제 covered로 분류되어 hint/훅이 동사를 답한다. `collapseGroupForKind`에는 넣지 않았다 — reset 하나가 undo 하나로 바뀌는 1:1 스왑이라 턴은 줄지 않고, 이 교체가 사는 것은 백업 ref다. 모드 플래그가 충돌하면(`--soft --hard`처럼) git은 **마지막** 플래그를 따르므로 covered를 주장하지 않는다 — target이 있으면 raw-reset-hard의 파괴적 읽기가, 없으면 침묵이 남는다. uncovered reset 몫(실측 12건)이 covered로 이동하는 소폭 지표 불연속 동반.
+
+- **멀티커밋 squash merge를 잡는다 — cherry가 못 보는 것을 merge-tree 콘텐츠 검사가 본다.** `branch clean --squash-merged`의 감지는 `git cherry`(patch-id 동등성)뿐이었는데, GitHub "Squash & Merge"로 **여러 커밋**이 하나로 합쳐지면 합쳐진 커밋의 patch-id가 원본 어느 커밋과도 일치하지 않아 전부 `+` — ambiguous조차 아닌 완전 미감지였다. 가장 흔한 실사용 케이스가 구멍이었던 셈이다. 이제 cherry가 확정하지 못한 브랜치는 콘텐츠 검사로 승격을 시도한다: `git merge-tree --write-tree base branch`의 결과 트리가 base 자신의 트리와 같으면 머지가 no-op — 정의 그대로 "이미 다 반영됨"이다(충돌은 확정적 not-merged). 검증된 squash-merged 후보는 `--force` 없이 `-D`로 지운다 — ancestor가 아니라 `-d`가 거부하는데, `--force`를 요구하면 protected 브랜치까지 후보로 노출되는 잘못된 결합이었다. 같은 검사가 `gk worktree cleanup --merged`에도 들어가 squash-merge된 worktree가 reason `squash-merged`로 후보에 편입되고(`--delete-branches`의 삭제 플래그 재확인 포함), `gk branch list`의 서베이도 거짓말을 멈춘다: `--merged`는 squash-merged 브랜치를 `[squash-merged]` 마커와 함께 편입하고, `--unmerged`는 숨기는 대신 마커만 붙인다(랜딩된 작업을 목록에서 지우는 건 은폐다). list 경로는 cherry 없이 콘텐츠 검사만 쓴다(`EffectivelyMergedSet`, base^{tree} 1회 + 브랜치당 merge-tree 1회) — cherry는 fork point 이후 base 쪽 커밋 전체의 patch-id를 계산해 오래된 base에서 비싸고, 서베이는 기본으로 도는 명령이라서다. 검사 실패는 어디서든 "unmerged" 취급으로 강등된다 — 잘못돼도 지우지 않는 쪽으로만 틀린다. 덤: 실 squash 픽스처 통합 테스트는 cherry가 정말 못 잡는다는 **전제부터 단언**한다 — git이 언젠가 잡게 되면 폴백의 존재 이유가 테스트로 드러난다.
+
+- **`gk --help`가 78개 플랫 나열 대신 9개 워크플로 섹션으로 나온다.** Daily / Branches / Worktrees & watch / Checks & release / Recovery & safety nets / AI / GitHub / Agent & audit / Setup — README의 분류를 help에 이식하되, commit·push는 Daily로(무엇이 구동하든 일상 동사다), 1개짜리 Policies·Continuous 챕터는 이웃에 흡수, 에이전트 동사 5종은 전용 섹션으로 꺼냈다. 배정은 명령 등록 파일 ~70곳이 아니라 중앙 맵 한 곳이고, 테스트가 실제 명령 트리를 걸으며 **미분류 visible 명령이 있으면 실패**한다 — 새 동사가 분류를 빼먹을 수 없다. Easy 한국어 help의 `koUsageTemplate`은 그룹 없는 옛 cobra 기본형이라 그대로면 ko에서 그룹이 안 그려졌는데, cobra 원본 템플릿의 그룹 브랜치를 라벨만 번역해 이식하고 그룹 제목은 기존 swap-and-restore 메커니즘으로 렌더 시점에만 한국어("일상 작업:")가 된다. `snapshot`과 나란히 두 줄을 차지하던 최상위 별칭 `snapshots`는 숨겼다(실행은 그대로).
+
+- **LICENSE 파일(MIT).** README의 MIT 배지는 처음부터 `LICENSE`를 링크했지만 파일이 없었다 — GitHub에서는 깨진 링크, 법적으로는 라이선스 미부여 상태로 Homebrew tap과 install.sh 배포가 돌고 있었다. MIT 전문을 추가한다. goreleaser는 아카이브에 `LICENSE*`를 기본 동봉하므로 이번 릴리스부터 함께 실린다.
+
+### Changed
+
+- **snapshot이 임시 index를 실제 index에서 시드한다 — 전체 트리 재해시 제거.** 종전에는 빈 임시 index에 `git add -A`를 돌려 stat 캐시 없이 저장소의 모든 파일을 다시 해시했다(O(repo bytes)). 한 번씩 부르는 `gk snapshot`에서는 견딜 만했지만, `gk discard`가 경로 하나 버릴 때마다 snapshot을 선행하게 되면서 비용의 자리가 바뀌었다. 실제 index를 복사해 시드하면 변경·untracked 파일만 다시 해시하고, `add -A`가 index를 워킹트리에 맞추는 건 어느 시작점에서든 같으므로 **결과 트리는 동일하다**.
+
+### Fixed
+
+- **전역 `--dry-run`이 그 플래그를 읽지 않는 동사에서 조용히 무시되던 문제 — `gk merge --dry-run`이 실제로 머지를 실행했다.** persistent 플래그라 어느 명령에든 붙지만 소비하는 동사는 일부뿐이었고, 나머지에서는 미리보기라 믿은 호출이 저장소를 그대로 바꿨다 — 안전 플래그의 최악의 읽힘이다. 이제 root의 PersistentPreRunE가 중앙에서 거부한다: 소비 목록에 없는 명령 + `--dry-run`은 실행 전에 `state:"blocked"`(code `dry-run-unsupported`)로 멈춘다. 자체 `--dry-run` 플래그를 가진 명령(ship, reset, discard, branch clean, resolve …)은 cobra가 로컬 플래그에 바인딩하므로 가드에 닿지 않는다. 허용 목록은 처음에 최상위 동사 단위였는데, 리뷰가 정확히 그 결이 구멍임을 잡았다 — `worktree`가 허용이라 `gk worktree remove --dry-run`이 가드를 통과해 **실제로 삭제**했다(bare `gk wip --dry-run`도 실제 커밋). 그래서 leaf 전체 경로 키(`"worktree add"`, `"wip repair"` …)로 재설계해 미등록 leaf는 전부 거부하고, remove/wip에는 진짜 plan-and-stop 미리보기를 넣었다. help/`__complete`는 우회한다(탭 완성 보호). **동작 변화 주의**: 종전에 무시된 채 실행되던 조합이 이제 rc 1로 거부된다 — 그 조합에 의존한 스크립트가 있다면 그것이 정확히 이 수정이 막으려던 사고다. 실패 방향이 핵심이다: 미리보기 거절은 복구 가능하고, 조용한 실행은 불가능하다.
+
+- **`branch clean`/`branch list --merged`가 `base_branch` 설정을 무시하던 문제.** 두 경로 모두 항상 원격의 기본 브랜치를 자동 감지했다 — base가 develop 같은 다른 브랜치로 설정된 저장소에서는 오판이고, 원격이 없는 저장소에서는 치명적 실패다. ship·sync·worktree cleanup이 이미 따르는 규칙대로 설정을 먼저 읽는다. squash 감지 스모크가 원격 없는 저장소에서 즉시 걸려 발견됐고, 회귀 테스트도 원격 없는 저장소에서 돈다.
+
+- **`gk pr create`가 detached HEAD에서 존재하지 않는 명령을 안내하던 문제.** remedy가 `gk branch new <name>`를 지목했는데 그런 동사는 없다 — 에이전트 규약이 remedies 실행을 지시하므로 유령 명령은 루프를 즉시 깬다. 실존 경로 `gk sw -c <name>`로 교정했다.
+
+- **clean 피커의 `[ambiguous]`가 스스로를 설명한다.** cherry가 `+`/`-` 혼합(일부만 반영)이고 콘텐츠 검사도 불일치인 브랜치는 기본 미선택인데, 맨숭한 상태 토큰만으로는 왜 미선택인지 알 수 없었다. `[partially applied — verify before deleting]` 라벨이 이유를 직접 말한다.
+
 ## [0.138.0] - 2026-08-13
 
 ### Added

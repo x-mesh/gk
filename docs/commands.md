@@ -478,7 +478,7 @@ echo "$TOOL_CMD" | gk hint --json
 
 A command containing several git segments reports the highest-severity covered pattern. Read-only plumbing (`git rev-parse`, `git config --get`, `git cat-file`, …), the `git diff`/`show` family, commands already on git-kit, and non-git commands all report not-covered.
 
-One exception to that silence: the pathspec discard forms — `git checkout [-–ours|--theirs] -- <path>` and `git restore <path>` (without `--staged`) — throw away uncommitted changes with nothing to walk back to, and for those an "ok" reads as approval. They stay **not-covered** (`covered: false` — gk has no replacement verb and the hint does not invent one), but carry a `caution` telling the agent to run `gk snapshot` first so the discard stays recoverable. The hook surfaces the same caution as an advisory in every mode — it never denies, since there is no replacement to force. Branch checkouts (`git checkout main`) and index-only restores (`git restore --staged`, covered by `gk unstage`) raise no caution.
+The pathspec discard forms split by their restore source. The **index-source** spellings — `git checkout -- <path>` (nothing before the `--`) and `git restore [--worktree] <path>` — are covered by `gk discard`, which performs the same restore after auto-saving a `refs/wip` snapshot, so the hint names the verb. The **ref-source** forms — `git checkout <ref> -- <path>`, `git checkout --ours/--theirs -- <path>`, `git restore --source=<ref> <path>`, `--staged --worktree` — restore from somewhere other than the index, which `gk discard` does not do; they stay **not-covered** (`covered: false` — the hint does not invent a replacement with different semantics) but carry a `caution` telling the agent to run `gk snapshot` first so the discard stays recoverable. The hook surfaces the caution as an advisory in every mode — it never denies, since there is no replacement to force. Branch checkouts (`git checkout main`) and index-only restores (`git restore --staged`, covered by `gk unstage`) raise no caution.
 
 ## gk session audit
 
@@ -1756,6 +1756,13 @@ gk branch list [flags]
 
 `--merged` and `--unmerged` are mutually exclusive.
 
+Both filters honour the configured `base_branch` before falling back to the
+remote's default branch, and both run a content check on the non-ancestor
+branches: work that landed on base via a **squash merge** is never an
+ancestor, so raw `git branch --merged` misses it. `--merged` adds those rows
+with a `[squash-merged]` marker; `--unmerged` keeps them listed but carries
+the same marker — landed work is flagged, not hidden.
+
 #### Examples
 
 ```bash
@@ -1798,6 +1805,8 @@ gk branch clean [flags]
 | `--force` | false | Use `git branch -D` (force delete) instead of `-d` |
 | `--gone` | false | Target branches whose upstream is gone instead of merged ones |
 | `--worktrees` | false | Also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped) |
+| `--squash-merged` | false | Also include squash-merged branches — `git cherry` plus a merge-tree content check that catches multi-commit squashes (whose combined patch-id matches no original commit) |
+| `--all` | false | Include merged, gone, stale, and squash-merged branches |
 
 #### Examples
 
@@ -2088,6 +2097,61 @@ gk restore --lost [--limit N]
 - This is the verb behind raw `git fsck --lost-found` / `--unreachable` / `--dangling`: `gk session audit` maps those forms here.
 - It only *surfaces* lost work; nothing is written. Restore an entry with the cherry-pick command it prints.
 - For "I want to go back to a moment", not "I lost a commit", see `gk undo` (reflog picker) and `gk timemachine`.
+
+---
+
+## gk discard
+
+Discard uncommitted working-tree changes to the given paths (tracked files
+only), after automatically saving a `refs/wip` snapshot of the whole working
+tree — untracked files included — so the discarded work stays recoverable.
+
+The discard itself is what `git checkout -- <path>` does: the working tree is
+restored from the INDEX. Staged changes stay staged; untracked files are never
+touched (they are reported instead — remove them explicitly if you mean to).
+Unmerged (conflicted) paths block with `unmerged-paths` and point at
+`gk resolve` — picking sides mid-conflict belongs to conflict resolution.
+Bring the pre-discard state back any time with `gk snapshot restore`.
+
+Because the snapshot makes the operation recoverable, there is no confirmation
+prompt — this is the verb to reach for where a raw `git checkout -- <path>`
+would destroy work with no way back. A failed snapshot aborts the discard: the
+command never throws work away without the net that justifies its lack of a
+prompt.
+
+### Synopsis
+
+```
+gk discard <path>... [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | false | List what would be discarded without touching anything (no snapshot either) |
+
+### Examples
+
+```bash
+gk discard src/a.go          # discard edits to one file
+gk discard src/ pkg/util.go  # pathspecs work
+gk discard --dry-run .       # show what would be discarded
+```
+
+### JSON / agent mode
+
+`--json` (or `GK_AGENT=1`) emits `{result, discarded, untracked_kept,
+snapshot_ref, snapshot_sha}` with `result` one of `discarded` /
+`nothing-to-discard` / `dry-run`.
+
+### Notes
+
+- The restore runs in bounded batches so a mass discard cannot exceed the
+  OS argv limit; each path is pinned to the repository root with a literal
+  pathspec, so the command is cwd-independent and glob-safe.
+- `gk wipe` is the whole-tree sibling (and also removes untracked files);
+  `gk discard` is per-path and never touches untracked files.
 
 ---
 
@@ -2738,7 +2802,7 @@ gk worktree cleanup --merged --stale 7d --delete-branches -y
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--merged` | true | Only remove branches merged into parent/base |
+| `--merged` | true | Only remove branches merged into parent/base — including **squash-merged** ones, verified by a merge-tree content check (reason `squash-merged`), since a squash merge never becomes an ancestor |
 | `--stale <age>` | — | Require branch tip older than an age (`7d`, `12h`, `30m`) |
 | `--delete-branches` | false | Delete the local branch after removing its worktree |
 | `-y, --yes` | false | Actually remove candidates |

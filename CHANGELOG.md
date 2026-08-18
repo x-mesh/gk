@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.139.0] - 2026-08-18
+
 ### Added
 
 - **`gk discard` — 경로 단위 discard에 안전망을 내장한 동사.** session audit 실측 미커버 1위(30일 44건)는 `git checkout -- <path>` / `git restore <path>`였고, 미커버 중 유일하게 흔한 **비가역** 명령이라 그동안 caution 한 줄("snapshot 먼저")로만 답해 왔다. 이제 `gk discard <path>...`가 그 자리를 채운다: 실행 전에 워킹트리 전체를 `refs/wip/<branch>`에 자동 snapshot(untracked 포함)하고, 그 다음 경로를 index 기준으로 복원한다 — `git checkout --`와 같은 동작이되, 버린 것은 언제든 `gk snapshot restore`로 돌아온다. staged 변경은 유지되고, untracked는 절대 건드리지 않고 보고만 하며, 충돌 중인 경로는 `blocked`(unmerged-paths)로 멈춰 `gk resolve`를 안내한다. 확인 프롬프트가 없는 이유가 곧 설계다: **snapshot이 실패하면 discard도 중단된다** — 안전망 없이 버리는 일은 없고, 그 abort 경로는 실제 실패 주입(객체 쓰기 차단) 테스트로 고정했다. 로컬 `--dry-run`, agent envelope(`{discarded, untracked_kept, snapshot_ref}`), porcelain `-z`의 rename origin 양측(x/y R·C) 스킵, argv가 ARG_MAX를 넘지 않도록 500개 단위 배치 checkout(`:(top,literal)` 매직으로 cwd-독립·글롭 안전)까지. 분류기에도 `raw-discard` kind가 생겨 `gk hint`와 PreToolUse 훅이 침묵+caution 대신 동사를 답한다 — 단 **index-소스 폼만**이다: `checkout <ref> -- p`·`restore --source`·`--ours/--theirs`는 index가 아닌 곳에서 복원하므로 covered를 주장하지 않고 caution이 남는다(놓친 폼은 caution으로 떨어질 뿐이지만, 과잉 주장은 의미가 다른 동사를 에이전트에 쥐여준다). 지표 불연속: uncovered gap의 checkout/restore 몫이 covered로 이동해 `uncovered_raw_hits`가 내려간다 — `estimated_turns_saved`는 collapse 그룹 밖(1:1 스왑)이라 불변.

@@ -153,6 +153,34 @@ func TestWorktreeAdd_DryRunNoSideEffect(t *testing.T) {
 	}
 }
 
+// Review F2: `gk worktree remove --dry-run` used to pass the (root-child
+// keyed) guard and delete the worktree for real. The preview must report and
+// leave the worktree — and any lock on it — untouched.
+func TestWorktreeRemove_DryRunNoSideEffect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "keep-wt")
+
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "-b", wtPath, "feat/keep")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree add failed: %v\nout: %s", err, buf.String())
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "remove", "--dry-run", wtPath)
+	t.Cleanup(func() { flagDryRun = false })
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree remove --dry-run failed: %v\nout: %s", err, buf2.String())
+	}
+	if !strings.Contains(buf2.String(), "would remove worktree") {
+		t.Errorf("dry-run output missing plan line:\n%s", buf2.String())
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("dry-run removed the worktree at %s: %v", wtPath, err)
+	}
+}
+
 // TestWorktreeAdd_DryRunJSONEnvelope checks the agent envelope shape and the
 // no-side-effect contract together.
 func TestWorktreeAdd_DryRunJSONEnvelope(t *testing.T) {

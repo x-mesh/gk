@@ -238,7 +238,30 @@ func applyWIPRepair(ctx context.Context, cmd *cobra.Command, runner *git.ExecRun
 
 func runWip(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
+	// --dry-run: wip is `add -A` + commit; preview the set and stop before
+	// either happens. This branch is what admits "wip" to dryRunAware — the
+	// guard refuses the flag on commands without one.
+	if DryRun() {
+		return previewWipCommit(cmd.Context(), runner, cmd.OutOrStdout())
+	}
 	return createWipCommit(cmd.Context(), runner, cmd.OutOrStdout())
+}
+
+// previewWipCommit reports what a WIP commit would sweep up, touching
+// neither the index nor history.
+func previewWipCommit(ctx context.Context, runner git.Runner, w io.Writer) error {
+	out, _, err := runner.Run(ctx, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	entries := strings.TrimSpace(string(out))
+	if entries == "" {
+		fmt.Fprintln(w, "nothing to wip — working tree is clean")
+		return nil
+	}
+	n := len(strings.Split(entries, "\n"))
+	fmt.Fprintf(w, "[dry-run] would create a WIP commit sweeping %d change(s); nothing committed\n", n)
+	return nil
 }
 
 func createWipCommit(ctx context.Context, runner git.Runner, w io.Writer) error {

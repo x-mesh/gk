@@ -69,6 +69,32 @@ func TestWip_CommitsThenUnwipRestores(t *testing.T) {
 	}
 }
 
+// Review F2: `gk wip --dry-run` used to sweep and commit for real — the
+// preview must touch neither the index nor history.
+func TestWip_DryRunCommitsNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("wip.txt", "work in progress\n")
+
+	root, buf := buildWipCmd(repo.Dir, "wip")
+	flagDryRun = true // set AFTER the builder: flag registration resets it
+	t.Cleanup(func() { flagDryRun = false })
+	if err := root.Execute(); err != nil {
+		t.Fatalf("wip --dry-run: %v\nout: %s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "would create a WIP commit") {
+		t.Errorf("dry-run output missing the preview line:\n%s", buf.String())
+	}
+	if subj := repo.RunGit("log", "-1", "--format=%s"); strings.HasPrefix(subj, "--wip--") {
+		t.Errorf("dry-run created a WIP commit: %q", subj)
+	}
+	if staged := strings.TrimSpace(repo.RunGit("diff", "--cached", "--name-only")); staged != "" {
+		t.Errorf("dry-run staged files (add -A ran): %q", staged)
+	}
+}
+
 // TestWip_CleanTreeIsNoop reports cleanly when there is nothing to commit.
 func TestWip_CleanTreeIsNoop(t *testing.T) {
 	if testing.Short() {

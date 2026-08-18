@@ -1172,6 +1172,18 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	forceLocked, _ := cmd.Flags().GetBool("force-locked")
 	path := args[0]
 
+	// --dry-run: report and stop BEFORE the lock gate — clearing a stale
+	// lock under --force is itself a mutation a preview must not perform.
+	// This branch is what admits "worktree remove" to dryRunAware.
+	if DryRun() {
+		fmt.Fprintf(w, "[dry-run] would remove worktree %s", path)
+		if force {
+			fmt.Fprint(w, " (--force: uncommitted changes in it would be discarded)")
+		}
+		fmt.Fprintln(w)
+		return nil
+	}
+
 	// A locked worktree needs special handling: a single `--force` does
 	// NOT clear a lock (git wants `-f -f`). Decide by whether the lock
 	// holder is still running — stale locks unlock under --force, live

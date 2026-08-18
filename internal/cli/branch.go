@@ -452,10 +452,15 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		Remote:        remote,
 		IncludeRemote: includeRemote,
 		Worktrees:     worktrees,
-		RemoteName:    cfg.Remote,
-		Protected:     cfg.Branch.Protected,
-		StaleDays:     cfg.Branch.StaleDays,
-		Lang:          cfg.AI.Lang,
+		// Honour the configured base like every other base-relative verb
+		// (ship, sync, worktree cleanup): without this, clean always
+		// auto-detects the remote's default branch — wrong when base_branch
+		// is set to something else, fatal when the repo has no remote.
+		BaseBranch: cfg.BaseBranch,
+		RemoteName: cfg.Remote,
+		Protected:  cfg.Branch.Protected,
+		StaleDays:  cfg.Branch.StaleDays,
+		Lang:       cfg.AI.Lang,
 	}
 
 	// AI provider 구성

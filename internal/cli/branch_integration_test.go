@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/branchclean"
@@ -327,4 +328,48 @@ func contains(ss []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// cfg.BaseBranch must reach the cleaner: without the mapping, clean always
+// auto-detects the remote's default branch — wrong when base_branch names
+// something else, fatal in a remote-less repo. (Found by the squash-merge
+// smoke: "could not determine base branch" despite base_branch: main.)
+func TestBranchClean_HonoursConfiguredBaseWithoutRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("base.txt", "base")
+	repo.Commit("base")
+	repo.WriteFile(".gk.yaml", "base_branch: main\n")
+	repo.CreateBranch("feat/sq")
+	repo.WriteFile("f1.txt", "one")
+	repo.Commit("c1")
+	repo.WriteFile("f2.txt", "two")
+	repo.Commit("c2")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--squash", "feat/sq")
+	repo.RunGit("commit", "-m", "feat: squashed")
+
+	t.Cleanup(func() {
+		flagRepo = ""
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		if c, _, err := rootCmd.Find([]string{"branch", "clean"}); err == nil {
+			_ = c.Flags().Set("dry-run", "false")
+			_ = c.Flags().Set("squash-merged", "false")
+			_ = c.Flags().Set("no-ai", "false")
+		}
+	})
+	var out strings.Builder
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"--repo", repo.Dir, "branch", "clean", "--squash-merged", "--dry-run", "--no-ai"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("clean must use the configured base_branch: %v", err)
+	}
+	if !strings.Contains(out.String(), "feat/sq") {
+		t.Errorf("squash-merged candidate missing from dry-run output:\n%s", out.String())
+	}
 }

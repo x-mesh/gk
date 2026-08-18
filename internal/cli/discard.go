@@ -39,6 +39,10 @@ prompt.
 	rootCmd.AddCommand(cmd)
 }
 
+// discardCheckoutBatch bounds how many pathspecs one `git checkout` argv
+// carries. A var so tests can shrink it to exercise the batching.
+var discardCheckoutBatch = 500
+
 // discardResultJSON backs `GK_AGENT=1 gk discard` (and --json).
 type discardResultJSON struct {
 	Schema        int      `json:"schema"`
@@ -122,16 +126,26 @@ func runDiscard(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("discard: snapshot unexpectedly empty — refusing to discard without a safety net")
 	}
 
-	checkoutArgs := make([]string, 0, len(targets.files)+2)
-	checkoutArgs = append(checkoutArgs, "checkout", "--")
-	for _, f := range targets.files {
-		// :(top,literal) pins each status path to the repo root, byte for
-		// byte — status speaks root-relative while pathspecs default to
-		// cwd-relative, and a glob character in a filename must not expand.
-		checkoutArgs = append(checkoutArgs, ":(top,literal)"+f)
-	}
-	if _, stderr, e := runner.Run(ctx, checkoutArgs...); e != nil {
-		return fmt.Errorf("discard: restore from index: %s: %w", strings.TrimSpace(string(stderr)), e)
+	// Batched so the argv stays bounded: each path adds a ":(top,literal)"
+	// pathspec, and a mass-churn `gk discard .` could otherwise exceed
+	// ARG_MAX (E2BIG) — after the snapshot was already written. Each path
+	// restores independently, so splitting the checkout is safe.
+	for start := 0; start < len(targets.files); start += discardCheckoutBatch {
+		batch := targets.files[start:min(start+discardCheckoutBatch, len(targets.files))]
+		checkoutArgs := make([]string, 0, len(batch)+2)
+		checkoutArgs = append(checkoutArgs, "checkout", "--")
+		for _, f := range batch {
+			// :(top,literal) pins each status path to the repo root, byte
+			// for byte — status speaks root-relative while pathspecs default
+			// to cwd-relative, and a glob character must not expand.
+			checkoutArgs = append(checkoutArgs, ":(top,literal)"+f)
+		}
+		if _, stderr, e := runner.Run(ctx, checkoutArgs...); e != nil {
+			return WithHint(
+				fmt.Errorf("discard: restore from index: %s: %w", strings.TrimSpace(string(stderr)), e),
+				fmt.Sprintf("the pre-discard state is saved at %s — 'gk snapshot restore' brings it back", ref),
+			)
+		}
 	}
 
 	if JSONOut() {
@@ -171,8 +185,12 @@ func collectDiscardTargets(ctx context.Context, runner git.Runner, pathspecs []s
 			continue
 		}
 		x, y, path := entry[0], entry[1], entry[3:]
-		if x == 'R' || x == 'C' {
-			i++ // the rename/copy origin travels as its own NUL field
+		// A rename/copy origin travels as its own NUL field — on EITHER
+		// side: staged renames put R/C in x, worktree renames (reachable
+		// via an intent-to-add rename) put them in y. Missing the y side
+		// would parse the origin path as an independent entry.
+		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+			i++
 		}
 		switch {
 		case x == '?' && y == '?':

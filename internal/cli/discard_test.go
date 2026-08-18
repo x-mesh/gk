@@ -2,14 +2,20 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -209,6 +215,158 @@ func TestDiscard_UnmergedPathsBlock(t *testing.T) {
 	}
 	if got := readRepoFile(t, repo, "a.txt"); !strings.Contains(got, "<<<<<<<") {
 		t.Errorf("the conflicted file must be left untouched, got %q", got)
+	}
+}
+
+// Review F1: the abort-on-snapshot-failure path is the promptless verb's
+// whole justification — a failed snapshot must abort BEFORE anything is
+// destroyed, and the worktree must come out untouched.
+func TestDiscard_SnapshotFailureAbortsDiscard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based failure injection needs POSIX modes")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root ignores permission bits")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "v1")
+	repo.Commit("v1")
+	repo.WriteFile("a.txt", "dirty-snapfail")
+
+	// Deny object writes: snapshotTree's `add -A` must hash the dirty file
+	// into .git/objects, and read-only dirs make exactly that fail while
+	// leaving the read-side (status) working.
+	restore := makeTreeReadOnly(t, filepath.Join(repo.Dir, ".git", "objects"))
+	t.Cleanup(restore)
+
+	root, buf := buildDiscardCmd(repo.Dir, "a.txt")
+	err := root.Execute()
+	restore() // let the asserts below use the repo normally
+	if err == nil {
+		t.Fatalf("discard must abort when the snapshot cannot be written, out:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "snapshot before discarding") {
+		t.Errorf("error must attribute the abort to the snapshot: %v", err)
+	}
+	if got := readRepoFile(t, repo, "a.txt"); got != "dirty-snapfail" {
+		t.Errorf("a.txt = %q — the worktree must be untouched when the snapshot fails", got)
+	}
+}
+
+// makeTreeReadOnly chmods dir and every directory below it to 0555 and
+// returns an idempotent restore func (both t.Cleanup and an early explicit
+// call may run it).
+func makeTreeReadOnly(t *testing.T, dir string) (restore func()) {
+	t.Helper()
+	var dirs []string
+	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if err := os.Chmod(d, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for _, d := range dirs {
+				_ = os.Chmod(d, 0o755)
+			}
+		})
+	}
+}
+
+// Review F8/F3: the porcelain -z parser must skip rename origins on BOTH
+// columns and classify T entries — synthetic bytes, since worktree-side
+// renames are awkward to stage deterministically with real git.
+func TestCollectDiscardTargets_ParsesRenamesAndEdgeShapes(t *testing.T) {
+	porcelain := "RM b.txt\x00a.txt\x00 M plain.txt\x00 R new.txt\x00old.txt\x00 T typechg.txt\x00?? un.txt\x00UU conflict.txt\x00"
+	fake := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain -z -- .": {Stdout: porcelain},
+	}}
+	got, err := collectDiscardTargets(context.Background(), fake, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// b.txt: staged rename + worktree edit (y==M) — discardable, origin
+	// a.txt skipped. new.txt: worktree-side rename (y==R) — no worktree
+	// M/D/T change, origin old.txt skipped.
+	if want := []string{"b.txt", "plain.txt", "typechg.txt"}; !reflect.DeepEqual(got.files, want) {
+		t.Errorf("files = %v, want %v", got.files, want)
+	}
+	if want := []string{"un.txt"}; !reflect.DeepEqual(got.untracked, want) {
+		t.Errorf("untracked = %v, want %v", got.untracked, want)
+	}
+	if want := []string{"conflict.txt"}; !reflect.DeepEqual(got.unmerged, want) {
+		t.Errorf("unmerged = %v, want %v", got.unmerged, want)
+	}
+	for _, bucket := range [][]string{got.files, got.untracked, got.unmerged} {
+		for _, p := range bucket {
+			if p == "a.txt" || p == "old.txt" {
+				t.Errorf("rename origin leaked into targets: %q", p)
+			}
+		}
+	}
+}
+
+// Review F8, real-git half: a staged rename with a worktree edit restores the
+// NEW path to its index version and never touches or resurrects the origin.
+func TestDiscard_StagedRenameWithWorktreeEdit(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "v1")
+	repo.Commit("v1")
+	repo.RunGit("mv", "a.txt", "b.txt")
+	repo.WriteFile("b.txt", "edited")
+
+	root, buf := buildDiscardCmd(repo.Dir, ".")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("discard failed: %v\nout: %s", err, buf.String())
+	}
+	if got := readRepoFile(t, repo, "b.txt"); got != "v1" {
+		t.Errorf("b.txt = %q, want the staged (renamed) index version %q", got, "v1")
+	}
+	if _, err := os.Stat(filepath.Join(repo.Dir, "a.txt")); !os.IsNotExist(err) {
+		t.Errorf("origin a.txt must not be resurrected (stat err=%v)", err)
+	}
+	if cached := repo.RunGit("diff", "--cached", "--name-only"); !strings.Contains(cached, "b.txt") {
+		t.Errorf("staged rename lost from the index: %q", cached)
+	}
+}
+
+// Review F6: the checkout is batched to keep argv bounded — shrink the batch
+// size and prove a multi-batch discard still restores every file.
+func TestDiscard_ChecksOutInBatches(t *testing.T) {
+	old := discardCheckoutBatch
+	discardCheckoutBatch = 2
+	t.Cleanup(func() { discardCheckoutBatch = old })
+
+	repo := testutil.NewRepo(t)
+	names := []string{"f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt"}
+	for _, n := range names {
+		repo.WriteFile(n, "v1")
+	}
+	repo.Commit("v1")
+	for _, n := range names {
+		repo.WriteFile(n, "dirty")
+	}
+
+	root, buf := buildDiscardCmd(repo.Dir, ".")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("batched discard failed: %v\nout: %s", err, buf.String())
+	}
+	for _, n := range names {
+		if got := readRepoFile(t, repo, n); got != "v1" {
+			t.Errorf("%s = %q, want %q (a batch was skipped)", n, got, "v1")
+		}
 	}
 }
 

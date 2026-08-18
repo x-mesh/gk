@@ -94,6 +94,34 @@ func EffectivelyMerged(ctx context.Context, r git.Runner, base, branch string) (
 	return effectivelyMergedTree(ctx, r, strings.TrimSpace(string(out)), base, branch)
 }
 
+// EffectivelyMergedSet runs the content check over branches, resolving
+// base^{tree} once. A branch whose check errors is simply absent from the
+// result — under-claiming keeps it listed as unmerged work, the safe
+// direction for every caller. Cost: one rev-parse plus one merge-tree per
+// branch, deliberately WITHOUT git cherry — cherry computes per-commit
+// patch-ids on both sides of the fork point, which gets expensive against a
+// long-lived base, and survey commands run this by default.
+func EffectivelyMergedSet(ctx context.Context, r git.Runner, base string, branches []string) map[string]bool {
+	out := make(map[string]bool, len(branches))
+	if len(branches) == 0 {
+		return out
+	}
+	baseTreeRaw, _, err := r.Run(ctx, "rev-parse", base+"^{tree}")
+	if err != nil {
+		return out
+	}
+	baseTree := strings.TrimSpace(string(baseTreeRaw))
+	if baseTree == "" {
+		return out
+	}
+	for _, b := range branches {
+		if ok, cerr := effectivelyMergedTree(ctx, r, baseTree, base, b); cerr == nil && ok {
+			out[b] = true
+		}
+	}
+	return out
+}
+
 func effectivelyMergedTree(ctx context.Context, r git.Runner, baseTree, base, branch string) (bool, error) {
 	stdout, stderr, err := r.Run(ctx, "merge-tree", "--write-tree", base, branch)
 	first := strings.TrimSpace(string(stdout))

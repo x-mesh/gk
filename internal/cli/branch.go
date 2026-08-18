@@ -233,9 +233,15 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 	var merged, unmerged map[string]bool
 	base := ""
 	if onlyMerged || onlyUnmerged {
-		base, err = client.DefaultBranch(ctx, cfg.Remote)
-		if err != nil {
-			return fmt.Errorf("could not determine default branch: %w", err)
+		// Honour the configured base first, like branch clean and every
+		// other base-relative verb — auto-detection alone is wrong when
+		// base_branch names something else and fatal without a remote.
+		base = cfg.BaseBranch
+		if base == "" {
+			base, err = client.DefaultBranch(ctx, cfg.Remote)
+			if err != nil {
+				return fmt.Errorf("could not determine default branch: %w", err)
+			}
 		}
 		if onlyMerged {
 			merged, err = mergedBranches(ctx, runner, base)
@@ -248,6 +254,29 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 	}
 	current, _ := client.CurrentBranch(ctx)
 
+	var squash map[string]bool
+	if onlyMerged || onlyUnmerged {
+		// The survey must not contradict the cleaner: a squash-merged branch
+		// is no ancestor, so `git branch --merged` misses it and --no-merged
+		// reports its work as pending. The content check (one merge-tree per
+		// non-ancestor branch) adds those rows to --merged and marks them in
+		// --unmerged instead of letting the listing lie.
+		var candidates []string
+		for _, b := range branches {
+			if b.Name == base || b.Name == current {
+				continue
+			}
+			if onlyMerged && merged[b.Name] {
+				continue // ancestor-merged already — nothing to detect
+			}
+			if onlyUnmerged && !unmerged[b.Name] {
+				continue
+			}
+			candidates = append(candidates, b.Name)
+		}
+		squash = branchclean.EffectivelyMergedSet(ctx, runner, base, candidates)
+	}
+
 	rows := buildBranchListRows(branches, branchListFilter{
 		Base:         base,
 		Current:      current,
@@ -256,6 +285,7 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 		OnlyGone:     onlyGone,
 		Merged:       merged,
 		Unmerged:     unmerged,
+		Squash:       squash,
 		Stale:        stale > 0,
 		Cutoff:       time.Now().AddDate(0, 0, -stale),
 	})
@@ -291,6 +321,10 @@ type branchListRow struct {
 	Ahead    int
 	Behind   int
 	Age      string
+	// Squash marks a branch whose work is content-verified in base without
+	// being an ancestor (squash merge) — included by --merged and flagged
+	// under --unmerged so the listing matches what the cleaner knows.
+	Squash bool
 }
 
 // branchListFilter carries every knob buildBranchListRows needs, decoupled
@@ -303,8 +337,11 @@ type branchListFilter struct {
 	OnlyMerged, OnlyUnmerged bool
 	OnlyGone                 bool
 	Merged, Unmerged         map[string]bool
-	Cutoff                   time.Time // zero-stale (stale=0) callers pass a zero-value cutoff filter via Stale
-	Stale                    bool      // true when --stale was given (Cutoff should be applied)
+	// Squash is the content-verified squash-merged set (nil when neither
+	// --merged nor --unmerged was requested).
+	Squash map[string]bool
+	Cutoff time.Time // zero-stale (stale=0) callers pass a zero-value cutoff filter via Stale
+	Stale  bool      // true when --stale was given (Cutoff should be applied)
 }
 
 // buildBranchListRows filters branches and shapes them into display rows.
@@ -321,7 +358,7 @@ func buildBranchListRows(branches []branchInfo, f branchListFilter) []branchList
 		if f.Base != "" && b.Name == f.Base {
 			continue
 		}
-		if f.OnlyMerged && !f.Merged[b.Name] {
+		if f.OnlyMerged && !f.Merged[b.Name] && !f.Squash[b.Name] {
 			continue
 		}
 		if f.OnlyUnmerged && !f.Unmerged[b.Name] {
@@ -347,6 +384,7 @@ func buildBranchListRows(branches []branchInfo, f branchListFilter) []branchList
 			Ahead:    b.Ahead,
 			Behind:   b.Behind,
 			Age:      ifZeroTime(b.LastCommit),
+			Squash:   f.Squash[b.Name],
 		})
 	}
 	return rows
@@ -393,13 +431,19 @@ func renderBranchListRows(rows []branchListRow) []string {
 			marker = yellow("★") + " "
 			nameCell = yellow(r.Name)
 		}
+		ageCell := r.Age
+		if r.Squash {
+			// AGE is the last column, so the marker can ride after it
+			// without disturbing the width computation.
+			ageCell += "  " + faint("[squash-merged]")
+		}
 		out = append(out, fmt.Sprintf("%s%s  %s  %s  %s",
 			marker,
 			padRightVisible(nameCell, wName),
 			padRight(r.Upstream, wUpstream),
 			// colorSwitchDiff carries ANSI, so pad by visible width.
 			padRightVisible(colorSwitchDiff(r.Ahead, r.Behind), wDiff),
-			r.Age,
+			ageCell,
 		))
 	}
 	return out

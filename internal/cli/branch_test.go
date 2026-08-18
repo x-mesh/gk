@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/x-mesh/gk/internal/branchclean"
@@ -892,5 +893,114 @@ func TestRenderBranchListRowsAligns(t *testing.T) {
 	}
 	if strings.Contains(out[1], "★") || strings.Contains(out[2], "★") {
 		t.Errorf("non-current rows should not carry ★")
+	}
+}
+
+// A squash-merged branch is no ancestor, so the raw --merged/--no-merged
+// sets miss it. The Squash set must pull it INTO --merged rows and mark it,
+// while --unmerged keeps (and marks) it rather than hiding landed work.
+func TestBuildBranchListRows_SquashJoinsMerged(t *testing.T) {
+	branches := []branchInfo{
+		{Name: "feat/sq", LastCommit: time.Now()},
+		{Name: "feat/wip", LastCommit: time.Now()},
+	}
+	rows := buildBranchListRows(branches, branchListFilter{
+		Base:       "main",
+		OnlyMerged: true,
+		Merged:     map[string]bool{},
+		Squash:     map[string]bool{"feat/sq": true},
+	})
+	if len(rows) != 1 || rows[0].Name != "feat/sq" || !rows[0].Squash {
+		t.Fatalf("rows = %+v, want only feat/sq with Squash=true", rows)
+	}
+
+	rows = buildBranchListRows(branches, branchListFilter{
+		Base:         "main",
+		OnlyUnmerged: true,
+		Unmerged:     map[string]bool{"feat/sq": true, "feat/wip": true},
+		Squash:       map[string]bool{"feat/sq": true},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("unmerged rows = %+v, want both branches kept", rows)
+	}
+	for _, r := range rows {
+		if r.Name == "feat/sq" && !r.Squash {
+			t.Errorf("feat/sq must carry the squash marker under --unmerged")
+		}
+		if r.Name == "feat/wip" && r.Squash {
+			t.Errorf("feat/wip must not carry the squash marker")
+		}
+	}
+}
+
+// End to end through the real root: in a remote-less repo with base_branch
+// configured, --merged lists the squash-merged branch (marked) and
+// --unmerged marks instead of hiding it.
+func TestBranchList_SquashMergedSurvey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("base.txt", "base")
+	repo.Commit("base")
+	repo.WriteFile(".gk.yaml", "base_branch: main\n")
+	repo.CreateBranch("feat/sq")
+	repo.WriteFile("f1.txt", "one")
+	repo.Commit("c1")
+	repo.WriteFile("f2.txt", "two")
+	repo.Commit("c2")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--squash", "feat/sq")
+	repo.RunGit("commit", "-m", "feat: squashed")
+
+	resetListFlags := func() {
+		flagRepo = ""
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		if c, _, err := rootCmd.Find([]string{"branch", "list"}); err == nil {
+			_ = c.Flags().Set("merged", "false")
+			_ = c.Flags().Set("unmerged", "false")
+		}
+	}
+	t.Cleanup(resetListFlags)
+
+	runList := func(filter string) string {
+		t.Helper()
+		// Flag values persist on the real command between Executes — reset
+		// so the previous call's filter doesn't combine with this one's.
+		resetListFlags()
+		var out strings.Builder
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"--repo", repo.Dir, "--no-color", "branch", "list", filter})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("branch list %s: %v", filter, err)
+		}
+		return out.String()
+	}
+
+	mergedOut := runList("--merged")
+	if !strings.Contains(mergedOut, "feat/sq") || !strings.Contains(mergedOut, "[squash-merged]") {
+		t.Errorf("--merged must list the squash-merged branch with its marker:\n%s", mergedOut)
+	}
+
+	unmergedOut := runList("--unmerged")
+	if !strings.Contains(unmergedOut, "feat/sq") || !strings.Contains(unmergedOut, "[squash-merged]") {
+		t.Errorf("--unmerged must keep and mark the squash-merged branch:\n%s", unmergedOut)
+	}
+}
+
+// The ambiguous status must explain itself in the picker label — a bare
+// [ambiguous] token told the user nothing about why it sits unselected.
+func TestFormatCandidateLabel_AmbiguousExplains(t *testing.T) {
+	label := FormatCandidateLabel(branchclean.CleanCandidate{
+		BranchEntry: branchclean.BranchEntry{
+			Name:   "feat/partial",
+			Status: branchclean.StatusAmbiguous,
+		},
+	})
+	if !strings.Contains(label, "partially applied") {
+		t.Errorf("label = %q, want the partially-applied explainer", label)
 	}
 }

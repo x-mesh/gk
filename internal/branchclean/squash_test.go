@@ -242,6 +242,37 @@ func TestDetectSquashMerged_CherryFastPathSkipsMergeTree(t *testing.T) {
 	}
 }
 
+// EffectivelyMergedSet: base^{tree}는 한 번만 해석하고, net-zero 브랜치만
+// 집합에 남는다. 검사 실패는 조용히 미포함(under-claim).
+func TestEffectivelyMergedSet(t *testing.T) {
+	baseTree := strings.Repeat("a", 40)
+	runner := &git.FakeRunner{
+		Responses: map[string]git.FakeResponse{
+			"rev-parse main^{tree}":                {Stdout: baseTree + "\n"},
+			"merge-tree --write-tree main feat/sq": {Stdout: baseTree + "\n"},
+			"merge-tree --write-tree main feat/wip": {
+				Stdout: strings.Repeat("b", 40) + "\n"},
+			"merge-tree --write-tree main feat/err": {Err: fmt.Errorf("boom")},
+		},
+	}
+
+	got := EffectivelyMergedSet(context.Background(), runner,
+		"main", []string{"feat/sq", "feat/wip", "feat/err"})
+	if len(got) != 1 || !got["feat/sq"] {
+		t.Fatalf("set = %v, want only feat/sq", got)
+	}
+
+	revParses := 0
+	for _, call := range runner.Calls {
+		if len(call.Args) > 0 && call.Args[0] == "rev-parse" {
+			revParses++
+		}
+	}
+	if revParses != 1 {
+		t.Errorf("rev-parse ran %d times, want 1 (base tree resolved once)", revParses)
+	}
+}
+
 // base^{tree} 해석 실패는 경고 + cherry-only 강등이지, 전체 실패가 아니다.
 func TestDetectSquashMerged_BaseTreeFailureDegradesToCherry(t *testing.T) {
 	runner := &git.FakeRunner{

@@ -100,12 +100,15 @@ best-effort) after every 'gk snapshot' save.`,
 
 	snapshot.AddCommand(newSnapshotHookCmd())
 
-	// Top-level convenience alias for `gk snapshot list`.
+	// Top-level convenience alias for `gk snapshot list`. Hidden so the root
+	// help lists the snapshot family once — the alias still runs, and
+	// `gk snapshot --help` documents it.
 	snapshots := &cobra.Command{
-		Use:   "snapshots",
-		Short: "List safety-net snapshots for the current branch",
-		Args:  cobra.NoArgs,
-		RunE:  runSnapshotList,
+		Use:    "snapshots",
+		Short:  "List safety-net snapshots for the current branch",
+		Args:   cobra.NoArgs,
+		RunE:   runSnapshotList,
+		Hidden: true,
 	}
 	rootCmd.AddCommand(snapshots)
 }

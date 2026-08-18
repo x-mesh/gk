@@ -174,6 +174,9 @@ func Execute() error {
 	if name != "gk" && verMeta.set {
 		rootCmd.Long = renderRootLong(name, verMeta.version, verMeta.commit, verMeta.date, verMeta.suffix)
 	}
+	// Group the root help after every subcommand has registered — the
+	// assignment walks the real command tree, so it must see all of it.
+	installHelpGroups(rootCmd)
 	// Wire Easy-Mode help after every subcommand has registered, so the
 	// plain-Korean descriptions cover the whole command tree.
 	installEasyHelp(rootCmd)

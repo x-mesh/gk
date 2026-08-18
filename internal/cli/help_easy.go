@@ -119,8 +119,12 @@ var easyShortKO = map[string]string{
 
 // koUsageTemplate is cobra's default usage template with the structural
 // labels translated to Korean (Usage→사용법, Flags→옵션, …). The {{...}}
-// actions are left untouched. Installed on the root (and inherited by every
-// subcommand) only when Easy Mode + Korean is active.
+// actions are left untouched — including the grouped-commands branch cobra
+// renders when the command has help groups (the root does, via
+// installHelpGroups; subcommands have none and keep the flat list). Group
+// titles come from the .Groups data, which swapEasyShorts localizes for the
+// render. Installed on the root (and inherited by every subcommand) only when
+// Easy Mode + Korean is active.
 const koUsageTemplate = `사용법:{{if .Runnable}}
   {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
   {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
@@ -129,10 +133,16 @@ const koUsageTemplate = `사용법:{{if .Runnable}}
   {{.NameAndAliases}}{{end}}{{if .HasExample}}
 
 예시:
-{{.Example}}{{end}}{{if .HasAvailableSubCommands}}
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
 
-사용할 수 있는 명령:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
-  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+사용할 수 있는 명령:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+기타 명령:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
 
 옵션:
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
@@ -219,6 +229,14 @@ func swapEasyShorts(root *cobra.Command) func() {
 		orig := get()
 		set(val)
 		restore = append(restore, func() { set(orig) })
+	}
+
+	// Help-group titles live on the shared *cobra.Group values, so they get
+	// the same swap-and-restore treatment as the command Shorts.
+	for _, g := range root.Groups() {
+		if ko := helpGroupKoTitle[g.ID]; ko != "" {
+			swapStr(func() string { return g.Title }, func(s string) { g.Title = s }, ko)
+		}
 	}
 
 	var walk func(*cobra.Command)

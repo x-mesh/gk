@@ -2289,11 +2289,17 @@ func isRawResetHard(subcmd string, args []string) bool {
 // uncommit-but-keep-the-work move. git-kit undo --soft is the same reset with
 // a backup ref recorded first, and it is scriptable: non-interactive runs
 // default to HEAD~1 and --to <ref> reaches any other target. git itself
-// rejects --soft with pathspecs, so the flag alone decides. A command that
-// also carries --hard stays with isRawResetHard — the classifier asks that
-// first, so colliding mode flags get the destructive reading.
+// rejects --soft with pathspecs, so the flag alone decides — UNLESS another
+// mode flag rides along: git honors the LAST mode flag, so `--soft --hard`
+// is really a hard reset and `--soft --mixed <ref>` an unstage, and claiming
+// undo --soft for those hands the agent a verb with different semantics.
+// Collisions with an explicit target fall to isRawResetHard (asked first);
+// the rest fall to the uncovered gap rather than a wrong coverage claim.
 func isRawUncommit(subcmd string, args []string) bool {
-	return subcmd == "reset" && hasArg(args, "--soft")
+	if subcmd != "reset" || !hasArg(args, "--soft") {
+		return false
+	}
+	return !hasAnyArg(args, "--hard", "--mixed", "--keep", "--merge")
 }
 
 // isRawLostFound matches the `git fsck` forms that hunt for dangling work, which

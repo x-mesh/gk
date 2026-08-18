@@ -927,8 +927,14 @@ func TestGitSegmentFinding_ResetAndFsck(t *testing.T) {
 		{"soft uncommit", "reset", []string{"--soft", "HEAD~1"}, "raw-uncommit"},
 		{"bare soft", "reset", []string{"--soft"}, "raw-uncommit"},
 		{"soft to sha", "reset", []string{"--soft", "8b7a4f21c"}, "raw-uncommit"},
-		// Colliding mode flags get the destructive reading.
+		// Colliding mode flags with a target get the destructive reading.
 		{"soft plus hard", "reset", []string{"--soft", "--hard", "HEAD~1"}, "raw-reset-hard"},
+		// A bare collision has no target for isRawResetHard to claim, and git
+		// honors the LAST mode flag (`--soft --hard` is a hard reset) — so no
+		// covered claim at all rather than a wrong undo --soft nudge.
+		{"soft plus hard bare", "reset", []string{"--soft", "--hard"}, ""},
+		{"soft plus mixed", "reset", []string{"--soft", "--mixed", "HEAD~1"}, ""},
+		{"keep plus soft", "reset", []string{"--keep", "--soft", "HEAD~1"}, ""},
 		// --mixed with an explicit commit moves the branch with index semantics
 		// no gk verb reproduces — still a gap.
 		{"mixed to commit", "reset", []string{"--mixed", "HEAD~1"}, ""},

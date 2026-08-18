@@ -149,7 +149,7 @@ func buildPRPlan(ctx context.Context, cmd *cobra.Command, cfg *config.Config, ru
 		if errors.Is(err, git.ErrDetachedHEAD) {
 			return prPlan{}, WithHint(
 				errors.New("pr create: HEAD is detached — a pull request needs a branch"),
-				"create one with 'gk branch new <name>', or pass --head <branch>",
+				"create one with 'gk sw -c <name>', or pass --head <branch>",
 			)
 		}
 		if err != nil {

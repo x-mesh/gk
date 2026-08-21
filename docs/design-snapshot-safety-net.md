@@ -1,6 +1,7 @@
 # Design: `gk snapshot` — 비파괴 안전망
 
-상태: Phase 1 구현됨 (develop, 미릴리스) · 2026-06-09 · 대상: 자동 작업 보존
+상태: 역사적 Phase 1 설계 · 2026-06-09 · Phase 2 구현 내용은
+[phase2-improvements.md](phase2-improvements.md) 참고
 
 ## 1. 배경 (WHY)
 

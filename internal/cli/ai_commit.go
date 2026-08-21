@@ -26,7 +26,7 @@ import (
 
 func init() {
 	cmd := &cobra.Command{
-		Use:   "commit",
+		Use:   "commit [-- <file>...]",
 		Short: "Generate commit messages with AI and apply them",
 		Long: `Analyzes current working-tree changes (staged + unstaged + untracked),
 groups them into semantic commit plans via an AI CLI provider, and applies
@@ -73,6 +73,16 @@ the most recent run, leaving the reverted changes unstaged for regrouping.
   validates without committing; with --json (or GK_AGENT=1) the result
   is a machine contract: {result, commits:[{message,result,sha}],
   failed_at?, backup_ref?}.
+
+  -m/--message is the one-commit shorthand for callers that already know
+  both the Conventional Commit message and exact file set. It builds the
+  same deterministic plan internally, so commitlint, secret scanning, and
+  backup-ref recovery still apply:
+
+    gk commit -m 'fix(api): validate input' -- api.go api_test.go
+
+  Repeat -m to add body paragraphs. At least one explicit file is required;
+  unrelated dirty files remain untouched.
 `,
 		RunE: runAICommit,
 	}
@@ -87,6 +97,7 @@ the most recent run, leaving the reverted changes unstaged for regrouping.
 	cmd.Flags().StringSliceP("allow-secret-kind", "S", nil, "suppress secret findings of the given kind (repeatable); the special value 'all' bypasses every finding")
 	cmd.Flags().BoolP("no-verify", "n", false, "bypass the noise + secret guards and the privacy-gate abort threshold (bypassed secrets are reported, then committed; payload redaction to remote AI still applies)")
 	cmd.Flags().Bool("abort", false, "restore HEAD to the latest ai-commit backup ref; leave reverted changes unstaged")
+	cmd.Flags().StringArrayP("message", "m", nil, "create one deterministic commit with this message and the files after -- (repeat for body paragraphs)")
 	cmd.Flags().String("plan", "", "JSON commit plan: a file path, or '-' for stdin (deterministic, no AI)")
 	cmd.Flags().Bool("plan-template", false, "emit current working-tree changes as a commit-plan draft (JSON) and exit")
 	cmd.Flags().BoolP("interactive", "i", false, "interactively group working-tree files into commits (TUI; builds a commit plan, no AI)")
@@ -99,7 +110,7 @@ the most recent run, leaving the reverted changes unstaged for regrouping.
 	rootCmd.AddCommand(cmd)
 }
 
-func runAICommit(cmd *cobra.Command, _ []string) error {
+func runAICommit(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -133,6 +144,19 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 
 	if flags.abort {
 		return runAICommitAbort(ctx, cmd, runner)
+	}
+	if len(flags.messages) > 0 {
+		paths, err := commitMessagePaths(cmd, args)
+		if err != nil {
+			return err
+		}
+		return runAICommitMessage(cmd, ctx, runner, cfg, ai, flags, paths)
+	}
+	if len(args) > 0 {
+		return WithHint(
+			fmt.Errorf("commit: file arguments require -m/--message"),
+			"use gk commit -m 'type(scope): subject' -- <file>..., or use --plan for multiple commits",
+		)
 	}
 
 	// Declarative (AI-free) paths branch BEFORE any provider is constructed —
@@ -485,6 +509,20 @@ func runAICommit(cmd *cobra.Command, _ []string) error {
 	Dbg("commit: compose ok — %d message(s) in %s", len(messages), time.Since(composeStart).Round(time.Millisecond))
 
 	return applyCommitMessages(ctx, cmd, runner, messages, files, wipCommit, flags, ai, prov)
+}
+
+func commitMessagePaths(cmd *cobra.Command, args []string) ([]string, error) {
+	dash := cmd.ArgsLenAtDash()
+	if dash < 0 {
+		return nil, WithHint(
+			fmt.Errorf("commit: --message files must follow --"),
+			"use gk commit -m 'type(scope): subject' -- <file>...",
+		)
+	}
+	if dash != 0 {
+		return nil, fmt.Errorf("commit: positional arguments before -- are not allowed with --message")
+	}
+	return args[dash:], nil
 }
 
 // applyCommitMessages runs the tail shared by every message-producing path:
@@ -928,6 +966,7 @@ type aiCommitFlags struct {
 	noWIPUnwrap      bool
 	forceWIP         bool
 	wip              bool
+	messages         []string
 	plan             string
 	planTemplate     bool
 	interactive      bool
@@ -960,12 +999,21 @@ func readAICommitFlags(cmd *cobra.Command) (aiCommitFlags, error) {
 	f.yes, _ = cmd.Flags().GetBool("yes")
 	f.noWIPUnwrap, _ = cmd.Flags().GetBool("no-wip-unwrap")
 	f.forceWIP, _ = cmd.Flags().GetBool("force-wip")
+	f.messages, _ = cmd.Flags().GetStringArray("message")
 	f.plan, _ = cmd.Flags().GetString("plan")
 	f.planTemplate, _ = cmd.Flags().GetBool("plan-template")
 	f.interactive, _ = cmd.Flags().GetBool("interactive")
 	f.wip, _ = cmd.Flags().GetBool("wip")
 	if f.stagedOnly && f.includeUnstaged {
 		return f, fmt.Errorf("--staged-only and --include-unstaged are mutually exclusive")
+	}
+	if len(f.messages) > 0 {
+		if f.plan != "" || f.planTemplate || f.interactive || f.wip || f.abort {
+			return f, fmt.Errorf("--message cannot be combined with --plan/--plan-template/--interactive/--wip/--abort")
+		}
+		if f.stagedOnly {
+			return f, fmt.Errorf("--message cannot be combined with --staged-only; pass explicit files after -- (partial staged files cannot be committed safely by path)")
+		}
 	}
 	if f.wip {
 		if f.plan != "" || f.planTemplate || f.interactive {

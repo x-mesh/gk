@@ -40,8 +40,8 @@ func TestAICommitRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rootCmd.Find(commit): %v", err)
 	}
-	if found.Use != "commit" {
-		t.Errorf("Use: want %q, got %q", "commit", found.Use)
+	if found.Use != "commit [-- <file>...]" {
+		t.Errorf("Use: want %q, got %q", "commit [-- <file>...]", found.Use)
 	}
 }
 
@@ -59,13 +59,66 @@ func TestAICommitHelpListsFlags(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"--force", "--dry-run", "--provider", "--lang",
-		"--staged-only", "--include-unstaged", "--abort",
+		"--staged-only", "--include-unstaged", "--abort", "--message",
 		"--allow-secret-kind", "--no-verify", "--ci", "--yes",
 		"--no-wip-unwrap", "--force-wip",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing flag %q\n%s", want, out)
 		}
+	}
+}
+
+func TestAICommitMessageFlagValidation(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "commit"}
+		cmd.Flags().StringArrayP("message", "m", nil, "")
+		cmd.Flags().String("plan", "", "")
+		cmd.Flags().Bool("plan-template", false, "")
+		cmd.Flags().Bool("interactive", false, "")
+		cmd.Flags().Bool("wip", false, "")
+		cmd.Flags().Bool("abort", false, "")
+		cmd.Flags().Bool("staged-only", false, "")
+		cmd.Flags().Bool("include-unstaged", false, "")
+		return cmd
+	}
+	cmd := newCmd()
+	_ = cmd.Flags().Set("message", "fix(x): subject")
+	_ = cmd.Flags().Set("plan", "-")
+	if _, err := readAICommitFlags(cmd); err == nil || !strings.Contains(err.Error(), "--message cannot be combined") {
+		t.Fatalf("message + plan: got %v", err)
+	}
+	cmd = newCmd()
+	_ = cmd.Flags().Set("message", "fix(x): subject")
+	_ = cmd.Flags().Set("staged-only", "true")
+	if _, err := readAICommitFlags(cmd); err == nil || !strings.Contains(err.Error(), "partial staged files") {
+		t.Fatalf("message + staged-only: got %v", err)
+	}
+}
+
+func TestCommitMessagePathsRequiresDelimiter(t *testing.T) {
+	cmd := &cobra.Command{Use: "commit", RunE: func(cmd *cobra.Command, args []string) error {
+		_, err := commitMessagePaths(cmd, args)
+		return err
+	}}
+	cmd.SetArgs([]string{"a.txt"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "must follow --") {
+		t.Fatalf("without delimiter: got %v", err)
+	}
+
+	cmd = &cobra.Command{Use: "commit", RunE: func(cmd *cobra.Command, args []string) error {
+		paths, err := commitMessagePaths(cmd, args)
+		if err != nil {
+			return err
+		}
+		if len(paths) != 2 || paths[0] != "a.txt" || paths[1] != "-odd.txt" {
+			t.Fatalf("paths = %v", paths)
+		}
+		return nil
+	}}
+	cmd.SetArgs([]string{"--", "a.txt", "-odd.txt"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("with delimiter: %v", err)
 	}
 }
 

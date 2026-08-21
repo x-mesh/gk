@@ -30,3 +30,13 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      # The E2E package is intentionally build-tagged out of the default test
+      # run because it compiles and drives the real binary against temp repos.
+      - run: go test -tags e2e ./internal/e2e/ -count=1 -v

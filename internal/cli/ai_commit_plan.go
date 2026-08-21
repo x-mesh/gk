@@ -56,6 +56,16 @@ func readCommitPlan(r io.Reader) (commitPlanJSON, error) {
 	if err != nil {
 		return plan, fmt.Errorf("commit plan: read plan: %w", err)
 	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return plan, WithRemedy(
+			WithHint(
+				fmt.Errorf("commit plan: --plan - received empty stdin"),
+				"pipe a JSON plan to stdin, pass --plan <file>, or start from --plan-template",
+			),
+			"generate a plan template",
+			errRemedy{Command: "gk commit --plan-template", Safety: "safe"},
+		)
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if derr := dec.Decode(&plan); derr != nil {

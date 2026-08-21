@@ -1,10 +1,16 @@
 # gk v2 Roadmap
 
+> **Historical planning snapshot.** This roadmap was written at v0.6.0 and is
+> retained for design rationale; it is not a current release tracker. The
+> repository is now at v0.136.0. Use `README.md`, `docs/commands.md`, and
+> `CHANGELOG.md` for shipped behavior, and verify remaining proposals against
+> the source before implementing them.
+
 This document is the canonical plan for gk v2 (target: v1.0.0 release) and the v1.1+ backlog. It consolidates the v2 brainstorm, `gk timemachine` design, the 62-leaf decomposition, non-functional requirements, the v1.1+ bias-corrected backlog, and the 2026-04-22 probe verdict (🔄 RETHINK) that repositioned F2/F3.
 
 | Field | Value |
 |-------|-------|
-| Current version | v0.6.0 |
+| Version when written | v0.6.0 |
 | Target | v1.0.0 |
 | Effort (3-way parallel) | **9–11 calendar days** (post-probe revision) |
 | Effort (serial, single dev) | ~28 dev-days |

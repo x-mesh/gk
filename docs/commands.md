@@ -34,7 +34,7 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `gk ship` | Interactive release: print the plan, run preflight, update metadata, commit, tag, push |
 | `gk ship auto` | Same as default, but skips confirmation (`--yes`) |
 | `gk ship status` | Read-only summary of commits since the latest tag and the inferred next tag |
-| `gk ship dry-run` | Full plan preview without preflight, metadata writes, tag, or push |
+| `gk ship --dry-run` | Full plan preview without preflight, metadata writes, tag, or push |
 | `gk ship squash` | Squash commits since the latest tag into one local commit; no bump, tag, or push |
 | `gk ship patch\|minor\|major` | Release with an explicit bump type |
 
@@ -126,7 +126,7 @@ With `wait: false` (or `--wait=false`) ship ends at the push: the release is pub
 
 ```bash
 # Preview the release without mutating anything
-gk ship dry-run
+gk ship --dry-run
 
 # Read current ship status
 gk ship status
@@ -3928,6 +3928,7 @@ Group working-tree changes (staged + unstaged + untracked) into semantic commit 
 
 ```
 gk commit [flags]
+gk commit -m 'fix(api): validate input' -- api.go api_test.go
 ```
 
 #### Flags
@@ -3945,6 +3946,7 @@ gk commit [flags]
 | `-S`, `--allow-secret-kind <kind>` | none | Suppress secret findings of the given kind (repeatable); the special value `all` bypasses every finding |
 | `-n`, `--no-verify` | false | Bypass the noise + secret guards **and** the privacy-gate abort threshold (implies `--skip-privacy`); findings are reported on stderr, then committed. Payload redaction to remote AI still applies |
 | `--abort` | false | Restore HEAD to the latest ai-commit backup ref and exit |
+| `-m`, `--message <text>` | — | Create one deterministic commit containing exactly the repo-relative files after `--`; repeat `-m` for body paragraphs. Uses the same commitlint, secret guard, and backup-ref path as `--plan`, with no AI call. Requires at least one file and cannot be combined with plan/TUI/WIP/staged-only modes |
 | `--plan <file\|->` | — | Create commits from a JSON plan instead of the AI: `{"commits":[{"message","files":[...]}]}` — deterministic, no LLM call. See "Curated plan mode" below |
 | `--plan-template` | false | Emit the current working-tree changes as a commit-plan draft (JSON) and exit |
 | `--wip` | false | Write **one** checkpoint commit headed `WIP(scope): <summary>` instead of a semantic history. Skips classification (one commit by definition) so it costs a single provider call, and never fails on the AI — no provider, a timeout, or a bad response all degrade to `WIP(scope): checkpoint — N files (no AI summary)` rather than refusing to commit. Implies `--force` and `--no-wip-unwrap`; the secret scan and noise guard still apply. See "Checkpoint mode" below |
@@ -3979,6 +3981,15 @@ The header spelling is deliberate: `WIP(...)` matches the WIP-chain patterns `gk
 #### Curated plan mode (`--plan` / `--plan-template`)
 
 When the caller — typically an agent — decides the grouping instead of the AI, the plan contract creates N commits in one deterministic call (the `gk rebase --plan` philosophy applied to commit creation):
+
+For the common one-commit case, no JSON is needed:
+
+```bash
+gk commit -m 'fix(codex): expose Sol 1M context opt-in' -- \
+  README.md src/handlers/models.rs tests/models_endpoint_tests.rs
+```
+
+Only those paths are committed; other dirty files remain untouched. Repeat `-m` to add body paragraphs. Paths are deliberately required so an omitted argument cannot accidentally capture the entire working tree. Use the full plan contract below when one call should create multiple commits.
 
 ```bash
 gk commit --plan-template            # emit dirty files as a JSON draft
@@ -4612,13 +4623,15 @@ root `Dockerfile` that builds a minimal image (git + ssh + gk) with
 
 ```
 docker build -t gk-follow .
-docker run --rm --restart=always \
+docker run --restart=always \
   -v "$PWD:/repo" -v ~/.ssh:/root/.ssh:ro \
   gk-follow -- make deploy
 ```
 
 The base image is intentionally minimal; a hook that needs a toolchain
-(`make`, `node`, …) should `FROM` it and add what it needs.
+(`make`, `node`, …) should extend the local image (or an image you publish
+yourself) and add what it needs. Use `--rm` instead of `--restart=always` for a
+one-shot local run; Docker does not allow both options together.
 
 ---
 

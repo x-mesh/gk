@@ -31,6 +31,8 @@ archives:
     # works as a stable URL. GoReleaser's brews block re-derives URL+sha256
     # from this template automatically, so the Homebrew tap stays in sync.
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
@@ -85,4 +87,4 @@ homebrew_casks:
         install: |
           system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/gk"]
     caveats: |
-      gk uses git under the hood. Ensure git >= 2.30 is installed.
+      gk uses git under the hood. Ensure git >= 2.38 is installed (>= 2.40 recommended).

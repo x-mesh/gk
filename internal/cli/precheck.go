@@ -276,8 +276,9 @@ func writePrecheckHuman(w io.Writer, res precheckResult, color bool) {
 }
 
 // scanMergeConflicts returns the list of conflicted paths when merging `theirs`
-// into `ours`. If `base` is non-empty it is passed as --merge-base; otherwise
-// git computes the merge-base itself. Empty slice means the merge would be clean.
+// into `ours`. If `base` is non-empty it is passed as --merge-base on modern
+// Git. The legacy fallback uses the three-tree form instead. Empty slice means
+// the merge would be clean.
 //
 // Exit semantics (git 2.38+): exit 0 = clean merge, exit 1 = conflicts, other = error.
 // We treat exit 1 with parseable output as conflicts (not an error).
@@ -325,21 +326,53 @@ func scanMergeConflictsTree(ctx context.Context, r git.Runner, base, ours, their
 		return mergeScan{}, fmt.Errorf("%s", trimmed)
 	}
 
-	// Fallback: git 2.38/2.39 — no --name-only; parse markers instead. The tree
-	// OID is left empty: this path can't enumerate paths, so the per-path blob
-	// reads that need it aren't possible here anyway.
-	stdout2, stderr2, err2 := runMergeTree(ctx, r, base, ours, theirs, false /*nameOnly*/)
-	if err2 != nil && !looksLikeTreeOID(stdout2) {
+	// Fallback: Git 2.38/2.39 has neither --name-only nor --merge-base for the
+	// --write-tree form. Use the original three-tree form, which prints conflict
+	// markers plus stage records containing the exact path. The tree OID stays
+	// empty because this form does not create a result tree to inspect.
+	stdout2, stderr2, err2 := runLegacyMergeTree(ctx, r, base, ours, theirs)
+	if err2 != nil {
 		trimmed := strings.TrimSpace(string(stderr2))
 		if trimmed == "" {
 			return mergeScan{}, err2
 		}
 		return mergeScan{}, fmt.Errorf("%s", trimmed)
 	}
-	if strings.Contains(string(stdout2), "<<<<<<<") {
-		return mergeScan{conflicts: []string{"(git <2.40: paths not enumerable)"}}, nil
+	return mergeScan{conflicts: parseLegacyMergeTreeConflicts(stdout2)}, nil
+}
+
+// runLegacyMergeTree uses the original three-tree syntax accepted by Git
+// versions predating `merge-tree --write-tree --merge-base`. Callers normally
+// supply base; resolving it here keeps the helper safe for the empty-base API.
+func runLegacyMergeTree(ctx context.Context, r git.Runner, base, ours, theirs string) ([]byte, []byte, error) {
+	if base == "" {
+		stdout, stderr, err := r.Run(ctx, "merge-base", ours, theirs)
+		if err != nil {
+			return stdout, stderr, err
+		}
+		base = strings.TrimSpace(string(stdout))
 	}
-	return mergeScan{}, nil
+	return r.Run(ctx, "merge-tree", base, ours, theirs)
+}
+
+// parseLegacyMergeTreeConflicts extracts the stage-record path for each block
+// that actually contains conflict markers. Clean changes are also printed by
+// legacy merge-tree, so stage records alone are not evidence of a conflict.
+func parseLegacyMergeTreeConflicts(out []byte) []string {
+	var conflicts []string
+	seen := make(map[string]bool)
+	currentPath := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && (fields[0] == "base" || fields[0] == "our" || fields[0] == "their") {
+			currentPath = strings.Join(fields[3:], " ")
+		}
+		if strings.HasPrefix(line, "+<<<<<<<") && currentPath != "" && !seen[currentPath] {
+			seen[currentPath] = true
+			conflicts = append(conflicts, currentPath)
+		}
+	}
+	return conflicts
 }
 
 // precheckConflictDetailMaxFiles caps how many conflicted files we crack open

@@ -47,6 +47,11 @@ func TestCommitPlan_Read(t *testing.T) {
 			input:   `{"schema":1,"commits":[{"message":"feat(x): s","files":["a.go"],"bogus":true}]}`,
 			wantErr: "invalid plan JSON",
 		},
+		{
+			name:    "empty stdin is actionable",
+			input:   "  \n\t",
+			wantErr: "--plan - received empty stdin",
+		},
 	}
 
 	for _, tc := range cases {

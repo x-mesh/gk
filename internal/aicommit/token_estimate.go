@@ -6,9 +6,9 @@ import (
 
 // composePromptOverhead is a fixed token allowance for the system
 // prompt + group metadata (type/scope/files block) attached to every
-// Compose call. Measured against a few sample prompts at 4 chars per
-// token; bumped a little for safety.
-const composePromptOverhead = 250
+// Compose call. Measured against the shared quality/rationale contract at
+// 4 chars per token; bumped a little for provider tokeniser variance.
+const composePromptOverhead = 450
 
 // charsPerToken is the cheap heuristic used to convert byte length to
 // token count. Real tokenisers vary by model; 4 is a conservative
@@ -35,7 +35,7 @@ func EstimateComposeTokens(g provider.Group, diff string, lang string) int {
 	for _, f := range g.Files {
 		fileBytes += len(f) + 4
 	}
-	return composePromptOverhead + (fileBytes+len(diff))/charsPerToken
+	return composePromptOverhead + (fileBytes+len(g.Rationale)+len(diff))/charsPerToken
 }
 
 // EstimateClassifyTokens approximates the input token count of a

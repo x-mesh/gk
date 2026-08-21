@@ -111,15 +111,19 @@ func TestComposeAllRejectsDisallowedGroupType(t *testing.T) {
 
 func TestComposeAllFeedsRetryContext(t *testing.T) {
 	p := provider.NewFake()
-	var capturedAttempts [][]provider.AttemptFeedback
+	var capturedInputs []provider.ComposeInput
 	p.OnCompose = func(in provider.ComposeInput) {
-		capturedAttempts = append(capturedAttempts, in.PreviousAttempts)
+		capturedInputs = append(capturedInputs, in)
 	}
 	p.ComposeResponses = []provider.ComposeResult{
 		{Subject: strings.Repeat("z", 200)}, // triggers retry
 		{Subject: "clean subject"},
 	}
-	groups := []provider.Group{{Type: "feat", Files: []string{"a.go"}}}
+	groups := []provider.Group{{
+		Type:      "feat",
+		Files:     []string{"a.go"},
+		Rationale: "preserve intent across retries",
+	}}
 	_, err := ComposeAll(context.Background(), p, groups, nil, ComposeOptions{
 		AllowedTypes:     []string{"feat"},
 		MaxSubjectLength: 72,
@@ -127,17 +131,25 @@ func TestComposeAllFeedsRetryContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComposeAll: %v", err)
 	}
-	if len(capturedAttempts) != 2 {
-		t.Fatalf("compose invocations: %d", len(capturedAttempts))
+	if len(capturedInputs) != 2 {
+		t.Fatalf("compose invocations: %d", len(capturedInputs))
 	}
-	if len(capturedAttempts[0]) != 0 {
-		t.Errorf("first call should have no history, got %+v", capturedAttempts[0])
+	if len(capturedInputs[0].PreviousAttempts) != 0 {
+		t.Errorf("first call should have no history, got %+v", capturedInputs[0].PreviousAttempts)
 	}
-	if len(capturedAttempts[1]) != 1 {
-		t.Fatalf("second call should have 1 history entry, got %d", len(capturedAttempts[1]))
+	if len(capturedInputs[1].PreviousAttempts) != 1 {
+		t.Fatalf("second call should have 1 history entry, got %d", len(capturedInputs[1].PreviousAttempts))
 	}
-	if !strings.Contains(strings.Join(capturedAttempts[1][0].Issues, " "), "subject-max-length") {
-		t.Errorf("issues not threaded into retry: %+v", capturedAttempts[1][0].Issues)
+	if !strings.Contains(strings.Join(capturedInputs[1].PreviousAttempts[0].Issues, " "), "subject-max-length") {
+		t.Errorf("issues not threaded into retry: %+v", capturedInputs[1].PreviousAttempts[0].Issues)
+	}
+	for i, in := range capturedInputs {
+		if in.Group.Type != "feat" || len(in.Group.Files) != 1 || in.Group.Files[0] != "a.go" || in.Group.Rationale != "preserve intent across retries" {
+			t.Errorf("attempt %d lost group context: %+v", i+1, in.Group)
+		}
+		if in.Diff != "" {
+			t.Errorf("attempt %d changed diff: %q", i+1, in.Diff)
+		}
 	}
 }
 

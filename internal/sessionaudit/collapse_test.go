@@ -1,6 +1,7 @@
 package sessionaudit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -585,6 +586,25 @@ func TestCodexSessionTurns(t *testing.T) {
 	}
 	if !events[2].IsError {
 		t.Errorf("c3 exited 1, should be error")
+	}
+}
+
+func TestCodexSessionTurnsUnifiedExec(t *testing.T) {
+	input, _ := json.Marshal(`const rs=await Promise.all([tools.exec_command({cmd:"git status",workdir:"/repo"}),tools.exec_command({cmd:"git log -1",workdir:"/repo"})]); rs.forEach(text);`)
+	data := []byte(strings.Join([]string{
+		`{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"u1","input":` + string(input) + `,"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}}`,
+		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"u1","output":[{"type":"input_text","text":"exit_code: 0"}]}}`,
+		`{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"u2","input":"const r=await tools.exec_command({cmd:\"git diff\",workdir:\"/repo\"}); text(r.output);","internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}}`,
+	}, "\n"))
+	events := CodexSessionTurns(data)
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %+v", len(events), events)
+	}
+	if events[0].Turn != events[1].Turn || events[2].Turn == events[0].Turn {
+		t.Fatalf("turn grouping = %+v", events)
+	}
+	if events[0].Repo != "/repo" || events[0].Cmd != "git status" {
+		t.Fatalf("first event = %+v", events[0])
 	}
 }
 

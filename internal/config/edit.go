@@ -198,6 +198,13 @@ func schemaLeaf(dotKey string) (any, bool) {
 // — as a leaf OR a section. Unlike ValidKey (leaf-only, for `set`), this lets
 // config doctor accept present-but-empty sections.
 func schemaHasPath(dotKey string) bool {
+	// Collection leaves tagged omitempty disappear when Defaults is marshaled,
+	// but they remain part of the public config schema. Keep these explicit so
+	// config doctor does not reject supported empty-by-default lists.
+	switch dotKey {
+	case "worktree.init.link", "worktree.init.copy", "worktree.init.run":
+		return true
+	}
 	raw, err := yaml.Marshal(Defaults())
 	if err != nil {
 		return false

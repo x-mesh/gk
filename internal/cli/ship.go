@@ -145,9 +145,12 @@ type shipPlan struct {
 	// Preflight/Watch/Verify carry the configured pipeline steps so the
 	// plan (human render and --json) shows the whole release pipeline,
 	// not just the git half.
-	Preflight []config.PreflightStep
-	Watch     []config.PreflightStep
-	Verify    []config.PreflightStep
+	Preflight   []config.PreflightStep
+	Watch       []config.PreflightStep
+	Verify      []config.PreflightStep
+	Prepare     []config.PreflightStep
+	Artifact    []config.PreflightStep
+	PostRelease []config.PreflightStep
 	// MergeToBase is set when shipping from a non-base branch that can
 	// fast-forward Base: ship advances Base to Branch's tip and releases from
 	// Base instead of tagging the feature branch in place. False when on the
@@ -356,6 +359,9 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 	if err := confirmShip(deps, plan, flags); err != nil {
 		return err
 	}
+	if err := runShipHookList(ctx, deps, "Prepare", plan.Prepare, false); err != nil {
+		return err
+	}
 
 	changed, err := applyShipReleaseFiles(plan)
 	if err != nil {
@@ -431,6 +437,12 @@ func runShipCore(ctx context.Context, deps shipDeps, flags shipFlags) error {
 		} else if err := runShipPostHooks(ctx, deps, plan); err != nil {
 			return err
 		}
+	}
+	if err := runShipHookList(ctx, deps, "Artifact", plan.Artifact, true); err != nil {
+		return err
+	}
+	if err := runShipHookList(ctx, deps, "Post-release", plan.PostRelease, true); err != nil {
+		return err
 	}
 
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
@@ -612,6 +624,22 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 	}
 
 	versionFile, changelog := detectShipReleaseFiles(repoRoot)
+	if len(cfg.Ship.VersionFiles) == 0 && versionFile != "" && latestTag != "v0.0.0" {
+		detectedVersion, verr := readShipVersionFile(config.VersionFile{Path: versionFile})
+		wantVersion := strings.TrimPrefix(latestTag, "v")
+		if verr != nil || detectedVersion != wantVersion {
+			detail := fmt.Sprintf("detected %s=%q but latest tag is %s", filepath.Base(versionFile), detectedVersion, latestTag)
+			if verr != nil {
+				detail = verr.Error()
+			}
+			return shipPlan{}, WithBlocked(
+				fmt.Errorf("ship: refusing ambiguous auto-detected version source: %s", detail),
+				"ship-version-source-ambiguous",
+				"declare the authoritative release files with ship.version_files, or use the repository's custom release workflow",
+				errRemedy{Command: selfCmd("ship --dry-run --json"), Safety: "safe"},
+			)
+		}
+	}
 
 	// ship.version_files overrides the auto-detection: an explicit list is
 	// the user's statement of every file that carries the version, so a
@@ -653,6 +681,9 @@ func buildShipPlan(ctx context.Context, r git.Runner, cfg *config.Config, flags 
 		Preflight:      cfg.Preflight.Steps,
 		Watch:          cfg.Ship.Watch,
 		Verify:         cfg.Ship.Verify,
+		Prepare:        cfg.Ship.Prepare,
+		Artifact:       cfg.Ship.Artifact,
+		PostRelease:    cfg.Ship.PostRelease,
 		MergeToBase:    mergeToBase,
 		BumpDowngraded: bumpDowngraded,
 		ChangelogDraft: changelogDraft,
@@ -832,10 +863,18 @@ func runShipCommitLint(ctx context.Context, r git.Runner, cfg *config.Config, pl
 	if plan.LatestTag != "" && plan.LatestTag != "v0.0.0" {
 		rangeSpec = plan.LatestTag + "..HEAD"
 	}
+	// Commits already reachable from any remote are immutable release input,
+	// not local release candidates this invocation can safely rewrite. Lint the
+	// tag range minus remotes so a historical non-conventional merge/PR title
+	// on main does not permanently block every later release.
+	logArgs := []string{"log", "--no-merges", "--format=%H%x00%B%x1e", rangeSpec}
+	if out, _, err := r.Run(ctx, "for-each-ref", "--format=%(refname)", "refs/remotes"); err == nil && strings.TrimSpace(string(out)) != "" {
+		logArgs = append(logArgs, "--not", "--remotes")
+	}
 	// Skip merge commits: their auto-generated "Merge branch ..." headers are not
 	// Conventional Commits and never will be, so linting them only blocks releases
 	// that legitimately used a merge. This matches commitlint's default `ignores`.
-	stdout, stderr, err := r.Run(ctx, "log", "--no-merges", "--format=%H%x00%B%x1e", rangeSpec)
+	stdout, stderr, err := r.Run(ctx, logArgs...)
 	if err != nil {
 		return fmt.Errorf("git log: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
@@ -1014,6 +1053,15 @@ func renderShipPlan(w io.Writer, plan shipPlan, flags shipFlags) {
 	if len(plan.Verify) > 0 {
 		fmt.Fprintf(w, "  %s   %s\n", label("Verify:   "), postVal(plan.Verify))
 	}
+	if len(plan.Prepare) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Prepare:  "), label(shipStepSummary(plan.Prepare)))
+	}
+	if len(plan.Artifact) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Artifact: "), label(shipStepSummary(plan.Artifact)))
+	}
+	if len(plan.PostRelease) > 0 {
+		fmt.Fprintf(w, "  %s   %s\n", label("Post:     "), label(shipStepSummary(plan.PostRelease)))
+	}
 	if plan.ChangelogDraft != "" {
 		fmt.Fprintln(w, header("─── Changelog draft ──────────────────────────"))
 		for _, ln := range strings.Split(strings.TrimRight(plan.ChangelogDraft, "\n"), "\n") {
@@ -1072,6 +1120,32 @@ func runShipPostHooks(ctx context.Context, deps shipDeps, plan shipPlan) error {
 	})
 }
 
+func runShipHookList(ctx context.Context, deps shipDeps, title string, steps []config.PreflightStep, published bool) error {
+	if len(steps) == 0 {
+		return nil
+	}
+	fmt.Fprintf(deps.Out, "─── %s ─────────────────────────────────\n", title)
+	for _, step := range steps {
+		name := step.Name
+		if name == "" {
+			name = step.Command
+		}
+		if err := runStep(ctx, deps.Runner, deps.Config, step); err != nil {
+			if step.ContinueOnFailure {
+				fmt.Fprintf(deps.Out, "  · %s: %v\n", name, err)
+				continue
+			}
+			hint := "fix the step, then rerun ship"
+			if published {
+				hint = "the release may already be public — rerun this idempotent step after fixing it: " + step.Command
+			}
+			return WithHint(fmt.Errorf("ship: %s step %q failed: %w", strings.ToLower(title), name, err), hint)
+		}
+		fmt.Fprintf(deps.Out, "  ✓ %s\n", name)
+	}
+	return nil
+}
+
 // printShipSkippedPipeline notes the watch/verify steps a wait=false run
 // leaves behind. The tag is already public at this point, so the commands
 // stay valid — listed verbatim for the user to fire once CI has run.
@@ -1126,10 +1200,13 @@ type shipPlanJSON struct {
 	Push           bool     `json:"push"`
 	// Wait mirrors the resolved --wait / ship.wait value: false means the
 	// live run returns right after the push without running watch/verify.
-	Wait      bool           `json:"wait"`
-	Preflight []shipStepJSON `json:"preflight,omitempty"`
-	Watch     []shipStepJSON `json:"watch,omitempty"`
-	Verify    []shipStepJSON `json:"verify,omitempty"`
+	Wait        bool           `json:"wait"`
+	Preflight   []shipStepJSON `json:"preflight,omitempty"`
+	Watch       []shipStepJSON `json:"watch,omitempty"`
+	Verify      []shipStepJSON `json:"verify,omitempty"`
+	Prepare     []shipStepJSON `json:"prepare,omitempty"`
+	Artifact    []shipStepJSON `json:"artifact,omitempty"`
+	PostRelease []shipStepJSON `json:"post_release,omitempty"`
 }
 
 func shipStepsToJSON(steps []config.PreflightStep) []shipStepJSON {
@@ -1167,6 +1244,9 @@ func renderShipPlanJSON(w io.Writer, plan shipPlan, flags shipFlags) error {
 		Preflight:      shipStepsToJSON(plan.Preflight),
 		Watch:          shipStepsToJSON(plan.Watch),
 		Verify:         shipStepsToJSON(plan.Verify),
+		Prepare:        shipStepsToJSON(plan.Prepare),
+		Artifact:       shipStepsToJSON(plan.Artifact),
+		PostRelease:    shipStepsToJSON(plan.PostRelease),
 	}
 	if flags.skipPreflight {
 		out.Preflight = nil

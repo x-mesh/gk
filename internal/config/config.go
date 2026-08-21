@@ -558,6 +558,9 @@ type ShipConfig struct {
 	Watch        []PreflightStep `mapstructure:"watch"         yaml:"watch"`
 	Verify       []PreflightStep `mapstructure:"verify"        yaml:"verify"`
 	VersionFiles []VersionFile   `mapstructure:"version_files" yaml:"version_files"`
+	Prepare      []PreflightStep `mapstructure:"prepare"       yaml:"prepare"`
+	Artifact     []PreflightStep `mapstructure:"artifact"      yaml:"artifact"`
+	PostRelease  []PreflightStep `mapstructure:"post_release"  yaml:"post_release"`
 	AutoConfirm  bool            `mapstructure:"auto_confirm"  yaml:"auto_confirm"`
 	Wait         bool            `mapstructure:"wait"          yaml:"wait"`
 }

@@ -72,6 +72,7 @@ func buildWorktreeCmd(repoDir string, sub string, extraArgs ...string) (*cobra.C
 	rm := &cobra.Command{Use: "remove", Args: cobra.ExactArgs(1), RunE: runWorktreeRemove}
 	rm.Flags().BoolP("force", "f", false, "")
 	rm.Flags().Bool("force-locked", false, "")
+	rm.Flags().Bool("deinit-submodules", false, "")
 	prune := &cobra.Command{Use: "prune", RunE: runWorktreePrune}
 	initc := &cobra.Command{Use: "init", Args: cobra.RangeArgs(0, 1), RunE: runWorktreeInit}
 	initc.Flags().Bool("save", false, "")
@@ -262,6 +263,32 @@ func TestWorktreeRemove_DryRunNoSideEffect(t *testing.T) {
 	}
 }
 
+func TestWorktreeRemove_DeinitSubmodules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	sub := testutil.NewRepo(t)
+	repo := testutil.NewRepo(t)
+	repo.RunGit("-c", "protocol.file.allow=always", "submodule", "add", sub.Dir, "vendor/sub")
+	repo.Commit("add submodule")
+
+	wtPath := filepath.Join(t.TempDir(), "submodule-wt")
+	add, abuf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "feat/submodule-wt")
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add worktree: %v\n%s", err, abuf.String())
+	}
+	wt := testutil.Attach(t, wtPath)
+	wt.RunGit("-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+
+	rm, rbuf := buildWorktreeCmd(repo.Dir, "remove", "--deinit-submodules", wtPath)
+	if err := rm.Execute(); err != nil {
+		t.Fatalf("remove submodule worktree: %v\n%s", err, rbuf.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+}
+
 // TestWorktreeAdd_DryRunJSONEnvelope checks the agent envelope shape and the
 // no-side-effect contract together.
 func TestWorktreeAdd_DryRunJSONEnvelope(t *testing.T) {
@@ -324,6 +351,36 @@ func TestWorktreeAdd_JSON(t *testing.T) {
 	rm, rbuf := buildWorktreeCmd(repo.Dir, "remove", wtPath)
 	if err := rm.Execute(); err != nil {
 		t.Fatalf("remove failed: %v\nout: %s", err, rbuf.String())
+	}
+}
+
+func TestWorktreeAdd_DetachedHonorsRequestedRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	want := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+	repo.RunGit("tag", "v1.2.3", want)
+	repo.WriteFile("later.txt", "later\n")
+	repo.Commit("later")
+	if got := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD")); got == want {
+		t.Fatal("test setup did not advance HEAD")
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "detached-tag")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--json", "--no-init", "--detach", wtPath, "v1.2.3")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("detached add failed: %v\nout: %s", err, buf.String())
+	}
+	var res worktreeAddJSON
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("result unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if !res.Detached || res.RequestedRef != "v1.2.3" || res.ResolvedHead != want || res.Reused {
+		t.Fatalf("unexpected detached result: %+v", res)
+	}
+	if got := strings.TrimSpace(testutil.Attach(t, wtPath).RunGit("rev-parse", "HEAD")); got != want {
+		t.Fatalf("worktree HEAD = %s, want %s", got, want)
 	}
 }
 

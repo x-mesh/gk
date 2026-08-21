@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,40 @@ func TestParseContextIncludes(t *testing.T) {
 	}
 	if _, err := parseContextIncludes(mk("digest")); err == nil || !strings.Contains(err.Error(), "unknown --include") {
 		t.Errorf("typo must be a usage error, got %v", err)
+	}
+}
+
+func TestApplyContextWorktreeMode(t *testing.T) {
+	base := []contextWorktreeJSON{
+		{Path: "/main", Current: true},
+		{Path: "/clean", Branch: "clean"},
+		{Path: "/dirty", Branch: "dirty", Dirty: &contextDirtyJSON{Unstaged: 1}},
+		{Path: "/ahead", Branch: "ahead", Ahead: 2},
+	}
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{{"off", 0}, {"current", 1}, {"summary", 3}, {"all", 4}} {
+		out := contextJSON{Worktrees: append([]contextWorktreeJSON(nil), base...)}
+		if err := applyContextWorktreeMode(&out, tc.mode); err != nil {
+			t.Fatalf("%s: %v", tc.mode, err)
+		}
+		if len(out.Worktrees) != tc.want {
+			t.Errorf("%s: got %d worktrees, want %d", tc.mode, len(out.Worktrees), tc.want)
+		}
+	}
+	out := contextJSON{Worktrees: base}
+	if err := applyContextWorktreeMode(&out, "typo"); err == nil {
+		t.Fatal("invalid mode should fail")
+	}
+
+	large := contextJSON{Worktrees: []contextWorktreeJSON{{Path: "/main", Current: true}}}
+	for i := 0; i < 100; i++ {
+		large.Worktrees = append(large.Worktrees, contextWorktreeJSON{Path: fmt.Sprintf("/clean/%d", i), Branch: fmt.Sprintf("clean-%d", i)})
+	}
+	large.Worktrees = append(large.Worktrees, contextWorktreeJSON{Path: "/dirty", Dirty: &contextDirtyJSON{Untracked: 1}})
+	if err := applyContextWorktreeMode(&large, "summary"); err != nil || len(large.Worktrees) != 2 {
+		t.Fatalf("large summary = %d worktrees, err=%v; want current + dirty", len(large.Worktrees), err)
 	}
 }
 

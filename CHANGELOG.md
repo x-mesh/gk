@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release와 agent workflow에 명시적 안전 계약을 추가했다.** `gk worktree add --detach`는 요청 tag/SHA와 실제 HEAD를 검증하고, submodule worktree는 clean·unlocked 상태에서 `--deinit-submodules`로 회수할 수 있다. `gk context --worktrees=off|current|summary|all`은 대규모 worktree 목록의 token 비용을 제어하며, deterministic fast-forward merge는 명시적 `--ai`가 없으면 원격 AI plan을 생략한다.
+- **복잡한 저장소를 위한 `ship.prepare`, `ship.artifact`, `ship.post_release` hook을 추가했다.** `ship`은 자동 감지한 version source가 최신 tag와 어긋나면 임의로 `package.json`을 고르지 않고 `blocked`로 중단하며, custom workflow를 dry-run JSON에 그대로 공개한다.
+
 ### Fixed
+
+- **Codex unified `functions.exec` 세션의 Git turn 집계를 복원했다.** nested `exec_command`와 병렬 호출을 실제 model/tool round-trip으로 읽어, command 수는 잡히는데 `git_turns: 0`이던 감사 결과를 바로잡았다.
+- **`config doctor`가 실제로 지원하는 `worktree.init.link`, `copy`, `run`을 unknown key로 오판하던 문제를 고쳤다.** 같은 설정을 `worktree init`은 실행하면서 doctor만 거부하던 schema 불일치를 제거했다.
+- **같은 크기의 tracked 파일을 빠르게 덮어쓴 직후 snapshot이 이전 blob을 보존할 수 있던 race를 고쳤다.** 임시 index가 현재 파일을 다시 hash하도록 해 `snapshot diff`와 `discard`의 복구 기준을 정확히 유지한다.
+- **managed agent contract를 v27로 갱신했다.** gk의 structured remedy를 먼저 따르고, 지원하지 않는 custom release는 raw Git 변형을 반복하지 않고 저장소 절차로 넘기는 기준을 명시했다.
 
 - **`gk commit`에 메시지와 파일을 이미 정한 호출자를 위한 단일 커밋 경로를 추가했다.** 이제 `gk commit -m 'fix(scope): subject' -- file...`가 임시 JSON 파일이나 AI 호출 없이 기존 deterministic plan의 commitlint·secret 검사·backup ref를 그대로 사용한다. `-m`은 본문 문단을 위해 반복할 수 있고, 파일 누락으로 작업 트리 전체를 우발적으로 담지 않도록 명시적 repo-relative 경로를 요구한다. 함께 드러난 `--plan -` 빈 stdin도 일반 JSON EOF 대신 실행 가능한 `--plan-template` remedy가 포함된 오류로 바꿨다.
 

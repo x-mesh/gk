@@ -221,6 +221,8 @@ upstream) degrades to a note instead of failing the whole call.`,
 		"extra sections to fuse into the result: diff, log, precheck, remotes, release, all — or github (opt-in, network)")
 	cmd.Flags().Bool("delta", false,
 		"emit only the core fields that changed since the last context call for this worktree")
+	cmd.Flags().String("worktrees", "all",
+		"worktree detail: off, current, summary, or all")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -241,6 +243,10 @@ func runContext(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	worktreeMode, _ := cmd.Flags().GetString("worktrees")
+	if err := applyContextWorktreeMode(&out, worktreeMode); err != nil {
+		return err
+	}
 
 	// --delta short-circuits into the ledger-backed path, which has to
 	// snapshot the core context before the include sections are fused in.
@@ -255,6 +261,36 @@ func runContext(cmd *cobra.Command, args []string) error {
 	}
 	renderContextText(cmd, out)
 	return nil
+}
+
+func applyContextWorktreeMode(out *contextJSON, mode string) error {
+	switch mode {
+	case "all", "":
+		return nil
+	case "off":
+		out.Worktrees = nil
+		return nil
+	case "current":
+		filtered := out.Worktrees[:0]
+		for _, wt := range out.Worktrees {
+			if wt.Current {
+				filtered = append(filtered, wt)
+			}
+		}
+		out.Worktrees = filtered
+		return nil
+	case "summary":
+		filtered := out.Worktrees[:0]
+		for _, wt := range out.Worktrees {
+			if wt.Current || wt.Dirty != nil || wt.Ahead != 0 || wt.Behind != 0 {
+				filtered = append(filtered, wt)
+			}
+		}
+		out.Worktrees = filtered
+		return nil
+	default:
+		return fmt.Errorf("unknown --worktrees mode %q (want off, current, summary, or all)", mode)
+	}
 }
 
 func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Config) (contextJSON, error) {

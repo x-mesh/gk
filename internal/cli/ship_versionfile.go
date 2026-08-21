@@ -60,6 +60,59 @@ func bumpShipVersionFile(spec config.VersionFile, version string) (bool, error) 
 	return true, nil
 }
 
+// readShipVersionFile reads the version currently carried by a native
+// auto-detected file. It deliberately excludes pattern/key specs: those are
+// explicit declarations and therefore do not participate in auto-detection's
+// fail-closed guard.
+func readShipVersionFile(spec config.VersionFile) (string, error) {
+	b, err := os.ReadFile(spec.Path)
+	if err != nil {
+		return "", fmt.Errorf("ship: read version file: %w", err)
+	}
+	s := string(b)
+	base := filepath.Base(spec.Path)
+	switch base {
+	case "VERSION":
+		if v := strings.TrimSpace(s); v != "" {
+			return strings.TrimPrefix(v, "v"), nil
+		}
+	case "package.json", "marketplace.json":
+		if m := versionJSONRE.FindStringSubmatch(s); len(m) == 4 {
+			return m[2], nil
+		}
+	case "pyproject.toml":
+		return readTOMLTableVersion(s, []string{"project", "tool.poetry"}, base)
+	case "Cargo.toml":
+		return readTOMLTableVersion(s, []string{"package"}, base)
+	case "pubspec.yaml", "Chart.yaml":
+		if m := yamlTopVersionRE.FindStringSubmatch(s); len(m) == 2 {
+			line := strings.TrimSpace(strings.TrimPrefix(m[0], m[1]))
+			return strings.Trim(line, "'\""), nil
+		}
+	}
+	return "", fmt.Errorf("ship: cannot read an authoritative version from %s", base)
+}
+
+func readTOMLTableVersion(content string, tables []string, base string) (string, error) {
+	want := make(map[string]bool, len(tables))
+	for _, table := range tables {
+		want[table] = true
+	}
+	current := ""
+	for _, line := range strings.Split(content, "\n") {
+		if m := tomlHeaderRE.FindStringSubmatch(line); m != nil {
+			current = strings.TrimSpace(m[1])
+			continue
+		}
+		if want[current] {
+			if m := tomlVersionLineRE.FindStringSubmatch(line); m != nil {
+				return strings.TrimSuffix(strings.TrimPrefix(line, m[1]), m[2]), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("ship: %s has no readable package version", base)
+}
+
 var versionJSONRE = regexp.MustCompile(`(?m)("version"\s*:\s*")([^"]+)(")`)
 
 // bumpVersionByFormat dispatches on the filename to a format-aware rewrite.

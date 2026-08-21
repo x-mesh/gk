@@ -200,7 +200,16 @@ func runWorktreeRename(cmd *cobra.Command, args []string) error {
 		if lock.Locked {
 			relockWorktree(ctx, runner, oldEntry.Path, lock.Reason)
 		}
-		return fmt.Errorf("worktree move: %s: %w", strings.TrimSpace(string(stderr)), err)
+		msg := strings.TrimSpace(string(stderr))
+		if strings.Contains(strings.ToLower(msg), "containing submodules cannot be moved or removed") {
+			return WithBlocked(
+				fmt.Errorf("worktree move: %s: %w", msg, err),
+				"worktree-contains-submodules",
+				"Git cannot move a registered submodule worktree; create the destination worktree at the desired ref and remove this one with --deinit-submodules",
+				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+			)
+		}
+		return fmt.Errorf("worktree move: %s: %w", msg, err)
 	}
 	if lock.Locked {
 		relockWorktree(ctx, runner, newPath, lock.Reason)

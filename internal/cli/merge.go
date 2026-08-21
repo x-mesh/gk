@@ -45,6 +45,7 @@ By default gk refuses to start with tracked working-tree changes. Use
 	cmd.Flags().Bool("skip-precheck", false, "skip the merge-tree conflict precheck")
 	cmd.Flags().Bool("autostash", false, "stash tracked changes before merge and pop afterwards")
 	cmd.Flags().Bool("no-ai", false, "skip the merge plan summary")
+	cmd.Flags().Bool("ai", false, "force an AI merge plan even for a deterministic fast-forward")
 	cmd.Flags().Bool("plan-only", false, "print the merge plan without running git merge")
 	cmd.Flags().String("into", "", "merge the source branch into this branch's checked-out worktree")
 	cmd.Flags().String("provider", "", "override ai.provider for the merge plan")
@@ -63,6 +64,7 @@ type mergeFlags struct {
 	planOnly     bool
 	into         string
 	provider     string
+	forceAI      bool
 }
 
 type mergeDeps struct {
@@ -83,27 +85,13 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		cfg = &d
 	}
 	flags := readMergeFlags(cmd)
-	var prov provider.Provider
-	var providerErr error
-	if !flags.noAI {
-		ai := cfg.AI
-		if flags.provider != "" {
-			ai.Provider = flags.provider
-		}
-		prov, providerErr = resolveMergePlanProvider(cmd.Context(), ai)
-		if providerErr != nil {
-			Dbg("merge plan provider unavailable: %v", providerErr)
-		}
-	}
 	deps := mergeDeps{
-		Runner:      &git.ExecRunner{Dir: RepoFlag()},
-		Config:      cfg,
-		Provider:    prov,
-		ProviderErr: providerErr,
-		Confirm:     ui.Confirm,
-		Out:         os.Stdout,
-		ErrOut:      os.Stderr,
-		Cmd:         cmd,
+		Runner:  &git.ExecRunner{Dir: RepoFlag()},
+		Config:  cfg,
+		Confirm: ui.Confirm,
+		Out:     os.Stdout,
+		ErrOut:  os.Stderr,
+		Cmd:     cmd,
 	}
 	if flags.into != "" {
 		err = runMergeInto(cmd.Context(), deps, args, flags, func(path string) git.Runner {
@@ -137,6 +125,7 @@ func readMergeFlags(cmd *cobra.Command) mergeFlags {
 	planOnly, _ := cmd.Flags().GetBool("plan-only")
 	into, _ := cmd.Flags().GetString("into")
 	providerName, _ := cmd.Flags().GetString("provider")
+	forceAI, _ := cmd.Flags().GetBool("ai")
 	return mergeFlags{
 		ffOnly:       ffOnly,
 		noFF:         noFF,
@@ -148,6 +137,7 @@ func readMergeFlags(cmd *cobra.Command) mergeFlags {
 		planOnly:     planOnly,
 		into:         into,
 		provider:     providerName,
+		forceAI:      forceAI,
 	}
 }
 
@@ -192,22 +182,48 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 	stashed := false
 
 	var conflicts []string
+	base := ""
 	if !flags.skipPrecheck {
 		baseOut, _, err := deps.Runner.Run(ctx, "merge-base", "HEAD", target)
 		if err != nil {
 			popMergeStashBestEffort(ctx, deps.Runner, stashed)
 			return fmt.Errorf("cannot find merge-base between HEAD and %s", target)
 		}
-		base := strings.TrimSpace(string(baseOut))
+		base = strings.TrimSpace(string(baseOut))
 		conflicts, err = scanMergeConflicts(ctx, deps.Runner, base, "HEAD", target)
 		if err != nil {
 			popMergeStashBestEffort(ctx, deps.Runner, stashed)
 			return fmt.Errorf("merge-tree scan: %w", err)
 		}
 	}
+	preHEAD := headRev(ctx, deps.Runner)
+	fastForward := false
+	if !flags.noFF && !flags.squash {
+		if base == "" {
+			if out, _, err := deps.Runner.Run(ctx, "merge-base", "HEAD", target); err == nil {
+				base = strings.TrimSpace(string(out))
+			}
+		}
+		fastForward = base != "" && preHEAD != "" && base == preHEAD
+	}
 
 	if !flags.noAI || flags.planOnly {
-		if err := renderMergePlan(ctx, deps, target, current, conflicts); err != nil && deps.ErrOut != nil {
+		planDeps := deps
+		useAI := !flags.noAI && (!fastForward || flags.forceAI)
+		if !useAI {
+			planDeps.Provider = nil
+			planDeps.ProviderErr = errors.New("deterministic fast-forward; AI plan skipped")
+		} else if planDeps.Provider == nil && planDeps.ProviderErr == nil && deps.Cmd != nil {
+			ai := deps.Config.AI
+			if flags.provider != "" {
+				ai.Provider = flags.provider
+			}
+			planDeps.Provider, planDeps.ProviderErr = resolveMergePlanProvider(ctx, ai)
+			if planDeps.ProviderErr != nil {
+				Dbg("merge plan provider unavailable: %v", planDeps.ProviderErr)
+			}
+		}
+		if err := renderMergePlan(ctx, planDeps, target, current, conflicts); err != nil && deps.ErrOut != nil {
 			fmt.Fprintf(deps.ErrOut, "merge plan unavailable: %v\n", err)
 		}
 	}
@@ -245,7 +261,6 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 		stashed = true
 	}
 
-	preHEAD := headRev(ctx, deps.Runner)
 	stdout, stderr, err := deps.Runner.Run(ctx, mergeArgs(target, flags)...)
 	if err != nil {
 		combined := string(stdout) + string(stderr)

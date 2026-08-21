@@ -96,6 +96,7 @@ Examples:
 	}
 	rm.Flags().BoolP("force", "f", false, "force remove a dirty worktree, and unlock+remove a worktree whose lock holder is no longer running")
 	rm.Flags().Bool("force-locked", false, "remove even when the lock holder is still running (dangerous: may be in active use)")
+	rm.Flags().Bool("deinit-submodules", false, "deinitialize submodules before removing a clean worktree")
 
 	prune := &cobra.Command{
 		Use:   "prune",
@@ -161,15 +162,18 @@ type WorktreeEntry struct {
 // standard envelope so callers read result.path instead of scraping the
 // human success line.
 type worktreeAddJSON struct {
-	Path     string `json:"path"`
-	Branch   string `json:"branch,omitempty"`
-	Parent   string `json:"parent,omitempty"`
-	From     string `json:"from,omitempty"`
-	Created  bool   `json:"created"`
-	Detached bool   `json:"detached,omitempty"`
-	Managed  bool   `json:"managed"`
-	DryRun   bool   `json:"dry_run,omitempty"`
-	Init     string `json:"init,omitempty"` // done | skipped (JSON mode only)
+	Path         string `json:"path"`
+	Branch       string `json:"branch,omitempty"`
+	Parent       string `json:"parent,omitempty"`
+	From         string `json:"from,omitempty"`
+	RequestedRef string `json:"requested_ref,omitempty"`
+	ResolvedHead string `json:"resolved_head,omitempty"`
+	Created      bool   `json:"created"`
+	Reused       bool   `json:"reused"`
+	Detached     bool   `json:"detached,omitempty"`
+	Managed      bool   `json:"managed"`
+	DryRun       bool   `json:"dry_run,omitempty"`
+	Init         string `json:"init,omitempty"` // done | skipped (JSON mode only)
 }
 
 // worktreeListEntryJSON enriches the raw porcelain record with the same
@@ -930,8 +934,24 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		if from != "" {
 			gitArgs = append(gitArgs, from)
 		}
-	} else if !detach && branch != "" {
+	} else if branch != "" {
 		gitArgs = append(gitArgs, branch)
+	}
+
+	requestedRef := ""
+	requestedHead := ""
+	if branch != "" && !newBranch {
+		requestedRef = branch
+		out, stderr, rerr := runner.Run(ctx, "rev-parse", "--verify", branch+"^{commit}")
+		if rerr != nil {
+			return WithBlocked(
+				fmt.Errorf("worktree add: resolve requested ref %q: %s: %w", branch, strings.TrimSpace(string(stderr)), rerr),
+				"worktree-ref-not-found",
+				"fetch or correct the requested ref before creating the worktree",
+				errRemedy{Command: selfCmd("context --include=remotes"), Safety: "safe"},
+			)
+		}
+		requestedHead = strings.TrimSpace(string(out))
 	}
 
 	// Decide the summary shape before git runs: once `worktree add`
@@ -950,12 +970,14 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	// Build the machine-readable plan up front: --dry-run, --json, and the
 	// human success line all describe the same intent, so compute it once.
 	res := worktreeAddJSON{
-		Path:     resolvedPath,
-		Branch:   sumBranch,
-		Created:  sumNew,
-		From:     from,
-		Detached: detach,
-		Managed:  managed,
+		Path:         resolvedPath,
+		Branch:       sumBranch,
+		Created:      sumNew,
+		From:         from,
+		RequestedRef: requestedRef,
+		ResolvedHead: requestedHead,
+		Detached:     detach,
+		Managed:      managed,
 	}
 	if sumNew && !detach {
 		res.Parent = predictWorktreeParent(ctx, runner, from)
@@ -984,6 +1006,19 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 	stdout, stderr, err := runner.Run(ctx, gitArgs...)
 	if err != nil {
 		return fmt.Errorf("worktree add: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
+	actualOut, actualErrOut, actualErr := runner.Run(ctx, "-C", resolvedPath, "rev-parse", "--verify", "HEAD^{commit}")
+	if actualErr != nil {
+		return fmt.Errorf("worktree add: verify created HEAD: %s: %w", strings.TrimSpace(string(actualErrOut)), actualErr)
+	}
+	res.ResolvedHead = strings.TrimSpace(string(actualOut))
+	if requestedHead != "" && res.ResolvedHead != requestedHead {
+		return WithBlocked(
+			fmt.Errorf("worktree add: requested ref %q resolved to %s but created worktree HEAD is %s", requestedRef, shortSHA(requestedHead), shortSHA(res.ResolvedHead)),
+			"worktree-ref-mismatch",
+			"the created worktree does not match the requested ref; inspect it before use",
+			errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+		)
 	}
 	if sumNew {
 		recordWorktreeParent(ctx, runner, sumBranch, from)
@@ -1170,6 +1205,7 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	w := cmd.OutOrStdout()
 	force, _ := cmd.Flags().GetBool("force")
 	forceLocked, _ := cmd.Flags().GetBool("force-locked")
+	deinitSubmodules, _ := cmd.Flags().GetBool("deinit-submodules")
 	path := args[0]
 
 	// --dry-run: report and stop BEFORE the lock gate — clearing a stale
@@ -1180,8 +1216,46 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 		if force {
 			fmt.Fprint(w, " (--force: uncommitted changes in it would be discarded)")
 		}
+		if deinitSubmodules {
+			fmt.Fprint(w, " (submodules would be deinitialized first)")
+		}
 		fmt.Fprintln(w)
 		return nil
+	}
+
+	if deinitSubmodules {
+		if force || forceLocked {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: --deinit-submodules requires a clean, unlocked worktree"),
+				"worktree-submodule-clean-required",
+				"inspect and clean the worktree before deinitializing its submodules",
+				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+			)
+		}
+		if dirty := worktreeDirtyAt(ctx, path); dirty != nil {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: refusing to deinitialize submodules in dirty worktree %s", path),
+				"worktree-submodule-clean-required",
+				"commit or stash changes before deinitializing submodules",
+				errRemedy{Command: selfCmd("context --include=diff"), Safety: "safe"},
+			)
+		}
+		if lock := worktreeLockInfo(ctx, runner, path); lock.Locked {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: refusing to deinitialize submodules in locked worktree %s: %s", path, lock.Reason),
+				"worktree-locked",
+				"stop the lock holder and unlock the worktree first",
+				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+			)
+		}
+		if _, stderr, err := runner.Run(ctx, "-C", path, "submodule", "deinit", "--all", "--force"); err != nil {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: deinitialize submodules: %s: %w", strings.TrimSpace(string(stderr)), err),
+				"worktree-submodule-deinit-failed",
+				"repair the submodule registration, then retry the same command",
+				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+			)
+		}
 	}
 
 	// A locked worktree needs special handling: a single `--force` does
@@ -1197,12 +1271,27 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	gitArgs := []string{"worktree", "remove"}
-	if force {
+	if deinitSubmodules {
+		// Git refuses worktrees that have ever registered submodules unless
+		// remove is forced twice, even after a successful deinit. The gates
+		// above prove this worktree is clean and unlocked before using that
+		// escape hatch.
+		gitArgs = append(gitArgs, "--force", "--force")
+	} else if force {
 		gitArgs = append(gitArgs, "--force")
 	}
 	gitArgs = append(gitArgs, path)
 	if _, stderr, err := runner.Run(ctx, gitArgs...); err != nil {
-		return fmt.Errorf("worktree remove: %s: %w", strings.TrimSpace(string(stderr)), err)
+		msg := strings.TrimSpace(string(stderr))
+		if strings.Contains(strings.ToLower(msg), "containing submodules cannot be moved or removed") {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: %s: %w", msg, err),
+				"worktree-contains-submodules",
+				"deinitialize submodules before removing this clean worktree",
+				errRemedy{Command: selfCmd("worktree remove --deinit-submodules " + statusShellQuote(path)), Safety: "safe"},
+			)
+		}
+		return fmt.Errorf("worktree remove: %s: %w", msg, err)
 	}
 	fmt.Fprintf(w, "removed worktree %s\n", path)
 	return nil

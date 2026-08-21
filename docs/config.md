@@ -648,6 +648,8 @@ ship:
 
 See [`gk ship`](commands.md#gk-ship) for the full pipeline.
 
+Custom release workflows can add idempotent `ship.prepare`, `ship.artifact`, and `ship.post_release` step lists using the same `{name, command, continue_on_failure}` shape as preflight/watch/verify. `prepare` runs after plan review and before release metadata changes; `artifact` and `post_release` run after tag push and watch/verify. If auto-detected version metadata disagrees with the latest tag, ship fails closed and requires an explicit `ship.version_files` declaration or the repository's custom workflow.
+
 ---
 
 ### `ai.assist`

@@ -268,6 +268,21 @@ func TestUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestUnknownKeysAcceptsWorktreeInit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "worktree:\n  init:\n    link: [.env]\n    copy: [settings.local]\n    run: [npm ci]\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnknownKeys(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("UnknownKeys = %v, want none", got)
+	}
+}
+
 func TestUnknownKeys_MissingFile(t *testing.T) {
 	got, err := UnknownKeys(filepath.Join(t.TempDir(), "none.yaml"))
 	if err != nil || got != nil {

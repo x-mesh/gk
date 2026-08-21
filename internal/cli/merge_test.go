@@ -219,6 +219,35 @@ func TestRunMergeCorePlanOnlyNoAIUsesLocalPlan(t *testing.T) {
 	}
 }
 
+func TestRunMergeCoreFastForwardSkipsAIPlan(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --verify main^{commit}": {Stdout: "def456\n"},
+		"symbolic-ref --short HEAD":        {Stdout: "feature\n"},
+		"merge-base HEAD main":             {Stdout: "abc123\n"},
+		"rev-parse HEAD":                   {Stdout: "abc123\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base abc123 HEAD main": {Stdout: "tree123\n"},
+		"log --oneline HEAD..main":        {Stdout: "def456 fix: incoming\n"},
+		"diff --stat HEAD...main":         {Stdout: " file.go | 1 +\n"},
+		"diff --name-status HEAD...main":  {Stdout: "M\tfile.go\n"},
+		"status --porcelain=v1 -uno":      {Stdout: ""},
+		"merge --no-edit main":            {Stdout: "Updating abc123..def456\nFast-forward\n"},
+		"rev-list --count abc123..def456": {Stdout: "1\n"},
+	}}
+	seq := &sequenceRunner{FakeRunner: runner, sequence: map[string][]git.FakeResponse{
+		"rev-parse HEAD": {{Stdout: "abc123\n"}, {Stdout: "def456\n"}},
+	}}
+	var errOut bytes.Buffer
+	err := runMergeCore(context.Background(), mergeDeps{
+		Runner: seq, Config: testShipConfig(), Provider: fakeChatProvider{name: "must-not-run"}, ErrOut: &errOut, Out: &bytes.Buffer{},
+	}, "main", mergeFlags{})
+	if err != nil {
+		t.Fatalf("runMergeCore: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "MERGE PLAN (LOCAL)") || !strings.Contains(errOut.String(), "deterministic fast-forward") {
+		t.Fatalf("expected deterministic local plan, got:\n%s", errOut.String())
+	}
+}
+
 func TestRunMergeIntoMergesCurrentBranchInReceiverWorktree(t *testing.T) {
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD": {Stdout: "ship\n"},

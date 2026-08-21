@@ -27,7 +27,7 @@ import (
 // The block is fenced with versioned markers and everything outside it is
 // never touched — the file stays the user's.
 
-const agentsContractVersion = 26
+const agentsContractVersion = 27
 
 var (
 	agentsBeginMarker = fmt.Sprintf("<!-- gk:agents:begin v%d — managed by `gk agents install`; edit outside this block -->", agentsContractVersion)
@@ -53,10 +53,10 @@ Minimum rules:
 - Keep read-only plumbing raw when needed: ` + "`git rev-parse`" + `, ` + "`git config --get`" + `, ` + "`git cat-file`" + `, ` + "`git ls-files`" + `.
 - Use raw git when git-kit has no equivalent, including ` + "`git show <object>`" + ` and the ` + "`git log`" + ` shapes git-kit log has no flag for (` + "`--stat`" + `, ` + "`--name-only`" + `, ` + "`--until`" + `); do not substitute ` + "`git-kit context`" + ` for object inspection.
 - Reach for ` + "`git-kit log`" + `, not ` + "`git-kit context`" + `, whenever the log question is not "what is recent here": ` + "`git-kit context --include=log`" + ` returns a fixed newest-first slice of the CURRENT branch, so another ref, more commits than that slice, or a specific format/date window is ` + "`git-kit log <rev>`" + ` / ` + "`-n`" + ` / ` + "`--since`" + ` / ` + "`--format`" + `.
-- For commit + pull + push, use ` + "`git-kit land`" + `; for local-only integration use ` + "`git-kit promote`" + `; for releases inspect ` + "`git-kit ship --dry-run --json`" + ` before ` + "`git-kit ship -y`" + `.
+- For commit + pull + push, use ` + "`git-kit land`" + `; for local-only integration use ` + "`git-kit promote`" + `; for releases inspect ` + "`git-kit ship --dry-run --json`" + ` before ` + "`git-kit ship -y`" + `. If ship reports an ambiguous version source or cannot model the repository's release workflow, stop and use that repository's documented custom workflow; do not force ship or improvise a different version source.
 - Agent-mode output is ` + "`{state, ok, result, error}`" + `. Branch on ` + "`state`" + `, not prose: ` + "`ok`" + `, ` + "`paused`" + `, ` + "`blocked`" + `, ` + "`error`" + `; ` + "`ok`" + ` is only ` + "`state==\"ok\"`" + `.
 - A paused merge/rebase/conflict is not done. Use the resume/abort command in the result. When explicitly asked to resolve conflicts, use ` + "`git-kit resolve`" + `; otherwise report the paused state and await direction.
-- On failure, run the first ` + "`error.remedies[]`" + ` command after checking its ` + "`safety`" + `; avoid retrying raw git variations.`
+- On failure, run the first ` + "`error.remedies[]`" + ` command after checking its ` + "`safety`" + `. Use raw git only when the envelope confirms no gk remedy/equivalent exists; do not probe a failure by retrying raw git variations.`
 
 // A var, not a const: the contract quotes gk context's log-slice size, and that
 // number comes from sessionaudit.ContextLogCommits so the paragraph cannot drift

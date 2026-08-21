@@ -3,6 +3,8 @@ package sessionaudit
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -123,11 +125,15 @@ func SessionTurnsWithLast(data []byte) (events []TurnEvent, lastTurn int) {
 // Claude assistant message's parallel tool calls, so one batch is one turn.
 type codexRecord struct {
 	Payload struct {
-		Type      string `json:"type"`      // function_call | function_call_output | ...
-		Name      string `json:"name"`      // exec_command for shell calls
-		Arguments string `json:"arguments"` // JSON string: {"cmd","workdir",...}
+		Type      string `json:"type"`      // function_call | custom_tool_call | outputs | ...
+		Name      string `json:"name"`      // exec_command or unified exec
+		Arguments string `json:"arguments"` // function_call JSON: {"cmd","workdir",...}
+		Input     string `json:"input"`     // custom_tool_call JavaScript body
 		CallID    string `json:"call_id"`
-		Output    string `json:"output"` // function_call_output text (carries exit code)
+		Output    any    `json:"output"`
+		Metadata  struct {
+			TurnID string `json:"turn_id"`
+		} `json:"internal_chat_message_metadata_passthrough"`
 	} `json:"payload"`
 }
 
@@ -158,8 +164,9 @@ func CodexSessionTurns(data []byte) []TurnEvent {
 	// Pass 1: join call_id -> did the command exit non-zero.
 	errByID := map[string]bool{}
 	for _, rec := range records {
-		if rec.Payload.Type == "function_call_output" && rec.Payload.CallID != "" {
-			errByID[rec.Payload.CallID] = codexOutputErrored(rec.Payload.Output)
+		if (rec.Payload.Type == "function_call_output" || rec.Payload.Type == "custom_tool_call_output") && rec.Payload.CallID != "" {
+			b, _ := json.Marshal(rec.Payload.Output)
+			errByID[rec.Payload.CallID] = codexOutputErrored(string(b))
 		}
 	}
 
@@ -192,11 +199,76 @@ func CodexSessionTurns(data []byte) []TurnEvent {
 				IsError:   errByID[rec.Payload.CallID],
 				Repo:      repo,
 			})
-		case "function_call_output":
+		case "custom_tool_call":
+			if rec.Payload.Name != "exec" {
+				continue
+			}
+			// Unified exec returns control to the model after every call. Its
+			// metadata turn_id spans the whole user turn (often hundreds of
+			// model/tool round-trips), so it is not a collapse turn boundary.
+			// One custom call is one agent turn; nested parallel exec_command
+			// calls inside it share that turn.
+			turn++
+			customTurn := turn
+			for i, a := range codexUnifiedExecArgs(rec.Payload.Input) {
+				repo := a.Workdir
+				if repo == "" {
+					repo = repoScope(a.Cmd)
+				}
+				events = append(events, TurnEvent{
+					Cmd:       a.Cmd,
+					Turn:      customTurn,
+					ToolUseID: fmt.Sprintf("%s#%d", rec.Payload.CallID, i),
+					IsError:   errByID[rec.Payload.CallID],
+					Repo:      repo,
+				})
+			}
+		case "function_call_output", "custom_tool_call_output":
 			inBatch = false
 		}
 	}
 	return events
+}
+
+var codexExecCallRE = regexp.MustCompile(`(?s)tools\.exec_command\s*\(\s*\{(.*?)\}\s*\)`)
+var codexJSFieldRE = regexp.MustCompile(`(?s)(cmd|workdir)\s*:\s*("(?:\\.|[^"\\])*")`)
+
+// codexUnifiedExecArgs extracts the concrete exec_command calls nested in a
+// unified functions.exec JavaScript body. The orchestrator accepts ordinary
+// JS, but generated calls use literal cmd/workdir fields; dynamic expressions
+// are intentionally ignored rather than guessed.
+func codexUnifiedExecArgs(input string) []codexArgs {
+	var out []codexArgs
+	for _, call := range codexExecCallRE.FindAllStringSubmatch(input, -1) {
+		var a codexArgs
+		for _, field := range codexJSFieldRE.FindAllStringSubmatch(call[1], -1) {
+			raw := field[2]
+			value, ok := unquoteCodexJS(raw)
+			if !ok {
+				continue
+			}
+			if field[1] == "workdir" {
+				a.Workdir = value
+			} else {
+				a.Cmd = value
+			}
+		}
+		if strings.TrimSpace(a.Cmd) != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func unquoteCodexJS(raw string) (string, bool) {
+	if len(raw) < 2 {
+		return "", false
+	}
+	if raw[0] == '\'' {
+		raw = `"` + strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(raw, "'"), "'"), `"`, `\"`) + `"`
+	}
+	v, err := strconv.Unquote(raw)
+	return v, err == nil
 }
 
 // codexOutputErrored best-effort reads the exit code Codex embeds in a

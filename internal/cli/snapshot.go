@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -211,6 +212,22 @@ func snapshotTree(ctx context.Context, runner *git.ExecRunner) (string, error) {
 	}
 
 	idx := &git.ExecRunner{Dir: runner.Dir, ExtraEnv: []string{"GIT_INDEX_FILE=" + tmpPath}}
+	// The copied index can be racily clean when a tracked file is rewritten
+	// within the filesystem timestamp tick to content of the same size. Mark
+	// every currently present tracked path intent-to-add in the temporary
+	// index, forcing add -A to rehash it; deleted paths are left for add -A to
+	// remove. This never touches the real index.
+	if paths, _, e := runner.Run(ctx, "ls-files", "-z"); e == nil {
+		for _, path := range bytes.Split(paths, []byte{0}) {
+			if len(path) == 0 {
+				continue
+			}
+			if _, statErr := os.Stat(filepath.Join(runner.Dir, filepath.FromSlash(string(path)))); statErr != nil {
+				continue
+			}
+			_, _, _ = idx.Run(ctx, "update-index", "--add", "--cacheinfo", "100644,0000000000000000000000000000000000000000,"+string(path))
+		}
+	}
 	if _, stderr, e := idx.Run(ctx, "add", "-A"); e != nil {
 		return "", fmt.Errorf("stage working tree: %s: %w", strings.TrimSpace(string(stderr)), e)
 	}

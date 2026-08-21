@@ -944,3 +944,41 @@ func TestBuildShipPlanVersionFilesConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildShipPlanRejectsAmbiguousAutoDetectedVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir+"/package.json", `{"version":"9.9.9"}`)
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                  {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":         {Stdout: "main\n"},
+		"rev-parse --show-toplevel":           {Stdout: dir + "\n"},
+		"describe --tags --abbrev=0":          {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":    {Stdout: "fix: y\n\x1e"},
+		"rev-parse --verify refs/tags/v1.2.4": {ExitCode: 1, Stderr: "not found"},
+	}}
+	_, err := buildShipPlan(context.Background(), runner, testShipConfig(), shipFlags{noFetch: true})
+	if err == nil || codeFrom(err) != "ship-version-source-ambiguous" {
+		t.Fatalf("error = %v, code=%q", err, codeFrom(err))
+	}
+}
+
+func TestBuildShipPlanIncludesCustomWorkflowHooks(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"status --porcelain":                  {Stdout: ""},
+		"rev-parse --abbrev-ref HEAD":         {Stdout: "main\n"},
+		"describe --tags --abbrev=0":          {Stdout: "v1.2.3\n"},
+		"log --format=%B%x1e v1.2.3..HEAD":    {Stdout: "fix: y\n\x1e"},
+		"rev-parse --verify refs/tags/v1.2.4": {ExitCode: 1},
+	}}
+	cfg := testShipConfig()
+	cfg.Ship.Prepare = []config.PreflightStep{{Name: "prepare", Command: "./release prepare"}}
+	cfg.Ship.Artifact = []config.PreflightStep{{Name: "artifact", Command: "./release artifact"}}
+	cfg.Ship.PostRelease = []config.PreflightStep{{Name: "post", Command: "./release post"}}
+	plan, err := buildShipPlan(context.Background(), runner, cfg, shipFlags{noFetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Prepare) != 1 || len(plan.Artifact) != 1 || len(plan.PostRelease) != 1 {
+		t.Fatalf("custom hooks missing: %+v", plan)
+	}
+}

@@ -43,6 +43,18 @@ func TestEstimateComposeTokensScalesWithDiff(t *testing.T) {
 	}
 }
 
+func TestEstimateComposeTokensIncludesRationale(t *testing.T) {
+	without := EstimateComposeTokens(provider.Group{Type: "feat", Files: []string{"main.go"}}, "diff", "en")
+	with := EstimateComposeTokens(provider.Group{
+		Type:      "feat",
+		Files:     []string{"main.go"},
+		Rationale: strings.Repeat("r", 400),
+	}, "diff", "en")
+	if got := with - without; got != 100 {
+		t.Errorf("400-byte rationale should add 100 estimated tokens, got %d", got)
+	}
+}
+
 func TestEstimateClassifyTokens(t *testing.T) {
 	files := []FileChange{
 		{Path: "main.go", Status: "modified"},

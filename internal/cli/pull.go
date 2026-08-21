@@ -730,7 +730,7 @@ func runPullCore(cmd *cobra.Command) error {
 
 	// Summary block: what came in, diffstat, one-line commit list.
 	postHEAD := headRev(ctx, runner)
-	renderPullSummary(cmd, runner, preHEAD, postHEAD, strategy, labeler(branchLabel))
+	renderPullSummary(cmd, runner, preHEAD, postHEAD, upstream, strategy, labeler(branchLabel))
 
 	// 9) pop stash — BEFORE the success JSON: a pop conflict means the
 	// session is not cleanly updated, and a script that already read
@@ -1085,6 +1085,7 @@ func printDivergenceRefusal(w io.Writer, runner git.Runner, ctx context.Context,
 	// section would over-fragment what is conceptually one warning.
 	if commits, _, err := runner.Run(ctx, "log",
 		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--topo-order",
 		"--pretty=format:%h %s",
 		upstream+"..HEAD",
 	); err == nil {
@@ -1592,7 +1593,18 @@ func renderPullVerbosePlan(w io.Writer, plan pullPlan) {
 // ("" for none) — with --with-base the output mixes two branches, so each
 // headline names whose status it is. Detail lines (commit list, diffstat)
 // stay unprefixed; they indent under their headline.
-func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strategy, label string) {
+//
+// upstream is the post-fetch remote-tracking ref (e.g. "origin/main").
+// Rebase rewrites the SHAs of any local commits that were ahead, so pre
+// (the local tip before integration) is no longer an ancestor of post —
+// pre..post would then span both the newly-fetched upstream commits and
+// the user's own rewritten commits. The commit count and one-line list use
+// pre..upstream instead in that case, which only ever contains commits
+// upstream actually contributed. ff-only/merge never rewrite pre, so
+// pre..post already names exactly the incoming commits there and is left
+// untouched. The headline and diffstat intentionally keep pre..post in all
+// cases — they describe what HEAD became, not what came from upstream.
+func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, upstream, strategy, label string) {
 	ctx := cmd.Context()
 	out := cmd.ErrOrStderr()
 	faint := color.New(color.Faint).SprintFunc()
@@ -1607,9 +1619,14 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 		return
 	}
 
+	incomingRange := pre + ".." + post
+	if strategy == pullStrategyRebase && upstream != "" {
+		incomingRange = pre + ".." + upstream
+	}
+
 	// Commit count — cheap single-call roll-up.
 	count := 0
-	if n, _, err := runner.Run(ctx, "rev-list", "--count", pre+".."+post); err == nil {
+	if n, _, err := runner.Run(ctx, "rev-list", "--count", incomingRange); err == nil {
 		count, _ = strconv.Atoi(strings.TrimSpace(string(n)))
 	}
 
@@ -1621,8 +1638,9 @@ func renderPullSummary(cmd *cobra.Command, runner git.Runner, pre, post, strateg
 	// subjects containing tabs/pipes do not split mid-row.
 	commits, _, err := runner.Run(ctx, "log",
 		fmt.Sprintf("--max-count=%d", pullCommitLimit),
+		"--topo-order",
 		"--pretty=format:%h\x1f%s\x1f%an\x1f%at",
-		pre+".."+post,
+		incomingRange,
 	)
 	if err == nil {
 		lines := strings.Split(strings.TrimRight(string(commits), "\n"), "\n")

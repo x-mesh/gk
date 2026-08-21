@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.140.0] - 2026-08-21
+
 ### Added
 
 - **Release와 agent workflow에 명시적 안전 계약을 추가했다.** `gk worktree add --detach`는 요청 tag/SHA와 실제 HEAD를 검증하고, submodule worktree는 clean·unlocked 상태에서 `--deinit-submodules`로 회수할 수 있다. `gk context --worktrees=off|current|summary|all`은 대규모 worktree 목록의 token 비용을 제어하며, deterministic fast-forward merge는 명시적 `--ai`가 없으면 원격 AI plan을 생략한다.

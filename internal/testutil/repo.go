@@ -56,6 +56,11 @@ func NewRepo(t testing.TB) *Repo {
 	r.RunGit("config", "user.email", "test@example.com")
 	r.RunGit("config", "core.autocrlf", "false")
 	r.RunGit("config", "core.quotepath", "false")
+	// auto maintenance holds .git/objects/maintenance.lock for a moment after
+	// every commit; a test that copies the live repo directory then fails on the
+	// lock vanishing mid-copy. gc.auto covers git older than the maintenance task.
+	r.RunGit("config", "maintenance.auto", "false")
+	r.RunGit("config", "gc.auto", "0")
 
 	// initial commit so HEAD is valid
 	keepDir := filepath.Join(dir, ".gkkeep")

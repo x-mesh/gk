@@ -1,7 +1,10 @@
 package testutil_test
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,5 +129,29 @@ func TestTryGit(t *testing.T) {
 	_, err := r.TryGit("rev-parse", "refs/heads/nonexistent-branch-xyz")
 	if err == nil {
 		t.Error("expected error for nonexistent ref, got nil")
+	}
+}
+
+// TestNoAutoMaintenanceLock: 커밋 직후 .git/objects/maintenance.lock 이 남지 않아야
+// 살아 있는 repo 디렉터리를 통째 복사하는 테스트(internal/forget 의 copyRepo)가
+// lock 소멸과 경쟁하지 않는다
+func TestNoAutoMaintenanceLock(t *testing.T) {
+	t.Parallel()
+	skipIfNoGit(t)
+
+	r := testutil.NewRepo(t)
+	lock := filepath.Join(r.GitDir, "objects", "maintenance.lock")
+
+	for i := 0; i < 30; i++ {
+		r.WriteFile("f.txt", strconv.Itoa(i)+"\n")
+		r.RunGit("add", "-A")
+		r.RunGit("commit", "-m", "c"+strconv.Itoa(i))
+		// lock 은 순간적으로만 존재한다. Commit() 은 내부에서 rev-parse 를 한 번 더
+		// 돌려 이 창을 놓치므로 add/commit 을 직접 부르고 곧바로 반복 관측한다
+		for p := 0; p < 8; p++ {
+			if _, err := os.Stat(lock); err == nil {
+				t.Fatalf("commit %d: maintenance.lock present — auto maintenance is on, live-repo copies will race it", i)
+			}
+		}
 	}
 }

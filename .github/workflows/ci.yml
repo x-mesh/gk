@@ -26,10 +26,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-      # action@v9 resolves the latest golangci-lint v2 release (Go 1.25-capable).
+      # Pinned on purpose: `latest` moved v2.12.2 -> v2.13.1 mid-release, and the
+      # newer binary embeds go1.27's gofmt, which aligns map literals differently.
+      # Bump this deliberately and reformat with the matching Go release.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.1
   e2e:
     runs-on: ubuntu-latest
     steps:

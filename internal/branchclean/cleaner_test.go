@@ -537,8 +537,8 @@ func TestCleanerRun_DryRunReturnsCandiates(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "main\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "main\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/done\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix()),
@@ -566,10 +566,10 @@ func TestCleanerRun_YesDeletesMerged(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/done\x001700000000\n"},
-			"branch -d feat/done":                                                                     {Stdout: "Deleted branch feat/done\n"},
+			"branch -d feat/done": {Stdout: "Deleted branch feat/done\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/done\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),
 			},
@@ -593,10 +593,10 @@ func TestCleanerRun_WorktreesFlag_DirtySkipped(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/held\x001700000000\n"},
-			"worktree list --porcelain":                                                               {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
+			"worktree list --porcelain": {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
 			// git refuses to remove a dirty worktree without --force.
 			"worktree remove /wt/held": {Stderr: "fatal: '/wt/held' contains modified or untracked files, use --force to delete", ExitCode: 1},
 			"branch -d feat/held":      {Stdout: "Deleted branch feat/held\n"},
@@ -628,12 +628,12 @@ func TestCleanerRun_WorktreesFlag_CleanRemovedThenDeleted(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/held\x001700000000\n"},
-			"worktree list --porcelain":                                                               {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
-			"worktree remove /wt/held":                                                                {Stdout: ""},
-			"branch -d feat/held":                                                                     {Stdout: "Deleted branch feat/held\n"},
+			"worktree list --porcelain": {Stdout: "worktree /wt/held\nHEAD abc\nbranch refs/heads/feat/held\n\n"},
+			"worktree remove /wt/held":  {Stdout: ""},
+			"branch -d feat/held":       {Stdout: "Deleted branch feat/held\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/held\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),
 			},
@@ -653,8 +653,8 @@ func TestCleanerRun_DeleteFailureContinues(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/a\x001700000000\nfeat/b\x001700000000\n"},
 			"branch -d feat/a": {Stderr: "error: not fully merged", ExitCode: 1},
 			"branch -d feat/b": {Stdout: "Deleted branch feat/b\n"},
@@ -690,8 +690,8 @@ func TestCleanerRun_NotMergedFailureCleanOutput(t *testing.T) {
 	var stderr bytes.Buffer
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/a\x001700000000\nfeat/b\x001700000000\n"},
 			"branch -d feat/a": {
 				Stderr: "error: the branch 'feat/a' is not fully merged\n" +
@@ -733,10 +733,10 @@ func TestCleanerRun_ForceUsesCapitalD(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/done\x001700000000\n"},
-			"branch -D feat/done":                                                                     {Stdout: "Deleted branch feat/done\n"},
+			"branch -D feat/done": {Stdout: "Deleted branch feat/done\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/done\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),
 			},
@@ -771,8 +771,8 @@ func TestCleanerRun_AIGracefulFallback(t *testing.T) {
 	now := time.Now()
 	runner := &git.FakeRunner{
 		Responses: map[string]git.FakeResponse{
-			"symbolic-ref --short HEAD":                                                               {Stdout: "develop\n"},
-			"symbolic-ref --short refs/remotes/origin/HEAD":                                           {Stdout: "origin/main\n"},
+			"symbolic-ref --short HEAD":                     {Stdout: "develop\n"},
+			"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
 			"for-each-ref --merged=main --format=%(refname:short)%00%(committerdate:unix) refs/heads": {Stdout: "feat/done\x001700000000\n"},
 			"for-each-ref --format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)%00%(upstream:track) refs/heads": {
 				Stdout: fmt.Sprintf("feat/done\x00\x00%d\x00\ndevelop\x00\x00%d\x00\nmain\x00origin/main\x00%d\x00\n", now.Unix(), now.Unix(), now.Unix()),

@@ -138,6 +138,8 @@ gk diff                      # color, line-numbered, word-level diff viewer
 gk status                    # concise working-tree summary
 gk next                      # plain-language status explanation and next steps
 gk log                       # short, colorful commit log
+gk show                      # browse recent commits and inspect the selected commit
+gk show <commit>             # show one commit's message, files, and patch
 
 # Safety
 gk precheck main     # dry-run merge into main; exits 3 if conflicts

@@ -42,7 +42,7 @@ var helpGroupKoTitle = func() map[string]string {
 // section.
 var commandGroup = map[string]string{
 	// Daily workflow — the verbs of an ordinary working session.
-	"clone": "daily", "pull": "daily", "push": "daily", "commit": "daily",
+	"clone": "daily", "pull": "daily", "push": "daily", "commit": "daily", "show": "daily",
 	"land": "daily", "promote": "daily", "status": "daily", "log": "daily",
 	"diff": "daily", "find": "daily", "local": "daily", "merge": "daily",
 	"resolve": "daily", "rebase": "daily", "sync": "daily", "stash": "daily",

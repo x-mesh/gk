@@ -1053,8 +1053,23 @@ With none of those, the request is unauthenticated: public repositories only, su
 
 ---
 
-## gk log
 
+## gk show
+
+The gk show command inspects one commit or opens an interactive browser when no commit is supplied.
+
+Examples:
+
+    gk show 5ec12d28             # metadata, message, changed files, and patch
+    gk show 5ec12d28 --stat      # metadata and changed-file statistics
+    gk show 5ec12d28 --name-only # metadata and changed file paths
+    gk show 5ec12d28 --no-patch  # metadata and message only
+    gk show --json 5ec12d28      # structured metadata, diff, and patch
+    gk show --limit 50            # load 50 commits per page in list mode/TUI
+
+With no commit argument, gk show opens the latest 20 commits in a terminal. The list loads commit metadata first; the selected commit patch is loaded only when selected and cached for later visits. Use ↑/↓ to select a commit, m or PageDown to load the next page, Tab to focus the detail panel, ↑/↓ to scroll its content, and q or Esc to quit. Pressing ↓ at the end of the loaded list also loads the next page. In a pipe, CI, or GK_AGENT=1 invocation it prints the recent commit list instead of waiting for keyboard input.
+
+## gk log
 Show a short, colorful commit log.
 
 ### Synopsis

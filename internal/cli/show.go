@@ -328,6 +328,7 @@ func (m showBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.focusDetail && m.selected > 0 {
 				m.selected--
 				m.updateList()
+				m.updateDetail()
 				return m, m.loadSelectedDetail()
 			}
 		case tea.KeyDown:
@@ -335,6 +336,7 @@ func (m showBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.selected+1 < len(m.commits) {
 					m.selected++
 					m.updateList()
+					m.updateDetail()
 					return m, m.loadSelectedDetail()
 				}
 				return m, m.loadMore()

@@ -69,7 +69,14 @@ func TestWriteShowJSON(t *testing.T) {
 }
 
 func TestShowBrowserNavigation(t *testing.T) {
-	model := showBrowserModel{commits: []showCommit{{ShortSHA: "one", Subject: "one"}, {ShortSHA: "two", Subject: "two"}}}
+	model := showBrowserModel{
+		commits: []showCommit{{SHA: "one", ShortSHA: "one", Subject: "one"}, {SHA: "two", ShortSHA: "two", Subject: "two"}},
+		details: map[string]showCommit{
+			"one": {SHA: "one", Subject: "one", Patch: "patch one"},
+			"two": {SHA: "two", Subject: "two", Patch: "patch two"},
+		},
+		noPatch: true,
+	}
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	model = updated.(showBrowserModel)
 	if !model.ready || model.leftWidth != 40 {
@@ -80,10 +87,20 @@ func TestShowBrowserNavigation(t *testing.T) {
 	if model.selected != 1 {
 		t.Fatalf("selected = %d, want 1", model.selected)
 	}
+	if !strings.Contains(model.detail.View(), "two") {
+		t.Fatalf("detail did not follow selection:\n%s", model.detail.View())
+	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(showBrowserModel)
 	if !model.focusDetail {
 		t.Fatal("tab did not focus detail")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(showBrowserModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(showBrowserModel)
+	if !strings.Contains(model.detail.View(), "one") {
+		t.Fatalf("detail did not follow upward selection:\n%s", model.detail.View())
 	}
 }
 

@@ -91,6 +91,24 @@ func TestGenerateGitignore_MultipleLanguages(t *testing.T) {
 	}
 }
 
+func TestGenerateGitignore_RemovesDuplicatePatterns(t *testing.T) {
+	result := &AnalysisResult{
+		Languages: []Language{
+			{Name: "python", MarkerFile: "pyproject.toml"},
+			{Name: "java", MarkerFile: "pom.xml"},
+			{Name: "rust", MarkerFile: "Cargo.toml"},
+		},
+	}
+	patterns := ParseGitignore(GenerateGitignore(result))
+	seen := make(map[string]bool, len(patterns))
+	for _, pattern := range patterns {
+		if seen[pattern] {
+			t.Fatalf("duplicate pattern %q in generated .gitignore", pattern)
+		}
+		seen[pattern] = true
+	}
+}
+
 // The space-mesh incident: a Swift package's app/.build (thousands of SwiftPM
 // artifacts) flooded `gk commit` because init neither detected Swift nor knew
 // its ignore patterns. Swift/Dart/C++ must produce their build-output patterns.
@@ -178,6 +196,19 @@ func TestMergeGitignore_AllExist(t *testing.T) {
 	}
 	if merged != existing {
 		t.Errorf("merged should equal existing when nothing to add")
+	}
+}
+
+func TestMergeGitignore_RemovesGeneratedDuplicates(t *testing.T) {
+	generated := "# Language: Node.js\ndist/\n\n# Build output\ndist/\n"
+
+	merged, added := MergeGitignore("", generated)
+
+	if strings.Count(merged, "dist/\n") != 1 {
+		t.Fatalf("expected one dist/ pattern, got:\n%s", merged)
+	}
+	if len(added) != 1 || added[0] != "dist/" {
+		t.Fatalf("expected one added pattern, got %#v", added)
 	}
 }
 

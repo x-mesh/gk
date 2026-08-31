@@ -57,6 +57,14 @@ func TestCheckBranch_NoMatch(t *testing.T) {
 	}
 }
 
+func TestCheckBranch_RequiresFullMatch(t *testing.T) {
+	patterns := []string{`^(feat|fix)/[a-z0-9._-]+`}
+	res := checkBranch("feat/example@invalid", patterns, nil)
+	if res.Matched {
+		t.Fatal("expected Matched=false when only a branch name prefix matches")
+	}
+}
+
 func TestCheckBranch_InvalidRegex(t *testing.T) {
 	// Invalid pattern is skipped; valid second pattern should match.
 	patterns := []string{"[invalid(", `^(feat|fix)/[a-z0-9._-]+$`}
@@ -164,6 +172,17 @@ func TestBranchCheckCmd_Fail_NoMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not match") {
 		t.Fatalf("expected 'did not match' in error, got: %v", err)
+	}
+}
+
+func TestBranchCheckCmd_Fail_PartialMatch(t *testing.T) {
+	cmd := newBranchCheckCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--branch", "feat/example@invalid", "--patterns", `^(feat|fix)/[a-z0-9._-]+`})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when the pattern matches only a branch name prefix")
 	}
 }
 

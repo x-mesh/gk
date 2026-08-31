@@ -98,6 +98,15 @@ var CompiledArtifactPatterns = []string{
 // 카테고리별 주석 헤더와 함께 언어별 패턴, 보안 패턴, IDE 패턴을 포함한다.
 func GenerateGitignore(result *AnalysisResult) string {
 	var b strings.Builder
+	seen := make(map[string]bool)
+	writePattern := func(pattern string) {
+		if seen[pattern] {
+			return
+		}
+		seen[pattern] = true
+		b.WriteString(pattern)
+		b.WriteByte('\n')
+	}
 
 	// 언어별 패턴 (감지된 순서대로)
 	for i, lang := range result.Languages {
@@ -112,8 +121,7 @@ func GenerateGitignore(result *AnalysisResult) string {
 		b.WriteString(display)
 		b.WriteByte('\n')
 		for _, pat := range langIgnorePatterns[lang.Name] {
-			b.WriteString(pat)
-			b.WriteByte('\n')
+			writePattern(pat)
 		}
 	}
 
@@ -123,24 +131,21 @@ func GenerateGitignore(result *AnalysisResult) string {
 	}
 	b.WriteString("# Security\n")
 	for _, pat := range SecurityPatterns {
-		b.WriteString(pat)
-		b.WriteByte('\n')
+		writePattern(pat)
 	}
 
 	// IDE/에디터 패턴 (항상 포함)
 	b.WriteByte('\n')
 	b.WriteString("# IDE/Editor\n")
 	for _, pat := range IDEPatterns {
-		b.WriteString(pat)
-		b.WriteByte('\n')
+		writePattern(pat)
 	}
 
 	// 컴파일 산출물 (항상 포함, 언어 감지와 무관)
 	b.WriteByte('\n')
 	b.WriteString("# Compiled artifacts\n")
 	for _, pat := range CompiledArtifactPatterns {
-		b.WriteString(pat)
-		b.WriteByte('\n')
+		writePattern(pat)
 	}
 
 	return b.String()
@@ -204,6 +209,7 @@ func MergeGitignore(existing string, generated string) (merged string, added []s
 		newSections.WriteString(trimmed)
 		newSections.WriteByte('\n')
 		added = append(added, trimmed)
+		existingPatterns[trimmed] = true
 	}
 
 	if len(added) == 0 {

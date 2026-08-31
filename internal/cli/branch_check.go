@@ -121,7 +121,7 @@ func checkBranch(name string, patterns, protected []string) branchCheckResult {
 		}
 	}
 	for _, raw := range patterns {
-		re, err := regexp.Compile(raw)
+		re, err := regexp.Compile(`\A(?:` + raw + `)\z`)
 		if err != nil {
 			// Invalid regex — skip this rule; don't block on misconfiguration.
 			continue

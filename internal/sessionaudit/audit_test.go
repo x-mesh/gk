@@ -529,8 +529,9 @@ func TestAudit_UnstageCoveredHistoryResetStaysGap(t *testing.T) {
 }
 
 // Per-project rollup: Claude sessions attribute to their workspace
-// directory, Codex sessions pool under "codex-sessions", chat-only
-// sessions (no git) drop out, and ordering is most-raw-git-first.
+// directory, Codex rollouts with no session_meta cwd pool under
+// "codex-sessions", chat-only sessions (no git) drop out, and ordering is
+// most-raw-git-first.
 func TestAudit_ProjectsRollup(t *testing.T) {
 	dir := t.TempDir()
 	alpha := filepath.Join(dir, ".claude", "projects", "-work-alpha")
@@ -566,6 +567,84 @@ func TestAudit_ProjectsRollup(t *testing.T) {
 	}
 	if got := report.Projects[2].Project; got != "codex-sessions" {
 		t.Errorf("projects[2] = %q, want codex-sessions", got)
+	}
+}
+
+// Subagent and workflow sessions nest under the workspace directory rather
+// than sitting beside it, so their raw git has to roll up into the repository
+// that spawned them — not into a "subagents" or workflow-run bucket that names
+// no repository.
+func TestAudit_NestedAgentSessionsAttributeToWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	workspace := filepath.Join(dir, ".claude", "projects", "-work-alpha")
+	sub := filepath.Join(workspace, "sid", "subagents")
+	wf := filepath.Join(sub, "workflows", "wf_2ab2b42c-40f")
+	for _, d := range []string{workspace, sub, wf} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitLine := `{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`
+	writeLines(t, filepath.Join(workspace, "s.jsonl"), gitLine)
+	writeLines(t, filepath.Join(sub, "agent-a1.jsonl"), gitLine)
+	writeLines(t, filepath.Join(wf, "agent-b2.jsonl"), gitLine)
+
+	report, err := Audit(Options{Paths: []string{dir}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Projects) != 1 {
+		t.Fatalf("projects = %+v, want one -work-alpha row", report.Projects)
+	}
+	got := report.Projects[0]
+	if got.Project != "-work-alpha" || got.Files != 3 || got.RawGit != 3 {
+		t.Errorf("project = %+v, want -work-alpha files=3 raw=3", got)
+	}
+}
+
+// A Codex rollout names its workspace only in the session_meta line. Encoding
+// that cwd the way Claude encodes its directory is what lets both clients'
+// sessions in one repository land on one row.
+func TestAudit_CodexSessionAttributesToWorkspaceCWD(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude", "projects", "-work-alpha")
+	codexDir := filepath.Join(dir, ".codex", "sessions", "2026", "09", "09")
+	for _, d := range []string{claudeDir, codexDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitLine := `{"payload":{"arguments":"{\"cmd\":\"git status\"}"}}`
+	meta := `{"type":"session_meta","payload":{"cwd":"/work/alpha"}}`
+	writeLines(t, filepath.Join(claudeDir, "s.jsonl"), gitLine)
+	writeLines(t, filepath.Join(codexDir, "rollout-a.jsonl"), meta, gitLine)
+
+	report, err := Audit(Options{Paths: []string{dir}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Projects) != 1 {
+		t.Fatalf("projects = %+v, want the Codex rollout merged into -work-alpha", report.Projects)
+	}
+	got := report.Projects[0]
+	if got.Project != "-work-alpha" || got.Files != 2 || got.RawGit != 2 {
+		t.Errorf("project = %+v, want -work-alpha files=2 raw=2", got)
+	}
+}
+
+func TestWorkspaceKeyForDir(t *testing.T) {
+	cases := map[string]string{
+		"/Users/me/work/project/term-mesh":                              "-Users-me-work-project-term-mesh",
+		"/Users/me/.gk/worktree/term-mesh/bug-report":                   "-Users-me--gk-worktree-term-mesh-bug-report",
+		"/Users/me/.term-mesh/worktrees/term-mesh/term-mesh_wt_1f3fd5d": "-Users-me--term-mesh-worktrees-term-mesh-term-mesh-wt-1f3fd5d",
+		"/Users/me/work/docker-gnuboard5-intranet-v2/www":               "-Users-me-work-docker-gnuboard5-intranet-v2-www",
+	}
+	for dir, want := range cases {
+		if got := workspaceKeyForDir(dir); got != want {
+			t.Errorf("workspaceKeyForDir(%q) = %q, want %q", dir, got, want)
+		}
 	}
 }
 

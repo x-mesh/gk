@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk session audit`가 세션을 실제 저장소에 귀속하도록 고쳤다.** Codex rollout은 날짜로만 묶여 `codex-sessions` 한 덩어리에 들어갔고, 서브에이전트·워크플로 세션은 상위 디렉터리 이름 탓에 `subagents`나 워크플로 실행 ID가 저장소 이름 자리를 차지했다. 이제 Codex는 여는 `session_meta`의 `cwd`로, 중첩된 Claude 세션은 `.claude/projects/<workspace>` 세그먼트로 귀속하며, 두 클라이언트가 같은 저장소에서 남긴 실적은 한 행으로 합쳐진다. 로컬 세션 파일 4000개에서 raw git의 63.8%를 담고 있던 미귀속 덩어리가 사라지고 43개 저장소로 갈렸다. `by_project` 키가 이 변경을 경계로 달라지므로, 기록된 추세를 볼 때 경계를 넘는 프로젝트 비교는 하지 않는다.
+
 ## [0.140.0] - 2026-08-21
 
 ### Added

@@ -548,7 +548,7 @@ func Audit(opts Options) (Report, error) {
 		report.Totals.GitKit += o.fr.GitKit
 		report.Totals.GKShort += o.fr.GKShort
 		report.Totals.ShellChains += o.fr.ShellChains
-		key := projectKeyForPath(files[i].path, o.fr.Source)
+		key := projectKeyForPath(files[i].path, o.fr.Source, o.codexCWD)
 		pa := projects[key]
 		if pa == nil {
 			pa = &ProjectAdoption{Project: key}
@@ -712,6 +712,7 @@ func collectFiles(paths []string, maxFiles int, since time.Time) ([]fileCandidat
 type fileOutcome struct {
 	fr                FileReport
 	commands          []string
+	codexCWD          string
 	gitTurns          int
 	runs              []CollapsibleRun
 	gkTurns           int
@@ -730,7 +731,11 @@ func processFile(path string, wantTurns bool) fileOutcome {
 			return fileOutcome{err: err}
 		}
 		fr.Source = sourceForPath(path)
-		return fileOutcome{fr: fr, commands: commands}
+		o := fileOutcome{fr: fr, commands: commands}
+		if fr.Source == "codex" {
+			o.codexCWD = codexCWDFromFile(path)
+		}
+		return o
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -739,6 +744,9 @@ func processFile(path string, wantTurns bool) fileOutcome {
 	fr, commands := auditData(path, data)
 	fr.Source = sourceForPath(path)
 	o := fileOutcome{fr: fr, commands: commands}
+	if fr.Source == "codex" {
+		o.codexCWD = codexCWDFromData(data)
+	}
 	// The turn model needs a per-source shape: Claude's message-id batch or
 	// Codex's function_call batch. Sources with neither are skipped.
 	var events []TurnEvent
@@ -2416,15 +2424,101 @@ func sortedProjects(projects map[string]*ProjectAdoption) []ProjectAdoption {
 }
 
 // projectKeyForPath derives the per-project rollup key for one session file.
-// Claude keeps one directory per workspace (the slash-encoded path, e.g.
-// -Users-me-work-gk), so the parent directory name identifies the project.
-// Codex buckets sessions by date with no project marker — those aggregate
-// under one "codex-sessions" key rather than pretending to know.
-func projectKeyForPath(path, source string) string {
+// Claude keeps one directory per workspace (the encoded path, e.g.
+// -Users-me-work-gk); Codex buckets sessions by date and carries the workspace
+// in its opening session_meta line instead. Both end up encoded the same way,
+// so a Claude session and a Codex session in one repository roll up together
+// rather than into two rows that cannot be compared.
+func projectKeyForPath(path, source, codexCWD string) string {
 	if source == "codex" {
-		return "codex-sessions"
+		if codexCWD == "" {
+			// Rollouts written before session_meta carried a cwd keep the
+			// one honest bucket rather than being attributed by guess.
+			return "codex-sessions"
+		}
+		return workspaceKeyForDir(codexCWD)
+	}
+	if key := claudeWorkspaceKey(path); key != "" {
+		return key
 	}
 	return filepath.Base(filepath.Dir(path))
+}
+
+// claudeWorkspaceKey returns the workspace directory Claude encodes directly
+// under .claude/projects. Subagent and workflow sessions nest deeper —
+// <workspace>/<session>/subagents/[workflows/<run>/]agent-*.jsonl — so the
+// parent directory alone reports "subagents" or a workflow run id as if it
+// were a repository, and the raw git those agents ran loses its project.
+// Empty when the path is not under .claude/projects.
+func claudeWorkspaceKey(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	// i+2 keeps the workspace segment from being the file itself.
+	for i := 1; i+2 < len(parts); i++ {
+		if parts[i] == "projects" && parts[i-1] == ".claude" {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// workspaceKeyForDir encodes a working directory the way Claude names its
+// per-workspace session directory: every non-alphanumeric byte becomes "-",
+// verified against /Users/me/.term-mesh/worktrees/term-mesh/term-mesh_wt_1f3fd5db
+// → -Users-me--term-mesh-worktrees-term-mesh-term-mesh-wt-1f3fd5db. Encoding to
+// the existing scheme, rather than introducing a second one, is what keeps the
+// key stable across audit runs and comparable with recorded history.
+func workspaceKeyForDir(dir string) string {
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	var b strings.Builder
+	b.Grow(len(clean))
+	for i := 0; i < len(clean); i++ {
+		c := clean[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+// codexSessionCWD reads the working directory out of the session_meta record
+// that opens a Codex rollout file — the only project marker the file carries.
+func codexSessionCWD(line []byte) string {
+	var rec struct {
+		Payload struct {
+			CWD string `json:"cwd"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(line), &rec); err != nil {
+		return ""
+	}
+	return rec.Payload.CWD
+}
+
+// codexCWDFromData takes the opening line from bytes already in memory.
+func codexCWDFromData(data []byte) string {
+	line := data
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		line = data[:i]
+	}
+	return codexSessionCWD(line)
+}
+
+// codexCWDFromFile reads only the opening line, so the occurrence-only path
+// keeps streaming instead of holding a whole rollout in memory.
+func codexCWDFromFile(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return codexSessionCWD(line)
 }
 
 func expandHome(path, home string) string {

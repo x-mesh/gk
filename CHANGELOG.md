@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **preflight 단계가 실행 중임을 보여준다.** `gk ship`, `gk ship --preflight`, `gk preflight`는 단계를 끝냈을 때만 결과 줄을 찍었다. 하위 명령의 출력은 캡처되므로 `make test` 같은 느린 단계에서는 화면이 몇 분간 비어 있었고, 실행이 멈춘 것처럼 보였다. 이제 각 단계는 실행하는 동안 경과 시간이 도는 스피너(`slow-test — 1m12s`)를 stderr에 그린다. 150ms 안에 끝나는 단계는 스피너를 그리지 않고, 비TTY stderr에서는 아무것도 출력하지 않으므로 파이프와 에이전트 출력은 바이트가 그대로다.
+
 ## [0.141.2] - 2026-09-09
 
 ### Fixed

@@ -14,6 +14,7 @@ import (
 	"github.com/x-mesh/gk/internal/commitlint"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -88,7 +89,7 @@ func runPreflight(cmd *cobra.Command, _ []string) error {
 		}
 
 		start := time.Now()
-		stepErr := runStep(ctx, runner, cfg, step)
+		stepErr := runStepWithProgress(name, func() error { return runStep(ctx, runner, cfg, step) })
 		dur := time.Since(start)
 
 		if stepErr == nil {
@@ -113,6 +114,20 @@ func runPreflight(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("preflight: %d step(s) failed", failed)
 	}
 	return nil
+}
+
+// runStepWithProgress runs one preflight step behind a live elapsed-time
+// spinner. Shell steps capture their child output, so a slow one (`make test`,
+// a linter) otherwise leaves the terminal blank for minutes and the run reads
+// as hung. The spinner is stderr-bound and a no-op on non-TTY stderr, so piped
+// and agent output stays byte-identical.
+func runStepWithProgress(name string, run func() error) error {
+	start := time.Now()
+	stop := ui.StartBubbleSpinnerLive(func() string {
+		return fmt.Sprintf("%s — %s", name, time.Since(start).Round(time.Second))
+	})
+	defer stop()
+	return run()
 }
 
 // runStep dispatches to the built-in handler or runs a shell command.

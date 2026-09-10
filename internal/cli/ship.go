@@ -760,12 +760,12 @@ func runShipPreflightOnly(ctx context.Context, deps shipDeps, flags shipFlags) e
 		if name == "" {
 			name = step.Command
 		}
-		var serr error
-		if step.Command == "commit-lint" {
-			serr = runShipCommitLint(ctx, deps.Runner, deps.Config, plan)
-		} else {
-			serr = runStep(ctx, deps.Runner, deps.Config, step)
-		}
+		serr := runStepWithProgress(name, func() error {
+			if step.Command == "commit-lint" {
+				return runShipCommitLint(ctx, deps.Runner, deps.Config, plan)
+			}
+			return runStep(ctx, deps.Runner, deps.Config, step)
+		})
 		results = append(results, shipPreflightStepJSON{Name: name, Command: step.Command, OK: serr == nil})
 		if serr != nil && failed == "" {
 			failed = name
@@ -811,14 +811,13 @@ func runShipPreflight(ctx context.Context, deps shipDeps, plan shipPlan, flags s
 			continue
 		}
 		ok := color.New(color.FgGreen, color.Bold).SprintFunc()
-		if step.Command == "commit-lint" {
-			if err := runShipCommitLint(ctx, deps.Runner, deps.Config, plan); err != nil {
-				return fmt.Errorf("ship: preflight failed at step %q: %w", name, err)
+		err := runStepWithProgress(name, func() error {
+			if step.Command == "commit-lint" {
+				return runShipCommitLint(ctx, deps.Runner, deps.Config, plan)
 			}
-			fmt.Fprintf(deps.Out, "  %s %-22s\n", ok("✓"), name)
-			continue
-		}
-		if err := runStep(ctx, deps.Runner, deps.Config, step); err != nil {
+			return runStep(ctx, deps.Runner, deps.Config, step)
+		})
+		if err != nil {
 			return fmt.Errorf("ship: preflight failed at step %q: %w", name, err)
 		}
 		fmt.Fprintf(deps.Out, "  %s %-22s\n", ok("✓"), name)

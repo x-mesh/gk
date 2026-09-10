@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -13,6 +14,28 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
+
+// TestRunStepWithProgress covers the preflight progress spinner as a
+// transparent wrapper: the step still runs, its result is forwarded
+// unchanged, and non-TTY stderr draws nothing (the spinner is a no-op there,
+// so piped and agent output keeps its bytes).
+func TestRunStepWithProgress(t *testing.T) {
+	want := errors.New("step failed")
+	called := 0
+	got := runStepWithProgress("slow-test", func() error {
+		called++
+		return want
+	})
+	if called != 1 {
+		t.Fatalf("step ran %d times, want 1", called)
+	}
+	if !errors.Is(got, want) {
+		t.Fatalf("error not forwarded: got %v, want %v", got, want)
+	}
+	if err := runStepWithProgress("quick", func() error { return nil }); err != nil {
+		t.Fatalf("success not forwarded: %v", err)
+	}
+}
 
 // TestRunBuiltinGofmt covers the `gofmt` preflight gate: skips when there's no
 // go.mod, fails (naming the file) on an unformatted tracked .go, ignores

@@ -72,7 +72,7 @@ var commandGroup = map[string]string{
 	"explain": "ai", "do": "ai",
 
 	// GitHub queries.
-	"pr": "github", "issue": "github", "inbox": "github",
+	"pr": "github", "issue": "github", "inbox": "github", "actions": "github",
 
 	// Agent & audit — the agent-native surface.
 	"agents": "agent", "context": "agent", "batch": "agent",

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.0] - 2026-09-15
+
+### Added
+
+- **`gk actions watch`가 현재 커밋의 GitHub Actions 실행을 직접 기다린다.** GitHub Pages와 CI 배포를 확인하려면 `gh run list`, `gh run view`, `gh run watch`를 차례로 실행해야 했고, 같은 SHA에 여러 실행이 있으면 잘못된 실행을 고를 수 있었다. 새 명령은 현재 GitHub remote와 `HEAD`를 기본으로 Actions REST API에서 실행을 찾고 완료까지 대기한다. 후보가 여럿이면 `--workflow` 또는 `--run`을 요구하며, `--repo`, `--sha`, `--interval`도 지원한다. 인증은 `GH_TOKEN`, 다음 `GITHUB_TOKEN`만 사용하므로 `gh` 명령과 저장 설정에 의존하지 않는다. 구현은 `internal/cli/actions.go`와 `internal/github/actions.go`에 있다.
+
+### Fixed
+
+- **Homebrew Cask 설치 뒤 macOS가 unsigned `gk`를 격리해 실행 파일을 휴지통으로 옮기던 문제를 피한다.** `.goreleaser.yaml`은 생성한 Cask의 declarative `postflight_steps`에서 staged `gk` 파일의 `com.apple.quarantine` 확장 속성을 제거한다. GoReleaser가 Cask 템플릿을 다시 렌더하므로 Homebrew의 `{{staged_path}}` 토큰은 이중 이스케이프한다.
+
 ## [0.142.0] - 2026-09-14
 
 ### Added

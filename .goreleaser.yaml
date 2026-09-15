@@ -61,9 +61,34 @@ homebrew_casks:
     # per-entry symlink target, so the second link is declared as raw cask
     # DSL — `binary "gk", target: "git-kit"` links the staged `gk` under a
     # second name in /opt/homebrew/bin. The quarantine xattr is stripped from
-    # the underlying file by the post-install hook below, so both names work.
+    # the underlying file by the `postflight_steps` block, so both names work.
+    #
+    # Strip the com.apple.quarantine xattr that Homebrew applies to every
+    # cask download. Without this, macOS Gatekeeper silently moves the
+    # unsigned `gk` binary to the Trash on first launch — the published
+    # release isn't codesigned/notarized and we don't intend to pay for
+    # the Apple Developer Program just to ship a CLI. The staged copy
+    # under the Caskroom is what the `binary "gk"` symlink in
+    # /opt/homebrew/bin ultimately resolves to, so cleaning the attribute
+    # there is enough.
+    #
+    # This is raw DSL rather than `hooks.post.install` because goreleaser
+    # renders hooks as `postflight do` Ruby blocks, which Homebrew deprecated
+    # in favour of declarative `postflight_steps`. Steps can't evaluate Ruby,
+    # so the path uses the install-time `{{staged_path}}` token instead of
+    # `#{staged_path}`, and `on_macos` skips the step on Linux (no xattr).
+    # goreleaser runs the rendered cask through text/template once more, so
+    # the Homebrew token is escaped as {{ "{{staged_path}}" }} here.
     custom_block: |
       binary "gk", target: "git-kit"
+
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr",
+              args:         ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/gk"],
+              must_succeed: false
+        end
+      end
     repository:
       owner: x-mesh
       name: homebrew-tap
@@ -74,17 +99,5 @@ homebrew_casks:
     commit_author:
       name: gk-bot
       email: bot@gk.dev
-    # Strip the com.apple.quarantine xattr that Homebrew applies to every
-    # cask download. Without this, macOS Gatekeeper silently moves the
-    # unsigned `gk` binary to the Trash on first launch — the published
-    # release isn't codesigned/notarized and we don't intend to pay for
-    # the Apple Developer Program just to ship a CLI. The staged copy
-    # under #{staged_path} is what the `binary "gk"` symlink in
-    # /opt/homebrew/bin ultimately resolves to, so cleaning the attribute
-    # there is enough.
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/gk"]
     caveats: |
       gk uses git under the hood. Ensure git >= 2.38 is installed (>= 2.40 recommended).

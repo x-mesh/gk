@@ -166,10 +166,10 @@ type gitDirs struct{ common, git string }
 // Detect on every worktree on every poll — 2 subprocesses each, ~46 per poll on
 // a 21-worktree fleet, purely to re-learn paths it already knew.
 //
-// The entry is dropped when its common dir no longer exists, so a worktree that
-// is removed (or a repo re-created at the same path with a different layout)
-// re-resolves instead of serving a stale path forever. That check is a stat,
-// not a fork.
+// The entry is dropped when it no longer describes the repository at that path
+// — see LayoutDescribes — so a removed worktree, or a different repo created at
+// the same path, re-resolves instead of serving a stale layout forever. That
+// check is stats and at most a tiny file read, never a fork.
 var gitDirCache sync.Map // workDir → gitDirs
 
 // Dirs exposes the memoised layout resolution to callers that need the paths
@@ -181,15 +181,83 @@ func Dirs(ctx context.Context, workDir string) (commonDir, gitDir string, err er
 	return resolveGitDirs(ctx, workDir)
 }
 
+// LayoutDescribes reports whether a memoised layout still belongs to whatever
+// repository is at workDir NOW. Every cache that remembers a resolved layout
+// needs this question answered without a fork, which is the reason the cache
+// exists in the first place.
+//
+// "The common dir still exists" is not enough on its own. A repository can be
+// removed and a different one created at the same path while the old common dir
+// survives elsewhere — a sibling linked worktree still referencing it — and the
+// stale entry would then answer for the wrong repository for the rest of the
+// process. A supervision dashboard reporting another repo's branches is worse
+// than one that re-forks.
+//
+// What a replacement necessarily rewrites is the link from the worktree back to
+// its layout: .git is the common dir itself for a main worktree, and a file
+// naming the gitdir under it for a linked one. Paths are compared by identity
+// rather than by string, because callers normalise them differently (one
+// resolves symlinks, the other does not).
+func LayoutDescribes(workDir, commonDir string) bool {
+	if !dirExists(commonDir) {
+		return false
+	}
+	gitPath := filepath.Join(workDir, ".git")
+	fi, err := os.Lstat(gitPath)
+	if err != nil {
+		// Nothing to follow: a bare repository reached by its own directory, or
+		// a layout pinned through GIT_DIR. The common dir existing is all that
+		// can be established without spending a subprocess.
+		return true
+	}
+	if fi.IsDir() {
+		return sameDir(gitPath, commonDir) // main worktree: .git IS the common dir
+	}
+	gitDir := gitdirFromLinkFile(workDir, gitPath)
+	if gitDir == "" {
+		return true // unreadable or unrecognised — do not evict on a guess
+	}
+	// A linked worktree's gitdir is <common>/worktrees/<name>.
+	return sameDir(filepath.Dir(filepath.Dir(gitDir)), commonDir)
+}
+
+// gitdirFromLinkFile reads the `gitdir: <path>` line git writes into a linked
+// worktree's .git file. The path may be relative to the worktree.
+func gitdirFromLinkFile(workDir, gitPath string) string {
+	line := readTrimmed(gitPath)
+	rest, ok := strings.CutPrefix(line, "gitdir:")
+	if !ok {
+		return ""
+	}
+	abs, err := toAbs(workDir, strings.TrimSpace(rest))
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+// sameDir reports whether two paths name the same directory on disk.
+func sameDir(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
+
 // resolveGitDirs runs `git rev-parse --git-common-dir` (with --git-dir fallback)
 // to locate the git and common directories, resolving them to absolute paths.
 // Memoised per workDir — see gitDirCache.
 func resolveGitDirs(ctx context.Context, workDir string) (commonDir, gitDir string, err error) {
 	if v, ok := gitDirCache.Load(workDir); ok {
-		if d, valid := v.(gitDirs); valid && dirExists(d.common) {
+		if d, valid := v.(gitDirs); valid && LayoutDescribes(workDir, d.common) {
 			return d.common, d.git, nil
 		}
-		gitDirCache.Delete(workDir) // the repo it described is gone
+		gitDirCache.Delete(workDir) // the repo it described is gone or was replaced
 	}
 	common, git, err := probeGitDirs(ctx, workDir)
 	if err != nil {

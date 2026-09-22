@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 )
 
 // repoIdent identifies one repository in a multi-repo fleet: a display label and
@@ -50,9 +51,14 @@ func newFleetLimiter(n int) chan struct{} {
 
 // repoLayoutCache memoises repoRootAndCommonDir per path. A repo's layout does
 // not move while a process runs, but the live dashboard re-asks on every poll.
-// The entry is dropped when the common dir no longer exists, so a removed (or
-// re-created) repo resolves again instead of serving a stale path forever —
-// same contract, and same stat-not-fork check, as gitstate's gitDirCache.
+//
+// Validity is gitstate.LayoutDescribes — the same check, from the same
+// implementation, that gitstate's own gitDirCache uses. The two caches hold
+// overlapping answers about one repository (this one has the top-level, that
+// one has the per-worktree gitdir) and they are deliberately not merged: the
+// single rev-parse that would return all three fails outright in a bare
+// repository, and the duplicate costs one fork per worktree exactly once. What
+// must not diverge is the staleness rule, so that lives in one place.
 var repoLayoutCache sync.Map // path → repoLayout
 
 type repoLayout struct{ root, common string }
@@ -64,10 +70,10 @@ type repoLayout struct{ root, common string }
 // repoLayoutCache.
 func repoRootAndCommonDir(ctx context.Context, path string) (root, common string, ok bool) {
 	if v, loaded := repoLayoutCache.Load(path); loaded {
-		if l, valid := v.(repoLayout); valid && isDirPath(l.common) {
+		if l, valid := v.(repoLayout); valid && gitstate.LayoutDescribes(path, l.common) {
 			return l.root, l.common, true
 		}
-		repoLayoutCache.Delete(path) // the repo it described is gone
+		repoLayoutCache.Delete(path) // gone, or a different repo is here now
 	}
 	root, common, ok = probeRepoRootAndCommonDir(ctx, path)
 	if ok {

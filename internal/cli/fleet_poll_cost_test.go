@@ -526,3 +526,41 @@ func TestDefaultBranchKeyIgnoresCommits(t *testing.T) {
 		t.Error("re-pointing origin/HEAD left the trunk fingerprint unchanged")
 	}
 }
+
+// TestRepoRootAndCommonDir_ReplacedRepo checks that the fleet's layout cache
+// answers for the repository actually at a path. The scenario is a linked
+// worktree removed while its common dir survives in the main repo, then a
+// different repository created at that same path — the fleet would otherwise
+// report the old repo's layout for the rest of the process.
+func TestRepoRootAndCommonDir_ReplacedRepo(t *testing.T) {
+	main := testutil.NewRepo(t)
+	main.WriteFile("a.txt", "a")
+	main.Commit("init")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	main.RunGit("worktree", "add", "-q", linked, "-b", "feat")
+
+	ctx := context.Background()
+	_, firstCommon, ok := repoRootAndCommonDir(ctx, linked)
+	if !ok {
+		t.Fatal("the linked worktree did not resolve")
+	}
+
+	if err := os.RemoveAll(linked); err != nil {
+		t.Fatal(err)
+	}
+	replacement := testutil.NewRepo(t) // its own repo, elsewhere
+	replacement.WriteFile("b.txt", "b")
+	replacement.Commit("init")
+	if err := os.Rename(replacement.Dir, linked); err != nil {
+		t.Skipf("could not move a repo onto the old path: %v", err)
+	}
+
+	_, secondCommon, ok := repoRootAndCommonDir(ctx, linked)
+	if !ok {
+		t.Fatal("the replacement repo did not resolve")
+	}
+	if secondCommon == firstCommon {
+		t.Errorf("still reporting the old common dir %q for a replaced repo", secondCommon)
+	}
+}

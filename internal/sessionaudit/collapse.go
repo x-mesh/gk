@@ -60,18 +60,19 @@ var gkForGroup = map[string]string{
 // what the run actually did.
 //
 // Only "integration" needs it, and it needs it badly: the group spans pull,
-// fetch+merge and fetch+rebase, which are different operations on different
-// refs. Answering "git-kit pull" for a `git merge origin/feature` run is worse
+// merge and rebase, which are different operations on different refs. A fetch
+// is not in the group — gk merge and gk sync do not fetch, so "fetch, then
+// merge" is still two commands with git-kit. Answering "git-kit pull" for a `git merge origin/feature` run is worse
 // than answering nothing — gk pull integrates the UPSTREAM, so an agent that
 // follows the nudge merges a branch it never asked for. Naming the wrong verb
 // is the same defect class as reporting a covered command as a gap: the hook
 // speaks with gk's authority, so a confident wrong answer costs more than
 // silence.
 //
-// The LAST explicit merge/rebase in the run wins: a run reads fetch-then-merge,
-// so the trailing verb is the integration that actually happened while the
-// fetch only fed it. With no such verb the run really is a pull, and the
-// default stands.
+// The LAST explicit merge/rebase in the run wins: it is the integration that
+// actually happened. A fetch segment that shares a turn with one of them is
+// skipped here. With no such verb the run really is a pull, and the default
+// stands.
 //
 // `git rebase <upstream>` maps to gk sync, NOT gk rebase: gk rebase is the
 // history-rewrite planner (the `rebase -i` replacement) and takes no positional
@@ -1004,7 +1005,7 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 	}
 	// prior was collected newest-first; gkCommandForRun's "last verb wins" rule
 	// needs the run in the order it happened, with the pending command last —
-	// in a fetch-then-merge shape that pending command IS the merge, and it is
+	// in a pull-then-merge shape that pending command IS the merge, and it is
 	// what decides which git-kit verb the nudge may name.
 	run := make([]string, 0, len(prior)+1)
 	for i := len(prior) - 1; i >= 0; i-- {

@@ -172,7 +172,7 @@ func TestCollapseNudgeFor(t *testing.T) {
 	}
 }
 
-// The integration group spans pull, fetch+merge and fetch+rebase, so the run
+// The integration group spans pull, merge and rebase, so the run
 // decides the verb. Saying "git-kit pull" for a merge of a sibling branch would
 // send the agent to integrate the UPSTREAM instead — a wrong verb is worse than
 // no advice, because the hook carries gk's authority.
@@ -234,11 +234,11 @@ func TestFirstRefOperand_SkipsShellNoise(t *testing.T) {
 }
 
 // The nudge names the verb of the run it is interrupting, and the PENDING
-// command is the one that decides it — a fetch last turn plus a pending merge
+// command is the one that decides it — a pull last turn plus a pending merge
 // is a merge, not a pull.
 func TestCollapseNudgeFor_IntegrationNamesPendingVerb(t *testing.T) {
 	recent, last := SessionTurnsWithLast(session(
-		asst("m1", "t1", "git fetch origin --prune"),
+		asst("m1", "t1", "git pull --ff-only"),
 	))
 	n := CollapseNudgeFor("git merge --no-ff --no-edit origin/fix/169-g5-routing", recent, last, collapseMaxGap+1)
 	if n == nil || n.Group != "integration" {
@@ -246,6 +246,17 @@ func TestCollapseNudgeFor_IntegrationNamesPendingVerb(t *testing.T) {
 	}
 	if n.GkCommand != "git-kit merge origin/fix/169-g5-routing" {
 		t.Errorf("nudge GkCommand = %q, want git-kit merge origin/fix/169-g5-routing", n.GkCommand)
+	}
+}
+
+// A fetch is not part of the integration run. gk merge does not fetch, so
+// "fetch, then merge" is still two commands with git-kit and saves no turn.
+func TestCollapseNudgeFor_FetchDoesNotStartAnIntegrationRun(t *testing.T) {
+	recent, last := SessionTurnsWithLast(session(
+		asst("m1", "t1", "git fetch origin --prune"),
+	))
+	if n := CollapseNudgeFor("git merge --no-ff origin/feature", recent, last, collapseMaxGap+1); n != nil {
+		t.Fatalf("a fetch must not start an integration run, got %+v", n)
 	}
 }
 

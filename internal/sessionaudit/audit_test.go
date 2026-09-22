@@ -1106,7 +1106,8 @@ func TestGitSegmentFinding_ContextVsSearchVsSurvey(t *testing.T) {
 		{"log path scoped", "log", []string{"--oneline", "--", "internal/cli/x.go"}, "raw-history-search"},
 		{"log patch", "log", []string{"-p"}, "raw-history-search"},
 		{"log follow", "log", []string{"--follow", "x.go"}, "raw-history-search"},
-		{"branch contains", "branch", []string{"--contains", "abc1234"}, "raw-history-search"},
+		// Which BRANCHES hold a commit — gk find returns commits, so no verb.
+		{"branch contains", "branch", []string{"--contains", "abc1234"}, ""},
 
 		// A range is NOT a search — gk find cannot answer "what is in B that is
 		// not in A", so it stays its own kind rather than being folded in. Its
@@ -1243,7 +1244,6 @@ func TestHint_GapKindsStaySilent(t *testing.T) {
 	for _, cmd := range []string{
 		"git log --all --grep=ship",
 		"git log -S tildePath",
-		"git branch --contains abc1234",
 	} {
 		res := Hint(cmd)
 		if !res.Covered || !containsString(res.CoveredBy, "git-kit find") {
@@ -1293,5 +1293,115 @@ func TestAudit_UncapEvidenceCollectsPastTheDefaultCap(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("raw-context-probes finding missing")
+	}
+}
+
+// Finishing or abandoning a paused operation is gk continue / gk abort, not a
+// new integration: naming pull/sync/merge for `git rebase --continue` hands the
+// agent a second integration on top of the one it is resolving.
+func TestGitSegmentFinding_OpControlIsNotIntegration(t *testing.T) {
+	cases := []struct {
+		name   string
+		subcmd string
+		args   []string
+		want   string
+	}{
+		{"rebase continue", "rebase", []string{"--continue"}, "raw-op-control"},
+		{"merge abort", "merge", []string{"--abort"}, "raw-op-control"},
+		{"cherry-pick continue", "cherry-pick", []string{"--continue"}, "raw-op-control"},
+		{"rebase skip has no gk verb", "rebase", []string{"--skip"}, ""},
+		{"cherry-pick a commit has no gk verb", "cherry-pick", []string{"77efc06"}, ""},
+		// gk pull --fetch-only fetches the current branch's upstream only, so
+		// it replaces neither `git fetch --all` nor `git fetch origin`, and a
+		// pull would also integrate.
+		{"fetch all has no gk verb", "fetch", []string{"--all"}, ""},
+		{"fetch a remote has no gk verb", "fetch", []string{"origin"}, ""},
+		{"rebase onto a ref stays integration", "rebase", []string{"origin/main"}, "raw-integration"},
+		{"merge a ref stays integration", "merge", []string{"feature/x"}, "raw-integration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitSegmentFinding(tc.subcmd, tc.args); got != tc.want {
+				t.Errorf("gitSegmentFinding(%q, %v) = %q, want %q", tc.subcmd, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHint_OpControlPushAndUncoveredForms(t *testing.T) {
+	if res := Hint("git rebase --continue"); !res.Covered || !containsString(res.CoveredBy, "git-kit continue") {
+		t.Errorf("Hint(rebase --continue) = %+v, want covered by git-kit continue", res)
+	}
+	if res := Hint("git push -u origin feature/x"); !res.Covered || res.Kind != "raw-push" ||
+		len(res.CoveredBy) == 0 || res.CoveredBy[0] != "git-kit push" {
+		t.Errorf("Hint(git push) = %+v, want covered raw-push by git-kit push", res)
+	}
+	// No git-kit verb answers these. A covered hint would send the agent to a
+	// command that does something else.
+	for _, cmd := range []string{"git cherry-pick 77efc06", "git branch -r --contains v0.41.5", "git fetch --all"} {
+		if res := Hint(cmd); res.Covered {
+			t.Errorf("Hint(%q) = %+v, want not covered", cmd, res)
+		}
+	}
+}
+
+// A release is a tag CREATED and pushed. Listing tags and pushing a feature
+// branch in the same session is not one, and that lone push is gk push.
+func TestAudit_ReleaseNeedsTagCreationAndLonePushIsGkPush(t *testing.T) {
+	dir := t.TempDir()
+	notRelease := filepath.Join(dir, "a.jsonl")
+	writeLines(t, notRelease,
+		`{"payload":{"arguments":"{\"cmd\":\"git tag --list 'v*'\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git push -u origin feature/x\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git cherry-pick 77efc06\"}"}}`,
+	)
+	report, err := Audit(Options{Paths: []string{notRelease}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(report, "raw-release-sequence") {
+		t.Errorf("tag listing plus a feature push must not be a release: %+v", report.Findings)
+	}
+	if !hasFinding(report, "raw-push") {
+		t.Errorf("a lone push must be covered by gk push: %+v", report.Findings)
+	}
+	gapCherryPick := false
+	for _, f := range report.Findings {
+		if f.Kind == "uncovered-raw-git" && f.Subcommands["cherry-pick"] > 0 {
+			gapCherryPick = true
+		}
+	}
+	if !gapCherryPick {
+		t.Errorf("cherry-pick of a commit must surface as a gap: %+v", report.Findings)
+	}
+
+	release := filepath.Join(dir, "b.jsonl")
+	writeLines(t, release,
+		`{"payload":{"arguments":"{\"cmd\":\"git tag -a v1.0.0 -m v1.0.0\"}"}}`,
+		`{"payload":{"arguments":"{\"cmd\":\"git push origin v1.0.0\"}"}}`,
+	)
+	report, err = Audit(Options{Paths: []string{release}, Home: dir, MaxFiles: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(report, "raw-release-sequence") {
+		t.Errorf("tag creation plus push must be a release: %+v", report.Findings)
+	}
+	if hasFinding(report, "raw-push") {
+		t.Errorf("the release push must not count twice as raw-push: %+v", report.Findings)
+	}
+}
+
+// The batch plan must not turn a fetch into a pull: the pull integrates the
+// upstream into the current branch, which the fetch never did.
+func TestSynthesizeBatchPlan_FetchIsOmittedNotPull(t *testing.T) {
+	plan := synthesizeBatchPlan("git fetch origin --prune && git status --short")
+	for _, step := range plan.Steps {
+		if len(step.Args) > 0 && step.Args[0] == "pull" {
+			t.Fatalf("fetch became a pull step: %+v", plan)
+		}
+	}
+	if !containsString(plan.Omitted, "git fetch") {
+		t.Errorf("Omitted = %v, want git fetch", plan.Omitted)
 	}
 }

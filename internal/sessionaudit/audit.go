@@ -239,6 +239,25 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit pull (fetch+integrate the upstream), git-kit sync (rebase onto the base branch) or git-kit merge <ref> (integrate another branch) so paused and blocked states stay in the agent envelope.",
 		coveredBy:      []string{"git-kit pull", "git-kit sync", "git-kit merge"},
 	},
+	// Finishing or abandoning a paused operation is not a new integration.
+	// Folded into raw-integration, `git rebase --continue` was answered with
+	// pull/sync/merge — a second integration on top of the one being resolved.
+	"raw-op-control": {
+		kind:           "raw-op-control",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit continue or git-kit abort to finish or abandon a paused rebase, merge or cherry-pick.",
+		coveredBy:      []string{"git-kit continue", "git-kit abort"},
+	},
+	// A push outside a release. It used to be credited only when the same
+	// session also touched a tag, and was invisible otherwise.
+	"raw-push": {
+		kind:           "raw-push",
+		severity:       "medium",
+		status:         "covered",
+		recommendation: "Use git-kit push — it runs the secret scan and the protected-branch confirmation that raw git push skips.",
+		coveredBy:      []string{"git-kit push"},
+	},
 	"raw-branch-switch": {
 		kind:           "raw-branch-switch",
 		severity:       "medium",
@@ -1175,6 +1194,7 @@ func isEnvAssignment(s string) bool {
 func addFindings(findings map[string]*Finding, file string, commands []string, evidenceCap int) {
 	var gitTag, gitPush bool
 	var releaseEvidence string
+	var pushEvidence []string
 	for _, cmd := range commands {
 		class := classifyCommand(cmd)
 		rawInChain := false
@@ -1191,9 +1211,11 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 				// (raw-release-sequence fires only when both appear), so they are
 				// flagged here rather than via gitSegmentFinding.
 				if subcmd == "tag" {
-					gitTag = true
-					if releaseEvidence == "" {
-						releaseEvidence = seg.Text
+					if isTagCreation(args) {
+						gitTag = true
+						if releaseEvidence == "" {
+							releaseEvidence = seg.Text
+						}
 					}
 					matched = true
 				}
@@ -1202,9 +1224,12 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 					if releaseEvidence == "" {
 						releaseEvidence = seg.Text
 					}
+					pushEvidence = append(pushEvidence, seg.Text)
 					matched = true
 				}
-				if kind := gitSegmentFinding(subcmd, args); kind != "" {
+				// raw-push waits for the end of the file: in a release session the
+				// push is part of raw-release-sequence and must not count twice.
+				if kind := gitSegmentFinding(subcmd, args); kind != "" && kind != "raw-push" {
 					addFinding(findings, kind, file, seg.Text, evidenceCap)
 					matched = true
 				}
@@ -1227,7 +1252,54 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 	}
 	if gitTag && gitPush {
 		addFinding(findings, "raw-release-sequence", file, releaseEvidence, evidenceCap)
+		return
 	}
+	for _, ev := range pushEvidence {
+		addFinding(findings, "raw-push", file, ev, evidenceCap)
+	}
+}
+
+// tagInspectFlags select the `git tag` forms that list, verify or delete.
+// Only a created tag is a release step.
+var tagInspectFlags = map[string]bool{
+	"-l": true, "--list": true, "-v": true, "--verify": true, "-d": true, "--delete": true,
+	"--contains": true, "--no-contains": true, "--points-at": true,
+	"--merged": true, "--no-merged": true, "--sort": true, "--format": true, "--column": true,
+}
+
+var tagValueFlags = map[string]bool{
+	"-m": true, "--message": true, "-F": true, "--file": true,
+	"-u": true, "--local-user": true, "--cleanup": true,
+}
+
+// isTagCreation reports whether a `git tag` segment names a tag to create. A
+// bare `git tag` lists, so a creation needs a tag-name operand; redirections
+// survive segment splitting as operand-shaped tokens and do not count.
+func isTagCreation(args []string) bool {
+	skipNext := false
+	operand := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "" || strings.ContainsAny(a, "<>|&;()") {
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			operand = true
+			continue
+		}
+		name, _, hasValue := strings.Cut(a, "=")
+		if tagInspectFlags[name] || (strings.HasPrefix(name, "-n") && !strings.HasPrefix(name, "--")) {
+			return false
+		}
+		if tagValueFlags[name] && !hasValue {
+			skipNext = true
+		}
+	}
+	return operand
 }
 
 // addFinding records one hit and returns a pointer to the freshly appended
@@ -1301,7 +1373,12 @@ func batchStepForGit(subcmd string, args []string) ([]string, bool) {
 		return []string{"context", "--include=diff,log"}, true
 	case subcmd == "add" || subcmd == "commit":
 		return []string{"commit"}, true
-	case subcmd == "pull" || subcmd == "fetch":
+	// Omitted rather than mapped: `git rebase --continue` must not become
+	// `git-kit rebase` (the history planner) or a fresh merge, and a fetch
+	// must not become a pull that integrates.
+	case isRawOpControl(subcmd, args) || isUnmappedIntegration(subcmd, args):
+		return nil, false
+	case subcmd == "pull":
 		return []string{"pull"}, true
 	case subcmd == "merge":
 		return []string{"merge"}, true
@@ -1579,8 +1656,8 @@ var branchMutationFlags = map[string]bool{
 // of them, which is why these used to inflate the context collapse group.
 //
 // Excluded: mutations (delete/rename/upstream — see branchMutationFlags), a bare
-// operand (that names a branch to create), and `--contains <ref>`, which is a
-// history question gk branch cannot ask (it routes to isRawHistorySearch).
+// operand (that names a branch to create), and `--contains <ref>`, which no
+// git-kit verb answers (branch is in rawGitNonGap, so it stays silent).
 func isRawBranchList(subcmd string, args []string) bool {
 	if subcmd != "branch" {
 		return false
@@ -1603,7 +1680,7 @@ func isRawBranchList(subcmd string, args []string) bool {
 			return false
 		}
 		if strings.HasPrefix(name, "--contains") || strings.HasPrefix(name, "--no-contains") {
-			return false // a history question — isRawHistorySearch owns it
+			return false // no git-kit verb answers it
 		}
 		if name == "--show-current" {
 			// Not a survey at all — it asks for ONE name, the branch you are on,
@@ -1619,9 +1696,13 @@ func isRawBranchList(subcmd string, args []string) bool {
 	return true
 }
 
-// isRawHistorySearch matches the log/rev-list/branch forms that SEARCH history
-// rather than report the current state — "which commit introduced X", "what
-// changed in this file over time", "which branch contains this commit".
+// isRawHistorySearch matches the log/rev-list forms that SEARCH history rather
+// than report the current state — "which commit introduced X", "what changed
+// in this file over time".
+//
+// `git branch --contains` is NOT here. It asks which BRANCHES hold a commit,
+// and gk find returns commits, so claiming it named a command that cannot
+// answer. branch is in rawGitNonGap, so the form stays silent instead.
 //
 // This is what `gk find` collapses. The turn cost was never one query; it was
 // that the agent cannot know which query will hit, so it pays a turn per guess
@@ -1634,14 +1715,6 @@ func isRawBranchList(subcmd string, args []string) bool {
 func isRawHistorySearch(subcmd string, args []string) bool {
 	switch subcmd {
 	case "log", "rev-list":
-	case "branch":
-		for _, raw := range args {
-			a := trimShellToken(raw)
-			if strings.HasPrefix(a, "--contains") || strings.HasPrefix(a, "--no-contains") {
-				return true
-			}
-		}
-		return false
 	default:
 		return false
 	}
@@ -1998,6 +2071,35 @@ func isRawIntegration(subcmd string) bool {
 	}
 }
 
+// isRawOpControl matches finishing or abandoning a paused rebase, merge or
+// cherry-pick — what gk continue and gk abort do.
+func isRawOpControl(subcmd string, args []string) bool {
+	switch subcmd {
+	case "rebase", "merge", "cherry-pick":
+		return hasArg(args, "--continue") || hasArg(args, "--abort")
+	default:
+		return false
+	}
+}
+
+// isUnmappedIntegration matches integration-family forms no git-kit verb
+// replaces: picking a commit (gk has no cherry-pick), skipping or quitting a
+// paused operation, and fetch. gk pull --fetch-only fetches the current
+// branch's upstream only, so it replaces neither `git fetch --all` nor
+// `git fetch origin`, and plain gk pull would also integrate. They fall
+// through to the gap finding. isRawIntegration still lists fetch for the
+// digest, which counts integration attempts rather than replacements.
+func isUnmappedIntegration(subcmd string, args []string) bool {
+	switch subcmd {
+	case "cherry-pick", "fetch":
+		return true
+	case "rebase", "merge":
+		return hasArg(args, "--skip") || hasArg(args, "--quit")
+	default:
+		return false
+	}
+}
+
 // isRawReadOnlyForm matches the read-only invocations of subcommands that mix
 // inspection with mutation (remote, submodule). An agent legitimately reaches
 // for these to orient, so they are not a coverage gap; the mutating forms
@@ -2100,8 +2202,16 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return "raw-commit-sequence"
 	case subcmd == "apply":
 		return "raw-apply"
+	// Op control and the unmapped integration forms come before
+	// isRawIntegration, which matches on the subcommand alone.
+	case isRawOpControl(subcmd, args):
+		return "raw-op-control"
+	case isUnmappedIntegration(subcmd, args):
+		return ""
 	case isRawIntegration(subcmd):
 		return "raw-integration"
+	case subcmd == "push":
+		return "raw-push"
 	case isRawBranchSwitch(subcmd, args):
 		return "raw-branch-switch"
 	case isRawWorktree(subcmd):

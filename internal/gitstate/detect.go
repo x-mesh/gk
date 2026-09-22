@@ -172,6 +172,15 @@ type gitDirs struct{ common, git string }
 // not a fork.
 var gitDirCache sync.Map // workDir → gitDirs
 
+// Dirs exposes the memoised layout resolution to callers that need the paths
+// themselves rather than a State — a live dashboard keying a cache on the files
+// git would read (HEAD, packed-refs, a branch ref) has to know where they are,
+// and re-forking rev-parse to re-learn that on every poll is the cost this
+// package's cache already exists to avoid.
+func Dirs(ctx context.Context, workDir string) (commonDir, gitDir string, err error) {
+	return resolveGitDirs(ctx, workDir)
+}
+
 // resolveGitDirs runs `git rev-parse --git-common-dir` (with --git-dir fallback)
 // to locate the git and common directories, resolving them to absolute paths.
 // Memoised per workDir — see gitDirCache.

@@ -376,12 +376,63 @@ func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner)
 	return out, defaultBr
 }
 
+// defaultBranchCache memoises the trunk probe by the refs that can change its
+// answer — see defaultBranchKey. The live dashboard re-resolves the trunk for
+// every repo on every poll, one `symbolic-ref` fork each (plus two `rev-parse`
+// fallbacks when the repo has no origin/HEAD), to re-learn a name that moves
+// about as often as a remote is re-pointed.
+var defaultBranchCache sync.Map // key → string
+
+// defaultBranchKey stamps the files the probe actually reads: origin/HEAD
+// loose, the packed-refs that can hold it instead, and the refs/heads directory
+// whose entries the main/master fallback looks for. Keyed by content, so the
+// answer cannot outlive the state that produced it.
+func defaultBranchKey(ctx context.Context, runner *git.ExecRunner) (string, bool) {
+	_, common, ok := repoRootAndCommonDir(ctx, runner.Dir)
+	if !ok {
+		return "", false
+	}
+	return strings.Join([]string{
+		common,
+		fileStamp(filepath.Join(common, "refs", "remotes", "origin", "HEAD")),
+		fileStamp(filepath.Join(common, "packed-refs")),
+		fileStamp(filepath.Join(common, "refs", "heads")),
+	}, "\x00"), true
+}
+
+// fileStamp renders a path's mtime and size as a cache-key fragment. A missing
+// path stamps as "-", which is itself a state worth keying on: the file
+// appearing is exactly what invalidates the entry.
+func fileStamp(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "-"
+	}
+	return strconv.FormatInt(fi.ModTime().UnixNano(), 10) + ":" + strconv.FormatInt(fi.Size(), 10)
+}
+
 // resolveDefaultBranchForWorktree returns the trunk used as the
 // computeForkPoints anchor. We deliberately keep this lighter than
 // resolveBaseForStatus (no config layer, no provenance) because the
 // worktree list is a read-only at-a-glance view — a missing trunk
 // only suppresses the fork column, never breaks the table.
 func resolveDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
+	key, cacheable := defaultBranchKey(ctx, runner)
+	if cacheable {
+		if v, ok := defaultBranchCache.Load(key); ok {
+			if s, valid := v.(string); valid {
+				return s
+			}
+		}
+	}
+	br := probeDefaultBranchForWorktree(ctx, runner)
+	if cacheable {
+		defaultBranchCache.Store(key, br)
+	}
+	return br
+}
+
+func probeDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
 	out, _, err := runner.Run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err == nil {
 		s := strings.TrimSpace(string(out))

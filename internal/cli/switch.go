@@ -889,7 +889,7 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	// One batch read (not GetParent per branch) keeps the subprocess
 	// count flat on branch-heavy repos; a read failure degrades every
 	// anchor to defaultBr rather than dropping the column.
-	parents, _ := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+	parents := cachedAllParents(ctx, runner)
 	type result struct {
 		idx    int
 		anchor string
@@ -966,6 +966,79 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 			forkPointCache.Store(key, forkPoint{anchor: r.anchor, hash: r.hash})
 		}
 	}
+}
+
+// allParentsCache memoises the batched branch.<name>.gk-parent read by the
+// config files that can change it. computeForkPoints runs on every dashboard
+// poll and pays a `git config --get-regexp` fork each time, for a map that only
+// moves when someone records a parent.
+//
+// The stored map is shared by every hit: callers read it, never write it.
+var allParentsCache sync.Map // key → map[string]string
+
+func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string {
+	key, cacheable := allParentsKey(ctx, runner)
+	if cacheable {
+		if v, ok := allParentsCache.Load(key); ok {
+			if m, valid := v.(map[string]string); valid {
+				return m
+			}
+		}
+	}
+	parents, err := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+	if err != nil {
+		// A read failure degrades every anchor to the trunk. Memoising that
+		// would keep the degraded view until a config file happens to change.
+		return parents
+	}
+	if cacheable {
+		allParentsCache.Store(key, parents)
+	}
+	return parents
+}
+
+// allParentsKey stamps the config files git would read for these keys: the
+// repository's own, and the per-user one. System config (/etc/gitconfig) is
+// deliberately out of scope — gk records branch.<name>.gk-parent per
+// repository, and that key placed machine-wide is not a case worth a stat on
+// every poll. A runner that is not an ExecRunner (tests) has no directory to
+// anchor the key to, so it reads fresh every time.
+func allParentsKey(ctx context.Context, runner git.Runner) (string, bool) {
+	er, ok := runner.(*git.ExecRunner)
+	if !ok {
+		return "", false
+	}
+	_, common, found := repoRootAndCommonDir(ctx, er.Dir)
+	if !found {
+		return "", false
+	}
+	parts := []string{common, fileStamp(filepath.Join(common, "config"))}
+	for _, p := range gitGlobalConfigPaths() {
+		parts = append(parts, fileStamp(p))
+	}
+	return strings.Join(parts, "\x00"), true
+}
+
+// gitGlobalConfigPaths lists the per-user config files git may read.
+// GIT_CONFIG_GLOBAL replaces them all when set, which is how the test suite
+// isolates itself from the developer's own gitconfig.
+func gitGlobalConfigPaths() []string {
+	if p := os.Getenv("GIT_CONFIG_GLOBAL"); p != "" {
+		return []string{p}
+	}
+	home, err := os.UserHomeDir()
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg == "" && err == nil {
+		xdg = filepath.Join(home, ".config")
+	}
+	var out []string
+	if err == nil {
+		out = append(out, filepath.Join(home, ".gitconfig"))
+	}
+	if xdg != "" {
+		out = append(out, filepath.Join(xdg, "git", "config"))
+	}
+	return out
 }
 
 // forkPoint is one memoised `merge-base` outcome. The anchor is stored beside

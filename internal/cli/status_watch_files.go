@@ -18,6 +18,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/diff"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/ui"
 )
 
@@ -75,7 +76,6 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 	if err != nil {
 		return sigs
 	}
-	stats := changeDiffProfile(ctx, runner)
 	tokens := strings.Split(string(out), "\x00")
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -89,22 +89,42 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 		if xy[0] == 'R' || xy[0] == 'C' {
 			i++
 		}
-		ds := stats[path]
-		if xy == "??" {
-			// Untracked files never appear in `git diff` — profile them from
-			// the content so new files still carry +N and a symbol.
-			if up, ok := untrackedChangeProfile(root, path); ok {
-				ds = up
-			}
-		}
 		var mtime int64
 		if root != "" {
 			if fi, serr := os.Stat(filepath.Join(root, path)); serr == nil {
 				mtime = fi.ModTime().UnixNano()
 			}
 		}
-		sigs[path] = fileSig{xy: xy, added: ds.added, removed: ds.removed,
-			symbols: strings.Join(ds.symbols, ", "), mtime: mtime}
+		sigs[path] = fileSig{xy: xy, mtime: mtime}
+	}
+	// A clean tree has nothing to diff. The fleet twin has always guarded this
+	// (scanWorktreeChanges); here the two `git diff` forks ran on every tick
+	// regardless, for a guaranteed-empty answer. Beyond that the counts are a
+	// function of the fingerprints just collected, so an unchanged dirty set
+	// reuses the previous profile — same gate, same cache, as the fleet scan.
+	if len(sigs) == 0 {
+		return sigs
+	}
+	key, cacheable := worktreeStatsKey(root, sigs)
+	if cacheable && applyCachedStats(root, key, sigs) {
+		return sigs
+	}
+	stats := changeDiffProfile(ctx, runner)
+	for path, sig := range sigs {
+		ds := stats[path]
+		if sig.xy == "??" {
+			// Untracked files never appear in `git diff` — profile them from
+			// the content so new files still carry +N and a symbol.
+			if up, ok := untrackedChangeProfile(root, path); ok {
+				ds = up
+			}
+		}
+		sig.added, sig.removed = ds.added, ds.removed
+		sig.symbols = strings.Join(ds.symbols, ", ")
+		sigs[path] = sig
+	}
+	if cacheable {
+		worktreeStatsCache.Store(root, worktreeStats{key: key, sigs: sigs})
 	}
 	return sigs
 }
@@ -552,8 +572,11 @@ type changeWatchModel struct {
 
 	paused     bool
 	refreshing bool
-	first      bool
-	err        error
+	// fsGate spaces fs-driven refresh starts; the heartbeat tick is already
+	// spaced by its own timer.
+	fsGate pollGate
+	first  bool
+	err    error
 
 	// showDash swaps the feed region for the full status dashboard (the rich
 	// `gk status` blocks). dashFrame holds the last captured frame.
@@ -582,6 +605,7 @@ func newChangeWatchModel(cmd *cobra.Command, interval time.Duration) *changeWatc
 		runner:   &git.ExecRunner{Dir: RepoFlag()},
 		interval: interval,
 		first:    true,
+		fsGate:   pollGate{gap: fsPollGap(interval)},
 	}
 }
 
@@ -624,13 +648,54 @@ type headInfo struct {
 	sha      string // short
 	ago      string // relative age of the HEAD commit ("22m", "" when <1m)
 	subject  string
+	// key fingerprints the refs this value was read from, so the next refresh
+	// can tell that nothing moved. Never rendered.
+	key string
+}
+
+// headInfoKey stamps the files git would read to answer the header: this
+// worktree's HEAD, the packed refs, and the loose refs for the branch and its
+// upstream. prev supplies those two names — on the first call they are unknown,
+// which simply makes that call a miss.
+//
+// It reports false when the layout cannot be resolved, so the header is read
+// fresh rather than keyed on an incomplete fingerprint.
+func headInfoKey(ctx context.Context, runner *git.ExecRunner, prev headInfo) (string, bool) {
+	common, gitDir, err := gitstate.Dirs(ctx, runner.Dir)
+	if err != nil {
+		return "", false
+	}
+	parts := []string{
+		gitDir,
+		fileStamp(filepath.Join(gitDir, "HEAD")),
+		fileStamp(filepath.Join(common, "packed-refs")),
+	}
+	if prev.branch != "" {
+		parts = append(parts, fileStamp(filepath.Join(common, "refs", "heads", filepath.FromSlash(prev.branch))))
+	}
+	if prev.upstream != "" {
+		parts = append(parts, fileStamp(filepath.Join(common, "refs", "remotes", filepath.FromSlash(prev.upstream))))
+	}
+	return strings.Join(parts, "\x00"), true
 }
 
 // fetchHeadInfo gathers the compact-header orientation. Every field degrades to
 // its zero value on error so the header renders partial rather than failing.
-func fetchHeadInfo(cmd *cobra.Command, runner *git.ExecRunner) headInfo {
+//
+// prev is the previous refresh's answer. Branch name, upstream, divergence and
+// HEAD subject all move only when a ref moves, while the feed refreshes at the
+// rate someone types — so when the stamped refs are untouched the whole header
+// is reused and its five subprocesses are not spawned at all.
+func fetchHeadInfo(cmd *cobra.Command, runner *git.ExecRunner, prev headInfo) headInfo {
 	ctx := cmd.Context()
-	h := headInfo{repo: detectRepoName(ctx, runner)}
+	key, cacheable := headInfoKey(ctx, runner, prev)
+	if cacheable && prev.key != "" && prev.key == key {
+		return prev
+	}
+	h := headInfo{key: key, repo: prev.repo}
+	if h.repo == "" {
+		h.repo = detectRepoName(ctx, runner)
+	}
 	if out, _, err := runner.Run(ctx, "--no-optional-locks", "symbolic-ref", "--short", "HEAD"); err == nil {
 		h.branch = strings.TrimSpace(string(out))
 	}
@@ -701,6 +766,7 @@ func (m *changeWatchModel) refreshCmd() tea.Cmd {
 	cmd := m.cmd
 	root := m.root
 	prev := m.prev
+	prevHead := m.head
 	ctx := m.cmd.Context()
 	now := m.nowFn()
 	showDash := m.showDash
@@ -711,7 +777,7 @@ func (m *changeWatchModel) refreshCmd() tea.Cmd {
 		msg := changeFrameMsg{
 			curr:   curr,
 			events: diffChangeSnapshots(prev, curr, now),
-			head:   fetchHeadInfo(cmd, runner),
+			head:   fetchHeadInfo(cmd, runner, prevHead),
 			ts:     now,
 			gen:    gen,
 		}
@@ -757,10 +823,19 @@ func (m *changeWatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.refreshCmd(), m.tickCmd())
 	case changeFSMsg:
-		// Re-arm the fs listener every time; refresh unless paused.
+		// Re-arm the fs listener every time; refresh unless paused. Refresh
+		// STARTS are spaced by the same rule the dashboard uses (fsPollGap):
+		// the interval is the user's cost budget, and fs events buy latency
+		// within it, not extra refreshes. Inside the fleet zoom this case never
+		// fires — fleet drives that model's refreshes and deliberately exempts
+		// them, one cheap worktree not being what the limit is for.
 		if m.paused {
 			return m, m.waitFSCmd()
 		}
+		if m.fsGate.wait(m.nowFn()) > 0 {
+			return m, m.waitFSCmd()
+		}
+		m.fsGate.start(m.nowFn())
 		return m, tea.Batch(m.refreshCmd(), m.waitFSCmd())
 	case changeFSClosedMsg:
 		// Watcher died — drop to heartbeat polling at the user's interval.

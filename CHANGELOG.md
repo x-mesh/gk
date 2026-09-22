@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk watch --events`가 `--interval`을 아예 무시하고 CPU를 태우던 문제 — v0.121.0의 폴 빈도 제한이 TUI에만 들어가 있었다.** 스트림 루프(`runFleetEvents`)는 타이머든 파일시스템 이벤트든 깨는 즉시 fleet 전체를 다시 수집했고, 폴 **시작 간격**을 재는 상태가 없었다. 에이전트 한 대가 계속 저장하기만 하면 전체 스캔이 연달아 돌았다. 실측(repo 25개·워크트리 59개, `--interval 60`으로 15초): 폴 32회, git 서브프로세스 8,590개, **CPU 605%** — 기대값은 폴 0회다. `sys` 시간이 `user`보다 컸다는 것이 무엇이 비용인지 말해 준다. 대시보드와 달리 스트림은 오케스트레이터가 무인으로 띄우는 경로라 아무도 눈치채지 못한다. 이제 세 갈래(대시보드·스트림·단일 워크트리 피드)가 같은 `fsPollGap` 규칙을 공유한다: 설정한 간격이 비용 예산이고, 파일시스템 이벤트가 사는 것은 "폴을 더 자주"가 아니라 "타이머를 기다리지 않는 즉시성"이다. 이벤트는 버려지지 않고 갭이 끝날 때까지 미뤄지며, 대기 중 도착한 이벤트는 곧 시작할 폴에 합쳐진다. 같은 조건 재측정: 폴 1회(baseline), CPU 30%. `gk status --watch`도 fs 이벤트마다 무제한 refresh하던 것을 같은 규칙으로 묶었다(fleet 줌의 refresh는 종전대로 면제 — 워크트리 하나는 이 제한이 막으려는 폭주가 아니다).
+
+### Changed
+
+- **`gk watch`의 폴 1회 원가를 git 서브프로세스 267개에서 110개로 줄였다 (repo 25개·워크트리 59개 기준, CPU 500% → 16%).** 빈 `git` fork 하나가 약 10ms CPU라 폴 비용은 호출 **횟수**에 선형인데, 폴마다 다시 묻던 것들 중 상당수는 답이 이미 정해져 있었다. 저장소가 이미 쓰던 방식 — 비교 대상의 커밋 tip을 키에 넣으면 tip이 움직이는 순간 다른 키가 되어 stale이 원리적으로 불가능한 콘텐츠 키 메모이제이션(`forkPointCache`) — 을 남은 자리에 마저 적용했다. 워크트리마다 돌던 `rev-list --count <branch>..<parent>`와 `merge-base --is-ancestor`는 둘 다 두 커밋의 순수 함수이고 tip은 브랜치 목록에서 이미 딸려 온다(폴당 20 + 40 → 0). repo마다 돌던 트렁크 조회(`symbolic-ref`)와 `branch.<name>.gk-parent` 배치 읽기(`config --get-regexp`)는 각각 origin/HEAD·packed-refs·refs/heads와 config 파일의 mtime을 키로 삼는다 — fork 하나(약 10ms)를 `stat` 두어 번(수 µs)으로 바꾸는 교환이다(폴당 25 + 24 → 0). 피드의 `+/-` 수치와 함수 이름은 변경 파일의 지문(porcelain XY + mtime)의 함수인데 그 지문은 스캔이 이미 모으고 있었으므로, 지문이 그대로면 `git diff -U0` 두 번과 untracked 파일 읽기를 건너뛴다(폴당 39 → 6; `git add`만 해도 XY가 바뀌므로 staging 전환은 그대로 잡힌다). 단일 워크트리 피드에서는 **clean 트리인데도** `git diff`를 두 번 돌리던 자리(fleet 쪽 쌍둥이에는 있던 가드가 여기엔 없었다)를 막고, 헤더 5개 호출(브랜치·업스트림·ahead/behind·HEAD 제목)은 HEAD·packed-refs·해당 ref 파일이 하나도 안 움직였으면 통째로 재사용한다 — 편집 중에는 ref가 움직이지 않으므로 정상 상태에서 0이 된다. `worktree list`는 캐시하지 않는다: 에이전트가 `git switch` 한 번으로 바꾸는 값이고, 감독용 대시보드가 낡은 브랜치를 보여주는 대가는 fork 25개보다 크다. 화면에 나오는 값과 `--json`/`--events` 계약은 그대로다.
+
 ## [0.143.0] - 2026-09-15
 
 ### Added

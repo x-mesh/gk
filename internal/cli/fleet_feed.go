@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -51,6 +54,17 @@ func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root strin
 	}
 	s := parseWorktreeScan(string(out), root)
 	if withStats && len(s.sigs) > 0 {
+		// The +/- counts and symbol names are a function of the changed files'
+		// contents, and the scan above already fingerprinted those (porcelain XY
+		// plus on-disk mtime). An unchanged fingerprint therefore has unchanged
+		// stats, so the two `git diff` forks and the untracked-file reads below
+		// are skipped — on a fleet where one agent is typing, that is most of
+		// the diff cost every poll. `git add` alone moves XY, so staging
+		// transitions still miss.
+		key, cacheable := worktreeStatsKey(root, s.sigs)
+		if cacheable && applyCachedStats(root, key, s.sigs) {
+			return s
+		}
 		for p, ds := range changeDiffProfile(ctx, runner) {
 			if sig, ok := s.sigs[p]; ok {
 				sig.added, sig.removed = ds.added, ds.removed
@@ -70,8 +84,66 @@ func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root strin
 				s.sigs[p] = sig
 			}
 		}
+		if cacheable {
+			worktreeStatsCache.Store(root, worktreeStats{key: key, sigs: s.sigs})
+		}
 	}
 	return s
+}
+
+// worktreeStats is one worktree's last computed diff profile, tagged with the
+// fingerprint of the change set that produced it.
+type worktreeStats struct {
+	key  string
+	sigs map[string]fileSig
+}
+
+// worktreeStatsCache holds one entry per worktree — the newest replaces the
+// previous, so it cannot grow with time the way a keyed-by-content map would.
+var worktreeStatsCache sync.Map // worktree root → worktreeStats
+
+// worktreeStatsKey fingerprints a change set by path, porcelain XY and mtime.
+// It reports false without a root: mtimes are unavailable then (parseWorktreeScan
+// leaves them zero), and a key that cannot see an edit must not be cached
+// against one.
+func worktreeStatsKey(root string, sigs map[string]fileSig) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	paths := make([]string, 0, len(sigs))
+	for p := range sigs {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	h := sha256.New()
+	for _, p := range paths {
+		sig := sigs[p]
+		fmt.Fprintf(h, "%s\x00%s\x00%d\x00", p, sig.xy, sig.mtime)
+	}
+	return hex.EncodeToString(h.Sum(nil)), true
+}
+
+// applyCachedStats copies a matching cached profile's counts and symbols onto
+// this scan's signatures, reporting whether it hit. The cached map is read, not
+// handed out: each poll keeps its own freshly allocated signatures.
+func applyCachedStats(root, key string, sigs map[string]fileSig) bool {
+	v, ok := worktreeStatsCache.Load(root)
+	if !ok {
+		return false
+	}
+	cached, valid := v.(worktreeStats)
+	if !valid || cached.key != key {
+		return false
+	}
+	for p, sig := range sigs {
+		c, found := cached.sigs[p]
+		if !found {
+			continue
+		}
+		sig.added, sig.removed, sig.symbols = c.added, c.removed, c.symbols
+		sigs[p] = sig
+	}
+	return true
 }
 
 // parseWorktreeScan derives counts, signatures, and the newest change from raw

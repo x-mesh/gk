@@ -574,16 +574,49 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 		}
 	}
 
-	// Parent drift + land-readiness — "which can I sync / reap".
+	// Parent drift + land-readiness — "which can I sync / reap". Both answers
+	// are pure functions of the two commits compared, and the tips arrived free
+	// with the branch listing, so the live dashboard memoises them instead of
+	// re-forking one rev-list and one merge-base per worktree on every poll.
 	if f.Parent != "" && !e.Detached && e.Branch != "" {
-		if n, ok := revListCount(ctx, wr, e.Branch+".."+f.Parent); ok {
-			f.ParentBehind = n
+		key, cacheable := fleetRelKey(e.Path, e.Branch, m.Hash, f.Parent, meta[f.Parent].Hash)
+		hit := false
+		if cacheable {
+			if v, ok := fleetParentBehindCache.Load(key); ok {
+				if n, valid := v.(int); valid {
+					f.ParentBehind, hit = n, true
+				}
+			}
+		}
+		if !hit {
+			if n, ok := revListCount(ctx, wr, e.Branch+".."+f.Parent); ok {
+				f.ParentBehind = n
+				if cacheable {
+					fleetParentBehindCache.Store(key, n)
+				}
+			}
 		}
 	}
 	if base != "" && e.Branch != "" && e.Branch != base && !e.Detached {
 		// Merged into base ⇒ all commits are in base ⇒ safe to reap.
-		if _, _, err := wr.Run(ctx, "merge-base", "--is-ancestor", e.Branch, base); err == nil {
-			f.LandReady = true
+		key, cacheable := fleetRelKey(e.Path, e.Branch, m.Hash, base, meta[base].Hash)
+		hit := false
+		if cacheable {
+			if v, ok := fleetLandReadyCache.Load(key); ok {
+				if b, valid := v.(bool); valid {
+					f.LandReady, hit = b, true
+				}
+			}
+		}
+		if !hit {
+			_, _, err := wr.Run(ctx, "merge-base", "--is-ancestor", e.Branch, base)
+			f.LandReady = err == nil
+			// Only a clean yes/no is memoisable. A timeout or an unusable ref
+			// exits with something other than 1, and caching that would freeze
+			// a false "not ready" in place until a tip happens to move.
+			if cacheable && (err == nil || isGitExitCode(err, 1)) {
+				fleetLandReadyCache.Store(key, f.LandReady)
+			}
 		}
 	}
 
@@ -611,6 +644,40 @@ func fleetOperationLabel(st *gitstate.State) string {
 	default:
 		return ""
 	}
+}
+
+// fleetParentBehindCache and fleetLandReadyCache memoise the two per-worktree
+// divergence probes by their inputs: the commits being compared. Keyed by
+// content, so an entry can never go stale — a moved tip is a different key, not
+// a wrong answer. They exist for the live dashboard, which otherwise re-forked
+// both probes for every worktree on every poll (measured on 25 repos / 59
+// worktrees: 20 rev-list and ~40 merge-base subprocesses per poll).
+var (
+	fleetParentBehindCache sync.Map // key → int
+	fleetLandReadyCache    sync.Map // key → bool
+)
+
+// fleetRelKey identifies a two-commit comparison by (worktree, ref, tip, ref,
+// tip). It reports false when either tip is unknown: without both, a hit could
+// answer for commits that have since moved, so the caller measures instead.
+//
+// The worktree path is part of the key because worktreeBranchMeta.Hash is a
+// SHORT hash — 7 hex chars collide across repositories far too easily to key a
+// process-wide cache on alone.
+func fleetRelKey(dir, branch, branchTip, other, otherTip string) (string, bool) {
+	if dir == "" || branch == "" || branchTip == "" || other == "" || otherTip == "" {
+		return "", false
+	}
+	return strings.Join([]string{dir, branch, branchTip, other, otherTip}, "\x00"), true
+}
+
+// isGitExitCode reports whether err is a *git.ExitError carrying code.
+func isGitExitCode(err error, code int) bool {
+	var ee *git.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	return ee.Code == code
 }
 
 // revListCount returns `git rev-list --count <range>`; ok is false on any error
@@ -1446,12 +1513,38 @@ func (m fleetModel) clockTickCmd() tea.Cmd {
 // events buy latency (a poll begins the moment a file lands, instead of up to N
 // seconds later) without buying extra polls. Without this the fs path ignored
 // the interval entirely and polled as fast as a poll could finish.
-func (m fleetModel) fsPollGap() time.Duration {
-	if m.interval <= 0 {
+func fsPollGap(interval time.Duration) time.Duration {
+	if interval <= 0 {
 		return fsWatchDebounce
 	}
-	return m.interval
+	return interval
 }
+
+func (m fleetModel) fsPollGap() time.Duration { return fsPollGap(m.interval) }
+
+// pollGate is that same rule as plain state, for the refresh loops that are not
+// bubbletea models — the --events stream and the single-worktree feed. The TUI
+// keeps its own lastPollStart field because its wait is an armed tea.Cmd rather
+// than a blocking sleep; the gap itself comes from fsPollGap either way, so the
+// three loops cannot drift apart.
+type pollGate struct {
+	gap  time.Duration
+	last time.Time
+}
+
+// wait reports how long remains before a poll may start. Zero means now.
+func (g *pollGate) wait(now time.Time) time.Duration {
+	if g.last.IsZero() {
+		return 0
+	}
+	if d := g.gap - now.Sub(g.last); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// start records a poll beginning at now.
+func (g *pollGate) start(now time.Time) { g.last = now }
 
 // pollNow starts a poll immediately, reserving the in-flight slot.
 func (m *fleetModel) pollNow() tea.Cmd {

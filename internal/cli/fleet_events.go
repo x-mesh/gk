@@ -131,6 +131,15 @@ func runFleetEvents(ctx context.Context, cmd *cobra.Command, gather func(context
 		}
 	}
 
+	// gate spaces poll STARTS the same way the dashboard does. Without it this
+	// loop re-gathered the instant an fs event landed, so one worktree under
+	// continuous edits chained full fleet scans back to back and --interval had
+	// no effect at all (measured on 25 repos / 59 worktrees: 32 polls and 8,590
+	// git subprocesses in 15 seconds under --interval 60, 605% CPU). Nobody
+	// watches a stream, so the burn went unnoticed where the TUI's did not.
+	gate := pollGate{gap: fsPollGap(interval)}
+
+	gate.start(time.Now())
 	entries, err := gather(ctx)
 	if err != nil {
 		return err
@@ -157,14 +166,25 @@ func runFleetEvents(ctx context.Context, cmd *cobra.Command, gather func(context
 		case <-fsCh:
 			// Debounced already; drain fell-behind signals so a burst across
 			// worktrees coalesces into this one refresh.
-			for drained := false; !drained; {
-				select {
-				case <-fsCh:
-				default:
-					drained = true
-				}
-			}
+			drainFleetFS(fsCh)
 		}
+
+		// Wait out the remainder of the gap before gathering. The event is
+		// deferred, never dropped: what it buys is starting the poll as soon as
+		// the gap allows instead of at the next tick.
+		if w := gate.wait(time.Now()); w > 0 {
+			timer := time.NewTimer(w)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+			// Events that landed during the wait are answered by the poll about
+			// to run, so they must not arm another one after it.
+			drainFleetFS(fsCh)
+		}
+		gate.start(time.Now())
 
 		entries, err = gather(ctx)
 		if err != nil {
@@ -187,6 +207,19 @@ func runFleetEvents(ctx context.Context, cmd *cobra.Command, gather func(context
 			ws.sync(ctx, entries)
 		}
 		prev = entries
+	}
+}
+
+// drainFleetFS empties the pending fs signals without blocking. The channel is
+// level-triggered (a full buffer drops), so draining loses nothing: what it
+// records is "something changed", which the gather about to run reads from disk.
+func drainFleetFS(ch <-chan string) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/x-mesh/gk/internal/git"
 )
@@ -47,11 +48,35 @@ func newFleetLimiter(n int) chan struct{} {
 	return make(chan struct{}, n)
 }
 
+// repoLayoutCache memoises repoRootAndCommonDir per path. A repo's layout does
+// not move while a process runs, but the live dashboard re-asks on every poll.
+// The entry is dropped when the common dir no longer exists, so a removed (or
+// re-created) repo resolves again instead of serving a stale path forever —
+// same contract, and same stat-not-fork check, as gitstate's gitDirCache.
+var repoLayoutCache sync.Map // path → repoLayout
+
+type repoLayout struct{ root, common string }
+
 // repoRootAndCommonDir resolves a path to its repo top-level and git-common-dir.
 // The common-dir is the dedup key: a repo reached via a symlink, or through one
 // of its linked worktrees, resolves to the same common-dir and so collapses to a
-// single fleet entry instead of being counted several times.
+// single fleet entry instead of being counted several times. Memoised — see
+// repoLayoutCache.
 func repoRootAndCommonDir(ctx context.Context, path string) (root, common string, ok bool) {
+	if v, loaded := repoLayoutCache.Load(path); loaded {
+		if l, valid := v.(repoLayout); valid && isDirPath(l.common) {
+			return l.root, l.common, true
+		}
+		repoLayoutCache.Delete(path) // the repo it described is gone
+	}
+	root, common, ok = probeRepoRootAndCommonDir(ctx, path)
+	if ok {
+		repoLayoutCache.Store(path, repoLayout{root: root, common: common})
+	}
+	return root, common, ok
+}
+
+func probeRepoRootAndCommonDir(ctx context.Context, path string) (root, common string, ok bool) {
 	runner := &git.ExecRunner{Dir: path}
 	stdout, _, err := runner.Run(ctx, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
 	if err != nil {

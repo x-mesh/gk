@@ -30,7 +30,7 @@ func TestFetchHeadInfo(t *testing.T) {
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
-	h := fetchHeadInfo(cmd, &git.ExecRunner{Dir: repo.Dir})
+	h := fetchHeadInfo(cmd, &git.ExecRunner{Dir: repo.Dir}, headInfo{})
 
 	if h.branch == "" {
 		t.Errorf("branch should be resolved, got empty")

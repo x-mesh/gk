@@ -251,3 +251,30 @@ func TestLayoutDescribes_GitSymlink(t *testing.T) {
 		t.Error("another repo's common dir was accepted through a .git symlink")
 	}
 }
+
+// TestLayoutDescribes_EnvPinnedLayout covers GIT_DIR / GIT_COMMON_DIR being
+// exported. The environment then decides which repository a command acts on,
+// and <workDir>/.git may still exist naming something else entirely —
+// comparing against it would reject a correct entry on every call, leaving a
+// cache that can never hit.
+func TestLayoutDescribes_EnvPinnedLayout(t *testing.T) {
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	initRepo(t, a)
+	initRepo(t, b)
+	aGit, bGit := filepath.Join(a, ".git"), filepath.Join(b, ".git")
+
+	if LayoutDescribes(b, aGit, aGit) {
+		t.Error("another repo's layout was accepted for this path with no env pinning it")
+	}
+
+	t.Setenv("GIT_DIR", aGit)
+	if !LayoutDescribes(b, aGit, aGit) {
+		t.Error("an env-pinned layout was rejected, so its cache entry can never hit")
+	}
+	// The common dir still has to exist; that check is all that remains.
+	if LayoutDescribes(b, filepath.Join(root, "gone"), "") {
+		t.Error("a missing common dir was accepted")
+	}
+	_ = bGit
+}

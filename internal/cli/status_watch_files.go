@@ -132,6 +132,10 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 		sig.symbols = strings.Join(ds.symbols, ", ")
 		sigs[path] = sig
 	}
+	// The stored map is the one just returned to the caller, not a copy.
+	// Everything downstream reads these signatures and none of it writes,
+	// and the next poll allocates a fresh map rather than editing this
+	// one — which is what makes sharing it safe.
 	worktreeStatsCache.store(root, key, sigs)
 	return sigs
 }

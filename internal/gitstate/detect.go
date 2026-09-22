@@ -207,11 +207,19 @@ func LayoutDescribes(workDir, commonDir, gitDir string) bool {
 	if !dirExists(commonDir) {
 		return false
 	}
+	if os.Getenv("GIT_DIR") != "" || os.Getenv("GIT_COMMON_DIR") != "" {
+		// The environment, not the filesystem, decides which repository these
+		// commands act on. <workDir>/.git may still exist and name a different
+		// layout entirely, and comparing against it would reject a correct
+		// entry on every call — a cache that never hits, for a link that is not
+		// the authority here.
+		return true
+	}
 	actual := worktreeGitDir(workDir)
 	if actual == "" {
-		// Nothing to follow: a bare repository reached by its own directory, or
-		// a layout pinned through GIT_DIR. The common dir existing is all that
-		// can be established without spending a subprocess.
+		// Nothing to follow: a bare repository, reached by its own directory.
+		// The common dir existing is all that can be established without
+		// spending a subprocess.
 		return true
 	}
 	// A caller that remembers the per-worktree gitdir has to have it checked

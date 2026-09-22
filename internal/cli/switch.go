@@ -901,8 +901,12 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	for _, b := range local {
 		tips[b.Name] = b.Hash
 	}
-	keys := make(map[int]string, len(local))  // idx → scope\x00\x00fingerprint, for the misses
-	asked := make(map[int]string, len(local)) // idx → the anchor that scope names
+	// memo slots for the misses we are about to compute. Held as fields rather
+	// than one joined string: splitting a key back apart only worked while
+	// twoRefScope refused empty components, and a later change there would have
+	// broken the split silently instead of loudly.
+	type memoSlot struct{ scope, fingerprint, anchor string }
+	slots := make(map[int]memoSlot, len(local))
 	out := make(chan result, len(local))
 	// Bound concurrency at NumCPU so a repo with hundreds of stale
 	// local branches doesn't fork hundreds of `git merge-base`
@@ -927,8 +931,7 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 			local[i].ForkBranch, local[i].ForkPoint = r.anchor, r.hash
 			continue
 		}
-		keys[i] = scope + "\x00\x00" + fp
-		asked[i] = anchor
+		slots[i] = memoSlot{scope: scope, fingerprint: fp, anchor: anchor}
 		wg.Add(1)
 		go func(idx int, branch, anchor string) {
 			defer wg.Done()
@@ -967,9 +970,8 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		// merely times out — and storing that under the recorded parent's scope
 		// would keep reporting "parent is the trunk" until one of the two tips
 		// moves.
-		if key, ok := keys[r.idx]; ok && asked[r.idx] == r.anchor {
-			scope, fp, _ := strings.Cut(key, "\x00\x00")
-			forkPointCache.store(scope, fp, forkPoint{anchor: r.anchor, hash: r.hash})
+		if slot, ok := slots[r.idx]; ok && slot.anchor == r.anchor {
+			forkPointCache.store(slot.scope, slot.fingerprint, forkPoint{anchor: r.anchor, hash: r.hash})
 		}
 	}
 }
@@ -993,7 +995,8 @@ func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string 
 }
 
 // allParentsKey stamps the config files git would read for these keys: the
-// repository's own (including config.worktree), and the per-user one.
+// repository's own, the main worktree's config.worktree beside it, and the
+// per-user one.
 //
 // Two sources git also consults are deliberately left out. The system file
 // (/etc/gitconfig) would be an odd place for a per-branch parent. Files pulled

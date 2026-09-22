@@ -1,6 +1,7 @@
 package gitstate
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,4 +128,50 @@ func TestLayoutDescribes_ReplacedLinkedWorktree(t *testing.T) {
 	if !LayoutDescribes(wt, filepath.Join(b, ".git")) {
 		t.Error("b's own linked worktree was rejected")
 	}
+}
+
+// TestLayoutDescribes_GitDirIsCommonDir covers the layouts where git reports the
+// gitdir and the common dir as the same directory. A submodule and a repository
+// created with --separate-git-dir are both like that, and accepting only the
+// linked-worktree shape (<common>/worktrees/<name>) rejected them outright — so
+// a correct entry was evicted on every call and rev-parse re-forked for an
+// answer that had not changed.
+func TestLayoutDescribes_GitDirIsCommonDir(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("submodule", func(t *testing.T) {
+		super, child := filepath.Join(root, "super"), filepath.Join(root, "child")
+		initRepo(t, super)
+		initRepo(t, child)
+		run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "sub")
+
+		sub := filepath.Join(super, "sub")
+		common, _, err := Dirs(context.Background(), sub)
+		if err != nil {
+			t.Fatalf("Dirs: %v", err)
+		}
+		if !LayoutDescribes(sub, common) {
+			t.Errorf("a submodule's own layout (%s) was rejected", common)
+		}
+		// A different repo's common dir must still not match.
+		if LayoutDescribes(sub, filepath.Join(child, ".git")) {
+			t.Error("another repo's common dir was accepted for the submodule path")
+		}
+	})
+
+	t.Run("separate-git-dir", func(t *testing.T) {
+		wt, elsewhere := filepath.Join(root, "wt"), filepath.Join(root, "elsewhere")
+		if err := os.MkdirAll(wt, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run(t, root, "init", "-q", "-b", "main", "--separate-git-dir="+elsewhere, wt)
+
+		common, _, err := Dirs(context.Background(), wt)
+		if err != nil {
+			t.Fatalf("Dirs: %v", err)
+		}
+		if !LayoutDescribes(wt, common) {
+			t.Errorf("a --separate-git-dir layout (%s) was rejected", common)
+		}
+	})
 }

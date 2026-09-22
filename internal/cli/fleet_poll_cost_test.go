@@ -564,3 +564,59 @@ func TestRepoRootAndCommonDir_ReplacedRepo(t *testing.T) {
 		t.Errorf("still reporting the old common dir %q for a replaced repo", secondCommon)
 	}
 }
+
+// TestResolveDefaultBranch_FailureIsNotMemoised is the counterpart to the
+// fingerprint being deliberately insensitive to commits: nothing in it moves
+// when a probe merely FAILS, so memoising a failure keeps it for the life of
+// the process. gatherFleetMulti gives each repo a 3s budget, and an empty trunk
+// switches off the fork column, ParentBehind and land-readiness for that whole
+// repository — one slow poll must not cost the rest of the session.
+func TestResolveDefaultBranch_FailureIsNotMemoised(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	want := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	repo.AddRemote("origin", repo.Dir)
+	repo.SetRemoteHEAD("origin", want)
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	// Prime the layout cache first, so the dead context can only fail the trunk
+	// probe itself rather than the lookup that builds its key.
+	repoRootAndCommonDir(context.Background(), repo.Dir)
+
+	dead, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	if got := resolveDefaultBranchForWorktree(dead, runner); got != "" {
+		t.Fatalf("a dead context resolved a trunk %q — the test no longer exercises a failure", got)
+	}
+
+	if got := resolveDefaultBranchForWorktree(context.Background(), runner); got != want {
+		t.Errorf("trunk = %q after a healthy poll, want %q — the failure was memoised", got, want)
+	}
+}
+
+// TestResolveDefaultBranch_TrunklessRepoIsMemoised is the other half: a
+// repository that genuinely has no trunk is a real answer and must be kept, or
+// every poll re-forks all three probes for it forever.
+func TestResolveDefaultBranch_TrunklessRepoIsMemoised(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	repo.RunGit("branch", "-m", "trunkless") // no origin/HEAD, no main, no master
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	if got := resolveDefaultBranchForWorktree(ctx, runner); got != "" {
+		t.Fatalf("trunk = %q, want empty for a repo with no origin/HEAD and no main/master", got)
+	}
+
+	counter := newGitCallCounter(t)
+	if got := resolveDefaultBranchForWorktree(ctx, runner); got != "" {
+		t.Errorf("trunk = %q on the second call, want empty", got)
+	}
+	for _, probe := range []string{"symbolic-ref", "rev-parse"} {
+		if n := counter.get(probe); n != 0 {
+			t.Errorf("a settled trunkless answer re-ran %q %d times, want 0", probe, n)
+		}
+	}
+}

@@ -167,9 +167,14 @@ type gitDirs struct{ common, git string }
 // a 21-worktree fleet, purely to re-learn paths it already knew.
 //
 // The entry is dropped when it no longer describes the repository at that path
-// — see LayoutDescribes — so a removed worktree, or a different repo created at
-// the same path, re-resolves instead of serving a stale layout forever. That
-// check is stats and at most a tiny file read, never a fork.
+// — see LayoutDescribes — so a DIFFERENT repo appearing at a path re-resolves
+// instead of serving the old one's layout forever. That check is stats and at
+// most a tiny file read, never a fork.
+//
+// A worktree that is merely deleted keeps its entry: with the working tree gone
+// there is no .git left to follow, and the common dir it named usually still
+// exists in the main repository. Nothing asks for that path again, so the entry
+// is inert rather than wrong.
 var gitDirCache sync.Map // workDir → gitDirs
 
 // Dirs exposes the memoised layout resolution to callers that need the paths
@@ -217,8 +222,14 @@ func LayoutDescribes(workDir, commonDir string) bool {
 	if gitDir == "" {
 		return true // unreadable or unrecognised — do not evict on a guess
 	}
-	// A linked worktree's gitdir is <common>/worktrees/<name>.
-	return sameDir(filepath.Dir(filepath.Dir(gitDir)), commonDir)
+	// The gitdir either IS the common dir — a submodule, and a repository set
+	// up with --separate-git-dir, are both reported by git with common == gitdir
+	// — or it sits under it as <common>/worktrees/<name> for a linked worktree.
+	// Accepting only the second shape rejected the first two outright, which
+	// evicted a correct entry on every single call and re-forked rev-parse for
+	// an answer that had not changed.
+	return sameDir(gitDir, commonDir) ||
+		sameDir(filepath.Dir(filepath.Dir(gitDir)), commonDir)
 }
 
 // gitdirFromLinkFile reads the `gitdir: <path>` line git writes into a linked

@@ -18,8 +18,14 @@ import (
 // entry, tagged with the fingerprint that produced it. A fingerprint change
 // REPLACES that entry instead of adding one beside it, which loses nothing: the
 // superseded answer can never be asked for again, because the inputs that would
-// key it have already moved. Entry count is therefore bounded by how many
-// worktrees and repositories are being watched, not by how long the watch runs.
+// key it have already moved.
+//
+// What that bounds is growth per COMMIT, which is what ran away before: a scope
+// holds one entry no matter how far its refs travel. Scopes themselves are
+// named after refs, so a branch that existed and was then deleted leaves its
+// one entry behind — the standing cost is (worktrees × branches ever seen)
+// rather than (branches × commits). Far flatter, and small enough to leave
+// alone, but not a constant.
 
 type memoEntry[V any] struct {
 	fingerprint string

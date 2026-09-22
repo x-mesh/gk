@@ -436,26 +436,47 @@ func fileStamp(path string) string {
 func resolveDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
 	scope, fingerprint := defaultBranchKey(ctx, runner)
 	return defaultBranchCache.do(scope, fingerprint, func() (string, bool) {
-		return probeDefaultBranchForWorktree(ctx, runner), true
+		return probeDefaultBranchForWorktree(ctx, runner)
 	})
 }
 
-func probeDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
+// probeDefaultBranchForWorktree returns the trunk, and whether git actually
+// answered. An empty name with ok=true means the repository genuinely has no
+// trunk to find; ok=false means no probe reached a verdict — a cancelled poll,
+// a repository mid-clone, a process out of descriptors.
+//
+// That distinction has to survive into the cache. Nothing in the fingerprint
+// moves when a probe merely fails, so a memoised failure stays for the life of
+// the process, and an empty trunk switches off the fork column, ParentBehind
+// and land-readiness for that whole repository. Returning the probe's own
+// verdict as the `keep` flag is what stops one 3s repo timeout from degrading
+// the dashboard until restart.
+func probeDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) (string, bool) {
 	out, _, err := runner.Run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err == nil {
 		s := strings.TrimSpace(string(out))
 		if i := strings.Index(s, "/"); i >= 0 {
-			return s[i+1:]
+			return s[i+1:], true
 		}
-		return s
+		return s, true
+	}
+	// A repository with no origin/HEAD exits 128 here; anything else is git
+	// failing to answer rather than answering "there is none".
+	if !git.IsExitCode(err, 128) {
+		return "", false
 	}
 	// Fallback: probe for the conventional trunk names locally.
 	for _, name := range []string{"main", "master"} {
-		if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+name); err == nil {
-			return name
+		_, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+		if err == nil {
+			return name, true
+		}
+		// `--verify --quiet` exits 1 for a ref that is not there.
+		if !git.IsExitCode(err, 1) {
+			return "", false
 		}
 	}
-	return ""
+	return "", true
 }
 
 // currentWorktreePath returns the absolute path of the worktree this

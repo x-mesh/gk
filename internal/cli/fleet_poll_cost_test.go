@@ -92,6 +92,9 @@ func TestGatherFleetRepo_SecondPollSkipsSettledProbes(t *testing.T) {
 			t.Fatalf("first poll never ran %q — the test no longer exercises it", probe)
 		}
 	}
+	if forkPointRuns(counter) == 0 {
+		t.Fatal("first poll never computed a fork point — the test no longer exercises it")
+	}
 
 	counter.reset()
 	if _, err := gatherFleetRepo(ctx, runner, "repo", repo.Dir, repo.Dir, sem, true); err != nil {
@@ -109,6 +112,18 @@ func TestGatherFleetRepo_SecondPollSkipsSettledProbes(t *testing.T) {
 			t.Errorf("second poll ran %q %d times; %s, so it cannot have changed", probe.arg, n, probe.why)
 		}
 	}
+	// Counted apart because --is-ancestor is a merge-base too, and it has its
+	// own memo above. This one is the fork point, whose memo went unasserted
+	// long enough for a regression to disable it entirely.
+	if n := forkPointRuns(counter); n != 0 {
+		t.Errorf("second poll computed %d fork point(s); they are keyed on the two commit tips, so none can have changed", n)
+	}
+}
+
+// forkPointRuns counts the merge-base calls that resolve a fork point, which
+// means every one that is not the land-readiness --is-ancestor probe.
+func forkPointRuns(c *gitCallCounter) int {
+	return c.get("merge-base") - c.get("--is-ancestor")
 }
 
 // TestGatherFleetRepo_MovedTipReprobes is the other half: a memoised answer has

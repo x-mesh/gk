@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -361,5 +363,72 @@ func TestChangeWatchModel_FSBurstsRespectInterval(t *testing.T) {
 	m.Update(changeFSMsg{})
 	if !m.refreshing {
 		t.Error("past the interval the next fs signal must refresh")
+	}
+}
+
+// TestChangeSnapshot_SameMtimeDifferentSizeReprobes guards the one input the
+// diff-stats fingerprint cannot read directly: file content. mtime alone is
+// only as fine as the filesystem's timestamps, so two saves inside one tick
+// would otherwise serve the first one's counts forever. Size is what separates
+// them, and os.Chtimes reproduces the coarse-timestamp case on a filesystem
+// that is too precise to hit it naturally.
+func TestChangeSnapshot_SameMtimeDifferentSizeReprobes(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a\n")
+	repo.Commit("init")
+	path := filepath.Join(repo.Dir, "a.txt")
+
+	repo.WriteFile("a.txt", "a\nb\n")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := fi.ModTime()
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	first := changeSnapshot(ctx, runner, repo.Dir)
+	if first["a.txt"].added != 1 {
+		t.Fatalf("first snapshot = %+v, want added=1", first["a.txt"])
+	}
+
+	repo.WriteFile("a.txt", "a\nb\nc\nd\n")
+	if err := os.Chtimes(path, frozen, frozen); err != nil {
+		t.Fatal(err)
+	}
+	second := changeSnapshot(ctx, runner, repo.Dir)
+	if second["a.txt"].added != 3 {
+		t.Errorf("after a same-mtime edit the stats read %+v, want added=3 — the fingerprint missed the content change",
+			second["a.txt"])
+	}
+}
+
+// TestFetchHeadInfo_UpstreamChangeReprobes covers the one header input that
+// lives in config rather than in a ref: `git branch --set-upstream-to` rewrites
+// branch.<name>.remote/.merge and touches nothing under refs/, so a fingerprint
+// built only from ref files would keep reporting the old upstream.
+func TestFetchHeadInfo_UpstreamChangeReprobes(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	base := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	repo.AddRemote("origin", repo.Dir)
+	repo.RunGit("update-ref", "refs/remotes/origin/"+base, "HEAD")
+	repo.RunGit("update-ref", "refs/remotes/origin/other", "HEAD")
+	repo.RunGit("branch", "--set-upstream-to=origin/"+base)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	runner := &git.ExecRunner{Dir: repo.Dir}
+
+	settled := fetchHeadInfo(cmd, runner, fetchHeadInfo(cmd, runner, headInfo{}))
+	if settled.upstream != "origin/"+base {
+		t.Fatalf("upstream = %q, want origin/%s", settled.upstream, base)
+	}
+
+	repo.RunGit("branch", "--set-upstream-to=origin/other")
+	after := fetchHeadInfo(cmd, runner, settled)
+	if after.upstream != "origin/other" {
+		t.Errorf("upstream = %q after re-pointing it, want origin/other", after.upstream)
 	}
 }

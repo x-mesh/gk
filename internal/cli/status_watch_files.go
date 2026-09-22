@@ -52,6 +52,14 @@ type fileSig struct {
 	// unchanged (e.g. swapping a line for one of equal length) — without it
 	// those edits would be silently dropped from the live feed.
 	mtime int64
+	// size pairs with mtime so the fingerprint survives a filesystem whose
+	// timestamps are coarser than the edits landing on it: two saves inside
+	// one timestamp tick are indistinguishable by mtime alone, and on such a
+	// filesystem the length almost always moves when the content does. Two
+	// same-length edits inside one tick remain indistinguishable — reading
+	// every changed file back to close that is the cost this whole path
+	// exists to avoid.
+	size int64
 }
 
 // changeEvent is one entry in the timeline feed.
@@ -89,13 +97,14 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 		if xy[0] == 'R' || xy[0] == 'C' {
 			i++
 		}
-		var mtime int64
+		var mtime, size int64
 		if root != "" {
 			if fi, serr := os.Stat(filepath.Join(root, path)); serr == nil {
 				mtime = fi.ModTime().UnixNano()
+				size = fi.Size()
 			}
 		}
-		sigs[path] = fileSig{xy: xy, mtime: mtime}
+		sigs[path] = fileSig{xy: xy, mtime: mtime, size: size}
 	}
 	// A clean tree has nothing to diff. The fleet twin has always guarded this
 	// (scanWorktreeChanges); here the two `git diff` forks ran on every tick
@@ -669,6 +678,12 @@ func headInfoKey(ctx context.Context, runner *git.ExecRunner, prev headInfo) (st
 		gitDir,
 		fileStamp(filepath.Join(gitDir, "HEAD")),
 		fileStamp(filepath.Join(common, "packed-refs")),
+		// The upstream lives in config, not in a ref: `git branch
+		// --set-upstream-to` rewrites branch.<name>.remote/.merge and touches
+		// nothing under refs/. Without this stamp the header keeps reporting
+		// the old upstream, and its ahead/behind, until some unrelated ref
+		// happens to move.
+		fileStamp(filepath.Join(common, "config")),
 	}
 	if prev.branch != "" {
 		parts = append(parts, fileStamp(filepath.Join(common, "refs", "heads", filepath.FromSlash(prev.branch))))

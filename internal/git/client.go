@@ -390,7 +390,7 @@ func (c *Client) GetBranchConfig(ctx context.Context, branch, key string) (strin
 	stdout, stderr, err := c.R.Run(ctx, "config", "--get", "branch."+branch+"."+key)
 	if err != nil {
 		// git config exits 1 when the key is unset; treat that as empty.
-		if isExitCode(err, 1) {
+		if IsExitCode(err, 1) {
 			return "", nil
 		}
 		return "", fmt.Errorf("git config --get branch.%s.%s: %w: %s",
@@ -409,7 +409,7 @@ func (c *Client) AllBranchConfig(ctx context.Context, key string) (map[string]st
 	pattern := `^branch\..*\.` + regexp.QuoteMeta(key) + `$`
 	stdout, stderr, err := c.R.Run(ctx, "config", "--get-regexp", pattern)
 	if err != nil {
-		if isExitCode(err, 1) {
+		if IsExitCode(err, 1) {
 			return map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("git config --get-regexp %s: %w: %s",
@@ -452,7 +452,7 @@ func (c *Client) UnsetBranchConfig(ctx context.Context, branch, key string) erro
 	_, stderr, err := c.R.Run(ctx, "config", "--unset", "branch."+branch+"."+key)
 	if err != nil {
 		// Exit 5 = config key did not exist; treat as success (idempotent).
-		if isExitCode(err, 5) {
+		if IsExitCode(err, 5) {
 			return nil
 		}
 		return fmt.Errorf("git config --unset branch.%s.%s: %w: %s",
@@ -461,12 +461,12 @@ func (c *Client) UnsetBranchConfig(ctx context.Context, branch, key string) erro
 	return nil
 }
 
-// isExitCode reports whether err is a *git.ExitError with the given code.
+// IsExitCode reports whether err is a *git.ExitError with the given code.
 // Used by GetBranchConfig/UnsetBranchConfig to distinguish "missing key"
 // (a normal state) from real failures. The runner wraps non-zero exits in
 // our custom ExitError; raw os/exec errors come through unwrapped only on
 // spawn failure (binary missing, etc.), which we want to surface either way.
-func isExitCode(err error, code int) bool {
+func IsExitCode(err error, code int) bool {
 	var ee *ExitError
 	if !errors.As(err, &ee) {
 		return false

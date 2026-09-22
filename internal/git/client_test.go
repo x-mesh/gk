@@ -709,16 +709,16 @@ func TestUnsetBranchConfig_RealError(t *testing.T) {
 }
 
 func TestIsExitCode(t *testing.T) {
-	if !isExitCode(&ExitError{Code: 1}, 1) {
+	if !IsExitCode(&ExitError{Code: 1}, 1) {
 		t.Error("ExitError{Code:1} should match code=1")
 	}
-	if isExitCode(&ExitError{Code: 1}, 2) {
+	if IsExitCode(&ExitError{Code: 1}, 2) {
 		t.Error("ExitError{Code:1} should not match code=2")
 	}
-	if isExitCode(errors.New("plain"), 1) {
+	if IsExitCode(errors.New("plain"), 1) {
 		t.Error("plain error should not match")
 	}
-	if isExitCode(nil, 1) {
+	if IsExitCode(nil, 1) {
 		t.Error("nil should not match")
 	}
 }

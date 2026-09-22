@@ -614,7 +614,7 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 			// Only a clean yes/no is memoisable. A timeout or an unusable ref
 			// exits with something other than 1, and caching that would freeze
 			// a false "not ready" in place until a tip happens to move.
-			if cacheable && (err == nil || isGitExitCode(err, 1)) {
+			if cacheable && (err == nil || git.IsExitCode(err, 1)) {
 				fleetLandReadyCache.Store(key, f.LandReady)
 			}
 		}
@@ -669,15 +669,6 @@ func fleetRelKey(dir, branch, branchTip, other, otherTip string) (string, bool) 
 		return "", false
 	}
 	return strings.Join([]string{dir, branch, branchTip, other, otherTip}, "\x00"), true
-}
-
-// isGitExitCode reports whether err is a *git.ExitError carrying code.
-func isGitExitCode(err error, code int) bool {
-	var ee *git.ExitError
-	if !errors.As(err, &ee) {
-		return false
-	}
-	return ee.Code == code
 }
 
 // revListCount returns `git rev-list --count <range>`; ok is false on any error

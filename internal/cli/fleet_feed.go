@@ -102,7 +102,8 @@ type worktreeStats struct {
 // previous, so it cannot grow with time the way a keyed-by-content map would.
 var worktreeStatsCache sync.Map // worktree root → worktreeStats
 
-// worktreeStatsKey fingerprints a change set by path, porcelain XY and mtime.
+// worktreeStatsKey fingerprints a change set by path, porcelain XY, mtime and
+// size.
 // It reports false without a root: mtimes are unavailable then (parseWorktreeScan
 // leaves them zero), and a key that cannot see an edit must not be cached
 // against one.
@@ -118,7 +119,7 @@ func worktreeStatsKey(root string, sigs map[string]fileSig) (string, bool) {
 	h := sha256.New()
 	for _, p := range paths {
 		sig := sigs[p]
-		fmt.Fprintf(h, "%s\x00%s\x00%d\x00", p, sig.xy, sig.mtime)
+		fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\x00", p, sig.xy, sig.mtime, sig.size)
 	}
 	return hex.EncodeToString(h.Sum(nil)), true
 }
@@ -176,18 +177,19 @@ func parseWorktreeScan(raw, root string) worktreeScan {
 		// mtime 0 = not on disk (e.g. a staged delete): it gets a signature —
 		// deletions are changes — but never wins the newest-change slot.
 		// (time.Time{}.UnixNano() is a large negative sentinel, not 0.)
-		var mtimeNS int64
+		var mtimeNS, size int64
 		if root != "" {
 			if fi, serr := os.Stat(filepath.Join(root, path)); serr == nil {
 				mt := fi.ModTime()
 				mtimeNS = mt.UnixNano()
+				size = fi.Size()
 				if mt.After(s.newestMtime) {
 					s.newestMtime = mt
 					s.newestPath = path
 				}
 			}
 		}
-		s.sigs[path] = fileSig{xy: xy, mtime: mtimeNS}
+		s.sigs[path] = fileSig{xy: xy, mtime: mtimeNS, size: size}
 	}
 	return s
 }

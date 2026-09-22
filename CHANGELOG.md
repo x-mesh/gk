@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.2] - 2026-09-22
+
 ### Changed
 
 - **`gk watch`/`gk switch`/`gk worktree`의 폴 캐시가 시간이 지나도 늘어나지 않는다.** v0.143.1이 도입한 콘텐츠 키 캐시들 — `rev-list`/`merge-base`/`config` 조회 결과를 커밋 tip이나 파일 지문으로 기억하는 방식 — 은 히트가 정확한 대신 tip이 움직일 때마다 옛 키를 남겼다. `gk watch`는 며칠 띄워 두는 명령이라 캐시 여러 개가 단조 증가했고, base 브랜치가 한 번 움직이면 그 저장소의 워크트리 수만큼 항목이 생기는 증폭도 있었다. 새 `scopedMemo`는 워크트리·저장소·ref 쌍 같은 **스코프**를 키로 두고 항목을 하나만 유지하며, 지문이 바뀌면 교체한다 — 밀려난 답은 다시 물어볼 수 없으므로 잃는 것이 없다. 흩어져 있던 세 개의 키 빌더도 하나로 합쳤다.

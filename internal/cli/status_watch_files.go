@@ -132,9 +132,7 @@ func changeSnapshot(ctx context.Context, runner *git.ExecRunner, root string) ma
 		sig.symbols = strings.Join(ds.symbols, ", ")
 		sigs[path] = sig
 	}
-	if cacheable {
-		worktreeStatsCache.Store(root, worktreeStats{key: key, sigs: sigs})
-	}
+	worktreeStatsCache.store(root, key, sigs)
 	return sigs
 }
 

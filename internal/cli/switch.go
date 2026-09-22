@@ -901,7 +901,7 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	for _, b := range local {
 		tips[b.Name] = b.Hash
 	}
-	keys := make(map[int]string, len(local)) // idx → cache key, for the misses we compute
+	keys := make(map[int]string, len(local)) // idx → scope\x00\x00fingerprint, for the misses
 	out := make(chan result, len(local))
 	// Bound concurrency at NumCPU so a repo with hundreds of stale
 	// local branches doesn't fork hundreds of `git merge-base`
@@ -920,16 +920,13 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		// a `merge-base` fork — on a fleet this scaled with BRANCH count, not
 		// worktree count (measured: ~21 subprocesses per poll). The answer is a
 		// pure function of the two commits, so a hit here is exact, not stale.
-		key, cacheable := forkPointKey(runner, b.Name, b.Hash, anchor, tips[anchor])
-		if cacheable {
-			if hit, ok := forkPointCache.Load(key); ok {
-				if r, valid := hit.(forkPoint); valid {
-					local[i].ForkBranch, local[i].ForkPoint = r.anchor, r.hash
-					continue
-				}
-			}
-			keys[i] = key
+		scope := twoRefScope(runnerDir(runner), b.Name, anchor)
+		fp := twoTipFingerprint(b.Hash, tips[anchor])
+		if r, ok := forkPointCache.load(scope, fp); ok {
+			local[i].ForkBranch, local[i].ForkPoint = r.anchor, r.hash
+			continue
 		}
+		keys[i] = scope + "\x00\x00" + fp
 		wg.Add(1)
 		go func(idx int, branch, anchor string) {
 			defer wg.Done()
@@ -963,7 +960,8 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 		local[r.idx].ForkBranch = r.anchor
 		local[r.idx].ForkPoint = r.hash
 		if key, ok := keys[r.idx]; ok {
-			forkPointCache.Store(key, forkPoint{anchor: r.anchor, hash: r.hash})
+			scope, fp, _ := strings.Cut(key, "\x00\x00")
+			forkPointCache.store(scope, fp, forkPoint{anchor: r.anchor, hash: r.hash})
 		}
 	}
 }
@@ -974,27 +972,16 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 // moves when someone records a parent.
 //
 // The stored map is shared by every hit: callers read it, never write it.
-var allParentsCache sync.Map // key → map[string]string
+var allParentsCache scopedMemo[map[string]string]
 
 func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string {
-	key, cacheable := allParentsKey(ctx, runner)
-	if cacheable {
-		if v, ok := allParentsCache.Load(key); ok {
-			if m, valid := v.(map[string]string); valid {
-				return m
-			}
-		}
-	}
-	parents, err := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
-	if err != nil {
-		// A read failure degrades every anchor to the trunk. Memoising that
-		// would keep the degraded view until a config file happens to change.
-		return parents
-	}
-	if cacheable {
-		allParentsCache.Store(key, parents)
-	}
-	return parents
+	scope, fingerprint := allParentsKey(ctx, runner)
+	return allParentsCache.do(scope, fingerprint, func() (map[string]string, bool) {
+		parents, err := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+		// A read failure degrades every anchor to the trunk. Keeping that would
+		// hold the degraded view until a config file happens to change.
+		return parents, err == nil
+	})
 }
 
 // allParentsKey stamps the config files git would read for these keys: the
@@ -1002,21 +989,21 @@ func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string 
 // deliberately out of scope — gk records branch.<name>.gk-parent per
 // repository, and that key placed machine-wide is not a case worth a stat on
 // every poll. A runner that is not an ExecRunner (tests) has no directory to
-// anchor the key to, so it reads fresh every time.
-func allParentsKey(ctx context.Context, runner git.Runner) (string, bool) {
-	er, ok := runner.(*git.ExecRunner)
-	if !ok {
-		return "", false
+// scope the entry to, so it reads fresh every time.
+func allParentsKey(ctx context.Context, runner git.Runner) (scope, fingerprint string) {
+	dir := runnerDir(runner)
+	if dir == "" {
+		return "", ""
 	}
-	_, common, found := repoRootAndCommonDir(ctx, er.Dir)
+	_, common, found := repoRootAndCommonDir(ctx, dir)
 	if !found {
-		return "", false
+		return "", ""
 	}
-	parts := []string{common, fileStamp(filepath.Join(common, "config"))}
+	stamps := []string{fileStamp(filepath.Join(common, "config"))}
 	for _, p := range gitGlobalConfigPaths() {
-		parts = append(parts, fileStamp(p))
+		stamps = append(stamps, fileStamp(p))
 	}
-	return strings.Join(parts, "\x00"), true
+	return common, strings.Join(stamps, "\x00")
 }
 
 // gitGlobalConfigPaths lists the per-user config files git may read.
@@ -1047,30 +1034,13 @@ func gitGlobalConfigPaths() []string {
 // for, and a cache that dropped it would re-attribute the fork on every hit.
 type forkPoint struct{ anchor, hash string }
 
-// forkPointCache memoises merge-base by its inputs: the two commits it joins.
-// Keyed by content, so an entry can never go stale — a moved tip is a different
-// key, not a wrong answer. It exists for the live dashboard, which otherwise
-// re-forked one `merge-base` per upstream-less branch per repo on every poll.
-var forkPointCache sync.Map // key → forkPoint
-
-// forkPointKey identifies a merge-base by (repo, branch tip, anchor tip). It
-// reports false when either tip is unknown — an anchor whose ref was deleted has
-// no tip to key on, so that branch is computed fresh every time rather than
-// cached against an input we cannot see change.
-//
-// The repo directory is part of the key because branchInfo.Hash is a SHORT
-// hash: 7 hex chars collide across repositories far too easily to key a
-// process-wide cache on alone.
-func forkPointKey(runner git.Runner, branch, branchTip, anchor, anchorTip string) (string, bool) {
-	if branchTip == "" || anchorTip == "" || branch == "" || anchor == "" {
-		return "", false
-	}
-	dir := ""
-	if er, ok := runner.(*git.ExecRunner); ok {
-		dir = er.Dir
-	}
-	return strings.Join([]string{dir, branch, branchTip, anchor, anchorTip}, "\x00"), true
-}
+// forkPointCache memoises merge-base, scoped to the branch and anchor it joins
+// and fingerprinted by their tips. It exists for the live dashboard, which
+// otherwise re-forked one `merge-base` per upstream-less branch per repo on
+// every poll. An anchor whose ref was deleted has no tip to fingerprint, so
+// that branch is computed fresh every time rather than kept against an input
+// nothing can see change.
+var forkPointCache scopedMemo[forkPoint]
 
 // applyUntrackedFallback patches Ahead/Behind on branches that have
 // no configured upstream but a same-named remote ref that differs.

@@ -579,45 +579,25 @@ func enrichFleetEntry(ctx context.Context, e WorktreeEntry, meta map[string]work
 	// with the branch listing, so the live dashboard memoises them instead of
 	// re-forking one rev-list and one merge-base per worktree on every poll.
 	if f.Parent != "" && !e.Detached && e.Branch != "" {
-		key, cacheable := fleetRelKey(e.Path, e.Branch, m.Hash, f.Parent, meta[f.Parent].Hash)
-		hit := false
-		if cacheable {
-			if v, ok := fleetParentBehindCache.Load(key); ok {
-				if n, valid := v.(int); valid {
-					f.ParentBehind, hit = n, true
-				}
-			}
-		}
-		if !hit {
-			if n, ok := revListCount(ctx, wr, e.Branch+".."+f.Parent); ok {
-				f.ParentBehind = n
-				if cacheable {
-					fleetParentBehindCache.Store(key, n)
-				}
-			}
-		}
+		f.ParentBehind = fleetParentBehind.do(
+			twoRefScope(e.Path, e.Branch, f.Parent),
+			twoTipFingerprint(m.Hash, meta[f.Parent].Hash),
+			func() (int, bool) { return revListCount(ctx, wr, e.Branch+".."+f.Parent) },
+		)
 	}
 	if base != "" && e.Branch != "" && e.Branch != base && !e.Detached {
 		// Merged into base ⇒ all commits are in base ⇒ safe to reap.
-		key, cacheable := fleetRelKey(e.Path, e.Branch, m.Hash, base, meta[base].Hash)
-		hit := false
-		if cacheable {
-			if v, ok := fleetLandReadyCache.Load(key); ok {
-				if b, valid := v.(bool); valid {
-					f.LandReady, hit = b, true
-				}
-			}
-		}
-		if !hit {
-			_, _, err := wr.Run(ctx, "merge-base", "--is-ancestor", e.Branch, base)
-			f.LandReady = err == nil
-			// Only a clean yes/no is memoisable. A timeout or an unusable ref
-			// exits with something other than 1, and caching that would freeze
-			// a false "not ready" in place until a tip happens to move.
-			if cacheable && (err == nil || git.IsExitCode(err, 1)) {
-				fleetLandReadyCache.Store(key, f.LandReady)
-			}
-		}
+		f.LandReady = fleetLandReady.do(
+			twoRefScope(e.Path, e.Branch, base),
+			twoTipFingerprint(m.Hash, meta[base].Hash),
+			func() (bool, bool) {
+				_, _, err := wr.Run(ctx, "merge-base", "--is-ancestor", e.Branch, base)
+				// Only a clean yes/no is memoisable. A timeout or an unusable
+				// ref exits with something other than 1, and keeping that would
+				// freeze a false "not ready" until a tip happens to move.
+				return err == nil, err == nil || git.IsExitCode(err, 1)
+			},
+		)
 	}
 
 	f.Status = fleetStatus(f)
@@ -646,30 +626,15 @@ func fleetOperationLabel(st *gitstate.State) string {
 	}
 }
 
-// fleetParentBehindCache and fleetLandReadyCache memoise the two per-worktree
-// divergence probes by their inputs: the commits being compared. Keyed by
-// content, so an entry can never go stale — a moved tip is a different key, not
-// a wrong answer. They exist for the live dashboard, which otherwise re-forked
-// both probes for every worktree on every poll (measured on 25 repos / 59
-// worktrees: 20 rev-list and ~40 merge-base subprocesses per poll).
+// fleetParentBehind and fleetLandReady memoise the two per-worktree divergence
+// probes, each scoped to the pair of refs it compares and fingerprinted by
+// their tips. The dashboard otherwise re-forked both for every worktree on
+// every poll (measured on 25 repos / 59 worktrees: 20 rev-list and ~40
+// merge-base subprocesses per poll).
 var (
-	fleetParentBehindCache sync.Map // key → int
-	fleetLandReadyCache    sync.Map // key → bool
+	fleetParentBehind scopedMemo[int]
+	fleetLandReady    scopedMemo[bool]
 )
-
-// fleetRelKey identifies a two-commit comparison by (worktree, ref, tip, ref,
-// tip). It reports false when either tip is unknown: without both, a hit could
-// answer for commits that have since moved, so the caller measures instead.
-//
-// The worktree path is part of the key because worktreeBranchMeta.Hash is a
-// SHORT hash — 7 hex chars collide across repositories far too easily to key a
-// process-wide cache on alone.
-func fleetRelKey(dir, branch, branchTip, other, otherTip string) (string, bool) {
-	if dir == "" || branch == "" || branchTip == "" || other == "" || otherTip == "" {
-		return "", false
-	}
-	return strings.Join([]string{dir, branch, branchTip, other, otherTip}, "\x00"), true
-}
 
 // revListCount returns `git rev-list --count <range>`; ok is false on any error
 // so callers leave the field at zero rather than guess.

@@ -432,3 +432,97 @@ func TestFetchHeadInfo_UpstreamChangeReprobes(t *testing.T) {
 		t.Errorf("upstream = %q after re-pointing it, want origin/other", after.upstream)
 	}
 }
+
+// countMemoScopes reports how many of a memo's scopes belong to one repository.
+// Reaching into the sync.Map is the point: the entry count IS the property
+// under test. The filter matters because these memos are process-global, so an
+// unfiltered count would also see every other test in the package.
+func countMemoScopes(m *sync.Map, mark string) int {
+	n := 0
+	m.Range(func(k, _ any) bool {
+		if scope, ok := k.(string); ok && strings.Contains(scope, mark) {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// TestGatherFleetRepo_CachesStayBoundedAcrossCommits is the property that makes
+// these caches safe in a process meant to stay up for days: a moved commit tip
+// REPLACES a scope's entry rather than adding one beside it. Keyed by the tips
+// themselves, every commit would leave its predecessor behind forever.
+func TestGatherFleetRepo_CachesStayBoundedAcrossCommits(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	base := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	repo.AddRemote("origin", repo.Dir)
+	repo.SetRemoteHEAD("origin", base)
+	repo.CreateBranch("feature")
+	repo.Checkout("feature")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	sem := newFleetLimiter(fleetConcurrency())
+
+	// t.TempDir() embeds this test's name, so the directory segment is a mark
+	// no other test's scopes can carry.
+	mark := filepath.Base(filepath.Dir(repo.Dir))
+
+	const commits = 6
+	for i := range commits {
+		repo.WriteFile("b.txt", strconv.Itoa(i))
+		repo.Commit("move the tip")
+		if _, err := gatherFleetRepo(ctx, runner, "repo", repo.Dir, repo.Dir, sem, true); err != nil {
+			t.Fatalf("gather %d: %v", i, err)
+		}
+	}
+
+	for _, c := range []struct {
+		name string
+		n    int
+	}{
+		{"fleetParentBehind", countMemoScopes(&fleetParentBehind.m, mark)},
+		{"fleetLandReady", countMemoScopes(&fleetLandReady.m, mark)},
+		{"defaultBranchCache", countMemoScopes(&defaultBranchCache.m, mark)},
+		{"forkPointCache", countMemoScopes(&forkPointCache.m, mark)},
+	} {
+		// One worktree and one repo here, so every scope this repo can produce
+		// is a small constant. Anything near the commit count means entries are
+		// accumulating per commit instead of being replaced.
+		if c.n >= commits {
+			t.Errorf("%s holds %d entries after %d commits — scopes are accumulating, not replacing",
+				c.name, c.n, commits)
+		}
+	}
+}
+
+// TestDefaultBranchKeyIgnoresCommits pins the fingerprint's sensitivity. A
+// commit rewrites a ref through a lockfile and a rename, which moves the
+// refs/heads directory's mtime — fingerprinting that directory discarded the
+// trunk on every commit and re-forked symbolic-ref for a name that never moved.
+func TestDefaultBranchKeyIgnoresCommits(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	repo.AddRemote("origin", repo.Dir)
+	repo.SetRemoteHEAD("origin", strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD")))
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	_, before := defaultBranchKey(ctx, runner)
+
+	repo.WriteFile("b.txt", "b")
+	repo.Commit("a commit that renames nothing")
+	if _, after := defaultBranchKey(ctx, runner); after != before {
+		t.Errorf("a commit changed the trunk fingerprint:\n before %q\n after  %q", before, after)
+	}
+
+	// Re-pointing origin/HEAD is the change that must still be seen.
+	repo.CreateBranch("trunk2")
+	repo.SetRemoteHEAD("origin", "trunk2")
+	if _, after := defaultBranchKey(ctx, runner); after == before {
+		t.Error("re-pointing origin/HEAD left the trunk fingerprint unchanged")
+	}
+}

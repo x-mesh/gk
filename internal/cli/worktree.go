@@ -381,23 +381,40 @@ func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner)
 // every repo on every poll, one `symbolic-ref` fork each (plus two `rev-parse`
 // fallbacks when the repo has no origin/HEAD), to re-learn a name that moves
 // about as often as a remote is re-pointed.
-var defaultBranchCache sync.Map // key → string
+var defaultBranchCache scopedMemo[string]
 
-// defaultBranchKey stamps the files the probe actually reads: origin/HEAD
-// loose, the packed-refs that can hold it instead, and the refs/heads directory
-// whose entries the main/master fallback looks for. Keyed by content, so the
-// answer cannot outlive the state that produced it.
-func defaultBranchKey(ctx context.Context, runner *git.ExecRunner) (string, bool) {
+// defaultBranchKey fingerprints only what can change the trunk's NAME:
+// origin/HEAD, where the answer normally comes from, loose or packed; and
+// whether refs/heads/main and refs/heads/master exist, which is all the
+// fallback asks of them when origin/HEAD is absent.
+//
+// The refs/heads DIRECTORY deliberately does not belong here, though it looks
+// like the obvious way to notice main appearing. Git rewrites a ref through a
+// lockfile and a rename, so every commit anywhere in the repository moves that
+// directory's mtime — fingerprinting it discards the entry on each commit and
+// re-forks symbolic-ref for a name that did not move. A branch appearing in
+// packed-refs instead of loose is still caught: packed-refs is fingerprinted.
+func defaultBranchKey(ctx context.Context, runner *git.ExecRunner) (scope, fingerprint string) {
 	_, common, ok := repoRootAndCommonDir(ctx, runner.Dir)
 	if !ok {
-		return "", false
+		return "", ""
 	}
-	return strings.Join([]string{
-		common,
+	return common, strings.Join([]string{
 		fileStamp(filepath.Join(common, "refs", "remotes", "origin", "HEAD")),
 		fileStamp(filepath.Join(common, "packed-refs")),
-		fileStamp(filepath.Join(common, "refs", "heads")),
-	}, "\x00"), true
+		existsStamp(filepath.Join(common, "refs", "heads", "main")),
+		existsStamp(filepath.Join(common, "refs", "heads", "master")),
+	}, "\x00")
+}
+
+// existsStamp records only whether a path is there. That is the whole question
+// the trunk fallback asks of refs/heads/main and refs/heads/master: their
+// contents move with every commit on those branches and never rename the trunk.
+func existsStamp(path string) string {
+	if _, err := os.Stat(path); err != nil {
+		return "-"
+	}
+	return "+"
 }
 
 // fileStamp renders a path's mtime and size as a cache-key fragment. A missing
@@ -417,19 +434,10 @@ func fileStamp(path string) string {
 // worktree list is a read-only at-a-glance view — a missing trunk
 // only suppresses the fork column, never breaks the table.
 func resolveDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
-	key, cacheable := defaultBranchKey(ctx, runner)
-	if cacheable {
-		if v, ok := defaultBranchCache.Load(key); ok {
-			if s, valid := v.(string); valid {
-				return s
-			}
-		}
-	}
-	br := probeDefaultBranchForWorktree(ctx, runner)
-	if cacheable {
-		defaultBranchCache.Store(key, br)
-	}
-	return br
+	scope, fingerprint := defaultBranchKey(ctx, runner)
+	return defaultBranchCache.do(scope, fingerprint, func() (string, bool) {
+		return probeDefaultBranchForWorktree(ctx, runner), true
+	})
 }
 
 func probeDefaultBranchForWorktree(ctx context.Context, runner *git.ExecRunner) string {
@@ -575,22 +583,11 @@ func shortWorktreeHead(sha string) string {
 	return sha
 }
 
-// worktreeParentRelCache memoises the ahead/behind measurement by its inputs:
-// the two commits compared. Keyed by content, so an entry can never go stale —
-// a moved tip is a different key, not a wrong answer. It exists for the
+// worktreeParentRelCache memoises the ahead/behind measurement, scoped to the
+// branch and parent compared and fingerprinted by their tips. It exists for the
 // worktree TUI, which rebuilds its rows on every keystroke and would otherwise
 // re-fork one `rev-list` per worktree per frame.
-var worktreeParentRelCache sync.Map // key → worktreeParentRel
-
-// worktreeParentRelKey builds that content key. Both tips must be known:
-// without them a hit could answer for commits that have since moved, so the
-// caller measures instead of caching.
-func worktreeParentRelKey(runner *git.ExecRunner, branch, branchTip, parent, parentTip string) (string, bool) {
-	if branch == "" || branchTip == "" || parent == "" || parentTip == "" {
-		return "", false
-	}
-	return strings.Join([]string{runner.Dir, branch, branchTip, parent, parentTip}, "\x00"), true
-}
+var worktreeParentRelCache scopedMemo[worktreeParentRel]
 
 // measureParentRel resolves one branch's parent and measures the divergence
 // between the two tips. explicitParent short-circuits the resolver when the
@@ -681,25 +678,20 @@ func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branche
 			// practice — `gk wt add` records a parent for every branch it
 			// creates — so the TUI's repeated rebuilds still hit.
 			parent := explicit[branch]
-			key, cacheable := "", false
+			scope, fingerprint := "", ""
 			if parent != "" && parent != branch {
-				key, cacheable = worktreeParentRelKey(runner, branch, tips[branch], parent, tips[parent])
-				if cacheable {
-					if hit, found := worktreeParentRelCache.Load(key); found {
-						if rel, valid := hit.(worktreeParentRel); valid {
-							out <- result{branch, rel}
-							return
-						}
-					}
+				scope = twoRefScope(runner.Dir, branch, parent)
+				fingerprint = twoTipFingerprint(tips[branch], tips[parent])
+				if rel, found := worktreeParentRelCache.load(scope, fingerprint); found {
+					out <- result{branch, rel}
+					return
 				}
 			}
 			rel := measureParentRel(ctx, runner, branch, parent)
 			if !rel.Resolved {
 				return
 			}
-			if cacheable {
-				worktreeParentRelCache.Store(key, rel)
-			}
+			worktreeParentRelCache.store(scope, fingerprint, rel)
 			out <- result{branch, rel}
 		}(name)
 	}

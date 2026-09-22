@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -84,23 +83,14 @@ func scanWorktreeChanges(ctx context.Context, runner *git.ExecRunner, root strin
 				s.sigs[p] = sig
 			}
 		}
-		if cacheable {
-			worktreeStatsCache.Store(root, worktreeStats{key: key, sigs: s.sigs})
-		}
+		worktreeStatsCache.store(root, key, s.sigs)
 	}
 	return s
 }
 
-// worktreeStats is one worktree's last computed diff profile, tagged with the
-// fingerprint of the change set that produced it.
-type worktreeStats struct {
-	key  string
-	sigs map[string]fileSig
-}
-
-// worktreeStatsCache holds one entry per worktree — the newest replaces the
-// previous, so it cannot grow with time the way a keyed-by-content map would.
-var worktreeStatsCache sync.Map // worktree root → worktreeStats
+// worktreeStatsCache holds one entry per worktree: the diff profile, scoped to
+// the worktree root and fingerprinted by the change set that produced it.
+var worktreeStatsCache scopedMemo[map[string]fileSig]
 
 // worktreeStatsKey fingerprints a change set by path, porcelain XY, mtime and
 // size.
@@ -127,17 +117,13 @@ func worktreeStatsKey(root string, sigs map[string]fileSig) (string, bool) {
 // applyCachedStats copies a matching cached profile's counts and symbols onto
 // this scan's signatures, reporting whether it hit. The cached map is read, not
 // handed out: each poll keeps its own freshly allocated signatures.
-func applyCachedStats(root, key string, sigs map[string]fileSig) bool {
-	v, ok := worktreeStatsCache.Load(root)
+func applyCachedStats(root, fingerprint string, sigs map[string]fileSig) bool {
+	cached, ok := worktreeStatsCache.load(root, fingerprint)
 	if !ok {
 		return false
 	}
-	cached, valid := v.(worktreeStats)
-	if !valid || cached.key != key {
-		return false
-	}
 	for p, sig := range sigs {
-		c, found := cached.sigs[p]
+		c, found := cached[p]
 		if !found {
 			continue
 		}

@@ -683,9 +683,14 @@ func headInfoKey(ctx context.Context, runner *git.ExecRunner, prev headInfo) (st
 		// happens to move.
 		fileStamp(filepath.Join(common, "config")),
 		// On the reftable backend the branch and upstream stamps below do not
-		// exist as files, so without this a commit would never reach the
-		// header. HEAD stays a file either way.
+		// exist as files, so without these a commit would never reach the
+		// header. HEAD is no help there either: it stays a file but holds the
+		// fixed placeholder `ref: refs/heads/.invalid`. Both stacks are needed
+		// — a linked worktree's branch switch moves only its own, and common
+		// refs move only the shared one. On a main worktree the two are the
+		// same directory and the second stamp is simply a duplicate.
 		reftableStamp(common),
+		reftableStamp(gitDir),
 	}
 	if prev.branch != "" {
 		parts = append(parts, fileStamp(filepath.Join(common, "refs", "heads", filepath.FromSlash(prev.branch))))

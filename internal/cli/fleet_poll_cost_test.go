@@ -716,6 +716,37 @@ func TestFingerprintsSeeReftableRepos(t *testing.T) {
 		}
 	})
 
+	t.Run("linked-worktree-header", func(t *testing.T) {
+		// A linked worktree keeps its OWN reftable stack, and switching
+		// branches there moves only that one — the shared stack, HEAD (a fixed
+		// `ref: refs/heads/.invalid` placeholder on this backend) and config
+		// all stay put.
+		wt := filepath.Join(t.TempDir(), "wt")
+		sh("worktree", "add", "-q", wt, "-b", "side")
+		// Created up front and from elsewhere, so the switch below moves no
+		// common ref — only HEAD, which on this backend lives in the worktree's
+		// own stack. Creating the branch during the switch would move the
+		// SHARED stack and the shared stamp alone would catch it.
+		sh("branch", "side2")
+		wtRunner := &git.ExecRunner{Dir: wt}
+		wtCmd := &cobra.Command{}
+		wtCmd.SetContext(ctx)
+
+		settled := fetchHeadInfo(wtCmd, wtRunner, fetchHeadInfo(wtCmd, wtRunner, headInfo{}))
+		if settled.branch != "side" {
+			t.Fatalf("header branch = %q, want side", settled.branch)
+		}
+		c := exec.Command("git", "switch", "-q", "side2")
+		c.Dir = wt
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Skipf("could not switch in the linked worktree: %v: %s", err, out)
+		}
+		if moved := fetchHeadInfo(wtCmd, wtRunner, settled); moved.branch == settled.branch {
+			t.Errorf("header branch stayed %q after switching in a linked worktree on reftable", moved.branch)
+		}
+	})
+
 	t.Run("header", func(t *testing.T) {
 		settled := fetchHeadInfo(cmd, runner, fetchHeadInfo(cmd, runner, headInfo{}))
 		if settled.sha == "" {
@@ -750,5 +781,95 @@ func TestAllParentsKeySeesWorktreeConfig(t *testing.T) {
 
 	if _, after := allParentsKey(ctx, runner); after == before {
 		t.Error("recording a parent through config.worktree left the fingerprint unchanged")
+	}
+}
+
+// TestScopesSurviveAnUnsetRepoFlag guards the memos on the paths they were
+// written for. --repo defaults to empty, so `gk switch`, `gk worktree` and a
+// single-repo `gk watch` all build their runner with Dir: "". That is the
+// process's own working directory, not an unknown one — requiring a non-empty
+// directory silently turned the fork-point and parent memos off there, putting
+// back one `merge-base` per upstream-less branch and one `git config` per poll.
+func TestScopesSurviveAnUnsetRepoFlag(t *testing.T) {
+	if twoRefScope("", "feature", "main") == "" {
+		t.Error("an unset --repo produced no scope — the fork-point memo is disabled there")
+	}
+	// Still no scope without the refs themselves: there would be nothing to name.
+	if twoRefScope("", "", "main") != "" || twoRefScope("/repo", "feature", "") != "" {
+		t.Error("a scope was built without both refs")
+	}
+
+	// An ExecRunner with an empty Dir is the shape the default --repo produces.
+	// It resolves against the process's working directory, which under `go
+	// test` is this package inside gk's own checkout.
+	if _, _, ok := repoRootAndCommonDir(context.Background(), ""); !ok {
+		t.Skip("tests are not running inside a git repository")
+	}
+	scope, fingerprint := allParentsKey(context.Background(), &git.ExecRunner{Dir: ""})
+	if scope == "" || fingerprint == "" {
+		t.Errorf("allParentsKey gave scope=%q fingerprint=%q for an unset --repo", scope, fingerprint)
+	}
+	// A fake runner has no repository to scope to and must stay uncached.
+	if s, _ := allParentsKey(context.Background(), &git.FakeRunner{}); s != "" {
+		t.Errorf("a fake runner produced scope %q", s)
+	}
+}
+
+// TestComputeForkPoints_FallbackAnchorIsNotMemoised covers the retry inside
+// computeForkPoints. When the recorded parent's merge-base fails it retries
+// against the trunk, and that answer belongs to a different anchor than the
+// scope names. Memoising it under the recorded parent's scope would keep
+// reporting "parent is the trunk" until one of the two tips moves.
+//
+// The branch listing is taken BEFORE the parent ref is deleted, which is what
+// makes the entry cacheable at all: the tip is known, so the fingerprint is
+// complete, while the ref it names is already gone.
+func TestComputeForkPoints_FallbackAnchorIsNotMemoised(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	trunk := strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD"))
+	repo.CreateBranch("parent")
+	repo.CreateBranch("feature")
+	repo.Checkout("feature")
+	repo.WriteFile("b.txt", "b")
+	repo.Commit("work")
+	repo.RunGit("config", "branch.feature.gk-parent", "parent")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	branches, err := listLocalBranches(ctx, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var featureTip, parentTip string
+	for _, b := range branches {
+		switch b.Name {
+		case "feature":
+			featureTip = b.Hash
+		case "parent":
+			parentTip = b.Hash
+		}
+	}
+	if featureTip == "" || parentTip == "" {
+		t.Fatalf("branch tips missing: feature=%q parent=%q", featureTip, parentTip)
+	}
+
+	repo.RunGit("branch", "-D", "parent")
+	computeForkPoints(ctx, runner, trunk, branches)
+
+	var got branchInfo
+	for _, b := range branches {
+		if b.Name == "feature" {
+			got = b
+		}
+	}
+	if got.ForkBranch != trunk {
+		t.Fatalf("fork anchor = %q, want the trunk %q — the fallback did not fire, so nothing was measured",
+			got.ForkBranch, trunk)
+	}
+	if r, ok := forkPointCache.load(twoRefScope(repo.Dir, "feature", "parent"),
+		twoTipFingerprint(featureTip, parentTip)); ok {
+		t.Errorf("the trunk answer was memoised as %q under the scope naming parent", r.anchor)
 	}
 }

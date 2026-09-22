@@ -901,7 +901,8 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	for _, b := range local {
 		tips[b.Name] = b.Hash
 	}
-	keys := make(map[int]string, len(local)) // idx → scope\x00\x00fingerprint, for the misses
+	keys := make(map[int]string, len(local))  // idx → scope\x00\x00fingerprint, for the misses
+	asked := make(map[int]string, len(local)) // idx → the anchor that scope names
 	out := make(chan result, len(local))
 	// Bound concurrency at NumCPU so a repo with hundreds of stale
 	// local branches doesn't fork hundreds of `git merge-base`
@@ -927,6 +928,7 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 			continue
 		}
 		keys[i] = scope + "\x00\x00" + fp
+		asked[i] = anchor
 		wg.Add(1)
 		go func(idx int, branch, anchor string) {
 			defer wg.Done()
@@ -959,7 +961,13 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 	for r := range out {
 		local[r.idx].ForkBranch = r.anchor
 		local[r.idx].ForkPoint = r.hash
-		if key, ok := keys[r.idx]; ok {
+		// Only memoise when the anchor that ANSWERED is the one the scope and
+		// fingerprint were built from. The fallback above retries against the
+		// trunk when the recorded parent's merge-base fails — including when it
+		// merely times out — and storing that under the recorded parent's scope
+		// would keep reporting "parent is the trunk" until one of the two tips
+		// moves.
+		if key, ok := keys[r.idx]; ok && asked[r.idx] == r.anchor {
 			scope, fp, _ := strings.Cut(key, "\x00\x00")
 			forkPointCache.store(scope, fp, forkPoint{anchor: r.anchor, hash: r.hash})
 		}
@@ -997,18 +1005,22 @@ func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string 
 // showing the trunk until some stamped file moves. A runner that is not an ExecRunner (tests) has no directory to
 // scope the entry to, so it reads fresh every time.
 func allParentsKey(ctx context.Context, runner git.Runner) (scope, fingerprint string) {
-	dir := runnerDir(runner)
-	if dir == "" {
+	// A fake runner has no repository to scope to. An ExecRunner with an empty
+	// Dir does: that is the process's own working directory, which is what the
+	// default --repo produces, and resolving it yields a real common dir.
+	if _, ok := runner.(*git.ExecRunner); !ok {
 		return "", ""
 	}
-	_, common, found := repoRootAndCommonDir(ctx, dir)
+	_, common, found := repoRootAndCommonDir(ctx, runnerDir(runner))
 	if !found {
 		return "", ""
 	}
 	stamps := []string{
 		fileStamp(filepath.Join(common, "config")),
-		// Read too when extensions.worktreeConfig is on, and not covered by the
-		// file above.
+		// Read too when extensions.worktreeConfig is on. This is the MAIN
+		// worktree's copy; a linked worktree keeps its own under
+		// worktrees/<name>/, which this memo has nowhere to put anyway — its
+		// scope is the repository, so one entry is shared by every worktree.
 		fileStamp(filepath.Join(common, "config.worktree")),
 	}
 	for _, p := range gitGlobalConfigPaths() {

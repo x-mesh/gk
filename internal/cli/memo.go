@@ -84,10 +84,15 @@ func (c *scopedMemo[V]) do(scope, fingerprint string, compute func() (V, bool)) 
 // twoRefScope names a comparison between two refs in one working directory.
 // The directory belongs in it because the tips these scopes carry are SHORT
 // hashes: 7 hex chars collide across repositories far too easily to key a
-// process-wide cache on alone. An unknown directory yields no scope, so the
-// fake runners in tests read fresh every time.
+// process-wide cache on alone.
+//
+// An EMPTY directory is a valid scope, not a missing one. --repo defaults to
+// empty, so `gk switch`, `gk worktree` and a single-repo `gk watch` all build
+// their runner with Dir: "" — which means the process's own working directory,
+// one repository that does not change while it runs. Rejecting it turned these
+// memos off on exactly the paths they were written for.
 func twoRefScope(dir, a, b string) string {
-	if dir == "" || a == "" || b == "" {
+	if a == "" || b == "" {
 		return ""
 	}
 	return strings.Join([]string{dir, a, b}, "\x00")

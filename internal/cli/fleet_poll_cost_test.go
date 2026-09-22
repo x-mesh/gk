@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -650,5 +651,104 @@ func TestDefaultBranchKeySeesTrunkRenamedIntoADirectory(t *testing.T) {
 	}
 	if got := resolveDefaultBranchForWorktree(ctx, runner); got == "main" {
 		t.Error("trunk still reads main, but that branch no longer exists")
+	}
+}
+
+// newReftableRepo builds a repository using the reftable backend, where none of
+// the ref FILES the fingerprints stamp exist. Skips when the local git is too
+// old to create one.
+func newReftableRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	sh := func(args ...string) string {
+		c := exec.Command("git", args...)
+		c.Dir, c.Env = dir, env
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Skipf("git %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	sh("init", "-q", "-b", "main", "--ref-format=reftable", ".")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh("add", "-A")
+	sh("commit", "-qm", "init")
+	if _, err := os.Stat(filepath.Join(dir, ".git", "reftable", "tables.list")); err != nil {
+		t.Skipf("reftable layout not present: %v", err)
+	}
+	return dir
+}
+
+// TestFingerprintsSeeReftableRepos covers the backend where every ref FILE the
+// fingerprints stamp is absent — refs/heads/<name>, packed-refs and
+// refs/remotes/origin/HEAD do not exist, while the refs themselves do. Without
+// a stamp that moves, both fingerprints freeze on their first value and the
+// answers can never be corrected.
+func TestFingerprintsSeeReftableRepos(t *testing.T) {
+	dir := newReftableRepo(t)
+	runner := &git.ExecRunner{Dir: dir}
+	ctx := context.Background()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+
+	sh := func(args ...string) {
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	t.Run("trunk", func(t *testing.T) {
+		_, before := defaultBranchKey(ctx, runner)
+		sh("update-ref", "refs/remotes/origin/main", "HEAD")
+		sh("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+		if _, after := defaultBranchKey(ctx, runner); after == before {
+			t.Error("pointing origin/HEAD left the trunk fingerprint unchanged on reftable")
+		}
+	})
+
+	t.Run("header", func(t *testing.T) {
+		settled := fetchHeadInfo(cmd, runner, fetchHeadInfo(cmd, runner, headInfo{}))
+		if settled.sha == "" {
+			t.Fatalf("header did not resolve: %+v", settled)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "g.txt"), []byte("y"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sh("add", "-A")
+		sh("commit", "-qm", "second")
+		if moved := fetchHeadInfo(cmd, runner, settled); moved.sha == settled.sha {
+			t.Errorf("header sha stayed %q across a commit on reftable", moved.sha)
+		}
+	})
+}
+
+// TestAllParentsKeySeesWorktreeConfig covers the second file `git config
+// --get-regexp` reads for these keys. With extensions.worktreeConfig on,
+// `git config --worktree` writes to config.worktree, which the repository's own
+// config file does not reflect at all.
+func TestAllParentsKeySeesWorktreeConfig(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	repo.RunGit("config", "extensions.worktreeConfig", "true")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	_, before := allParentsKey(ctx, runner)
+
+	repo.RunGit("config", "--worktree", "branch.feat.gk-parent", "develop")
+
+	if _, after := allParentsKey(ctx, runner); after == before {
+		t.Error("recording a parent through config.worktree left the fingerprint unchanged")
 	}
 }

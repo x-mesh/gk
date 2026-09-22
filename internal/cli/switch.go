@@ -985,10 +985,16 @@ func cachedAllParents(ctx context.Context, runner git.Runner) map[string]string 
 }
 
 // allParentsKey stamps the config files git would read for these keys: the
-// repository's own, and the per-user one. System config (/etc/gitconfig) is
-// deliberately out of scope — gk records branch.<name>.gk-parent per
-// repository, and that key placed machine-wide is not a case worth a stat on
-// every poll. A runner that is not an ExecRunner (tests) has no directory to
+// repository's own (including config.worktree), and the per-user one.
+//
+// Two sources git also consults are deliberately left out. The system file
+// (/etc/gitconfig) would be an odd place for a per-branch parent. Files pulled
+// in by include.path or includeIf are read — verified — but finding them means
+// parsing the config to follow a chain that can itself be conditional, which is
+// far more than a memoised annotation is worth. gk writes these keys to the
+// repository's own config, so both omissions need someone to have placed them
+// somewhere gk never puts them; the cost is a fork annotation that keeps
+// showing the trunk until some stamped file moves. A runner that is not an ExecRunner (tests) has no directory to
 // scope the entry to, so it reads fresh every time.
 func allParentsKey(ctx context.Context, runner git.Runner) (scope, fingerprint string) {
 	dir := runnerDir(runner)
@@ -999,7 +1005,12 @@ func allParentsKey(ctx context.Context, runner git.Runner) (scope, fingerprint s
 	if !found {
 		return "", ""
 	}
-	stamps := []string{fileStamp(filepath.Join(common, "config"))}
+	stamps := []string{
+		fileStamp(filepath.Join(common, "config")),
+		// Read too when extensions.worktreeConfig is on, and not covered by the
+		// file above.
+		fileStamp(filepath.Join(common, "config.worktree")),
+	}
 	for _, p := range gitGlobalConfigPaths() {
 		stamps = append(stamps, fileStamp(p))
 	}

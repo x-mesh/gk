@@ -682,6 +682,10 @@ func headInfoKey(ctx context.Context, runner *git.ExecRunner, prev headInfo) (st
 		// the old upstream, and its ahead/behind, until some unrelated ref
 		// happens to move.
 		fileStamp(filepath.Join(common, "config")),
+		// On the reftable backend the branch and upstream stamps below do not
+		// exist as files, so without this a commit would never reach the
+		// header. HEAD stays a file either way.
+		reftableStamp(common),
 	}
 	if prev.branch != "" {
 		parts = append(parts, fileStamp(filepath.Join(common, "refs", "heads", filepath.FromSlash(prev.branch))))

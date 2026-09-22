@@ -404,7 +404,23 @@ func defaultBranchKey(ctx context.Context, runner *git.ExecRunner) (scope, finge
 		fileStamp(filepath.Join(common, "packed-refs")),
 		existsStamp(filepath.Join(common, "refs", "heads", "main")),
 		existsStamp(filepath.Join(common, "refs", "heads", "master")),
+		reftableStamp(common),
 	}, "\x00")
+}
+
+// reftableStamp covers repositories using the reftable backend, where none of
+// the ref stamps above exist: refs/heads/<name>, packed-refs and
+// refs/remotes/origin/HEAD are all absent while the refs themselves are
+// perfectly real, so every file stamp reads "-" and the fingerprint would never
+// move again. tables.list is the one file that does, on every ref update.
+//
+// It costs a stat and reads "-" on the files backend, so the ordinary case is
+// unchanged. On reftable the trade is the reverse of the refs/heads directory:
+// a commit invalidates the trunk even though the name did not move, because a
+// single file cannot say WHICH ref changed. A re-fork per commit beats an
+// answer that can never be corrected.
+func reftableStamp(commonDir string) string {
+	return fileStamp(filepath.Join(commonDir, "reftable", "tables.list"))
 }
 
 // existsStamp records whether a path is there as a regular FILE. That is the

@@ -41,10 +41,10 @@ func TestLayoutDescribes_MainWorktree(t *testing.T) {
 	initRepo(t, a)
 	initRepo(t, b)
 
-	if !LayoutDescribes(a, filepath.Join(a, ".git")) {
+	if !LayoutDescribes(a, filepath.Join(a, ".git"), "") {
 		t.Error("a repo's own layout was rejected")
 	}
-	if LayoutDescribes(a, filepath.Join(b, ".git")) {
+	if LayoutDescribes(a, filepath.Join(b, ".git"), "") {
 		t.Error("another repo's existing common dir was accepted for this path")
 	}
 }
@@ -62,7 +62,7 @@ func TestLayoutDescribes_ReplacedRepoAtSamePath(t *testing.T) {
 	run(t, main, "worktree", "add", "-q", linked, "-b", "feat")
 
 	common := filepath.Join(main, ".git")
-	if !LayoutDescribes(linked, common) {
+	if !LayoutDescribes(linked, common, "") {
 		t.Fatal("the linked worktree's own layout was rejected")
 	}
 
@@ -75,7 +75,7 @@ func TestLayoutDescribes_ReplacedRepoAtSamePath(t *testing.T) {
 	}
 	initRepo(t, linked) // something else now lives at that path
 
-	if LayoutDescribes(linked, common) {
+	if LayoutDescribes(linked, common, "") {
 		t.Error("a replaced repo still matched the old layout — the cache would answer for the wrong repository")
 	}
 }
@@ -90,10 +90,10 @@ func TestLayoutDescribes_BareRepo(t *testing.T) {
 	bare := filepath.Join(root, "bare.git")
 	run(t, root, "clone", "-q", "--bare", src, bare)
 
-	if !LayoutDescribes(bare, bare) {
+	if !LayoutDescribes(bare, bare, "") {
 		t.Error("a bare repository's own layout was rejected")
 	}
-	if LayoutDescribes(bare, filepath.Join(root, "gone")) {
+	if LayoutDescribes(bare, filepath.Join(root, "gone"), "") {
 		t.Error("a missing common dir was accepted")
 	}
 }
@@ -111,7 +111,7 @@ func TestLayoutDescribes_ReplacedLinkedWorktree(t *testing.T) {
 	wt := filepath.Join(root, "wt")
 	run(t, a, "worktree", "add", "-q", wt, "-b", "feat")
 	aCommon := filepath.Join(a, ".git")
-	if !LayoutDescribes(wt, aCommon) {
+	if !LayoutDescribes(wt, aCommon, "") {
 		t.Fatal("a's own linked worktree was rejected")
 	}
 
@@ -122,10 +122,10 @@ func TestLayoutDescribes_ReplacedLinkedWorktree(t *testing.T) {
 	run(t, a, "worktree", "prune")
 	run(t, b, "worktree", "add", "-q", wt, "-b", "feat")
 
-	if LayoutDescribes(wt, aCommon) {
+	if LayoutDescribes(wt, aCommon, "") {
 		t.Error("a linked worktree of another repo matched a's layout — the cache would answer for the wrong repository")
 	}
-	if !LayoutDescribes(wt, filepath.Join(b, ".git")) {
+	if !LayoutDescribes(wt, filepath.Join(b, ".git"), "") {
 		t.Error("b's own linked worktree was rejected")
 	}
 }
@@ -150,11 +150,11 @@ func TestLayoutDescribes_GitDirIsCommonDir(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dirs: %v", err)
 		}
-		if !LayoutDescribes(sub, common) {
+		if !LayoutDescribes(sub, common, "") {
 			t.Errorf("a submodule's own layout (%s) was rejected", common)
 		}
 		// A different repo's common dir must still not match.
-		if LayoutDescribes(sub, filepath.Join(child, ".git")) {
+		if LayoutDescribes(sub, filepath.Join(child, ".git"), "") {
 			t.Error("another repo's common dir was accepted for the submodule path")
 		}
 	})
@@ -170,8 +170,84 @@ func TestLayoutDescribes_GitDirIsCommonDir(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dirs: %v", err)
 		}
-		if !LayoutDescribes(wt, common) {
+		if !LayoutDescribes(wt, common, "") {
 			t.Errorf("a --separate-git-dir layout (%s) was rejected", common)
 		}
 	})
+}
+
+// TestDirs_ReclaimedAdminDirReresolves is the reason LayoutDescribes takes the
+// gitdir as well as the common dir. Git hands a removed worktree's admin
+// directory to the next worktree that claims the name, so the same PATH can
+// come back designating a different one: add a/W (worktrees/W), remove it, add
+// b/W — which takes the freed worktrees/W — then add a/W again, now
+// worktrees/W1. A memoised worktrees/W would read b/W's in-progress operation
+// as a/W's, and Detect is what gates the history-rewriting commands.
+func TestDirs_ReclaimedAdminDirReresolves(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	initRepo(t, main)
+	aW := filepath.Join(root, "a", "W")
+	bW := filepath.Join(root, "b", "W")
+
+	run(t, main, "worktree", "add", "-q", aW, "-b", "W")
+	_, firstGitDir, err := Dirs(context.Background(), aW)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, main, "worktree", "remove", aW)
+	run(t, main, "worktree", "add", "-q", bW, "-b", "W2")
+	run(t, main, "worktree", "add", "-q", aW, "-b", "W3")
+
+	_, secondGitDir, err := Dirs(context.Background(), aW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondGitDir == firstGitDir {
+		t.Errorf("a/W still resolves to %s, which belongs to b/W now", filepath.Base(secondGitDir))
+	}
+
+	// The consequence, stated as the behaviour that matters: an operation
+	// in b/W must not surface as a/W's.
+	_, bGitDir, err := Dirs(context.Background(), bW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bGitDir, "MERGE_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Detect(context.Background(), aW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Kind != StateNone {
+		t.Errorf("a/W reports %v — that is b/W's merge, read through a stale admin dir", st.Kind)
+	}
+}
+
+// TestLayoutDescribes_GitSymlink covers .git being a symlink to the layout
+// rather than the layout itself. Lstat called that "not a directory", which
+// sent it down the link-file branch, failed to read a directory as a file, and
+// returned true without comparing anything — the check was blind there.
+func TestLayoutDescribes_GitSymlink(t *testing.T) {
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	initRepo(t, a)
+	initRepo(t, b)
+
+	moved := filepath.Join(root, "a-gitdir")
+	if err := os.Rename(filepath.Join(a, ".git"), moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, filepath.Join(a, ".git")); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+
+	if !LayoutDescribes(a, moved, "") {
+		t.Errorf("the layout its own .git symlink points at (%s) was rejected", moved)
+	}
+	if LayoutDescribes(a, filepath.Join(b, ".git"), "") {
+		t.Error("another repo's common dir was accepted through a .git symlink")
+	}
 }

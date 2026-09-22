@@ -53,7 +53,8 @@ func newFleetLimiter(n int) chan struct{} {
 // not move while a process runs, but the live dashboard re-asks on every poll.
 //
 // Validity is gitstate.LayoutDescribes — the same check, from the same
-// implementation, that gitstate's own gitDirCache uses. The two caches hold
+// implementation, that gitstate's own gitDirCache uses. The empty gitdir says
+// this cache does not remember one, so there is none to verify. The two caches hold
 // overlapping answers about one repository (this one has the top-level, that
 // one has the per-worktree gitdir) and they are deliberately not merged: the
 // single rev-parse that would return all three fails outright in a bare
@@ -70,7 +71,7 @@ type repoLayout struct{ root, common string }
 // repoLayoutCache.
 func repoRootAndCommonDir(ctx context.Context, path string) (root, common string, ok bool) {
 	if v, loaded := repoLayoutCache.Load(path); loaded {
-		if l, valid := v.(repoLayout); valid && gitstate.LayoutDescribes(path, l.common) {
+		if l, valid := v.(repoLayout); valid && gitstate.LayoutDescribes(path, l.common, "") {
 			return l.root, l.common, true
 		}
 		repoLayoutCache.Delete(path) // gone, or a different repo is here now

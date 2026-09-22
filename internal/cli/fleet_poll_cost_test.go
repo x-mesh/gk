@@ -620,3 +620,35 @@ func TestResolveDefaultBranch_TrunklessRepoIsMemoised(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultBranchKeySeesTrunkRenamedIntoADirectory covers the one transition
+// plain existence cannot see. Renaming main away and creating main/x turns
+// refs/heads/main from a loose ref FILE into a DIRECTORY holding only the
+// sub-ref — os.Stat succeeds either way, so the fingerprint would not move
+// while the answer had become "no trunk".
+func TestDefaultBranchKeySeesTrunkRenamedIntoADirectory(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("init")
+	if strings.TrimSpace(repo.RunGit("rev-parse", "--abbrev-ref", "HEAD")) != "main" {
+		repo.RunGit("branch", "-m", "main")
+	}
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if got := resolveDefaultBranchForWorktree(ctx, runner); got != "main" {
+		t.Fatalf("trunk = %q, want main", got)
+	}
+	_, before := defaultBranchKey(ctx, runner)
+
+	// Both halves inside one poll interval: main goes away, main/x arrives.
+	repo.RunGit("branch", "-m", "main", "other")
+	repo.RunGit("branch", "main/x")
+
+	if _, after := defaultBranchKey(ctx, runner); after == before {
+		t.Error("the fingerprint did not move when refs/heads/main became a directory")
+	}
+	if got := resolveDefaultBranchForWorktree(ctx, runner); got == "main" {
+		t.Error("trunk still reads main, but that branch no longer exists")
+	}
+}

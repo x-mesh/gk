@@ -203,24 +203,26 @@ func Dirs(ctx context.Context, workDir string) (commonDir, gitDir string, err er
 // naming the gitdir under it for a linked one. Paths are compared by identity
 // rather than by string, because callers normalise them differently (one
 // resolves symlinks, the other does not).
-func LayoutDescribes(workDir, commonDir string) bool {
+func LayoutDescribes(workDir, commonDir, gitDir string) bool {
 	if !dirExists(commonDir) {
 		return false
 	}
-	gitPath := filepath.Join(workDir, ".git")
-	fi, err := os.Lstat(gitPath)
-	if err != nil {
+	actual := worktreeGitDir(workDir)
+	if actual == "" {
 		// Nothing to follow: a bare repository reached by its own directory, or
 		// a layout pinned through GIT_DIR. The common dir existing is all that
 		// can be established without spending a subprocess.
 		return true
 	}
-	if fi.IsDir() {
-		return sameDir(gitPath, commonDir) // main worktree: .git IS the common dir
-	}
-	gitDir := gitdirFromLinkFile(workDir, gitPath)
-	if gitDir == "" {
-		return true // unreadable or unrecognised — do not evict on a guess
+	// A caller that remembers the per-worktree gitdir has to have it checked
+	// too. Git hands a removed worktree's admin directory to the next one that
+	// claims the name, so the SAME path can come back pointing somewhere else:
+	// add a/W (worktrees/W), remove it, add b/W (which takes worktrees/W), then
+	// add a/W again (now worktrees/W1). A remembered worktrees/W would then read
+	// b/W's rebase-merge and MERGE_HEAD as a/W's — and Detect is what gates the
+	// history-rewriting commands.
+	if gitDir != "" && !sameDir(actual, gitDir) {
+		return false
 	}
 	// The gitdir either IS the common dir — a submodule, and a repository set
 	// up with --separate-git-dir, are both reported by git with common == gitdir
@@ -228,8 +230,29 @@ func LayoutDescribes(workDir, commonDir string) bool {
 	// Accepting only the second shape rejected the first two outright, which
 	// evicted a correct entry on every single call and re-forked rev-parse for
 	// an answer that had not changed.
-	return sameDir(gitDir, commonDir) ||
-		sameDir(filepath.Dir(filepath.Dir(gitDir)), commonDir)
+	return sameDir(actual, commonDir) ||
+		sameDir(filepath.Dir(filepath.Dir(actual)), commonDir)
+}
+
+// worktreeGitDir resolves <workDir>/.git to the gitdir it designates: the
+// directory itself for a main worktree, and the path named by its `gitdir:`
+// line for a linked worktree or a submodule. Empty when there is nothing to
+// follow.
+//
+// Stat, not Lstat: a .git SYMLINK designates what it points at. Under Lstat
+// such a layout reported "not a directory", fell through to the link-file
+// branch, failed to read a directory as a file, and returned true without
+// checking anything — the replaced-repo detection was blind there.
+func worktreeGitDir(workDir string) string {
+	gitPath := filepath.Join(workDir, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	if fi.IsDir() {
+		return gitPath
+	}
+	return gitdirFromLinkFile(workDir, gitPath)
 }
 
 // gitdirFromLinkFile reads the `gitdir: <path>` line git writes into a linked
@@ -265,7 +288,7 @@ func sameDir(a, b string) bool {
 // Memoised per workDir — see gitDirCache.
 func resolveGitDirs(ctx context.Context, workDir string) (commonDir, gitDir string, err error) {
 	if v, ok := gitDirCache.Load(workDir); ok {
-		if d, valid := v.(gitDirs); valid && LayoutDescribes(workDir, d.common) {
+		if d, valid := v.(gitDirs); valid && LayoutDescribes(workDir, d.common, d.git) {
 			return d.common, d.git, nil
 		}
 		gitDirCache.Delete(workDir) // the repo it described is gone or was replaced

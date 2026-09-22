@@ -407,11 +407,18 @@ func defaultBranchKey(ctx context.Context, runner *git.ExecRunner) (scope, finge
 	}, "\x00")
 }
 
-// existsStamp records only whether a path is there. That is the whole question
-// the trunk fallback asks of refs/heads/main and refs/heads/master: their
-// contents move with every commit on those branches and never rename the trunk.
+// existsStamp records whether a path is there as a regular FILE. That is the
+// whole question the trunk fallback asks of refs/heads/main and
+// refs/heads/master: a loose ref is a file, and their contents move with every
+// commit on those branches without ever renaming the trunk.
+//
+// The regular-file test is what separates the branch `main` from a directory
+// refs/heads/main/ holding only `main/x`. Plain existence cannot tell those
+// apart, so renaming main away and creating main/x inside one poll left the
+// fingerprint unchanged while the answer had become "no trunk".
 func existsStamp(path string) string {
-	if _, err := os.Stat(path); err != nil {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
 		return "-"
 	}
 	return "+"

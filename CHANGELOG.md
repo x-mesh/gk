@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.144.0] - 2026-09-23
+
 ### Added
 
 - **Jev로 `gk chat`의 명령 제안과 `gk find`의 결과 순서를 정할 수 있다 (옵트인).** `ai.jev.suggest: true`를 켜면 `gk chat`의 `gk_suggest` 도구가 키워드 점수 대신 Jev 점수로 명령을 고른다. 현재 빌드의 Cobra 트리에 있는 명령 전부를 64개씩 나눠 평가하고, 점수 1.5 이상인 명령을 최대 5개 돌려준다. `ai.jev.find_rerank: true`를 켜면 `gk find`가 합친 후보 중 앞쪽 최대 50개를 질의와의 관련도로 다시 정렬한 뒤 `--limit`을 적용한다. 텍스트 출력에는 평가한 후보 수와 모델을, JSON 출력에는 `ranking` 객체를 붙인다. 두 기능 모두 기본값은 꺼져 있다. 보내는 내용은 질의와 명령 요약·커밋 제목 같은 후보 메타데이터뿐이며 diff 본문이나 파일 내용은 보내지 않는다. 요청 본문은 보내기 전에 비밀값 가림 처리를 거친다. 엔드포인트·키·모델은 전역 설정과 `GK_AI_JEV_*` 환경변수에서만 읽는다 — 저장소의 `.gk.yaml`은 이 값을 바꿀 수 없으므로, 클론한 저장소가 요청을 다른 서버로 돌릴 수 없다. HTTPS만 허용하고(루프백 HTTP 제외) 리다이렉트는 따라가지 않는다. 요청이 실패하면 조용히 대체 결과를 내지 않고 명령이 실패한다. 다만 설정 자체를 읽지 못하면 `gk find`는 순위 매기기만 건너뛰고 이유를 `ranking.skipped`에 남긴다 — jev 이전의 `find`는 설정을 읽지 않았으므로, 설정 오류가 검색을 막아서는 안 된다. `gk config set`·`config show`·설정 마법사는 Jev 키를 가려서 보여 준다.

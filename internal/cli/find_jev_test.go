@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,4 +104,31 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// Before ranking existed gk find never read the config, so a config that fails
+// to load must not fail a search that never asked for ranking. The skip is
+// reported in res.Ranking, where --json callers can see it.
+func TestApplyFindRankingSkipsWhenConfigFailsToLoad(t *testing.T) {
+	res := findResult{Query: "ship", Matches: []findMatch{{Hash: "a"}, {Hash: "b"}}, Count: 2}
+	err := applyFindRanking(context.Background(), &res, findQuery{query: "ship", limit: 20}, &config.Config{}, errors.New("decoding failed"))
+	if err != nil {
+		t.Fatalf("applyFindRanking returned %v, want the search to succeed", err)
+	}
+	if res.Ranking == nil || !strings.Contains(res.Ranking.Skipped, "decoding failed") {
+		t.Fatalf("Ranking = %+v, want a skip naming the config error", res.Ranking)
+	}
+	if res.Count != 2 {
+		t.Fatalf("Count = %d, want the unranked matches kept", res.Count)
+	}
+}
+
+func TestApplyFindRankingIsSilentWhenRerankIsOff(t *testing.T) {
+	res := findResult{Query: "ship", Matches: []findMatch{{Hash: "a"}, {Hash: "b"}}, Count: 2}
+	if err := applyFindRanking(context.Background(), &res, findQuery{query: "ship", limit: 20}, &config.Config{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if res.Ranking != nil {
+		t.Fatalf("Ranking = %+v, want nil when find_rerank is off", res.Ranking)
+	}
 }

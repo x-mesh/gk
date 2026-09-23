@@ -149,13 +149,8 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 	res := findCommits(cmd.Context(), runner, findQ)
 	cfg, cfgErr := config.Load(cmd.Flags())
-	if cfgErr != nil {
-		return cfgErr
-	}
-	if cfg.AI.Jev.FindRerank {
-		if err := rerankFindResult(cmd.Context(), &res, findQ, cfg.AI.Jev); err != nil {
-			return invalidFindJevConfig(err)
-		}
+	if err := applyFindRanking(cmd.Context(), &res, findQ, cfg, cfgErr); err != nil {
+		return err
 	}
 
 	if asJSON {

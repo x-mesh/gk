@@ -88,6 +88,24 @@ func renderFindRanking(res findResult, format func(string, ...any)) {
 	format("\n")
 }
 
+// applyFindRanking runs the optional Jev rerank. gk find read no config before
+// ranking existed, so a config that fails to load must not fail a search that
+// never asked for ranking: the rerank is skipped and the reason is recorded in
+// res.Ranking, which --json callers see.
+func applyFindRanking(ctx context.Context, res *findResult, q findQuery, cfg *config.Config, cfgErr error) error {
+	if cfgErr != nil {
+		res.Ranking = &findRanking{Skipped: "config not loaded: " + cfgErr.Error()}
+		return nil
+	}
+	if cfg == nil || !cfg.AI.Jev.FindRerank {
+		return nil
+	}
+	if err := rerankFindResult(ctx, res, q, cfg.AI.Jev); err != nil {
+		return invalidFindJevConfig(err)
+	}
+	return nil
+}
+
 func invalidFindJevConfig(err error) error {
 	return fmt.Errorf("gk find: %w", err)
 }

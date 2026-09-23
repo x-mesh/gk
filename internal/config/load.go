@@ -142,6 +142,11 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	v.SetDefault("snapshot.retention_days", defaults.Snapshot.RetentionDays)
 	v.SetDefault("ai.enabled", defaults.AI.Enabled)
 	v.SetDefault("ai.provider", defaults.AI.Provider)
+	v.SetDefault("ai.jev.endpoint", defaults.AI.Jev.Endpoint)
+	v.SetDefault("ai.jev.api_key", defaults.AI.Jev.APIKey)
+	v.SetDefault("ai.jev.model", defaults.AI.Jev.Model)
+	v.SetDefault("ai.jev.suggest", defaults.AI.Jev.Suggest)
+	v.SetDefault("ai.jev.find_rerank", defaults.AI.Jev.FindRerank)
 	// ai.lang is intentionally NOT given a viper default: that would make
 	// viper.IsSet("ai.lang") always true and defeat the "follow output.lang
 	// when unset" fallback below. The struct default (Defaults().AI.Lang)
@@ -315,6 +320,11 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		}
 		return &fallback, err
 	}
+	jev, jevErr := loadGlobalJev(filepath.Join(globalDir, "config.yaml"), defaults.AI.Jev)
+	if jevErr != nil {
+		return &cfg, jevErr
+	}
+	cfg.AI.Jev = jev
 
 	// When ai.lang is not explicitly configured, follow output.lang so that
 	// AI responses match the rest of the CLI's language (e.g. Easy Mode with

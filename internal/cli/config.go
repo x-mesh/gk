@@ -27,7 +27,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			out, err := yaml.Marshal(cfg)
+			out, err := maskJevYAML(cfg)
 			if err != nil {
 				return err
 			}
@@ -116,6 +116,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("key %q not found", args[0])
 	}
 
+	val = maskJevValue(args[0], val)
 	if showSrc, _ := cmd.Flags().GetBool("source"); showSrc {
 		root := ""
 		if r, terr := gitToplevel(cmd.Context(), &git.ExecRunner{Dir: RepoFlag()}); terr == nil {
@@ -216,6 +217,9 @@ func firstNonEmpty(vals ...string) string {
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	key, val := args[0], args[1]
 	local, _ := cmd.Flags().GetBool("local")
+	if err := validateConfigWriteScope(key, local); err != nil {
+		return err
+	}
 
 	path, scope, created, err := configWritePath(cmd, local, true)
 	if err != nil {
@@ -281,6 +285,9 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if key == "ai.jev.api_key" {
+		written = maskSecret(val)
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("set", "%s = %s  (%s: %s)", key, written, scope, path))
 	return nil
 }

@@ -274,6 +274,16 @@ ai:
   #              IDE launcher; the headless binary is `kiro-cli`)
   # provider: nvidia
 
+  # Optional Jev decision service. Both features are off by default.
+  # Jev settings are read from this global file and GK_AI_JEV_* environment
+  # variables. Repository-local .gk.yaml and git config do not override them.
+  jev:
+    endpoint: https://api.typesafe.ai/v1/systemone
+    api_key: ""
+    model: jev-latest
+    suggest: false
+    find_rerank: false
+
   # NVIDIA provider settings. Uses the OpenAI-compatible Chat Completions API
   # directly over HTTP — no external binary required. Auth: NVIDIA_API_KEY env var.
   # `timeout` (Go duration) is the per-HTTP-call timeout for this provider.

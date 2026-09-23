@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"unicode/utf8"
 )
 
 // maxSuggestQuery bounds the intent string the model may send. A suggestion
@@ -41,7 +42,7 @@ type suggestInput struct {
 func RegisterSuggestTools(r *Registry, lookup func(ctx context.Context, intent string) (string, error)) {
 	r.Register(Tool{
 		Name: "gk_suggest",
-		Description: "Map an intent to gk commands, returning each match's full command path, one-line " +
+		Description: "Map an intent, including a semantic request, to gk commands, returning each match's full command path, one-line " +
 			"summary, notable flags, and usage example. THIS IS NOT AN EXPLORATION TOOL: it reads gk's " +
 			"command list, never the repository, so it cannot find code, explain behaviour, or answer " +
 			"any question about THIS project's source — use git_grep/file_read/git_log for that, " +
@@ -52,7 +53,7 @@ func RegisterSuggestTools(r *Registry, lookup func(ctx context.Context, intent s
 			"CLI; if it returns no match, gk has no such command — say so or stay silent instead of " +
 			"inventing one. This does NOT run anything: gk chat is read-only.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
-			`"intent":{"type":"string","description":"What the user would want to do next, in a few words (e.g. \"clean up merged branches\", \"undo the last commit\", \"cut a release\"). Keywords work better than sentences."}` +
+			`"intent":{"type":"string","description":"What the user would want to do next, including a semantic request (e.g. \"clean up merged branches\", \"undo the last commit\", \"cut a release\")."}` +
 			`},"required":["intent"],"additionalProperties":false}`),
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var in suggestInput
@@ -64,9 +65,19 @@ func RegisterSuggestTools(r *Registry, lookup func(ctx context.Context, intent s
 				return "", errors.New("gk_suggest: intent is required")
 			}
 			if len(intent) > maxSuggestQuery {
-				intent = intent[:maxSuggestQuery]
+				intent = truncateSuggestBytes(intent, maxSuggestQuery)
 			}
 			return lookup(ctx, intent)
 		},
 	})
+}
+
+func truncateSuggestBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.ValidString(s[:max]) {
+		max--
+	}
+	return s[:max]
 }

@@ -144,6 +144,12 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 		changes["ai.commit.model"] = v
 	}
 
+	// 2b. Jev is a separate decision service. Its settings are kept out of the
+	// generative provider questions and each feature has its own switch.
+	if err := jevSetupChanges(cmd, ctx, cur, changes); err != nil {
+		return err
+	}
+
 	// 3. commit-only language (optional — empty follows ai.lang/output.lang)
 	if v, ok, err := wizardOptional(cmd, ctx, "commit-lang",
 		"commit 메시지 언어를 따로 지정할까요?",
@@ -186,6 +192,13 @@ func runConfigSetup(cmd *cobra.Command, _ []string) error {
 
 	// Resolve the target file and show a summary before writing.
 	local, _ := cmd.Flags().GetBool("local")
+	if local {
+		for key := range changes {
+			if strings.HasPrefix(key, "ai.jev.") {
+				return fmt.Errorf("gk config setup --local: Jev 설정은 사용자 전역 설정에서만 저장할 수 있습니다")
+			}
+		}
+	}
 	path, scope, created, err := configWritePath(cmd, local, true)
 	if err != nil {
 		return err
@@ -454,6 +467,16 @@ func setupCurrentValue(cur *config.Config, key string) (string, bool) {
 		return cur.Output.Lang, true
 	case "output.easy":
 		return strconv.FormatBool(cur.Output.Easy), true
+	case "ai.jev.endpoint":
+		return cur.AI.Jev.Endpoint, true
+	case "ai.jev.api_key":
+		return cur.AI.Jev.APIKey, true
+	case "ai.jev.model":
+		return cur.AI.Jev.Model, true
+	case "ai.jev.suggest":
+		return strconv.FormatBool(cur.AI.Jev.Suggest), true
+	case "ai.jev.find_rerank":
+		return strconv.FormatBool(cur.AI.Jev.FindRerank), true
 	case "log.graph":
 		return strconv.FormatBool(cur.Log.Graph), true
 	case "status.xy_style":

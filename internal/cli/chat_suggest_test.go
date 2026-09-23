@@ -3,8 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/x-mesh/gk/internal/config"
 )
 
 // topMatch runs a lookup against the real command tree and returns the
@@ -136,6 +141,84 @@ func TestChatSuggestLookupCapsMatches(t *testing.T) {
 	_, res := topMatch(t, "commit branch file remote change")
 	if len(res.Matches) > suggestMaxMatches {
 		t.Errorf("got %d matches, cap is %d", len(res.Matches), suggestMaxMatches)
+	}
+}
+
+func TestChatSuggestLookupWithJevRanksRealCommands(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			State struct {
+				Candidates []struct {
+					ID   string `json:"id"`
+					Path string `json:"path"`
+				} `json:"candidates"`
+			} `json:"state"`
+			Questions map[string]jevScoreQuestion `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(request.State.Candidates) != len(request.Questions) || len(request.Questions) < suggestMaxMatches {
+			t.Errorf("evaluated %d candidates with %d questions", len(request.State.Candidates), len(request.Questions))
+		}
+		answers := make(map[string]jevScoreAnswer, len(request.Questions))
+		for _, candidate := range request.State.Candidates {
+			score := 0.0
+			probabilities := map[string]float64{"0": 1, "1": 0, "2": 0}
+			if candidate.Path == "gk doctor" {
+				score = 2
+				probabilities = map[string]float64{"0": 0, "1": 0, "2": 1}
+			}
+			answers[candidate.ID] = jevScoreAnswer{
+				Type: "score", Score: score, Confidence: 1, Probabilities: probabilities,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jevResponse{Model: "test-model", Answers: answers})
+	}))
+	defer server.Close()
+
+	out, err := chatSuggestLookupWithJev(rootCmd, config.JevConfig{
+		Endpoint: server.URL,
+		APIKey:   "test-key",
+		Model:    "test-model",
+		Suggest:  true,
+	})(context.Background(), "check repository health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result suggestResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Command != "gk doctor" {
+		t.Fatalf("Jev results = %+v", result.Matches)
+	}
+}
+
+func TestChatSuggestLookupWithJevDisabledDoesNotCallEndpoint(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+
+	out, err := chatSuggestLookupWithJev(rootCmd, config.JevConfig{Endpoint: server.URL})(context.Background(), "search commit history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("disabled Jev called the endpoint")
+	}
+	var result suggestResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Matches) == 0 {
+		t.Fatal("disabled Jev did not preserve keyword suggestions")
 	}
 }
 

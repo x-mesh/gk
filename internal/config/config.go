@@ -135,6 +135,7 @@ type AIConfig struct {
 	Enabled   bool              `mapstructure:"enabled"   yaml:"enabled"`
 	Provider  string            `mapstructure:"provider"  yaml:"provider"`
 	Lang      string            `mapstructure:"lang"      yaml:"lang"`
+	Jev       JevConfig         `mapstructure:"jev"       yaml:"jev"`
 	Assist    AIAssistConfig    `mapstructure:"assist"    yaml:"assist"`
 	Commit    AICommitConfig    `mapstructure:"commit"    yaml:"commit"`
 	Chat      AIChatConfig      `mapstructure:"chat"      yaml:"chat"`
@@ -156,6 +157,17 @@ type AIConfig struct {
 	// `ai.openai:` / `ai.groq:` blocks. customProvider() consults Providers
 	// first, then Extra.
 	Extra map[string]AICustomProviderConfig `mapstructure:",remain" yaml:"-"`
+}
+
+// JevConfig controls the optional Jev decision calls used by command
+// suggestions and history ranking. The two features stay independent so a
+// user can enable one without enabling the other.
+type JevConfig struct {
+	Endpoint   string `mapstructure:"endpoint"   yaml:"endpoint"`
+	APIKey     string `mapstructure:"api_key"    yaml:"api_key"`
+	Model      string `mapstructure:"model"      yaml:"model"`
+	Suggest    bool   `mapstructure:"suggest"    yaml:"suggest"`
+	FindRerank bool   `mapstructure:"find_rerank" yaml:"find_rerank"`
 }
 
 // CustomProvider resolves a user-named provider by the name used in
@@ -960,6 +972,10 @@ func Defaults() Config {
 		AI: AIConfig{
 			Enabled:  true,
 			Provider: "",
+			Jev: JevConfig{
+				Endpoint: "https://api.typesafe.ai/v1/systemone",
+				Model:    "jev-latest",
+			},
 			// Lang empty means "follow output.lang" (resolved in Load). An
 			// explicit ai.lang in config/env still wins. fallbackLang() turns a
 			// still-empty value into "en" at the call site.

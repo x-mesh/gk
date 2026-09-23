@@ -3,12 +3,15 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/x-mesh/gk/internal/config"
 )
 
 // Bounds on one gk_suggest result. The tool feeds a single trailing
@@ -27,6 +30,8 @@ const (
 	// keywords. Long texts run to paragraphs of prose; matching all of it makes
 	// verbose commands win on volume rather than relevance.
 	suggestLongScanLimit = 400
+	suggestMaxCandidates = 256
+	suggestJevMinScore   = 1.5
 )
 
 // suggestFlag is one notable flag of a matched command.
@@ -71,6 +76,91 @@ func chatSuggestLookup(cmd *cobra.Command) func(context.Context, string) (string
 		}
 		return string(out), nil
 	}
+}
+
+func chatSuggestLookupWithJev(cmd *cobra.Command, jev config.JevConfig) func(context.Context, string) (string, error) {
+	root := cmd.Root()
+	return func(ctx context.Context, intent string) (string, error) {
+		if !jev.Suggest {
+			return chatSuggestLookup(cmd)(ctx, intent)
+		}
+		catalogue, err := suggestCatalogue(root)
+		if err != nil {
+			return "", err
+		}
+		if len(catalogue) > suggestMaxCandidates {
+			return "", fmt.Errorf("gk_suggest: command catalogue exceeds %d candidates", suggestMaxCandidates)
+		}
+		stateCandidates := make([]map[string]any, 0, len(catalogue))
+		jevCandidates := make([]jevCandidate, 0, len(catalogue))
+		for i, match := range catalogue {
+			id := fmt.Sprintf("command-%d", i)
+			stateCandidates = append(stateCandidates, map[string]any{
+				"id": id, "path": match.Command, "summary": truncateRunes(match.Summary, 512), "flags": match.Flags,
+			})
+			jevCandidates = append(jevCandidates, jevCandidate{ID: id, Text: match.Command + " " + match.Summary})
+		}
+		scores, _, err := scoreWithJev(ctx, jev, "suggest", map[string]any{
+			"intent": truncateRunes(intent, 200), "candidates": stateCandidates,
+		}, jevCandidates)
+		if err != nil {
+			return "", err
+		}
+		type scored struct {
+			match suggestMatch
+			score float64
+		}
+		selected := make([]scored, 0, suggestMaxMatches)
+		for i, match := range catalogue {
+			if scores[fmt.Sprintf("command-%d", i)] < suggestJevMinScore {
+				continue
+			}
+			selected = append(selected, scored{match: match, score: scores[fmt.Sprintf("command-%d", i)]})
+		}
+		sort.SliceStable(selected, func(i, j int) bool {
+			if selected[i].score != selected[j].score {
+				return selected[i].score > selected[j].score
+			}
+			return selected[i].match.Command < selected[j].match.Command
+		})
+		if len(selected) > suggestMaxMatches {
+			selected = selected[:suggestMaxMatches]
+		}
+		matches := make([]suggestMatch, 0, len(selected))
+		for _, item := range selected {
+			matches = append(matches, item.match)
+		}
+		res := suggestResult{Matches: matches}
+		if len(matches) == 0 {
+			res.Matches = []suggestMatch{}
+			res.Note = "No gk command matches this intent. Do not invent one — either suggest nothing or say plainly that gk has no command for it."
+		}
+		out, err := json.Marshal(res)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
+	}
+}
+
+func suggestCatalogue(root *cobra.Command) ([]suggestMatch, error) {
+	var matches []suggestMatch
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			if suggestEligible(sub) {
+				matches = append(matches, suggestMatch{
+					Command: sub.CommandPath(),
+					Summary: truncateRunes(sub.Short, 512),
+					Flags:   notableFlags(sub),
+				})
+			}
+			walk(sub)
+		}
+	}
+	walk(root)
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Command < matches[j].Command })
+	return matches, nil
 }
 
 // suggestCommands scores every runnable command in the tree against the

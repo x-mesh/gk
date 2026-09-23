@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 )
 
@@ -102,7 +103,9 @@ type findResult struct {
 	Matches []findMatch `json:"matches"`
 	// Failed records a mode that errored (e.g. an unknown --ref). The other modes
 	// still return: a partial answer beats no answer, but it must not look complete.
-	Failed map[string]string `json:"failed,omitempty"`
+	Failed     map[string]string `json:"failed,omitempty"`
+	Ranking    *findRanking      `json:"ranking,omitempty"`
+	allMatches []findMatch
 }
 
 func runFind(cmd *cobra.Command, args []string) error {
@@ -136,14 +139,24 @@ func runFind(cmd *cobra.Command, args []string) error {
 	if err := validateFindSince(cmd.Context(), runner, since); err != nil {
 		return err
 	}
-	res := findCommits(cmd.Context(), runner, findQuery{
+	findQ := findQuery{
 		query: query, limit: limit, since: since, author: author,
 		path: path, ref: ref,
 		message: message, content: content, pathMode: pathMode,
 		// --follow only has useful, well-defined semantics for the path-only
 		// form. With a query, --path is a scope filter rather than a match.
 		follow: pathMode && query == "" && isLiteralFindPath(path),
-	})
+	}
+	res := findCommits(cmd.Context(), runner, findQ)
+	cfg, cfgErr := config.Load(cmd.Flags())
+	if cfgErr != nil {
+		return cfgErr
+	}
+	if cfg.AI.Jev.FindRerank {
+		if err := rerankFindResult(cmd.Context(), &res, findQ, cfg.AI.Jev); err != nil {
+			return invalidFindJevConfig(err)
+		}
+	}
 
 	if asJSON {
 		return emitAgentResult(cmd.OutOrStdout(), res)
@@ -311,10 +324,12 @@ func findCommits(ctx context.Context, runner *git.ExecRunner, q findQuery) findR
 		}
 		return matches[i].when.After(matches[j].when) // then newest
 	})
+	allMatches := append([]findMatch(nil), matches...)
 	if len(matches) > q.limit {
 		matches = matches[:q.limit]
 	}
 	res.Matches = matches
+	res.allMatches = allMatches
 	res.Count = len(matches)
 	return res
 }
@@ -412,6 +427,7 @@ func renderFind(w io.Writer, res findResult) {
 	}
 	if res.Count == 0 {
 		fmt.Fprintf(w, "no commits match %q (searched: %s)\n", res.Query, strings.Join(res.Modes, ", "))
+		renderFindRanking(res, func(format string, args ...any) { fmt.Fprintf(w, format, args...) })
 		return
 	}
 	for _, m := range res.Matches {
@@ -420,4 +436,5 @@ func renderFind(w io.Writer, res findResult) {
 	}
 	fmt.Fprintf(w, "\n%d commits · searched %s across %s\n",
 		res.Count, strings.Join(res.Modes, " + "), res.Scope)
+	renderFindRanking(res, func(format string, args ...any) { fmt.Fprintf(w, format, args...) })
 }

@@ -62,12 +62,12 @@ var gkForGroup = map[string]string{
 // Only "integration" needs it, and it needs it badly: the group spans pull,
 // merge and rebase, which are different operations on different refs. A fetch
 // is not in the group — gk merge and gk sync do not fetch, so "fetch, then
-// merge" is still two commands with git-kit. Answering "git-kit pull" for a `git merge origin/feature` run is worse
-// than answering nothing — gk pull integrates the UPSTREAM, so an agent that
-// follows the nudge merges a branch it never asked for. Naming the wrong verb
-// is the same defect class as reporting a covered command as a gap: the hook
-// speaks with gk's authority, so a confident wrong answer costs more than
-// silence.
+// merge" is still two commands with git-kit. Answering "git-kit pull" for a
+// `git merge origin/feature` run is worse than answering nothing — gk pull
+// integrates the UPSTREAM, so an agent that follows the nudge merges a branch
+// it never asked for. Naming the wrong verb is the same defect class as
+// reporting a covered command as a gap: the hook speaks with gk's authority,
+// so a confident wrong answer costs more than silence.
 //
 // The LAST explicit merge/rebase in the run wins: it is the integration that
 // actually happened. A fetch segment that shares a turn with one of them is

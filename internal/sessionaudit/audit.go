@@ -1227,9 +1227,7 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 					pushEvidence = append(pushEvidence, seg.Text)
 					matched = true
 				}
-				// raw-push waits for the end of the file: in a release session the
-				// push is part of raw-release-sequence and must not count twice.
-				if kind := gitSegmentFinding(subcmd, args); kind != "" && kind != "raw-push" {
+				if kind := gitSegmentFinding(subcmd, args); kind != "" {
 					addFinding(findings, kind, file, seg.Text, evidenceCap)
 					matched = true
 				}
@@ -1254,6 +1252,10 @@ func addFindings(findings map[string]*Finding, file string, commands []string, e
 		addFinding(findings, "raw-release-sequence", file, releaseEvidence, evidenceCap)
 		return
 	}
+	// raw-push is decided here, at the end of the file, and not in
+	// gitSegmentFinding: in a release session the push belongs to
+	// raw-release-sequence and must not count twice, and Hint stays silent on
+	// a lone push by design.
 	for _, ev := range pushEvidence {
 		addFinding(findings, "raw-push", file, ev, evidenceCap)
 	}
@@ -2210,8 +2212,6 @@ func gitSegmentFinding(subcmd string, args []string) string {
 		return ""
 	case isRawIntegration(subcmd):
 		return "raw-integration"
-	case subcmd == "push":
-		return "raw-push"
 	case isRawBranchSwitch(subcmd, args):
 		return "raw-branch-switch"
 	case isRawWorktree(subcmd):

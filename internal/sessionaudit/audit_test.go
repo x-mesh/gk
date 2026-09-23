@@ -1332,9 +1332,10 @@ func TestHint_OpControlPushAndUncoveredForms(t *testing.T) {
 	if res := Hint("git rebase --continue"); !res.Covered || !containsString(res.CoveredBy, "git-kit continue") {
 		t.Errorf("Hint(rebase --continue) = %+v, want covered by git-kit continue", res)
 	}
-	if res := Hint("git push -u origin feature/x"); !res.Covered || res.Kind != "raw-push" ||
-		len(res.CoveredBy) == 0 || res.CoveredBy[0] != "git-kit push" {
-		t.Errorf("Hint(git push) = %+v, want covered raw-push by git-kit push", res)
+	// The audit counts a lone push as raw-push, but the hint does not nag it
+	// inline — see the tag/push note on Hint.
+	if res := Hint("git push -u origin feature/x"); res.Covered {
+		t.Errorf("Hint(git push) = %+v, want silent", res)
 	}
 	// No git-kit verb answers these. A covered hint would send the agent to a
 	// command that does something else.

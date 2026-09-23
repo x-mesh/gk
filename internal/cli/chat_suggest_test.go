@@ -145,6 +145,14 @@ func TestChatSuggestLookupCapsMatches(t *testing.T) {
 }
 
 func TestChatSuggestLookupWithJevRanksRealCommands(t *testing.T) {
+	catalogue, err := suggestCatalogue(rootCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalogue) <= suggestJevBatchSize {
+		t.Fatalf("test requires more than %d eligible commands, got %d", suggestJevBatchSize, len(catalogue))
+	}
+	var callCount, evaluatedCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			State struct {
@@ -160,9 +168,14 @@ func TestChatSuggestLookupWithJevRanksRealCommands(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if len(request.State.Candidates) != len(request.Questions) || len(request.Questions) < suggestMaxMatches {
+		if len(request.State.Candidates) != len(request.Questions) {
 			t.Errorf("evaluated %d candidates with %d questions", len(request.State.Candidates), len(request.Questions))
 		}
+		if len(request.Questions) > suggestJevBatchSize {
+			t.Errorf("request has %d questions, maximum is %d", len(request.Questions), suggestJevBatchSize)
+		}
+		callCount++
+		evaluatedCount += len(request.State.Candidates)
 		answers := make(map[string]jevScoreAnswer, len(request.Questions))
 		for _, candidate := range request.State.Candidates {
 			score := 0.0
@@ -195,6 +208,10 @@ func TestChatSuggestLookupWithJevRanksRealCommands(t *testing.T) {
 	}
 	if len(result.Matches) != 1 || result.Matches[0].Command != "gk doctor" {
 		t.Fatalf("Jev results = %+v", result.Matches)
+	}
+	wantCalls := (len(catalogue) + suggestJevBatchSize - 1) / suggestJevBatchSize
+	if callCount != wantCalls || evaluatedCount != len(catalogue) {
+		t.Fatalf("evaluated %d candidates in %d calls, want %d candidates in %d calls", evaluatedCount, callCount, len(catalogue), wantCalls)
 	}
 }
 

@@ -807,10 +807,10 @@ no diff body or file content. It uses one request with a ten-second timeout.
 An active request error stops the command. The client does not retry or use a
 silent fallback.
 
-`gk chat` evaluates all eligible commands and returns at most five commands
-with a score of at least `1.5`. `gk find` evaluates at most fifty merged
-history candidates before the final result limit. Jev ranking does not remove
-low-score candidates.
+`gk chat` evaluates all eligible commands in requests of up to 64 commands.
+It returns at most five commands with a score of at least `1.5`. `gk find`
+evaluates at most fifty merged history candidates before the final result
+limit. Jev ranking does not remove low-score candidates.
 
 The CLI masks the Jev key in `config show`, `config get`, `config set`, and
 the setup summary. `--local` cannot write Jev settings.

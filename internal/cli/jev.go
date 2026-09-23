@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,10 +20,13 @@ import (
 )
 
 const (
-	jevTimeout          = 10 * time.Second
-	jevMaxRequestBytes  = 256 << 10
-	jevMaxResponseBytes = 1 << 20
-	jevMaxTextRunes     = 2048
+	jevTimeout                 = 10 * time.Second
+	jevMaxRequestBytes         = 256 << 10
+	jevMaxResponseBytes        = 1 << 20
+	jevMaxDebugErrorBytes      = 4 << 10
+	jevMaxDebugErrorRunes      = 512
+	jevMaxTextRunes            = 2048
+	jevProbabilitySumTolerance = 1e-2
 )
 
 type jevCandidate struct {
@@ -97,6 +101,7 @@ func scoreWithJev(ctx context.Context, cfg config.JevConfig, feature string, sta
 	if err != nil {
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: %w", feature, err)
 	}
+	Dbg("jev %s request: model=%q questions=%d body_bytes=%d", feature, cfg.Model, len(questions), len(body))
 	callCtx, cancel := context.WithTimeout(ctx, jevTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -119,6 +124,9 @@ func scoreWithJev(ctx context.Context, cfg config.JevConfig, feature string, sta
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if Debug() {
+			debugJevHTTPError(feature, resp)
+		}
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: HTTP status %d", feature, resp.StatusCode)
 	}
 	limited := io.LimitReader(resp.Body, jevMaxResponseBytes+1)
@@ -130,12 +138,15 @@ func scoreWithJev(ctx context.Context, cfg config.JevConfig, feature string, sta
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: response exceeds %d bytes", feature, jevMaxResponseBytes)
 	}
 	if err := decodeJSONUnique(responseBody, &struct{}{}); err != nil {
+		Dbg("jev %s response: invalid JSON (%d bytes)", feature, len(responseBody))
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: invalid response JSON", feature)
 	}
 	var parsed jevResponse
 	if err := json.Unmarshal(responseBody, &parsed); err != nil {
+		Dbg("jev %s response: invalid shape (%d bytes)", feature, len(responseBody))
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: invalid response", feature)
 	}
+	debugJevResponse(feature, parsed)
 	if strings.TrimSpace(parsed.Model) == "" {
 		return nil, jevCallInfo{}, fmt.Errorf("jev %s: response model is empty", feature)
 	}
@@ -165,12 +176,57 @@ func scoreWithJev(ctx context.Context, cfg config.JevConfig, feature string, sta
 			}
 			sum += probability
 		}
-		if math.Abs(sum-1) > 1e-6 {
-			return nil, jevCallInfo{}, fmt.Errorf("jev %s: score probabilities do not sum to one", feature)
+		if math.Abs(sum-1) > jevProbabilitySumTolerance {
+			return nil, jevCallInfo{}, fmt.Errorf("jev %s: score probabilities sum to %.6f", feature, sum)
 		}
 		result[id] = answer.Score
 	}
 	return result, jevCallInfo{Model: parsed.Model, Requested: len(candidates), Evaluated: len(result)}, nil
+}
+
+func debugJevResponse(feature string, response jevResponse) {
+	if !Debug() {
+		return
+	}
+	ids := make([]string, 0, len(response.Answers))
+	for id := range response.Answers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	Dbg("jev %s response: model=%q answers=%d", feature, response.Model, len(ids))
+	for _, id := range ids {
+		answer := response.Answers[id]
+		probabilities := answer.Probabilities
+		sum := probabilities["0"] + probabilities["1"] + probabilities["2"]
+		Dbg("jev %s response: id=%q type=%q score=%.6f confidence=%.6f probabilities=[%.6f, %.6f, %.6f] sum=%.6f",
+			feature, id, answer.Type, answer.Score, answer.Confidence,
+			probabilities["0"], probabilities["1"], probabilities["2"], sum)
+	}
+}
+
+func debugJevHTTPError(feature string, resp *http.Response) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, jevMaxDebugErrorBytes+1))
+	if err != nil {
+		Dbg("jev %s response: HTTP %d content_type=%q error_body=unreadable", feature, resp.StatusCode, resp.Header.Get("Content-Type"))
+		return
+	}
+	if len(body) > jevMaxDebugErrorBytes {
+		Dbg("jev %s response: HTTP %d content_type=%q error_body_omitted=over_%d_bytes",
+			feature, resp.StatusCode, resp.Header.Get("Content-Type"), jevMaxDebugErrorBytes)
+		return
+	}
+	redacted, _, err := aicommit.Redact(string(body), aicommit.PrivacyGateOptions{
+		DenyPaths:      config.DefaultDenyPaths(),
+		SecretPatterns: vendorSecretPatterns,
+		MaxSecrets:     -1,
+	})
+	if err != nil {
+		Dbg("jev %s response: HTTP %d content_type=%q error_body=redaction_failed", feature, resp.StatusCode, resp.Header.Get("Content-Type"))
+		return
+	}
+	redacted, truncated := utf8Limit(strings.TrimSpace(redacted), jevMaxDebugErrorRunes)
+	Dbg("jev %s response: HTTP %d content_type=%q error_body=%q truncated=%t",
+		feature, resp.StatusCode, resp.Header.Get("Content-Type"), redacted, truncated)
 }
 
 func validateJevConfig(cfg config.JevConfig, feature string) error {

@@ -32,6 +32,7 @@ const (
 	suggestLongScanLimit = 400
 	suggestMaxCandidates = 256
 	suggestJevMinScore   = 1.5
+	suggestJevBatchSize  = 64
 )
 
 // suggestFlag is one notable flag of a matched command.
@@ -100,11 +101,21 @@ func chatSuggestLookupWithJev(cmd *cobra.Command, jev config.JevConfig) func(con
 			})
 			jevCandidates = append(jevCandidates, jevCandidate{ID: id, Text: match.Command + " " + match.Summary})
 		}
-		scores, _, err := scoreWithJev(ctx, jev, "suggest", map[string]any{
-			"intent": truncateRunes(intent, 200), "candidates": stateCandidates,
-		}, jevCandidates)
-		if err != nil {
-			return "", err
+		intent = truncateRunes(intent, 200)
+		scores := make(map[string]float64, len(jevCandidates))
+		batchCount := (len(jevCandidates) + suggestJevBatchSize - 1) / suggestJevBatchSize
+		for start := 0; start < len(jevCandidates); start += suggestJevBatchSize {
+			end := min(start+suggestJevBatchSize, len(jevCandidates))
+			batchScores, _, err := scoreWithJev(ctx, jev, "suggest", map[string]any{
+				"intent": intent, "candidates": stateCandidates[start:end],
+			}, jevCandidates[start:end])
+			if err != nil {
+				batch := start/suggestJevBatchSize + 1
+				return "", fmt.Errorf("gk_suggest: Jev batch %d/%d: %w", batch, batchCount, err)
+			}
+			for id, score := range batchScores {
+				scores[id] = score
+			}
 		}
 		type scored struct {
 			match suggestMatch

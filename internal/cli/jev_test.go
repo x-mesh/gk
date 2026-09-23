@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/x-mesh/gk/internal/config"
 )
 
@@ -78,6 +80,116 @@ func TestScoreWithJevRejectsDuplicateOrUnknownAnswers(t *testing.T) {
 		if err == nil {
 			t.Errorf("response %q must fail", response)
 		}
+	}
+}
+
+func TestScoreWithJevAllowsRoundedProbabilitySum(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		probabilities map[string]float64
+		wantError     bool
+	}{
+		{name: "rounded values", probabilities: map[string]float64{"0": 0.3333, "1": 0.3333, "2": 0.3333}},
+		{name: "invalid sum", probabilities: map[string]float64{"0": 0.32, "1": 0.32, "2": 0.32}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				response := jevResponse{
+					Model: "test-model",
+					Answers: map[string]jevScoreAnswer{
+						"a": {Type: "score", Score: 0.9999, Confidence: 0.5, Probabilities: tc.probabilities},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+			_, _, err := scoreWithJev(context.Background(), config.JevConfig{
+				Endpoint: server.URL,
+				APIKey:   "test-key",
+				Model:    "test-model",
+			}, "find", map[string]string{"query": "stop"}, []jevCandidate{{ID: "a"}})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestScoreWithJevDebugShowsResponseAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"jev-1.13.0","answers":{"candidate":{"type":"score","score":1.25,"confidence":0.6,"probabilities":{"0":0.1,"1":0.45,"2":0.45}}}}`)
+	}))
+	defer server.Close()
+
+	var output bytes.Buffer
+	previousWriter := SetDebugWriter(&output)
+	previousDebug := flagDebug
+	previousNoColor := color.NoColor
+	flagDebug = true
+	color.NoColor = true
+	t.Cleanup(func() {
+		flagDebug = previousDebug
+		color.NoColor = previousNoColor
+		SetDebugWriter(previousWriter)
+	})
+
+	_, _, err := scoreWithJev(context.Background(), config.JevConfig{
+		Endpoint: server.URL,
+		APIKey:   "test-key",
+		Model:    "test-model",
+	}, "find", nil, []jevCandidate{{ID: "candidate"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`jev find response: model="jev-1.13.0" answers=1`,
+		`id="candidate" type="score" score=1.250000 confidence=0.600000`,
+		`probabilities=[0.100000, 0.450000, 0.450000] sum=1.000000`,
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("debug output does not contain %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestScoreWithJevDebugShowsRedactedHTTPError(t *testing.T) {
+	const secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"question limit exceeded","api_key":"`+secret+`"}`)
+	}))
+	defer server.Close()
+
+	var output bytes.Buffer
+	previousWriter := SetDebugWriter(&output)
+	previousDebug := flagDebug
+	previousNoColor := color.NoColor
+	flagDebug = true
+	color.NoColor = true
+	t.Cleanup(func() {
+		flagDebug = previousDebug
+		color.NoColor = previousNoColor
+		SetDebugWriter(previousWriter)
+	})
+
+	_, _, err := scoreWithJev(context.Background(), config.JevConfig{
+		Endpoint: server.URL,
+		APIKey:   "test-key",
+		Model:    "test-model",
+	}, "suggest", nil, []jevCandidate{{ID: "candidate"}})
+	if err == nil || !strings.Contains(err.Error(), "HTTP status 400") {
+		t.Fatalf("error = %v, want HTTP 400", err)
+	}
+	got := output.String()
+	for _, want := range []string{"questions=1", "HTTP 400", "question limit exceeded"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("debug output does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, secret) {
+		t.Errorf("debug output leaked response secret: %s", got)
 	}
 }
 

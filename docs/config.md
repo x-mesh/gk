@@ -803,7 +803,7 @@ Environment variables override values in the global file. Repository-local
 `.gk.yaml` and git config entries do not override Jev settings.
 
 The client sends the search intent and bounded candidate metadata. It sends
-no diff body or file content. It uses one request with a ten-second timeout.
+no diff body or file content. Each request has a ten-second timeout.
 An active request error stops the command. The client does not retry or use a
 silent fallback.
 

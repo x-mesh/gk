@@ -1247,7 +1247,8 @@ searches and result sets with fewer than two candidates skip ranking.
 
 The text output reports the evaluated candidate count and model. JSON output
 adds a `ranking` object. An active Jev error returns an error and preserves no
-silent fallback result.
+silent fallback result. If the configuration does not load, `gk find` skips the
+ranking and reports the reason in `ranking.skipped`.
 
 **What `gk find` does not answer:** "what is in B that is not in A" (`git log A..B`). That is a range comparison, not a search. Use `gk log --ahead` / `--behind` (add `--base` to compare against the base branch instead of the upstream) for those.
 

@@ -1240,6 +1240,15 @@ Flags: `-n/--limit` (default 20) · `--since` · `--author` · `--path` · `--re
 
 A mode that fails (an unknown `--ref`, say) is reported in `failed` alongside whatever the other modes found: a partial answer beats no answer, but it must never read as a complete one.
 
+Set `ai.jev.find_rerank: true` to rank the merged candidates with Jev before
+`--limit` applies. The request contains the query, commit subjects, and
+existing match labels. It evaluates at most fifty candidates. Path-only
+searches and result sets with fewer than two candidates skip ranking.
+
+The text output reports the evaluated candidate count and model. JSON output
+adds a `ranking` object. An active Jev error returns an error and preserves no
+silent fallback result.
+
 **What `gk find` does not answer:** "what is in B that is not in A" (`git log A..B`). That is a range comparison, not a search. Use `gk log --ahead` / `--behind` (add `--base` to compare against the base branch instead of the upstream) for those.
 
 ---
@@ -1267,6 +1276,11 @@ them. A round that calls tools (there's no final text yet to stream)
 falls back to a normal non-stream request for that round; JSON/agent
 mode (`--json`/`GK_AGENT=1`) never streams, since the envelope needs the
 whole answer at once.
+
+Set `ai.jev.suggest: true` to rank `gk_suggest` candidates with Jev. The
+tool evaluates every eligible command in the live Cobra tree and returns at
+most five commands with a score of at least `1.5`. Jev errors become tool
+errors. The tool never executes a suggested command.
 
 ### Synopsis
 

@@ -269,7 +269,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// gk_suggest reads gk's own cobra tree, not the repository, so it needs
 	// neither the sandbox nor the runner — but it still goes through the
 	// registry's redact+cap stages like every other tool.
-	tools.RegisterSuggestTools(registry, chatSuggestLookup(cmd))
+	tools.RegisterSuggestTools(registry, chatSuggestLookupWithJev(cmd, cfg.AI.Jev))
 
 	// REPO_CONTEXT is gk context's own collector (collectContext), projected
 	// down to a token-budget-sensitive core — branch, upstream, ahead/

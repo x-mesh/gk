@@ -770,6 +770,51 @@ ai:
       - "secrets/**"
 ```
 
+### `ai.jev`
+
+| | |
+|-|-|
+| Type | object |
+| Default | `endpoint: https://api.typesafe.ai/v1/systemone`, `model: jev-latest`, `suggest: false`, `find_rerank: false` |
+| Scope | global config and `GK_AI_JEV_*` environment variables |
+
+Jev provides optional structured decisions for command suggestions and history
+ranking. Each feature has an independent switch. Both switches are off by
+default.
+
+Use `gk config set` for non-interactive setup:
+
+```bash
+gk config set ai.jev.endpoint https://api.typesafe.ai/v1/systemone
+gk config set ai.jev.api_key ts-...
+gk config set ai.jev.model jev-latest
+gk config set ai.jev.suggest true
+gk config set ai.jev.find_rerank true
+```
+
+Use environment variables when a key must stay outside the config file:
+
+```bash
+export GK_AI_JEV_API_KEY=ts-...
+export GK_AI_JEV_SUGGEST=true
+```
+
+Environment variables override values in the global file. Repository-local
+`.gk.yaml` and git config entries do not override Jev settings.
+
+The client sends the search intent and bounded candidate metadata. It sends
+no diff body or file content. It uses one request with a ten-second timeout.
+An active request error stops the command. The client does not retry or use a
+silent fallback.
+
+`gk chat` evaluates all eligible commands and returns at most five commands
+with a score of at least `1.5`. `gk find` evaluates at most fifty merged
+history candidates before the final result limit. Jev ranking does not remove
+low-score candidates.
+
+The CLI masks the Jev key in `config show`, `config get`, `config set`, and
+the setup summary. `--local` cannot write Jev settings.
+
 ### `ai.nvidia.model`
 
 | | |

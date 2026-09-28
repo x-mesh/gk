@@ -75,7 +75,7 @@ test-e2e:
 	go test -tags e2e ./internal/e2e/ -count=1 -v
 
 lint:
-	golangci-lint run
+	go tool -modfile=tools/go.mod golangci-lint run
 
 # `make check` mirrors what the CI jobs run end-to-end (vet → build → test
 # → e2e → lint). Run this before `gk ship` to catch lint/format regressions

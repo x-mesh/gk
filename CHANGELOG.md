@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gk worktree cleanup`이 `--global`(`-g`)로 저장소 밖에서도 모든 프로젝트의 워크트리를 한 번에 정리한다.** `worktree.base`(기본 `~/.gk/worktree`) 아래 프로젝트마다 저장소를 찾아 그 저장소의 `.gk.yaml` 정책(보호 브랜치, base 브랜치)을 그대로 적용해 기존 `cleanup`을 실행하므로, 지금 있는 디렉터리가 git 저장소가 아니어도 실행할 수 있다. 삭제 대상은 `worktree.base` 아래 워크트리로만 한정하고, 저장소를 git이 읽지 못하는 워크트리는 지우지 않고 `repo-unreadable` 사유로 보고한다. `--json` 결과의 각 항목에는 `project` 필드가 붙는다.
+
+### Fixed
+
+- **`gk worktree -g`(전역 워크트리 목록)가 이름에 `/`가 든 워크트리를 찾지 못하던 문제.** 워크트리 이름은 `fix/foo`나 `tm/xm/<id>`처럼 `/`를 포함할 수 있어 워크트리 루트가 프로젝트 디렉터리 1단계 아래가 아닌 경우가 있는데, 종전 탐색은 각 프로젝트의 첫 번째 하위 디렉터리 하나만 확인해 그 디렉터리가 중간 디렉터리이거나 원래 저장소 기록이 사라진 고아 디렉터리이면 프로젝트 전체를 목록에서 빠뜨렸다. `.git` 항목이 있는 디렉터리를 찾을 때까지 내려가며 탐색하고 main 워크트리 기준으로 저장소 중복을 제거하는 공용 탐색 함수로 고쳤으며, `gk worktree cleanup --global`도 같은 함수를 쓴다.
+
 ## [0.144.0] - 2026-09-23
 
 ### Added

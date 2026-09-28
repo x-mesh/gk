@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.145.0] - 2026-09-28
+
 ### Added
 
 - **`gk worktree cleanup`이 `--global`(`-g`)로 저장소 밖에서도 모든 프로젝트의 워크트리를 한 번에 정리한다.** `worktree.base`(기본 `~/.gk/worktree`) 아래 프로젝트마다 저장소를 찾아 그 저장소의 `.gk.yaml` 정책(보호 브랜치, base 브랜치)을 그대로 적용해 기존 `cleanup`을 실행하므로, 지금 있는 디렉터리가 git 저장소가 아니어도 실행할 수 있다. 삭제 대상은 `worktree.base` 아래 워크트리로만 한정하고, 저장소를 git이 읽지 못하는 워크트리는 지우지 않고 `repo-unreadable` 사유로 보고한다. `--json` 결과의 각 항목에는 `project` 필드가 붙는다.

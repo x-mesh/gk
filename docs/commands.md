@@ -2830,7 +2830,17 @@ their `gk-parent` or base.
 ```bash
 gk worktree cleanup --merged --stale 7d --json
 gk worktree cleanup --merged --stale 7d --delete-branches -y
+gk worktree cleanup --global --stale 14d
 ```
+
+With `--global`, cleanup scans every project under `worktree.base` (default
+`~/.gk/worktree`). It does not need a repository, so you can run it from any
+directory. It only removes worktrees under `worktree.base`. Each repository
+applies its own `.gk.yaml` rules for protected branches and the base branch.
+Worktree names can contain `/`, so cleanup searches each project directory for
+worktree roots at any depth. If git cannot read the repository of a worktree,
+cleanup skips it with the reason `repo-unreadable`. Cleanup does not delete these
+directories.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -2840,9 +2850,11 @@ gk worktree cleanup --merged --stale 7d --delete-branches -y
 | `-y, --yes` | false | Actually remove candidates |
 | `--force-stale-locks` | false | Unlock/remove stale locked worktrees |
 | `--discard-dirty` | false | Destructively remove dirty worktrees with `git worktree remove --force` |
+| `-g, --global` | false | Clean worktrees of all projects under `worktree.base`, also outside a repository |
 
 With `--json` (or `GK_AGENT=1`) the result is
-`{dry_run, candidates, removed, skipped, failed}`.
+`{dry_run, candidates, removed, skipped, failed}`. In `--global` mode, each
+entry also has a `project` field.
 
 ### List columns
 

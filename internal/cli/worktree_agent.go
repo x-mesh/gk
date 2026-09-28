@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/x-mesh/gk/internal/branchclean"
 	"github.com/x-mesh/gk/internal/branchparent"
@@ -60,6 +62,7 @@ type worktreeCleanupJSON struct {
 
 type worktreeCleanupEntry struct {
 	Path          string            `json:"path"`
+	Project       string            `json:"project,omitempty"`
 	Branch        string            `json:"branch,omitempty"`
 	Target        string            `json:"target,omitempty"`
 	Action        string            `json:"action,omitempty"`
@@ -401,14 +404,18 @@ gk-parent or base.`,
 	c.Flags().BoolP("yes", "y", false, "perform removals; without this, cleanup only reports candidates")
 	c.Flags().Bool("force-stale-locks", false, "unlock and remove worktrees whose lock holder is no longer running")
 	c.Flags().Bool("discard-dirty", false, "allow removal of dirty worktrees with git worktree remove --force (destructive)")
+	c.Flags().BoolP("global", "g", false, "clean gk-managed worktrees of every project under worktree.base; runs outside a repository")
 	return c
 }
 
 func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	runner := &git.ExecRunner{Dir: RepoFlag()}
-	if err := ensureGitRepo(ctx, runner); err != nil {
-		return err
+	global, _ := cmd.Flags().GetBool("global")
+	if !global {
+		if err := ensureGitRepo(ctx, runner); err != nil {
+			return err
+		}
 	}
 	cfg, _ := config.Load(cmd.Flags())
 	staleRaw, _ := cmd.Flags().GetString("stale")
@@ -419,14 +426,22 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	yes, _ := cmd.Flags().GetBool("yes")
 	dryRun := DryRun() || !yes
 
-	report, err := collectWorktreeCleanup(ctx, cmd, runner, cfg, stale)
-	if err != nil {
-		return err
+	var report worktreeCleanupJSON
+	if global {
+		report, err = runGlobalWorktreeCleanup(ctx, cmd, cfg, currentWorktreePath(ctx, runner), stale, dryRun)
+		if err != nil {
+			return err
+		}
+	} else {
+		report, err = collectWorktreeCleanup(ctx, cmd, runner, cfg, stale, "", currentWorktreePath(ctx, runner))
+		if err != nil {
+			return err
+		}
+		if !dryRun {
+			report.Removed, report.Failed = applyWorktreeCleanup(ctx, cmd, runner, report.Candidates)
+		}
 	}
 	report.DryRun = dryRun
-	if !dryRun {
-		report.Removed, report.Failed = applyWorktreeCleanup(ctx, cmd, runner, report.Candidates)
-	}
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), report)
 	}
@@ -434,13 +449,89 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, cfg *config.Config, stale time.Duration) (worktreeCleanupJSON, error) {
+// runGlobalWorktreeCleanup runs the per-repository cleanup for every
+// repository that owns a directory under worktree.base. Repositories are keyed
+// by their main worktree because two clones with the same basename share one
+// project directory. Only worktrees under base are considered.
+func runGlobalWorktreeCleanup(ctx context.Context, cmd *cobra.Command, cfg *config.Config, current string, stale time.Duration, dryRun bool) (worktreeCleanupJSON, error) {
+	report := worktreeCleanupJSON{
+		Candidates: []worktreeCleanupEntry{},
+		Skipped:    []worktreeCleanupEntry{},
+	}
+	base := ""
+	if cfg != nil {
+		base = expandHome(cfg.Worktree.Base)
+	}
+	if base == "" {
+		base = expandHome("~/.gk/worktree")
+	}
+	roots, err := managedWorktreeRoots(base)
+	if err != nil {
+		return report, fmt.Errorf("worktree cleanup: scan worktree base %q: %w", base, err)
+	}
+	base = resolvePath(base)
+	tag := func(rows []worktreeCleanupEntry) []worktreeCleanupEntry {
+		for i := range rows {
+			rows[i].Project = managedProjectOf(base, rows[i].Path)
+		}
+		return rows
+	}
+
+	seen := map[string]bool{}
+	for _, root := range roots {
+		main, err := mainWorktreePath(ctx, &git.ExecRunner{Dir: root.Path})
+		if err != nil {
+			report.Skipped = append(report.Skipped, worktreeCleanupEntry{
+				Path: root.Path, Project: root.Project, Reasons: []string{"repo-unreadable"}, Error: err.Error(),
+			})
+			continue
+		}
+		main = resolvePath(main)
+		if seen[main] {
+			continue
+		}
+		seen[main] = true
+
+		runner := &git.ExecRunner{Dir: main}
+		// Load the repository's own .gk.yaml so its protected branches and
+		// base branch decide what is safe, not the caller's cwd config.
+		repoFlags := pflag.NewFlagSet("worktree-cleanup-global", pflag.ContinueOnError)
+		repoFlags.String("repo", main, "")
+		repoCfg, _ := config.Load(repoFlags)
+		sub, err := collectWorktreeCleanup(ctx, cmd, runner, repoCfg, stale, base, current)
+		if err != nil {
+			report.Skipped = append(report.Skipped, worktreeCleanupEntry{
+				Path: main, Project: root.Project, Reasons: []string{"repo-unreadable"}, Error: err.Error(),
+			})
+			continue
+		}
+		report.Candidates = append(report.Candidates, tag(sub.Candidates)...)
+		report.Skipped = append(report.Skipped, tag(sub.Skipped)...)
+		if !dryRun {
+			removed, failed := applyWorktreeCleanup(ctx, cmd, runner, sub.Candidates)
+			report.Removed = append(report.Removed, removed...)
+			report.Failed = append(report.Failed, failed...)
+		}
+	}
+	return report, nil
+}
+
+func resolvePath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// collectWorktreeCleanup classifies the runner repository's worktrees. A
+// non-empty within limits the scan to worktrees under that directory; current
+// is the worktree the caller runs in, which is never removed.
+func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git.ExecRunner, cfg *config.Config, stale time.Duration, within, current string) (worktreeCleanupJSON, error) {
 	out, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return worktreeCleanupJSON{}, fmt.Errorf("worktree cleanup: list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	entries := parseWorktreePorcelain(string(out))
-	current := currentWorktreePath(ctx, runner)
 	meta := loadWorktreeBranchMeta(ctx, runner)
 	mergedOnly, _ := cmd.Flags().GetBool("merged")
 	deleteBranches, _ := cmd.Flags().GetBool("delete-branches")
@@ -469,6 +560,9 @@ func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git
 		Skipped:    []worktreeCleanupEntry{},
 	}
 	for _, e := range entries {
+		if within != "" && !strings.HasPrefix(resolvePath(e.Path), within+string(filepath.Separator)) {
+			continue
+		}
 		row := worktreeCleanupEntry{Path: e.Path, Branch: e.Branch}
 		skip := func(reason string) {
 			row.Reasons = append(row.Reasons, reason)

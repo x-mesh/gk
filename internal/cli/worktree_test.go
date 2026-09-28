@@ -204,6 +204,145 @@ func TestWorktreeCleanup_SquashMergedWorktree(t *testing.T) {
 	}
 }
 
+// --global must work from a directory that is not a repository, reclaim merged
+// managed worktrees across projects (including names nested under "/"), keep
+// unmerged ones, and report a worktree whose repository git cannot read
+// instead of failing the whole run.
+func TestWorktreeCleanup_Global(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	base := filepath.Join(t.TempDir(), "wtbase")
+	t.Setenv("GK_WORKTREE_BASE", base)
+
+	repoA := testutil.NewRepo(t)
+	repoA.WriteFile("a.txt", "a")
+	repoA.Commit("base a")
+	repoB := testutil.NewRepo(t)
+	repoB.WriteFile("b.txt", "b")
+	repoB.Commit("base b")
+
+	doneA := filepath.Join(base, "proj-a", "fix", "done-a")
+	doneB := filepath.Join(base, "proj-b", "done-b")
+	openB := filepath.Join(base, "proj-b", "open-b")
+	repoA.RunGit("worktree", "add", "-b", "feat/done-a", doneA)
+	repoB.RunGit("worktree", "add", "-b", "feat/done-b", doneB)
+	repoB.RunGit("worktree", "add", "-b", "feat/open-b", openB)
+	openRunner := &git.ExecRunner{Dir: openB}
+	if err := os.WriteFile(filepath.Join(openB, "wip.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, openRunner, "add", "-A")
+	mustRun(t, openRunner, "commit", "-m", "wip")
+	// A worktree whose main repository is gone keeps a .git file that points
+	// at a missing gitdir.
+	junk := filepath.Join(base, "proj-junk", "not-a-worktree")
+	if err := os.MkdirAll(junk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(junk, ".git"), []byte("gitdir: "+filepath.Join(t.TempDir(), "gone")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "proj-empty", "fix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := t.TempDir()
+	root, buf := buildWorktreeCmd(outside, "cleanup", "--global", "--json")
+	t.Cleanup(func() { flagJSON = false })
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree cleanup --global failed: %v\nout: %s", err, buf.String())
+	}
+	var report worktreeCleanupJSON
+	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
+		t.Fatalf("parse cleanup json: %v\nout: %s", err, buf.String())
+	}
+	candidates := map[string]string{}
+	for _, c := range report.Candidates {
+		candidates[c.Branch] = c.Project
+	}
+	if len(candidates) != 2 || candidates["feat/done-a"] != "proj-a" || candidates["feat/done-b"] != "proj-b" {
+		t.Fatalf("candidates = %+v, want feat/done-a (proj-a) and feat/done-b (proj-b)", report.Candidates)
+	}
+	skipReasons := map[string]string{}
+	for _, s := range report.Skipped {
+		if len(s.Reasons) > 0 {
+			skipReasons[filepath.Base(s.Path)] = s.Reasons[len(s.Reasons)-1]
+		}
+	}
+	if skipReasons["open-b"] != "unmerged" {
+		t.Errorf("open-b skip reason = %q, want unmerged (skipped %+v)", skipReasons["open-b"], report.Skipped)
+	}
+	if skipReasons["not-a-worktree"] != "repo-unreadable" {
+		t.Errorf("junk dir skip reason = %q, want repo-unreadable (skipped %+v)", skipReasons["not-a-worktree"], report.Skipped)
+	}
+	for _, s := range report.Skipped {
+		if sameDir(s.Path, repoA.Dir) || sameDir(s.Path, repoB.Dir) {
+			t.Errorf("main worktree %s is outside worktree.base and must not be reported", s.Path)
+		}
+	}
+
+	flagJSON = false
+	root2, buf2 := buildWorktreeCmd(outside, "cleanup", "--global", "--yes", "--delete-branches")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("worktree cleanup --global apply failed: %v\nout: %s", err, buf2.String())
+	}
+	for _, p := range []string{doneA, doneB} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("worktree still exists at %s (stat err=%v)", p, err)
+		}
+	}
+	if _, err := os.Stat(openB); err != nil {
+		t.Errorf("unmerged worktree %s was removed: %v", openB, err)
+	}
+	if out := strings.TrimSpace(repoA.RunGit("branch", "--list", "feat/done-a")); out != "" {
+		t.Errorf("feat/done-a still exists after cleanup: %q", out)
+	}
+}
+
+// The global picker must find worktrees whose names nest under "/", keep a
+// project's live worktrees when its first directory is an orphan, and list
+// both repositories when two clones share one project slug.
+func TestListGlobalWorktrees_NestedOrphanAndSharedSlug(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	base := filepath.Join(t.TempDir(), "wtbase")
+	cfg := config.Defaults()
+	cfg.Worktree.Base = base
+
+	repoA := testutil.NewRepo(t)
+	repoA.WriteFile("a.txt", "a")
+	repoA.Commit("base a")
+	repoB := testutil.NewRepo(t)
+	repoB.WriteFile("b.txt", "b")
+	repoB.Commit("base b")
+
+	nestedA := filepath.Join(base, "proj", "tm", "xm", "a1")
+	nestedB := filepath.Join(base, "proj", "fix", "b1")
+	repoA.RunGit("worktree", "add", "-b", "tm/xm/a1", nestedA)
+	repoB.RunGit("worktree", "add", "-b", "fix/b1", nestedB)
+	orphan := filepath.Join(base, "proj", "aaa-orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, ".git"), []byte("gitdir: "+filepath.Join(t.TempDir(), "gone")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := listGlobalWorktrees(context.Background(), &cfg)
+	if err != nil {
+		t.Fatalf("listGlobalWorktrees: %v", err)
+	}
+	branches := map[string]string{}
+	for _, g := range got {
+		branches[g.Entry.Branch] = g.Project
+	}
+	if len(got) != 2 || branches["tm/xm/a1"] != "proj" || branches["fix/b1"] != "proj" {
+		t.Fatalf("got %+v, want tm/xm/a1 and fix/b1 under proj only", got)
+	}
+}
+
 func mustRun(t *testing.T, r *git.ExecRunner, args ...string) {
 	t.Helper()
 	if _, stderr, err := r.Run(context.Background(), args...); err != nil {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1653,14 +1654,11 @@ type globalWorktree struct {
 }
 
 // listGlobalWorktrees scans the gk-managed base directory (default
-// ~/.gk/worktree) and returns one row per real git worktree found.
-// Implementation:
-//  1. read first-level dirs (= project slugs)
-//  2. for each project, run `git -C <first-wt> worktree list --porcelain`
-//     once and keep the entries whose paths fall under the project dir.
-//
-// This is one git invocation per project (not per worktree), so a few
-// hundred worktrees still load in well under a second.
+// ~/.gk/worktree) and returns one row per real git worktree found under it.
+// It runs `git worktree list --porcelain` once per repository (not per
+// worktree), keyed by the main worktree, so a few hundred worktrees still load
+// in well under a second. Worktrees whose repository git cannot read are left
+// out.
 func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorktree, error) {
 	if cfg == nil {
 		return nil, nil
@@ -1669,47 +1667,90 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 	if base == "" {
 		base = expandHome("~/.gk/worktree")
 	}
+	roots, err := managedWorktreeRoots(base)
+	if err != nil {
+		return nil, fmt.Errorf("scan worktree base %q: %w", base, err)
+	}
+	base = resolvePath(base)
+
+	var out []globalWorktree
+	seen := map[string]bool{}
+	for _, root := range roots {
+		r := &git.ExecRunner{Dir: root.Path}
+		stdout, _, lErr := r.Run(ctx, "worktree", "list", "--porcelain")
+		if lErr != nil {
+			continue
+		}
+		entries := parseWorktreePorcelain(string(stdout))
+		if len(entries) == 0 {
+			continue
+		}
+		main := resolvePath(entries[0].Path)
+		if seen[main] {
+			continue
+		}
+		seen[main] = true
+		for _, e := range entries {
+			project := managedProjectOf(base, e.Path)
+			if project == "" {
+				continue
+			}
+			out = append(out, globalWorktree{Project: project, Entry: e})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Project != out[j].Project {
+			return out[i].Project < out[j].Project
+		}
+		return out[i].Entry.Path < out[j].Entry.Path
+	})
+	return out, nil
+}
+
+type managedWorktreeRoot struct {
+	Project string
+	Path    string
+}
+
+// managedWorktreeRoots returns every directory under base/<project> that holds
+// a .git entry. Worktree names may contain "/" (fix/foo, tm/xm/<id>), so a
+// worktree root can sit at any depth below the project directory. A missing
+// base is normal on a fresh install and yields no roots.
+func managedWorktreeRoots(base string) ([]managedWorktreeRoot, error) {
 	projects, err := os.ReadDir(base)
 	if err != nil {
-		// Missing base is normal on a fresh install — return an empty
-		// list rather than failing the picker.
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("scan worktree base %q: %w", base, err)
+		return nil, err
 	}
-
-	var out []globalWorktree
+	var roots []managedWorktreeRoot
 	for _, proj := range projects {
 		if !proj.IsDir() {
 			continue
 		}
-		projectDir := filepath.Join(base, proj.Name())
-		wts, _ := os.ReadDir(projectDir)
-		var firstWT string
-		for _, wt := range wts {
-			if wt.IsDir() {
-				firstWT = filepath.Join(projectDir, wt.Name())
-				break
+		_ = filepath.WalkDir(filepath.Join(base, proj.Name()), func(path string, d os.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
 			}
-		}
-		if firstWT == "" {
-			continue
-		}
-		r := &git.ExecRunner{Dir: firstWT}
-		stdout, _, lErr := r.Run(ctx, "worktree", "list", "--porcelain")
-		if lErr != nil {
-			// Not a real git worktree (or stale), skip silently.
-			continue
-		}
-		for _, e := range parseWorktreePorcelain(string(stdout)) {
-			if !strings.HasPrefix(e.Path, projectDir+string(os.PathSeparator)) && e.Path != projectDir {
-				continue
+			if _, statErr := os.Lstat(filepath.Join(path, ".git")); statErr != nil {
+				return nil
 			}
-			out = append(out, globalWorktree{Project: proj.Name(), Entry: e})
-		}
+			roots = append(roots, managedWorktreeRoot{Project: proj.Name(), Path: path})
+			return filepath.SkipDir
+		})
 	}
-	return out, nil
+	return roots, nil
+}
+
+// managedProjectOf returns the project directory name of path under the
+// already resolved base, or "" when path is outside base.
+func managedProjectOf(base, path string) string {
+	rel, err := filepath.Rel(base, resolvePath(path))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return strings.SplitN(rel, string(filepath.Separator), 2)[0]
 }
 
 // findWorktreeEntry locates the entry whose Path matches path, returning

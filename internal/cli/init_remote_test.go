@@ -445,6 +445,9 @@ func TestSaveRemoteProfile_PreservesCommentsAndReloads(t *testing.T) {
 }
 
 func TestSaveRemoteProfile_Failures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root ignores permission bits")
+	}
 	// No structured host/owner (opaque URL) → refuse.
 	if err := saveRemoteProfile("/nonexistent", "x", &remotePlan{URL: "ssh://weird/path"}); err == nil {
 		t.Error("expected error for opaque plan")

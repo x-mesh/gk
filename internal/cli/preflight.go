@@ -181,7 +181,8 @@ func runBuiltinGofmt(ctx context.Context, r git.Runner) error {
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return nil // not a Go module — not our concern
 	}
-	if _, err := exec.LookPath("gofmt"); err != nil {
+	gofmt := resolveGofmt(ctx, root)
+	if gofmt == "" {
 		return nil // gofmt absent (rare outside CI) — skip rather than fail
 	}
 
@@ -207,7 +208,7 @@ func runBuiltinGofmt(ctx context.Context, r git.Runner) error {
 	// `gofmt -l` lists files whose formatting differs. A non-zero exit (e.g. a
 	// syntax error gofmt can't parse) is left to the compiler/linter, not a
 	// formatting gate.
-	cmd := exec.CommandContext(ctx, "gofmt", append([]string{"-l"}, targets...)...)
+	cmd := exec.CommandContext(ctx, gofmt, append([]string{"-l"}, targets...)...)
 	stdout, gerr := cmd.Output()
 	if gerr != nil {
 		return nil
@@ -226,7 +227,7 @@ func runBuiltinGofmt(ctx context.Context, r git.Runner) error {
 	}
 	return WithHint(
 		fmt.Errorf("gofmt: %d file(s) not formatted: %s", len(bad), strings.Join(bad, ", ")),
-		"fix with: gofmt -w "+strings.Join(bad, " "),
+		"fix with: "+gofmt+" -w "+strings.Join(bad, " "),
 	)
 }
 

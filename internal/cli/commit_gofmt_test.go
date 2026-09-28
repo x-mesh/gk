@@ -101,6 +101,48 @@ func TestGuardGofmt_NoGofmtBinarySkips(t *testing.T) {
 	}
 }
 
+func TestResolveGofmt_UsesModuleToolchain(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH")
+	}
+	root := writeGoModRepo(t, nil)
+	cmd := exec.Command("go", "env", "GOROOT")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go env GOROOT: %v", err)
+	}
+	want, err := exec.LookPath(filepath.Join(strings.TrimSpace(string(out)), "bin", "gofmt"))
+	if err != nil {
+		t.Skipf("toolchain has no gofmt: %v", err)
+	}
+	// A decoy gofmt first on PATH must lose to the toolchain's own gofmt.
+	decoyDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(decoyDir, "gofmt"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", decoyDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if got := resolveGofmt(context.Background(), root); got != want {
+		t.Errorf("resolveGofmt = %q, want %q", got, want)
+	}
+}
+
+func TestResolveGofmt_FallsBackToPath(t *testing.T) {
+	root := writeGoModRepo(t, nil)
+	decoyDir := t.TempDir()
+	decoy := filepath.Join(decoyDir, "gofmt")
+	if err := os.WriteFile(decoy, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No go binary on PATH → `go env` fails → PATH gofmt is used.
+	t.Setenv("PATH", decoyDir)
+
+	if got := resolveGofmt(context.Background(), root); got != decoy {
+		t.Errorf("resolveGofmt = %q, want %q", got, decoy)
+	}
+}
+
 func TestGuardGofmt_ExcludesGenerated(t *testing.T) {
 	if _, err := exec.LookPath("gofmt"); err != nil {
 		t.Skip("gofmt not on PATH")

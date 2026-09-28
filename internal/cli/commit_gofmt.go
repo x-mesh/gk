@@ -19,7 +19,7 @@ import (
 //
 // The guard is silent unless it has something to say: it self-skips when
 // the repo is not a Go module (no go.mod at repoRoot) or when no gofmt
-// binary is on PATH. Generated sources (*.pb.go, *_gen.go, zz_generated*)
+// binary is found (see resolveGofmt). Generated sources (*.pb.go, *_gen.go, zz_generated*)
 // and deleted files (no longer on disk) are excluded — the former are
 // machine-written, the latter cannot be reformatted.
 //
@@ -40,8 +40,8 @@ func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aic
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return
 	}
-	// gofmt absent (rare outside CI) → skip rather than error.
-	if _, err := exec.LookPath("gofmt"); err != nil {
+	gofmt := resolveGofmt(ctx, root)
+	if gofmt == "" {
 		return
 	}
 
@@ -70,7 +70,7 @@ func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aic
 	// nothing. A non-zero exit (e.g. a syntax error gofmt can't parse) is
 	// treated as "nothing to advise" — the compiler/linter owns that case,
 	// not a formatting nudge.
-	cmd := exec.CommandContext(ctx, "gofmt", append([]string{"-l"}, targets...)...)
+	cmd := exec.CommandContext(ctx, gofmt, append([]string{"-l"}, targets...)...)
 	stdout, err := cmd.Output()
 	if err != nil {
 		return
@@ -91,8 +91,31 @@ func guardGofmt(ctx context.Context, out io.Writer, repoRoot string, files []aic
 	for _, p := range unformatted {
 		lines = append(lines, "  "+p)
 	}
-	lines = append(lines, "fix with: gofmt -w "+strings.Join(unformatted, " "))
+	lines = append(lines, "fix with: "+gofmt+" -w "+strings.Join(unformatted, " "))
 	printNote(out, lines...)
+}
+
+// resolveGofmt returns the gofmt binary of the Go toolchain that root's
+// go.mod selects, or "" when none is available. gofmt output differs across
+// Go releases (go1.27 aligns map literals differently from go1.25), so
+// checking with whatever gofmt is on PATH flags files that the module's
+// toolchain — and its CI linter — consider clean, and vice versa.
+func resolveGofmt(ctx context.Context, root string) string {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOROOT")
+	cmd.Dir = root
+	if out, err := cmd.Output(); err == nil {
+		if p, err := exec.LookPath(filepath.Join(strings.TrimSpace(string(out)), "bin", "gofmt")); err == nil {
+			return p
+		}
+	}
+	// `go env` fails without a go binary, or offline when the go.mod
+	// toolchain is not downloaded yet; PATH gofmt keeps the check running
+	// at the cost of possible release-to-release formatting drift.
+	p, err := exec.LookPath("gofmt")
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 // resolveWorktreeRoot returns the absolute worktree top for path resolution:

@@ -105,7 +105,10 @@ func (k *Kiro) invoke(ctx context.Context, userPrompt string, stdinExtra []byte)
 		userPrompt,
 	}
 	stdout, stderr, err := k.Runner.Run(ctx, k.binary(), args, stdinExtra, nil)
-	if err != nil && len(stdout) == 0 {
+	// A failing kiro-cli still writes to stdout (e.g. a browser-auth
+	// spinner when the login expired), so a non-zero exit must win over
+	// stdout or the real cause surfaces as a JSON parse error.
+	if err != nil {
 		return nil, fmt.Errorf("kiro-cli: %w (stderr=%s)", err, string(stderr))
 	}
 	if len(stdout) == 0 {

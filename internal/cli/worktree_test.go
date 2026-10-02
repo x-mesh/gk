@@ -565,6 +565,47 @@ func TestWorktreeList_JSONEnriched(t *testing.T) {
 	if cur.Dirty == nil || cur.Dirty.Untracked < 1 {
 		t.Errorf("expected untracked dirty on current worktree, got %+v", cur.Dirty)
 	}
+	if len(cur.Untracked) != cur.Dirty.Untracked || !strings.Contains(strings.Join(cur.Untracked, ","), "scratch.txt") {
+		t.Errorf("expected untracked paths incl. scratch.txt, got %v", cur.Untracked)
+	}
+}
+
+func TestFormatDirtyCounts(t *testing.T) {
+	cases := []struct {
+		name      string
+		dirty     contextDirtyJSON
+		untracked []string
+		want      string
+	}{
+		{"untracked only", contextDirtyJSON{Untracked: 2}, nil, "2 untracked"},
+		{"modified and untracked", contextDirtyJSON{Unstaged: 4, Untracked: 1}, nil, "4 modified, 1 untracked"},
+		{"every kind", contextDirtyJSON{Conflicts: 1, Staged: 2, Unstaged: 3, Untracked: 4}, nil, "1 conflicted, 2 staged, 3 modified, 4 untracked"},
+		{"preview truncates", contextDirtyJSON{Untracked: 5}, []string{"a", "b", "c", "d", "e"}, "5 untracked [a, b, c, +2 more]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatDirtyCounts(tc.dirty, tc.untracked); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorktreeList_TextExplainsDirty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	if err := os.WriteFile(filepath.Join(repo.Dir, "scratch.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, buf := buildWorktreeCmd(repo.Dir, "list")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list: %v\nout: %s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "[dirty: 1 untracked]") {
+		t.Errorf("list should say why the tree is dirty, got:\n%s", buf.String())
+	}
 }
 
 // TestRunInWorktree_ExitCode covers exit-code reporting and the

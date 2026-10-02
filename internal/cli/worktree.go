@@ -195,6 +195,9 @@ type worktreeListEntryJSON struct {
 	Ahead    int               `json:"ahead,omitempty"`
 	Behind   int               `json:"behind,omitempty"`
 	Dirty    *contextDirtyJSON `json:"dirty,omitempty"`
+	// Untracked names the paths behind dirty.untracked, so a consumer can tell
+	// a stray lockfile from a file someone wrote.
+	Untracked []string `json:"untracked,omitempty"`
 	// Parent standing, measured against Parent (not the upstream that
 	// Ahead/Behind describe): parent_state is same | merged | ahead |
 	// diverged, and same/merged mean the branch holds no commit its parent
@@ -244,6 +247,9 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 					j.ParentAhead, j.ParentBehind, j.ParentState = rel.Ahead, rel.Behind, rel.State()
 				}
 				j.Dirty = worktreeDirtyAt(cmd.Context(), e.Path)
+				if j.Dirty != nil && j.Dirty.Untracked > 0 {
+					j.Untracked, _ = worktreeUntrackedAt(cmd.Context(), e.Path)
+				}
 			}
 			enriched = append(enriched, j)
 		}
@@ -276,7 +282,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		// without this marker would invite exactly the wrong deletion.
 		if !e.Bare {
 			if d := worktreeDirtyAt(cmd.Context(), e.Path); d != nil {
-				marks += fmt.Sprintf(" [dirty +%d]", d.Staged+d.Unstaged+d.Untracked+d.Conflicts)
+				marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
 			}
 		}
 		if e.Locked {

@@ -69,6 +69,8 @@ type worktreeCleanupEntry struct {
 	Reasons       []string          `json:"reasons,omitempty"`
 	Age           string            `json:"age,omitempty"`
 	Dirty         *contextDirtyJSON `json:"dirty,omitempty"`
+	Untracked     []string          `json:"untracked,omitempty"`
+	Disposable    []string          `json:"disposable,omitempty"`
 	Locked        bool              `json:"locked,omitempty"`
 	BranchDeleted bool              `json:"branch_deleted,omitempty"`
 	Error         string            `json:"error,omitempty"`
@@ -394,7 +396,12 @@ func newWorktreeCleanupCmd() *cobra.Command {
 By default cleanup is a dry-run report. Pass -y to remove candidates. The
 safe default skips the current worktree, dirty trees, live locks, protected
 branches, detached/bare worktrees, and branches that are not merged into their
-gk-parent or base.`,
+gk-parent or base. The report names the reason for every kept worktree.
+
+A tree whose only change is untracked, regenerable files (package-lock.json,
+yarn.lock, pnpm-lock.yaml, bun.lock, bun.lockb, .DS_Store) is not dirty:
+cleanup deletes those files and removes the worktree. Any other untracked file,
+or any tracked change, keeps the worktree.`,
 		Args: cobra.NoArgs,
 		RunE: runWorktreeCleanup,
 	}
@@ -602,12 +609,20 @@ func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git
 
 		dirty := worktreeDirtyAt(ctx, e.Path)
 		row.Dirty = dirty
-		if dirty != nil && !discardDirty {
-			skip("dirty")
-			continue
-		}
 		if dirty != nil {
-			row.Reasons = append(row.Reasons, "dirty-discard")
+			untracked, onlyUntracked := worktreeUntrackedAt(ctx, e.Path)
+			disposable := disposableUntrackedOnly(untracked, onlyUntracked)
+			switch {
+			case discardDirty:
+				row.Reasons = append(row.Reasons, "dirty-discard")
+			case disposable != nil:
+				row.Disposable = disposable
+				row.Reasons = append(row.Reasons, "disposable-untracked")
+			default:
+				row.Untracked = untracked
+				skip("dirty")
+				continue
+			}
 		} else {
 			row.Reasons = append(row.Reasons, "clean")
 		}
@@ -681,6 +696,14 @@ func applyWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git.E
 		progress = io.Discard
 	}
 	for _, c := range candidates {
+		if err := removeDisposableFiles(c.Path, c.Disposable); err != nil {
+			c.Error = err.Error()
+			failed = append(failed, c)
+			continue
+		}
+		for _, f := range c.Disposable {
+			fmt.Fprintf(progress, "deleted %s\n", filepath.Join(c.Path, f))
+		}
 		err := removeCleanupWorktree(ctx, runner, progress, c.Path, c.Locked && forceStaleLocks, c.Dirty != nil && discardDirty)
 		if err != nil {
 			c.Error = err.Error()
@@ -757,25 +780,4 @@ func parseWorktreeStale(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid --stale %q: must be positive", raw)
 	}
 	return d, nil
-}
-
-func renderWorktreeCleanup(w io.Writer, report worktreeCleanupJSON) {
-	if report.DryRun {
-		fmt.Fprintf(w, "worktree cleanup: %d candidate(s), %d skipped (dry-run)\n", len(report.Candidates), len(report.Skipped))
-	} else {
-		fmt.Fprintf(w, "worktree cleanup: removed %d, failed %d, skipped %d\n", len(report.Removed), len(report.Failed), len(report.Skipped))
-	}
-	for _, c := range report.Candidates {
-		fmt.Fprintf(w, "  remove %s (%s", c.Path, c.Branch)
-		if c.Target != "" {
-			fmt.Fprintf(w, " -> %s", c.Target)
-		}
-		if len(c.Reasons) > 0 {
-			fmt.Fprintf(w, "; %s", strings.Join(c.Reasons, ", "))
-		}
-		fmt.Fprintln(w, ")")
-	}
-	for _, c := range report.Failed {
-		fmt.Fprintf(w, "  failed %s: %s\n", c.Path, c.Error)
-	}
 }

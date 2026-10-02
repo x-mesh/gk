@@ -428,6 +428,42 @@ func dirtyPtrIfAny(d contextDirtyJSON) *contextDirtyJSON {
 	return &d
 }
 
+const untrackedPreviewLimit = 3
+
+// formatDirtyCounts spells a dirty tally out per kind ("4 modified, 1
+// untracked"). Passing the untracked paths appends a short preview of them.
+func formatDirtyCounts(d contextDirtyJSON, untracked []string) string {
+	var parts []string
+	if d.Conflicts > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflicted", d.Conflicts))
+	}
+	if d.Staged > 0 {
+		parts = append(parts, fmt.Sprintf("%d staged", d.Staged))
+	}
+	if d.Unstaged > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified", d.Unstaged))
+	}
+	if d.Untracked > 0 {
+		parts = append(parts, fmt.Sprintf("%d untracked%s", d.Untracked, formatUntrackedPreview(untracked)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatUntrackedPreview(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	shown := names
+	if len(shown) > untrackedPreviewLimit {
+		shown = shown[:untrackedPreviewLimit]
+	}
+	list := strings.Join(shown, ", ")
+	if extra := len(names) - len(shown); extra > 0 {
+		list += fmt.Sprintf(", +%d more", extra)
+	}
+	return " [" + list + "]"
+}
+
 // worktreeDirtyAt scans one linked worktree's working tree for uncommitted
 // changes by running the same porcelain tally against its own path. Returns
 // nil when clean (or unscannable) so only worktrees with work get a dirty

@@ -2823,9 +2823,19 @@ both shared across linked worktrees.
 ### gk worktree cleanup
 
 Bulk reclaim safe, finished worktrees. Without `-y`, cleanup is a dry-run
-report. The safe default skips the current worktree, dirty worktrees, live
-locks, protected branches, detached/bare entries, and branches not merged into
-their `gk-parent` or base.
+report that prints what *would* be removed and, for every worktree it keeps, the
+reason and (for dirty ones) the change counts plus the untracked file names. The
+safe default skips the current worktree, dirty worktrees, live locks, protected
+branches, detached/bare entries, and branches not merged into their `gk-parent`
+or base.
+
+A worktree whose **only** change is untracked, regenerable files — package-manager
+lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`,
+`bun.lockb`) and `.DS_Store` — is not treated as dirty. Cleanup lists those files
+(reason `disposable-untracked`, `disposable` in `--json`), deletes exactly them,
+then runs a plain `git worktree remove`, so git still refuses if anything else
+appeared in between. A tracked edit, a staged change, or any other untracked file
+(a note, a review report, a directory) keeps the worktree as `dirty`.
 
 ```bash
 gk worktree cleanup --merged --stale 7d --json
@@ -2854,7 +2864,9 @@ directories.
 
 With `--json` (or `GK_AGENT=1`) the result is
 `{dry_run, candidates, removed, skipped, failed}`. In `--global` mode, each
-entry also has a `project` field.
+entry also has a `project` field. A `dirty` skip carries `untracked` (the
+untracked paths); a candidate that will also delete lockfiles carries
+`disposable`.
 
 ### List columns
 
@@ -2864,7 +2876,7 @@ Each row pairs the branch's tip with its parent and the distance between them:
 ```
 █  WORKTREES   4 entries
      BRANCH          HEAD     PARENT   VS PARENT  AGE  PATH
-   ★ main            559ceab  -        -          2h   /Users/jinwoo/work/project/agentic/gk [dirty +2]
+   ★ main            559ceab  -        -          2h   /Users/jinwoo/work/project/agentic/gk [dirty: 2 untracked]
      fix-bug         559ceab  main     ● same     10d  /Users/jinwoo/.gk/worktree/gk/fix-bug
      old-spike       a1b2c3d  main     ● merged   3w   /Users/jinwoo/.gk/worktree/gk/old-spike
      improve-ux      d6c5d89  main     ↑2 ↓66     11d  /Users/jinwoo/.gk/worktree/gk/improve-ux
@@ -2879,15 +2891,15 @@ Each row pairs the branch's tip with its parent and the distance between them:
 | `VS PARENT` | Standing against `PARENT`. `● same` (green) — the two tips are the same commit. `● merged` (green) — the parent has everything this branch has and moved on. `↑2` / `↑2 ↓66` (yellow) — commits that live only here. `-` when the parent is unknown or its ref is gone. |
 | `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
 | `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |
-| `FLAGS` | `[dirty +N]` (uncommitted paths), `[locked]`, `[prunable]`. |
+| `FLAGS` | `[dirty: 4 modified, 1 untracked]` (uncommitted work, spelled out per kind), `[locked]`, `[prunable]`. |
 
 Green `VS PARENT` means the branch holds no commit its parent lacks — the
 precondition for reclaiming the worktree. It is not the whole verdict:
-`[dirty +N]` marks work that was never committed at all, and a green row with
+`[dirty: …]` marks work that was never committed at all, and a green row with
 that flag still has something to lose. `gk worktree cleanup` applies the full
 check (dirty, locks, protected branches) and is the safe way to act in bulk.
 
-`--json` adds `parent`, `parent_source` (`explicit` / `inferred`),
+`--json` adds `untracked` (the paths behind `dirty.untracked`), `parent`, `parent_source` (`explicit` / `inferred`),
 `parent_ahead`, `parent_behind`, and `parent_state`
 (`same` / `merged` / `ahead` / `diverged`) alongside the existing
 upstream-relative `ahead` / `behind`.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.0] - 2026-10-02
+
+### Added
+
+- **internal:** add disposable lockfile cleanup for worktrees
+
+### Fixed
+
+- **cli:** run gofmt checks with the module's selected toolchain
+
 ## [0.145.0] - 2026-09-28
 
 ### Added

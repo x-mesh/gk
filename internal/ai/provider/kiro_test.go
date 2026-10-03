@@ -152,6 +152,36 @@ func TestKiroEmptyResponseErrors(t *testing.T) {
 	}
 }
 
+func TestKiroNonZeroExitSurfacesStderr(t *testing.T) {
+	// Captured from kiro-cli 2.13.0 with an expired login: it exits 1,
+	// leaves a browser-auth spinner on stdout, and puts the real cause on
+	// stderr. Parsing that stdout used to yield "invalid character '\x1b'".
+	const stderr = "Failed to open browser for authentication.\nPlease try again with: kiro-cli login --use-device-flow\n"
+	runner := &FakeCommandRunner{Responses: []FakeCommandResponse{{
+		Stdout: []byte("\x1b[?25l\r▰▱▱▱▱▱▱ Opening browser... | Press (^) + C to cancel\x1b[?25h"),
+		Stderr: []byte(stderr),
+		Err:    &ExecError{Code: 1, Name: "kiro-cli", Stderr: stderr},
+	}}}
+	k := &Kiro{Runner: runner, Binary: "kiro-cli"}
+	_, err := k.Classify(context.Background(), ClassifyInput{
+		Files:        []FileChange{{Path: "a.go", Status: "modified", DiffHint: "+x\n"}},
+		AllowedTypes: []string{"feat"},
+	})
+	if err == nil {
+		t.Fatal("want error on non-zero exit")
+	}
+	if errors.Is(err, ErrProviderResponse) {
+		t.Errorf("non-zero exit must not be reported as a malformed response: %v", err)
+	}
+	var execErr *ExecError
+	if !errors.As(err, &execErr) {
+		t.Errorf("want *ExecError in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "kiro-cli login") {
+		t.Errorf("error must carry kiro-cli stderr: %v", err)
+	}
+}
+
 // Note: Kiro.Available's "kiro IDE launcher detected" branch uses
 // exec.LookPath, which we cannot mock without adding indirection.
 // The branch is exercised in integration tests; here we only test

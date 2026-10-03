@@ -2004,8 +2004,11 @@ Alias: `gk sw`.
 | `--fetch` | false | Refresh remote branches before switching; when opening the picker, show remote-only rows immediately |
 | `-m, --main` | false | Switch to the detected main/master branch — no branch argument needed |
 | `-d, --develop` | false | Switch to the `develop` / `dev` branch — no branch argument needed |
+| `--take` | false | If another worktree holds the branch, detach HEAD in that worktree and switch here. The worktree stays on disk |
 
 `--main` and `--develop` are mutually exclusive and incompatible with a positional `branch` argument or `--create`.
+
+`--take` needs a branch name, `--main`, or `--develop`. It cannot combine with `--create` or `--detach`. It acts only if the other worktree is unlocked, has no tracked changes, and has no merge, rebase, or cherry-pick in progress. If any check fails, the command stops with the normal conflict error and changes nothing. With `--dry-run`, the command prints the planned detach and does not run it.
 
 ### Keyword resolution
 

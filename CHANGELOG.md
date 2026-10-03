@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk switch <branch> --take` moves a branch that another worktree holds into the current worktree without deleting that worktree: it detaches HEAD there and then switches. It acts only when that worktree is unlocked, has no tracked changes, and has no merge/rebase/cherry-pick in progress (any probe failure refuses). The "branch is held by another worktree" error now lists `gk switch <branch> --take` as a `safe` remedy ahead of the `destructive` `gk worktree remove … && gk switch …`.
+
 ## [0.146.0] - 2026-10-02
 
 ### Added

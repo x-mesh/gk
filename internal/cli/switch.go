@@ -38,10 +38,13 @@ func init() {
 	cmd.Flags().Bool("fetch", false, "refresh remote branches before switching")
 	cmd.Flags().BoolP("main", "m", false, "switch to the detected main/master branch")
 	cmd.Flags().Bool("develop", false, "switch to the develop/dev branch")
+	cmd.Flags().Bool("take", false, "when another worktree holds the branch, detach HEAD there (clean, unlocked worktrees only) and switch here")
 	rootCmd.AddCommand(cmd)
 }
 
 const switchFetchTimeout = 10 * time.Second
+
+const switchTakeProbeTimeout = 5 * time.Second
 
 // switchRemoteStaleAfter is how old the last fetch may be before the picker's
 // `r` (show remotes) key refreshes first. Pressing `r` means "show me what's on
@@ -110,7 +113,14 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	fetch, _ := cmd.Flags().GetBool("fetch")
 	toMain, _ := cmd.Flags().GetBool("main")
 	toDevelop, _ := cmd.Flags().GetBool("develop")
+	take, _ := cmd.Flags().GetBool("take")
 
+	if take && (create || detach) {
+		return fmt.Errorf("--take cannot combine with --create or --detach")
+	}
+	if take && len(args) == 0 && !toMain && !toDevelop {
+		return fmt.Errorf("--take requires a branch name, --main, or --develop")
+	}
 	if toMain && toDevelop {
 		return fmt.Errorf("--main and --develop are mutually exclusive")
 	}
@@ -132,7 +142,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if !detach {
-			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, w, name, take); err != nil || done {
 				return err
 			}
 		}
@@ -144,7 +154,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if !detach {
-			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, w, name, take); err != nil || done {
 				return err
 			}
 		}
@@ -154,7 +164,7 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
 		name := args[0]
 		if !create && !detach {
-			if done, err := redirectIfWorktreeLocked(ctx, runner, name); err != nil || done {
+			if done, err := redirectIfWorktreeLocked(ctx, runner, w, name, take); err != nil || done {
 				return err
 			}
 		}
@@ -1606,8 +1616,11 @@ func handleDeleteAction(ctx context.Context, r git.Runner, cfg *config.Config, w
 // --develop) where the user's intent is to switch HERE.
 // Returns (false, err) with a clear message when locked; (false, nil) when free.
 // Worktree removal is intentionally left to the user — gk sw must not destroy
-// worktrees as a side-effect of a branch switch.
-func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) (bool, error) {
+// worktrees as a side-effect of a branch switch. With take, a worktree that is
+// provably safe to touch (see worktreeTakeable) is detached in place instead,
+// which releases the branch without deleting anything; (false, nil) is then
+// returned so the caller completes the switch.
+func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, w io.Writer, branch string, take bool) (bool, error) {
 	wt := loadSwitchWorktrees(ctx, r)
 	entry, locked := wt.byBranch[branch]
 	if !locked {
@@ -1636,6 +1649,18 @@ func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) 
 			"clear the stale registration and retry → "+command,
 			errRemedy{Command: command, Safety: "safe"},
 		)
+	}
+	takeable := worktreeTakeable(ctx, entry)
+	if take && takeable {
+		if flagDryRun {
+			fmt.Fprintf(w, "would detach HEAD in %s to release %s\n", entry.Path, branch)
+			return true, nil
+		}
+		if _, stderr, err := (&git.ExecRunner{Dir: entry.Path}).Run(ctx, "switch", "--detach"); err != nil {
+			return false, fmt.Errorf("detach HEAD in %s: %s: %w", entry.Path, strings.TrimSpace(string(stderr)), err)
+		}
+		fmt.Fprintln(w, successLinef("detached", "HEAD in %s (%s released)", entry.Path, branch))
+		return false, nil
 	}
 	dirtyMap := loadWorktreeDirtyStates(ctx, switchWorktreeMap{
 		byBranch: map[string]WorktreeEntry{entry.Branch: entry},
@@ -1679,12 +1704,37 @@ func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, branch string) 
 	}
 
 	moveCommand := fmt.Sprintf("gk worktree remove %s && gk switch %s", pathArg, branchArg)
+	remedies := []errRemedy{{Command: moveCommand, Safety: "destructive"}}
+	if takeable {
+		takeCommand := fmt.Sprintf("gk switch %s --take", branchArg)
+		hint += "\nmove it here, keeping that worktree (its HEAD is detached) → " + takeCommand
+		remedies = append([]errRemedy{{Command: takeCommand, Safety: "safe"}}, remedies...)
+	}
 	hint += "\nmove it here → " + moveCommand
-	return false, WithRemedy(
-		body,
-		hint,
-		errRemedy{Command: moveCommand, Safety: "destructive"},
-	)
+	return false, WithRemedy(body, hint, remedies...)
+}
+
+// worktreeTakeable reports whether entry's worktree can have its HEAD detached
+// without side effects: unlocked, no merge/rebase/cherry-pick in progress, and
+// no tracked changes. Unlike the picker's best-effort dirty scan (which treats
+// a timeout or error as clean), any failure here answers false, because the
+// result gates a command advertised as safe.
+func worktreeTakeable(ctx context.Context, entry WorktreeEntry) bool {
+	if entry.Locked || entry.Bare {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, switchTakeProbeTimeout)
+	defer cancel()
+	st, err := gitstate.Detect(ctx, entry.Path)
+	if err != nil || inProgressOp(st) != "" {
+		return false
+	}
+	out, _, err := (&git.ExecRunner{Dir: entry.Path}).Run(ctx,
+		"--no-optional-locks", "status", "--porcelain", "-z")
+	if err != nil {
+		return false
+	}
+	return git.ParsePorcelainV1(out).Clean()
 }
 
 func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, create, force, detach bool) error {

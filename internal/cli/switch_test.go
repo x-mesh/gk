@@ -168,6 +168,7 @@ func buildSwitchCmd(repoDir string, extraArgs ...string) (*cobra.Command, *bytes
 	sw.Flags().Bool("fetch", false, "")
 	sw.Flags().BoolP("main", "m", false, "")
 	sw.Flags().Bool("develop", false, "")
+	sw.Flags().Bool("take", false, "")
 
 	testRoot.AddCommand(sw)
 
@@ -222,8 +223,116 @@ func TestSwitch_WorktreeConflictNamesBranchAndDirectoryAndCompletesMove(t *testi
 		t.Errorf("hint does not complete remove + switch:\n%s", hint)
 	}
 	remedies := RemediesFrom(err)
-	if len(remedies) != 1 || remedies[0].Command != wantMove || remedies[0].Safety != "destructive" {
-		t.Errorf("remedies = %+v, want one destructive complete move command", remedies)
+	if len(remedies) != 2 ||
+		remedies[0].Command != "gk switch develop --take" || remedies[0].Safety != "safe" ||
+		remedies[1].Command != wantMove || remedies[1].Safety != "destructive" {
+		t.Errorf("remedies = %+v, want safe --take first, then destructive remove + switch", remedies)
+	}
+}
+
+func TestSwitch_TakeDetachesCleanWorktreeAndSwitchesHere(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("tracked.txt", "original")
+	repo.Commit("add tracked fixture")
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "parked")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if _, stderr, err := runner.Run(ctx, "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+
+	root, buf := buildSwitchCmd(repo.Dir, "develop", "--take")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("switch --take: %v\n%s", err, buf)
+	}
+
+	if out, _, err := runner.Run(ctx, "symbolic-ref", "--short", "HEAD"); err != nil || strings.TrimSpace(string(out)) != "develop" {
+		t.Errorf("main checkout HEAD = %q (err %v), want develop", out, err)
+	}
+	wtRunner := &git.ExecRunner{Dir: wtPath}
+	if _, _, err := wtRunner.Run(ctx, "symbolic-ref", "-q", "HEAD"); err == nil {
+		t.Error("parked worktree must be detached after --take")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("parked worktree must survive --take: %v", err)
+	}
+}
+
+func TestSwitch_TakeRefusesDirtyWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("tracked.txt", "original")
+	repo.Commit("add tracked fixture")
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release-prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if _, stderr, err := runner.Run(ctx, "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "tracked.txt"), []byte("unfinished"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop", "--take")
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "has uncommitted changes") {
+		t.Fatalf("--take on a dirty worktree must fail with the conflict error, got %v", err)
+	}
+	if _, _, derr := (&git.ExecRunner{Dir: wtPath}).Run(ctx, "symbolic-ref", "-q", "HEAD"); derr != nil {
+		t.Error("dirty worktree must keep its branch checked out")
+	}
+}
+
+func TestSwitch_TakeRefusesLockedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.Checkout("main")
+
+	wtPath := filepath.Join(t.TempDir(), "release-prep")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if _, stderr, err := runner.Run(ctx, "worktree", "add", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %s: %v", stderr, err)
+	}
+	if _, stderr, err := runner.Run(ctx, "worktree", "lock", "--reason", "active release", wtPath); err != nil {
+		t.Fatalf("worktree lock: %s: %v", stderr, err)
+	}
+
+	root, _ := buildSwitchCmd(repo.Dir, "develop", "--take")
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "currently checks it out") {
+		t.Fatalf("--take on a locked worktree must fail with the conflict error, got %v", err)
+	}
+	if _, _, derr := (&git.ExecRunner{Dir: wtPath}).Run(ctx, "symbolic-ref", "-q", "HEAD"); derr != nil {
+		t.Error("locked worktree must keep its branch checked out")
+	}
+}
+
+func TestSwitch_TakeRejectsConflictingFlags(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	for _, args := range [][]string{
+		{"x", "--take", "--create"},
+		{"x", "--take", "--detach"},
+		{"--take"},
+	} {
+		root, _ := buildSwitchCmd(repo.Dir, args...)
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "--take") {
+			t.Errorf("args %v: want a --take usage error, got %v", args, err)
+		}
 	}
 }
 

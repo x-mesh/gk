@@ -3043,6 +3043,8 @@ gk prompt-info [--format=plain|segment|json]
 | Inside a linked worktree, dir name != branch | `wt:<basename>` | `<repo>/<branch>` | (same as above) |
 | Detached HEAD inside a repo | as above (marker if linked, else empty) | `<repo>` | `{"linked":...,"repo":"<repo>"}` |
 
+If `GK_WT` is set, plain output adds the token `↩exit` after the worktree marker. JSON output adds `"subshell":true`. `gk wt` and the `gk sw` picker set `GK_WT` when they open a subshell, so the token reminds you to type `exit`. The token appears in any directory, also outside a git repo, because the subshell stays open. The `segment` format does not change.
+
 Plain output deduplicates `wt:<name>` to bare `wt` when the worktree directory name equals the branch (gk's default `~/.gk/worktree/<repo>/<branch>` layout makes this the common case) — the branch name is already in the prompt next door, so repeating it would just be noise. The unabbreviated `wt:<name>` is kept for the rare divergent case where the suffix still carries information.
 
 `<repo>` is derived from `git rev-parse --git-common-dir`: the parent directory's basename for regular repos (`<repo>/.git`) and the `.git`-stripped basename for bare repos (`<repo>.git`).

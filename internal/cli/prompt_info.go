@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +32,8 @@ Formats:
            are produced for each --include flag entry:
 
              wt | wt:<name>   linked worktree marker
+             ↩exit            shell was opened by gk (GK_WT is set); type
+                              exit to return. Printed even outside a repo
              wip              HEAD subject matches a WIP pattern
              ±N               N modified/untracked entries in the tree
              ↑N               N commits ahead of upstream
@@ -42,8 +45,8 @@ Formats:
            a single, deduplicated label that always tells you both the
            project and the branch.
 
-  json     Structured payload (linked, repo, name, path, branch, plus
-           any optional signals enabled via --include) for prompt
+  json     Structured payload (linked, repo, name, path, branch, subshell,
+           plus any optional signals enabled via --include) for prompt
            frameworks that compose their own segments.
 
 Includes (--include=<csv>) are opt-in because each one adds a git call
@@ -95,6 +98,10 @@ type promptInfo struct {
 	Name   string `json:"name,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Branch string `json:"branch,omitempty"`
+
+	// Subshell is true when this shell was opened by gk (GK_WT is set), so
+	// the prompt can remind the user that `exit` returns to the parent shell.
+	Subshell bool `json:"subshell,omitempty"`
 
 	WIP    bool   `json:"wip,omitempty"`
 	Dirty  int    `json:"dirty,omitempty"`
@@ -149,6 +156,7 @@ func runPromptInfo(cmd *cobra.Command, args []string) error {
 	}
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	info := detectPromptInfo(cmd.Context(), runner, includes)
+	info.Subshell = inGKSubshell()
 	return formatPromptInfo(cmd.OutOrStdout(), info, format)
 }
 
@@ -185,8 +193,15 @@ func formatPromptInfo(w io.Writer, info promptInfo, format string) error {
 	}
 }
 
+// inGKSubshell reports whether enterWorktreeSubshell started this shell. It
+// reads the environment only: prompt-info reruns on every prompt render, so
+// the check must not add a git call.
+func inGKSubshell() bool {
+	return os.Getenv("GK_WT") != ""
+}
+
 // plainTokens assembles the space-separated token list for `--format=plain`.
-// Order is fixed (worktree, wip, dirty, ahead, behind, state) so prompt
+// Order is fixed (worktree, subshell, wip, dirty, ahead, behind, state) so prompt
 // configs can rely on positional parsing if they want, and so visual
 // scanning of the prompt stays predictable.
 func plainTokens(info promptInfo) []string {
@@ -202,6 +217,9 @@ func plainTokens(info promptInfo) []string {
 		} else {
 			tokens = append(tokens, "wt:"+info.Name)
 		}
+	}
+	if info.Subshell {
+		tokens = append(tokens, "↩exit")
 	}
 	if info.WIP {
 		tokens = append(tokens, "wip")

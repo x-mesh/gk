@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
@@ -247,6 +249,12 @@ func TestPlainTokens_SignalOrder(t *testing.T) {
 			promptInfo{Linked: true, Name: "tmux", Branch: "feature/tmux", Repo: "gk", Dirty: 1},
 			"wt:tmux ±1",
 		},
+		{"subshell-only", promptInfo{Subshell: true}, "↩exit"},
+		{
+			"subshell-follows-worktree-marker",
+			promptInfo{Linked: true, Name: "fix-bug", Branch: "fix-bug", Repo: "gk", Subshell: true, WIP: true, Dirty: 2},
+			"wt ↩exit wip ±2",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -307,5 +315,47 @@ func TestDetectPromptInfo_WIP(t *testing.T) {
 	infoOff := detectPromptInfo(context.Background(), r, promptIncludes{})
 	if infoOff.WIP {
 		t.Errorf("expected WIP=false when include flag is off, got %+v", infoOff)
+	}
+}
+
+// TestRunPromptInfo_SubshellFromGKWT drives the real command path: GK_WT is
+// what enterWorktreeSubshell sets, so a prompt must show the exit reminder
+// when it is present and nothing extra when it is absent.
+func TestRunPromptInfo_SubshellFromGKWT(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	run := func(format string) string {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("format", format, "")
+		cmd.Flags().String("include", "", "")
+		cmd.SetContext(context.Background())
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		if err := runPromptInfo(cmd, nil); err != nil {
+			t.Fatalf("runPromptInfo: %v", err)
+		}
+		return strings.TrimRight(buf.String(), "\n")
+	}
+
+	t.Setenv("GK_WT", "")
+	if got := run("plain"); got != "" {
+		t.Errorf("plain without GK_WT = %q, want empty", got)
+	}
+	if got := run("json"); strings.Contains(got, "subshell") {
+		t.Errorf("json without GK_WT must omit subshell: %s", got)
+	}
+
+	t.Setenv("GK_WT", "/some/worktree")
+	if got := run("plain"); got != "↩exit" {
+		t.Errorf("plain with GK_WT = %q, want %q", got, "↩exit")
+	}
+	if got := run("json"); !strings.Contains(got, `"subshell":true`) {
+		t.Errorf("json with GK_WT missing subshell: %s", got)
+	}
+	if got := run("segment"); strings.Contains(got, "exit") {
+		t.Errorf("segment format must not change: %q", got)
 	}
 }

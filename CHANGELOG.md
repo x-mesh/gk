@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `gk prompt-info` marks a shell that gk opened with `gk wt` or the `gk sw` picker: when `GK_WT` is set, plain output adds the token `↩exit` after the `wt` marker and JSON output adds `"subshell":true`, so a prompt can remind the user that `exit` returns to the parent shell. The check reads the environment only and adds no git call.
 - `gk switch <branch> --take` moves a branch that another worktree holds into the current worktree without deleting that worktree: it detaches HEAD there and then switches. It acts only when that worktree is unlocked, has no tracked changes, and has no merge/rebase/cherry-pick in progress (any probe failure refuses). The "branch is held by another worktree" error now lists `gk switch <branch> --take` as a `safe` remedy ahead of the `destructive` `gk worktree remove … && gk switch …`.
 
 ## [0.146.0] - 2026-10-02

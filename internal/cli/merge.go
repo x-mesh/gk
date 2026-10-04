@@ -78,6 +78,15 @@ type mergeDeps struct {
 	Cmd         *cobra.Command // for --show-prompt / --skip-privacy; nil in tests
 }
 
+type mergeResultJSON struct {
+	Schema   int    `json:"schema"`
+	Source   string `json:"source"`
+	Receiver string `json:"receiver"`
+	PlanOnly bool   `json:"plan_only"`
+	NoCommit bool   `json:"no_commit"`
+	Squash   bool   `json:"squash"`
+}
+
 func runMerge(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil || cfg == nil {
@@ -92,6 +101,17 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		Out:     os.Stdout,
 		ErrOut:  os.Stderr,
 		Cmd:     cmd,
+	}
+	res := mergeResultJSON{Schema: 1, Receiver: flags.into, PlanOnly: flags.planOnly, NoCommit: flags.noCommit, Squash: flags.squash}
+	if JSONOut() {
+		if len(args) > 0 {
+			res.Source = args[0]
+		} else {
+			res.Source = currentMergeBranch(cmd.Context(), git.NewClient(deps.Runner))
+		}
+		if res.Receiver == "" {
+			res.Receiver = currentMergeBranch(cmd.Context(), git.NewClient(deps.Runner))
+		}
 	}
 	if flags.into != "" {
 		err = runMergeInto(cmd.Context(), deps, args, flags, func(path string) git.Runner {
@@ -111,7 +131,13 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		emitPullConflictJSON(cmd, ce.Dir, false)
 		os.Exit(ce.Code)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if JSONOut() {
+		return emitAgentResult(cmd.OutOrStdout(), res)
+	}
+	return nil
 }
 
 func readMergeFlags(cmd *cobra.Command) mergeFlags {

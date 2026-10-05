@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.147.0] - 2026-10-05
+
 ### Added
 
 - `gk prompt-info` marks a shell that gk opened with `gk wt` or the `gk sw` picker: when `GK_WT` is set, plain output adds the token `↩exit` after the `wt` marker and JSON output adds `"subshell":true`, so a prompt can remind the user that `exit` returns to the parent shell. The check reads the environment only and adds no git call.

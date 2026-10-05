@@ -76,6 +76,34 @@ type mergeDeps struct {
 	Out         io.Writer
 	ErrOut      io.Writer
 	Cmd         *cobra.Command // for --show-prompt / --skip-privacy; nil in tests
+	Result      *mergeResultJSON
+}
+
+// mergeResultJSON is the --json / agent-mode success payload. Every success
+// exit must fill it: an agent treats an empty stdout as a protocol failure,
+// and the already-up-to-date no-op is exactly the case integrators hit.
+type mergeResultJSON struct {
+	Schema   int    `json:"schema"`
+	Result   string `json:"result"` // merged | up-to-date | staged | planned
+	Noop     bool   `json:"noop"`
+	Receiver string `json:"receiver,omitempty"`
+	Source   string `json:"source"`
+	Pre      string `json:"pre,omitempty"`
+	Post     string `json:"post,omitempty"`
+	HeadOID  string `json:"head_oid,omitempty"`
+}
+
+const (
+	mergeResultMerged   = "merged"
+	mergeResultUpToDate = "up-to-date"
+	mergeResultStaged   = "staged"
+	mergeResultPlanned  = "planned"
+)
+
+func (d mergeDeps) setResult(r mergeResultJSON) {
+	if d.Result != nil {
+		*d.Result = r
+	}
 }
 
 func runMerge(cmd *cobra.Command, args []string) error {
@@ -89,17 +117,13 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		Runner:  &git.ExecRunner{Dir: RepoFlag()},
 		Config:  cfg,
 		Confirm: ui.Confirm,
-		Out:     os.Stdout,
+		Out:     cmd.OutOrStdout(),
 		ErrOut:  os.Stderr,
 		Cmd:     cmd,
 	}
-	if flags.into != "" {
-		err = runMergeInto(cmd.Context(), deps, args, flags, func(path string) git.Runner {
-			return &git.ExecRunner{Dir: path}
-		})
-	} else {
-		err = runMergeCore(cmd.Context(), deps, args[0], flags)
-	}
+	err = runMergeAndEmit(cmd.Context(), deps, args, flags, func(path string) git.Runner {
+		return &git.ExecRunner{Dir: path}
+	})
 	var ce *ConflictError
 	if errors.As(err, &ce) {
 		if h := HintFrom(err); h != "" {
@@ -112,6 +136,25 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		os.Exit(ce.Code)
 	}
 	return err
+}
+
+// runMergeAndEmit dispatches the merge and, under --json / GK_AGENT, writes
+// the success payload to deps.Out once — failures and the paused conflict
+// state are emitted by their own paths.
+func runMergeAndEmit(ctx context.Context, deps mergeDeps, args []string, flags mergeFlags, runnerForPath func(string) git.Runner) error {
+	res := &mergeResultJSON{}
+	deps.Result = res
+	var err error
+	if flags.into != "" {
+		err = runMergeInto(ctx, deps, args, flags, runnerForPath)
+	} else {
+		err = runMergeCore(ctx, deps, args[0], flags)
+	}
+	if err != nil || !JSONOut() {
+		return err
+	}
+	res.Schema = 1
+	return emitAgentResult(deps.Out, res)
 }
 
 func readMergeFlags(cmd *cobra.Command) mergeFlags {
@@ -235,6 +278,7 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 		)
 	}
 	if flags.planOnly {
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Noop: true, Receiver: current, Source: target, Pre: preHEAD, Post: preHEAD, HeadOID: preHEAD})
 		return nil
 	}
 
@@ -276,6 +320,15 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 	if deps.ErrOut != nil {
 		renderMergeSummary(ctx, deps.ErrOut, deps.Runner, preHEAD, postHEAD, target, current, flags)
 	}
+	res := mergeResultJSON{Result: mergeResultMerged, Receiver: current, Source: target, Pre: preHEAD, Post: postHEAD, HeadOID: postHEAD}
+	switch {
+	case flags.noCommit || flags.squash:
+		res.Result = mergeResultStaged
+	case preHEAD == postHEAD:
+		res.Result = mergeResultUpToDate
+		res.Noop = true
+	}
+	deps.setResult(res)
 	if stashed {
 		if err := popStash(ctx, deps.Runner); err != nil {
 			return fmt.Errorf("stash pop failed: %w", err)
@@ -335,7 +388,12 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 					"commit or stash the source worktree before `gk merge --into "+flags.into+"`",
 				)
 			}
-			if err := createWipCommit(ctx, deps.Runner, deps.Out); err != nil {
+			// The WIP notice is prose; under --json stdout carries only the result.
+			wipOut := deps.Out
+			if JSONOut() && deps.ErrOut != nil {
+				wipOut = deps.ErrOut
+			}
+			if err := createWipCommit(ctx, deps.Runner, wipOut); err != nil {
 				return fmt.Errorf("source wip commit: %w", err)
 			}
 		}
@@ -362,6 +420,8 @@ func runMergeInto(ctx context.Context, deps mergeDeps, args []string, flags merg
 		if deps.ErrOut != nil {
 			fmt.Fprintf(deps.ErrOut, "Already up to date — %s already contains %s\n", flags.into, source)
 		}
+		head, _ := resolveCommitSHA(ctx, deps.Runner, "refs/heads/"+flags.into)
+		deps.setResult(mergeResultJSON{Result: mergeResultUpToDate, Noop: true, Receiver: flags.into, Source: source, Pre: head, Post: head, HeadOID: head})
 		return nil
 	}
 	if runnerForPath == nil {
@@ -440,6 +500,7 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 		if deps.ErrOut != nil {
 			fmt.Fprintf(deps.ErrOut, "%s already contains %s at %s\n", receiver, source, shortSHA(sourceSHA))
 		}
+		deps.setResult(mergeResultJSON{Result: mergeResultUpToDate, Noop: true, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA})
 		return nil
 	}
 	isFF := base == receiverSHA
@@ -476,6 +537,7 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 	}
 
 	if flags.planOnly {
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Noop: true, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA})
 		return nil
 	}
 
@@ -523,6 +585,7 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 		renderMergeSummary(ctx, deps.ErrOut, deps.Runner, receiverSHA, newSHA, source, receiver, flags)
 		renderMergeIntoNextHint(deps.ErrOut, deps.Config, source, receiver)
 	}
+	deps.setResult(mergeResultJSON{Result: mergeResultMerged, Receiver: receiver, Source: source, Pre: receiverSHA, Post: newSHA, HeadOID: newSHA})
 	return nil
 }
 

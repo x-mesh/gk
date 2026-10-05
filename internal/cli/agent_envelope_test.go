@@ -17,9 +17,8 @@ func withAgentMode(t *testing.T, on bool) {
 	prevA, prevJ := flagAgent, flagJSON
 	t.Cleanup(func() { flagAgent, flagJSON = prevA, prevJ })
 	flagAgent = on
-	if on {
-		flagJSON = true
-	}
+	// Off means human mode: other tests leave flagJSON set, so clear it too.
+	flagJSON = on
 }
 
 // TestEmitAgentResult_GoldenWithoutAgentMode: without GK_AGENT the output

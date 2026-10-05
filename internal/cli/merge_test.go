@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -568,6 +569,7 @@ func TestRunMergeIntoDefaultSourceRejectsDirtySource(t *testing.T) {
 }
 
 func TestRunMergeIntoDirtySourceCanCreateWipCommit(t *testing.T) {
+	withAgentMode(t, false)
 	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
 		"symbolic-ref --short HEAD":  {Stdout: "ship\n"},
 		"status --porcelain=v1 -uno": {Stdout: " M local.go\n"},
@@ -959,5 +961,158 @@ func TestMergeSourceCleanable_SkipsProtectedSource(t *testing.T) {
 func TestMergeSourceCleanable_NilConfigStillOffers(t *testing.T) {
 	if !mergeSourceCleanable(nil, "feat/x", "main") {
 		t.Error("nil cfg should not suppress the cleanup hint")
+	}
+}
+
+type mergeEnvelopeForTest struct {
+	State  string          `json:"state"`
+	OK     bool            `json:"ok"`
+	Result mergeResultJSON `json:"result"`
+}
+
+func decodeMergeEnvelope(t *testing.T, out []byte) mergeEnvelopeForTest {
+	t.Helper()
+	var env mergeEnvelopeForTest
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatalf("stdout is not an agent envelope (%v):\n%q", err, out)
+	}
+	if env.State != envStateOK || !env.OK {
+		t.Fatalf("want state=ok ok=true, got %+v", env)
+	}
+	return env
+}
+
+func mergeCoreRunner(preHEAD, postHEAD string) git.Runner {
+	return &sequenceRunner{
+		FakeRunner: &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
+			"symbolic-ref --short HEAD":        {Stdout: "work\n"},
+			"merge-base HEAD main":             {Stdout: "abc123\n"},
+			"merge-tree --write-tree --no-messages --name-only --merge-base abc123 HEAD main": {Stdout: "tree123\n"},
+			"merge --no-edit main": {Stdout: "Already up to date.\n"},
+		}},
+		sequence: map[string][]git.FakeResponse{
+			"rev-parse HEAD": {{Stdout: preHEAD + "\n"}, {Stdout: postHEAD + "\n"}},
+		},
+	}
+}
+
+// An integrator merging a base the branch already contains must still get a
+// parseable result on stdout — an empty stdout reads as a protocol failure.
+func TestRunMergeAndEmit_AlreadyUpToDateEmitsEnvelope(t *testing.T) {
+	withAgentMode(t, true)
+	var out, errOut bytes.Buffer
+
+	err := runMergeAndEmit(context.Background(), mergeDeps{
+		Runner: mergeCoreRunner("abc123", "abc123"),
+		Out:    &out,
+		ErrOut: &errOut,
+	}, []string{"main"}, mergeFlags{noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeAndEmit: %v", err)
+	}
+	env := decodeMergeEnvelope(t, out.Bytes())
+	want := mergeResultJSON{Schema: 1, Result: mergeResultUpToDate, Noop: true, Receiver: "work", Source: "main", Pre: "abc123", Post: "abc123", HeadOID: "abc123"}
+	if env.Result != want {
+		t.Fatalf("result = %+v, want %+v", env.Result, want)
+	}
+	if !strings.Contains(errOut.String(), "work already contains main") {
+		t.Fatalf("human summary must stay on stderr, got:\n%s", errOut.String())
+	}
+}
+
+func TestRunMergeAndEmit_RealMergeIsNotNoop(t *testing.T) {
+	withAgentMode(t, true)
+	var out bytes.Buffer
+
+	err := runMergeAndEmit(context.Background(), mergeDeps{
+		Runner: mergeCoreRunner("old1234", "new5678"),
+		Out:    &out,
+		ErrOut: &bytes.Buffer{},
+	}, []string{"main"}, mergeFlags{noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeAndEmit: %v", err)
+	}
+	env := decodeMergeEnvelope(t, out.Bytes())
+	if env.Result.Noop || env.Result.Result != mergeResultMerged || env.Result.HeadOID != "new5678" {
+		t.Fatalf("want merged non-noop at new5678, got %+v", env.Result)
+	}
+}
+
+// --no-commit leaves HEAD in place but stages the merge; that is work done,
+// not a no-op.
+func TestRunMergeAndEmit_NoCommitIsStagedNotNoop(t *testing.T) {
+	withAgentMode(t, true)
+	var out bytes.Buffer
+	runner := mergeCoreRunner("abc123", "abc123").(*sequenceRunner)
+	runner.Responses["merge --no-commit main"] = git.FakeResponse{Stdout: "Automatic merge went well\n"}
+
+	err := runMergeAndEmit(context.Background(), mergeDeps{
+		Runner: runner,
+		Out:    &out,
+		ErrOut: &bytes.Buffer{},
+	}, []string{"main"}, mergeFlags{noAI: true, noCommit: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeAndEmit: %v", err)
+	}
+	env := decodeMergeEnvelope(t, out.Bytes())
+	if env.Result.Noop || env.Result.Result != mergeResultStaged {
+		t.Fatalf("want staged non-noop, got %+v", env.Result)
+	}
+}
+
+func TestRunMergeAndEmit_IntoNoopsEmitEnvelope(t *testing.T) {
+	withAgentMode(t, true)
+	cases := map[string]map[string]git.FakeResponse{
+		"worktree": {
+			"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+			"worktree list --porcelain":                   {Stdout: "worktree /repo/main\nHEAD abc123\nbranch refs/heads/main\n"},
+			"merge-base --is-ancestor ship main":          {Stdout: ""},
+			"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		},
+		"bare": {
+			"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+			"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+			"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+			"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+			"merge-base main ship":                        {Stdout: "bbb2222\n"},
+		},
+	}
+	for name, responses := range cases {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runMergeAndEmit(context.Background(), mergeDeps{
+				Runner: &git.FakeRunner{Responses: responses},
+				Out:    &out,
+				ErrOut: &bytes.Buffer{},
+			}, nil, mergeFlags{into: "main", noAI: true}, func(path string) git.Runner {
+				t.Fatalf("no-op must not route into receiver worktree %q", path)
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("runMergeAndEmit: %v", err)
+			}
+			env := decodeMergeEnvelope(t, out.Bytes())
+			if !env.Result.Noop || env.Result.Receiver != "main" || env.Result.Source != "ship" || env.Result.HeadOID != "aaa1111" {
+				t.Fatalf("want noop main<-ship at aaa1111, got %+v", env.Result)
+			}
+		})
+	}
+}
+
+func TestRunMergeAndEmit_NoJSONLeavesStdoutEmpty(t *testing.T) {
+	withAgentMode(t, false)
+	var out bytes.Buffer
+
+	err := runMergeAndEmit(context.Background(), mergeDeps{
+		Runner: mergeCoreRunner("abc123", "abc123"),
+		Out:    &out,
+		ErrOut: &bytes.Buffer{},
+	}, []string{"main"}, mergeFlags{noAI: true}, nil)
+	if err != nil {
+		t.Fatalf("runMergeAndEmit: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("human mode must not write to stdout, got:\n%s", out.String())
 	}
 }

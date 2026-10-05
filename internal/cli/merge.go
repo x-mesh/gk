@@ -91,6 +91,9 @@ type mergeResultJSON struct {
 	Pre      string `json:"pre,omitempty"`
 	Post     string `json:"post,omitempty"`
 	HeadOID  string `json:"head_oid,omitempty"`
+	PlanOnly bool   `json:"plan_only"`
+	NoCommit bool   `json:"no_commit"`
+	Squash   bool   `json:"squash"`
 }
 
 const (
@@ -154,6 +157,7 @@ func runMergeAndEmit(ctx context.Context, deps mergeDeps, args []string, flags m
 		return err
 	}
 	res.Schema = 1
+	res.PlanOnly, res.NoCommit, res.Squash = flags.planOnly, flags.noCommit, flags.squash
 	return emitAgentResult(deps.Out, res)
 }
 
@@ -278,7 +282,7 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 		)
 	}
 	if flags.planOnly {
-		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Noop: true, Receiver: current, Source: target, Pre: preHEAD, Post: preHEAD, HeadOID: preHEAD})
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: current, Source: target, Pre: preHEAD, Post: preHEAD, HeadOID: preHEAD})
 		return nil
 	}
 
@@ -537,7 +541,7 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 	}
 
 	if flags.planOnly {
-		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Noop: true, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA})
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA})
 		return nil
 	}
 

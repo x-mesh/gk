@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gk prompt-info` marks a shell that gk opened with `gk wt` or the `gk sw` picker: when `GK_WT` is set, plain output adds the token `↩exit` after the `wt` marker and JSON output adds `"subshell":true`, so a prompt can remind the user that `exit` returns to the parent shell. The check reads the environment only and adds no git call.
 - `gk switch <branch> --take` moves a branch that another worktree holds into the current worktree without deleting that worktree: it detaches HEAD there and then switches. It acts only when that worktree is unlocked, has no tracked changes, and has no merge/rebase/cherry-pick in progress (any probe failure refuses). The "branch is held by another worktree" error now lists `gk switch <branch> --take` as a `safe` remedy ahead of the `destructive` `gk worktree remove … && gk switch …`.
 
+### Fixed
+
+- `gk merge` now writes a JSON result to stdout on every successful run under `--json` or `GK_AGENT=1`, including the already-up-to-date no-op that used to exit 0 with empty stdout. The result carries `result` (`merged`, `up-to-date`, `staged`, `planned`), `noop`, `receiver`, `source`, `pre`, `post`, `head_oid`, plus the `plan_only`, `no_commit` and `squash` flags; human summaries stay on stderr. Under `--json`, the `--into` WIP-commit notice also moves to stderr so stdout holds a single document.
+- The kiro provider reports a failing `kiro-cli` (non-zero exit) with its stderr instead of parsing whatever it printed to stdout, so an expired login no longer surfaces as `invalid character '\x1b'`.
+
 ## [0.146.0] - 2026-10-02
 
 ### Added

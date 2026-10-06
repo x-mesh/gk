@@ -343,6 +343,105 @@ func TestListGlobalWorktrees_NestedOrphanAndSharedSlug(t *testing.T) {
 	}
 }
 
+// A global-mode row can belong to another repository. Removing it with the
+// cwd repository's runner measures nothing against the parent and runs
+// worktree remove/prune/branch -D in the wrong repository, so the action must
+// run in the owning repository's main worktree with that repository's
+// protected list.
+func TestWorktreeTUIActionTarget_GlobalEntryRunsInOwningRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "wtbase")
+	cfg := config.Defaults()
+	cfg.Worktree.Base = base
+
+	repoA := testutil.NewRepo(t)
+	repoB := testutil.NewRepo(t)
+	repoB.RunGit("branch", "develop")
+	wt := filepath.Join(base, "proj-b", "feat-b")
+	repoB.RunGit("worktree", "add", "-b", "feat/b", wt, "develop")
+	repoB.RunGit("config", "branch.feat/b.gk-parent", "develop")
+	repoB.WriteFile(".gk.yaml", "branch:\n  protected: [feat/b]\n")
+
+	cwdRunner := &git.ExecRunner{Dir: repoA.Dir}
+	cwdProtected := cfgProtected(&cfg)
+	entry := WorktreeEntry{Path: wt, Branch: "feat/b"}
+	listsWorktree := func(r *git.ExecRunner) bool {
+		out, _, err := r.Run(ctx, "worktree", "list", "--porcelain")
+		if err != nil {
+			t.Fatalf("worktree list in %s: %v", r.Dir, err)
+		}
+		for _, e := range parseWorktreePorcelain(string(out)) {
+			if sameDir(e.Path, wt) {
+				return true
+			}
+		}
+		return false
+	}
+	removeOutput := func(r *git.ExecRunner, protected []string) string {
+		var buf bytes.Buffer
+		if err := worktreeTUIRemove(ctx, r, &buf, entry, protected); err != nil {
+			t.Fatalf("worktreeTUIRemove in %s: %v", r.Dir, err)
+		}
+		return stripANSIForWidth(buf.String())
+	}
+
+	if listsWorktree(cwdRunner) {
+		t.Fatalf("premise: the cwd repository must not know %s", wt)
+	}
+	if got := removeOutput(cwdRunner, cwdProtected); strings.Contains(got, "develop") {
+		t.Fatalf("premise: the cwd repository cannot measure feat/b against develop, got %q", got)
+	}
+
+	gws, err := listGlobalWorktrees(ctx, &cfg)
+	if err != nil {
+		t.Fatalf("listGlobalWorktrees: %v", err)
+	}
+	rs := globalWorktreeRowSource(gws)
+	var picked *WorktreeEntry
+	for i := range rs.entries {
+		if rs.entries[i].Branch == "feat/b" {
+			picked = &rs.entries[i]
+		}
+	}
+	if picked == nil {
+		t.Fatalf("global rows %+v have no feat/b entry", rs.entries)
+	}
+
+	runner, protected := worktreeTUIActionTarget(rs, *picked, cwdRunner, cwdProtected)
+	if !sameDir(runner.Dir, repoB.Dir) {
+		t.Errorf("runner dir = %s, want repoB main worktree %s", runner.Dir, repoB.Dir)
+	}
+	if !isProtectedBranchName("feat/b", protected) {
+		t.Errorf("protected = %v, want repoB's .gk.yaml list containing feat/b", protected)
+	}
+	if !listsWorktree(runner) {
+		t.Errorf("owning repository runner does not list %s", wt)
+	}
+	if got := removeOutput(runner, protected); !strings.Contains(got, "feat/b holds nothing develop lacks") {
+		t.Errorf("remove output = %q, want the standing against develop", got)
+	}
+}
+
+// A local-mode row has no owning-repository entry, so the action keeps the
+// caller's runner and protected list unchanged.
+func TestWorktreeTUIActionTarget_LocalEntryKeepsCaller(t *testing.T) {
+	runner := &git.ExecRunner{Dir: t.TempDir()}
+	protected := []string{"main", "release"}
+	entry := WorktreeEntry{Path: filepath.Join(runner.Dir, "wt"), Branch: "feat/x"}
+	rs := worktreeRowSource{entries: []WorktreeEntry{entry}}
+
+	gotRunner, gotProtected := worktreeTUIActionTarget(rs, entry, runner, protected)
+	if gotRunner != runner {
+		t.Errorf("runner = %+v, want the caller's runner", gotRunner)
+	}
+	if strings.Join(gotProtected, ",") != "main,release" {
+		t.Errorf("protected = %v, want the caller's list", gotProtected)
+	}
+}
+
 func mustRun(t *testing.T, r *git.ExecRunner, args ...string) {
 	t.Helper()
 	if _, stderr, err := r.Run(context.Background(), args...); err != nil {

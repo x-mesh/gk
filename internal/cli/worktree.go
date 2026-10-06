@@ -17,6 +17,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
@@ -1437,34 +1438,19 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	// project they belong to (only used in global mode).
 	global := startGlobal
 
-	type rowSource struct {
-		entries []WorktreeEntry
-		// projectByPath surfaces the owning project slug for the global
-		// mode rendering. Empty in local mode.
-		projectByPath map[string]string
-	}
-
-	loadRows := func() (rowSource, error) {
+	loadRows := func() (worktreeRowSource, error) {
 		if global {
 			gws, gErr := listGlobalWorktrees(ctx, cfg)
 			if gErr != nil {
-				return rowSource{}, gErr
+				return worktreeRowSource{}, gErr
 			}
-			rs := rowSource{
-				entries:       make([]WorktreeEntry, 0, len(gws)),
-				projectByPath: make(map[string]string, len(gws)),
-			}
-			for _, gw := range gws {
-				rs.entries = append(rs.entries, gw.Entry)
-				rs.projectByPath[gw.Entry.Path] = gw.Project
-			}
-			return rs, nil
+			return globalWorktreeRowSource(gws), nil
 		}
 		ents, lErr := listWorktreesForTUI(ctx, runner)
 		if lErr != nil {
-			return rowSource{}, lErr
+			return worktreeRowSource{}, lErr
 		}
-		return rowSource{entries: ents}, nil
+		return worktreeRowSource{entries: ents}, nil
 	}
 
 	// loadBranchMeta reads upstream / ahead-behind / fork-parent for the
@@ -1484,7 +1470,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	// another project's parents aren't resolvable from this repo. Results are
 	// memoised by commit pair, so the rebuild this runs on every keystroke
 	// costs no subprocess until a tip actually moves.
-	loadParentRels := func(rs rowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
+	loadParentRels := func(rs worktreeRowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
 		if global {
 			return nil
 		}
@@ -1492,7 +1478,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			worktreeBranchNames(rs.entries), worktreeBranchTips(meta))
 	}
 
-	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
+	buildItems := func(rs worktreeRowSource) (items []ui.PickerItem, headers []string) {
 		meta := loadBranchMeta()
 		parentRels := loadParentRels(rs, meta)
 		appendDiff := func(branch string) string {
@@ -1641,7 +1627,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			if entry == nil {
 				continue
 			}
-			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, *entry, cfgProtected(cfg))
+			actRunner, actProtected := worktreeTUIActionTarget(rs, *entry, runner, cfgProtected(cfg))
+			done, err := worktreeTUIActOnEntry(ctx, actRunner, cmd, *entry, actProtected)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
@@ -1652,10 +1639,54 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// worktreeRowSource holds the entries one `gk wt` picker pass shows.
+type worktreeRowSource struct {
+	entries []WorktreeEntry
+	// projectByPath surfaces the owning project slug for the global
+	// mode rendering. Empty in local mode.
+	projectByPath map[string]string
+	// mainByPath maps a global-mode entry to its owning repository's main
+	// worktree. Empty in local mode.
+	mainByPath map[string]string
+}
+
+func globalWorktreeRowSource(gws []globalWorktree) worktreeRowSource {
+	rs := worktreeRowSource{
+		entries:       make([]WorktreeEntry, 0, len(gws)),
+		projectByPath: make(map[string]string, len(gws)),
+		mainByPath:    make(map[string]string, len(gws)),
+	}
+	for _, gw := range gws {
+		rs.entries = append(rs.entries, gw.Entry)
+		rs.projectByPath[gw.Entry.Path] = gw.Project
+		rs.mainByPath[gw.Entry.Path] = gw.Main
+	}
+	return rs
+}
+
+// worktreeTUIActionTarget returns the runner and protected-branch list an
+// action on entry runs with. A global-mode entry can belong to another
+// repository: the cwd runner would measure its branch against nothing and
+// run worktree remove, prune, and branch -D in the wrong repository. Its
+// owning repository's main worktree is used instead of entry.Path because
+// the orphan-branch step runs after that path is gone.
+func worktreeTUIActionTarget(rs worktreeRowSource, entry WorktreeEntry, runner *git.ExecRunner, protected []string) (*git.ExecRunner, []string) {
+	main := rs.mainByPath[entry.Path]
+	if main == "" {
+		return runner, protected
+	}
+	repoFlags := pflag.NewFlagSet("worktree-tui-global", pflag.ContinueOnError)
+	repoFlags.String("repo", main, "")
+	repoCfg, _ := config.Load(repoFlags)
+	return &git.ExecRunner{Dir: main}, cfgProtected(repoCfg)
+}
+
 // globalWorktree pairs a parsed WorktreeEntry with the gk project slug
-// it belongs to, so the global-mode picker can prefix the row.
+// it belongs to, so the global-mode picker can prefix the row. Main is the
+// owning repository's main worktree, where actions on the entry run.
 type globalWorktree struct {
 	Project string
+	Main    string
 	Entry   WorktreeEntry
 }
 
@@ -1701,7 +1732,7 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 			if project == "" {
 				continue
 			}
-			out = append(out, globalWorktree{Project: project, Entry: e})
+			out = append(out, globalWorktree{Project: project, Main: main, Entry: e})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {

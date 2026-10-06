@@ -801,6 +801,81 @@ func TestWorktreeList_TextExplainsDirty(t *testing.T) {
 	}
 }
 
+// The list reads each worktree's dirty tally and untracked names from one
+// status scan, and must report exactly what the separate per-kind scans
+// (worktreeDirtyAt, worktreeUntrackedAt) did. Not parallel: gitCallCounter
+// hooks a process global.
+func TestWorktreeList_OneStatusScanPerWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	repo.RunGit("worktree", "add", "-b", "feat/dirty", wt)
+	wtRunner := &git.ExecRunner{Dir: wt}
+	for name, body := range map[string]string{
+		"staged.txt":     "s\n",
+		".gkkeep/README": "changed\n",
+		"new-file.txt":   "u\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(wt, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wt, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRun(t, wtRunner, "add", "staged.txt")
+
+	ctx := context.Background()
+	wantDirty := worktreeDirtyAt(ctx, wt)
+	wantUntracked, _ := worktreeUntrackedAt(ctx, wt)
+	if wantDirty == nil || *wantDirty != (contextDirtyJSON{Staged: 1, Unstaged: 1, Untracked: 1}) {
+		t.Fatalf("fixture dirty = %+v, want 1 staged, 1 modified, 1 untracked", wantDirty)
+	}
+
+	counter := newGitCallCounter(t)
+	root, buf := buildWorktreeCmd(repo.Dir, "list", "--json")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list --json: %v\nout: %s", err, buf.String())
+	}
+	if n := counter.get("status --porcelain"); n != 2 {
+		t.Errorf("list --json ran status --porcelain %d times, want 2 (one per worktree)", n)
+	}
+	var entries []worktreeListEntryJSON
+	if err := json.Unmarshal(buf.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	for _, e := range entries {
+		if !sameDir(e.Path, wt) {
+			if e.Dirty != nil || len(e.Untracked) != 0 {
+				t.Errorf("clean main worktree reported dirty %+v untracked %v", e.Dirty, e.Untracked)
+			}
+			continue
+		}
+		if e.Dirty == nil || *e.Dirty != *wantDirty {
+			t.Errorf("linked worktree dirty = %+v, want %+v", e.Dirty, *wantDirty)
+		}
+		if strings.Join(e.Untracked, ",") != strings.Join(wantUntracked, ",") || strings.Join(e.Untracked, ",") != "new-file.txt" {
+			t.Errorf("linked worktree untracked = %v, want %v", e.Untracked, wantUntracked)
+		}
+	}
+
+	flagJSON = false
+	counter.reset()
+	root, buf = buildWorktreeCmd(repo.Dir, "list")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list: %v\nout: %s", err, buf.String())
+	}
+	if n := counter.get("status --porcelain"); n != 2 {
+		t.Errorf("list ran status --porcelain %d times, want 2 (one per worktree)", n)
+	}
+	wantMark := fmt.Sprintf("[dirty: %s]", formatDirtyCounts(*wantDirty, nil))
+	if out := buf.String(); strings.Count(out, "[dirty:") != 1 || !strings.Contains(out, wantMark) {
+		t.Errorf("table should mark only the linked worktree with %q, got:\n%s", wantMark, out)
+	}
+}
+
 // TestRunInWorktree_ExitCode covers exit-code reporting and the
 // could-not-start error path.
 func TestRunInWorktree_ExitCode(t *testing.T) {

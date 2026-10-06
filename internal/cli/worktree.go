@@ -230,10 +230,11 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	// branches would each cost a rev-list nobody reads here.
 	parentRels := loadWorktreeParentRels(cmd.Context(), runner,
 		worktreeBranchNames(entries), worktreeBranchTips(branchMeta))
+	statuses := scanWorktreeListStatuses(cmd.Context(), entries)
 
 	if JSONOut() {
 		enriched := make([]worktreeListEntryJSON, 0, len(entries))
-		for _, e := range entries {
+		for i, e := range entries {
 			j := worktreeListEntryJSON{
 				Path: e.Path, Head: e.Head, Branch: e.Branch,
 				Detached: e.Detached, Bare: e.Bare, Locked: e.Locked, Prunable: e.Prunable,
@@ -249,9 +250,9 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 					j.Parent, j.ParentSource = rel.Parent, string(rel.Source)
 					j.ParentAhead, j.ParentBehind, j.ParentState = rel.Ahead, rel.Behind, rel.State()
 				}
-				j.Dirty = worktreeDirtyAt(cmd.Context(), e.Path)
+				j.Dirty = statuses[i].dirty
 				if j.Dirty != nil && j.Dirty.Untracked > 0 {
-					j.Untracked, _ = worktreeUntrackedAt(cmd.Context(), e.Path)
+					j.Untracked = statuses[i].untracked
 				}
 			}
 			enriched = append(enriched, j)
@@ -267,7 +268,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	body := make([]string, 0, len(entries))
 	var detached, locked, prunable int
 	rows := make([]worktreeRow, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		branchLabel := e.Branch
 		switch {
 		case e.Bare:
@@ -283,10 +284,8 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		// two disagree constantly: a branch level with its parent still holds
 		// everything that was never committed, and a row reading "● same"
 		// without this marker would invite exactly the wrong deletion.
-		if !e.Bare {
-			if d := worktreeDirtyAt(cmd.Context(), e.Path); d != nil {
-				marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
-			}
+		if d := statuses[i].dirty; d != nil {
+			marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
 		}
 		if e.Locked {
 			marks += " [locked]"
@@ -330,6 +329,42 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		Color:  ui.SectionInfo,
 	}))
 	return nil
+}
+
+// worktreeListStatus is one worktree's uncommitted state as `gk worktree
+// list` reports it. A zero value (nil dirty) means clean, bare, or unscannable.
+type worktreeListStatus struct {
+	dirty     *contextDirtyJSON
+	untracked []string
+}
+
+// scanWorktreeListStatuses runs one `status --porcelain -z` per non-bare entry,
+// at most NumCPU at a time, and reads both the dirty tally and the untracked
+// names from that one scan. Results are indexed like entries, so the
+// goroutines never share a map.
+func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []worktreeListStatus {
+	out := make([]worktreeListStatus, len(entries))
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		if e.Bare {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			raw, _, err := (&git.ExecRunner{Dir: path}).Run(ctx, "status", "--porcelain", "-z")
+			if err != nil {
+				return
+			}
+			out[i].dirty = dirtyPtrIfAny(parseWorktreeScan(string(raw), "").dirty)
+			out[i].untracked, _ = parseUntrackedPorcelainZ(string(raw))
+		}(i, e.Path)
+	}
+	wg.Wait()
+	return out
 }
 
 // worktreeBranchMeta is the slice of branchInfo we actually consume in

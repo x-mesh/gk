@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The `gk pr` / `gk issue` / `gk inbox` picker binds `r` to search GitHub again. The picker used to answer a repeated query from its in-process cache, so the list never changed while it stayed open.
+
+### Fixed
+
+- The `gk pr` / `gk issue` / `gk inbox` picker draws on the terminal's alternate screen, so a resize or an `a`/`o` re-open no longer leaves copies of the list in the scrollback. The "not a pull request" message now shows inside the next picker. Every other table picker (`gk sw`, `gk wt`, `gk stash`, `gk diff`, …) clears its frame when it closes, so a loop that re-opens it no longer stacks copies; these stay inline, and a resize while one is open still leaves a copy.
+- `gk wt` global mode (`g`) ran remove against the repository gk was started in: removing another project's worktree pruned the wrong repository, printed a false "removed", and offered to delete a same-named branch there. Actions now run in the owning repository's main worktree with that repository's protected list.
+- `gk wt` loads faster: fork points are computed only for worktree branches and their anchors instead of every local branch (316 → 16 `merge-base` calls on a 316-branch repo), parent inference for branches without `gk-parent` is memoised with a timeout and skips the trunk, global discovery forks `git worktree list` once per repository instead of once per worktree, and the `g` toggle loads off the UI goroutine. `gk wt list` scans each worktree's status once, in bounded parallel.
+- The fork-point fallback to the trunk gets its own timeout, so it still works after the recorded parent's `merge-base` times out.
+
 ## [0.147.0] - 2026-10-05
 
 ### Added

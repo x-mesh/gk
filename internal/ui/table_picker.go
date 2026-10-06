@@ -143,6 +143,17 @@ type TablePicker struct {
 	// right edge — so callers that don't opt in are unaffected. A faint
 	// "+N cols" note reports any drop.
 	ColumnPriority map[string]int
+	// AltScreen draws the picker on the terminal's alternate screen. Inline
+	// rendering repaints by moving the cursor up over the lines it drew last,
+	// so a resize that rewraps those lines, or a loop that opens the picker
+	// again, leaves old copies in the scrollback. It is opt-in because the
+	// alternate screen also hides whatever the caller prints between two
+	// Picks until the program exits; such a caller passes it as Notice.
+	AltScreen bool
+	// Notice is a one-line message rendered under the help line, so a caller
+	// that re-opens the picker after an action can report the outcome where
+	// the user is looking.
+	Notice string
 }
 
 type tablePickerModel struct {
@@ -159,6 +170,7 @@ type tablePickerModel struct {
 	extras        []TablePickerExtraKey
 	headers       []string
 	errMsg        string
+	notice        string
 	loading       bool // an OnPress load is in flight
 	subtitle      string
 	legend        string
@@ -401,6 +413,12 @@ func (m *tablePickerModel) selectCursorItem() bool {
 	return true
 }
 
+// done reports whether the picker has quit: aborted, a row picked, or an
+// Exit hotkey fired. Every selectCursorItem call is followed by tea.Quit.
+func (m tablePickerModel) done() bool {
+	return m.aborted || m.chosen >= 0 || m.chosenItem.ExtraAction != ""
+}
+
 // buildColumnsFromHeaders rebuilds table.Column slice from a fresh
 // header list, sized to fit the widest cell content per column. Used
 // by ExtraKey callbacks that replace the column structure (e.g. local
@@ -576,6 +594,12 @@ func itemMatchesFilter(it PickerItem, q string) bool {
 }
 
 func (m tablePickerModel) View() string {
+	// The last frame stays where the inline renderer drew it, so a caller that
+	// loops and opens the picker again would stack one copy of the list per
+	// pass. Drawing nothing once the picker has quit clears that frame.
+	if m.done() {
+		return ""
+	}
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
 	var filterLine string
@@ -635,6 +659,9 @@ func (m tablePickerModel) View() string {
 		out += hintStyle.Render(line) + "\n"
 	}
 	out += filterLine + "\n" + m.t.View() + "\n" + help
+	if m.notice != "" {
+		out += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("179")).Render(m.notice)
+	}
 	if m.loading {
 		out += "\n" + hintStyle.Render("loading…")
 	}
@@ -718,6 +745,7 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		extras:           p.Extras,
 		headers:          headers,
 		subtitle:         p.Subtitle,
+		notice:           p.Notice,
 		legend:           p.Legend,
 		legendCompact:    p.LegendCompact,
 		priorityByHeader: p.ColumnPriority,
@@ -733,12 +761,15 @@ func (p *TablePicker) Pick(ctx context.Context, title string, items []PickerItem
 		model.applyFilter()
 	}
 
-	prog := tea.NewProgram(
-		model,
+	opts := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithOutput(os.Stderr),
 		tea.WithInputTTY(),
-	)
+	}
+	if p.AltScreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+	prog := tea.NewProgram(model, opts...)
 	final, err := prog.Run()
 	if err != nil {
 		// Context cancellation surfaces as a wrapped error here. Treat it

@@ -88,6 +88,52 @@ func TestGHPickerFetchIsBoundedCachedAndWarmsExactCount(t *testing.T) {
 	}
 }
 
+func TestGHPickerRefreshRefetchesCachedQuery(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		items := make([]map[string]any, calls)
+		for i := range items {
+			items[i] = pickerSearchItem("x-mesh", "gk", i+1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": calls, "items": items})
+	}))
+	defer srv.Close()
+
+	p := newGHPicker(&cobra.Command{Use: "pr"}, &ghapi.Client{APIBase: srv.URL}, cacheRunner(t, ""), &config.Config{}, true, "repo", githubSearchFilters{typeFilter: "is:pr", state: "open"})
+	p.setScopeFromPrefix("repo:x-mesh/gk")
+
+	if _, _, _, err := p.fetch(context.Background()); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if _, _, _, err := p.fetch(context.Background()); err != nil {
+		t.Fatalf("cached fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("repeated query made %d API calls before refresh, want 1", calls)
+	}
+
+	p.refresh()
+	issues, _, total, err := p.fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch after refresh: %v", err)
+	}
+	if calls != 2 || total != 2 || len(issues) != 2 {
+		t.Fatalf("after refresh calls/total/len = %d/%d/%d, want 2/2/2 (a new search)", calls, total, len(issues))
+	}
+
+	found := false
+	for _, ex := range p.extras() {
+		if ex.Key == "r" {
+			found = ex.Exit
+		}
+	}
+	if !found {
+		t.Fatal("picker has no r refresh key that exits to the loop")
+	}
+}
+
 func TestGHPickerExplicitPickUsesNonTTYNumberedFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

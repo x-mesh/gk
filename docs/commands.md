@@ -4172,6 +4172,10 @@ filter; the typed filter survives an action and the picker re-opens on it.
 | `y` | Copy the item URL |
 | `o` | Open the **scope layer** — pick this repo, your own account, any org you belong to, or the inbox |
 | `a` | Toggle state: open ↔ all |
+| `r` | Search GitHub again. The picker keeps each search result until you press `r`. |
+
+The picker draws on the alternate screen of the terminal. A resize or a new
+open of the picker does not leave old copies of the list in the scrollback.
 
 Non-interactive runs are untouched: `--json`, `GK_AGENT=1`, a pipe, or CI all
 print the static list (the gate is `promptAllowed()`). `--list` forces the static

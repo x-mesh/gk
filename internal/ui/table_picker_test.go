@@ -708,6 +708,22 @@ func TestTablePicker_NoLegendHidesLine(t *testing.T) {
 	}
 }
 
+func TestTablePicker_NoticeRenderedUnderHelp(t *testing.T) {
+	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
+	if strIdx(m.View(), "not a pull request") >= 0 {
+		t.Fatalf("no notice configured → no notice line, got view: %q", m.View())
+	}
+	m.notice = "not a pull request: #7 — checkout applies to PRs only"
+	view := m.View()
+	helpIdx, noticeIdx := strIdx(view, "esc/q cancel"), strIdx(view, "not a pull request: #7")
+	if noticeIdx < 0 {
+		t.Fatalf("notice missing; got view: %q", view)
+	}
+	if helpIdx < 0 || noticeIdx < helpIdx {
+		t.Errorf("notice must sit under the help line; help=%d notice=%d", helpIdx, noticeIdx)
+	}
+}
+
 func TestTablePicker_NoSubtitleHidesLine(t *testing.T) {
 	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
 	view := m.View()

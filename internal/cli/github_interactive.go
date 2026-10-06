@@ -128,8 +128,9 @@ func (p *ghPicker) chooseScope(ctx context.Context) error {
 	}
 
 	picker := &ui.TablePicker{
-		Headers:  []string{"SCOPE", "WHAT"},
-		Subtitle: "pick a scope — enter select · esc keep current",
+		Headers:   []string{"SCOPE", "WHAT"},
+		Subtitle:  "pick a scope — enter select · esc keep current",
+		AltScreen: true,
 	}
 	choice, err := picker.Pick(ctx, "scope", items)
 	if err != nil {
@@ -253,7 +254,15 @@ func (p *ghPicker) extras() []ui.TablePickerExtraKey {
 		{Key: "y", Help: "y copy url", Exit: true},
 		{Key: "o", Help: "o scope", Exit: true},
 		{Key: "a", Help: "a open/all", Exit: true},
+		{Key: "r", Help: "r refresh", Exit: true},
 	}
+}
+
+// refresh drops every memoised search so the next fetch asks GitHub again.
+// fetch otherwise answers a repeated query from fetchCache for as long as the
+// picker stays open.
+func (p *ghPicker) refresh() {
+	p.fetchCache = nil
 }
 
 func (p *ghPicker) subtitle(scope string, shown, total int) string {
@@ -265,7 +274,7 @@ func (p *ghPicker) subtitle(scope string, shown, total int) string {
 	if total > shown {
 		count = fmt.Sprintf("%d of %d item(s) · capped at %d", shown, total, p.interactiveLimit())
 	}
-	return fmt.Sprintf("%s · %s · %s  —  enter open · c checkout · y copy url · o scope · a open/all", scope, state, count)
+	return fmt.Sprintf("%s · %s · %s  —  enter open · c checkout · y copy url · o scope · a open/all · r refresh", scope, state, count)
 }
 
 func shouldRunGHPicker(explicitPick, list, promptsAllowed bool) bool {
@@ -321,6 +330,10 @@ func (p *ghPicker) openPicked(picked ghapi.Issue) error {
 func (p *ghPicker) run(ctx context.Context) error {
 	out, errOut := p.cmd.OutOrStdout(), p.cmd.ErrOrStderr()
 	filter := ""
+	// notice reports an action's outcome inside the next picker: on the
+	// alternate screen, a line printed between two Picks stays hidden until
+	// the loop exits.
+	notice := ""
 
 	for {
 		issues, _, total, err := p.fetch(ctx)
@@ -346,6 +359,8 @@ func (p *ghPicker) run(ctx context.Context) error {
 			Subtitle:       p.subtitle(scope, len(byKey), total),
 			InitialFilter:  filter,
 			ColumnPriority: ghPickerColumnPriority(),
+			AltScreen:      true,
+			Notice:         notice,
 		}
 		choice, err := picker.Pick(ctx, p.title(), items)
 		if err != nil {
@@ -355,6 +370,7 @@ func (p *ghPicker) run(ctx context.Context) error {
 			return err
 		}
 		filter = choice.FilterValue
+		notice = ""
 		picked, hasPick := byKey[choice.Key]
 
 		switch choice.ExtraAction {
@@ -380,7 +396,7 @@ func (p *ghPicker) run(ctx context.Context) error {
 				continue
 			}
 			if !picked.IsPR {
-				fmt.Fprintf(errOut, "not a pull request: #%d — checkout applies to PRs only\n", picked.Number)
+				notice = fmt.Sprintf("not a pull request: #%d — checkout applies to PRs only", picked.Number)
 				continue
 			}
 			source, local, err := prCheckoutTarget(ctx, p.runner, *p.cfg, picked.Owner, picked.Repo, picked.Number)
@@ -406,6 +422,10 @@ func (p *ghPicker) run(ctx context.Context) error {
 			} else {
 				p.filters.state = "all"
 			}
+			continue
+
+		case "r":
+			p.refresh()
 			continue
 		}
 	}

@@ -1789,9 +1789,11 @@ type globalWorktree struct {
 // listGlobalWorktrees scans the gk-managed base directory (default
 // ~/.gk/worktree) and returns one row per real git worktree found under it.
 // It runs `git worktree list --porcelain` once per repository (not per
-// worktree), keyed by the main worktree, so a few hundred worktrees still load
-// in well under a second. Worktrees whose repository git cannot read are left
-// out.
+// worktree): each root's .git names its repository's common dir, and a root
+// whose repository was already listed is skipped without a fork. A root whose
+// .git cannot be read that way is forked on its own, and the main-worktree
+// check drops its repository if it was already listed. Worktrees whose
+// repository git cannot read are left out.
 func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorktree, error) {
 	if cfg == nil {
 		return nil, nil
@@ -1808,7 +1810,12 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 
 	var out []globalWorktree
 	seen := map[string]bool{}
+	listed := map[string]bool{}
 	for _, root := range roots {
+		common := worktreeRootCommonDir(root.Path)
+		if common != "" && listed[common] {
+			continue
+		}
 		r := &git.ExecRunner{Dir: root.Path}
 		stdout, _, lErr := r.Run(ctx, "worktree", "list", "--porcelain")
 		if lErr != nil {
@@ -1817,6 +1824,11 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 		entries := parseWorktreePorcelain(string(stdout))
 		if len(entries) == 0 {
 			continue
+		}
+		// Marked only after a listing that worked: a failure on this root
+		// must not hide the repository's other roots.
+		if common != "" {
+			listed[common] = true
 		}
 		main := resolvePath(entries[0].Path)
 		if seen[main] {
@@ -1838,6 +1850,48 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 		return out[i].Entry.Path < out[j].Entry.Path
 	})
 	return out, nil
+}
+
+// worktreeRootCommonDir reads the common dir that root's .git designates,
+// without forking git: the .git directory itself, or the gitdir a .git file
+// names, followed through its commondir file when there is one (a linked
+// worktree's gitdir sits under <common>/worktrees/). A submodule or a
+// --separate-git-dir checkout has no commondir file, and git then uses the
+// gitdir as the common dir too. Empty when .git cannot be read, so the
+// caller forks git for this root.
+func worktreeRootCommonDir(root string) string {
+	gitPath := filepath.Join(root, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	gitDir := gitPath
+	if !fi.IsDir() {
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			return ""
+		}
+		rest, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+		if !ok {
+			return ""
+		}
+		gitDir = strings.TrimSpace(rest)
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(root, gitDir)
+		}
+	}
+	common := gitDir
+	data, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	switch {
+	case err == nil:
+		common = strings.TrimSpace(string(data))
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitDir, common)
+		}
+	case !os.IsNotExist(err):
+		return ""
+	}
+	return resolvePath(common)
 }
 
 type managedWorktreeRoot struct {

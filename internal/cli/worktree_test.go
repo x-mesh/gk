@@ -343,6 +343,49 @@ func TestListGlobalWorktrees_NestedOrphanAndSharedSlug(t *testing.T) {
 	}
 }
 
+// Every root of one repository lists the same worktrees, so the global scan
+// lists each repository once, deduplicated by the common dir read from each
+// root's .git before forking. Not parallel: gitCallCounter hooks a process
+// global.
+func TestListGlobalWorktrees_ListsEachRepositoryOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	base := filepath.Join(t.TempDir(), "wtbase")
+	cfg := config.Defaults()
+	cfg.Worktree.Base = base
+
+	repoA := testutil.NewRepo(t)
+	repoB := testutil.NewRepo(t)
+	for _, name := range []string{"a1", "a2", "fix/a3"} {
+		repoA.RunGit("worktree", "add", "-b", "wt/"+name, filepath.Join(base, "proj-a", name))
+	}
+	for _, name := range []string{"b1", "b2"} {
+		repoB.RunGit("worktree", "add", "-b", "wt/"+name, filepath.Join(base, "proj-b", name))
+	}
+
+	counter := newGitCallCounter(t)
+	got, err := listGlobalWorktrees(context.Background(), &cfg)
+	if err != nil {
+		t.Fatalf("listGlobalWorktrees: %v", err)
+	}
+	if n := counter.get("worktree list"); n != 2 {
+		t.Errorf("worktree list ran %d times, want 2 (one per repository)", n)
+	}
+	if len(got) != 5 {
+		t.Fatalf("got %d rows, want 5: %+v", len(got), got)
+	}
+	for _, g := range got {
+		wantProject, wantMain := "proj-a", repoA.Dir
+		if strings.HasPrefix(g.Entry.Branch, "wt/b") {
+			wantProject, wantMain = "proj-b", repoB.Dir
+		}
+		if g.Project != wantProject || !sameDir(g.Main, wantMain) {
+			t.Errorf("%s: project %q main %q, want %q and %s", g.Entry.Branch, g.Project, g.Main, wantProject, wantMain)
+		}
+	}
+}
+
 // A global-mode row can belong to another repository. Removing it with the
 // cwd repository's runner measures nothing against the parent and runs
 // worktree remove/prune/branch -D in the wrong repository, so the action must

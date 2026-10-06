@@ -1529,12 +1529,9 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
-	// Toggleable state shared between the picker call and the 'g'
-	// extra-key callback: which entries are currently shown, and what
-	// project they belong to (only used in global mode).
-	global := startGlobal
-
-	loadRows := func() (worktreeRowSource, error) {
+	// The loaders take the mode as an argument instead of reading the loop's
+	// state: the 'g' toggle runs them off the UI goroutine.
+	loadRows := func(global bool) (worktreeRowSource, error) {
 		if global {
 			gws, gErr := listGlobalWorktrees(ctx, cfg)
 			if gErr != nil {
@@ -1553,7 +1550,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	// current repo's branches in one shot. Skipped in global mode
 	// (cross-repo iteration is out of scope) — global rows still show
 	// the branch but lose the SOURCE/DIFF columns. nil on failure.
-	loadBranchMeta := func(rs worktreeRowSource) map[string]worktreeBranchMeta {
+	loadBranchMeta := func(global bool, rs worktreeRowSource) map[string]worktreeBranchMeta {
 		if global {
 			return nil
 		}
@@ -1564,9 +1561,10 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	// signal that answers "is this worktree still holding work?" at the exact
 	// moment the user is about to press [d]. Skipped in global mode, where
 	// another project's parents aren't resolvable from this repo. Results are
-	// memoised by commit pair, so the rebuild this runs on every keystroke
-	// costs no subprocess until a tip actually moves.
-	loadParentRels := func(rs worktreeRowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
+	// memoised by commit pair, so the rebuild this runs on every loop
+	// iteration and every 'g' toggle costs no subprocess until a tip
+	// actually moves.
+	loadParentRels := func(global bool, rs worktreeRowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
 		if global {
 			return nil
 		}
@@ -1574,9 +1572,9 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			worktreeBranchNames(rs.entries), worktreeBranchTips(meta))
 	}
 
-	buildItems := func(rs worktreeRowSource) (items []ui.PickerItem, headers []string) {
-		meta := loadBranchMeta(rs)
-		parentRels := loadParentRels(rs, meta)
+	buildItems := func(global bool, rs worktreeRowSource) (items []ui.PickerItem, headers []string) {
+		meta := loadBranchMeta(global, rs)
+		parentRels := loadParentRels(global, rs, meta)
 		appendDiff := func(branch string) string {
 			m, ok := meta[branch]
 			if !ok {
@@ -1674,13 +1672,26 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		return items, headers
 	}
 
+	// global is the mode the next iteration opens in. Only a 'g' toggle whose
+	// rows reached the screen changes it, so a failed load leaves the screen
+	// and the next iteration in the same mode.
+	global := startGlobal
 	for {
-		rs, err := loadRows()
+		// shown is this iteration's own copy of the mode, the one its OnPress
+		// reads. A load still running after Pick returned reads this copy,
+		// never the next iteration's.
+		shown := global
+		rs, err := loadRows(shown)
 		if err != nil {
 			return err
 		}
 
-		items, headers := buildItems(rs)
+		items, headers := buildItems(shown, rs)
+		// commit runs from the picker's Apply, on this goroutine, before Pick
+		// returns, so the loop below sees the rows the user picked from.
+		commit := func(mode bool, rs2 worktreeRowSource) {
+			shown, global, rs = mode, mode, rs2
+		}
 		picker := &ui.TablePicker{
 			Headers:        headers,
 			ColumnPriority: worktreeColumnPriority(),
@@ -1688,15 +1699,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				Key:       "g",
 				FilterKey: "ctrl+g",
 				Help:      "g toggle global",
-				OnPress: func() ([]ui.PickerItem, []string, error) {
-					global = !global
-					rs2, gErr := loadRows()
-					if gErr != nil {
-						return nil, nil, gErr
-					}
-					rs = rs2
-					its, hdrs := buildItems(rs2)
-					return its, hdrs, nil
+				OnPress: func() (ui.TablePickerReload, error) {
+					return worktreeTUIToggle(shown, loadRows, buildItems, commit)
 				},
 			}},
 		}
@@ -1744,6 +1748,29 @@ type worktreeRowSource struct {
 	// mainByPath maps a global-mode entry to its owning repository's main
 	// worktree. Empty in local mode.
 	mainByPath map[string]string
+}
+
+// worktreeTUIToggle loads and builds the rows of the mode opposite to shown.
+// It runs off the UI goroutine, so it only reads; commit runs from the
+// reload's Apply once the rows are on screen. A failed load returns the
+// error and never commits, leaving the screen and the caller in shown.
+func worktreeTUIToggle(
+	shown bool,
+	load func(global bool) (worktreeRowSource, error),
+	build func(global bool, rs worktreeRowSource) ([]ui.PickerItem, []string),
+	commit func(global bool, rs worktreeRowSource),
+) (ui.TablePickerReload, error) {
+	next := !shown
+	rs, err := load(next)
+	if err != nil {
+		return ui.TablePickerReload{}, err
+	}
+	items, headers := build(next, rs)
+	return ui.TablePickerReload{
+		Items:   items,
+		Headers: headers,
+		Apply:   func() { commit(next, rs) },
+	}, nil
 }
 
 func globalWorktreeRowSource(gws []globalWorktree) worktreeRowSource {

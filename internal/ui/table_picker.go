@@ -45,8 +45,30 @@ type TablePickerExtraKey struct {
 	// an emacs editing shortcut on a one-line filter box.
 	FilterKey string
 	Help      string
-	OnPress   func() (items []PickerItem, headers []string, err error)
-	Exit      bool
+	// OnPress loads the replacement data set. It runs in a tea.Cmd, off the
+	// UI goroutine, so it must not write state the caller reads elsewhere;
+	// such writes belong in the returned Apply. Presses that arrive while a
+	// load is still running are ignored.
+	OnPress func() (TablePickerReload, error)
+	Exit    bool
+}
+
+// TablePickerReload is what an OnPress extra loaded. Items and Headers
+// replace the listing (nil Headers keeps the columns). Apply, when non-nil,
+// runs once after the new rows are applied, on the goroutine that called
+// Pick, so a caller can commit its own state exactly when the screen
+// changes. A failed load, or a picker that closed before the load
+// finished, never runs it.
+type TablePickerReload struct {
+	Items   []PickerItem
+	Headers []string
+	Apply   func()
+}
+
+// tablePickerReloadMsg carries an OnPress result back into Update.
+type tablePickerReloadMsg struct {
+	reload TablePickerReload
+	err    error
 }
 
 // extraKeyMatches reports whether s triggers ex in nav mode — either the
@@ -137,6 +159,7 @@ type tablePickerModel struct {
 	extras        []TablePickerExtraKey
 	headers       []string
 	errMsg        string
+	loading       bool // an OnPress load is in flight
 	subtitle      string
 	legend        string
 	legendCompact string
@@ -155,6 +178,9 @@ func (m tablePickerModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tablePickerReloadMsg:
+		m.applyReload(msg)
+		return m, nil
 	case tea.KeyMsg:
 		// Filter mode is sticky — typing replaces table navigation
 		// except for the few keys we explicitly forward (arrows, enter,
@@ -265,9 +291,10 @@ func (m tablePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // runExtra executes ex and reports whether it consumed the keystroke.
 // An Exit extra captures the cursor row (so handlers can act on THIS
-// branch), tags it with ExtraAction and quits; an OnPress extra swaps
-// the data set in place. A non-Exit extra with no callback is inert —
-// (nil, false) lets the caller keep scanning for another binding.
+// branch), tags it with ExtraAction and quits; an OnPress extra starts
+// loading a replacement data set, which applyReload swaps in. A non-Exit
+// extra with no callback is inert — (nil, false) lets the caller keep
+// scanning for another binding.
 func (m *tablePickerModel) runExtra(ex TablePickerExtraKey) (tea.Cmd, bool) {
 	if ex.Exit {
 		m.selectCursorItem()
@@ -277,23 +304,41 @@ func (m *tablePickerModel) runExtra(ex TablePickerExtraKey) (tea.Cmd, bool) {
 	if ex.OnPress == nil {
 		return nil, false
 	}
-	items, headers, err := ex.OnPress()
-	if err != nil {
-		m.errMsg = err.Error()
+	// One load at a time: a second one would race the first and land its
+	// rows in whichever order they finish.
+	if m.loading {
 		return nil, true
 	}
+	m.loading = true
+	onPress := ex.OnPress
+	return func() tea.Msg {
+		reload, err := onPress()
+		return tablePickerReloadMsg{reload: reload, err: err}
+	}, true
+}
+
+// applyReload ends the in-flight load. A failure only reports itself, so
+// the rows on screen and the caller's state (Apply) stay as they were.
+func (m *tablePickerModel) applyReload(msg tablePickerReloadMsg) {
+	m.loading = false
+	if msg.err != nil {
+		m.errMsg = msg.err.Error()
+		return
+	}
 	m.errMsg = ""
-	m.all = items
-	if headers != nil {
+	m.all = msg.reload.Items
+	if msg.reload.Headers != nil {
 		// New column structure: re-fit it to the current width (reflow
 		// rebuilds rows too). With no size yet, width 0 makes fitColumns
 		// keep every column.
-		m.headers = headers
+		m.headers = msg.reload.Headers
 		m.reflowColumns(m.width)
 	} else {
 		m.applyFilter()
 	}
-	return nil, true
+	if msg.reload.Apply != nil {
+		msg.reload.Apply()
+	}
 }
 
 // applyFilter rebuilds the visible row list from the filter query.
@@ -590,6 +635,9 @@ func (m tablePickerModel) View() string {
 		out += hintStyle.Render(line) + "\n"
 	}
 	out += filterLine + "\n" + m.t.View() + "\n" + help
+	if m.loading {
+		out += "\n" + hintStyle.Render("loading…")
+	}
 	if m.errMsg != "" {
 		out += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("203")).
 			Render("✗ "+m.errMsg)

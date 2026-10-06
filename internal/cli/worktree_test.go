@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // TestParseWorktreePorcelain covers record splitting and field parsing.
@@ -465,6 +467,55 @@ func TestWorktreeTUIActionTarget_GlobalEntryRunsInOwningRepo(t *testing.T) {
 	}
 	if got := removeOutput(runner, protected); !strings.Contains(got, "feat/b holds nothing develop lacks") {
 		t.Errorf("remove output = %q, want the standing against develop", got)
+	}
+}
+
+// The 'g' toggle commits the new mode and rows only through Apply, which the
+// picker runs once the rows are on screen. A failed load commits nothing, so
+// the screen and the next loop iteration stay in the old mode.
+func TestWorktreeTUIToggle_CommitsOnlyThroughApply(t *testing.T) {
+	loaded := worktreeRowSource{entries: []WorktreeEntry{{Path: "/wt/a", Branch: "feat/a"}}}
+	build := func(global bool, rs worktreeRowSource) ([]ui.PickerItem, []string) {
+		return []ui.PickerItem{{Key: rs.entries[0].Path}}, []string{fmt.Sprintf("global=%v", global)}
+	}
+	commits := 0
+	var committedMode bool
+	var committedRows worktreeRowSource
+	commit := func(global bool, rs worktreeRowSource) {
+		commits++
+		committedMode, committedRows = global, rs
+	}
+
+	failing := func(bool) (worktreeRowSource, error) { return worktreeRowSource{}, errors.New("scan failed") }
+	if _, err := worktreeTUIToggle(false, failing, build, commit); err == nil {
+		t.Error("a failed load should return its error")
+	}
+	if commits != 0 {
+		t.Fatalf("a failed load committed %d time(s)", commits)
+	}
+
+	var loadedMode bool
+	load := func(global bool) (worktreeRowSource, error) {
+		loadedMode = global
+		return loaded, nil
+	}
+	reload, err := worktreeTUIToggle(false, load, build, commit)
+	if err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if !loadedMode {
+		t.Error("toggling from local mode should load global rows")
+	}
+	if commits != 0 {
+		t.Fatal("the toggle committed before Apply")
+	}
+	if len(reload.Items) != 1 || reload.Items[0].Key != "/wt/a" || strings.Join(reload.Headers, ",") != "global=true" {
+		t.Errorf("reload = %+v, want build's items and headers for global mode", reload)
+	}
+	reload.Apply()
+	if commits != 1 || !committedMode || len(committedRows.entries) != 1 || committedRows.entries[0].Path != "/wt/a" {
+		t.Errorf("after Apply: %d commit(s) with mode %v rows %+v, want one commit(true, loaded rows)",
+			commits, committedMode, committedRows)
 	}
 }
 

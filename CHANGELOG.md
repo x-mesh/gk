@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.147.1] - 2026-10-06
+
 ### Added
 
 - The `gk pr` / `gk issue` / `gk inbox` picker binds `r` to search GitHub again. The picker used to answer a repeated query from its in-process cache, so the list never changed while it stayed open.

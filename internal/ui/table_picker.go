@@ -413,6 +413,12 @@ func (m *tablePickerModel) selectCursorItem() bool {
 	return true
 }
 
+// done reports whether the picker has quit: aborted, a row picked, or an
+// Exit hotkey fired. Every selectCursorItem call is followed by tea.Quit.
+func (m tablePickerModel) done() bool {
+	return m.aborted || m.chosen >= 0 || m.chosenItem.ExtraAction != ""
+}
+
 // buildColumnsFromHeaders rebuilds table.Column slice from a fresh
 // header list, sized to fit the widest cell content per column. Used
 // by ExtraKey callbacks that replace the column structure (e.g. local
@@ -588,6 +594,12 @@ func itemMatchesFilter(it PickerItem, q string) bool {
 }
 
 func (m tablePickerModel) View() string {
+	// The last frame stays where the inline renderer drew it, so a caller that
+	// loops and opens the picker again would stack one copy of the list per
+	// pass. Drawing nothing once the picker has quit clears that frame.
+	if m.done() {
+		return ""
+	}
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
 	var filterLine string

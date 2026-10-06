@@ -708,6 +708,30 @@ func TestTablePicker_NoLegendHidesLine(t *testing.T) {
 	}
 }
 
+func TestTablePicker_ViewClearsOnceThePickerQuits(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	cases := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{"enter picks a row", tea.KeyMsg{Type: tea.KeyEnter}},
+		{"q aborts", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}},
+		{"exit hotkey fires", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTablePickerWithExtras(items, []TablePickerExtraKey{{Key: "x", Help: "x act", Exit: true}})
+			if m.View() == "" {
+				t.Fatal("an open picker rendered nothing")
+			}
+			got, _ := updateAs(m, tc.key)
+			if v := got.View(); v != "" {
+				t.Errorf("view after quit = %q, want empty so the inline frame is cleared", v)
+			}
+		})
+	}
+}
+
 func TestTablePicker_NoticeRenderedUnderHelp(t *testing.T) {
 	m := newTablePickerModelForTest([]PickerItem{{Key: "a", Display: "alpha"}})
 	if strIdx(m.View(), "not a pull request") >= 0 {

@@ -349,7 +349,7 @@ func collectContext(ctx context.Context, runner *git.ExecRunner, cfg *config.Con
 		// the top-level fields carry, so an agent sees not just "which
 		// worktrees exist" but "which one holds unfinished work" without a
 		// follow-up scan per path.
-		meta := loadWorktreeBranchMeta(ctx, runner)
+		meta := loadWorktreeBranchMeta(ctx, runner, worktreeBranchNames(entries))
 		currentPath := currentWorktreePath(ctx, runner)
 		for _, e := range entries {
 			if e.Bare {

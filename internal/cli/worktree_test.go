@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 // TestParseWorktreePorcelain covers record splitting and field parsing.
@@ -343,6 +345,197 @@ func TestListGlobalWorktrees_NestedOrphanAndSharedSlug(t *testing.T) {
 	}
 }
 
+// Every root of one repository lists the same worktrees, so the global scan
+// lists each repository once, deduplicated by the common dir read from each
+// root's .git before forking. Not parallel: gitCallCounter hooks a process
+// global.
+func TestListGlobalWorktrees_ListsEachRepositoryOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	base := filepath.Join(t.TempDir(), "wtbase")
+	cfg := config.Defaults()
+	cfg.Worktree.Base = base
+
+	repoA := testutil.NewRepo(t)
+	repoB := testutil.NewRepo(t)
+	for _, name := range []string{"a1", "a2", "fix/a3"} {
+		repoA.RunGit("worktree", "add", "-b", "wt/"+name, filepath.Join(base, "proj-a", name))
+	}
+	for _, name := range []string{"b1", "b2"} {
+		repoB.RunGit("worktree", "add", "-b", "wt/"+name, filepath.Join(base, "proj-b", name))
+	}
+
+	counter := newGitCallCounter(t)
+	got, err := listGlobalWorktrees(context.Background(), &cfg)
+	if err != nil {
+		t.Fatalf("listGlobalWorktrees: %v", err)
+	}
+	if n := counter.get("worktree list"); n != 2 {
+		t.Errorf("worktree list ran %d times, want 2 (one per repository)", n)
+	}
+	if len(got) != 5 {
+		t.Fatalf("got %d rows, want 5: %+v", len(got), got)
+	}
+	for _, g := range got {
+		wantProject, wantMain := "proj-a", repoA.Dir
+		if strings.HasPrefix(g.Entry.Branch, "wt/b") {
+			wantProject, wantMain = "proj-b", repoB.Dir
+		}
+		if g.Project != wantProject || !sameDir(g.Main, wantMain) {
+			t.Errorf("%s: project %q main %q, want %q and %s", g.Entry.Branch, g.Project, g.Main, wantProject, wantMain)
+		}
+	}
+}
+
+// A global-mode row can belong to another repository. Removing it with the
+// cwd repository's runner measures nothing against the parent and runs
+// worktree remove/prune/branch -D in the wrong repository, so the action must
+// run in the owning repository's main worktree with that repository's
+// protected list.
+func TestWorktreeTUIActionTarget_GlobalEntryRunsInOwningRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "wtbase")
+	cfg := config.Defaults()
+	cfg.Worktree.Base = base
+
+	repoA := testutil.NewRepo(t)
+	repoB := testutil.NewRepo(t)
+	repoB.RunGit("branch", "develop")
+	wt := filepath.Join(base, "proj-b", "feat-b")
+	repoB.RunGit("worktree", "add", "-b", "feat/b", wt, "develop")
+	repoB.RunGit("config", "branch.feat/b.gk-parent", "develop")
+	repoB.WriteFile(".gk.yaml", "branch:\n  protected: [feat/b]\n")
+
+	cwdRunner := &git.ExecRunner{Dir: repoA.Dir}
+	cwdProtected := cfgProtected(&cfg)
+	entry := WorktreeEntry{Path: wt, Branch: "feat/b"}
+	listsWorktree := func(r *git.ExecRunner) bool {
+		out, _, err := r.Run(ctx, "worktree", "list", "--porcelain")
+		if err != nil {
+			t.Fatalf("worktree list in %s: %v", r.Dir, err)
+		}
+		for _, e := range parseWorktreePorcelain(string(out)) {
+			if sameDir(e.Path, wt) {
+				return true
+			}
+		}
+		return false
+	}
+	removeOutput := func(r *git.ExecRunner, protected []string) string {
+		var buf bytes.Buffer
+		if err := worktreeTUIRemove(ctx, r, &buf, entry, protected); err != nil {
+			t.Fatalf("worktreeTUIRemove in %s: %v", r.Dir, err)
+		}
+		return stripANSIForWidth(buf.String())
+	}
+
+	if listsWorktree(cwdRunner) {
+		t.Fatalf("premise: the cwd repository must not know %s", wt)
+	}
+	if got := removeOutput(cwdRunner, cwdProtected); strings.Contains(got, "develop") {
+		t.Fatalf("premise: the cwd repository cannot measure feat/b against develop, got %q", got)
+	}
+
+	gws, err := listGlobalWorktrees(ctx, &cfg)
+	if err != nil {
+		t.Fatalf("listGlobalWorktrees: %v", err)
+	}
+	rs := globalWorktreeRowSource(gws)
+	var picked *WorktreeEntry
+	for i := range rs.entries {
+		if rs.entries[i].Branch == "feat/b" {
+			picked = &rs.entries[i]
+		}
+	}
+	if picked == nil {
+		t.Fatalf("global rows %+v have no feat/b entry", rs.entries)
+	}
+
+	runner, protected := worktreeTUIActionTarget(rs, *picked, cwdRunner, cwdProtected)
+	if !sameDir(runner.Dir, repoB.Dir) {
+		t.Errorf("runner dir = %s, want repoB main worktree %s", runner.Dir, repoB.Dir)
+	}
+	if !isProtectedBranchName("feat/b", protected) {
+		t.Errorf("protected = %v, want repoB's .gk.yaml list containing feat/b", protected)
+	}
+	if !listsWorktree(runner) {
+		t.Errorf("owning repository runner does not list %s", wt)
+	}
+	if got := removeOutput(runner, protected); !strings.Contains(got, "feat/b holds nothing develop lacks") {
+		t.Errorf("remove output = %q, want the standing against develop", got)
+	}
+}
+
+// The 'g' toggle commits the new mode and rows only through Apply, which the
+// picker runs once the rows are on screen. A failed load commits nothing, so
+// the screen and the next loop iteration stay in the old mode.
+func TestWorktreeTUIToggle_CommitsOnlyThroughApply(t *testing.T) {
+	loaded := worktreeRowSource{entries: []WorktreeEntry{{Path: "/wt/a", Branch: "feat/a"}}}
+	build := func(global bool, rs worktreeRowSource) ([]ui.PickerItem, []string) {
+		return []ui.PickerItem{{Key: rs.entries[0].Path}}, []string{fmt.Sprintf("global=%v", global)}
+	}
+	commits := 0
+	var committedMode bool
+	var committedRows worktreeRowSource
+	commit := func(global bool, rs worktreeRowSource) {
+		commits++
+		committedMode, committedRows = global, rs
+	}
+
+	failing := func(bool) (worktreeRowSource, error) { return worktreeRowSource{}, errors.New("scan failed") }
+	if _, err := worktreeTUIToggle(false, failing, build, commit); err == nil {
+		t.Error("a failed load should return its error")
+	}
+	if commits != 0 {
+		t.Fatalf("a failed load committed %d time(s)", commits)
+	}
+
+	var loadedMode bool
+	load := func(global bool) (worktreeRowSource, error) {
+		loadedMode = global
+		return loaded, nil
+	}
+	reload, err := worktreeTUIToggle(false, load, build, commit)
+	if err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if !loadedMode {
+		t.Error("toggling from local mode should load global rows")
+	}
+	if commits != 0 {
+		t.Fatal("the toggle committed before Apply")
+	}
+	if len(reload.Items) != 1 || reload.Items[0].Key != "/wt/a" || strings.Join(reload.Headers, ",") != "global=true" {
+		t.Errorf("reload = %+v, want build's items and headers for global mode", reload)
+	}
+	reload.Apply()
+	if commits != 1 || !committedMode || len(committedRows.entries) != 1 || committedRows.entries[0].Path != "/wt/a" {
+		t.Errorf("after Apply: %d commit(s) with mode %v rows %+v, want one commit(true, loaded rows)",
+			commits, committedMode, committedRows)
+	}
+}
+
+// A local-mode row has no owning-repository entry, so the action keeps the
+// caller's runner and protected list unchanged.
+func TestWorktreeTUIActionTarget_LocalEntryKeepsCaller(t *testing.T) {
+	runner := &git.ExecRunner{Dir: t.TempDir()}
+	protected := []string{"main", "release"}
+	entry := WorktreeEntry{Path: filepath.Join(runner.Dir, "wt"), Branch: "feat/x"}
+	rs := worktreeRowSource{entries: []WorktreeEntry{entry}}
+
+	gotRunner, gotProtected := worktreeTUIActionTarget(rs, entry, runner, protected)
+	if gotRunner != runner {
+		t.Errorf("runner = %+v, want the caller's runner", gotRunner)
+	}
+	if strings.Join(gotProtected, ",") != "main,release" {
+		t.Errorf("protected = %v, want the caller's list", gotProtected)
+	}
+}
+
 func mustRun(t *testing.T, r *git.ExecRunner, args ...string) {
 	t.Helper()
 	if _, stderr, err := r.Run(context.Background(), args...); err != nil {
@@ -605,6 +798,81 @@ func TestWorktreeList_TextExplainsDirty(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "[dirty: 1 untracked]") {
 		t.Errorf("list should say why the tree is dirty, got:\n%s", buf.String())
+	}
+}
+
+// The list reads each worktree's dirty tally and untracked names from one
+// status scan, and must report exactly what the separate per-kind scans
+// (worktreeDirtyAt, worktreeUntrackedAt) did. Not parallel: gitCallCounter
+// hooks a process global.
+func TestWorktreeList_OneStatusScanPerWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	repo.RunGit("worktree", "add", "-b", "feat/dirty", wt)
+	wtRunner := &git.ExecRunner{Dir: wt}
+	for name, body := range map[string]string{
+		"staged.txt":     "s\n",
+		".gkkeep/README": "changed\n",
+		"new-file.txt":   "u\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(wt, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wt, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRun(t, wtRunner, "add", "staged.txt")
+
+	ctx := context.Background()
+	wantDirty := worktreeDirtyAt(ctx, wt)
+	wantUntracked, _ := worktreeUntrackedAt(ctx, wt)
+	if wantDirty == nil || *wantDirty != (contextDirtyJSON{Staged: 1, Unstaged: 1, Untracked: 1}) {
+		t.Fatalf("fixture dirty = %+v, want 1 staged, 1 modified, 1 untracked", wantDirty)
+	}
+
+	counter := newGitCallCounter(t)
+	root, buf := buildWorktreeCmd(repo.Dir, "list", "--json")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list --json: %v\nout: %s", err, buf.String())
+	}
+	if n := counter.get("status --porcelain"); n != 2 {
+		t.Errorf("list --json ran status --porcelain %d times, want 2 (one per worktree)", n)
+	}
+	var entries []worktreeListEntryJSON
+	if err := json.Unmarshal(buf.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	for _, e := range entries {
+		if !sameDir(e.Path, wt) {
+			if e.Dirty != nil || len(e.Untracked) != 0 {
+				t.Errorf("clean main worktree reported dirty %+v untracked %v", e.Dirty, e.Untracked)
+			}
+			continue
+		}
+		if e.Dirty == nil || *e.Dirty != *wantDirty {
+			t.Errorf("linked worktree dirty = %+v, want %+v", e.Dirty, *wantDirty)
+		}
+		if strings.Join(e.Untracked, ",") != strings.Join(wantUntracked, ",") || strings.Join(e.Untracked, ",") != "new-file.txt" {
+			t.Errorf("linked worktree untracked = %v, want %v", e.Untracked, wantUntracked)
+		}
+	}
+
+	flagJSON = false
+	counter.reset()
+	root, buf = buildWorktreeCmd(repo.Dir, "list")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list: %v\nout: %s", err, buf.String())
+	}
+	if n := counter.get("status --porcelain"); n != 2 {
+		t.Errorf("list ran status --porcelain %d times, want 2 (one per worktree)", n)
+	}
+	wantMark := fmt.Sprintf("[dirty: %s]", formatDirtyCounts(*wantDirty, nil))
+	if out := buf.String(); strings.Count(out, "[dirty:") != 1 || !strings.Contains(out, wantMark) {
+		t.Errorf("table should mark only the linked worktree with %q, got:\n%s", wantMark, out)
 	}
 }
 
@@ -1733,7 +2001,7 @@ func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
 	runner := &git.ExecRunner{Dir: repo.Dir}
 	ctx := context.Background()
 	tipsNow := func() map[string]string {
-		return worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner))
+		return worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
 	}
 
 	first := loadWorktreeParentRels(ctx, runner, []string{"feat/moving"}, tipsNow())
@@ -1750,6 +2018,191 @@ func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
 	}
 	if got := second["feat/moving"].Ahead; got != 1 {
 		t.Errorf("after the commit: ahead = %d, want 1", got)
+	}
+}
+
+// Inference walks a branch's reflog and asks which branches contain its
+// branchpoint, so every TUI rebuild would repeat both per worktree without a
+// gk-parent. The answer, found or ambiguous, is memoised by every local branch
+// tip, and the trunk is never inferred. Not parallel: gitCallCounter hooks a
+// process global.
+func TestLoadWorktreeParentRels_InferenceMemoisedByAllTips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.RunGit("branch", "feat/amb")
+	repo.RunGit("branch", "idle")
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/inf")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	branches := []string{"feat/inf", "feat/amb", "main"}
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+
+	counter := newGitCallCounter(t)
+	first := loadWorktreeParentRels(ctx, runner, branches, tips)
+	if rel := first["feat/inf"]; !rel.Resolved || rel.Parent != "develop" || rel.Source != branchparent.SourceInferred {
+		t.Fatalf("feat/inf = %+v, want inferred parent develop", rel)
+	}
+	if rel, ok := first["feat/amb"]; ok {
+		t.Errorf("feat/amb is ambiguous, want no entry, got %+v", rel)
+	}
+	if rel, ok := first["main"]; ok {
+		t.Errorf("main is the trunk, want no entry, got %+v", rel)
+	}
+	if counter.get("log -g") == 0 {
+		t.Fatal("first call walked no reflog — the test no longer exercises inference")
+	}
+	if n := counter.get("log -g --format=%H refs/heads/main"); n != 0 {
+		t.Errorf("the trunk's reflog was walked %d time(s), want 0", n)
+	}
+
+	counter.reset()
+	second := loadWorktreeParentRels(ctx, runner, branches, tips)
+	if second["feat/inf"] != first["feat/inf"] {
+		t.Errorf("second feat/inf = %+v, want %+v", second["feat/inf"], first["feat/inf"])
+	}
+	for _, probe := range []string{"log -g", "--contains", "gk-parent", "rev-list"} {
+		if n := counter.get(probe); n != 0 {
+			t.Errorf("second call ran %q %d time(s); no branch tip moved", probe, n)
+		}
+	}
+
+	repo.RunGit("branch", "-f", "idle", "develop")
+	tips = worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+	counter.reset()
+	loadWorktreeParentRels(ctx, runner, branches, tips)
+	if counter.get("log -g") == 0 {
+		t.Error("idle moved, yet the memoised inference was served without a reflog walk")
+	}
+}
+
+// A resolution cut short by the timeout or the caller's cancellation says
+// nothing about the branch, so it must not be memoised as "no parent".
+func TestLoadWorktreeParentRels_CancelledResolveIsNotCached(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/inf")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(context.Background(), runner, nil))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if rel := loadWorktreeParentRels(cancelled, runner, []string{"feat/inf"}, tips)["feat/inf"]; rel.Resolved {
+		t.Fatalf("a cancelled call resolved feat/inf: %+v", rel)
+	}
+	rel := loadWorktreeParentRels(context.Background(), runner, []string{"feat/inf"}, tips)["feat/inf"]
+	if !rel.Resolved || rel.Parent != "develop" {
+		t.Errorf("after a cancelled call: feat/inf = %+v, want resolved against develop", rel)
+	}
+}
+
+// Explicit and inferred parents share the measurement cache, so a hit must
+// report how the parent is known now, not how it was first measured. Not
+// parallel: gitCallCounter hooks a process global.
+func TestLoadWorktreeParentRels_CachedMeasureTakesCurrentSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/x")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+	first := loadWorktreeParentRels(ctx, runner, []string{"feat/x"}, tips)["feat/x"]
+	if first.Parent != "develop" || first.Source != branchparent.SourceInferred {
+		t.Fatalf("feat/x = %+v, want inferred parent develop", first)
+	}
+
+	repo.RunGit("config", "branch.feat/x.gk-parent", "develop")
+	counter := newGitCallCounter(t)
+	second := loadWorktreeParentRels(ctx, runner, []string{"feat/x"}, tips)["feat/x"]
+	if second.Source != branchparent.SourceExplicit {
+		t.Errorf("after recording gk-parent: Source = %q, want explicit", second.Source)
+	}
+	if n := counter.get("rev-list"); n != 0 {
+		t.Errorf("second call ran rev-list %d time(s); the measurement cache hit was not exercised", n)
+	}
+}
+
+// Fork points are read only for worktree rows, so a branch no worktree has
+// checked out must cost no merge-base. The map still carries every local
+// branch's tip, and the anchor's tip keeps the fork-point cache warm. Not
+// parallel: gitCallCounter hooks a process global.
+func TestLoadWorktreeBranchMeta_ForkPointsOnlyForWorktreeBranches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	idle := []string{"idle/a", "idle/b", "idle/c", "idle/d", "idle/e"}
+	for _, name := range idle {
+		repo.RunGit("branch", name)
+	}
+	repo.RunGit("branch", "stack/p")
+	wt := filepath.Join(t.TempDir(), "w")
+	repo.RunGit("worktree", "add", "-b", "feat/w", wt, "stack/p")
+	repo.RunGit("config", "branch.feat/w.gk-parent", "stack/p")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	entries, err := listWorktreeEntries(ctx, runner)
+	if err != nil {
+		t.Fatalf("listWorktreeEntries: %v", err)
+	}
+	forkFor := worktreeBranchNames(entries)
+
+	counter := newGitCallCounter(t)
+	if meta := loadWorktreeBranchMeta(ctx, runner, nil); len(meta) == 0 {
+		t.Fatal("forkFor=nil returned no branches")
+	}
+	if n := counter.get("merge-base"); n != 0 {
+		t.Errorf("forkFor=nil ran merge-base %d times, want 0", n)
+	}
+
+	counter.reset()
+	meta := loadWorktreeBranchMeta(ctx, runner, forkFor)
+	if forkPointRuns(counter) == 0 {
+		t.Fatal("first call computed no fork point — the test no longer exercises it")
+	}
+	for _, name := range idle {
+		counter.mu.Lock()
+		for line, n := range counter.counts {
+			if strings.Contains(line, "merge-base") && strings.Contains(line, name) {
+				t.Errorf("%s is in no worktree but ran %q %d time(s)", name, line, n)
+			}
+		}
+		counter.mu.Unlock()
+		if got := meta[name].ForkBranch; got != "" {
+			t.Errorf("%s ForkBranch = %q, want empty", name, got)
+		}
+	}
+	if got := meta["feat/w"].ForkBranch; got != "stack/p" {
+		t.Errorf("feat/w ForkBranch = %q, want its gk-parent stack/p", got)
+	}
+	for _, name := range append([]string{"main", "stack/p", "feat/w"}, idle...) {
+		if meta[name].Hash == "" {
+			t.Errorf("%s has no Hash in the meta map", name)
+		}
+	}
+
+	counter.reset()
+	loadWorktreeBranchMeta(ctx, runner, forkFor)
+	if n := forkPointRuns(counter); n != 0 {
+		t.Errorf("second call computed %d fork point(s); the tips did not move", n)
 	}
 }
 

@@ -265,7 +265,7 @@ func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root, c
 		return nil, fmt.Errorf("fleet: worktree list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	entries := parseWorktreePorcelain(string(stdout))
-	meta, base := loadWorktreeBranchMetaWithBase(ctx, runner)
+	meta, base := loadWorktreeBranchMetaWithBase(ctx, runner, worktreeBranchNames(entries))
 	now := time.Now()
 
 	live := make([]WorktreeEntry, 0, len(entries))

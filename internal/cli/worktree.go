@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
@@ -220,17 +223,18 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	// sw` columns: "where this branch came from" + "how far diverged" +
 	// "when last touched". Best-effort: a git failure collapses the
 	// enrichment rather than aborting the whole list.
-	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
+	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner, worktreeBranchNames(entries))
 	currentPath := currentWorktreePath(cmd.Context(), runner)
 	// Parent standing is measured only for the branches actually checked out
 	// in a worktree — the map is keyed by branch, and a repo's other local
 	// branches would each cost a rev-list nobody reads here.
 	parentRels := loadWorktreeParentRels(cmd.Context(), runner,
 		worktreeBranchNames(entries), worktreeBranchTips(branchMeta))
+	statuses := scanWorktreeListStatuses(cmd.Context(), entries)
 
 	if JSONOut() {
 		enriched := make([]worktreeListEntryJSON, 0, len(entries))
-		for _, e := range entries {
+		for i, e := range entries {
 			j := worktreeListEntryJSON{
 				Path: e.Path, Head: e.Head, Branch: e.Branch,
 				Detached: e.Detached, Bare: e.Bare, Locked: e.Locked, Prunable: e.Prunable,
@@ -246,9 +250,9 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 					j.Parent, j.ParentSource = rel.Parent, string(rel.Source)
 					j.ParentAhead, j.ParentBehind, j.ParentState = rel.Ahead, rel.Behind, rel.State()
 				}
-				j.Dirty = worktreeDirtyAt(cmd.Context(), e.Path)
+				j.Dirty = statuses[i].dirty
 				if j.Dirty != nil && j.Dirty.Untracked > 0 {
-					j.Untracked, _ = worktreeUntrackedAt(cmd.Context(), e.Path)
+					j.Untracked = statuses[i].untracked
 				}
 			}
 			enriched = append(enriched, j)
@@ -264,7 +268,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	body := make([]string, 0, len(entries))
 	var detached, locked, prunable int
 	rows := make([]worktreeRow, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		branchLabel := e.Branch
 		switch {
 		case e.Bare:
@@ -280,10 +284,8 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		// two disagree constantly: a branch level with its parent still holds
 		// everything that was never committed, and a row reading "● same"
 		// without this marker would invite exactly the wrong deletion.
-		if !e.Bare {
-			if d := worktreeDirtyAt(cmd.Context(), e.Path); d != nil {
-				marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
-			}
+		if d := statuses[i].dirty; d != nil {
+			marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
 		}
 		if e.Locked {
 			marks += " [locked]"
@@ -329,6 +331,42 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// worktreeListStatus is one worktree's uncommitted state as `gk worktree
+// list` reports it. A zero value (nil dirty) means clean, bare, or unscannable.
+type worktreeListStatus struct {
+	dirty     *contextDirtyJSON
+	untracked []string
+}
+
+// scanWorktreeListStatuses runs one `status --porcelain -z` per non-bare entry,
+// at most NumCPU at a time, and reads both the dirty tally and the untracked
+// names from that one scan. Results are indexed like entries, so the
+// goroutines never share a map.
+func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []worktreeListStatus {
+	out := make([]worktreeListStatus, len(entries))
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		if e.Bare {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			raw, _, err := (&git.ExecRunner{Dir: path}).Run(ctx, "status", "--porcelain", "-z")
+			if err != nil {
+				return
+			}
+			out[i].dirty = dirtyPtrIfAny(parseWorktreeScan(string(raw), "").dirty)
+			out[i].untracked, _ = parseUntrackedPorcelainZ(string(raw))
+		}(i, e.Path)
+	}
+	wg.Wait()
+	return out
+}
+
 // worktreeBranchMeta is the slice of branchInfo we actually consume in
 // the worktree-list renderer. Keeping it narrow keeps the test fixtures
 // small and lets us evolve listLocalBranches independently.
@@ -345,8 +383,8 @@ type worktreeBranchMeta struct {
 	LastCommit time.Time
 }
 
-func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[string]worktreeBranchMeta {
-	meta, _ := loadWorktreeBranchMetaWithBase(ctx, runner)
+func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner, forkFor []string) map[string]worktreeBranchMeta {
+	meta, _ := loadWorktreeBranchMetaWithBase(ctx, runner, forkFor)
 	return meta
 }
 
@@ -355,18 +393,19 @@ func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[str
 // poll: the meta map for every worktree, the trunk for the land-ready check)
 // used to fork it a second time — twice per repo per poll, which on a
 // 17-repo fleet was 34 subprocesses where 17 would do.
-func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner) (map[string]worktreeBranchMeta, string) {
+//
+// Fork points are computed only for forkFor (the branches checked out in a
+// worktree) and their anchors: every caller reads ForkBranch for worktree
+// rows only, and each other local branch cost a merge-base on a cold cache.
+// The map still holds every local branch, because callers look up a parent's
+// or the trunk's Hash.
+func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner, forkFor []string) (map[string]worktreeBranchMeta, string) {
 	// Resolved before the branch listing so a listing failure still yields the
 	// trunk — callers use it independently of the meta map.
 	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
 	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {
 		return nil, defaultBr
-	}
-	// computeForkPoints needs a default-base hint. Tolerate failures: without a
-	// default we lose the fork annotation but still get upstream/diff/age.
-	if defaultBr != "" {
-		computeForkPoints(ctx, runner, defaultBr, branches)
 	}
 	out := make(map[string]worktreeBranchMeta, len(branches))
 	for _, b := range branches {
@@ -375,10 +414,36 @@ func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner)
 			Ahead:      b.Ahead,
 			Behind:     b.Behind,
 			Hash:       b.Hash,
-			ForkBranch: b.ForkBranch,
-			ForkPoint:  b.ForkPoint,
 			LastCommit: b.LastCommit,
 		}
+	}
+	// computeForkPoints needs a default-base hint. Tolerate failures: without a
+	// default we lose the fork annotation but still get upstream/diff/age.
+	if defaultBr == "" || len(forkFor) == 0 {
+		return out, defaultBr
+	}
+	// The anchors ride along because computeForkPoints fingerprints its cache
+	// with the anchor's tip from this slice; without it every call misses.
+	want := make(map[string]bool, 2*len(forkFor)+1)
+	want[defaultBr] = true
+	parents := cachedAllParents(ctx, runner)
+	for _, name := range forkFor {
+		want[name] = true
+		if p := parents[name]; p != "" {
+			want[p] = true
+		}
+	}
+	subset := make([]branchInfo, 0, len(want))
+	for _, b := range branches {
+		if want[b.Name] {
+			subset = append(subset, b)
+		}
+	}
+	computeForkPoints(ctx, runner, defaultBr, subset)
+	for _, b := range subset {
+		m := out[b.Name]
+		m.ForkBranch, m.ForkPoint = b.ForkBranch, b.ForkPoint
+		out[b.Name] = m
 	}
 	return out, defaultBr
 }
@@ -636,9 +701,54 @@ func shortWorktreeHead(sha string) string {
 
 // worktreeParentRelCache memoises the ahead/behind measurement, scoped to the
 // branch and parent compared and fingerprinted by their tips. It exists for the
-// worktree TUI, which rebuilds its rows on every keystroke and would otherwise
-// re-fork one `rev-list` per worktree per frame.
+// worktree TUI, which rebuilds its rows on every loop iteration and every 'g'
+// toggle and would otherwise re-fork one `rev-list` per worktree per rebuild.
+// Explicit and inferred parents share an entry, so a hit carries the Source of
+// whichever measured it first; callers overwrite it with the current one.
 var worktreeParentRelCache scopedMemo[worktreeParentRel]
+
+// worktreeParentResolution is one resolver answer, kept whether or not a
+// parent was found: an ambiguous branch costs the same reflog walk as an
+// inferable one.
+type worktreeParentResolution struct {
+	parent string
+	source branchparent.Source
+	ok     bool
+}
+
+// worktreeParentResolutionCache memoises resolver answers for branches with
+// no gk-parent, scoped to the branch and fingerprinted by every local branch
+// tip (worktreeAllTipsFingerprint), because inference reads which branches
+// contain the branchpoint and any branch moving can change that answer.
+var worktreeParentResolutionCache scopedMemo[worktreeParentResolution]
+
+// resolveWorktreeParent runs the resolver under its own timeout. cacheable is
+// false when that timeout or the caller's cancellation cut it short: the
+// "no parent" it then reports says nothing about the branch.
+func resolveWorktreeParent(ctx context.Context, runner git.Runner, branch string) (res worktreeParentResolution, cacheable bool) {
+	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	p, s, ok := branchparent.NewResolver(git.NewClient(runner)).ResolveParent(resolveCtx, branch)
+	return worktreeParentResolution{parent: p, source: s, ok: ok}, resolveCtx.Err() == nil
+}
+
+// worktreeAllTipsFingerprint digests every name=tip pair. Empty tips yield
+// "", which scopedMemo treats as not memoisable.
+func worktreeAllTipsFingerprint(tips map[string]string) string {
+	if len(tips) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(tips))
+	for name := range tips {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%s=%s\x00", name, tips[name])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // measureParentRel resolves one branch's parent and measures the divergence
 // between the two tips. explicitParent short-circuits the resolver when the
@@ -657,12 +767,17 @@ func measureParentRel(ctx context.Context, runner git.Runner, branch, explicitPa
 	}
 	parent, source := explicitParent, branchparent.SourceExplicit
 	if parent == "" || parent == branch {
-		p, s, ok := branchparent.NewResolver(git.NewClient(runner)).ResolveParent(ctx, branch)
-		if !ok {
+		res, _ := resolveWorktreeParent(ctx, runner, branch)
+		if !res.ok {
 			return worktreeParentRel{}
 		}
-		parent, source = p, s
+		parent, source = res.parent, res.source
 	}
+	return measureParentDivergence(ctx, runner, branch, parent, source)
+}
+
+// measureParentDivergence counts the commits branch and parent each lack.
+func measureParentDivergence(ctx context.Context, runner git.Runner, branch, parent string, source branchparent.Source) worktreeParentRel {
 	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// left...right: left-only commits are what the branch is behind by,
@@ -691,11 +806,13 @@ func measureParentRel(ctx context.Context, runner git.Runner, branch, explicitPa
 // divergence in one pass. Explicit gk-parent metadata is read as a single
 // batch (AllParents) and only the branches it misses fall through to
 // reflog inference, so the common case costs one config read plus one
-// rev-list per worktree rather than a resolver walk per worktree.
+// rev-list per worktree rather than a resolver walk per worktree. The trunk
+// without a gk-parent is skipped: it has no parent, and inferring one would
+// walk its reflog for nothing.
 //
 // tips maps branch name → tip sha (the branch listing already has them).
 // Supplying it makes results cacheable; passing nil just means every call
-// measures afresh.
+// resolves and measures afresh.
 //
 // Every failure degrades to an unresolved relationship: a missing parent
 // ref, a timed-out rev-list, or a detached worktree simply leaves the
@@ -704,7 +821,9 @@ func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branche
 	if len(branches) == 0 {
 		return nil
 	}
-	explicit, _ := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+	explicit := cachedAllParents(ctx, runner)
+	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
+	allTips := worktreeAllTipsFingerprint(tips)
 
 	type result struct {
 		branch string
@@ -717,34 +836,47 @@ func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branche
 		if name == "" {
 			continue
 		}
+		parent := explicit[name]
+		if parent == name {
+			parent = ""
+		}
+		if parent == "" && name == defaultBr {
+			continue
+		}
 		wg.Add(1)
-		go func(branch string) {
+		go func(branch, parent string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Only the explicit path is cacheable: an inferred parent isn't
-			// known until measureParentRel resolves it, and without the
-			// parent's name there is no tip to key on. Explicit dominates in
-			// practice — `gk wt add` records a parent for every branch it
-			// creates — so the TUI's repeated rebuilds still hit.
-			parent := explicit[branch]
-			scope, fingerprint := "", ""
-			if parent != "" && parent != branch {
-				scope = twoRefScope(runner.Dir, branch, parent)
-				fingerprint = twoTipFingerprint(tips[branch], tips[parent])
-				if rel, found := worktreeParentRelCache.load(scope, fingerprint); found {
-					out <- result{branch, rel}
+			// Both paths are cacheable once the parent is known: an explicit
+			// parent comes from the batched config read, an inferred one from
+			// the resolution memo, which a later rebuild hits until a branch
+			// tip moves.
+			source := branchparent.SourceExplicit
+			if parent == "" {
+				res := worktreeParentResolutionCache.do(runner.Dir+"\x00"+branch, allTips, func() (worktreeParentResolution, bool) {
+					return resolveWorktreeParent(ctx, runner, branch)
+				})
+				if !res.ok {
 					return
 				}
+				parent, source = res.parent, res.source
 			}
-			rel := measureParentRel(ctx, runner, branch, parent)
+			scope := twoRefScope(runner.Dir, branch, parent)
+			fingerprint := twoTipFingerprint(tips[branch], tips[parent])
+			if rel, found := worktreeParentRelCache.load(scope, fingerprint); found {
+				rel.Source = source
+				out <- result{branch, rel}
+				return
+			}
+			rel := measureParentDivergence(ctx, runner, branch, parent, source)
 			if !rel.Resolved {
 				return
 			}
 			worktreeParentRelCache.store(scope, fingerprint, rel)
 			out <- result{branch, rel}
-		}(name)
+		}(name, parent)
 	}
 	wg.Wait()
 	close(out)
@@ -1432,59 +1564,42 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
-	// Toggleable state shared between the picker call and the 'g'
-	// extra-key callback: which entries are currently shown, and what
-	// project they belong to (only used in global mode).
-	global := startGlobal
-
-	type rowSource struct {
-		entries []WorktreeEntry
-		// projectByPath surfaces the owning project slug for the global
-		// mode rendering. Empty in local mode.
-		projectByPath map[string]string
-	}
-
-	loadRows := func() (rowSource, error) {
+	// The loaders take the mode as an argument instead of reading the loop's
+	// state: the 'g' toggle runs them off the UI goroutine.
+	loadRows := func(global bool) (worktreeRowSource, error) {
 		if global {
 			gws, gErr := listGlobalWorktrees(ctx, cfg)
 			if gErr != nil {
-				return rowSource{}, gErr
+				return worktreeRowSource{}, gErr
 			}
-			rs := rowSource{
-				entries:       make([]WorktreeEntry, 0, len(gws)),
-				projectByPath: make(map[string]string, len(gws)),
-			}
-			for _, gw := range gws {
-				rs.entries = append(rs.entries, gw.Entry)
-				rs.projectByPath[gw.Entry.Path] = gw.Project
-			}
-			return rs, nil
+			return globalWorktreeRowSource(gws), nil
 		}
 		ents, lErr := listWorktreesForTUI(ctx, runner)
 		if lErr != nil {
-			return rowSource{}, lErr
+			return worktreeRowSource{}, lErr
 		}
-		return rowSource{entries: ents}, nil
+		return worktreeRowSource{entries: ents}, nil
 	}
 
 	// loadBranchMeta reads upstream / ahead-behind / fork-parent for the
 	// current repo's branches in one shot. Skipped in global mode
 	// (cross-repo iteration is out of scope) — global rows still show
 	// the branch but lose the SOURCE/DIFF columns. nil on failure.
-	loadBranchMeta := func() map[string]worktreeBranchMeta {
+	loadBranchMeta := func(global bool, rs worktreeRowSource) map[string]worktreeBranchMeta {
 		if global {
 			return nil
 		}
-		return loadWorktreeBranchMeta(ctx, runner)
+		return loadWorktreeBranchMeta(ctx, runner, worktreeBranchNames(rs.entries))
 	}
 
 	// loadParentRels measures each listed branch against its parent — the
 	// signal that answers "is this worktree still holding work?" at the exact
 	// moment the user is about to press [d]. Skipped in global mode, where
 	// another project's parents aren't resolvable from this repo. Results are
-	// memoised by commit pair, so the rebuild this runs on every keystroke
-	// costs no subprocess until a tip actually moves.
-	loadParentRels := func(rs rowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
+	// memoised by commit pair, so the rebuild this runs on every loop
+	// iteration and every 'g' toggle costs no subprocess until a tip
+	// actually moves.
+	loadParentRels := func(global bool, rs worktreeRowSource, meta map[string]worktreeBranchMeta) map[string]worktreeParentRel {
 		if global {
 			return nil
 		}
@@ -1492,9 +1607,9 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			worktreeBranchNames(rs.entries), worktreeBranchTips(meta))
 	}
 
-	buildItems := func(rs rowSource) (items []ui.PickerItem, headers []string) {
-		meta := loadBranchMeta()
-		parentRels := loadParentRels(rs, meta)
+	buildItems := func(global bool, rs worktreeRowSource) (items []ui.PickerItem, headers []string) {
+		meta := loadBranchMeta(global, rs)
+		parentRels := loadParentRels(global, rs, meta)
 		appendDiff := func(branch string) string {
 			m, ok := meta[branch]
 			if !ok {
@@ -1592,13 +1707,26 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		return items, headers
 	}
 
+	// global is the mode the next iteration opens in. Only a 'g' toggle whose
+	// rows reached the screen changes it, so a failed load leaves the screen
+	// and the next iteration in the same mode.
+	global := startGlobal
 	for {
-		rs, err := loadRows()
+		// shown is this iteration's own copy of the mode, the one its OnPress
+		// reads. A load still running after Pick returned reads this copy,
+		// never the next iteration's.
+		shown := global
+		rs, err := loadRows(shown)
 		if err != nil {
 			return err
 		}
 
-		items, headers := buildItems(rs)
+		items, headers := buildItems(shown, rs)
+		// commit runs from the picker's Apply, on this goroutine, before Pick
+		// returns, so the loop below sees the rows the user picked from.
+		commit := func(mode bool, rs2 worktreeRowSource) {
+			shown, global, rs = mode, mode, rs2
+		}
 		picker := &ui.TablePicker{
 			Headers:        headers,
 			ColumnPriority: worktreeColumnPriority(),
@@ -1606,15 +1734,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				Key:       "g",
 				FilterKey: "ctrl+g",
 				Help:      "g toggle global",
-				OnPress: func() ([]ui.PickerItem, []string, error) {
-					global = !global
-					rs2, gErr := loadRows()
-					if gErr != nil {
-						return nil, nil, gErr
-					}
-					rs = rs2
-					its, hdrs := buildItems(rs2)
-					return its, hdrs, nil
+				OnPress: func() (ui.TablePickerReload, error) {
+					return worktreeTUIToggle(shown, loadRows, buildItems, commit)
 				},
 			}},
 		}
@@ -1641,7 +1762,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			if entry == nil {
 				continue
 			}
-			done, err := worktreeTUIActOnEntry(ctx, runner, cmd, *entry, cfgProtected(cfg))
+			actRunner, actProtected := worktreeTUIActionTarget(rs, *entry, runner, cfgProtected(cfg))
+			done, err := worktreeTUIActOnEntry(ctx, actRunner, cmd, *entry, actProtected)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
@@ -1652,19 +1774,88 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// worktreeRowSource holds the entries one `gk wt` picker pass shows.
+type worktreeRowSource struct {
+	entries []WorktreeEntry
+	// projectByPath surfaces the owning project slug for the global
+	// mode rendering. Empty in local mode.
+	projectByPath map[string]string
+	// mainByPath maps a global-mode entry to its owning repository's main
+	// worktree. Empty in local mode.
+	mainByPath map[string]string
+}
+
+// worktreeTUIToggle loads and builds the rows of the mode opposite to shown.
+// It runs off the UI goroutine, so it only reads; commit runs from the
+// reload's Apply once the rows are on screen. A failed load returns the
+// error and never commits, leaving the screen and the caller in shown.
+func worktreeTUIToggle(
+	shown bool,
+	load func(global bool) (worktreeRowSource, error),
+	build func(global bool, rs worktreeRowSource) ([]ui.PickerItem, []string),
+	commit func(global bool, rs worktreeRowSource),
+) (ui.TablePickerReload, error) {
+	next := !shown
+	rs, err := load(next)
+	if err != nil {
+		return ui.TablePickerReload{}, err
+	}
+	items, headers := build(next, rs)
+	return ui.TablePickerReload{
+		Items:   items,
+		Headers: headers,
+		Apply:   func() { commit(next, rs) },
+	}, nil
+}
+
+func globalWorktreeRowSource(gws []globalWorktree) worktreeRowSource {
+	rs := worktreeRowSource{
+		entries:       make([]WorktreeEntry, 0, len(gws)),
+		projectByPath: make(map[string]string, len(gws)),
+		mainByPath:    make(map[string]string, len(gws)),
+	}
+	for _, gw := range gws {
+		rs.entries = append(rs.entries, gw.Entry)
+		rs.projectByPath[gw.Entry.Path] = gw.Project
+		rs.mainByPath[gw.Entry.Path] = gw.Main
+	}
+	return rs
+}
+
+// worktreeTUIActionTarget returns the runner and protected-branch list an
+// action on entry runs with. A global-mode entry can belong to another
+// repository: the cwd runner would measure its branch against nothing and
+// run worktree remove, prune, and branch -D in the wrong repository. Its
+// owning repository's main worktree is used instead of entry.Path because
+// the orphan-branch step runs after that path is gone.
+func worktreeTUIActionTarget(rs worktreeRowSource, entry WorktreeEntry, runner *git.ExecRunner, protected []string) (*git.ExecRunner, []string) {
+	main := rs.mainByPath[entry.Path]
+	if main == "" {
+		return runner, protected
+	}
+	repoFlags := pflag.NewFlagSet("worktree-tui-global", pflag.ContinueOnError)
+	repoFlags.String("repo", main, "")
+	repoCfg, _ := config.Load(repoFlags)
+	return &git.ExecRunner{Dir: main}, cfgProtected(repoCfg)
+}
+
 // globalWorktree pairs a parsed WorktreeEntry with the gk project slug
-// it belongs to, so the global-mode picker can prefix the row.
+// it belongs to, so the global-mode picker can prefix the row. Main is the
+// owning repository's main worktree, where actions on the entry run.
 type globalWorktree struct {
 	Project string
+	Main    string
 	Entry   WorktreeEntry
 }
 
 // listGlobalWorktrees scans the gk-managed base directory (default
 // ~/.gk/worktree) and returns one row per real git worktree found under it.
 // It runs `git worktree list --porcelain` once per repository (not per
-// worktree), keyed by the main worktree, so a few hundred worktrees still load
-// in well under a second. Worktrees whose repository git cannot read are left
-// out.
+// worktree): each root's .git names its repository's common dir, and a root
+// whose repository was already listed is skipped without a fork. A root whose
+// .git cannot be read that way is forked on its own, and the main-worktree
+// check drops its repository if it was already listed. Worktrees whose
+// repository git cannot read are left out.
 func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorktree, error) {
 	if cfg == nil {
 		return nil, nil
@@ -1681,7 +1872,12 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 
 	var out []globalWorktree
 	seen := map[string]bool{}
+	listed := map[string]bool{}
 	for _, root := range roots {
+		common := worktreeRootCommonDir(root.Path)
+		if common != "" && listed[common] {
+			continue
+		}
 		r := &git.ExecRunner{Dir: root.Path}
 		stdout, _, lErr := r.Run(ctx, "worktree", "list", "--porcelain")
 		if lErr != nil {
@@ -1690,6 +1886,11 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 		entries := parseWorktreePorcelain(string(stdout))
 		if len(entries) == 0 {
 			continue
+		}
+		// Marked only after a listing that worked: a failure on this root
+		// must not hide the repository's other roots.
+		if common != "" {
+			listed[common] = true
 		}
 		main := resolvePath(entries[0].Path)
 		if seen[main] {
@@ -1701,7 +1902,7 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 			if project == "" {
 				continue
 			}
-			out = append(out, globalWorktree{Project: project, Entry: e})
+			out = append(out, globalWorktree{Project: project, Main: main, Entry: e})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -1711,6 +1912,48 @@ func listGlobalWorktrees(ctx context.Context, cfg *config.Config) ([]globalWorkt
 		return out[i].Entry.Path < out[j].Entry.Path
 	})
 	return out, nil
+}
+
+// worktreeRootCommonDir reads the common dir that root's .git designates,
+// without forking git: the .git directory itself, or the gitdir a .git file
+// names, followed through its commondir file when there is one (a linked
+// worktree's gitdir sits under <common>/worktrees/). A submodule or a
+// --separate-git-dir checkout has no commondir file, and git then uses the
+// gitdir as the common dir too. Empty when .git cannot be read, so the
+// caller forks git for this root.
+func worktreeRootCommonDir(root string) string {
+	gitPath := filepath.Join(root, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	gitDir := gitPath
+	if !fi.IsDir() {
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			return ""
+		}
+		rest, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+		if !ok {
+			return ""
+		}
+		gitDir = strings.TrimSpace(rest)
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(root, gitDir)
+		}
+	}
+	common := gitDir
+	data, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	switch {
+	case err == nil:
+		common = strings.TrimSpace(string(data))
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitDir, common)
+		}
+	case !os.IsNotExist(err):
+		return ""
+	}
+	return resolvePath(common)
 }
 
 type managedWorktreeRoot struct {

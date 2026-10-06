@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -504,26 +505,129 @@ func TestTablePicker_ExitHotkeyOnEmptyListStillFires(t *testing.T) {
 	}
 }
 
+// OnPress runs in the returned tea.Cmd, not inside Update, and its rows and
+// Apply land only when the result message comes back.
 func TestTablePicker_NonExitHotkeyRunsOnPress(t *testing.T) {
-	pressed := false
+	pressed, applied := 0, 0
 	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	swapped := []PickerItem{{Key: "b", Display: "beta"}}
 	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
 		{Key: "r", Help: "r toggle",
-			OnPress: func() ([]PickerItem, []string, error) {
-				pressed = true
-				return items, nil, nil
+			OnPress: func() (TablePickerReload, error) {
+				pressed++
+				return TablePickerReload{Items: swapped, Apply: func() { applied++ }}, nil
 			}},
 	})
 	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	if !pressed {
-		t.Errorf("OnPress should have fired")
+	if cmd == nil {
+		t.Fatal("OnPress extra should return the load as a cmd")
+	}
+	if pressed != 0 {
+		t.Errorf("OnPress ran inside Update; it must run in the cmd")
 	}
 	if got.chosenItem.ExtraAction != "" {
 		t.Errorf("non-Exit OnPress must NOT set ExtraAction, got %q",
 			got.chosenItem.ExtraAction)
 	}
+	msg := cmd()
+	if _, quit := msg.(tea.QuitMsg); quit {
+		t.Fatal("non-Exit OnPress must NOT quit")
+	}
+	if pressed != 1 {
+		t.Errorf("OnPress ran %d times, want 1", pressed)
+	}
+	if applied != 0 {
+		t.Errorf("Apply ran before the result reached Update")
+	}
+	got, cmd = updateAs(got, msg)
 	if cmd != nil {
-		t.Errorf("non-Exit OnPress must NOT quit; got cmd %v", cmd)
+		t.Errorf("applying the result must not return a cmd, got %v", cmd)
+	}
+	if len(got.all) != 1 || got.all[0].Key != "b" {
+		t.Errorf("rows = %+v, want the loaded beta row", got.all)
+	}
+	if applied != 1 {
+		t.Errorf("Apply ran %d times, want 1", applied)
+	}
+	if got.loading {
+		t.Error("loading still set after the result was applied")
+	}
+}
+
+// A second press while a load is running must not start another load: two
+// in flight would land their rows in whichever order they finish.
+func TestTablePicker_PressWhileLoadingIsIgnored(t *testing.T) {
+	pressed := 0
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", Help: "r toggle",
+			OnPress: func() (TablePickerReload, error) {
+				pressed++
+				return TablePickerReload{Items: items}, nil
+			}},
+	})
+	got, first := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got, second := updateAs(got, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if second != nil {
+		t.Errorf("press while loading returned cmd %v, want nil", second)
+	}
+	first()
+	if pressed != 1 {
+		t.Errorf("OnPress ran %d times, want 1", pressed)
+	}
+	if !got.loading {
+		t.Error("the first load should still be in flight")
+	}
+}
+
+// A failed load reports itself and changes nothing else: the rows stay,
+// Apply never runs, and the next press starts a fresh load.
+func TestTablePicker_FailedLoadKeepsRowsAndSkipsApply(t *testing.T) {
+	applied := 0
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", Help: "r toggle",
+			OnPress: func() (TablePickerReload, error) {
+				return TablePickerReload{
+					Items: []PickerItem{{Key: "b", Display: "beta"}},
+					Apply: func() { applied++ },
+				}, errors.New("scan failed")
+			}},
+	})
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got, _ = updateAs(got, cmd())
+	if got.errMsg != "scan failed" {
+		t.Errorf("errMsg = %q, want the load error", got.errMsg)
+	}
+	if len(got.all) != 1 || got.all[0].Key != "a" {
+		t.Errorf("rows = %+v, want the original alpha row", got.all)
+	}
+	if applied != 0 {
+		t.Errorf("Apply ran %d times after a failed load, want 0", applied)
+	}
+	if _, next := updateAs(got, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); next == nil {
+		t.Error("the press after a failed load should start a new load")
+	}
+}
+
+func TestTablePicker_ViewShowsLoadingWhileOnPressRuns(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "r", Help: "r toggle",
+			OnPress: func() (TablePickerReload, error) {
+				return TablePickerReload{Items: items}, nil
+			}},
+	})
+	if strings.Contains(m.View(), "loading") {
+		t.Fatal("loading shown before any press")
+	}
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !strings.Contains(got.View(), "loading…") {
+		t.Errorf("view while loading lacks the loading line:\n%s", got.View())
+	}
+	got, _ = updateAs(got, cmd())
+	if strings.Contains(got.View(), "loading") {
+		t.Errorf("loading line still shown after the result:\n%s", got.View())
 	}
 }
 

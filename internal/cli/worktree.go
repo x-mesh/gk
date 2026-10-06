@@ -221,7 +221,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	// sw` columns: "where this branch came from" + "how far diverged" +
 	// "when last touched". Best-effort: a git failure collapses the
 	// enrichment rather than aborting the whole list.
-	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner)
+	branchMeta := loadWorktreeBranchMeta(cmd.Context(), runner, worktreeBranchNames(entries))
 	currentPath := currentWorktreePath(cmd.Context(), runner)
 	// Parent standing is measured only for the branches actually checked out
 	// in a worktree — the map is keyed by branch, and a repo's other local
@@ -346,8 +346,8 @@ type worktreeBranchMeta struct {
 	LastCommit time.Time
 }
 
-func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[string]worktreeBranchMeta {
-	meta, _ := loadWorktreeBranchMetaWithBase(ctx, runner)
+func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner, forkFor []string) map[string]worktreeBranchMeta {
+	meta, _ := loadWorktreeBranchMetaWithBase(ctx, runner, forkFor)
 	return meta
 }
 
@@ -356,18 +356,19 @@ func loadWorktreeBranchMeta(ctx context.Context, runner *git.ExecRunner) map[str
 // poll: the meta map for every worktree, the trunk for the land-ready check)
 // used to fork it a second time — twice per repo per poll, which on a
 // 17-repo fleet was 34 subprocesses where 17 would do.
-func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner) (map[string]worktreeBranchMeta, string) {
+//
+// Fork points are computed only for forkFor (the branches checked out in a
+// worktree) and their anchors: every caller reads ForkBranch for worktree
+// rows only, and each other local branch cost a merge-base on a cold cache.
+// The map still holds every local branch, because callers look up a parent's
+// or the trunk's Hash.
+func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner, forkFor []string) (map[string]worktreeBranchMeta, string) {
 	// Resolved before the branch listing so a listing failure still yields the
 	// trunk — callers use it independently of the meta map.
 	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
 	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {
 		return nil, defaultBr
-	}
-	// computeForkPoints needs a default-base hint. Tolerate failures: without a
-	// default we lose the fork annotation but still get upstream/diff/age.
-	if defaultBr != "" {
-		computeForkPoints(ctx, runner, defaultBr, branches)
 	}
 	out := make(map[string]worktreeBranchMeta, len(branches))
 	for _, b := range branches {
@@ -376,10 +377,36 @@ func loadWorktreeBranchMetaWithBase(ctx context.Context, runner *git.ExecRunner)
 			Ahead:      b.Ahead,
 			Behind:     b.Behind,
 			Hash:       b.Hash,
-			ForkBranch: b.ForkBranch,
-			ForkPoint:  b.ForkPoint,
 			LastCommit: b.LastCommit,
 		}
+	}
+	// computeForkPoints needs a default-base hint. Tolerate failures: without a
+	// default we lose the fork annotation but still get upstream/diff/age.
+	if defaultBr == "" || len(forkFor) == 0 {
+		return out, defaultBr
+	}
+	// The anchors ride along because computeForkPoints fingerprints its cache
+	// with the anchor's tip from this slice; without it every call misses.
+	want := make(map[string]bool, 2*len(forkFor)+1)
+	want[defaultBr] = true
+	parents := cachedAllParents(ctx, runner)
+	for _, name := range forkFor {
+		want[name] = true
+		if p := parents[name]; p != "" {
+			want[p] = true
+		}
+	}
+	subset := make([]branchInfo, 0, len(want))
+	for _, b := range branches {
+		if want[b.Name] {
+			subset = append(subset, b)
+		}
+	}
+	computeForkPoints(ctx, runner, defaultBr, subset)
+	for _, b := range subset {
+		m := out[b.Name]
+		m.ForkBranch, m.ForkPoint = b.ForkBranch, b.ForkPoint
+		out[b.Name] = m
 	}
 	return out, defaultBr
 }
@@ -1457,11 +1484,11 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	// current repo's branches in one shot. Skipped in global mode
 	// (cross-repo iteration is out of scope) — global rows still show
 	// the branch but lose the SOURCE/DIFF columns. nil on failure.
-	loadBranchMeta := func() map[string]worktreeBranchMeta {
+	loadBranchMeta := func(rs worktreeRowSource) map[string]worktreeBranchMeta {
 		if global {
 			return nil
 		}
-		return loadWorktreeBranchMeta(ctx, runner)
+		return loadWorktreeBranchMeta(ctx, runner, worktreeBranchNames(rs.entries))
 	}
 
 	// loadParentRels measures each listed branch against its parent — the
@@ -1479,7 +1506,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	buildItems := func(rs worktreeRowSource) (items []ui.PickerItem, headers []string) {
-		meta := loadBranchMeta()
+		meta := loadBranchMeta(rs)
 		parentRels := loadParentRels(rs, meta)
 		appendDiff := func(branch string) string {
 			m, ok := meta[branch]

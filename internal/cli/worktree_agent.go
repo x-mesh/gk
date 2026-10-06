@@ -539,7 +539,7 @@ func collectWorktreeCleanup(ctx context.Context, cmd *cobra.Command, runner *git
 		return worktreeCleanupJSON{}, fmt.Errorf("worktree cleanup: list: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	entries := parseWorktreePorcelain(string(out))
-	meta := loadWorktreeBranchMeta(ctx, runner)
+	meta := loadWorktreeBranchMeta(ctx, runner, nil)
 	mergedOnly, _ := cmd.Flags().GetBool("merged")
 	deleteBranches, _ := cmd.Flags().GetBool("delete-branches")
 	forceStaleLocks, _ := cmd.Flags().GetBool("force-stale-locks")

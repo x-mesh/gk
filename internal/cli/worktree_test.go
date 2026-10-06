@@ -1832,7 +1832,7 @@ func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
 	runner := &git.ExecRunner{Dir: repo.Dir}
 	ctx := context.Background()
 	tipsNow := func() map[string]string {
-		return worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner))
+		return worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
 	}
 
 	first := loadWorktreeParentRels(ctx, runner, []string{"feat/moving"}, tipsNow())
@@ -1849,6 +1849,73 @@ func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
 	}
 	if got := second["feat/moving"].Ahead; got != 1 {
 		t.Errorf("after the commit: ahead = %d, want 1", got)
+	}
+}
+
+// Fork points are read only for worktree rows, so a branch no worktree has
+// checked out must cost no merge-base. The map still carries every local
+// branch's tip, and the anchor's tip keeps the fork-point cache warm. Not
+// parallel: gitCallCounter hooks a process global.
+func TestLoadWorktreeBranchMeta_ForkPointsOnlyForWorktreeBranches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	idle := []string{"idle/a", "idle/b", "idle/c", "idle/d", "idle/e"}
+	for _, name := range idle {
+		repo.RunGit("branch", name)
+	}
+	repo.RunGit("branch", "stack/p")
+	wt := filepath.Join(t.TempDir(), "w")
+	repo.RunGit("worktree", "add", "-b", "feat/w", wt, "stack/p")
+	repo.RunGit("config", "branch.feat/w.gk-parent", "stack/p")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	entries, err := listWorktreeEntries(ctx, runner)
+	if err != nil {
+		t.Fatalf("listWorktreeEntries: %v", err)
+	}
+	forkFor := worktreeBranchNames(entries)
+
+	counter := newGitCallCounter(t)
+	if meta := loadWorktreeBranchMeta(ctx, runner, nil); len(meta) == 0 {
+		t.Fatal("forkFor=nil returned no branches")
+	}
+	if n := counter.get("merge-base"); n != 0 {
+		t.Errorf("forkFor=nil ran merge-base %d times, want 0", n)
+	}
+
+	counter.reset()
+	meta := loadWorktreeBranchMeta(ctx, runner, forkFor)
+	if forkPointRuns(counter) == 0 {
+		t.Fatal("first call computed no fork point — the test no longer exercises it")
+	}
+	for _, name := range idle {
+		counter.mu.Lock()
+		for line, n := range counter.counts {
+			if strings.Contains(line, "merge-base") && strings.Contains(line, name) {
+				t.Errorf("%s is in no worktree but ran %q %d time(s)", name, line, n)
+			}
+		}
+		counter.mu.Unlock()
+		if got := meta[name].ForkBranch; got != "" {
+			t.Errorf("%s ForkBranch = %q, want empty", name, got)
+		}
+	}
+	if got := meta["feat/w"].ForkBranch; got != "stack/p" {
+		t.Errorf("feat/w ForkBranch = %q, want its gk-parent stack/p", got)
+	}
+	for _, name := range append([]string{"main", "stack/p", "feat/w"}, idle...) {
+		if meta[name].Hash == "" {
+			t.Errorf("%s has no Hash in the meta map", name)
+		}
+	}
+
+	counter.reset()
+	loadWorktreeBranchMeta(ctx, runner, forkFor)
+	if n := forkPointRuns(counter); n != 0 {
+		t.Errorf("second call computed %d fork point(s); the tips did not move", n)
 	}
 }
 

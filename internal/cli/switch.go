@@ -954,7 +954,10 @@ func computeForkPoints(ctx context.Context, runner git.Runner, defaultBr string,
 				// Recorded parent unusable (ref deleted?) — fall back
 				// to the trunk anchor, same policy as Resolver.
 				anchor = defaultBr
-				stdout, _, err = runner.Run(callCtx, "merge-base", branch, anchor)
+				// callCtx is already spent when the first call failed by timing out.
+				retryCtx, retryCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+				defer retryCancel()
+				stdout, _, err = runner.Run(retryCtx, "merge-base", branch, anchor)
 			}
 			if err != nil {
 				return

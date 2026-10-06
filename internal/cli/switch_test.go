@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1313,6 +1314,132 @@ func TestComputeForkPoints_EmptyDefaultIsNoOp(t *testing.T) {
 	if local[0].ForkPoint != "" || local[0].ForkBranch != "" {
 		t.Errorf("empty defaultBr should be no-op, got %+v", local[0])
 	}
+}
+
+// forkRetryRunner stands in for git when a recorded parent's merge-base times
+// out: that call blocks until its context ends. The trunk call records the
+// context it was handed before answering, so a test can see whether the retry
+// started with any time left.
+type forkRetryRunner struct {
+	*git.FakeRunner
+	feature, parent, trunk string
+	// trunkHash answers the trunk merge-base. Empty makes that call block until
+	// its context ends as well.
+	trunkHash string
+
+	mu               sync.Mutex
+	parentReached    bool
+	trunkRan         bool
+	trunkEntryErr    error
+	trunkDeadline    time.Time
+	trunkHasDeadline bool
+}
+
+func (r *forkRetryRunner) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	switch strings.Join(args, " ") {
+	case `config --get-regexp ^branch\..*\.gk-parent$`:
+		return []byte("branch." + r.feature + ".gk-parent " + r.parent + "\n"), nil, nil
+	case "merge-base " + r.feature + " " + r.parent:
+		r.mu.Lock()
+		r.parentReached = true
+		r.mu.Unlock()
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	case "merge-base " + r.feature + " " + r.trunk:
+		entryErr := ctx.Err()
+		r.mu.Lock()
+		r.trunkRan = true
+		r.trunkEntryErr = entryErr
+		r.trunkDeadline, r.trunkHasDeadline = ctx.Deadline()
+		r.mu.Unlock()
+		// exec.Cmd.Start refuses a context that is already done without
+		// spawning git.
+		if entryErr != nil {
+			return nil, nil, entryErr
+		}
+		if r.trunkHash == "" {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+		return []byte(r.trunkHash + "\n"), nil, nil
+	}
+	return r.FakeRunner.Run(ctx, args...)
+}
+
+// TestComputeForkPoints_TrunkRetryGetsOwnTimeout covers the trunk retry after
+// the recorded parent's merge-base times out. The retry used to run on the
+// first call's 200ms context, which that timeout had already spent, so a slow
+// parent never fell back to the trunk.
+//
+// No t.Parallel: forkPointCache is process-global, and each subtest uses its
+// own branch names so the cache cannot carry state between them.
+func TestComputeForkPoints_TrunkRetryGetsOwnTimeout(t *testing.T) {
+	const (
+		trunk      = "main"
+		featureTip = "1111111"
+		parentTip  = "2222222"
+		forkHash   = "0123456789abcdef0123456789abcdef01234567"
+	)
+	run := func(t *testing.T, feature, parent, trunkHash string) (*forkRetryRunner, branchInfo, time.Time) {
+		t.Helper()
+		runner := &forkRetryRunner{
+			FakeRunner: &git.FakeRunner{},
+			feature:    feature,
+			parent:     parent,
+			trunk:      trunk,
+			trunkHash:  trunkHash,
+		}
+		local := []branchInfo{
+			{Name: feature, Hash: featureTip},
+			// Skipped for its upstream, yet its tip still fingerprints the
+			// feature's scope.
+			{Name: parent, Hash: parentTip, Upstream: "origin/" + parent},
+		}
+		// Bounded so a regression fails instead of hanging the run.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		parentDeadline, _ := ctx.Deadline()
+		computeForkPoints(ctx, runner, trunk, local)
+		if !runner.parentReached {
+			t.Fatalf("merge-base %s %s never ran, so the trunk retry was not exercised", feature, parent)
+		}
+		return runner, local[0], parentDeadline
+	}
+	assertNotMemoised := func(t *testing.T, feature, parent string) {
+		t.Helper()
+		if r, ok := forkPointCache.load(twoRefScope("", feature, parent),
+			twoTipFingerprint(featureTip, parentTip)); ok {
+			t.Errorf("memoised %+v under the scope naming %s", r, parent)
+		}
+	}
+
+	t.Run("trunk answers after parent timeout", func(t *testing.T) {
+		feature, parent := "forkretry-ok-feature", "forkretry-ok-parent"
+		runner, got, parentDeadline := run(t, feature, parent, forkHash)
+		if !runner.trunkRan {
+			t.Fatal("the trunk retry never ran")
+		}
+		if runner.trunkEntryErr != nil {
+			t.Fatalf("the trunk retry started on a finished context: %v", runner.trunkEntryErr)
+		}
+		if !runner.trunkHasDeadline || !runner.trunkDeadline.Before(parentDeadline) {
+			t.Errorf("trunk retry deadline = %v (set: %v), want its own deadline before the caller's %v",
+				runner.trunkDeadline, runner.trunkHasDeadline, parentDeadline)
+		}
+		if got.ForkBranch != trunk || got.ForkPoint != forkHash[:7] {
+			t.Errorf("fork = %q at %q, want %q at %q", got.ForkBranch, got.ForkPoint, trunk, forkHash[:7])
+		}
+		assertNotMemoised(t, feature, parent)
+	})
+
+	t.Run("trunk also times out", func(t *testing.T) {
+		feature, parent := "forkretry-slow-feature", "forkretry-slow-parent"
+		_, got, _ := run(t, feature, parent, "")
+		if got.ForkBranch != "" || got.ForkPoint != "" {
+			t.Errorf("fork = %q at %q, want none when both calls time out", got.ForkBranch, got.ForkPoint)
+		}
+		assertNotMemoised(t, feature, parent)
+	})
 }
 
 // --- dirty-state integration ---

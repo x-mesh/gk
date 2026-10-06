@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -664,9 +666,54 @@ func shortWorktreeHead(sha string) string {
 
 // worktreeParentRelCache memoises the ahead/behind measurement, scoped to the
 // branch and parent compared and fingerprinted by their tips. It exists for the
-// worktree TUI, which rebuilds its rows on every keystroke and would otherwise
-// re-fork one `rev-list` per worktree per frame.
+// worktree TUI, which rebuilds its rows on every loop iteration and every 'g'
+// toggle and would otherwise re-fork one `rev-list` per worktree per rebuild.
+// Explicit and inferred parents share an entry, so a hit carries the Source of
+// whichever measured it first; callers overwrite it with the current one.
 var worktreeParentRelCache scopedMemo[worktreeParentRel]
+
+// worktreeParentResolution is one resolver answer, kept whether or not a
+// parent was found: an ambiguous branch costs the same reflog walk as an
+// inferable one.
+type worktreeParentResolution struct {
+	parent string
+	source branchparent.Source
+	ok     bool
+}
+
+// worktreeParentResolutionCache memoises resolver answers for branches with
+// no gk-parent, scoped to the branch and fingerprinted by every local branch
+// tip (worktreeAllTipsFingerprint), because inference reads which branches
+// contain the branchpoint and any branch moving can change that answer.
+var worktreeParentResolutionCache scopedMemo[worktreeParentResolution]
+
+// resolveWorktreeParent runs the resolver under its own timeout. cacheable is
+// false when that timeout or the caller's cancellation cut it short: the
+// "no parent" it then reports says nothing about the branch.
+func resolveWorktreeParent(ctx context.Context, runner git.Runner, branch string) (res worktreeParentResolution, cacheable bool) {
+	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	p, s, ok := branchparent.NewResolver(git.NewClient(runner)).ResolveParent(resolveCtx, branch)
+	return worktreeParentResolution{parent: p, source: s, ok: ok}, resolveCtx.Err() == nil
+}
+
+// worktreeAllTipsFingerprint digests every name=tip pair. Empty tips yield
+// "", which scopedMemo treats as not memoisable.
+func worktreeAllTipsFingerprint(tips map[string]string) string {
+	if len(tips) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(tips))
+	for name := range tips {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%s=%s\x00", name, tips[name])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // measureParentRel resolves one branch's parent and measures the divergence
 // between the two tips. explicitParent short-circuits the resolver when the
@@ -685,12 +732,17 @@ func measureParentRel(ctx context.Context, runner git.Runner, branch, explicitPa
 	}
 	parent, source := explicitParent, branchparent.SourceExplicit
 	if parent == "" || parent == branch {
-		p, s, ok := branchparent.NewResolver(git.NewClient(runner)).ResolveParent(ctx, branch)
-		if !ok {
+		res, _ := resolveWorktreeParent(ctx, runner, branch)
+		if !res.ok {
 			return worktreeParentRel{}
 		}
-		parent, source = p, s
+		parent, source = res.parent, res.source
 	}
+	return measureParentDivergence(ctx, runner, branch, parent, source)
+}
+
+// measureParentDivergence counts the commits branch and parent each lack.
+func measureParentDivergence(ctx context.Context, runner git.Runner, branch, parent string, source branchparent.Source) worktreeParentRel {
 	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// left...right: left-only commits are what the branch is behind by,
@@ -719,11 +771,13 @@ func measureParentRel(ctx context.Context, runner git.Runner, branch, explicitPa
 // divergence in one pass. Explicit gk-parent metadata is read as a single
 // batch (AllParents) and only the branches it misses fall through to
 // reflog inference, so the common case costs one config read plus one
-// rev-list per worktree rather than a resolver walk per worktree.
+// rev-list per worktree rather than a resolver walk per worktree. The trunk
+// without a gk-parent is skipped: it has no parent, and inferring one would
+// walk its reflog for nothing.
 //
 // tips maps branch name → tip sha (the branch listing already has them).
 // Supplying it makes results cacheable; passing nil just means every call
-// measures afresh.
+// resolves and measures afresh.
 //
 // Every failure degrades to an unresolved relationship: a missing parent
 // ref, a timed-out rev-list, or a detached worktree simply leaves the
@@ -732,7 +786,9 @@ func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branche
 	if len(branches) == 0 {
 		return nil
 	}
-	explicit, _ := branchparent.NewConfig(git.NewClient(runner)).AllParents(ctx)
+	explicit := cachedAllParents(ctx, runner)
+	defaultBr := resolveDefaultBranchForWorktree(ctx, runner)
+	allTips := worktreeAllTipsFingerprint(tips)
 
 	type result struct {
 		branch string
@@ -745,34 +801,47 @@ func loadWorktreeParentRels(ctx context.Context, runner *git.ExecRunner, branche
 		if name == "" {
 			continue
 		}
+		parent := explicit[name]
+		if parent == name {
+			parent = ""
+		}
+		if parent == "" && name == defaultBr {
+			continue
+		}
 		wg.Add(1)
-		go func(branch string) {
+		go func(branch, parent string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Only the explicit path is cacheable: an inferred parent isn't
-			// known until measureParentRel resolves it, and without the
-			// parent's name there is no tip to key on. Explicit dominates in
-			// practice — `gk wt add` records a parent for every branch it
-			// creates — so the TUI's repeated rebuilds still hit.
-			parent := explicit[branch]
-			scope, fingerprint := "", ""
-			if parent != "" && parent != branch {
-				scope = twoRefScope(runner.Dir, branch, parent)
-				fingerprint = twoTipFingerprint(tips[branch], tips[parent])
-				if rel, found := worktreeParentRelCache.load(scope, fingerprint); found {
-					out <- result{branch, rel}
+			// Both paths are cacheable once the parent is known: an explicit
+			// parent comes from the batched config read, an inferred one from
+			// the resolution memo, which a later rebuild hits until a branch
+			// tip moves.
+			source := branchparent.SourceExplicit
+			if parent == "" {
+				res := worktreeParentResolutionCache.do(runner.Dir+"\x00"+branch, allTips, func() (worktreeParentResolution, bool) {
+					return resolveWorktreeParent(ctx, runner, branch)
+				})
+				if !res.ok {
 					return
 				}
+				parent, source = res.parent, res.source
 			}
-			rel := measureParentRel(ctx, runner, branch, parent)
+			scope := twoRefScope(runner.Dir, branch, parent)
+			fingerprint := twoTipFingerprint(tips[branch], tips[parent])
+			if rel, found := worktreeParentRelCache.load(scope, fingerprint); found {
+				rel.Source = source
+				out <- result{branch, rel}
+				return
+			}
+			rel := measureParentDivergence(ctx, runner, branch, parent, source)
 			if !rel.Resolved {
 				return
 			}
 			worktreeParentRelCache.store(scope, fingerprint, rel)
 			out <- result{branch, rel}
-		}(name)
+		}(name, parent)
 	}
 	wg.Wait()
 	close(out)

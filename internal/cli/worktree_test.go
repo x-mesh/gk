@@ -1852,6 +1852,124 @@ func TestLoadWorktreeParentRels_CacheFollowsMovingTips(t *testing.T) {
 	}
 }
 
+// Inference walks a branch's reflog and asks which branches contain its
+// branchpoint, so every TUI rebuild would repeat both per worktree without a
+// gk-parent. The answer, found or ambiguous, is memoised by every local branch
+// tip, and the trunk is never inferred. Not parallel: gitCallCounter hooks a
+// process global.
+func TestLoadWorktreeParentRels_InferenceMemoisedByAllTips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.RunGit("branch", "feat/amb")
+	repo.RunGit("branch", "idle")
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/inf")
+	repo.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	branches := []string{"feat/inf", "feat/amb", "main"}
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+
+	counter := newGitCallCounter(t)
+	first := loadWorktreeParentRels(ctx, runner, branches, tips)
+	if rel := first["feat/inf"]; !rel.Resolved || rel.Parent != "develop" || rel.Source != branchparent.SourceInferred {
+		t.Fatalf("feat/inf = %+v, want inferred parent develop", rel)
+	}
+	if rel, ok := first["feat/amb"]; ok {
+		t.Errorf("feat/amb is ambiguous, want no entry, got %+v", rel)
+	}
+	if rel, ok := first["main"]; ok {
+		t.Errorf("main is the trunk, want no entry, got %+v", rel)
+	}
+	if counter.get("log -g") == 0 {
+		t.Fatal("first call walked no reflog — the test no longer exercises inference")
+	}
+	if n := counter.get("log -g --format=%H refs/heads/main"); n != 0 {
+		t.Errorf("the trunk's reflog was walked %d time(s), want 0", n)
+	}
+
+	counter.reset()
+	second := loadWorktreeParentRels(ctx, runner, branches, tips)
+	if second["feat/inf"] != first["feat/inf"] {
+		t.Errorf("second feat/inf = %+v, want %+v", second["feat/inf"], first["feat/inf"])
+	}
+	for _, probe := range []string{"log -g", "--contains", "gk-parent", "rev-list"} {
+		if n := counter.get(probe); n != 0 {
+			t.Errorf("second call ran %q %d time(s); no branch tip moved", probe, n)
+		}
+	}
+
+	repo.RunGit("branch", "-f", "idle", "develop")
+	tips = worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+	counter.reset()
+	loadWorktreeParentRels(ctx, runner, branches, tips)
+	if counter.get("log -g") == 0 {
+		t.Error("idle moved, yet the memoised inference was served without a reflog walk")
+	}
+}
+
+// A resolution cut short by the timeout or the caller's cancellation says
+// nothing about the branch, so it must not be memoised as "no parent".
+func TestLoadWorktreeParentRels_CancelledResolveIsNotCached(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/inf")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(context.Background(), runner, nil))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if rel := loadWorktreeParentRels(cancelled, runner, []string{"feat/inf"}, tips)["feat/inf"]; rel.Resolved {
+		t.Fatalf("a cancelled call resolved feat/inf: %+v", rel)
+	}
+	rel := loadWorktreeParentRels(context.Background(), runner, []string{"feat/inf"}, tips)["feat/inf"]
+	if !rel.Resolved || rel.Parent != "develop" {
+		t.Errorf("after a cancelled call: feat/inf = %+v, want resolved against develop", rel)
+	}
+}
+
+// Explicit and inferred parents share the measurement cache, so a hit must
+// report how the parent is known now, not how it was first measured. Not
+// parallel: gitCallCounter hooks a process global.
+func TestLoadWorktreeParentRels_CachedMeasureTakesCurrentSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("develop")
+	repo.WriteFile("d.txt", "d")
+	repo.Commit("develop work")
+	repo.RunGit("branch", "feat/x")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	tips := worktreeBranchTips(loadWorktreeBranchMeta(ctx, runner, nil))
+	first := loadWorktreeParentRels(ctx, runner, []string{"feat/x"}, tips)["feat/x"]
+	if first.Parent != "develop" || first.Source != branchparent.SourceInferred {
+		t.Fatalf("feat/x = %+v, want inferred parent develop", first)
+	}
+
+	repo.RunGit("config", "branch.feat/x.gk-parent", "develop")
+	counter := newGitCallCounter(t)
+	second := loadWorktreeParentRels(ctx, runner, []string{"feat/x"}, tips)["feat/x"]
+	if second.Source != branchparent.SourceExplicit {
+		t.Errorf("after recording gk-parent: Source = %q, want explicit", second.Source)
+	}
+	if n := counter.get("rev-list"); n != 0 {
+		t.Errorf("second call ran rev-list %d time(s); the measurement cache hit was not exercised", n)
+	}
+}
+
 // Fork points are read only for worktree rows, so a branch no worktree has
 // checked out must cost no merge-base. The map still carries every local
 // branch's tip, and the anchor's tip keeps the fork-point cache warm. Not

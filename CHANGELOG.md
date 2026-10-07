@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk worktree init` refuses a `link` or `copy` path that leaves the worktree (such as `../../etc/passwd`). A re-run re-points a link only when it dangles, so a symlink you placed is never replaced, and it completes a directory copy that an earlier run interrupted. `copy` of a symlinked source copies the real content, and each file copy is atomic, so a crash never leaves a truncated file.
+
 ## [0.148.0] - 2026-10-07
 
 ### Added

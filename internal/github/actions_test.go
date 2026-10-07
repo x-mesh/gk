@@ -99,3 +99,28 @@ func TestListRecentWorkflowRunsReportsRateLimitReset(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestListWorkflowRunsForSHAFiltersAndIsConditional(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("head_sha"); got != "abc123" {
+			t.Errorf("head_sha = %q", got)
+		}
+		if r.Header.Get("If-None-Match") == `"s1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"s1"`)
+		writeJSON(t, w, map[string]any{"workflow_runs": []map[string]any{{"id": 3, "name": "CI", "status": "queued"}}})
+	}))
+	defer srv.Close()
+	c := &Client{APIBase: srv.URL}
+
+	runs, etag, notModified, err := c.ListWorkflowRunsForSHA(context.Background(), "x-mesh", "gk", "abc123", "")
+	if err != nil || notModified || len(runs) != 1 || etag != `"s1"` {
+		t.Fatalf("first: runs=%v etag=%q nm=%v err=%v", runs, etag, notModified, err)
+	}
+	_, _, notModified, err = c.ListWorkflowRunsForSHA(context.Background(), "x-mesh", "gk", "abc123", etag)
+	if err != nil || !notModified {
+		t.Fatalf("second: nm=%v err=%v", notModified, err)
+	}
+}

@@ -76,12 +76,26 @@ func (c *Client) GetWorkflowRun(ctx context.Context, owner, repo string, runID i
 	return run, nil
 }
 
+// ListWorkflowRunsForSHA is ListWorkflowRuns made conditional on etag, for
+// a poller that re-asks about one pushed commit until its runs finish.
+// notModified means GitHub answered 304 and runs is nil.
+func (c *Client) ListWorkflowRunsForSHA(ctx context.Context, owner, repo, sha, etag string) (runs []WorkflowRun, newETag string, notModified bool, err error) {
+	q := url.Values{}
+	q.Set("head_sha", sha)
+	q.Set("per_page", "100")
+	return c.listRunsConditional(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?%s", url.PathEscape(owner), url.PathEscape(repo), q.Encode()), etag)
+}
+
 // ListRecentWorkflowRuns returns a repository's newest Actions runs on any
 // commit, conditionally on etag. notModified means GitHub answered 304 and
 // runs is nil; the caller keeps its previous view. One call covers every run
 // of the repo, so a watcher polls this instead of each run separately.
 func (c *Client) ListRecentWorkflowRuns(ctx context.Context, owner, repo, etag string) (runs []WorkflowRun, newETag string, notModified bool, err error) {
-	resp, err := c.getConditional(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=20", url.PathEscape(owner), url.PathEscape(repo)), etag)
+	return c.listRunsConditional(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=20", url.PathEscape(owner), url.PathEscape(repo)), etag)
+}
+
+func (c *Client) listRunsConditional(ctx context.Context, path, etag string) (runs []WorkflowRun, newETag string, notModified bool, err error) {
+	resp, err := c.getConditional(ctx, path, etag)
 	if err != nil {
 		return nil, etag, false, err
 	}

@@ -2955,13 +2955,19 @@ Under `--json` (or `GK_AGENT=1`) it instead emits a one-shot machine-readable sn
 
 ### Event stream (`--events`)
 
-For an orchestrator, polling `--json` snapshots and diffing them is busywork — `--events` does the diff server-side and streams one NDJSON event per line: `file-changed` (`file`, `note: new|re-touched|cleared`; with `--feed-stats` also `added`/`removed` and `symbols` — the changed-function names from git's hunk contexts), `status-changed` (`from`/`to`), `op-start`/`op-end` (`operation`), and `land-ready`. Every event carries `ts`, `repo`, `branch`, and `path` (the worktree). Under `GK_AGENT=1` a single `{"schema":1,"state":"streaming","result":{"mode":"fleet-events"}}` header frame precedes the events so envelope consumers recognize the mode switch. Runs until interrupted; driven by filesystem events when available, with the same heartbeat fallback as the TUI.
+For an orchestrator, polling `--json` snapshots and diffing them is busywork — `--events` does the diff server-side and streams one NDJSON event per line: `file-changed` (`file`, `note: new|re-touched|cleared`; with `--feed-stats` also `added`/`removed` and `symbols` — the changed-function names from git's hunk contexts), `status-changed` (`from`/`to`), `op-start`/`op-end` (`operation`), `land-ready`, and the CI events `ci-expecting`, `ci-start`, `ci-end` (`conclusion`), and `ci-none` (all with `sha`; run events also carry `run_id`, `workflow`, and `url`). Every event carries `ts`, `repo`, `branch`, and `path` (the worktree). Under `GK_AGENT=1` a single `{"schema":1,"state":"streaming","result":{"mode":"fleet-events"}}` header frame precedes the events so envelope consumers recognize the mode switch. Runs until interrupted; driven by filesystem events when available, with the same heartbeat fallback as the TUI.
 
 ```
 GK_AGENT=1 gk watch --events | while read -r ev; do …; done
 ```
 
-The opt-in `fleet.notify` config maps a transition to a shell hook (`sh -c`, with `GK_FLEET_KIND/BRANCH/PATH/REPO/OPERATION` in the environment; output discarded). Keys: `conflict` (a worktree hit conflicts), `paused` (an operation stopped mid-way), `land_ready` (a branch became fully merged into base). Hooks fire from both the TUI and `--events`.
+The opt-in `fleet.notify` config maps a transition to a shell hook (`sh -c`, with `GK_FLEET_KIND/BRANCH/PATH/REPO/OPERATION` in the environment; output discarded). Keys: `conflict` (a worktree hit conflicts), `paused` (an operation stopped mid-way), `land_ready` (a branch became fully merged into base), `ci_failed` (a GitHub Actions run of a pushed branch failed). Hooks fire from both the TUI and `--events`.
+
+### CI status
+
+If `GH_TOKEN` or `GITHUB_TOKEN` is set, the dashboard shows the GitHub Actions state of each branch. gk reads the tip of the remote-tracking branch and when it moved from the reflog. A push from this clone and a fetch of a commit that was pushed elsewhere both count. The state is for the remote tip, which can differ from the local branch. The branch cell shows `◌` while runs wait or run, `✓` when they pass, and `✗` when one fails. The cursor panel lists each workflow and the URL of a failed run. The `--json` snapshot has a `ci` object for each pushed branch.
+
+gk tracks a remote tip that moved 24 hours or less before the watch starts, or later. If no run starts within 90 seconds of the move, the state is `none`. Without a token, the state is `off`. gk does not show CI for a repository in reftable format, for a remote that is not GitHub, or for a single-worktree `gk watch`.
 
 ### Multi-repo mode
 

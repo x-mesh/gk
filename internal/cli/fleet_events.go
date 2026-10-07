@@ -25,7 +25,8 @@ import (
 
 // fleetStreamEvent is one NDJSON line. Kind decides which fields are set:
 // file-changed (file/note[/added/removed/symbols]), status-changed (from/to),
-// op-start/op-end (operation), land-ready (—).
+// op-start/op-end (operation), land-ready (—), ci-expecting/ci-none (sha),
+// ci-start/ci-end (sha/run_id/workflow/url, conclusion on ci-end).
 type fleetStreamEvent struct {
 	TS      string `json:"ts"`
 	Kind    string `json:"kind"`
@@ -43,6 +44,12 @@ type fleetStreamEvent struct {
 	From      string   `json:"from,omitempty"`
 	To        string   `json:"to,omitempty"`
 	Operation string   `json:"operation,omitempty"`
+
+	SHA        string `json:"sha,omitempty"`
+	RunID      int64  `json:"run_id,omitempty"`
+	Workflow   string `json:"workflow,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	URL        string `json:"url,omitempty"`
 }
 
 // fleetTransitions diffs two fleet snapshots into state-transition events:
@@ -84,6 +91,49 @@ func fleetTransitions(prev, curr []fleetEntryJSON, ts time.Time) []fleetStreamEv
 			ev.Kind = "land-ready"
 			evs = append(evs, ev)
 		}
+		evs = append(evs, fleetCITransitions(p.CI, e.CI, base)...)
+	}
+	return evs
+}
+
+// fleetCITransitions diffs one worktree's CI across two polls. A new pushed
+// SHA starts over: its runs are compared against nothing.
+func fleetCITransitions(prev, curr *fleetCIJSON, base fleetStreamEvent) []fleetStreamEvent {
+	if curr == nil || curr.State == "off" {
+		return nil
+	}
+	var evs []fleetStreamEvent
+	prevRuns := map[int64]fleetCIRunJSON{}
+	newPush := prev == nil || prev.SHA != curr.SHA
+	if !newPush {
+		for _, r := range prev.Runs {
+			prevRuns[r.ID] = r
+		}
+	}
+	base.SHA = curr.SHA
+	if newPush {
+		ev := base
+		ev.Kind = "ci-expecting"
+		evs = append(evs, ev)
+	}
+	for _, r := range curr.Runs {
+		ev := base
+		ev.RunID, ev.Workflow, ev.URL = r.ID, r.Workflow, r.URL
+		p, seen := prevRuns[r.ID]
+		if !seen {
+			ev.Kind = "ci-start"
+			evs = append(evs, ev)
+		}
+		if r.Status == "completed" && (!seen || p.Status != "completed") {
+			ev.Kind = "ci-end"
+			ev.Conclusion = r.Conclusion
+			evs = append(evs, ev)
+		}
+	}
+	if curr.State == "none" && (newPush || prev.State != "none") {
+		ev := base
+		ev.Kind = "ci-none"
+		evs = append(evs, ev)
 	}
 	return evs
 }
@@ -239,6 +289,8 @@ func fireFleetNotify(ctx context.Context, notify map[string]string, ev fleetStre
 		key = "paused"
 	case ev.Kind == "land-ready":
 		key = "land_ready"
+	case ev.Kind == "ci-end" && ciRunFailed(ev.Conclusion):
+		key = "ci_failed"
 	default:
 		return
 	}

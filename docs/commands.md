@@ -4138,7 +4138,7 @@ its token in the OS keyring, expose it with `export GH_TOKEN=$(gh auth token)`.
 #### Synopsis
 
 ```
-gk pr [flags]        # open PRs in the current repo (owner/repo from origin)
+gk pr [flags]        # open PRs in the current repo (owner/repo from origin; github.owner's org without a remote)
 gk pr --org [name]   # open PRs across a whole org/account, one search
 gk pr --mine         # only PRs you opened
 ```
@@ -4147,7 +4147,7 @@ gk pr --mine         # only PRs you opened
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--org [name]` | — | Search the whole org/account instead of the current repo. Owner priority: the value you pass > `github.owner` in config > origin's owner. `--org` and `--org=acme`/`--org acme` both work. |
+| `--org [name]` | `github.owner` if no remote | Search the whole org/account instead of the current repo. Owner priority: the value you pass > `github.owner` in config > origin's owner. `--org` and `--org=acme`/`--org acme` both work. |
 | `--mine` | false | Restrict to items you authored (`author:@me`; needs a token) |
 | `--review` | false | Only PRs awaiting your review (`review-requested:@me`; needs a token) |
 | `--assigned` | false | Only items assigned to you (`assignee:@me`; needs a token) |

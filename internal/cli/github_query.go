@@ -151,28 +151,43 @@ func cmdCtx(cmd *cobra.Command) context.Context {
 // resolveGitHubScope turns the shared flags into a Search API scope prefix
 // (e.g. "repo:x-mesh/gk", "org:acme", "user:octocat") plus a human label.
 //
-// No --org  → current repo, from origin.
+// No --org  → current repo, from origin (github.owner as org scope when
+//
+//	there is no remote to read).
+//
 // --org     → org/account scope. Owner priority: explicit --org value >
 //
 //	positional arg (the `--org acme` space form) > config
 //	github.owner > origin's owner. org: vs user: qualifier is
 //	chosen via a /users lookup (defaulting to org: on failure).
 func resolveGitHubScope(ctx context.Context, cmd *cobra.Command, args []string, cfg config.Config, runner git.Runner, client *ghapi.Client) (prefix, label string, err error) {
+	owner := ""
 	if !cmd.Flags().Changed("org") {
-		owner, repo, err := currentRepoSlug(ctx, cfg, runner)
+		repoOwner, repo, err := currentRepoSlug(ctx, cfg, runner)
 		if err != nil {
-			return "", "", err
+			// Outside a repository with a remote (e.g. a workspace of
+			// clones), github.owner stands in for a bare --org, as in
+			// `gk actions watch`.
+			remote := cfg.Remote
+			if remote == "" {
+				remote = "origin"
+			}
+			if cfg.GitHub.Owner == "" || remoteURL(ctx, runner, remote) != "" {
+				return "", "", err
+			}
+			owner = cfg.GitHub.Owner
+		} else {
+			s := fmt.Sprintf("repo:%s/%s", repoOwner, repo)
+			return s, s, nil
 		}
-		s := fmt.Sprintf("repo:%s/%s", owner, repo)
-		return s, s, nil
-	}
-
-	owner, _ := cmd.Flags().GetString("org")
-	if owner == orgFlagSentinel {
-		owner = ""
-	}
-	if owner == "" && len(args) == 1 {
-		owner = args[0] // `--org acme` (space form); NoOptDefVal sends acme to args
+	} else {
+		owner, _ = cmd.Flags().GetString("org")
+		if owner == orgFlagSentinel {
+			owner = ""
+		}
+		if owner == "" && len(args) == 1 {
+			owner = args[0] // `--org acme` (space form); NoOptDefVal sends acme to args
+		}
 	}
 	if owner == "" {
 		owner = cfg.GitHub.Owner

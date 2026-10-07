@@ -296,3 +296,36 @@ func TestResolveGitHubScopeLookupErrorFallsBack(t *testing.T) {
 		t.Errorf("prefix = %q, want org:acme (fallback on transient error)", prefix)
 	}
 }
+
+// TestResolveGitHubScopeOwnerWithoutRemote: no --org and no remote to read →
+// github.owner becomes the org scope instead of an error. A remote still wins.
+func TestResolveGitHubScopeOwnerWithoutRemote(t *testing.T) {
+	srv := userTypeServer(t, "Organization")
+	defer srv.Close()
+	client := &ghapi.Client{APIBase: srv.URL}
+	cfg := config.Config{GitHub: config.GitHubConfig{Owner: "acme"}}
+
+	cmd := ghScopeCmd(t, false, "")
+	prefix, _, err := resolveGitHubScope(context.Background(), cmd, nil, cfg, &git.FakeRunner{}, client)
+	if err != nil {
+		t.Fatalf("no remote: resolveGitHubScope: %v", err)
+	}
+	if prefix != "org:acme" {
+		t.Errorf("no remote: prefix = %q, want org:acme (from config)", prefix)
+	}
+
+	withRemote := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {Stdout: "git@github.com:x-mesh/gk.git\n"},
+	}}
+	prefix, _, err = resolveGitHubScope(context.Background(), ghScopeCmd(t, false, ""), nil, cfg, withRemote, client)
+	if err != nil {
+		t.Fatalf("remote: resolveGitHubScope: %v", err)
+	}
+	if prefix != "repo:x-mesh/gk" {
+		t.Errorf("remote: prefix = %q, want repo:x-mesh/gk", prefix)
+	}
+
+	if _, _, err := resolveGitHubScope(context.Background(), ghScopeCmd(t, false, ""), nil, config.Config{}, &git.FakeRunner{}, client); err == nil {
+		t.Error("no remote, no owner: expected the no-remote error")
+	}
+}

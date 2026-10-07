@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk pr` and `gk issue` use `github.owner` from the config as `--org` when the directory has no remote. Before, they stopped with "no origin remote to read" even when `github.owner` was set. Inside a repository with a remote, they still list that repository.
+
 ## [0.149.0] - 2026-10-07
 
 ### Added

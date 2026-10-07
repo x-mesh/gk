@@ -23,8 +23,10 @@ func init() {
 		Short: "List open pull requests (current repo, --org, or --mine)",
 		Long: `Lists open pull requests via the GitHub search API.
 
-No flag lists the current repo's PRs (owner/repo from origin). --org lists
-a whole org/account's PRs in one query; --mine restricts to PRs you opened.
+No flag lists the current repo's PRs (owner/repo from origin). Outside a
+repository with a remote, github.owner from the config acts as --org. --org
+lists a whole org/account's PRs in one query; --mine restricts to PRs you
+opened.
 --state open|closed|all and --json are supported.
 
 Auth comes from GH_TOKEN / GITHUB_TOKEN / a prior 'gh auth login'. Without

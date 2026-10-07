@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk actions watch --org <name>` streams GitHub Actions runs across every repository of an organization or user account. It finds pushes from each repository's `pushed_at` and reports `ci-expecting`, `ci-start`, `ci-end` (with the conclusion), or `ci-none` when no run starts within 90 seconds. Steady-state polls are conditional requests, so a quiet organization costs almost no rate limit. `--json` (or `GK_AGENT`) emits NDJSON, `--workflow` filters by name, and a rate-limit rejection pauses the stream until GitHub's reset time. Scheduled or manually dispatched runs without a push are not reported.
+
 ## [0.147.1] - 2026-10-06
 
 ### Added

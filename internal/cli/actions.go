@@ -22,6 +22,7 @@ type actionsWatchOptions struct {
 	sha      string
 	workflow string
 	run      int64
+	org      string
 	interval time.Duration
 }
 
@@ -38,17 +39,28 @@ func init() {
 		Long: "Waits for a GitHub Actions run without invoking gh.\n\n" +
 			"Without options, it resolves the current GitHub remote and HEAD. Set GH_TOKEN or GITHUB_TOKEN. " +
 			"gk does not read gh configuration for this command. If more than one workflow run matches, " +
-			"select one with --workflow or --run.",
+			"select one with --workflow or --run.\n\n" +
+			"With --org it instead streams every repository of an organization (or user account): " +
+			"repositories are discovered by their newest push, and each push reports ci-expecting, " +
+			"ci-start and ci-end per workflow run, or ci-none when no run starts. It runs until " +
+			"interrupted and exits 0; failed runs are events, not exit codes. --json (or GK_AGENT) " +
+			"emits NDJSON. Pushes are detected from GitHub's pushed_at, so scheduled or manually " +
+			"dispatched runs without a push are not reported.",
 		Args: cobra.NoArgs,
 		RunE: runActionsWatch,
 	}
-	watchCmd.Flags().String("repo", "", "GitHub repository as owner/repo (default: current remote)")
-	watchCmd.Flags().String("sha", "", "commit SHA (default: HEAD)")
-	watchCmd.Flags().String("workflow", "", "exact workflow display name")
-	watchCmd.Flags().Int64("run", 0, "GitHub Actions run ID")
-	watchCmd.Flags().Duration("interval", defaultActionsWatchInterval, "poll interval")
+	addActionsWatchFlags(watchCmd)
 	actionsCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(actionsCmd)
+}
+
+func addActionsWatchFlags(cmd *cobra.Command) {
+	cmd.Flags().String("repo", "", "GitHub repository as owner/repo (default: current remote)")
+	cmd.Flags().String("sha", "", "commit SHA (default: HEAD)")
+	cmd.Flags().String("workflow", "", "exact workflow display name")
+	cmd.Flags().Int64("run", 0, "GitHub Actions run ID")
+	cmd.Flags().String("org", "", "stream Actions runs across every repository of this organization or user")
+	cmd.Flags().Duration("interval", defaultActionsWatchInterval, "poll interval")
 }
 
 func runActionsWatch(cmd *cobra.Command, _ []string) error {
@@ -59,6 +71,9 @@ func runActionsWatch(cmd *cobra.Command, _ []string) error {
 	opts, err := readActionsWatchOptions(cmd)
 	if err != nil {
 		return err
+	}
+	if opts.org != "" {
+		return runActionsWatchOrg(cmd, &ghapi.Client{Token: token}, opts)
 	}
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	cfg, err := config.Load(cmd.Flags())
@@ -100,6 +115,9 @@ func readActionsWatchOptions(cmd *cobra.Command) (actionsWatchOptions, error) {
 	if opts.run, err = cmd.Flags().GetInt64("run"); err != nil {
 		return opts, err
 	}
+	if opts.org, err = cmd.Flags().GetString("org"); err != nil {
+		return opts, err
+	}
 	if opts.interval, err = cmd.Flags().GetDuration("interval"); err != nil {
 		return opts, err
 	}
@@ -111,6 +129,9 @@ func readActionsWatchOptions(cmd *cobra.Command) (actionsWatchOptions, error) {
 	}
 	if opts.run > 0 && (opts.sha != "" || opts.workflow != "") {
 		return opts, fmt.Errorf("--run cannot be combined with --sha or --workflow")
+	}
+	if opts.org != "" && (opts.repo != "" || opts.sha != "" || opts.run > 0) {
+		return opts, fmt.Errorf("--org cannot be combined with --repo, --sha or --run")
 	}
 	return opts, nil
 }

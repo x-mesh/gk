@@ -3425,8 +3425,12 @@ Set a single configuration value. The target file is edited in place — comment
 #### Synopsis
 
 ```
-gk config set <key>[+=|-=] <value> [flags]
+gk config set [<key>[+=|-=] [<value>]] [flags]
 ```
+
+In a terminal, a missing key opens a picker of the settable keys with their current value and source. Type to filter the list. A missing value opens a prompt that holds the current value. If you press Esc in either step, gk writes nothing. Outside a terminal, both arguments are required.
+
+Shell completion offers the settable keys for the first argument. List keys and keys under `ai.providers.` and `clone.hosts.` are not in the picker or the completion list.
 
 #### Flags
 
@@ -3449,6 +3453,9 @@ gk config set ai.commit.audit true
 # Add or remove a single list item (comments + flow style preserved).
 gk config set log.vis+= merged
 gk config set log.vis-= base
+
+# Pick the key from a list, then type the value.
+gk config set
 ```
 
 ---

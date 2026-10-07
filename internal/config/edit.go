@@ -164,6 +164,43 @@ func ValidKey(dotKey string) bool {
 	return ok
 }
 
+// SettableKeys returns every dot-key that a plain `gk config set <key> <value>`
+// accepts, sorted. List-valued keys (which need += / -=) and keys under the
+// dynamic map prefixes are excluded since neither takes a single scalar.
+func SettableKeys() []string {
+	raw, err := yaml.Marshal(Defaults())
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	var keys []string
+	var walk func(prefix string, node any)
+	walk = func(prefix string, node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for k, child := range v {
+				p := k
+				if prefix != "" {
+					p = prefix + "." + k
+				}
+				if underDynamicPrefix(p + ".") {
+					continue
+				}
+				walk(p, child)
+			}
+		case []any, nil:
+		default:
+			keys = append(keys, prefix)
+		}
+	}
+	walk("", m)
+	sort.Strings(keys)
+	return keys
+}
+
 // schemaLeaf walks the Defaults() schema (as a nested map) along dotKey and
 // returns the default value at that path. ok is false if the path doesn't
 // exist or stops short of a leaf.

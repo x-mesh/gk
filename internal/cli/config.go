@@ -12,6 +12,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -44,7 +45,7 @@ func init() {
 	getCmd.Flags().Bool("source", false, "also print where the value comes from (local/global/default)")
 	configCmd.AddCommand(getCmd)
 	setCmd := &cobra.Command{
-		Use:   "set <key>[+=|-=] <value>",
+		Use:   "set [<key>[+=|-=] [<value>]]",
 		Short: "Set a config value, or add/remove a list item (comments preserved)",
 		Long: `Writes one dot-notation key into the global config (or repo-local
 .gk.yaml with --local), leaving every other line — comments, ordering,
@@ -61,9 +62,13 @@ Examples:
   gk config set --local status.density compact
   gk config set ai.commit.audit true
   gk config set log.vis+= merged       # add a layer to the gk log default set
-  gk config set log.vis-= base         # remove a layer from it`,
-		Args: cobra.ExactArgs(2),
-		RunE: runConfigSet,
+  gk config set log.vis-= base         # remove a layer from it
+
+In a terminal, a missing key opens a filterable key picker and a missing
+value opens a prompt seeded with the current value.`,
+		Args:              cobra.RangeArgs(0, 2),
+		ValidArgsFunction: completeConfigSetKey,
+		RunE:              runConfigSet,
 	}
 	setCmd.Flags().Bool("local", false, "write to repo-local .gk.yaml instead of the global config")
 	configCmd.AddCommand(setCmd)
@@ -215,6 +220,16 @@ func firstNonEmpty(vals ...string) string {
 
 // runConfigSet handles `gk config set <key> <value> [--local]`.
 func runConfigSet(cmd *cobra.Command, args []string) error {
+	if len(args) < 2 {
+		filled, err := promptConfigSetArgs(cmd, args)
+		if errors.Is(err, ui.ErrPickerAborted) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		args = filled
+	}
 	key, val := args[0], args[1]
 	local, _ := cmd.Flags().GetBool("local")
 	if err := validateConfigWriteScope(key, local); err != nil {
@@ -290,6 +305,76 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), successLinef("set", "%s = %s  (%s: %s)", key, written, scope, path))
 	return nil
+}
+
+// completeConfigSetKey offers settable keys for the first argument. It returns
+// the whole list unfiltered so the shell's own matcher (prefix, or fuzzy with
+// plugins such as fzf-tab) decides what fits.
+func completeConfigSetKey(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return config.SettableKeys(), cobra.ShellCompDirectiveNoFileComp
+}
+
+// promptConfigSetArgs fills a missing key and/or value interactively: a
+// filterable picker for the key, then a text prompt seeded with the current
+// value. Outside a terminal it fails like the old ExactArgs(2) check did.
+func promptConfigSetArgs(cmd *cobra.Command, args []string) ([]string, error) {
+	if !ui.IsTerminal() {
+		return nil, fmt.Errorf("accepts 2 arg(s), received %d", len(args))
+	}
+	current := map[string]any{}
+	if cfg, err := config.Load(cmd.Flags()); err == nil {
+		if raw, err := yaml.Marshal(cfg); err == nil {
+			_ = yaml.Unmarshal(raw, &current)
+		}
+	}
+	valueOf := func(key string) string {
+		v, ok := lookupDot(current, key)
+		if !ok || v == nil {
+			return ""
+		}
+		return fmt.Sprint(maskJevValue(key, v))
+	}
+
+	key := ""
+	if len(args) == 1 {
+		key = args[0]
+	} else {
+		root := ""
+		if r, err := gitToplevel(cmd.Context(), &git.ExecRunner{Dir: RepoFlag()}); err == nil {
+			root = r
+		}
+		keys := config.SettableKeys()
+		items := make([]ui.PickerItem, len(keys))
+		for i, k := range keys {
+			items[i] = ui.PickerItem{
+				Key:     k,
+				Display: k,
+				Cells:   []string{k, valueOf(k), config.ValueSource(k, root)},
+			}
+		}
+		picker := &ui.TablePicker{
+			Headers:        []string{"KEY", "VALUE", "SOURCE"},
+			ColumnPriority: map[string]int{"KEY": 3, "VALUE": 2, "SOURCE": 1},
+		}
+		picked, err := picker.Pick(cmd.Context(), "gk config set — type to filter keys", items)
+		if err != nil {
+			return nil, err
+		}
+		key = picked.Key
+	}
+
+	initial := ""
+	if _, _, isOp := parseListOp(key); !isOp && key != "ai.jev.api_key" {
+		initial = valueOf(key)
+	}
+	val, err := ui.PromptTextTUI(cmd.Context(), key, "value", initial)
+	if err != nil {
+		return nil, err
+	}
+	return []string{key, val}, nil
 }
 
 // parseListOp splits a `key+=` / `key-=` list operator off the key. Returns

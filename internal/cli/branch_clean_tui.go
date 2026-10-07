@@ -59,7 +59,7 @@ func FormatCandidateLabel(c branchclean.CleanCandidate) string {
 // formatBranchTimes formats the (created, last commit) pair so the user
 // can tell apart a freshly-branched-from-old-base case from a stale
 // branch. Falls back gracefully when reflog is unavailable.
-// relativeTime() already returns "Nd ago" / "today" — do not append "ago"
+// relativeTime() already returns "Nd ago" / "now" — do not append "ago"
 // here.
 func formatBranchTimes(created, lastCommit time.Time) string {
 	hasCreated := !created.IsZero()
@@ -86,14 +86,18 @@ func formatBranchTimes(created, lastCommit time.Time) string {
 func relativeTime(d time.Duration) string {
 	days := int(d.Hours() / 24)
 	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
 	case days < 1:
-		return "today"
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	case days < 7:
 		return fmt.Sprintf("%dd ago", days)
 	case days < 30:
 		return fmt.Sprintf("%dw ago", days/7)
 	case days < 365:
-		return fmt.Sprintf("%dm ago", days/30)
+		return fmt.Sprintf("%dmo ago", days/30)
 	default:
 		return fmt.Sprintf("%dy ago", days/365)
 	}

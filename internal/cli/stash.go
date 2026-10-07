@@ -221,7 +221,7 @@ func runStashTUI(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// stashRelative renders a created timestamp as "5m ago" / "today" — the
+// stashRelative renders a created timestamp as "5m ago" / "now" — the
 // same vocabulary as branch clean's relative-time formatter so users
 // don't have to translate between two formats.
 func stashRelative(t time.Time) string {

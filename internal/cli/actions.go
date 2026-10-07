@@ -46,7 +46,8 @@ func init() {
 			"ci-start and ci-end per workflow run, or ci-none when no run starts. It runs until " +
 			"interrupted and exits 0; failed runs are events, not exit codes. --json (or GK_AGENT) " +
 			"emits NDJSON. Pushes are detected from GitHub's pushed_at, so scheduled or manually " +
-			"dispatched runs without a push are not reported.",
+			"dispatched runs without a push are not reported. Outside a repository with a remote, " +
+			"github.owner from config acts as --org when --repo, --sha and --run are not set.",
 		Args: cobra.NoArgs,
 		RunE: runActionsWatch,
 	}
@@ -80,6 +81,9 @@ func runActionsWatch(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(cmd.Flags())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if opts.org = actionsOrgFallback(cmdCtx(cmd), *cfg, runner, opts); opts.org != "" {
+		return runActionsWatchOrg(cmd, &ghapi.Client{Token: token}, opts)
 	}
 	owner, repo, sha, err := resolveActionsTarget(cmdCtx(cmd), *cfg, runner, opts)
 	if err != nil {
@@ -135,6 +139,22 @@ func readActionsWatchOptions(cmd *cobra.Command) (actionsWatchOptions, error) {
 		return opts, fmt.Errorf("--org cannot be combined with --repo, --sha or --run")
 	}
 	return opts, nil
+}
+
+// actionsOrgFallback picks github.owner only where no remote exists, such as
+// a workspace directory of clones, so a repository keeps its per-commit watch.
+func actionsOrgFallback(ctx context.Context, cfg config.Config, runner git.Runner, opts actionsWatchOptions) string {
+	if opts.repo != "" || opts.sha != "" || opts.run > 0 || cfg.GitHub.Owner == "" {
+		return ""
+	}
+	remote := cfg.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	if remoteURL(ctx, runner, remote) != "" {
+		return ""
+	}
+	return cfg.GitHub.Owner
 }
 
 func resolveActionsTarget(ctx context.Context, cfg config.Config, runner git.Runner, opts actionsWatchOptions) (owner, repo, sha string, err error) {

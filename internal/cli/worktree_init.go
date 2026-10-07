@@ -188,13 +188,38 @@ func linkFromMain(w io.Writer, mainPath, target, rel string, dryRun bool) error 
 	src := filepath.Join(mainPath, rel)
 	dst := filepath.Join(target, rel)
 
+	if escapesRoot(mainPath, src) || escapesRoot(target, dst) {
+		fmt.Fprintf(w, "link  %s: skipped (path escapes the worktree)\n", rel)
+		return nil
+	}
 	if _, err := os.Lstat(src); err != nil {
 		fmt.Fprintf(w, "link  %s: skipped (not present in main worktree)\n", rel)
 		return nil
 	}
 	if cur, err := os.Readlink(dst); err == nil {
-		if cur == src {
+		// linkTargetsEqual (not raw ==) so a link we planted is still seen as
+		// ours when mainPath is spelled differently across runs (e.g. macOS
+		// /var vs /private/var), matching sameDir's normalization.
+		if linkTargetsEqual(cur, src) {
 			fmt.Fprintf(w, "link  %s: ok (already linked)\n", rel)
+			return nil
+		}
+		// A symlink pointing elsewhere. Re-point it ONLY when it dangles (the
+		// target no longer resolves) — the main-worktree-moved case — so re-run
+		// self-heals a stale link, while a symlink the user deliberately placed
+		// (still valid) is left untouched, never clobbered.
+		if _, serr := os.Stat(dst); serr != nil {
+			if dryRun {
+				fmt.Fprintf(w, "link  %s: re-point dangling -> %s (dry-run)\n", rel, src)
+				return nil
+			}
+			if rerr := os.Remove(dst); rerr != nil {
+				return fmt.Errorf("link %s: remove stale link: %w", rel, rerr)
+			}
+			if serr := os.Symlink(src, dst); serr != nil {
+				return fmt.Errorf("link %s: %w", rel, serr)
+			}
+			fmt.Fprintf(w, "link  %s: re-pointed (was dangling) -> %s\n", rel, src)
 			return nil
 		}
 	}
@@ -216,29 +241,85 @@ func linkFromMain(w io.Writer, mainPath, target, rel string, dryRun bool) error 
 	return nil
 }
 
-// copyFromMain copies <main>/<rel> into <target>/<rel>. Idempotent: an
-// existing destination is left untouched (use `gk wt remove` to reset).
+// copyFromMain copies <main>/<rel> into <target>/<rel> to give the worktree an
+// INDEPENDENT, editable copy. Idempotent AND self-healing: an existing file is
+// left untouched (never clobbers a per-worktree edit), but an existing
+// directory is reconciled child-by-child so a half-applied/interrupted copy is
+// completed on re-run (see copyTreeMissing). A symlinked source is dereferenced
+// so the copy is of real content, not a link that would re-resolve here.
 func copyFromMain(w io.Writer, mainPath, target, rel string, dryRun bool) error {
 	src := filepath.Join(mainPath, rel)
 	dst := filepath.Join(target, rel)
 
+	if escapesRoot(mainPath, src) || escapesRoot(target, dst) {
+		fmt.Fprintf(w, "copy  %s: skipped (path escapes the worktree)\n", rel)
+		return nil
+	}
 	if _, err := os.Lstat(src); err != nil {
 		fmt.Fprintf(w, "copy  %s: skipped (not present in main worktree)\n", rel)
 		return nil
 	}
+
+	// `copy:` must yield an independent file. If the source is a symlink (e.g.
+	// main's .env -> .env.shared), copy the real content it resolves to —
+	// recreating the link verbatim would re-resolve relative to THIS worktree
+	// and dangle or alias the shared file, defeating the copy contract.
+	realSrc := src
+	if fi, err := os.Lstat(src); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(src); rerr == nil {
+			realSrc = resolved
+		}
+	}
+
+	existed := false
 	if _, err := os.Lstat(dst); err == nil {
-		fmt.Fprintf(w, "copy  %s: ok (already present)\n", rel)
-		return nil
+		existed = true
 	}
 	if dryRun {
-		fmt.Fprintf(w, "copy  %s (dry-run)\n", rel)
+		if existed {
+			fmt.Fprintf(w, "copy  %s: present (reconcile missing files, dry-run)\n", rel)
+		} else {
+			fmt.Fprintf(w, "copy  %s (dry-run)\n", rel)
+		}
 		return nil
 	}
-	if err := copyPath(src, dst); err != nil {
+	if err := copyTreeMissing(realSrc, dst); err != nil {
 		return fmt.Errorf("copy %s: %w", rel, err)
 	}
-	fmt.Fprintf(w, "copy  %s\n", rel)
+	if existed {
+		fmt.Fprintf(w, "copy  %s: ok (reconciled; existing files kept)\n", rel)
+	} else {
+		fmt.Fprintf(w, "copy  %s\n", rel)
+	}
 	return nil
+}
+
+// copyTreeMissing copies src into dst, filling ONLY what is missing: an absent
+// dst is fully copied (copyPath); two directories are merged child-by-child so
+// an interrupted copy is completed on a re-run; an existing file/symlink (or a
+// type mismatch) is left untouched so a per-worktree edit is never clobbered.
+func copyTreeMissing(src, dst string) error {
+	sInfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	dInfo, derr := os.Lstat(dst)
+	if derr != nil {
+		return copyPath(src, dst) // dst absent — full copy
+	}
+	if sInfo.IsDir() && dInfo.IsDir() {
+		entries, rerr := os.ReadDir(src)
+		if rerr != nil {
+			return rerr
+		}
+		for _, e := range entries {
+			if err := copyTreeMissing(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return nil // existing non-dir (or type mismatch): leave untouched
 }
 
 // runInitCommands executes each command via `sh -c` inside dir, streaming
@@ -320,15 +401,34 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	// Write to a temp file in the destination dir, then atomically rename into
+	// place. A crash mid-copy leaves only an orphaned temp (cleaned up here),
+	// never a truncated dst — so a re-run sees the file absent and copies it
+	// fresh instead of certifying a partial file as "already present".
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".gk-cp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+	tmpName := tmp.Name()
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return err
 	}
-	return out.Close()
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // sameDir reports whether two paths point at the same directory, resolving
@@ -344,18 +444,49 @@ func sameDir(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// mainWorktreePath returns the path of the repository's main worktree —
-// always the first entry in `git worktree list --porcelain`.
+// escapesRoot reports whether p (a filepath.Join of root + a config rel) lands
+// outside root — a guard so a worktree.init `link`/`copy` rel like
+// "../../etc/passwd" cannot read or write outside the worktree.
+func escapesRoot(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return true
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// linkTargetsEqual reports whether two symlink targets point at the same place,
+// tolerating equivalent-but-differently-spelled paths (e.g. macOS /var vs
+// /private/var) so a link gk planted is still recognized as ours across runs —
+// matching sameDir's normalization instead of a raw string compare.
+func linkTargetsEqual(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	if filepath.Base(a) != filepath.Base(b) {
+		return false
+	}
+	return sameDir(filepath.Dir(a), filepath.Dir(b))
+}
+
+// mainWorktreePath returns the path of the repository's main worktree — the
+// first NON-bare entry in `git worktree list --porcelain`. In a `git clone
+// --bare` + worktrees layout the bare repo is listed first with no checkout;
+// returning it would point link/copy at a dir with no working state, silently
+// importing nothing, so bare blocks are skipped.
 func mainWorktreePath(ctx context.Context, runner *git.ExecRunner) (string, error) {
 	out, stderr, err := runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", fmt.Errorf("%s", strings.TrimSpace(string(stderr)))
 	}
 	entries := parseWorktreePorcelain(string(out))
-	if len(entries) == 0 {
-		return "", fmt.Errorf("no worktrees found")
+	for _, e := range entries {
+		if e.Bare {
+			continue
+		}
+		return e.Path, nil
 	}
-	return entries[0].Path, nil
+	return "", fmt.Errorf("no non-bare worktree found")
 }
 
 // manifestRule maps a manifest filename to the install command that

@@ -14,6 +14,7 @@ import (
 type fakeActionsClient struct {
 	runs     []ghapi.WorkflowRun
 	updates  []ghapi.WorkflowRun
+	byID     map[int64]ghapi.WorkflowRun
 	getCalls int
 }
 
@@ -21,7 +22,11 @@ func (f *fakeActionsClient) ListWorkflowRuns(_ context.Context, _, _, _, _ strin
 	return f.runs, nil
 }
 
-func (f *fakeActionsClient) GetWorkflowRun(_ context.Context, _, _ string, _ int64) (ghapi.WorkflowRun, error) {
+func (f *fakeActionsClient) GetWorkflowRun(_ context.Context, _, _ string, id int64) (ghapi.WorkflowRun, error) {
+	if f.byID != nil {
+		f.getCalls++
+		return f.byID[id], nil
+	}
 	i := f.getCalls
 	f.getCalls++
 	if i >= len(f.updates) {
@@ -56,11 +61,33 @@ func TestResolveActionsTargetUsesRemoteAndHEAD(t *testing.T) {
 	}
 }
 
-func TestWatchActionsRunRequiresSelection(t *testing.T) {
-	client := &fakeActionsClient{runs: []ghapi.WorkflowRun{{ID: 1}, {ID: 2}}}
-	_, err := watchActionsRun(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "--workflow or --run") {
+// One push can start the same workflow twice (push and pull_request), so
+// several matches are watched together instead of rejected.
+func TestWatchActionsRunsWaitsForEveryMatch(t *testing.T) {
+	client := &fakeActionsClient{
+		runs: []ghapi.WorkflowRun{{ID: 1, Name: "CI", Status: "in_progress"}, {ID: 2, Name: "CI", Status: "queued"}},
+		byID: map[int64]ghapi.WorkflowRun{
+			1: {ID: 1, Name: "CI", Status: "completed", Conclusion: "success"},
+			2: {ID: 2, Name: "CI", Status: "completed", Conclusion: "skipped"},
+		},
+	}
+	runs, err := watchActionsRuns(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
+	if err != nil {
 		t.Fatalf("err = %v", err)
+	}
+	if len(runs) != 2 || client.getCalls != 2 || runs[1].Conclusion != "skipped" {
+		t.Fatalf("runs = %+v getCalls = %d", runs, client.getCalls)
+	}
+}
+
+func TestWatchActionsRunsFailsWhenAnyMatchFails(t *testing.T) {
+	client := &fakeActionsClient{runs: []ghapi.WorkflowRun{
+		{ID: 1, Name: "CI", Status: "completed", Conclusion: "success"},
+		{ID: 2, Name: "Lint", Status: "completed", Conclusion: "failure", HTMLURL: "https://example.test/2"},
+	}}
+	_, err := watchActionsRuns(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "1 of 2") || !strings.Contains(err.Error(), "https://example.test/2") || client.getCalls != 0 {
+		t.Fatalf("err = %v getCalls = %d", err, client.getCalls)
 	}
 }
 
@@ -71,12 +98,12 @@ func TestWatchActionsRunPollsToSuccess(t *testing.T) {
 			ID: 11, Name: "Pages", Status: "completed", Conclusion: "success", HTMLURL: "https://example.test/11",
 		}},
 	}
-	run, err := watchActionsRun(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
+	runs, err := watchActionsRuns(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
 	if err != nil {
-		t.Fatalf("watchActionsRun: %v", err)
+		t.Fatalf("watchActionsRuns: %v", err)
 	}
-	if run.ID != 11 || client.getCalls != 1 {
-		t.Fatalf("run = %+v, getCalls = %d", run, client.getCalls)
+	if len(runs) != 1 || runs[0].ID != 11 || client.getCalls != 1 {
+		t.Fatalf("runs = %+v, getCalls = %d", runs, client.getCalls)
 	}
 }
 
@@ -84,7 +111,7 @@ func TestWatchActionsRunReturnsFailedConclusion(t *testing.T) {
 	client := &fakeActionsClient{runs: []ghapi.WorkflowRun{{
 		ID: 11, Status: "completed", Conclusion: "failure", HTMLURL: "https://example.test/11",
 	}}}
-	_, err := watchActionsRun(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
+	_, err := watchActionsRuns(context.Background(), client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, func(context.Context, time.Duration) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "failure") || !strings.Contains(err.Error(), "https://example.test/11") {
 		t.Fatalf("err = %v", err)
 	}
@@ -94,7 +121,7 @@ func TestWatchActionsRunStopsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	client := &fakeActionsClient{runs: []ghapi.WorkflowRun{{ID: 11, Status: "in_progress"}}}
-	_, err := watchActionsRun(ctx, client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, waitActionsInterval)
+	_, err := watchActionsRuns(ctx, client, "x-mesh", "headroom", "abc", actionsWatchOptions{interval: time.Millisecond}, waitActionsInterval)
 	if err != context.Canceled {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

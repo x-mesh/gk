@@ -61,7 +61,8 @@ type FleetConfig struct {
 	// distinguishable from "unset". Same as --feed-stats.
 	FeedStats *bool `mapstructure:"feed_stats" yaml:"feed_stats,omitempty"`
 	// Notify maps a fleet transition to a shell command (`sh -c`), run with
-	// GK_FLEET_* context env. Keys: conflict, paused, land_ready. Opt-in.
+	// GK_FLEET_* context env. Keys: conflict, paused, land_ready, ci_failed.
+	// Opt-in.
 	Notify map[string]string `mapstructure:"notify" yaml:"notify,omitempty"`
 	// Filter is the dashboard's initial view filter (all | active | busy |
 	// stuck). Unset keeps the mode default: active in multi-repo, all in

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func repoJSON(owner, name, desc string, private bool) map[string]any {
@@ -142,5 +143,70 @@ func TestListReposPaginates(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestPushedRepoPollerUsesETagAndKeepsLastResult(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+		if got := r.URL.Query().Get("sort"); got != "pushed" {
+			t.Errorf("sort = %q", got)
+		}
+		if r.Header.Get("If-None-Match") == `"e1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"e1"`)
+		repo := repoJSON("x-mesh", "gk", "", false)
+		repo["pushed_at"] = "2026-10-07T02:11:48Z"
+		writeJSON(t, w, []map[string]any{repo})
+	}))
+	defer srv.Close()
+	p := &PushedRepoPoller{Client: &Client{APIBase: srv.URL}, Owner: "x-mesh", Limit: 5}
+
+	repos, changed, err := p.Poll(context.Background())
+	if err != nil || !changed || len(repos) != 1 || repos[0].PushedAt.IsZero() {
+		t.Fatalf("first poll: repos=%+v changed=%v err=%v", repos, changed, err)
+	}
+	repos, changed, err = p.Poll(context.Background())
+	if err != nil || changed || len(repos) != 1 || repos[0].Name != "gk" {
+		t.Fatalf("second poll: repos=%+v changed=%v err=%v", repos, changed, err)
+	}
+	if paths[0] != "/orgs/x-mesh/repos?type=all&sort=pushed&direction=desc&per_page=5" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestPushedRepoPollerFallsBackToUserAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/JINWOO-J/repos":
+			w.WriteHeader(http.StatusNotFound)
+		case "/users/JINWOO-J/repos":
+			writeJSON(t, w, []map[string]any{repoJSON("JINWOO-J", "playground", "", false)})
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	p := &PushedRepoPoller{Client: &Client{APIBase: srv.URL}, Owner: "JINWOO-J"}
+
+	repos, _, err := p.Poll(context.Background())
+	if err != nil || len(repos) != 1 || repos[0].Name != "playground" {
+		t.Fatalf("repos=%+v err=%v", repos, err)
+	}
+}
+
+func TestAsRateLimitIgnoresPermissionFailures(t *testing.T) {
+	now := time.Unix(1000, 0)
+	forbidden := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"X-Ratelimit-Remaining": {"42"}}}
+	if rl := asRateLimit(forbidden, now); rl != nil {
+		t.Fatalf("403 with quota left = %v, want nil", rl)
+	}
+	secondary := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Retry-After": {"30"}}}
+	if rl := asRateLimit(secondary, now); rl == nil || !rl.Reset.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("Retry-After = %v", rl)
 	}
 }

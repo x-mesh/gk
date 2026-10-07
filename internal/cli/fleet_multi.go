@@ -235,13 +235,7 @@ func renderFleetGroupedTable(rows []fleetRow, cursor int, now time.Time, cols fl
 		default:
 			e := r.entry
 			dot := lipgloss.NewStyle().Foreground(fleetStatusColor(e.Status)).Render("●")
-			branch := clip(e.Branch, cols.branch)
-			if e.Current {
-				branch += "*"
-			}
-			if e.Operation != "" {
-				branch += " ⏸"
-			}
+			branch := fleetBranchCell(e, cols.branch)
 			line = fmt.Sprintf("%s    %s %-*s  %-8s  %-11s  %-*s  %s%s",
 				caret, dot, cols.branch+3, branch,
 				fleetDiffLabel(e.Ahead, e.Behind),

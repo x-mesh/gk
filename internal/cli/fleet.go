@@ -105,6 +105,10 @@ type fleetEntryJSON struct {
 	RepoRoot string `json:"repo_root,omitempty"`
 	Error    string `json:"error,omitempty"`
 
+	// CI is the GitHub Actions state of the branch's newest push, set only
+	// for a push within fleetCIPushWindow of the watch start or later.
+	CI *fleetCIJSON `json:"ci,omitempty"`
+
 	// lastActive is the absolute timestamp behind ActiveAgoS. Unexported (never
 	// serialized) so the live TUI re-derives the relative age every clock tick
 	// instead of freezing it at poll time.
@@ -113,6 +117,8 @@ type fleetEntryJSON struct {
 	// the feed's diff input. Unexported: the JSON contract carries events, not
 	// raw signatures.
 	sigs map[string]fileSig
+	// push is the newest tracked push of the branch, the CI tracker's key.
+	push *fleetPush
 }
 
 const fleetRepoTimeout = 3 * time.Second
@@ -145,16 +151,19 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 	if _, ferr := resolveFleetFilter(cmd, multi); ferr != nil {
 		return ferr
 	}
+	ci := fleetCI()
 	if multi {
 		sem := newFleetLimiter(fleetConcurrency())
 		if streamEvents {
 			gather := func(gctx context.Context) ([]fleetEntryJSON, error) {
 				return gatherFleetMulti(gctx, ids, sem, fleetRepoTimeout, feedStats), nil
 			}
-			return runFleetEvents(ctx, cmd, gather,
+			ci.start(ctx)
+			return runFleetEvents(ctx, cmd, withFleetCIBaseline(ci, gather),
 				time.Duration(resolveFleetInterval(cmd, true))*time.Second, fleetNotifyConfig())
 		}
 		entries := gatherFleetMulti(ctx, ids, sem, fleetRepoTimeout, feedStats)
+		ci.settleFirst(ctx, entries)
 		if JSONOut() {
 			return emitAgentResult(cmd.OutOrStdout(), entries)
 		}
@@ -165,6 +174,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		}
 		interval := resolveFleetInterval(cmd, true)
 		filter, _ := resolveFleetFilter(cmd, true) // validated above
+		ci.start(ctx)
 		return runFleetMultiTUI(ctx, cmd, ids, sem, entries, time.Duration(interval)*time.Second, feedStats, filter)
 	}
 
@@ -177,7 +187,8 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		gather := func(gctx context.Context) ([]fleetEntryJSON, error) {
 			return gatherFleet(gctx, runner, feedStats)
 		}
-		return runFleetEvents(ctx, cmd, gather,
+		ci.start(ctx)
+		return runFleetEvents(ctx, cmd, withFleetCIBaseline(ci, gather),
 			time.Duration(resolveFleetInterval(cmd, false))*time.Second, fleetNotifyConfig())
 	}
 
@@ -185,6 +196,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 	if err != nil {
 		return err
 	}
+	ci.settleFirst(ctx, entries)
 
 	// Machine-readable snapshot: emit once and exit. A GUI/agent polls this.
 	if JSONOut() {
@@ -207,6 +219,7 @@ func runFleetCore(cmd *cobra.Command, autoSingleWatch bool) error {
 		return runChangeWatch(cmd)
 	}
 	filter, _ := resolveFleetFilter(cmd, false) // validated above
+	ci.start(ctx)
 	return runFleetTUI(ctx, cmd, runner, entries, time.Duration(interval)*time.Second, feedStats, filter)
 }
 
@@ -267,6 +280,8 @@ func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root, c
 	entries := parseWorktreePorcelain(string(stdout))
 	meta, base := loadWorktreeBranchMetaWithBase(ctx, runner, worktreeBranchNames(entries))
 	now := time.Now()
+	_, common, hasCommon := repoRootAndCommonDir(ctx, root)
+	ci := fleetCI()
 
 	live := make([]WorktreeEntry, 0, len(entries))
 	for _, e := range entries {
@@ -289,6 +304,12 @@ func gatherFleetRepo(ctx context.Context, runner *git.ExecRunner, label, root, c
 			e := enrichFleetEntry(ctx, live[i], meta, current, base, now, withStats)
 			e.Repo = label
 			e.RepoRoot = root
+			if hasCommon && !live[i].Detached && live[i].Branch != "" {
+				if p, ok := ci.pushFor(ctx, common, live[i].Branch); ok {
+					e.push = &p
+				}
+			}
+			ci.annotate(&e, now)
 			out[i] = e
 		}(i)
 	}
@@ -1153,13 +1174,7 @@ func renderFleetTable(entries []fleetEntryJSON, cursor int, now time.Time, cols 
 			caret = "› "
 		}
 		dot := lipgloss.NewStyle().Foreground(fleetStatusColor(e.Status)).Render("●")
-		branch := clip(e.Branch, cols.branch)
-		if e.Current {
-			branch += "*"
-		}
-		if e.Operation != "" {
-			branch += " ⏸"
-		}
+		branch := fleetBranchCell(e, cols.branch)
 		row := fmt.Sprintf("%s%s %-*s  %-8s  %-11s  %-*s  %s%s",
 			caret, dot, cols.branch+3, branch,
 			fleetDiffLabel(e.Ahead, e.Behind),
@@ -1255,6 +1270,13 @@ func renderFleetDetail(e fleetEntryJSON, now time.Time, tail []fleetFeedEvent) s
 		}
 	}
 	lines = append(lines, row("op", op))
+
+	if e.CI != nil {
+		lines = append(lines, row("ci", fleetCIDetail(e.CI)))
+		if u := fleetCIFailedURL(e.CI); u != "" {
+			lines = append(lines, row("", clipLeft(u, 40)))
+		}
+	}
 
 	land := "no"
 	if e.LandReady {

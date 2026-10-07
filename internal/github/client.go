@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,7 @@ type Repo struct {
 	Name        string
 	Description string
 	UpdatedAt   time.Time
+	PushedAt    time.Time
 	Private     bool
 }
 
@@ -215,17 +218,22 @@ func (c *Client) fetchPage(ctx context.Context, pathWithQuery string) ([]Repo, e
 		return nil, fmt.Errorf("github api returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
+	return decodeRepoList(resp.Body)
+}
+
+func decodeRepoList(body io.Reader) ([]Repo, error) {
 	var payload []struct {
 		Name        string `json:"name"`
 		FullName    string `json:"full_name"`
 		Description string `json:"description"`
 		UpdatedAt   string `json:"updated_at"`
+		PushedAt    string `json:"pushed_at"`
 		Private     bool   `json:"private"`
 		Owner       struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode repo list: %w", err)
 	}
 
@@ -239,6 +247,9 @@ func (c *Client) fetchPage(ctx context.Context, pathWithQuery string) ([]Repo, e
 		}
 		if t, err := time.Parse(time.RFC3339, p.UpdatedAt); err == nil {
 			r.UpdatedAt = t
+		}
+		if t, err := time.Parse(time.RFC3339, p.PushedAt); err == nil {
+			r.PushedAt = t
 		}
 		repos = append(repos, r)
 	}
@@ -280,4 +291,127 @@ func (c *Client) ListMyOrgs(ctx context.Context) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// getConditional is get with If-None-Match. GitHub does not charge a 304
+// against the primary rate limit, which is what makes tight org-wide polling
+// affordable.
+func (c *Client) getConditional(ctx context.Context, path, etag string) (*http.Response, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	return c.doer().Do(req)
+}
+
+// RateLimitError reports a primary or secondary rate-limit rejection. Reset is
+// when GitHub says the caller may try again, so a long-running poller can
+// sleep instead of failing.
+type RateLimitError struct {
+	Status string
+	Reset  time.Time
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("github rate limit (%s), retry after %s", e.Status, e.Reset.Format(time.RFC3339))
+}
+
+// asRateLimit returns a *RateLimitError when resp is a rate-limit rejection,
+// nil otherwise. Unlike rateLimitError (search), the caller gets the reset
+// time to sleep on. A 403 with quota left is a permission failure, not a limit.
+func asRateLimit(resp *http.Response, now time.Time) *RateLimitError {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return nil
+	}
+	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+		return &RateLimitError{Status: resp.Status, Reset: now.Add(time.Duration(secs) * time.Second)}
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		reset := now.Add(time.Minute)
+		if unix, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+			reset = time.Unix(unix, 0)
+		}
+		return &RateLimitError{Status: resp.Status, Reset: reset}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &RateLimitError{Status: resp.Status, Reset: now.Add(time.Minute)}
+	}
+	return nil
+}
+
+// PushedRepoPoller lists one owner's repositories newest-push-first, one
+// page per Poll. It remembers which endpoint answered and that endpoint's
+// ETag, so a steady-state poll is a single conditional request.
+type PushedRepoPoller struct {
+	Client *Client
+	Owner  string
+	Limit  int
+
+	path string
+	etag string
+	last []Repo
+}
+
+// Poll returns the newest-pushed repositories. changed is false when GitHub
+// answered 304 and repos is the previous result.
+func (p *PushedRepoPoller) Poll(ctx context.Context) (repos []Repo, changed bool, err error) {
+	if p.path == "" {
+		if err := p.resolvePath(ctx); err != nil {
+			return nil, false, err
+		}
+	}
+	resp, err := p.Client.getConditional(ctx, p.path, p.etag)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return p.last, false, nil
+	}
+	if rl := asRateLimit(resp, time.Now()); rl != nil {
+		return nil, false, rl
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, false, fmt.Errorf("github repo list returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	repos, err = decodeRepoList(resp.Body)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.HasPrefix(p.path, "/user/repos") {
+		repos = filterByOwner(repos, p.Owner)
+	}
+	p.etag = resp.Header.Get("ETag")
+	p.last = repos
+	return repos, true, nil
+}
+
+// resolvePath picks the endpoint once, with the same org → own account →
+// public user fallback as ListRepos.
+func (p *PushedRepoPoller) resolvePath(ctx context.Context) error {
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	query := fmt.Sprintf("sort=pushed&direction=desc&per_page=%d", limit)
+	orgPath := fmt.Sprintf("/orgs/%s/repos?type=all&%s", url.PathEscape(p.Owner), query)
+	resp, err := p.Client.get(ctx, orgPath)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		p.path = orgPath
+		return nil
+	}
+	if login := p.Client.authenticatedLogin(ctx); login != "" && strings.EqualFold(login, p.Owner) {
+		p.path = "/user/repos?affiliation=owner&" + query
+		return nil
+	}
+	p.path = fmt.Sprintf("/users/%s/repos?%s", url.PathEscape(p.Owner), query)
+	return nil
 }

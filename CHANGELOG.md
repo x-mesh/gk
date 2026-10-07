@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk actions watch --org <name>` streams GitHub Actions runs across every repository of an organization or user account. It finds pushes from each repository's `pushed_at` and reports `ci-expecting`, `ci-start`, `ci-end` (with the conclusion), or `ci-none` when no run starts within 90 seconds. Steady-state polls are conditional requests, so a quiet organization costs almost no rate limit. `--json` (or `GK_AGENT`) emits NDJSON, `--workflow` filters by name, and a rate-limit rejection pauses the stream until GitHub's reset time. Scheduled or manually dispatched runs without a push are not reported.
+- `gk watch` shows the GitHub Actions state of each worktree branch's remote tip when `GH_TOKEN` or `GITHUB_TOKEN` is set: `◌` while runs wait or run, `✓` when they pass, `✗` when one fails, with each workflow and the failed run's URL in the cursor panel. The tip is read from the remote-tracking reflog, so a push from any tool and a fetch of a commit pushed elsewhere both count, and runs are matched by that exact SHA. Tips that moved within 24 hours of the watch start are tracked. GitHub is polled in the background, never from a dashboard poll. `--json` adds a `ci` object per pushed branch, `--events` adds `ci-expecting`, `ci-start`, `ci-end` and `ci-none`, and `fleet.notify` takes a `ci_failed` key.
+
+### Fixed
+
+- `gk actions watch` no longer stops with "N Actions runs match … pass --workflow or --run" when one commit has several runs, such as the same workflow for push and pull_request. It waits for all of them and exits non-zero when any fails. A `skipped` or `neutral` run is not a failure. `--json` adds a `runs` list and keeps `run` when exactly one run matches.
+
 ## [0.147.1] - 2026-10-06
 
 ### Added

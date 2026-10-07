@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Under a CJK locale (`LANG=ko_KR.UTF-8` and similar), tables, truncation and the tool line no longer drift by a cell per `…`, `▸`, `→` or `◌`. gk counted these East Asian ambiguous runes as two cells while lipgloss and common terminals draw them as one; they are now one cell. Set `RUNEWIDTH_EASTASIAN=1` if your terminal draws them wide.
 - `gk worktree init` refuses a `link` or `copy` path that leaves the worktree (such as `../../etc/passwd`). A re-run re-points a link only when it dangles, so a symlink you placed is never replaced, and it completes a directory copy that an earlier run interrupted. `copy` of a symlinked source copies the real content, and each file copy is atomic, so a crash never leaves a truncated file.
 
 ## [0.148.0] - 2026-10-07

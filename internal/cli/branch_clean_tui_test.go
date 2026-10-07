@@ -163,7 +163,7 @@ func TestFormatCandidateLabel_WorktreeMarker(t *testing.T) {
 	}
 }
 
-func TestFormatCandidateLabel_Today(t *testing.T) {
+func TestFormatCandidateLabel_Now(t *testing.T) {
 	c := branchclean.CleanCandidate{
 		BranchEntry: branchclean.BranchEntry{
 			Name:           "hotfix/urgent",
@@ -173,8 +173,8 @@ func TestFormatCandidateLabel_Today(t *testing.T) {
 	}
 	label := FormatCandidateLabel(c)
 
-	if !strings.Contains(label, "(today)") {
-		t.Errorf("expected 'today' in label: %s", label)
+	if !strings.Contains(label, "(now)") {
+		t.Errorf("expected 'now' in label: %s", label)
 	}
 }
 
@@ -199,11 +199,16 @@ func TestRelativeTime(t *testing.T) {
 		duration time.Duration
 		want     string
 	}{
-		{"today", 6 * time.Hour, "today"},
+		{"now", 30 * time.Second, "now"},
+		{"negative", -time.Minute, "now"},
+		{"5 minutes", 5 * time.Minute, "5m ago"},
+		{"59 minutes", 59*time.Minute + 59*time.Second, "59m ago"},
+		{"6 hours", 6 * time.Hour, "6h ago"},
+		{"23 hours", 23 * time.Hour, "23h ago"},
 		{"1 day", 36 * time.Hour, "1d ago"},
 		{"5 days", 5 * 24 * time.Hour, "5d ago"},
 		{"2 weeks", 14 * 24 * time.Hour, "2w ago"},
-		{"3 months", 90 * 24 * time.Hour, "3m ago"},
+		{"3 months", 90 * 24 * time.Hour, "3mo ago"},
 		{"1 year", 400 * 24 * time.Hour, "1y ago"},
 	}
 	for _, tt := range tests {

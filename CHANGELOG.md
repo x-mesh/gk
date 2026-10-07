@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk config set` without a key opens a picker of the settable keys with their current value and source. Type to filter, then enter the value in a prompt that holds the current one. `gk config set <key>` opens only the prompt. Shell completion offers the same keys for the first argument. Outside a terminal, both arguments are still required.
+
 ### Fixed
 
 - `gk pr` and `gk issue` use `github.owner` from the config as `--org` when the directory has no remote. Before, they stopped with "no origin remote to read" even when `github.owner` was set. Inside a repository with a remote, they still list that repository.

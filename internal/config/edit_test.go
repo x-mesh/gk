@@ -298,3 +298,24 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestSettableKeys(t *testing.T) {
+	keys := SettableKeys()
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if !ValidKey(k) {
+			t.Errorf("SettableKeys returned %q, which ValidKey rejects", k)
+		}
+		seen[k] = true
+	}
+	for _, want := range []string{"github.owner", "ai.commit.model", "log.limit"} {
+		if !seen[want] {
+			t.Errorf("SettableKeys missing %q", want)
+		}
+	}
+	for _, list := range []string{"log.vis", "branch.protected"} {
+		if seen[list] {
+			t.Errorf("SettableKeys includes list key %q, which plain set rejects", list)
+		}
+	}
+}

@@ -4568,6 +4568,48 @@ gk hooks uninstall --pre-commit
 
 ---
 
+## gk actions watch
+
+Wait for GitHub Actions runs without the `gh` binary. gk reads only `GH_TOKEN` or `GITHUB_TOKEN`. It does not read the `gh` configuration.
+
+### Synopsis
+
+```
+gk actions watch [--repo owner/repo] [--sha <sha> | --run <id>] [--workflow <name>] [--interval <duration>]
+gk actions watch --org <name> [--workflow <name>] [--interval <duration>]
+```
+
+Without options, gk resolves the current GitHub remote and `HEAD`. If several runs match the commit, gk waits for all of them. One push can start several workflows, or the same workflow for `push` and `pull_request`. The command fails if a run fails. A `skipped` or `neutral` run is not a failure. To watch fewer runs, use `--workflow` or `--run`.
+
+With `--org`, gk streams every repository of an organization or user account. gk finds pushes from the `pushed_at` value of each repository. Each push reports `ci-expecting`, then `ci-start` and `ci-end` for each workflow run. If no run starts within 90 seconds, gk reports `ci-none`. The stream runs until you stop it and exits 0. A failed run is an event, not an exit code. If GitHub rejects a request for the rate limit, the stream pauses until the reset time. gk does not report scheduled or manually dispatched runs that have no push.
+
+### Flags
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--repo` | current remote | GitHub repository as `owner/repo` |
+| `--sha` | `HEAD` | commit SHA |
+| `--run` | — | GitHub Actions run ID |
+| `--workflow` | — | exact workflow display name |
+| `--org` | — | stream Actions runs across every repository of this organization or user |
+| `--interval` | `3s` | poll interval |
+
+`--org` cannot be used with `--repo`, `--sha` or `--run`.
+
+### Output
+
+`--json` prints `{"repo", "runs": [...]}` for a single watch, and `run` too when exactly one run matches. With `--org`, `--json` (or `GK_AGENT=1`) prints one NDJSON event for each line. Under `GK_AGENT=1`, a `{"schema":1,"state":"streaming"}` header frame comes first.
+
+### Examples
+
+```bash
+gk actions watch                          # runs for HEAD on the current remote
+gk actions watch --sha 62921bc            # runs for a specific commit
+GH_TOKEN=... gk actions watch --org x-mesh --json
+```
+
+---
+
 ## gk follow
 
 Foreground watcher that polls a **remote** branch and, each time it advances,

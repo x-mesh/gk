@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk actions watch` no longer stops with "N Actions runs match … pass --workflow or --run" when one commit has several runs, such as the same workflow for push and pull_request. It waits for all of them and exits non-zero when any fails. A `skipped` or `neutral` run is not a failure. `--json` adds a `runs` list and keeps `run` when exactly one run matches.
+- Relative ages in `gk pr`, `gk branch clean` and `gk stash` show `now`, `Nm ago` and `Nh ago` within a day instead of `today`. Months are now `mo` (`3mo ago`), so `m` always means minutes, as in `gk undo` and `gk switch`.
 
 ## [0.147.1] - 2026-10-06
 

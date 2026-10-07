@@ -200,7 +200,7 @@ gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 | `gk worktree` (no sub) | `gk wt` | Interactive TUI — list (with `HASH` + `AGE` columns), add, remove, and cd into worktrees. `cd` spawns a `$SHELL` in the target dir (`exit` returns). `--print-path` flips to the `gwt() { cd "$(gk wt --print-path)"; }` alias pattern. Narrow terminals drop the lowest-priority columns whole (HASH first), keeping BRANCH and AGE longest. |
 | `gk worktree add <name>` | | Relative names resolve under `<worktree.base>/<worktree.project>/<name>` (default `~/.gk/worktree/<repo>/<name>`); absolute paths passthrough. Orphan-branch collisions surface an inline reuse/delete/cancel prompt. After creating, offers to bootstrap the worktree (`--init`/`--no-init` skip the prompt). |
 | `gk worktree acquire <branch>` | | Agent setup path: create or reuse a managed worktree for `<branch>`, run `worktree.init` by default, and return the ready path (`--json` gives `{path, branch, created, reused, init}`). |
-| `gk worktree init [path]` | | Reconstitute a worktree's gitignored state from `worktree.init` in `.gk.yaml`: `link` (symlink secrets like `.env`), `copy` (per-worktree files), `run` (`npm ci`, `uv sync`). Idempotent, so it doubles as a setup-retry. With no config, detects package manifests — at the root, or in nested monorepo projects (`frontend/`, `backend/`) when the root has none — and proposes a block (`--save` to persist, `--dry-run` to preview). |
+| `gk worktree init [path]` | | Reconstitute a worktree's gitignored state from `worktree.init` in `.gk.yaml`: `link` (symlink secrets like `.env`), `copy` (per-worktree files), `run` (`npm ci`, `uv sync`). Idempotent, so it doubles as a setup-retry. A `link`/`copy` path that leaves the worktree is refused, and a symlink you placed is never replaced. With no config, detects package manifests — at the root, or in nested monorepo projects (`frontend/`, `backend/`) when the root has none — and proposes a block (`--save` to persist, `--dry-run` to preview). |
 | `gk worktree list` | | Table or `--json` listing parsed from `git worktree list --porcelain` |
 | `gk worktree remove <path>` | | Removes worktree; dirty gets a force prompt. A locked worktree is gated on whether its lock holder is still running: a stale lock (dead pid) unlocks+removes under `--force`; a live one is refused and needs `--force-locked` to override. Stale admin entries auto-prune |
 | `gk worktree rename <wt> <new>` | `gk wt mv` | Moves a linked worktree to a new managed name/path (`git worktree move`); `--with-branch` also renames the branch (`git branch -m`, carrying upstream + `gk-parent`). Matches the target by managed name, path, or branch. Same lock gating as `remove`; the main worktree is refused. `--dry-run`/`--json`/`--print-path` supported |
@@ -493,6 +493,12 @@ Flags: `--from`, `--to`, `--format` (markdown|json), `--dry-run`, `--provider`
 | `GK_LANG` | `ko` | Message catalog language (BCP-47 short code; `en` and `ko` shipped) |
 | `GK_EMOJI` | `true` | Prefix status sections with emoji (`📋` / `❌` / `💡`) |
 | `GK_HINTS` | `verbose` | Hint verbosity: `verbose` / `minimal` / `off` |
+
+### Terminal width env var
+
+| Var | Default | Description |
+|---|---|---|
+| `RUNEWIDTH_EASTASIAN` | unset | gk sizes East Asian ambiguous characters (`…`, `▸`, `→`, `◌`) as one cell, even under a CJK locale. Set `1` if your terminal draws them as two cells |
 
 ## Configuration
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk actions watch` uses `github.owner` from the config as `--org` when the directory has no remote and `--repo`, `--sha` and `--run` are not set. Before, it stopped with "no origin remote to read". Inside a repository with a remote, it still watches that repository.
+
 ## [0.148.0] - 2026-10-07
 
 ### Added

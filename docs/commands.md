@@ -4591,10 +4591,16 @@ With `--org`, gk streams every repository of an organization or user account. gk
 | `--sha` | `HEAD` | commit SHA |
 | `--run` | — | GitHub Actions run ID |
 | `--workflow` | — | exact workflow display name |
-| `--org` | — | stream Actions runs across every repository of this organization or user |
+| `--org` | `github.owner` if no remote | stream Actions runs across every repository of this organization or user |
 | `--interval` | `3s` | poll interval |
 
 `--org` cannot be used with `--repo`, `--sha` or `--run`.
+
+If the directory has no remote, `github.owner` from the config is the default for `--org`. This rule applies only when `--repo`, `--sha` and `--run` are not set. Inside a repository with a remote, gk watches that repository.
+
+```bash
+gk config set github.owner x-mesh
+```
 
 ### Output
 

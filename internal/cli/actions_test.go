@@ -61,6 +61,36 @@ func TestResolveActionsTargetUsesRemoteAndHEAD(t *testing.T) {
 	}
 }
 
+func TestActionsOrgFallbackUsesOwnerOnlyWithoutRemote(t *testing.T) {
+	noRemote := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {ExitCode: 2, Stderr: "error: No such remote 'origin'"},
+	}}
+	withRemote := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"remote get-url origin": {Stdout: "git@github.com:x-mesh/gk.git\n"},
+	}}
+	owned := config.Config{GitHub: config.GitHubConfig{Owner: "x-mesh"}}
+	cases := []struct {
+		name   string
+		cfg    config.Config
+		runner git.Runner
+		opts   actionsWatchOptions
+		want   string
+	}{
+		{"no remote", owned, noRemote, actionsWatchOptions{}, "x-mesh"},
+		{"workflow kept", owned, noRemote, actionsWatchOptions{workflow: "CI"}, "x-mesh"},
+		{"remote wins", owned, withRemote, actionsWatchOptions{}, ""},
+		{"owner unset", config.Config{}, noRemote, actionsWatchOptions{}, ""},
+		{"repo flag", owned, noRemote, actionsWatchOptions{repo: "x-mesh/gk"}, ""},
+		{"sha flag", owned, noRemote, actionsWatchOptions{sha: "abc"}, ""},
+		{"run flag", owned, noRemote, actionsWatchOptions{run: 7}, ""},
+	}
+	for _, tc := range cases {
+		if got := actionsOrgFallback(context.Background(), tc.cfg, tc.runner, tc.opts); got != tc.want {
+			t.Errorf("%s: actionsOrgFallback = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // One push can start the same workflow twice (push and pull_request), so
 // several matches are watched together instead of rejected.
 func TestWatchActionsRunsWaitsForEveryMatch(t *testing.T) {

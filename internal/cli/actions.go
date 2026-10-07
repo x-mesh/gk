@@ -38,8 +38,9 @@ func init() {
 		Short: "Wait for a GitHub Actions run for the current commit",
 		Long: "Waits for a GitHub Actions run without invoking gh.\n\n" +
 			"Without options, it resolves the current GitHub remote and HEAD. Set GH_TOKEN or GITHUB_TOKEN. " +
-			"gk does not read gh configuration for this command. If more than one workflow run matches, " +
-			"select one with --workflow or --run.\n\n" +
+			"gk does not read gh configuration for this command. When several runs match the commit " +
+			"(one push can start several workflows, or the same workflow for push and pull_request), " +
+			"it waits for all of them and fails if any fails; narrow with --workflow or --run.\n\n" +
 			"With --org it instead streams every repository of an organization (or user account): " +
 			"repositories are discovered by their newest push, and each push reports ci-expecting, " +
 			"ci-start and ci-end per workflow run, or ci-none when no run starts. It runs until " +
@@ -84,11 +85,11 @@ func runActionsWatch(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	run, err := watchActionsRun(cmdCtx(cmd), &ghapi.Client{Token: token}, owner, repo, sha, opts, waitActionsInterval)
+	runs, err := watchActionsRuns(cmdCtx(cmd), &ghapi.Client{Token: token}, owner, repo, sha, opts, waitActionsInterval)
 	if err != nil {
 		return err
 	}
-	return emitActionsRun(cmd, owner, repo, run)
+	return emitActionsRuns(cmd, owner, repo, runs)
 }
 
 // actionsToken deliberately accepts only explicit environment variables. This
@@ -177,50 +178,78 @@ func waitActionsInterval(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-func watchActionsRun(ctx context.Context, client actionsClient, owner, repo, sha string, opts actionsWatchOptions, wait func(context.Context, time.Duration) error) (ghapi.WorkflowRun, error) {
-	var run ghapi.WorkflowRun
+// watchActionsRuns waits until every matching run completes. Runs that
+// appear after the first listing are not picked up: the set is what GitHub
+// had started for the commit when the watch began.
+func watchActionsRuns(ctx context.Context, client actionsClient, owner, repo, sha string, opts actionsWatchOptions, wait func(context.Context, time.Duration) error) ([]ghapi.WorkflowRun, error) {
+	var runs []ghapi.WorkflowRun
 	if opts.run > 0 {
 		selected, err := client.GetWorkflowRun(ctx, owner, repo, opts.run)
 		if err != nil {
-			return run, err
+			return nil, err
 		}
-		run = selected
+		runs = []ghapi.WorkflowRun{selected}
 	} else {
-		runs, err := client.ListWorkflowRuns(ctx, owner, repo, sha, opts.workflow)
+		listed, err := client.ListWorkflowRuns(ctx, owner, repo, sha, opts.workflow)
 		if err != nil {
-			return run, err
+			return nil, err
 		}
-		if len(runs) == 0 {
+		if len(listed) == 0 {
 			if opts.workflow != "" {
-				return run, fmt.Errorf("no Actions run for %s at %s with workflow %q", owner+"/"+repo, sha, opts.workflow)
+				return nil, fmt.Errorf("no Actions run for %s at %s with workflow %q", owner+"/"+repo, sha, opts.workflow)
 			}
-			return run, fmt.Errorf("no Actions run for %s at %s", owner+"/"+repo, sha)
+			return nil, fmt.Errorf("no Actions run for %s at %s", owner+"/"+repo, sha)
 		}
-		if len(runs) > 1 {
-			return run, fmt.Errorf("%d Actions runs match %s at %s; pass --workflow or --run", len(runs), owner+"/"+repo, sha)
-		}
-		run = runs[0]
+		runs = listed
 	}
-	for run.Status != "completed" {
+	for actionsRunsPending(runs) {
 		if err := wait(ctx, opts.interval); err != nil {
-			return run, err
+			return runs, err
 		}
-		updated, err := client.GetWorkflowRun(ctx, owner, repo, run.ID)
-		if err != nil {
-			return run, err
+		for i := range runs {
+			if runs[i].Status == "completed" {
+				continue
+			}
+			updated, err := client.GetWorkflowRun(ctx, owner, repo, runs[i].ID)
+			if err != nil {
+				return runs, err
+			}
+			runs[i] = updated
 		}
-		run = updated
 	}
-	if run.Conclusion != "success" {
-		return run, fmt.Errorf("GitHub Actions run %d finished with %q: %s", run.ID, run.Conclusion, run.HTMLURL)
+	var failed []string
+	for _, run := range runs {
+		if ciRunFailed(run.Conclusion) {
+			failed = append(failed, fmt.Sprintf("%s (run %d) finished with %q: %s", run.Name, run.ID, run.Conclusion, run.HTMLURL))
+		}
 	}
-	return run, nil
+	if len(failed) > 0 {
+		return runs, fmt.Errorf("%d of %d GitHub Actions runs failed: %s", len(failed), len(runs), strings.Join(failed, "; "))
+	}
+	return runs, nil
 }
 
-func emitActionsRun(cmd *cobra.Command, owner, repo string, run ghapi.WorkflowRun) error {
-	if JSONOut() {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"repo": owner + "/" + repo, "run": run})
+func actionsRunsPending(runs []ghapi.WorkflowRun) bool {
+	for _, run := range runs {
+		if run.Status != "completed" {
+			return true
+		}
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Actions run succeeded: %s\n%s\n", run.Name, run.HTMLURL)
+	return false
+}
+
+// emitActionsRuns keeps "run" for a single match so existing --json readers
+// still work; "runs" always lists every watched run.
+func emitActionsRuns(cmd *cobra.Command, owner, repo string, runs []ghapi.WorkflowRun) error {
+	if JSONOut() {
+		out := map[string]any{"repo": owner + "/" + repo, "runs": runs}
+		if len(runs) == 1 {
+			out["run"] = runs[0]
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
+	}
+	for _, run := range runs {
+		fmt.Fprintf(cmd.OutOrStdout(), "Actions run %s: %s\n%s\n", run.Name, run.Conclusion, run.HTMLURL)
+	}
 	return nil
 }

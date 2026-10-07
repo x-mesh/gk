@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Under a CJK locale (`LANG=ko_KR.UTF-8` and similar), tables, truncation and the tool line no longer drift by a cell per `…`, `▸`, `→` or `◌`. gk counted these East Asian ambiguous runes as two cells while lipgloss and common terminals draw them as one; they are now one cell. Set `RUNEWIDTH_EASTASIAN=1` if your terminal draws them wide.
+
 ## [0.148.0] - 2026-10-07
 
 ### Added

@@ -8,9 +8,10 @@ func init() {
 		Short: "List open issues (current repo, --org, or --mine)",
 		Long: `Lists open issues via the GitHub search API.
 
-No flag lists the current repo's issues (owner/repo from origin). --org
-lists a whole org/account's issues in one query; --mine restricts to issues
-you opened. --state open|closed|all and --json are supported.
+No flag lists the current repo's issues (owner/repo from origin). Outside
+a repository with a remote, github.owner from the config acts as --org.
+--org lists a whole org/account's issues in one query; --mine restricts to
+issues you opened. --state open|closed|all and --json are supported.
 
 Auth comes from GH_TOKEN / GITHUB_TOKEN / a prior 'gh auth login'. Without
 a token only public results show, under a lower rate limit.`,

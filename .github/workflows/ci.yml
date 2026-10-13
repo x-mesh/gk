@@ -28,10 +28,11 @@ jobs:
           go-version: '1.25'
       # Pinned on purpose: `latest` moved v2.12.2 -> v2.13.1 mid-release, and the
       # newer binary embeds go1.27's gofmt, which aligns map literals differently.
-      # Bump this deliberately and reformat with the matching Go release.
+      # Bump this deliberately and reformat with the matching Go release, and keep
+      # it equal to tools/go.mod, which `make lint` and the ship preflight run.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.1
+          version: v2.14.0
   e2e:
     runs-on: ubuntu-latest
     steps:

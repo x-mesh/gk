@@ -2338,14 +2338,32 @@ func TestWorktreeColumnPriority(t *testing.T) {
 
 // TestResolveSubshell pins the shell gk wt launches when $SHELL is unset:
 // bash fills SHELL without exporting it, so the passwd login shell must win
-// over /bin/sh.
+// over /bin/sh, but only when exec can start it.
 func TestResolveSubshell(t *testing.T) {
+	dir := t.TempDir()
+	// The relative case names a file that exists from the working directory,
+	// so only the absolute-path check can reject it.
+	t.Chdir(dir)
+	bash := filepath.Join(dir, "bash")
+	zsh := filepath.Join(dir, "zsh")
+	plain := filepath.Join(dir, "plain")
+	for path, mode := range map[string]os.FileMode{bash: 0o755, zsh: 0o755, plain: 0o644} {
+		if err := os.WriteFile(path, nil, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
 	passwd := strings.Join([]string{
 		"# comment",
 		"broken:line",
-		"root:x:0:0:root:/root:/bin/bash",
+		"root:x:0:0:root:/root:" + bash,
 		"nosh:x:7:7::/home/nosh:",
-		"dev:x:1000:1000:Dev,,,:/home/dev:/usr/bin/zsh",
+		"dev:x:1000:1000:Dev,,,:/home/dev:" + zsh,
+		"gone:x:1001:1001::/home/gone:" + filepath.Join(dir, "missing"),
+		"noexec:x:1002:1002::/home/noexec:" + plain,
+		"dir:x:1003:1003::/home/dir:" + dir,
+		"rel:x:1004:1004::/home/rel:bash",
+		"dup1:x:1005:1005::/home/dup1:" + plain,
+		"dup2:x:1005:1005::/home/dup2:" + zsh,
 	}, "\n")
 	cases := []struct {
 		name     string
@@ -2354,10 +2372,15 @@ func TestResolveSubshell(t *testing.T) {
 		want     string
 	}{
 		{"env wins", "/usr/bin/fish", 0, "/usr/bin/fish"},
-		{"passwd when env empty", "", 0, "/bin/bash"},
-		{"uid matched exactly", "", 1000, "/usr/bin/zsh"},
+		{"passwd when env empty", "", 0, bash},
+		{"uid matched exactly", "", 1000, zsh},
 		{"empty shell field", "", 7, "/bin/sh"},
 		{"no entry", "", 4242, "/bin/sh"},
+		{"missing shell", "", 1001, "/bin/sh"},
+		{"shell not executable", "", 1002, "/bin/sh"},
+		{"shell is a directory", "", 1003, "/bin/sh"},
+		{"relative shell", "", 1004, "/bin/sh"},
+		{"first entry for uid decides, like getpwuid", "", 1005, "/bin/sh"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

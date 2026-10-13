@@ -37,8 +37,11 @@ func init() {
 
 With no subcommand, gk opens an interactive TUI for listing, adding,
 removing, and entering worktrees. Picking a worktree spawns a new
-$SHELL in its directory — type 'exit' to return to the original shell.
-Press d to remove the worktree under the cursor.
+$SHELL in its directory. Inside it, gk wt moves to another worktree
+without nesting a shell, its [←] back row returns to the original
+shell, and typing 'exit' returns as well (bash, zsh and fish; other
+shells nest and return on exit). Press d to remove the worktree under
+the cursor.
 
 If you prefer the cd-in-place pattern, pass --print-path and wrap in
 a shell alias so the chosen path applies to the parent shell:
@@ -1675,6 +1678,10 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			// global mode hides [+] add — adds belong to the current
 			// repo and would surprise the user when scrolling other
 			// projects' worktrees.
+			if back, ok := worktreeBackRow(faint); ok {
+				back.Cells = []string{"", back.Cells[0], "", ""}
+				items = append(items, back)
+			}
 			items = append(items, ui.PickerItem{
 				Display: faint("[q] quit"),
 				Cells:   []string{"", "[q] quit", "", ""},
@@ -1696,18 +1703,19 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				Key: e.Path,
 			})
 		}
-		items = append(items,
-			ui.PickerItem{
-				Display: faint("[+] add new worktree"),
-				Cells:   []string{"[+] add new worktree", "", "", ""},
-				Key:     keyAddNew,
-			},
-			ui.PickerItem{
-				Display: faint("[q] quit"),
-				Cells:   []string{"[q] quit", "", "", ""},
-				Key:     keyQuit,
-			},
-		)
+		items = append(items, ui.PickerItem{
+			Display: faint("[+] add new worktree"),
+			Cells:   []string{"[+] add new worktree", "", "", ""},
+			Key:     keyAddNew,
+		})
+		if back, ok := worktreeBackRow(faint); ok {
+			items = append(items, back)
+		}
+		items = append(items, ui.PickerItem{
+			Display: faint("[q] quit"),
+			Cells:   []string{"[q] quit", "", "", ""},
+			Key:     keyQuit,
+		})
 		return items, headers
 	}
 
@@ -1770,6 +1778,11 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 
 		switch picked.Key {
 		case keyQuit:
+			return nil
+		case worktreeKeyBack:
+			// The gk function ends this subshell once the control file
+			// holds the marker; the gk that owns it returns to the parent.
+			writeSubshellCtl(ctlBack)
 			return nil
 		case keyAddNew:
 			if err := worktreeTUIAdd(ctx, runner, cfg); err != nil {
@@ -2135,10 +2148,19 @@ func worktreeRowPartsPlain(e WorktreeEntry) (branch, flags string) {
 // still at its original cwd — this is the standard "tool shell" pattern
 // used by nix-shell, poetry shell, etc.
 //
+// Under bash, zsh and fish the shell starts with the hop bootstrap (see
+// worktree_subshell.go), so gk run inside it replaces the shell instead
+// of nesting one: this loop runs one shell per hop until the user leaves.
+//
 // We expose the original PWD via GK_WT_PARENT_PWD so an advanced user
 // can `cd "$GK_WT_PARENT_PWD"` from within the subshell if they want
 // to peek back at the outer tree without exiting.
 func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
+	// Inside a bootstrapped subshell the gk that owns the shell takes over:
+	// hand it the target and let the gk function end this shell.
+	if writeSubshellCtl(path) {
+		return nil
+	}
 	var passwd io.Reader = strings.NewReader("")
 	if f, err := os.Open("/etc/passwd"); err == nil {
 		defer f.Close()
@@ -2146,11 +2168,20 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 	}
 	sh := resolveSubshell(os.Getenv("SHELL"), passwd, os.Getuid())
 	origPWD, _ := os.Getwd()
+	for {
+		next, err := runWorktreeSubshell(cmd.ErrOrStderr(), sh, path, origPWD)
+		if err != nil || next == "" {
+			return err
+		}
+		path = next
+	}
+}
 
+// runWorktreeSubshell runs one subshell in path and blocks until it exits.
+// It returns the next worktree to enter, or "" when the user is done.
+func runWorktreeSubshell(stderr io.Writer, sh, path, origPWD string) (string, error) {
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s %s  %s\n",
-		bold("▸ entered"), path, faint("(type `exit` to return)"))
 
 	sub := exec.Command(sh)
 	sub.Dir = path
@@ -2158,20 +2189,48 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 	sub.Stdout = os.Stdout
 	sub.Stderr = os.Stderr
 	sub.Env = append(os.Environ(),
-		"GK_WT_PARENT_PWD="+origPWD,
+		envWTParent+"="+origPWD,
 		"GK_WT="+path,
+		// Only the gk function sets this, per call; a value inherited from
+		// the caller must not mark every gk in the new shell.
+		envWTFn+"=",
 	)
+	hint := "(type `exit` to return)"
+
+	// The bootstrap is best effort: when it cannot be written the shell
+	// starts plain, as before, and gk inside it nests.
+	ctl := ""
+	if fam := subshellFamilyOf(sh); fam != shellOther {
+		if dir, err := os.MkdirTemp("", "gk-wt-"); err == nil {
+			defer func() { _ = os.RemoveAll(dir) }()
+			if boot, err := prepareSubshellBootstrap(dir, fam); err == nil {
+				ctl = filepath.Join(dir, "ctl")
+				sub.Args = append(sub.Args, boot.Args...)
+				sub.Env = append(sub.Env, boot.Env...)
+				sub.Env = append(sub.Env, envWTCtl+"="+ctl)
+				hint = "(gk wt moves or goes back · exit returns)"
+			}
+		}
+	}
+	fmt.Fprintf(stderr, "%s %s  %s\n", bold("▸ entered"), path, faint(hint))
+
 	// A non-zero exit from the user's shell (Ctrl+D after a failing
 	// last command, e.g.) is not our failure. Swallow *ExitError so gk
 	// returns 0 when the subshell closes cleanly from the user's POV.
 	if err := sub.Run(); err != nil {
 		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return nil
+		if !errors.As(err, &ee) {
+			return "", fmt.Errorf("enter subshell: %w", err)
 		}
-		return fmt.Errorf("enter subshell: %w", err)
 	}
-	return nil
+	if ctl == "" {
+		return "", nil
+	}
+	content, _ := os.ReadFile(ctl)
+	if action, target := parseSubshellCtl(string(content)); action == ctlHop {
+		return target, nil
+	}
+	return "", nil
 }
 
 // resolveSubshell picks $SHELL, then the passwd login shell for uid, then

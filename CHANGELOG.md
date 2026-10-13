@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - In the `gk wt` picker, enter opens the subshell in the selected worktree at once. Before, it opened a second menu with cd, remove and cancel. Press `d` (`ctrl+d` while you type a filter) to remove the worktree under the cursor, with the same confirmation prompts as before. `d` on the main worktree stops with "cannot remove the main worktree" before the prompt, in `gk wt` and in the `gk switch` picker. Enter on a worktree whose directory is gone keeps the picker open and tells you to press `d`. Enter on the worktree you are in prints `already in <path>` and exits instead of opening a nested subshell. With `--print-path`, enter prints the path at once.
+- Inside the subshell that `gk wt` or `gk switch` opens, `gk wt` moves to another worktree by replacing the shell instead of nesting one, and the picker's `[←] back to <dir>` row returns to the shell you started from. `exit` still returns. gk sets this up by starting bash, zsh or fish with a `gk` shell function defined after your own startup files; an alias named `gk` is replaced inside the subshell. Other shells behave as before.
 
 ## [0.150.1] - 2026-10-13
 

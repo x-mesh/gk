@@ -172,7 +172,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 
 | 명령어 | 별칭 | 설명 |
 |---|---|---|
-| `gk worktree` (no sub) | `gk wt` | 인터랙티브 TUI — 목록/추가/삭제/진입. Enter를 누르면 대상 디렉토리에서 `$SHELL` 서브셸을 열고(`exit`로 복귀), `d`는 커서가 있는 worktree를 삭제하며, `--print-path`면 alias 패턴용으로 경로만 stdout 출력 |
+| `gk worktree` (no sub) | `gk wt` | 인터랙티브 TUI — 목록/추가/삭제/진입. Enter를 누르면 대상 디렉토리에서 `$SHELL` 서브셸을 열고(`exit`나 선택 화면의 `[←] back` 행으로 복귀, 서브셸 안의 `gk wt`는 중첩 없이 이동), `d`는 커서가 있는 worktree를 삭제하며, `--print-path`면 alias 패턴용으로 경로만 stdout 출력 |
 | `gk worktree add <name>` | | 상대 경로는 `<worktree.base>/<worktree.project>/<name>`(기본 `~/.gk/worktree/<repo>/<name>`)에 배치, 절대 경로는 그대로 사용. 고아 브랜치 충돌 시 인라인 재사용/삭제/취소 선택. 생성 후 worktree 초기화 여부를 물음(`--init`/`--no-init`로 프롬프트 생략) |
 | `gk worktree init [path]` | | `.gk.yaml`의 `worktree.init`로 worktree의 gitignore된 상태 복원: `link`(`.env` 등 시크릿 symlink), `copy`(worktree별 파일), `run`(`npm ci`, `uv sync`). 멱등이라 셋업 재시도로도 사용. 설정이 없으면 패키지 매니페스트를 감지(루트, 또는 루트에 없으면 `frontend/`·`backend/` 같은 중첩 모노레포 프로젝트)해 블록을 제안(`--save`로 저장, `--dry-run`으로 미리보기) |
 | `gk worktree list` | | `git worktree list --porcelain` 파싱 결과를 테이블 또는 `--json`으로 |

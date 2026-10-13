@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -2148,7 +2149,7 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 	}
 }
 
-// enterWorktreeSubshell launches $SHELL inside the worktree path and
+// enterWorktreeSubshell launches the user's shell inside the worktree path and
 // blocks until the user exits it. stdin/stdout/stderr are inherited so
 // the subshell is fully interactive. On exit the caller's shell is
 // still at its original cwd — this is the standard "tool shell" pattern
@@ -2158,10 +2159,12 @@ func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cob
 // can `cd "$GK_WT_PARENT_PWD"` from within the subshell if they want
 // to peek back at the outer tree without exiting.
 func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
-	sh := os.Getenv("SHELL")
-	if sh == "" {
-		sh = "/bin/sh"
+	var passwd io.Reader = strings.NewReader("")
+	if f, err := os.Open("/etc/passwd"); err == nil {
+		defer f.Close()
+		passwd = f
 	}
+	sh := resolveSubshell(os.Getenv("SHELL"), passwd, os.Getuid())
 	origPWD, _ := os.Getwd()
 
 	bold := color.New(color.Bold).SprintFunc()
@@ -2189,6 +2192,26 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 		return fmt.Errorf("enter subshell: %w", err)
 	}
 	return nil
+}
+
+// resolveSubshell picks $SHELL, then the passwd login shell for uid, then
+// /bin/sh — the order tmux uses. The passwd step matters because bash fills
+// SHELL without exporting it, so a terminal launcher that never sets SHELL
+// leaves gk with an empty value and the user's exported bash PS1 would be
+// rendered by dash.
+func resolveSubshell(shellEnv string, passwd io.Reader, uid int) string {
+	if shellEnv != "" {
+		return shellEnv
+	}
+	want := strconv.Itoa(uid)
+	sc := bufio.NewScanner(passwd)
+	for sc.Scan() {
+		f := strings.SplitN(sc.Text(), ":", 7)
+		if len(f) == 7 && f[2] == want && f[6] != "" {
+			return f[6]
+		}
+	}
+	return "/bin/sh"
 }
 
 // worktreeTUIRemove removes a worktree, handling the common failure

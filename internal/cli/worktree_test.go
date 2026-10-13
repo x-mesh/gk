@@ -2335,3 +2335,36 @@ func TestWorktreeColumnPriority(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveSubshell pins the shell gk wt launches when $SHELL is unset:
+// bash fills SHELL without exporting it, so the passwd login shell must win
+// over /bin/sh.
+func TestResolveSubshell(t *testing.T) {
+	passwd := strings.Join([]string{
+		"# comment",
+		"broken:line",
+		"root:x:0:0:root:/root:/bin/bash",
+		"nosh:x:7:7::/home/nosh:",
+		"dev:x:1000:1000:Dev,,,:/home/dev:/usr/bin/zsh",
+	}, "\n")
+	cases := []struct {
+		name     string
+		shellEnv string
+		uid      int
+		want     string
+	}{
+		{"env wins", "/usr/bin/fish", 0, "/usr/bin/fish"},
+		{"passwd when env empty", "", 0, "/bin/bash"},
+		{"uid matched exactly", "", 1000, "/usr/bin/zsh"},
+		{"empty shell field", "", 7, "/bin/sh"},
+		{"no entry", "", 4242, "/bin/sh"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveSubshell(tc.shellEnv, strings.NewReader(passwd), tc.uid)
+			if got != tc.want {
+				t.Fatalf("resolveSubshell(%q, uid=%d) = %q, want %q", tc.shellEnv, tc.uid, got, tc.want)
+			}
+		})
+	}
+}

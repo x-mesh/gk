@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk wt` and `gk switch` start your login shell from the passwd entry when `SHELL` is not set. Before, they started `/bin/sh`, so an exported bash `PS1` showed raw escape codes and `__git_ps1: not found` on every prompt. A set `SHELL` still wins.
+
 ## [0.150.0] - 2026-10-07
 
 ### Added

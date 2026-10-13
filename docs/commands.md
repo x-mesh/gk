@@ -2629,12 +2629,18 @@ Flags:
 |------|-------------|
 | `--print-path` | On **enter**, write the chosen path to stdout instead of spawning a subshell. Use this for shell-alias wrappers that need to `cd` the parent shell itself. |
 
-Shell-alias pattern (when you prefer staying in one shell):
+To stay in one shell, add the shell function from `gk shell-init` to your startup file. Then `gk wt` and `gk switch` change the directory of the shell you typed them in, and no subshell opens:
 
 ```sh
-# ~/.zshrc or ~/.bashrc
-gwt() { local p="$(gk wt --print-path)"; [ -n "$p" ] && cd "$p"; }
+# ~/.zshrc
+eval "$(gk shell-init zsh)"
+# ~/.bashrc
+eval "$(gk shell-init bash)"
+# ~/.config/fish/config.fish
+gk shell-init fish | source
 ```
+
+`cd -` returns to the previous directory. The function runs the gk binary for every `gk` command and changes directory only when a command selects a worktree. An alias with the same name takes precedence over a function, so the zsh and bash scripts remove an alias named `gk`. Use `--name` for another function name. Use `--bin` when the binary on `PATH` has a different name, for example `eval "$(git-kit shell-init zsh --name gk --bin git-kit)"`.
 
 On a non-interactive stdin/stdout (CI, piped input) the TUI falls back to printing this help instead of drawing a dead UI.
 

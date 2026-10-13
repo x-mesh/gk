@@ -43,11 +43,11 @@ shell, and typing 'exit' returns as well (bash, zsh and fish; other
 shells nest and return on exit). Press d to remove the worktree under
 the cursor.
 
-If you prefer the cd-in-place pattern, pass --print-path and wrap in
-a shell alias so the chosen path applies to the parent shell:
+To cd your own shell instead of opening a subshell, add the shell
+function from gk shell-init to your startup file:
 
-    # ~/.zshrc or ~/.bashrc
-    gwt() { local p="$(gk wt --print-path)"; [ -n "$p" ] && cd "$p"; }
+    # ~/.zshrc (bash: ~/.bashrc and "bash")
+    eval "$(gk shell-init zsh)"
 
 The TUI falls back to printing this help on non-interactive stdin/stdout.`,
 		RunE: runWorktreeTUI,
@@ -2156,6 +2156,14 @@ func worktreeRowPartsPlain(e WorktreeEntry) (branch, flags string) {
 // can `cd "$GK_WT_PARENT_PWD"` from within the subshell if they want
 // to peek back at the outer tree without exiting.
 func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
+	// Called through the gk shell-init function, the calling shell cds
+	// itself, so no subshell is needed. A write that fails opens one.
+	if f := os.Getenv(envCdFile); f != "" {
+		if err := os.WriteFile(f, []byte(path), 0o600); err == nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s %s\n", color.New(color.Bold).Sprint("▸ cd"), path)
+			return nil
+		}
+	}
 	// Inside a bootstrapped subshell the gk that owns the shell takes over:
 	// hand it the target and let the gk function end this shell.
 	if writeSubshellCtl(path) {

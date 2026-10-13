@@ -32,8 +32,9 @@ Formats:
            are produced for each --include flag entry:
 
              wt | wt:<name>   linked worktree marker
-             ↩exit            shell was opened by gk (GK_WT is set); type
-                              exit to return. Printed even outside a repo
+             ↩exit            shell was opened by gk (GK_WT is set); exit
+                              or gk wt's [←] back row returns. Printed
+                              even outside a repo
              wip              HEAD subject matches a WIP pattern
              ±N               N modified/untracked entries in the tree
              ↑N               N commits ahead of upstream

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,11 +71,22 @@ func TestParseSubshellCtl(t *testing.T) {
 
 func TestWriteSubshellCtl(t *testing.T) {
 	t.Setenv(envWTCtl, "")
+	t.Setenv(envWTFn, "1")
 	if writeSubshellCtl("/x") {
 		t.Fatal("wrote a control file without GK_WT_CTL")
 	}
 	ctl := filepath.Join(t.TempDir(), "ctl")
 	t.Setenv(envWTCtl, ctl)
+	// A shell started inside the subshell inherits GK_WT_CTL but not the
+	// function, so gk there must nest instead of writing.
+	t.Setenv(envWTFn, "")
+	if writeSubshellCtl("/x") {
+		t.Fatal("wrote a control file without the gk function marker")
+	}
+	if _, ok := worktreeBackRow(fmt.Sprint); ok {
+		t.Fatal("offered the back row without the gk function marker")
+	}
+	t.Setenv(envWTFn, "1")
 	if !writeSubshellCtl("/x") {
 		t.Fatal("did not write the control file")
 	}
@@ -92,7 +104,7 @@ func TestWriteSubshellBootstrap(t *testing.T) {
 	for _, want := range []string{
 		"unalias gk git-kit 2>/dev/null",
 		"gk() {", "git-kit() {",
-		`'/opt/g k/gk' "$@"`,
+		`GK_WT_FN=1 '/opt/g k/gk' "$@"`,
 		`[ -s "$GK_WT_CTL" ]`,
 		"builtin exit 0",
 	} {
@@ -150,7 +162,7 @@ func TestWriteSubshellBootstrap(t *testing.T) {
 			t.Fatalf("bootstrap = %+v", boot)
 		}
 		body, _ := os.ReadFile(init)
-		for _, want := range []string{"function gk --wraps gk", "'/opt/gk' $argv", "builtin exit 0"} {
+		for _, want := range []string{"function gk --wraps gk", "set -lx GK_WT_FN 1", "'/opt/gk' $argv", "builtin exit 0"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("init.fish lacks %q:\n%s", want, body)
 			}
@@ -182,7 +194,7 @@ func runBootstrappedShell(t *testing.T, sh string, files map[string]string, hop,
 		}
 	}
 	exe := filepath.Join(home, "fake-gk")
-	fake := "#!/bin/sh\n[ -n \"$GK_WT_HOP\" ] && printf '%s' \"$GK_WT_HOP\" > \"$GK_WT_CTL\"\nexit 0\n"
+	fake := "#!/bin/sh\n[ -n \"$GK_WT_HOP\" ] && [ \"$GK_WT_FN\" = 1 ] && printf '%s' \"$GK_WT_HOP\" > \"$GK_WT_CTL\"\nexit 0\n"
 	if err := os.WriteFile(exe, []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +217,7 @@ func runBootstrappedShell(t *testing.T, sh string, files map[string]string, hop,
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
-		case "HOME", "ZDOTDIR", "GK_WT_CTL", "GK_WT_HOP", "GK_ZDOTDIR_ORIG", "PS1", "PROMPT":
+		case "HOME", "ZDOTDIR", "GK_WT_CTL", "GK_WT_FN", "GK_WT_HOP", "GK_ZDOTDIR_ORIG", "PS1", "PROMPT":
 			continue
 		}
 		cmd.Env = append(cmd.Env, kv)

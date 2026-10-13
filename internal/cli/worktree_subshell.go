@@ -22,9 +22,13 @@ import (
 //	back       the picker's [←] back row: return to the parent shell
 //
 // GK_WT_CTL names the file and is set only when a bootstrap exists for the
-// shell, so under any other shell gk inside the subshell nests as before.
+// shell. It is exported, so a shell started inside the subshell (bash, a
+// tmux pane) inherits it without the function that would end the shell.
+// The function therefore marks each of its own calls with GK_WT_FN, and gk
+// hands off only on such a call. Any other gk nests as before.
 const (
 	envWTCtl    = "GK_WT_CTL"
+	envWTFn     = "GK_WT_FN"
 	envWTParent = "GK_WT_PARENT_PWD"
 	ctlBack     = "back"
 
@@ -80,7 +84,7 @@ func subshellFunctionSh(exe string, names []string) string {
 	b.WriteString("unalias " + strings.Join(names, " ") + " 2>/dev/null\n")
 	for _, n := range names {
 		fmt.Fprintf(&b, `%s() {
-  %s "$@"
+  GK_WT_FN=1 %s "$@"
   local rc=$?
   if [ -n "$%s" ] && [ -s "$%s" ]; then
     builtin exit 0
@@ -98,6 +102,7 @@ func subshellFunctionFish(exe string, names []string) string {
 	var b strings.Builder
 	for _, n := range names {
 		fmt.Fprintf(&b, `function %s --wraps %s
+    set -lx GK_WT_FN 1
     %s $argv
     set -l rc $status
     if test -n "$%s"; and test -s "$%s"
@@ -197,22 +202,27 @@ func parseSubshellCtl(content string) (ctlAction, string) {
 	return ctlExit, ""
 }
 
+// inHopSubshell reports whether this gk was called by the gk function of a
+// bootstrapped subshell, the only caller that ends the shell after a write.
+func inHopSubshell() bool {
+	return os.Getenv(envWTCtl) != "" && os.Getenv(envWTFn) == "1"
+}
+
 // writeSubshellCtl hands content to the gk that owns this subshell. It
 // reports false when this process is not inside a bootstrapped subshell.
 // A write that fails is treated the same way: the owner is gone or its
 // directory was removed, so the caller falls back to a nested shell.
 func writeSubshellCtl(content string) bool {
-	ctl := os.Getenv(envWTCtl)
-	if ctl == "" {
+	if !inHopSubshell() {
 		return false
 	}
-	return os.WriteFile(ctl, []byte(content), 0o600) == nil
+	return os.WriteFile(os.Getenv(envWTCtl), []byte(content), 0o600) == nil
 }
 
 // worktreeBackRow is the picker row that returns to the parent shell. It
 // exists only inside a bootstrapped subshell, where the owner can act on it.
 func worktreeBackRow(faint func(a ...interface{}) string) (ui.PickerItem, bool) {
-	if os.Getenv(envWTCtl) == "" {
+	if !inHopSubshell() {
 		return ui.PickerItem{}, false
 	}
 	label := "[←] back"

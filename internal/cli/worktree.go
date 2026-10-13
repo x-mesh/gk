@@ -2191,6 +2191,9 @@ func runWorktreeSubshell(stderr io.Writer, sh, path, origPWD string) (string, er
 	sub.Env = append(os.Environ(),
 		envWTParent+"="+origPWD,
 		"GK_WT="+path,
+		// Only the gk function sets this, per call; a value inherited from
+		// the caller must not mark every gk in the new shell.
+		envWTFn+"=",
 	)
 	hint := "(type `exit` to return)"
 

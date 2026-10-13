@@ -52,7 +52,7 @@ var commandGroup = map[string]string{
 	"branch": "branches", "branch-check": "branches", "switch": "branches",
 
 	// Worktrees & watch (follow is the remote-watching sibling).
-	"worktree": "worktree", "watch": "worktree", "prompt-info": "worktree",
+	"worktree": "worktree", "watch": "worktree", "prompt-info": "worktree", "shell-init": "worktree",
 	"follow": "worktree",
 
 	// Checks & release.

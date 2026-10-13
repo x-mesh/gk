@@ -115,6 +115,7 @@ var easyShortKO = map[string]string{
 	"gk ship":            "릴리스 점검 후 태그 발행",
 	"gk update":          "gk를 최신 버전으로 업데이트",
 	"gk prompt-info":     "셸 프롬프트용 worktree 표시 출력",
+	"gk shell-init":      "gk wt가 지금 셸을 worktree로 이동하게 하는 셸 함수 출력",
 }
 
 // koUsageTemplate is cobra's default usage template with the structural

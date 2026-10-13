@@ -178,6 +178,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 | `gk worktree list` | | `git worktree list --porcelain` 파싱 결과를 테이블 또는 `--json`으로 |
 | `gk worktree remove <path>` | | 삭제; dirty는 force 재확인. locked worktree는 lock 소유 프로세스 생존 여부로 분기 — 죽은(stale) 잠금은 `--force`로 unlock+삭제, 살아있는 잠금은 거부하고 `--force-locked`로만 강제. stale admin 엔트리는 자동 prune |
 | `gk prompt-info` | | 셸 프롬프트 통합용 짧은 라벨. `plain`(기본)은 linked 워크트리 안에서 `wt` (디렉터리명이 브랜치명과 다르면 `wt:<basename>`), 그 외에는 빈 출력. `--format=segment`는 git repo 안이면 `<repo>/<branch>`를 출력해 starship의 `$directory` + `$git_branch`를 단일 중복 제거 라벨로 대체. `--format=json`은 `{linked, repo, name, path, branch}`. 탐지는 `git rev-parse --git-dir` vs `--git-common-dir` 비교(~30ms). |
+| `gk shell-init <zsh\|bash\|fish>` | | 셸 시작 파일에 넣을 `gk` 셸 함수 출력(`eval "$(gk shell-init zsh)"`, fish는 `gk shell-init fish \| source`). 넣으면 `gk wt`와 `gk switch`가 서브셸을 열지 않고 현재 셸을 선택한 worktree로 `cd`하므로 `exit`가 필요 없고 `cd -`로 돌아감. 같은 이름의 alias `gk`는 제거하며, 다른 이름은 `--name`/`--bin`으로 지정 |
 
 ### 안전
 

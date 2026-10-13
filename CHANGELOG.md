@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk shell-init <zsh|bash|fish>` prints a `gk` shell function for your startup file: `eval "$(gk shell-init zsh)"` in `~/.zshrc`, `eval "$(gk shell-init bash)"` in `~/.bashrc`, or `gk shell-init fish | source` in `config.fish`. With it, `gk wt` and `gk switch` change the directory of the shell you typed them in instead of opening a subshell, so there is no `exit` to type; `cd -` returns. The function runs the gk binary for every command and removes an alias named `gk` in zsh and bash, since an alias would take precedence over it. `--name` and `--bin` set other function and binary names. Without the function, `gk wt` opens a subshell as before.
+
 ### Changed
 
 - In the `gk wt` picker, enter opens the subshell in the selected worktree at once. Before, it opened a second menu with cd, remove and cancel. Press `d` (`ctrl+d` while you type a filter) to remove the worktree under the cursor, with the same confirmation prompts as before. `d` on the main worktree stops with "cannot remove the main worktree" before the prompt, in `gk wt` and in the `gk switch` picker. Enter on a worktree whose directory is gone keeps the picker open and tells you to press `d`. Enter on the worktree you are in prints `already in <path>` and exits instead of opening a nested subshell. With `--print-path`, enter prints the path at once.

@@ -2616,8 +2616,8 @@ Alias: `gk wt`.
 
 Running `gk wt` or `gk worktree` without a subcommand opens an interactive picker that loops until you quit. Actions:
 
-- **cd** — spawns a new `$SHELL` inside the selected worktree so you can work in it immediately. Type `exit` to return to your original shell at its original cwd. Inside the subshell, `$GK_WT` holds the worktree path and `$GK_WT_PARENT_PWD` holds where you came from. (See `--print-path` below for scripting workflows.)
-- **remove** — confirm prompt → `git worktree remove <path>`. Dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune. After a clean remove you're also offered to delete the branch if no other worktree holds it.
+- **enter** — spawns a new `$SHELL` inside the selected worktree so you can work in it immediately. Type `exit` to return to your original shell at its original cwd. Inside the subshell, `$GK_WT` holds the worktree path and `$GK_WT_PARENT_PWD` holds where you came from. (See `--print-path` below for scripting workflows.) If the worktree directory no longer exists, the picker stays open and tells you to press `d`. If you select the worktree you are in, gk prints `already in <path>` and exits.
+- **d** (`ctrl+d` while the filter has focus) — remove the worktree under the cursor: confirm prompt → `git worktree remove <path>`. The main worktree is refused before the prompt. Dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune. After a clean remove you're also offered to delete the branch if no other worktree holds it.
 - **add new** — the form opens on the create-new-branch toggle, since that choice selects between two different flows.
   - **new branch** — name, branch name, base ref. The base-ref field names the current branch as its default (`blank = <branch>`) — leaving it blank cuts the new branch from where you stand, not from main. A newly created branch records its fork parent (`gk-parent`), same as `gk worktree add`. Name collisions with an orphan branch surface an inline three-way choice (reuse / delete & recreate / cancel) instead of a dead-end error.
   - **existing** — opens a branch picker instead of asking you to type a name, then suggests the worktree name from the branch you chose (`feat/relay-agent-notify` → `relay-agent-notify`). Rows are ordered **newest commit first** — unlike `gk sw`, which lists locals alphabetically — because this list answers "which one was I working on". `●` local, `○` remote-only, `⊗` already checked out somewhere: occupied rows stay listed and name their worktree, but selecting one is refused (git allows a branch in one worktree only, and that includes the branch you are standing on). Remote branches are hidden until `ctrl+r`, yet join the list as soon as you type a filter. Picking one runs `git worktree add --track -b <name> <path> <remote>/<name>`, creating the local branch and its upstream in the same command. `Esc` at the name prompt returns to the picker rather than cancelling the whole form.
@@ -2627,7 +2627,7 @@ Flags:
 
 | Flag | Description |
 |------|-------------|
-| `--print-path` | On the **cd** action, write the chosen path to stdout instead of spawning a subshell. Use this for shell-alias wrappers that need to `cd` the parent shell itself. |
+| `--print-path` | On **enter**, write the chosen path to stdout instead of spawning a subshell. Use this for shell-alias wrappers that need to `cd` the parent shell itself. |
 
 Shell-alias pattern (when you prefer staying in one shell):
 

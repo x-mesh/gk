@@ -1626,6 +1626,24 @@ func TestWorktreeTUIRemove_BareRefuses(t *testing.T) {
 	}
 }
 
+func TestWorktreeTUIRemove_MainRefusesBeforePrompt(t *testing.T) {
+	// d lands on the picker's first row, the main worktree. gk must refuse
+	// it before the confirm prompt, which git would only refuse after.
+	main := t.TempDir()
+	if err := os.Mkdir(filepath.Join(main, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &git.ExecRunner{Dir: main}
+	buf := &bytes.Buffer{}
+	err := worktreeTUIRemove(context.Background(), runner, buf, WorktreeEntry{Path: main, Branch: "main"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "main worktree") {
+		t.Errorf("expected main-worktree refusal, got %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output before the refusal, got %q", buf.String())
+	}
+}
+
 func TestWorktreeTUI_NonTTYFallsBackToHelp(t *testing.T) {
 	// When stdin/stdout is not a TTY (as in `go test`), bare `gk wt`
 	// must not attempt to draw an interactive UI. Instead it prints

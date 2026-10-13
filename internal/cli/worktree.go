@@ -38,6 +38,7 @@ func init() {
 With no subcommand, gk opens an interactive TUI for listing, adding,
 removing, and entering worktrees. Picking a worktree spawns a new
 $SHELL in its directory — type 'exit' to return to the original shell.
+Press d to remove the worktree under the cursor.
 
 If you prefer the cd-in-place pattern, pass --print-path and wrap in
 a shell alias so the chosen path applies to the parent shell:
@@ -48,7 +49,7 @@ a shell alias so the chosen path applies to the parent shell:
 The TUI falls back to printing this help on non-interactive stdin/stdout.`,
 		RunE: runWorktreeTUI,
 	}
-	wt.Flags().Bool("print-path", false, "on 'cd', print the chosen path instead of entering a subshell (for `cd $(gk wt --print-path)` wrappers)")
+	wt.Flags().Bool("print-path", false, "on enter, print the chosen path instead of entering a subshell (for `cd $(gk wt --print-path)` wrappers)")
 	wt.Flags().BoolP("global", "g", false, "list every gk-managed worktree across all projects (toggle inside the TUI with 'g')")
 
 	list := &cobra.Command{
@@ -1554,6 +1555,8 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 	stderr := cmd.ErrOrStderr()
 
 	startGlobal, _ := cmd.Flags().GetBool("global")
+	printPath, _ := cmd.Flags().GetBool("print-path")
+	herePath := currentWorktreePath(ctx, runner)
 
 	// Menu action sentinels. Using clearly reserved keys avoids any
 	// collision with a real worktree path a user might pick.
@@ -1731,14 +1734,17 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 		picker := &ui.TablePicker{
 			Headers:        headers,
 			ColumnPriority: worktreeColumnPriority(),
-			Extras: []ui.TablePickerExtraKey{{
-				Key:       "g",
-				FilterKey: "ctrl+g",
-				Help:      "g toggle global",
-				OnPress: func() (ui.TablePickerReload, error) {
-					return worktreeTUIToggle(shown, loadRows, buildItems, commit)
+			Extras: []ui.TablePickerExtraKey{
+				{
+					Key:       "g",
+					FilterKey: "ctrl+g",
+					Help:      "g toggle global",
+					OnPress: func() (ui.TablePickerReload, error) {
+						return worktreeTUIToggle(shown, loadRows, buildItems, commit)
+					},
 				},
-			}},
+				{Key: "d", FilterKey: "ctrl+d", Help: "d remove", Exit: true},
+			},
 		}
 		picked, err := picker.Pick(ctx, "worktree", items)
 		if err != nil {
@@ -1746,6 +1752,20 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 			return err
+		}
+
+		// Look up the full entry so remove (and its branch drop) sees
+		// branch/locked/prunable state, not just the path. The [+] and [q]
+		// rows have no entry, so d on them does nothing.
+		entry := findWorktreeEntry(rs.entries, picked.Key)
+		if picked.ExtraAction == "d" {
+			if entry != nil {
+				actRunner, actProtected := worktreeTUIActionTarget(rs, *entry, runner, cfgProtected(cfg))
+				if err := worktreeTUIRemove(ctx, actRunner, stderr, *entry, actProtected); err != nil {
+					fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
+				}
+			}
+			continue
 		}
 
 		switch picked.Key {
@@ -1756,23 +1776,26 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
 		default:
-			// Chosen worktree — open the action submenu. Look up the
-			// full entry so downstream actions (remove + branch drop)
-			// see branch/locked/prunable state, not just the path.
-			entry := findWorktreeEntry(rs.entries, picked.Key)
 			if entry == nil {
 				continue
 			}
-			actRunner, actProtected := worktreeTUIActionTarget(rs, *entry, runner, cfgProtected(cfg))
-			done, err := worktreeTUIActOnEntry(ctx, actRunner, cmd, *entry, actProtected)
-			// An action that ends the picker returns its error so the exit
-			// status reports it, as gk switch does for the same subshell.
-			if done {
-				return err
+			// A prunable worktree's directory is gone, so neither a subshell
+			// nor a printed path can reach it. Keep the picker open for d.
+			if entry.Prunable {
+				fmt.Fprintln(stderr, color.YellowString("%s no longer exists; press d to remove it", entry.Path))
+				continue
 			}
-			if err != nil {
-				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
+			if printPath {
+				// Scripting path: `cd $(gk wt --print-path)`. All picker
+				// rendering is on stderr, so stdout carries only the path.
+				fmt.Fprintln(cmd.OutOrStdout(), entry.Path)
+				return nil
 			}
+			if herePath != "" && filepath.Clean(entry.Path) == herePath {
+				fmt.Fprintf(stderr, "already in %s\n", entry.Path)
+				return nil
+			}
+			return enterWorktreeSubshell(cmd, entry.Path)
 		}
 	}
 }
@@ -2106,51 +2129,6 @@ func worktreeRowPartsPlain(e WorktreeEntry) (branch, flags string) {
 	return branch, flags
 }
 
-// worktreeTUIActOnEntry is the secondary picker: what to do with the
-// worktree the user just selected. Returns (done, err) — done=true
-// means the outer loop should exit (e.g. user picked "cd").
-func worktreeTUIActOnEntry(ctx context.Context, runner *git.ExecRunner, cmd *cobra.Command, entry WorktreeEntry, protected []string) (bool, error) {
-	const (
-		actCD     = "cd"
-		actRemove = "remove"
-		actCancel = "cancel"
-	)
-	printPath, _ := cmd.Flags().GetBool("print-path")
-
-	faint := color.New(color.Faint).SprintFunc()
-	cdHint := faint("(enter a subshell in this worktree)")
-	if printPath {
-		cdHint = faint("(print path to stdout for shell alias)")
-	}
-	items := []ui.PickerItem{
-		{Display: fmt.Sprintf("cd  %s", cdHint), Key: actCD},
-		{Display: "remove", Key: actRemove},
-		{Display: "cancel", Key: actCancel},
-	}
-	picked, err := ui.NewPicker().Pick(ctx, entry.Path, items)
-	if err != nil {
-		if errors.Is(err, ui.ErrPickerAborted) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	switch picked.Key {
-	case actCD:
-		if printPath {
-			// Scripting path: `cd $(gk wt --print-path)`. All menu
-			// rendering has been on stderr so stdout stays clean.
-			fmt.Fprintln(cmd.OutOrStdout(), entry.Path)
-			return true, nil
-		}
-		return true, enterWorktreeSubshell(cmd, entry.Path)
-	case actRemove:
-		return false, worktreeTUIRemove(ctx, runner, cmd.ErrOrStderr(), entry, protected)
-	default: // cancel
-		return false, nil
-	}
-}
-
 // enterWorktreeSubshell launches the user's shell inside the worktree path and
 // blocks until the user exits it. stdin/stdout/stderr are inherited so
 // the subshell is fully interactive. On exit the caller's shell is
@@ -2250,6 +2228,12 @@ func worktreeTUIRemove(ctx context.Context, runner git.Runner, w io.Writer, entr
 
 	if entry.Bare {
 		return fmt.Errorf("cannot remove the bare/main worktree: %s", entry.Path)
+	}
+	// git refuses to remove the main worktree, but only after the confirm
+	// prompt, and d sits on the picker's first row, which is the main one.
+	// Its .git is a directory; a linked worktree's .git is a file.
+	if info, err := os.Stat(filepath.Join(entry.Path, ".git")); err == nil && info.IsDir() {
+		return fmt.Errorf("cannot remove the main worktree: %s", entry.Path)
 	}
 
 	// State the branch's standing against its parent before asking. The

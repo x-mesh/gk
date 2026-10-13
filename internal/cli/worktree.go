@@ -2197,10 +2197,12 @@ func enterWorktreeSubshell(cmd *cobra.Command, path string) error {
 }
 
 // resolveSubshell picks $SHELL, then the passwd login shell for uid, then
-// /bin/sh — the order tmux uses. The passwd step matters because bash fills
-// SHELL without exporting it, so a terminal launcher that never sets SHELL
-// leaves gk with an empty value and the user's exported bash PS1 would be
-// rendered by dash.
+// /bin/sh. The passwd step matters because bash fills SHELL without
+// exporting it, so a terminal launcher that never sets SHELL leaves gk with
+// an empty value and the user's exported bash PS1 would be rendered by dash.
+// Like tmux, a passwd shell that is not an absolute path to an executable
+// file falls through to /bin/sh, since exec would otherwise fail and leave
+// the user without a subshell. A set $SHELL is trusted as given.
 func resolveSubshell(shellEnv string, passwd io.Reader, uid int) string {
 	if shellEnv != "" {
 		return shellEnv
@@ -2209,9 +2211,15 @@ func resolveSubshell(shellEnv string, passwd io.Reader, uid int) string {
 	sc := bufio.NewScanner(passwd)
 	for sc.Scan() {
 		f := strings.SplitN(sc.Text(), ":", 7)
-		if len(f) == 7 && f[2] == want && f[6] != "" {
-			return f[6]
+		if len(f) != 7 || f[2] != want {
+			continue
 		}
+		if sh := f[6]; filepath.IsAbs(sh) {
+			if info, err := os.Stat(sh); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+				return sh
+			}
+		}
+		break
 	}
 	return "/bin/sh"
 }

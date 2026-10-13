@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk wt` and `gk switch` start your login shell from the passwd entry when `SHELL` is not set. Before, they started `/bin/sh`, so an exported bash `PS1` showed raw escape codes and `__git_ps1: not found` on every prompt. A set `SHELL` still wins.
+- `gk wt` exits with status 1 when the `cd` subshell cannot start, for example when the shell path does not exist. Before, it printed the error and exited with status 0. `gk switch` already exits with status 1 in this case.
 
 ## [0.150.0] - 2026-10-07
 

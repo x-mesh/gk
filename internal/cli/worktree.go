@@ -1765,11 +1765,13 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 			}
 			actRunner, actProtected := worktreeTUIActionTarget(rs, *entry, runner, cfgProtected(cfg))
 			done, err := worktreeTUIActOnEntry(ctx, actRunner, cmd, *entry, actProtected)
+			// An action that ends the picker returns its error so the exit
+			// status reports it, as gk switch does for the same subshell.
+			if done {
+				return err
+			}
 			if err != nil {
 				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
-			}
-			if done {
-				return nil
 			}
 		}
 	}

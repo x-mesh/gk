@@ -243,7 +243,7 @@ func errorsAs(err error, target **exec.ExitError) bool {
 	return ok
 }
 
-const subshellProbe = "echo \"mark=$GK_TEST_MARK zdot=$ZDOTDIR\"\ngk\necho after\n"
+const subshellProbe = "echo \"mark=$GK_TEST_MARK zdot=$ZDOTDIR\"\necho \"hist=$HISTFILE\"\ngk\necho after\n"
 
 // TestSubshellBootstrap_Bash runs the real bash with the bootstrap: the
 // user's ~/.bashrc still runs, an alias named gk no longer wins over the
@@ -286,9 +286,58 @@ func TestSubshellBootstrap_Zsh(t *testing.T) {
 	if line := strings.SplitN(out, "\n", 2)[0]; !strings.HasSuffix(line, "/cfg") {
 		t.Fatalf("ZDOTDIR must be the user's XDG directory after startup, got %q", line)
 	}
+	// macOS's /etc/zshrc sets HISTFILE from ZDOTDIR while it still names the
+	// bootstrap directory; where no system file sets it, HISTFILE stays empty.
+	for _, line := range strings.Split(out, "\n") {
+		if hist, ok := strings.CutPrefix(line, "hist="); ok && hist != "" && !strings.HasSuffix(hist, "/cfg/.zsh_history") {
+			t.Fatalf("HISTFILE must be in the user's ZDOTDIR, got %q", hist)
+		}
+	}
 
 	out, _ = runBootstrappedShell(t, zsh, files, "", subshellProbe)
 	if !strings.Contains(out, "after") {
 		t.Fatalf("no hop: the shell must continue; stdout:\n%s", out)
+	}
+}
+
+// TestSubshellBootstrap_ZshHistfile runs the temporary .zshrc under zsh -f
+// with the HISTFILE a system zshrc leaves behind, so the check does not
+// depend on what /etc/zshrc contains on the machine running the test.
+func TestSubshellBootstrap_ZshHistfile(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	if _, err := writeSubshellBootstrap(dir, shellZsh, subshellFunctionSh("/opt/gk", []string{"gk"}), ""); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, histfile, userRC, want string
+	}{
+		{"moved out of the bootstrap dir", filepath.Join(dir, ".zsh_history"), "", "HOME/.zsh_history"},
+		{"keeps the file name", filepath.Join(dir, ".histfile"), "", "HOME/.histfile"},
+		{"leaves another location alone", "/var/hist/.zsh_history", "", "/var/hist/.zsh_history"},
+		{"user .zshrc wins", filepath.Join(dir, ".zsh_history"), "HISTFILE=/mine/hist\n", "/mine/hist"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tc.userRC != "" {
+				if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(tc.userRC), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command(zsh, "-f", "-c", `source "$1"; print -r -- "$HISTFILE"`, "zsh", filepath.Join(dir, ".zshrc"))
+			cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "ZDOTDIR=" + dir, "GK_ZDOTDIR_ORIG=", "HISTFILE=" + tc.histfile}
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Replace(tc.want, "HOME", home, 1)
+			if got := strings.TrimSpace(string(out)); got != want {
+				t.Fatalf("HISTFILE = %q, want %q", got, want)
+			}
+		})
 	}
 }

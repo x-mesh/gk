@@ -140,15 +140,22 @@ func writeSubshellBootstrap(dir string, fam subshellFamily, fn string, origZDotD
 		// points ZDOTDIR back here so the temporary .zshrc runs next. That
 		// .zshrc restores ZDOTDIR before it runs the user's .zshrc, so
 		// compinit and history land in the user's directory, not in dir.
+		// /etc/zshrc runs between the two files while ZDOTDIR is still dir,
+		// and macOS's sets HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history there, so
+		// a HISTFILE inside dir is moved to the user's directory. zsh reads
+		// the history file after all startup files, so this covers both
+		// loading and saving, and a HISTFILE the user's .zshrc sets wins.
+		qdir := shellQuote(dir)
 		if _, err := write(".zshenv", `if [ -n "$GK_ZDOTDIR_ORIG" ]; then ZDOTDIR="$GK_ZDOTDIR_ORIG"; else unset ZDOTDIR; fi
 [ -f "${ZDOTDIR:-$HOME}/.zshenv" ] && . "${ZDOTDIR:-$HOME}/.zshenv"
 GK_ZDOTDIR_ORIG="$ZDOTDIR"
-ZDOTDIR=`+shellQuote(dir)+`
+ZDOTDIR=`+qdir+`
 `); err != nil {
 			return subshellBootstrap{}, err
 		}
 		if _, err := write(".zshrc", `if [ -n "$GK_ZDOTDIR_ORIG" ]; then ZDOTDIR="$GK_ZDOTDIR_ORIG"; else unset ZDOTDIR; fi
 unset GK_ZDOTDIR_ORIG
+[[ $HISTFILE == `+qdir+`/* ]] && HISTFILE="${ZDOTDIR:-$HOME}/${HISTFILE:t}"
 [ -f "${ZDOTDIR:-$HOME}/.zshrc" ] && . "${ZDOTDIR:-$HOME}/.zshrc"
 `+fn); err != nil {
 			return subshellBootstrap{}, err

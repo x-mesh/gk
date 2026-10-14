@@ -34,10 +34,10 @@ type cleanupSelectRow struct {
 // cleanupSelectExcluded names the kept reasons whose worktrees the list
 // leaves out: git cannot remove the current or a bare worktree, and a
 // running process still holds a live lock.
-var cleanupSelectExcluded = map[string]bool{
-	"current":     true,
-	"bare":        true,
-	"locked-live": true,
+var cleanupSelectExcluded = map[cleanupReason]bool{
+	reasonCurrent:    true,
+	reasonBare:       true,
+	reasonLockedLive: true,
 }
 
 // cleanupSelectRows lists the worktrees the user may remove, in git's
@@ -59,10 +59,7 @@ func cleanupSelectRows(report worktreeCleanupJSON, entries []WorktreeEntry, main
 		if !ok || (mainPath != "" && sameDir(mainPath, e.Path)) {
 			continue
 		}
-		// cleanup returns before its lock check for detached and protected
-		// worktrees, so their verdict does not carry the lock.
 		r.detached, r.head = e.Detached, e.Head
-		r.entry.Locked = r.entry.Locked || e.Locked
 		rows = append(rows, r)
 	}
 	return rows
@@ -110,7 +107,7 @@ func loadCleanupRowInfo(ctx context.Context, runner *git.ExecRunner, cfg *config
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r.info = cleanupRowInfoFor(ctx, runner, *r, branches[r.entry.Branch], subjects[r.entry.Branch], base)
-			if !r.candidate && r.entry.Dirty == nil && !cleanupHasReason(r.entry, "clean") && cleanupPrimaryReason(r.entry) != "prunable" {
+			if !r.candidate && r.entry.Dirty == nil && !cleanupHasReason(r.entry, reasonClean) && cleanupPrimaryReason(r.entry) != reasonPrunable {
 				r.entry.Dirty = worktreeDirtyAt(ctx, r.entry.Path)
 				if r.entry.Dirty != nil {
 					r.entry.Untracked, _ = worktreeUntrackedAt(ctx, r.entry.Path)
@@ -155,9 +152,9 @@ func cleanupRowInfoFor(ctx context.Context, runner *git.ExecRunner, r cleanupSel
 	return info
 }
 
-func cleanupHasReason(e worktreeCleanupEntry, reason string) bool {
+func cleanupHasReason(e worktreeCleanupEntry, reason cleanupReason) bool {
 	for _, r := range e.Reasons {
-		if r == reason {
+		if r == string(reason) {
 			return true
 		}
 	}
@@ -204,25 +201,25 @@ func cleanupSelectState(r cleanupSelectRow) string {
 	reason := cleanupPrimaryReason(r.entry)
 	var parts []string
 	switch {
-	case reason == "prunable":
+	case reason == reasonPrunable:
 		return "prunable: directory gone"
 	case r.candidate:
 		verdict := reason
-		if cleanupHasReason(r.entry, "squash-merged") {
-			verdict = "squash-merged"
-		} else if cleanupHasReason(r.entry, "merged") {
-			verdict = "merged"
+		if cleanupHasReason(r.entry, reasonSquashMerged) {
+			verdict = reasonSquashMerged
+		} else if cleanupHasReason(r.entry, reasonMerged) {
+			verdict = reasonMerged
 		}
-		parts = append(parts, verdict)
+		parts = append(parts, string(verdict))
 		if len(r.entry.Disposable) > 0 {
 			parts = append(parts, "lockfiles only")
 		}
-	case reason == "unmerged":
+	case reason == reasonUnmerged:
 		parts = append(parts, fmt.Sprintf("unmerged ↑%d", r.info.ahead))
-	case reason == "unstarted":
+	case reason == reasonUnstarted:
 		parts = append(parts, "unstarted, created "+cleanupAgo(r.info.createdAt))
-	case reason != "dirty":
-		parts = append(parts, reason)
+	case reason != reasonDirty:
+		parts = append(parts, string(reason))
 	}
 	if r.entry.Dirty != nil && len(r.entry.Disposable) == 0 {
 		parts = append(parts, "dirty: "+formatDirtyCounts(*r.entry.Dirty, nil))
@@ -254,7 +251,7 @@ func cleanupSelectDetail(r cleanupSelectRow) string {
 	var state []string
 	reason := cleanupPrimaryReason(r.entry)
 	switch {
-	case reason == "prunable":
+	case reason == reasonPrunable:
 		state = append(state, "directory is gone; removing drops only the registration")
 	case r.info.target != "" && r.info.target != r.entry.Branch:
 		state = append(state, fmt.Sprintf("vs %s: ↑%d ↓%d", r.info.target, r.info.ahead, r.info.behind))
@@ -265,7 +262,7 @@ func cleanupSelectDetail(r cleanupSelectRow) string {
 		state = append(state, push)
 	}
 	switch {
-	case reason == "prunable":
+	case reason == reasonPrunable:
 	case r.entry.Dirty != nil:
 		state = append(state, "uncommitted: "+formatDirtyCounts(*r.entry.Dirty, r.entry.Untracked))
 	default:
@@ -397,37 +394,33 @@ func cleanupSelectBranch(r cleanupSelectRow, maxLen int) string {
 }
 
 // cleanupSelectLoss says what removing r loses beyond files git can rebuild
-// from a ref, or "" when nothing is lost. It fills r.entry.Dirty for
-// worktrees cleanup kept before it looked at their changes, so the removal
-// knows to force them.
+// from a ref, or "" when nothing is lost. It reads the changes again with
+// worktreeChangesAt, so changes that submodule.<name>.ignore or
+// status.showUntrackedFiles hide are listed, and a worktree whose changes
+// cannot be read counts as a loss. It fills r.entry.Dirty, so the removal
+// knows to force a row whose loss the user accepted.
 func cleanupSelectLoss(ctx context.Context, runner git.Runner, r *cleanupSelectRow) string {
-	if r.candidate {
-		// The verdict was made before the list opened. Work saved into the
-		// worktree since then must not go without asking.
-		// --discard-dirty already chose to drop the changes of such a row.
-		if r.entry.Action == cleanupActionPruneRecord || cleanupHasReason(r.entry, "dirty-discard") {
-			return ""
-		}
-		dirty := worktreeDirtyAt(ctx, r.entry.Path)
-		if dirty == nil {
-			return ""
-		}
-		untracked, only := worktreeUntrackedAt(ctx, r.entry.Path)
-		if disposableUntrackedOnly(untracked, only) != nil {
-			return ""
-		}
-		r.entry.Dirty, r.entry.Untracked = dirty, untracked
-		return "uncommitted changes made after the list opened (" + formatDirtyCounts(*dirty, untracked) + ")"
+	// --discard-dirty already chose to drop the changes of such a candidate.
+	if r.entry.Action == cleanupActionPruneRecord || (r.candidate && cleanupHasReason(r.entry, reasonDirtyDiscard)) {
+		return ""
 	}
 	var losses []string
-	if r.entry.Dirty == nil && cleanupPrimaryReason(r.entry) != "prunable" {
-		r.entry.Dirty = worktreeDirtyAt(ctx, r.entry.Path)
-		if r.entry.Dirty != nil {
-			r.entry.Untracked, _ = worktreeUntrackedAt(ctx, r.entry.Path)
+	if cleanupPrimaryReason(r.entry) != reasonPrunable {
+		changes, err := worktreeChangesAt(ctx, runner, r.entry.Path)
+		switch {
+		case err != nil:
+			losses = append(losses, "could not check for uncommitted changes ("+err.Error()+")")
+		case changes.dirty == nil:
+		case r.candidate && disposableUntrackedOnly(changes.untracked, changes.onlyUntracked) != nil:
+			// Regenerable lockfiles only; cleanup deletes those itself.
+		default:
+			r.entry.Dirty, r.entry.Untracked = changes.dirty, changes.untracked
+			what := "uncommitted changes ("
+			if r.candidate {
+				what = "uncommitted changes found when rechecking ("
+			}
+			losses = append(losses, what+formatDirtyCounts(*changes.dirty, changes.untracked)+")")
 		}
-	}
-	if r.entry.Dirty != nil {
-		losses = append(losses, "uncommitted changes ("+formatDirtyCounts(*r.entry.Dirty, r.entry.Untracked)+")")
 	}
 	if r.detached && r.head != "" {
 		out, _, err := runner.Run(ctx, "for-each-ref", "--contains", r.head, "--count=1", "--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes")
@@ -436,6 +429,34 @@ func cleanupSelectLoss(ctx context.Context, runner git.Runner, r *cleanupSelectR
 		}
 	}
 	return strings.Join(losses, "; ")
+}
+
+// checkSelectedLosses runs cleanupSelectLoss on the picked rows,
+// statusScanWorkers at a time, and returns each loss by path and the loss
+// lines in pick order. It updates the rows in place.
+func checkSelectedLosses(ctx context.Context, runner git.Runner, picked []cleanupSelectRow) (map[string]string, []string) {
+	lossOf := make([]string, len(picked))
+	sem := make(chan struct{}, min(runtime.NumCPU(), statusScanWorkers))
+	var wg sync.WaitGroup
+	for i := range picked {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			lossOf[i] = cleanupSelectLoss(ctx, runner, &picked[i])
+		}(i)
+	}
+	wg.Wait()
+	losses := map[string]string{}
+	var lossy []string
+	for i, r := range picked {
+		if lossOf[i] != "" {
+			losses[r.entry.Path] = lossOf[i]
+			lossy = append(lossy, fmt.Sprintf("%s: %s", r.entry.Path, lossOf[i]))
+		}
+	}
+	return losses, lossy
 }
 
 // measureWorktreeSizes sums the disk blocks under each path, at most
@@ -539,7 +560,7 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 
 	paths := make([]string, 0, len(rows))
 	for _, r := range rows {
-		if cleanupPrimaryReason(r.entry) != "prunable" {
+		if cleanupPrimaryReason(r.entry) != reasonPrunable {
 			paths = append(paths, r.entry.Path)
 		}
 	}
@@ -594,16 +615,14 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 		byPath[r.entry.Path] = i
 	}
 	picked := make([]cleanupSelectRow, 0, len(keys))
-	losses := map[string]string{}
-	var lossy []string
 	for _, k := range keys {
-		r := rows[byPath[k]]
-		if loss := cleanupSelectLoss(ctx, runner, &r); loss != "" {
-			losses[r.entry.Path] = loss
-			lossy = append(lossy, fmt.Sprintf("%s: %s", r.entry.Path, loss))
-		}
-		picked = append(picked, r)
+		picked = append(picked, rows[byPath[k]])
 	}
+	stopCheck := ui.StartBubbleSpinnerLive(func() string {
+		return fmt.Sprintf("checking %d selected worktrees for unsaved work", len(picked))
+	})
+	losses, lossy := checkSelectedLosses(ctx, runner, picked)
+	stopCheck()
 	safe, changed, chosen := splitCleanupSelection(picked, losses)
 	if len(lossy) > 0 {
 		ok, err := ui.ConfirmTUI(ctx,
@@ -630,15 +649,13 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 		return nil
 	}
 	removed, failed := applyWorktreeCleanup(ctx, w, runner, safe, opts)
-	// A candidate that changed while the list was open is still merged, so it
-	// keeps the user's --delete-branches; its confirmed changes are dropped.
-	changedOpts := opts
-	changedOpts.discardDirty = true
-	rc, fc := applyWorktreeCleanup(ctx, w, runner, changed, changedOpts)
+	// A candidate that changed while the list was open keeps its action, so
+	// --delete-branches still applies to it; its confirmed changes are dropped.
+	rc, fc := applyWorktreeCleanup(ctx, w, runner, changed, worktreeCleanupOpts{forceStaleLocks: opts.forceStaleLocks, discardDirty: true})
 	removed, failed = append(removed, rc...), append(failed, fc...)
 	// The user picked these past cleanup's verdict and confirmed any loss, so
 	// a stale lock or uncommitted changes no longer stop the removal. Their
-	// branches stay: nothing proved them merged.
+	// action never deletes the branch: nothing proved them merged.
 	r2, f2 := applyWorktreeCleanup(ctx, w, runner, chosen, worktreeCleanupOpts{forceStaleLocks: true, discardDirty: true})
 	removed, failed = append(removed, r2...), append(failed, f2...)
 	fmt.Fprintf(w, "worktree cleanup: removed %d, failed %d\n", len(removed), len(failed))

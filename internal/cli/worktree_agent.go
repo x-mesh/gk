@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +64,44 @@ type worktreeCleanupJSON struct {
 	Failed     []worktreeCleanupEntry `json:"failed,omitempty"`
 }
 
-const cleanupActionPruneRecord = "prune-record"
+// cleanupAction is what applying a cleanup row does. Only
+// cleanupActionRemoveDeleteBranch deletes the branch.
+type cleanupAction string
+
+const (
+	cleanupActionRemove             cleanupAction = "remove-worktree"
+	cleanupActionRemoveDeleteBranch cleanupAction = "remove-worktree-delete-branch"
+	cleanupActionPruneRecord        cleanupAction = "prune-record"
+)
+
+// cleanupReason is one entry of worktreeCleanupEntry.Reasons. A kept row
+// also records its skip reason as the verdict.
+type cleanupReason string
+
+const (
+	reasonCurrent             cleanupReason = "current"
+	reasonBare                cleanupReason = "bare"
+	reasonDetached            cleanupReason = "detached"
+	reasonNoBranch            cleanupReason = "no-branch"
+	reasonProtected           cleanupReason = "protected"
+	reasonLockedLive          cleanupReason = "locked-live"
+	reasonLockedStale         cleanupReason = "locked-stale"
+	reasonPrunable            cleanupReason = "prunable"
+	reasonDirtyDiscard        cleanupReason = "dirty-discard"
+	reasonDisposableUntracked cleanupReason = "disposable-untracked"
+	reasonDirty               cleanupReason = "dirty"
+	reasonClean               cleanupReason = "clean"
+	reasonUnstarted           cleanupReason = "unstarted"
+	reasonStale               cleanupReason = "stale"
+	reasonFresh               cleanupReason = "fresh"
+	reasonAgeUnknown          cleanupReason = "age-unknown"
+	reasonNoMergeTarget       cleanupReason = "no-merge-target"
+	reasonTargetIsSelf        cleanupReason = "target-is-self"
+	reasonMerged              cleanupReason = "merged"
+	reasonSquashMerged        cleanupReason = "squash-merged"
+	reasonUnmerged            cleanupReason = "unmerged"
+	reasonRepoUnreadable      cleanupReason = "repo-unreadable"
+)
 
 // worktreeCleanupOpts carries cleanup's classification flags so callers
 // without those flags (gk worktree list) classify with the same rules.
@@ -83,7 +121,7 @@ type worktreeCleanupEntry struct {
 	Project       string            `json:"project,omitempty"`
 	Branch        string            `json:"branch,omitempty"`
 	Target        string            `json:"target,omitempty"`
-	Action        string            `json:"action,omitempty"`
+	Action        cleanupAction     `json:"action,omitempty"`
 	Reasons       []string          `json:"reasons,omitempty"`
 	Age           string            `json:"age,omitempty"`
 	Dirty         *contextDirtyJSON `json:"dirty,omitempty"`
@@ -92,6 +130,14 @@ type worktreeCleanupEntry struct {
 	Locked        bool              `json:"locked,omitempty"`
 	BranchDeleted bool              `json:"branch_deleted,omitempty"`
 	Error         string            `json:"error,omitempty"`
+
+	// verdict is the reason a kept row was skipped. The JSON keeps reporting
+	// it as the last entry of Reasons.
+	verdict cleanupReason
+}
+
+func (e *worktreeCleanupEntry) note(r cleanupReason) {
+	e.Reasons = append(e.Reasons, string(r))
 }
 
 func newWorktreeAcquireCmd() *cobra.Command {
@@ -550,7 +596,7 @@ func runGlobalWorktreeCleanup(ctx context.Context, cmd *cobra.Command, cfg *conf
 		main, err := mainWorktreePath(ctx, &git.ExecRunner{Dir: root.Path})
 		if err != nil {
 			report.Skipped = append(report.Skipped, worktreeCleanupEntry{
-				Path: root.Path, Project: root.Project, Reasons: []string{"repo-unreadable"}, Error: err.Error(),
+				Path: root.Path, Project: root.Project, Reasons: []string{string(reasonRepoUnreadable)}, verdict: reasonRepoUnreadable, Error: err.Error(),
 			})
 			continue
 		}
@@ -569,7 +615,7 @@ func runGlobalWorktreeCleanup(ctx context.Context, cmd *cobra.Command, cfg *conf
 		sub, err := collectWorktreeCleanup(ctx, runner, repoCfg, opts, base, current)
 		if err != nil {
 			report.Skipped = append(report.Skipped, worktreeCleanupEntry{
-				Path: main, Project: root.Project, Reasons: []string{"repo-unreadable"}, Error: err.Error(),
+				Path: main, Project: root.Project, Reasons: []string{string(reasonRepoUnreadable)}, verdict: reasonRepoUnreadable, Error: err.Error(),
 			})
 			continue
 		}
@@ -662,22 +708,23 @@ func collectWorktreeCleanup(ctx context.Context, runner *git.ExecRunner, cfg *co
 // classifyCleanupEntry returns the report row for one worktree and whether
 // cleanup removes it.
 func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e WorktreeEntry, opts worktreeCleanupOpts, protected map[string]bool, meta map[string]worktreeBranchMeta, mergeBase, current string) (worktreeCleanupEntry, bool) {
-	row := worktreeCleanupEntry{Path: e.Path, Branch: e.Branch}
-	skip := func(reason string) (worktreeCleanupEntry, bool) {
-		row.Reasons = append(row.Reasons, reason)
+	row := worktreeCleanupEntry{Path: e.Path, Branch: e.Branch, Locked: e.Locked}
+	skip := func(reason cleanupReason) (worktreeCleanupEntry, bool) {
+		row.note(reason)
+		row.verdict = reason
 		return row, false
 	}
 	switch {
 	case current != "" && sameDir(current, e.Path):
-		return skip("current")
+		return skip(reasonCurrent)
 	case e.Bare:
-		return skip("bare")
+		return skip(reasonBare)
 	case e.Detached:
-		return skip("detached")
+		return skip(reasonDetached)
 	case e.Branch == "":
-		return skip("no-branch")
+		return skip(reasonNoBranch)
 	case protected[e.Branch] || isProtectedBranchName(e.Branch, nil):
-		return skip("protected")
+		return skip(reasonProtected)
 	}
 
 	// The porcelain entry already says whether the worktree is locked; the
@@ -691,11 +738,11 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 	if lock.Locked {
 		switch {
 		case lock.Alive:
-			return skip("locked-live")
+			return skip(reasonLockedLive)
 		case !opts.forceStaleLocks:
-			return skip("locked-stale")
+			return skip(reasonLockedStale)
 		}
-		row.Reasons = append(row.Reasons, "locked-stale")
+		row.note(reasonLockedStale)
 	}
 
 	// git also marks a worktree on an unmounted volume prunable. Only when
@@ -705,7 +752,7 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 		// Only the registration is left, so removing it loses no file and
 		// no commit: the merge and age gates do not apply. The branch is
 		// kept because its merge was never checked.
-		row.Reasons = append(row.Reasons, "prunable")
+		row.note(reasonPrunable)
 		row.Action = cleanupActionPruneRecord
 		return row, true
 	}
@@ -716,16 +763,16 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 		disposable := disposableUntrackedOnly(untracked, onlyUntracked)
 		switch {
 		case opts.discardDirty:
-			row.Reasons = append(row.Reasons, "dirty-discard")
+			row.note(reasonDirtyDiscard)
 		case disposable != nil:
 			row.Disposable = disposable
-			row.Reasons = append(row.Reasons, "disposable-untracked")
+			row.note(reasonDisposableUntracked)
 		default:
 			row.Untracked = untracked
-			return skip("dirty")
+			return skip(reasonDirty)
 		}
 	} else {
-		row.Reasons = append(row.Reasons, "clean")
+		row.note(reasonClean)
 	}
 
 	// A branch that never moved since it was created has no work of its
@@ -734,9 +781,9 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 	// it, judged by when the branch was created.
 	if created, ok := branchUnstartedSince(ctx, runner, e.Branch); ok {
 		if opts.stale == 0 || time.Since(created) < opts.stale {
-			return skip("unstarted")
+			return skip(reasonUnstarted)
 		}
-		row.Reasons = append(row.Reasons, "unstarted")
+		row.note(reasonUnstarted)
 	}
 
 	if bm, ok := meta[e.Branch]; ok && !bm.LastCommit.IsZero() {
@@ -744,25 +791,25 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 		row.Age = shortAge(bm.LastCommit)
 		if opts.stale > 0 {
 			if age < opts.stale {
-				return skip("fresh")
+				return skip(reasonFresh)
 			}
-			row.Reasons = append(row.Reasons, "stale")
+			row.note(reasonStale)
 		}
 	} else if opts.stale > 0 {
-		return skip("age-unknown")
+		return skip(reasonAgeUnknown)
 	}
 
 	if opts.merged {
 		target := cleanupMergeTarget(ctx, runner, mergeBase, e.Branch)
 		row.Target = target
 		if target == "" {
-			return skip("no-merge-target")
+			return skip(reasonNoMergeTarget)
 		}
 		if target == e.Branch {
-			return skip("target-is-self")
+			return skip(reasonTargetIsSelf)
 		}
 		if isAncestor(ctx, runner, e.Branch, target) {
-			row.Reasons = append(row.Reasons, "merged")
+			row.note(reasonMerged)
 		} else {
 			// A squash merge never becomes an ancestor; the content test
 			// (merging into target changes nothing) is the proof that the
@@ -770,15 +817,15 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 			// — under-claiming keeps the worktree, never removes one.
 			ok, _ := branchclean.EffectivelyMerged(ctx, runner, target, e.Branch)
 			if !ok {
-				return skip("unmerged")
+				return skip(reasonUnmerged)
 			}
-			row.Reasons = append(row.Reasons, "squash-merged")
+			row.note(reasonSquashMerged)
 		}
 	}
 
-	row.Action = "remove-worktree"
+	row.Action = cleanupActionRemove
 	if opts.deleteBranches {
-		row.Action = "remove-worktree-delete-branch"
+		row.Action = cleanupActionRemoveDeleteBranch
 	}
 	return row, true
 }
@@ -883,7 +930,7 @@ func applyWorktreeCleanup(ctx context.Context, progress io.Writer, runner *git.E
 			failed = append(failed, c)
 			continue
 		}
-		if opts.deleteBranches && c.Branch != "" {
+		if c.Action == cleanupActionRemoveDeleteBranch && c.Branch != "" {
 			// The candidate already passed the merged gate, but git's
 			// `branch -d` checks merged-ness against this runner's HEAD (or
 			// upstream), not target — so a branch merged into a non-HEAD target
@@ -955,14 +1002,40 @@ func removeCleanupWorktree(ctx context.Context, runner git.Runner, w io.Writer, 
 // honours submodule.<name>.ignore and status.showUntrackedFiles, which can
 // hide unsaved work that the forced removal would delete.
 func checkNoHiddenChanges(ctx context.Context, runner git.Runner, path string) error {
-	out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "--ignore-submodules=none", "--untracked-files=normal")
+	changes, err := worktreeChangesAt(ctx, runner, path)
 	if err != nil {
-		return fmt.Errorf("remove %s: check for uncommitted changes: %s: %w", path, strings.TrimSpace(string(serr)), err)
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
-	if len(strings.TrimSpace(string(out))) > 0 {
-		return fmt.Errorf("remove %s: the worktree or one of its submodules has uncommitted changes", path)
+	if changes.dirty != nil {
+		return fmt.Errorf("remove %s: %w", path, errHiddenChanges)
 	}
 	return nil
+}
+
+// errHiddenChanges marks uncommitted work found by worktreeChangesAt, as
+// opposed to a git status that failed.
+var errHiddenChanges = errors.New("the worktree or one of its submodules has uncommitted changes")
+
+// worktreeChanges is what removing a worktree would lose.
+type worktreeChanges struct {
+	dirty         *contextDirtyJSON
+	untracked     []string
+	onlyUntracked bool
+}
+
+// worktreeChangesAt reads the uncommitted work in path. Unlike
+// worktreeDirtyAt it also sees what submodule.<name>.ignore and
+// status.showUntrackedFiles hide, and it returns a failed git status as an
+// error instead of reporting the worktree clean.
+func worktreeChangesAt(ctx context.Context, runner git.Runner, path string) (worktreeChanges, error) {
+	out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "-z", "--ignore-submodules=none", "--untracked-files=normal")
+	if err != nil {
+		return worktreeChanges{}, fmt.Errorf("check for uncommitted changes: %s: %w", strings.TrimSpace(string(serr)), err)
+	}
+	raw := string(out)
+	c := worktreeChanges{dirty: dirtyPtrIfAny(parseWorktreeScan(raw, "").dirty)}
+	c.untracked, c.onlyUntracked = parseUntrackedPorcelainZ(raw)
+	return c, nil
 }
 
 func isSubmoduleRemoveRefusal(msg string) bool {

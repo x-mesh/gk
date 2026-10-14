@@ -1538,6 +1538,16 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 		// the clean check must also see what submodule.<name>.ignore and
 		// status.showUntrackedFiles hide from a plain git status.
 		if err := checkNoHiddenChanges(ctx, runner, path); err != nil {
+			if !errors.Is(err, errHiddenChanges) {
+				// Commit or stash cannot clear a git status that fails, for
+				// example on a submodule whose git directory is missing.
+				return WithBlocked(
+					fmt.Errorf("worktree remove: refusing to deinitialize submodules: %w", err),
+					"worktree-status-failed",
+					"git status failed in the worktree; check that the worktree and its submodules are intact",
+					errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
+				)
+			}
 			return WithBlocked(
 				fmt.Errorf("worktree remove: refusing to deinitialize submodules: %w", err),
 				"worktree-submodule-clean-required",

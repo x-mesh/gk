@@ -76,7 +76,7 @@ func cleanupSelectFixture() (worktreeCleanupJSON, []WorktreeEntry) {
 			{Path: "/wt/open", Branch: "open", Reasons: []string{"clean", "unmerged"}},
 			{Path: "/wt/busy", Branch: "busy", Reasons: []string{"locked-live"}},
 			{Path: "/wt/main", Branch: "topic", Reasons: []string{"clean", "unmerged"}},
-			{Path: "/wt/det", Reasons: []string{"detached"}},
+			{Path: "/wt/det", Reasons: []string{"detached"}, Locked: true},
 		},
 	}
 	entries := []WorktreeEntry{
@@ -109,7 +109,7 @@ func TestCleanupSelectRows(t *testing.T) {
 		t.Errorf("detached row lost its HEAD: %+v", rows[2])
 	}
 	if !rows[2].entry.Locked {
-		t.Error("a locked detached worktree must carry its lock: cleanup returns before its lock check")
+		t.Error("the lock recorded in the verdict must reach the select row")
 	}
 }
 
@@ -222,7 +222,7 @@ func TestCleanupSelectLoss(t *testing.T) {
 		{"detached commit on no ref", cleanupSelectRow{entry: worktreeCleanupEntry{Path: offRef, Reasons: []string{"detached"}}, detached: true, head: head(offRef)}, "is on no branch or tag"},
 		{"uncommitted file", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Reasons: []string{"protected"}}}, "uncommitted changes"},
 		{"clean candidate", cleanupSelectRow{entry: worktreeCleanupEntry{Path: onRef, Branch: "x", Action: "remove-worktree"}, candidate: true}, ""},
-		{"candidate changed after the verdict", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree"}, candidate: true}, "made after the list opened"},
+		{"candidate changed after the verdict", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree"}, candidate: true}, "found when rechecking"},
 		{"candidate the user chose to discard", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree", Reasons: []string{"dirty-discard", "merged"}}, candidate: true}, ""},
 	}
 	for _, tc := range cases {

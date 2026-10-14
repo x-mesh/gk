@@ -229,6 +229,8 @@ func TestWorktreeCleanup_Global(t *testing.T) {
 	openB := filepath.Join(base, "proj-b", "open-b")
 	repoA.RunGit("worktree", "add", "-b", "feat/done-a", doneA)
 	repoB.RunGit("worktree", "add", "-b", "feat/done-b", doneB)
+	startCleanupBranch(t, doneA)
+	startCleanupBranch(t, doneB)
 	repoB.RunGit("worktree", "add", "-b", "feat/open-b", openB)
 	openRunner := &git.ExecRunner{Dir: openB}
 	if err := os.WriteFile(filepath.Join(openB, "wip.txt"), []byte("wip"), 0o644); err != nil {
@@ -870,6 +872,9 @@ func TestWorktreeList_OneStatusScanPerWorktree(t *testing.T) {
 	if n := counter.get("status --porcelain"); n != 2 {
 		t.Errorf("list ran status --porcelain %d times, want 2 (one per worktree)", n)
 	}
+	if n := counter.get("core.preloadIndex=false status"); n != 2 {
+		t.Errorf("a multi-worktree scan ran %d of 2 statuses with preload off", n)
+	}
 	wantMark := fmt.Sprintf("[dirty: %s]", formatDirtyCounts(*wantDirty, nil))
 	if out := buf.String(); strings.Count(out, "[dirty:") != 1 || !strings.Contains(out, wantMark) {
 		t.Errorf("table should mark only the linked worktree with %q, got:\n%s", wantMark, out)
@@ -967,6 +972,7 @@ func TestWorktreeCleanup_DryRunAndApply(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("worktree add: %v\nout: %s", err, buf.String())
 	}
+	startCleanupBranch(t, wtPath)
 
 	root2, buf2 := buildWorktreeCmd(repo.Dir, "cleanup", "--json", "--delete-branches")
 	if err := root2.Execute(); err != nil {
@@ -1167,6 +1173,188 @@ func TestWorktreeCleanup_SkipsDirtyAndUnmerged(t *testing.T) {
 	}
 	if !cleanupSkippedFor(rep, "ahead", "unmerged") {
 		t.Errorf("ahead worktree not skipped for unmerged: %+v", rep.Skipped)
+	}
+}
+
+// TestWorktreeCleanup_PrunesGoneDirectoryKeepsBranch covers a worktree whose
+// directory was deleted by hand: the leftover registration still reserves an
+// unmerged branch (gk switch fails on it), so cleanup must remove the
+// registration past the merge gate while keeping the branch, even with
+// --delete-branches.
+func TestWorktreeCleanup_PrunesGoneDirectoryKeepsBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("gone")
+	repo.WriteFile("gone.txt", "x\n")
+	repo.Commit("unmerged commit")
+	repo.Checkout("main")
+	gonePath := filepath.Join(t.TempDir(), "gone-wt")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", gonePath, "gone")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add worktree: %v\nout: %s", err, buf.String())
+	}
+	if err := os.RemoveAll(gonePath); err != nil {
+		t.Fatalf("delete worktree directory: %v", err)
+	}
+
+	dry := runCleanupJSON(t, repo.Dir, "--delete-branches")
+	if len(dry.Candidates) != 1 || dry.Candidates[0].Branch != "gone" || dry.Candidates[0].Action != cleanupActionPruneRecord {
+		t.Fatalf("expected one prune-record candidate for gone, got %+v (skipped %+v)", dry.Candidates, dry.Skipped)
+	}
+
+	applied := runCleanupJSON(t, repo.Dir, "--delete-branches", "-y")
+	if len(applied.Removed) != 1 || applied.Removed[0].BranchDeleted {
+		t.Fatalf("expected the record removed and the branch kept, got removed=%+v failed=%+v", applied.Removed, applied.Failed)
+	}
+	if out := repo.RunGit("worktree", "list", "--porcelain"); strings.Contains(out, "gone-wt") {
+		t.Fatalf("registration still listed:\n%s", out)
+	}
+	if !branchExists(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "gone") {
+		t.Fatal("cleanup deleted the branch of a pruned registration")
+	}
+}
+
+// TestWorktreeList_SingleScanKeepsPreload keeps git's preload threads for a
+// lone worktree: they only cause contention when several statuses run at
+// once, and they are what makes one large worktree fast.
+func TestWorktreeList_SingleScanKeepsPreload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	counter := newGitCallCounter(t)
+	root, buf := buildWorktreeCmd(repo.Dir, "list")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("worktree list: %v\nout: %s", err, buf.String())
+	}
+	if n := counter.get("status --porcelain"); n != 1 {
+		t.Fatalf("list ran status --porcelain %d times, want 1", n)
+	}
+	if n := counter.get("core.preloadIndex=false"); n != 0 {
+		t.Errorf("single-worktree scan turned preload off %d times", n)
+	}
+}
+
+// TestWorktreeCleanup_KeepsPorcelainOrder pins the report order to git's
+// worktree order: cleanup classifies worktrees concurrently, and the report
+// must not depend on which classification finishes first.
+func TestWorktreeCleanup_KeepsPorcelainOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	for _, name := range []string{"wt-a", "wt-b", "wt-c", "wt-d"} {
+		addCleanupWorktree(t, repo.Dir, name)
+	}
+	var want []string
+	for _, e := range parseWorktreePorcelain(repo.RunGit("worktree", "list", "--porcelain")) {
+		if e.Branch != "main" {
+			want = append(want, e.Branch)
+		}
+	}
+	rep := runCleanupJSON(t, repo.Dir)
+	var got []string
+	for _, c := range rep.Candidates {
+		got = append(got, c.Branch)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("candidate order = %v, want porcelain order %v", got, want)
+	}
+}
+
+// worktreeListLine returns the gk worktree list row whose BRANCH field is
+// branch, or "" when no row matches.
+func worktreeListLine(out, branch string) string {
+	for _, line := range strings.Split(out, "\n") {
+		for _, f := range strings.Fields(line) {
+			if f == branch {
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+// TestWorktreeList_MarksRemovableAndRepeatsSummary pins list to cleanup's
+// verdict: [removable] marks exactly the rows cleanup -y would remove, the
+// header count equals cleanup's candidate count, and the summary is repeated
+// at the bottom beside the cleanup commands.
+func TestWorktreeList_MarksRemovableAndRepeatsSummary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	addCleanupWorktree(t, repo.Dir, "merged-wt")
+	dirtyPath := addCleanupWorktree(t, repo.Dir, "dirty-wt")
+	if err := os.WriteFile(filepath.Join(dirtyPath, "note.md"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatalf("dirty the worktree: %v", err)
+	}
+	gonePath := addCleanupWorktree(t, repo.Dir, "gone-wt")
+	if err := os.RemoveAll(gonePath); err != nil {
+		t.Fatalf("delete worktree directory: %v", err)
+	}
+	repo.CreateBranch("ahead")
+	repo.WriteFile("ahead.txt", "x\n")
+	repo.Commit("ahead commit")
+	repo.Checkout("main")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", filepath.Join(t.TempDir(), "ahead-wt"), "ahead")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add ahead worktree: %v\nout: %s", err, buf.String())
+	}
+
+	rootL, bufL := buildWorktreeCmd(repo.Dir, "list")
+	if err := rootL.Execute(); err != nil {
+		t.Fatalf("worktree list: %v\nout: %s", err, bufL.String())
+	}
+	out := bufL.String()
+
+	if line := worktreeListLine(out, "merged-wt"); !strings.Contains(line, "[removable]") {
+		t.Errorf("merged clean worktree not marked removable: %q\n%s", line, out)
+	}
+	for _, branch := range []string{"dirty-wt", "ahead"} {
+		if line := worktreeListLine(out, branch); line == "" || strings.Contains(line, "[removable]") {
+			t.Errorf("%s must be listed without [removable]: %q\n%s", branch, line, out)
+		}
+	}
+	if line := worktreeListLine(out, "gone-wt"); !strings.Contains(line, "[prunable]") || strings.Contains(line, "[removable]") {
+		t.Errorf("gone worktree must read [prunable] only: %q\n%s", line, out)
+	}
+
+	cleanup := runCleanupJSON(t, repo.Dir)
+	count := fmt.Sprintf("· %d removable", len(cleanup.Candidates))
+	if got := strings.Count(out, count); got != 2 {
+		t.Errorf("want %q in the header and the NEXT footer (2 times), got %d\n%s", count, got, out)
+	}
+	if !strings.Contains(out, "NEXT") || !strings.Contains(out, "gk wt cleanup -y") {
+		t.Errorf("missing NEXT footer with the cleanup command\n%s", out)
+	}
+}
+
+// TestWorktreeList_NoFooterWithoutRemovable keeps the footer off when there
+// is nothing to clean, so an ordinary list does not grow by a section.
+func TestWorktreeList_NoFooterWithoutRemovable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("ahead")
+	repo.WriteFile("ahead.txt", "x\n")
+	repo.Commit("ahead commit")
+	repo.Checkout("main")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", filepath.Join(t.TempDir(), "ahead-wt"), "ahead")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add ahead worktree: %v\nout: %s", err, buf.String())
+	}
+
+	rootL, bufL := buildWorktreeCmd(repo.Dir, "list")
+	if err := rootL.Execute(); err != nil {
+		t.Fatalf("worktree list: %v\nout: %s", err, bufL.String())
+	}
+	out := bufL.String()
+	if strings.Contains(out, "removable") || strings.Contains(out, "NEXT") {
+		t.Errorf("list with nothing to clean must not show removable or NEXT\n%s", out)
 	}
 }
 

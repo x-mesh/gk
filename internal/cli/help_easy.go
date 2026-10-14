@@ -46,11 +46,12 @@ var easyShortKO = map[string]string{
 	"gk branch-check":        "브랜치 이름이 규칙에 맞는지 확인",
 
 	// 작업 공간(worktree)
-	"gk worktree":        "여러 작업 공간(worktree) 관리",
-	"gk worktree add":    "작업 공간(worktree) 새로 만들기",
-	"gk worktree list":   "작업 공간(worktree) 목록",
-	"gk worktree remove": "작업 공간(worktree) 제거",
-	"gk worktree prune":  "쓰지 않는 worktree 기록 정리",
+	"gk worktree":         "여러 작업 공간(worktree) 관리",
+	"gk worktree add":     "작업 공간(worktree) 새로 만들기",
+	"gk worktree list":    "작업 공간(worktree) 목록",
+	"gk worktree remove":  "작업 공간(worktree) 제거",
+	"gk worktree prune":   "폴더가 지워진 작업 공간(worktree)의 남은 기록 제거",
+	"gk worktree cleanup": "다 쓴 작업 공간(worktree)을 한꺼번에 정리 (-y는 바로 정리, -i는 골라서 정리)",
 
 	// 합치기·충돌
 	"gk resolve":       "충돌(같은 부분을 다르게 고침) 해결 (AI)",

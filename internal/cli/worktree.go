@@ -41,7 +41,8 @@ $SHELL in its directory. Inside it, gk wt moves to another worktree
 without nesting a shell, its [←] back row returns to the original
 shell, and typing 'exit' returns as well (bash, zsh and fish; other
 shells nest and return on exit). Press d to remove the worktree under
-the cursor.
+the cursor. Press x to choose several worktrees to remove in a checkbox
+list with their sizes, the same list as gk worktree cleanup -i.
 
 To cd your own shell instead of opening a subshell, add the shell
 function from gk shell-init to your startup file:
@@ -109,8 +110,20 @@ Examples:
 
 	prune := &cobra.Command{
 		Use:   "prune",
-		Short: "Prune worktree administrative records",
-		RunE:  runWorktreePrune,
+		Short: "Remove the registrations of worktrees whose directory is gone",
+		Long: `Remove the registrations that git keeps in .git/worktrees for worktrees
+whose directory no longer exists, for example after rm -rf of a worktree
+directory. gk worktree list marks these worktrees as [prunable]. While the
+registration exists, git treats its branch as checked out, so gk switch to
+that branch fails.
+
+prune runs git worktree prune -v. It deletes no files and no branches. It keeps
+the registrations of locked worktrees.
+
+To remove finished worktrees that still have a directory, use
+gk worktree cleanup. Cleanup also removes these registrations, except for
+detached worktrees and protected branches.`,
+		RunE: runWorktreePrune,
 	}
 
 	initc := &cobra.Command{
@@ -267,6 +280,22 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 
 	w := cmd.OutOrStdout()
 
+	// "Removable" is cleanup's own verdict with its default flags, so the
+	// count here always equals what gk worktree cleanup -y removes.
+	cfg, _ := config.Load(cmd.Flags())
+	scanned := make(map[string]worktreeListStatus, len(entries))
+	for i, e := range entries {
+		scanned[e.Path] = statuses[i]
+	}
+	removable, err := collectWorktreeCleanup(cmd.Context(), runner, cfg, worktreeCleanupOpts{merged: true, scanned: scanned}, "", currentPath)
+	if err != nil {
+		return err
+	}
+	removablePaths := make(map[string]bool, len(removable.Candidates))
+	for _, c := range removable.Candidates {
+		removablePaths[c.Path] = true
+	}
+
 	// Build the table body and accumulate per-state counts so the
 	// section's title summary can carry the magnitude (n entries · m
 	// detached · k locked) without forcing the user to scan the table.
@@ -299,6 +328,8 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		if e.Prunable {
 			marks += " [prunable]"
 			prunable++
+		} else if removablePaths[e.Path] {
+			marks += " [removable]"
 		}
 		meta := branchMeta[e.Branch]
 		rel := parentRels[e.Branch]
@@ -319,6 +350,9 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	body = append(body, renderWorktreeRows(rows)...)
 
 	summary := fmt.Sprintf("%d %s", len(entries), pluralize(len(entries), "entry", "entries"))
+	if len(removable.Candidates) > 0 {
+		summary += fmt.Sprintf(" · %d removable", len(removable.Candidates))
+	}
 	if detached > 0 {
 		summary += fmt.Sprintf(" · %d detached", detached)
 	}
@@ -333,23 +367,60 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		Layout: ui.SectionLayoutBar,
 		Color:  ui.SectionInfo,
 	}))
+	// A long table pushes the header summary off screen, so repeat it beside
+	// the command that acts on it.
+	if len(removable.Candidates) > 0 {
+		fmt.Fprint(w, ui.RenderSection("next", summary, worktreeCleanupNextLines(), ui.SectionOpts{
+			Layout: ui.SectionLayoutBar,
+			Color:  ui.SectionAction,
+		}))
+	}
 	return nil
+}
+
+// worktreeCleanupNextLines pads by hand because fmt's %-Ns would count the
+// ANSI escapes of the bold label.
+func worktreeCleanupNextLines() []string {
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+	formatOpt := func(cmd, desc string) string {
+		const labelWidth = 20
+		return bold(cmd) + strings.Repeat(" ", labelWidth-len(cmd)) + faint(desc)
+	}
+	return []string{
+		formatOpt("gk wt cleanup", "preview what would be removed"),
+		formatOpt("gk wt cleanup -y", "remove the removable worktrees"),
+	}
 }
 
 // worktreeListStatus is one worktree's uncommitted state as `gk worktree
 // list` reports it. A zero value (nil dirty) means clean, bare, or unscannable.
 type worktreeListStatus struct {
-	dirty     *contextDirtyJSON
-	untracked []string
+	dirty         *contextDirtyJSON
+	untracked     []string
+	onlyUntracked bool
 }
 
+// statusScanWorkers caps the concurrent `git status` runs of a list scan.
+// Each status also starts its own preload-index threads: on a 16-CPU Mac,
+// 57 worktrees scanned 16 at a time spent 14-20s of system time in lstat
+// contention for a 1.6s wall, while 8 at a time with preload off took 1.1s
+// and 7s.
+const statusScanWorkers = 8
+
 // scanWorktreeListStatuses runs one `status --porcelain -z` per non-bare entry,
-// at most NumCPU at a time, and reads both the dirty tally and the untracked
-// names from that one scan. Results are indexed like entries, so the
-// goroutines never share a map.
+// at most statusScanWorkers at a time, and reads both the dirty tally and the
+// untracked names from that one scan. Results are indexed like entries, so
+// the goroutines never share a map.
 func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []worktreeListStatus {
 	out := make([]worktreeListStatus, len(entries))
-	sem := make(chan struct{}, runtime.NumCPU())
+	sem := make(chan struct{}, min(runtime.NumCPU(), statusScanWorkers))
+	args := []string{"status", "--porcelain", "-z"}
+	// Preload threads speed up one large worktree; across several worktrees
+	// the scan is already parallel and they only add contention.
+	if len(entries) > 1 {
+		args = append([]string{"-c", "core.preloadIndex=false"}, args...)
+	}
 	var wg sync.WaitGroup
 	for i, e := range entries {
 		if e.Bare {
@@ -360,12 +431,12 @@ func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []wo
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			raw, _, err := (&git.ExecRunner{Dir: path}).Run(ctx, "status", "--porcelain", "-z")
+			raw, _, err := (&git.ExecRunner{Dir: path}).Run(ctx, args...)
 			if err != nil {
 				return
 			}
 			out[i].dirty = dirtyPtrIfAny(parseWorktreeScan(string(raw), "").dirty)
-			out[i].untracked, _ = parseUntrackedPorcelainZ(string(raw))
+			out[i].untracked, out[i].onlyUntracked = parseUntrackedPorcelainZ(string(raw))
 		}(i, e.Path)
 	}
 	wg.Wait()
@@ -1514,7 +1585,7 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	gitArgs = append(gitArgs, path)
 	if _, stderr, err := runner.Run(ctx, gitArgs...); err != nil {
 		msg := strings.TrimSpace(string(stderr))
-		if strings.Contains(strings.ToLower(msg), "containing submodules cannot be moved or removed") {
+		if isSubmoduleRemoveRefusal(msg) {
 			return WithBlocked(
 				fmt.Errorf("worktree remove: %s: %w", msg, err),
 				"worktree-contains-submodules",
@@ -1752,6 +1823,7 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 					},
 				},
 				{Key: "d", FilterKey: "ctrl+d", Help: "d remove", Exit: true},
+				{Key: "x", FilterKey: "ctrl+x", Help: "x clean up several", Exit: true},
 			},
 		}
 		picked, err := picker.Pick(ctx, "worktree", items)
@@ -1772,6 +1844,17 @@ func runWorktreeTUI(cmd *cobra.Command, args []string) error {
 				if err := worktreeTUIRemove(ctx, actRunner, stderr, *entry, actProtected); err != nil {
 					fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 				}
+			}
+			continue
+		}
+		if picked.ExtraAction == "x" {
+			if shown {
+				fmt.Fprintln(stderr, color.YellowString("x cleans up the repository you are in; press g to leave the global view first"))
+				continue
+			}
+			fmt.Fprintln(stderr, "opening the cleanup list (gk worktree cleanup -i)...")
+			if err := runWorktreeCleanupSelect(ctx, stderr, runner, cfg, worktreeCleanupOpts{merged: true}, herePath); err != nil {
+				fmt.Fprintf(stderr, "%s %v\n", color.RedString("error:"), err)
 			}
 			continue
 		}

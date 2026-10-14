@@ -72,7 +72,18 @@ func addCleanupWorktree(t *testing.T, repoDir, name string) string {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("add worktree %s: %v\nout: %s", name, err, buf.String())
 	}
+	startCleanupBranch(t, wtPath)
 	return wtPath
+}
+
+// startCleanupBranch moves the worktree's branch forward and back. Its tip
+// stays merged into main, but the branch is no longer one that never moved
+// since creation, which cleanup keeps as unstarted.
+func startCleanupBranch(t *testing.T, wtPath string) {
+	t.Helper()
+	wt := testutil.Attach(t, wtPath)
+	wt.RunGit("commit", "--allow-empty", "-m", "start work")
+	wt.RunGit("reset", "--hard", "HEAD~1")
 }
 
 func runCleanupJSON(t *testing.T, repoDir string, args ...string) worktreeCleanupJSON {
@@ -144,6 +155,33 @@ func TestWorktreeCleanup_DisposableUntrackedIsReclaimed(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(withNote, "REVIEW.md")); err != nil {
 		t.Fatalf("authored file lost: %v", err)
+	}
+}
+
+// TestRenderWorktreeCleanup_NamesSkipReasonAndPrunedRecord pins two output
+// rules: a kept row reads its skip reason, not a check it passed earlier
+// ("clean"), and a prune-record candidate says the branch is kept.
+func TestRenderWorktreeCleanup_NamesSkipReasonAndPrunedRecord(t *testing.T) {
+	report := worktreeCleanupJSON{
+		DryRun: true,
+		Candidates: []worktreeCleanupEntry{
+			{Path: "/wt/gone", Branch: "gone", Action: cleanupActionPruneRecord, Reasons: []string{"prunable"}},
+		},
+		Skipped: []worktreeCleanupEntry{
+			{Path: "/wt/ahead", Branch: "ahead", Target: "main", Reasons: []string{"clean", "unmerged"}},
+		},
+	}
+	var buf bytes.Buffer
+	renderWorktreeCleanup(&buf, report)
+	out := buf.String()
+	for _, want := range []string{
+		"would prune record /wt/gone (gone; directory is gone, branch kept)",
+		"kept (1 unmerged):",
+		"/wt/ahead (ahead): unmerged (not merged into its parent/base)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n%s", want, out)
+		}
 	}
 }
 

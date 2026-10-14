@@ -1534,11 +1534,14 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
 			)
 		}
-		if dirty := worktreeDirtyAt(ctx, path); dirty != nil {
+		// deinit --force and the doubled --force below discard changes, so
+		// the clean check must also see what submodule.<name>.ignore and
+		// status.showUntrackedFiles hide from a plain git status.
+		if err := checkNoHiddenChanges(ctx, runner, path); err != nil {
 			return WithBlocked(
-				fmt.Errorf("worktree remove: refusing to deinitialize submodules in dirty worktree %s", path),
+				fmt.Errorf("worktree remove: refusing to deinitialize submodules: %w", err),
 				"worktree-submodule-clean-required",
-				"commit or stash changes before deinitializing submodules",
+				"commit or stash changes, including inside submodules, before deinitializing submodules",
 				errRemedy{Command: selfCmd("context --include=diff"), Safety: "safe"},
 			)
 		}

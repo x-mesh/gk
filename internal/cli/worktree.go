@@ -219,6 +219,9 @@ type worktreeListEntryJSON struct {
 	// Untracked names the paths behind dirty.untracked, so a consumer can tell
 	// a stray lockfile from a file someone wrote.
 	Untracked []string `json:"untracked,omitempty"`
+	// StatusError is the error of a git status that failed. dirty is then
+	// unknown, not clean.
+	StatusError string `json:"status_error,omitempty"`
 	// Parent standing, measured against Parent (not the upstream that
 	// Ahead/Behind describe): parent_state is same | merged | ahead |
 	// diverged, and same/merged mean the branch holds no commit its parent
@@ -271,6 +274,9 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 				j.Dirty = statuses[i].dirty
 				if j.Dirty != nil && j.Dirty.Untracked > 0 {
 					j.Untracked = statuses[i].untracked
+				}
+				if err := statuses[i].err; err != nil && !e.Prunable {
+					j.StatusError = err.Error()
 				}
 			}
 			enriched = append(enriched, j)
@@ -399,7 +405,8 @@ func worktreeCleanupNextLines() []string {
 }
 
 // worktreeListStatus is one worktree's uncommitted state as `gk worktree
-// list` reports it. A zero value (nil dirty) means clean, bare, or unscannable.
+// list` reports it. A zero value (nil dirty, nil err) means clean or bare; a
+// set err means git status failed and the other fields are unknown.
 type worktreeListStatus struct {
 	dirty         *contextDirtyJSON
 	untracked     []string

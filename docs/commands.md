@@ -3031,7 +3031,7 @@ two cleanup commands:
 
 `--json` output does not change.
 
-`--json` adds `untracked` (the paths behind `dirty.untracked`), `parent`, `parent_source` (`explicit` / `inferred`),
+`--json` adds `untracked` (the paths behind `dirty.untracked`), `status_error` (the error of a `git status` that failed; `dirty` is then unknown, not clean), `parent`, `parent_source` (`explicit` / `inferred`),
 `parent_ahead`, `parent_behind`, and `parent_state`
 (`same` / `merged` / `ahead` / `diverged`) alongside the existing
 upstream-relative `ahead` / `behind`.

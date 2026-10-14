@@ -149,7 +149,8 @@ func TestMainWorktreeOf(t *testing.T) {
 
 // TestWorktreeCleanup_PrunableWithoutParentKeepsGates covers a worktree on a
 // volume that is not mounted: git marks it prunable, but its directory may
-// still exist, so an unmerged branch must stay behind the merge gate.
+// still exist, so it must not be pruned as a bare record. Its status cannot
+// be read either, so cleanup keeps it before the merge gate.
 func TestWorktreeCleanup_PrunableWithoutParentKeepsGates(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
@@ -168,8 +169,8 @@ func TestWorktreeCleanup_PrunableWithoutParentKeepsGates(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := runCleanupJSON(t, repo.Dir)
-	if len(rep.Candidates) != 0 || !cleanupSkippedFor(rep, "vol", "unmerged") {
-		t.Fatalf("want the unmerged entry kept as unmerged, got candidates=%+v skipped=%+v", rep.Candidates, rep.Skipped)
+	if len(rep.Candidates) != 0 || !cleanupSkippedFor(rep, "vol", "status-unreadable") {
+		t.Fatalf("want the entry kept as status-unreadable, got candidates=%+v skipped=%+v", rep.Candidates, rep.Skipped)
 	}
 }
 

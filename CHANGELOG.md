@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `gk worktree cleanup` keeps a worktree whose `git status` fails, with the reason `status-unreadable` and the error of git, and `gk worktree list` marks it `[status unreadable]` (`status_error` in `--json`). Before, cleanup counted such a worktree as clean, so a merged one became a candidate and got the `[removable]` mark. A worktree on a volume that is not mounted is kept for the same reason.
+- The yes/no dialogs wrap a description line that is wider than the terminal and indent every line. Before, the terminal cut the line, and the loss confirmation of `gk worktree cleanup -i` lost the reason behind a long worktree path.
+
 - The loss confirmation of `gk worktree cleanup -i` lists uncommitted changes inside a submodule, also when `submodule.<name>.ignore` or `status.showUntrackedFiles=no` hides them from `git status`. A worktree whose changes cannot be read, for example because a submodule is broken, counts as a loss and is listed. Before, such a worktree passed as clean. The selected worktrees are checked in parallel, eight at a time, and a spinner shows while they are checked.
 - `gk worktree remove --deinit-submodules` stops with the code `worktree-status-failed` when `git status` fails in the worktree. Before, it used `worktree-submodule-clean-required` and told you to commit or stash, which cannot fix a broken submodule.
 - `gk worktree cleanup --json` reports `locked` for detached and protected worktrees too. Before, the field was missing for them, because cleanup returns before its lock check for such worktrees.

@@ -2866,8 +2866,14 @@ worktree, even with `--delete-branches`. The rules for the current worktree,
 detached worktrees, and protected branches still apply. In `--json`, the reason
 is `prunable` and the action is `prune-record`. Cleanup does this only when the
 parent directory of the worktree still exists. git also marks a worktree on a
-volume that is not mounted as prunable, and such an entry goes through the
-usual checks.
+volume that is not mounted as prunable. Cleanup cannot read the status of such
+an entry, so it keeps the entry with the reason `status-unreadable`.
+
+If `git status` fails in a worktree, for example because a submodule is broken,
+cleanup does not know which work the worktree holds. Cleanup keeps such a
+worktree with the reason `status-unreadable` and shows the error of git, also
+with `--discard-dirty`. `gk worktree list` marks the worktree
+`[status unreadable]`.
 
 A branch that did not move after it was created has no work of its own, so the
 merge check counts it as merged. Its worktree is often a workspace that an
@@ -3000,7 +3006,7 @@ Each row pairs the branch's tip with its parent and the distance between them:
 | `VS PARENT` | Standing against `PARENT`. `● same` (green) — the two tips are the same commit. `● merged` (green) — the parent has everything this branch has and moved on. `↑2` / `↑2 ↓66` (yellow) — commits that live only here. `-` when the parent is unknown or its ref is gone. |
 | `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
 | `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |
-| `FLAGS` | `[dirty: 4 modified, 1 untracked]` (uncommitted work, spelled out per kind), `[locked]`, `[prunable]`, `[removable]` (`gk worktree cleanup -y` removes this worktree). |
+| `FLAGS` | `[dirty: 4 modified, 1 untracked]` (uncommitted work, spelled out per kind), `[status unreadable]` (`git status` failed, so the uncommitted work is unknown), `[locked]`, `[prunable]`, `[removable]` (`gk worktree cleanup -y` removes this worktree). |
 
 Green `VS PARENT` means the branch holds no commit its parent lacks — the
 precondition for reclaiming the worktree. It is not the whole verdict:
@@ -3025,7 +3031,7 @@ two cleanup commands:
 
 `--json` output does not change.
 
-`--json` adds `untracked` (the paths behind `dirty.untracked`), `parent`, `parent_source` (`explicit` / `inferred`),
+`--json` adds `untracked` (the paths behind `dirty.untracked`), `status_error` (the error of a `git status` that failed; `dirty` is then unknown, not clean), `parent`, `parent_source` (`explicit` / `inferred`),
 `parent_ahead`, `parent_behind`, and `parent_state`
 (`same` / `merged` / `ahead` / `diverged`) alongside the existing
 upstream-relative `ahead` / `behind`.

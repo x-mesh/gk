@@ -90,6 +90,7 @@ const (
 	reasonDirtyDiscard        cleanupReason = "dirty-discard"
 	reasonDisposableUntracked cleanupReason = "disposable-untracked"
 	reasonDirty               cleanupReason = "dirty"
+	reasonStatusUnreadable    cleanupReason = "status-unreadable"
 	reasonClean               cleanupReason = "clean"
 	reasonUnstarted           cleanupReason = "unstarted"
 	reasonStale               cleanupReason = "stale"
@@ -757,7 +758,14 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 		return row, true
 	}
 
-	dirty, untracked, onlyUntracked := cleanupWorktreeStatus(ctx, e.Path, opts.scanned)
+	st, err := cleanupWorktreeStatus(ctx, e.Path, opts.scanned)
+	if err != nil {
+		// Nothing is known about the work in the worktree, so it is kept,
+		// also under --discard-dirty.
+		row.Error = err.Error()
+		return skip(reasonStatusUnreadable)
+	}
+	dirty, untracked, onlyUntracked := st.dirty, st.untracked, st.onlyUntracked
 	row.Dirty = dirty
 	if dirty != nil {
 		disposable := disposableUntrackedOnly(untracked, onlyUntracked)
@@ -883,16 +891,12 @@ func branchCreatedAt(ctx context.Context, runner git.Runner, branch string) (tim
 	return entries[len(entries)-1].at, true
 }
 
-func cleanupWorktreeStatus(ctx context.Context, path string, scanned map[string]worktreeListStatus) (dirty *contextDirtyJSON, untracked []string, onlyUntracked bool) {
-	if st, ok := scanned[path]; ok {
-		return st.dirty, st.untracked, st.onlyUntracked
+func cleanupWorktreeStatus(ctx context.Context, path string, scanned map[string]worktreeListStatus) (worktreeListStatus, error) {
+	st, ok := scanned[path]
+	if !ok {
+		st = readWorktreeListStatus(ctx, path)
 	}
-	dirty = worktreeDirtyAt(ctx, path)
-	if dirty == nil {
-		return nil, nil, false
-	}
-	untracked, onlyUntracked = worktreeUntrackedAt(ctx, path)
-	return dirty, untracked, onlyUntracked
+	return st, st.err
 }
 
 func cleanupMergeTarget(ctx context.Context, runner git.Runner, base, branch string) string {
@@ -1030,7 +1034,11 @@ type worktreeChanges struct {
 func worktreeChangesAt(ctx context.Context, runner git.Runner, path string) (worktreeChanges, error) {
 	out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "-z", "--ignore-submodules=none", "--untracked-files=normal")
 	if err != nil {
-		return worktreeChanges{}, fmt.Errorf("check for uncommitted changes: %s: %w", strings.TrimSpace(string(serr)), err)
+		msg := strings.TrimSpace(string(serr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return worktreeChanges{}, errors.New("git status: " + msg)
 	}
 	raw := string(out)
 	c := worktreeChanges{dirty: dirtyPtrIfAny(parseWorktreeScan(raw, "").dirty)}

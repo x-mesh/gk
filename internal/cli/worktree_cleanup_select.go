@@ -107,7 +107,8 @@ func loadCleanupRowInfo(ctx context.Context, runner *git.ExecRunner, cfg *config
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r.info = cleanupRowInfoFor(ctx, runner, *r, branches[r.entry.Branch], subjects[r.entry.Branch], base)
-			if !r.candidate && r.entry.Dirty == nil && !cleanupHasReason(r.entry, reasonClean) && cleanupPrimaryReason(r.entry) != reasonPrunable {
+			reason := cleanupPrimaryReason(r.entry)
+			if !r.candidate && r.entry.Dirty == nil && !cleanupHasReason(r.entry, reasonClean) && reason != reasonPrunable && reason != reasonStatusUnreadable {
 				r.entry.Dirty = worktreeDirtyAt(ctx, r.entry.Path)
 				if r.entry.Dirty != nil {
 					r.entry.Untracked, _ = worktreeUntrackedAt(ctx, r.entry.Path)
@@ -263,6 +264,8 @@ func cleanupSelectDetail(r cleanupSelectRow) string {
 	}
 	switch {
 	case reason == reasonPrunable:
+	case reason == reasonStatusUnreadable:
+		state = append(state, "uncommitted changes unknown: "+r.entry.Error)
 	case r.entry.Dirty != nil:
 		state = append(state, "uncommitted: "+formatDirtyCounts(*r.entry.Dirty, r.entry.Untracked))
 	default:

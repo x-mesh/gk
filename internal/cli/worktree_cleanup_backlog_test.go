@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -173,5 +174,78 @@ func TestCleanupSelectLoss_RecheckReplacesListState(t *testing.T) {
 	loss := cleanupSelectLoss(ctx, &git.ExecRunner{Dir: broken.Dir}, &r)
 	if !strings.Contains(loss, "could not check") || !strings.Contains(loss, "2 modified") {
 		t.Fatalf("a failed recheck must keep the known counts, loss=%q", loss)
+	}
+}
+
+// TestWorktreeCleanup_StatusUnreadableIsKept keeps a worktree whose git
+// status fails: nothing is known about its work, so neither cleanup nor the
+// [removable] mark of gk worktree list may treat it as clean.
+func TestWorktreeCleanup_StatusUnreadableIsKept(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo, wtPath := newMergedSubmoduleWorktree(t)
+	isCandidate := func(rep worktreeCleanupJSON) bool {
+		for _, c := range rep.Candidates {
+			if sameDir(c.Path, wtPath) {
+				return true
+			}
+		}
+		return false
+	}
+	if !isCandidate(runCleanupJSON(t, repo.Dir)) {
+		t.Fatal("setup: the merged worktree must be a candidate while its status reads")
+	}
+
+	breakSubmodule(t, wtPath)
+	rep := runCleanupJSON(t, repo.Dir)
+	if isCandidate(rep) {
+		t.Fatal("a worktree whose status fails is a cleanup candidate")
+	}
+	var kept *worktreeCleanupEntry
+	for i := range rep.Skipped {
+		if sameDir(rep.Skipped[i].Path, wtPath) {
+			kept = &rep.Skipped[i]
+		}
+	}
+	if kept == nil || cleanupPrimaryReason(*kept) != reasonStatusUnreadable || kept.Error == "" {
+		t.Fatalf("want the worktree kept as status-unreadable with the git error, got %+v", kept)
+	}
+	// --discard-dirty drops known changes; changes nobody could read are not
+	// known, so it must not reach this worktree.
+	if isCandidate(runCleanupJSON(t, repo.Dir, "--discard-dirty")) {
+		t.Fatal("--discard-dirty made an unreadable worktree a candidate")
+	}
+
+	listJSON, jbuf := buildWorktreeCmd(repo.Dir, "list", "--json")
+	if err := listJSON.Execute(); err != nil {
+		t.Fatalf("worktree list --json: %v\n%s", err, jbuf.String())
+	}
+	var rows []worktreeListEntryJSON
+	if err := json.Unmarshal(jbuf.Bytes(), &rows); err != nil {
+		t.Fatalf("unmarshal list: %v\n%s", err, jbuf.String())
+	}
+	for _, r := range rows {
+		if sameDir(r.Path, wtPath) && r.StatusError == "" {
+			t.Fatalf("list --json reports an unreadable worktree without status_error: %+v", r)
+		}
+	}
+
+	list, buf := buildWorktreeCmd(repo.Dir, "list")
+	if err := list.Execute(); err != nil {
+		t.Fatalf("worktree list: %v\n%s", err, buf.String())
+	}
+	if line := worktreeListLine(buf.String(), "feat/sub-wt"); !strings.Contains(line, "[status unreadable]") || strings.Contains(line, "[removable]") {
+		t.Fatalf("list must mark the worktree unreadable, not removable: %q\n%s", line, buf.String())
+	}
+}
+
+// TestCleanupSelectDetail_StatusUnreadable keeps the detail box of cleanup -i
+// from calling a worktree clean when its status could not be read.
+func TestCleanupSelectDetail_StatusUnreadable(t *testing.T) {
+	r := cleanupSelectRow{entry: worktreeCleanupEntry{Path: "/wt/broken", Branch: "broken", Reasons: []string{"status-unreadable"}, Error: "git status: fatal: broken"}}
+	detail := cleanupSelectDetail(r)
+	if strings.Contains(detail, "no uncommitted changes") || !strings.Contains(detail, "uncommitted changes unknown") {
+		t.Fatalf("detail must say the changes are unknown:\n%s", detail)
 	}
 }

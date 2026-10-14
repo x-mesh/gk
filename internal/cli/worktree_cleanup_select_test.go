@@ -362,6 +362,29 @@ func TestWorktreeCleanup_SubmoduleCheckSeesHiddenUntracked(t *testing.T) {
 	assertCleanupKept(t, runCleanupJSON(t, repo.Dir, "-y"), notes)
 }
 
+// TestWorktreeRemove_DeinitSubmodulesKeepsHiddenChanges covers
+// `gk worktree remove --deinit-submodules`: submodule.<name>.ignore hides
+// changes inside a submodule from a plain git status, so the clean gate
+// passed and the forced removal deleted the unsaved file.
+func TestWorktreeRemove_DeinitSubmodulesKeepsHiddenChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo, wtPath := newMergedSubmoduleWorktree(t)
+	repo.RunGit("config", "submodule.vendor/sub.ignore", "all")
+	unsaved := filepath.Join(wtPath, "vendor", "sub", "unsaved.txt")
+	if err := os.WriteFile(unsaved, []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rm, buf := buildWorktreeCmd(repo.Dir, "remove", "--deinit-submodules", wtPath)
+	if err := rm.Execute(); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("want an uncommitted-changes refusal, got err=%v\n%s", err, buf.String())
+	}
+	if _, err := os.Stat(unsaved); err != nil {
+		t.Fatalf("the unsaved file inside the submodule is gone: %v", err)
+	}
+}
+
 func TestDirDiskUsage(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a", "b", filepath.Join("nested", "c")} {

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.151.1] - 2026-10-14
+
 ### Fixed
 
 - `gk worktree cleanup` keeps a worktree whose `git status` fails, with the reason `status-unreadable` and the error of git, and `gk worktree list` marks it `[status unreadable]` (`status_error` in `--json`). Before, cleanup counted such a worktree as clean, so a merged one became a candidate and got the `[removable]` mark. A worktree on a volume that is not mounted is kept for the same reason.

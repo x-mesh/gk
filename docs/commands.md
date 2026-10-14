@@ -2607,7 +2607,7 @@ Alias: `gk wt`.
 | `add <name\|path> [branch]` | Create a worktree (managed base for relative names, passthrough for absolute paths) |
 | `acquire <branch>` | Create or reuse an initialized worktree and print its path |
 | `remove <path>` | Remove a worktree |
-| `prune` | Prune worktree administrative records |
+| `prune` | Remove the registrations of worktrees whose directory is gone |
 | `run <branch> -- <cmd>` | Create (or reuse) a worktree, run a command in it, optionally reclaim it with `--cleanup` |
 | `finish` | Commit/promote the current worktree branch, optionally cleaning up the worktree |
 | `cleanup` | Bulk-remove safe, finished worktrees |
@@ -2618,6 +2618,7 @@ Running `gk wt` or `gk worktree` without a subcommand opens an interactive picke
 
 - **enter** — spawns a new `$SHELL` inside the selected worktree so you can work in it immediately. Type `exit` to return to your original shell at its original cwd, or run `gk wt` inside the subshell and pick `[←] back to <dir>`. In that inner `gk wt`, picking another worktree replaces the subshell instead of nesting one, so you are always one shell deep. This works in bash, zsh and fish: gk starts them with a `gk` shell function defined after your own startup files (an alias named `gk` is replaced inside the subshell). Other shells nest as before and return on `exit`. Inside the subshell, `$GK_WT` holds the worktree path and `$GK_WT_PARENT_PWD` holds where you came from. (See `--print-path` below for scripting workflows.) If the worktree directory no longer exists, the picker stays open and tells you to press `d`. If you select the worktree you are in, gk prints `already in <path>` and exits.
 - **d** (`ctrl+d` while the filter has focus) — remove the worktree under the cursor: confirm prompt → `git worktree remove <path>`. The main worktree is refused before the prompt. Dirty/locked worktrees get a follow-up "force-remove anyway?" prompt; stale admin entries auto-prune. After a clean remove you're also offered to delete the branch if no other worktree holds it.
+- **x** (`ctrl+x` while the filter has focus) — open the cleanup checkbox list, the same list as `gk worktree cleanup -i`. After the removals, the picker opens again. In the global view, `x` prints a note and does nothing, because the list works on one repository.
 - **add new** — the form opens on the create-new-branch toggle, since that choice selects between two different flows.
   - **new branch** — name, branch name, base ref. The base-ref field names the current branch as its default (`blank = <branch>`) — leaving it blank cuts the new branch from where you stand, not from main. A newly created branch records its fork parent (`gk-parent`), same as `gk worktree add`. Name collisions with an orphan branch surface an inline three-way choice (reuse / delete & recreate / cancel) instead of a dead-end error.
   - **existing** — opens a branch picker instead of asking you to type a name, then suggests the worktree name from the branch you chose (`feat/relay-agent-notify` → `relay-agent-notify`). Rows are ordered **newest commit first** — unlike `gk sw`, which lists locals alphabetically — because this list answers "which one was I working on". `●` local, `○` remote-only, `⊗` already checked out somewhere: occupied rows stay listed and name their worktree, but selecting one is refused (git allows a branch in one worktree only, and that includes the branch you are standing on). Remote branches are hidden until `ctrl+r`, yet join the list as soon as you type a filter. Picking one runs `git worktree add --track -b <name> <path> <remote>/<name>`, creating the local branch and its upstream in the same command. `Esc` at the name prompt returns to the picker rather than cancelling the whole form.
@@ -2726,6 +2727,17 @@ Project layout on disk:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f, --force` | false | Force remove even when the worktree is dirty or locked |
+
+### gk worktree prune
+
+Remove the registrations of worktrees whose directory is gone, for example after
+`rm -rf` of a worktree directory. `gk worktree list` marks these worktrees as
+`[prunable]`. While a registration exists, git treats its branch as checked out,
+and `gk switch` to that branch fails.
+
+`prune` runs `git worktree prune -v`. It does not delete files or branches. It
+keeps the registrations of locked worktrees. `gk worktree cleanup` also removes
+these registrations, except for detached worktrees and protected branches.
 
 ### gk worktree rename
 
@@ -2846,6 +2858,85 @@ then runs a plain `git worktree remove`, so git still refuses if anything else
 appeared in between. A tracked edit, a staged change, or any other untracked file
 (a note, a review report, a directory) keeps the worktree as `dirty`.
 
+If the directory of a worktree is already gone (`[prunable]` in
+`gk worktree list`), only its registration in `.git/worktrees` is left. Cleanup
+removes this registration also when the branch is not merged or not old enough,
+because no file and no commit is lost. Cleanup keeps the branch of such a
+worktree, even with `--delete-branches`. The rules for the current worktree,
+detached worktrees, and protected branches still apply. In `--json`, the reason
+is `prunable` and the action is `prune-record`.
+
+A branch that did not move after it was created has no work of its own, so the
+merge check counts it as merged. Its worktree is often a workspace that an
+agent opened a moment ago. Cleanup keeps such a worktree with the reason
+`unstarted`. Cleanup reads this from the reflog of the branch: the reflog holds
+only the `branch: Created from` entry. If you give `--stale`, cleanup removes an
+unstarted worktree when its branch was created longer ago than the given age.
+If the reflog cannot be read, cleanup uses the merge check only.
+
+If a worktree checked out a submodule, git refuses a plain `git worktree remove`.
+For such a worktree, cleanup deinitializes the submodules and removes the
+worktree with `git worktree remove --force --force`. This also removes the
+submodule checkouts in the worktree. Cleanup does not check them for commits
+that their remote does not have.
+
+#### Choose in a list (`-i`)
+
+`gk worktree cleanup -i` opens a checkbox list instead of the report. The list
+shows every worktree except the current worktree, the main worktree, bare
+entries, and worktrees that a running process locked. The candidates of cleanup
+are checked.
+
+| Column | Meaning |
+|---|---|
+| `BRANCH` | The branch, or `(detached)` |
+| `SIZE` | The disk space of the worktree |
+| `COMMIT` | The age of the last commit |
+| `STATE` | The verdict of cleanup with its numbers (`merged`, `unmerged ↑3`, `unstarted, created 2h ago`, `prunable: directory gone`), uncommitted changes (`dirty: 2 modified`), and the push state (`pushed`, `↑2 unpushed`, `not pushed`, `upstream gone`) |
+
+The box under the list describes the row under the cursor in three lines: the
+full path, the last commit with its message and when the branch was created,
+and the distance to its parent or base (`vs develop: ↑1 ↓18`) with the push
+state and the uncommitted changes. The last line of the box shows how many rows
+you checked, their total size, and the sort order. Press `s` to change the
+order: safe first (the default), oldest commit, largest, and name. The checked
+rows stay checked.
+If the list is taller than the terminal, it scrolls and keeps a few rows free
+above the title, because some terminals cover the top rows with a header.
+
+```
+█ CLEANUP  choose the worktrees to remove · checked rows are safe to remove
+
+     BRANCH        SIZE  COMMIT  STATE
+ [x] feat/login  1.2GiB      2d  merged · pushed
+ [x] old-spike       -       3w  prunable: directory gone
+ [ ] (detached)  7.5GiB     18h  detached · dirty: 9 staged
+ [ ] feat/wip    640MiB      1d  unmerged ↑3 · ↑2 unpushed
+
+details
+╭──────────────────────────────────────────────────────────────────────╮
+│ feat/wip  /Users/me/.gk/worktree/gk/feat-wip                         │
+│ last commit 1d ago "fix: retry handshake" · created 4d ago           │
+│ vs develop: ↑3 ↓18 · ↑2 unpushed · no uncommitted changes            │
+│ cleanup: 2 of 4 checked · 1.2GiB on disk · sort: safe first (s) · …  │
+╰──────────────────────────────────────────────────────────────────────╯
+```
+
+You can also check a worktree that cleanup keeps. If a checked worktree holds
+uncommitted changes, or a detached HEAD that no branch or tag contains, cleanup
+lists what is lost and asks again. The default answer is No. No keeps these
+worktrees and removes the others. Esc removes nothing. The branch of a
+worktree that you check yourself is never deleted. `--delete-branches` applies
+only to the candidates of cleanup.
+
+The size is the disk space of the files in the worktree, like `du -s`. Files
+that APFS cloned share their blocks, so the real space that a removal frees can
+be smaller. Cleanup measures 8 worktrees at a time before the list opens. In
+one measurement, 55 worktrees with 49 GiB of files took about 1.5 seconds.
+
+`-i` needs an interactive terminal. You cannot combine it with `-y`,
+`--global`, or `--json`.
+
 ```bash
 gk worktree cleanup --merged --stale 7d --json
 gk worktree cleanup --merged --stale 7d --delete-branches -y
@@ -2863,10 +2954,11 @@ directories.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--merged` | true | Only remove branches merged into parent/base — including **squash-merged** ones, verified by a merge-tree content check (reason `squash-merged`), since a squash merge never becomes an ancestor |
-| `--stale <age>` | — | Require branch tip older than an age (`7d`, `12h`, `30m`) |
-| `--delete-branches` | false | Delete the local branch after removing its worktree |
+| `--merged` | true | Only remove branches merged into parent/base — including **squash-merged** ones, verified by a merge-tree content check (reason `squash-merged`), since a squash merge never becomes an ancestor. Does not apply to `[prunable]` registrations |
+| `--stale <age>` | — | Require branch tip older than an age (`7d`, `12h`, `30m`). Does not apply to `[prunable]` registrations |
+| `--delete-branches` | false | Delete the local branch after removing its worktree. Never deletes the branch of a `[prunable]` registration |
 | `-y, --yes` | false | Actually remove candidates |
+| `-i, --interactive` | false | Choose the worktrees to remove in a checkbox list with their size. Needs a terminal |
 | `--force-stale-locks` | false | Unlock/remove stale locked worktrees |
 | `--discard-dirty` | false | Destructively remove dirty worktrees with `git worktree remove --force` |
 | `-g, --global` | false | Clean worktrees of all projects under `worktree.base`, also outside a repository |
@@ -2900,13 +2992,30 @@ Each row pairs the branch's tip with its parent and the distance between them:
 | `VS PARENT` | Standing against `PARENT`. `● same` (green) — the two tips are the same commit. `● merged` (green) — the parent has everything this branch has and moved on. `↑2` / `↑2 ↓66` (yellow) — commits that live only here. `-` when the parent is unknown or its ref is gone. |
 | `AGE` | Compact age of the branch's last commit (`5m`, `2h`, `10d`). |
 | `PATH` | Absolute worktree path; long temp paths get a middle ellipsis with the basename preserved. |
-| `FLAGS` | `[dirty: 4 modified, 1 untracked]` (uncommitted work, spelled out per kind), `[locked]`, `[prunable]`. |
+| `FLAGS` | `[dirty: 4 modified, 1 untracked]` (uncommitted work, spelled out per kind), `[locked]`, `[prunable]`, `[removable]` (`gk worktree cleanup -y` removes this worktree). |
 
 Green `VS PARENT` means the branch holds no commit its parent lacks — the
 precondition for reclaiming the worktree. It is not the whole verdict:
 `[dirty: …]` marks work that was never committed at all, and a green row with
 that flag still has something to lose. `gk worktree cleanup` applies the full
 check (dirty, locks, protected branches) and is the safe way to act in bulk.
+
+The table shows that full check as `[removable]`. `gk worktree list` runs the
+classification of `gk worktree cleanup` with its default flags, so the
+`N removable` count in the header is the number of worktrees that
+`gk worktree cleanup -y` removes. A `[prunable]` row that cleanup removes is
+part of this count, but it keeps the `[prunable]` flag only. If the count is
+not zero, the list ends with a `NEXT` section. This section repeats the header
+summary, because a long table pushes the header off the screen, and shows the
+two cleanup commands:
+
+```
+█  NEXT   5 entries · 2 removable · 1 prunable
+   gk wt cleanup       preview what would be removed
+   gk wt cleanup -y    remove the removable worktrees
+```
+
+`--json` output does not change.
 
 `--json` adds `untracked` (the paths behind `dirty.untracked`), `parent`, `parent_source` (`explicit` / `inferred`),
 `parent_ahead`, `parent_behind`, and `parent_state`

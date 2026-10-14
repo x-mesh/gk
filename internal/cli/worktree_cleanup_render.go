@@ -19,6 +19,7 @@ var cleanupSkipNotes = map[string]string{
 	"no-merge-target": "no parent/base to check the merge against",
 	"target-is-self":  "its merge target is itself",
 	"unmerged":        "not merged into its parent/base",
+	"unstarted":       "branch never moved since it was created; may be a workspace in use",
 	"repo-unreadable": "repository could not be read",
 }
 
@@ -26,6 +27,10 @@ func renderWorktreeCleanup(w io.Writer, report worktreeCleanupJSON) {
 	if report.DryRun {
 		fmt.Fprintf(w, "worktree cleanup (dry-run): %d would be removed, %d kept\n", len(report.Candidates), len(report.Skipped))
 		for _, c := range report.Candidates {
+			if c.Action == cleanupActionPruneRecord {
+				fmt.Fprintf(w, "  would prune record %s (%s; directory is gone, branch kept)\n", c.Path, c.Branch)
+				continue
+			}
 			fmt.Fprintf(w, "  would remove %s (%s)", c.Path, cleanupBranchNote(c))
 			if len(c.Disposable) > 0 {
 				fmt.Fprintf(w, " + delete regenerable untracked: %s", strings.Join(c.Disposable, ", "))
@@ -75,11 +80,13 @@ func renderCleanupKept(w io.Writer, skipped []worktreeCleanupEntry) {
 	}
 }
 
+// cleanupPrimaryReason names why a worktree was kept. The skip reason is the
+// last entry: earlier ones record checks the worktree passed, such as "clean".
 func cleanupPrimaryReason(s worktreeCleanupEntry) string {
 	if len(s.Reasons) == 0 {
 		return "skipped"
 	}
-	return s.Reasons[0]
+	return s.Reasons[len(s.Reasons)-1]
 }
 
 func cleanupBranchNote(c worktreeCleanupEntry) string {

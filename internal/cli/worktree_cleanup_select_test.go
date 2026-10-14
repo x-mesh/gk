@@ -85,7 +85,7 @@ func cleanupSelectFixture() (worktreeCleanupJSON, []WorktreeEntry) {
 		{Path: "/wt/open", Branch: "open"},
 		{Path: "/wt/busy", Branch: "busy", Locked: true},
 		{Path: "/wt/done", Branch: "done"},
-		{Path: "/wt/det", Detached: true, Head: "0123456789abcdef"},
+		{Path: "/wt/det", Detached: true, Head: "0123456789abcdef", Locked: true},
 	}
 	return report, entries
 }
@@ -107,6 +107,44 @@ func TestCleanupSelectRows(t *testing.T) {
 	}
 	if !rows[2].detached || rows[2].head != "0123456789abcdef" {
 		t.Errorf("detached row lost its HEAD: %+v", rows[2])
+	}
+	if !rows[2].entry.Locked {
+		t.Error("a locked detached worktree must carry its lock: cleanup returns before its lock check")
+	}
+}
+
+func TestMainWorktreeOf(t *testing.T) {
+	if got := mainWorktreeOf([]WorktreeEntry{{Path: "/repo"}, {Path: "/wt/a"}}); got != "/repo" {
+		t.Errorf("main = %q, want the first entry /repo", got)
+	}
+	if got := mainWorktreeOf([]WorktreeEntry{{Path: "/repo.git", Bare: true}, {Path: "/wt/a"}}); got != "" {
+		t.Errorf("a bare main must not let the first linked worktree stand in for it, got %q", got)
+	}
+}
+
+// TestWorktreeCleanup_PrunableWithoutParentKeepsGates covers a worktree on a
+// volume that is not mounted: git marks it prunable, but its directory may
+// still exist, so an unmerged branch must stay behind the merge gate.
+func TestWorktreeCleanup_PrunableWithoutParentKeepsGates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.CreateBranch("vol")
+	repo.WriteFile("vol.txt", "x\n")
+	repo.Commit("unmerged on the volume")
+	repo.Checkout("main")
+	volume := filepath.Join(t.TempDir(), "volume")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", filepath.Join(volume, "vol-wt"), "vol")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add worktree: %v\n%s", err, buf.String())
+	}
+	if err := os.RemoveAll(volume); err != nil {
+		t.Fatal(err)
+	}
+	rep := runCleanupJSON(t, repo.Dir)
+	if len(rep.Candidates) != 0 || !cleanupSkippedFor(rep, "vol", "unmerged") {
+		t.Fatalf("want the unmerged entry kept as unmerged, got candidates=%+v skipped=%+v", rep.Candidates, rep.Skipped)
 	}
 }
 
@@ -161,7 +199,8 @@ func TestCleanupSelectLoss(t *testing.T) {
 		{"detached on a branch", cleanupSelectRow{entry: worktreeCleanupEntry{Path: onRef, Reasons: []string{"detached"}}, detached: true, head: head(onRef)}, ""},
 		{"detached commit on no ref", cleanupSelectRow{entry: worktreeCleanupEntry{Path: offRef, Reasons: []string{"detached"}}, detached: true, head: head(offRef)}, "is on no branch or tag"},
 		{"uncommitted file", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Reasons: []string{"protected"}}}, "uncommitted changes"},
-		{"candidate", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt"}, candidate: true}, ""},
+		{"clean candidate", cleanupSelectRow{entry: worktreeCleanupEntry{Path: onRef, Branch: "x", Action: "remove-worktree"}, candidate: true}, ""},
+		{"candidate changed after the verdict", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree"}, candidate: true}, "made after the list opened"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,6 +241,40 @@ func TestWorktreeCleanup_RemovesSubmoduleWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists: %v", err)
+	}
+}
+
+// TestWorktreeCleanup_KeepsSubmoduleWithHiddenChanges covers the forced
+// removal of a submodule worktree: `submodule.<name>.ignore` hides changes
+// inside the submodule from a plain git status, so the worktree looked clean
+// and `submodule deinit --force` deleted the unsaved file.
+func TestWorktreeCleanup_KeepsSubmoduleWithHiddenChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	sub := testutil.NewRepo(t)
+	repo := testutil.NewRepo(t)
+	repo.RunGit("-c", "protocol.file.allow=always", "submodule", "add", sub.Dir, "vendor/sub")
+	repo.Commit("add submodule")
+	repo.RunGit("config", "submodule.vendor/sub.ignore", "all")
+	wtPath := filepath.Join(t.TempDir(), "sub-wt")
+	add, abuf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "feat/sub-wt")
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add worktree: %v\n%s", err, abuf.String())
+	}
+	testutil.Attach(t, wtPath).RunGit("-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+	startCleanupBranch(t, wtPath)
+	unsaved := filepath.Join(wtPath, "vendor", "sub", "unsaved.txt")
+	if err := os.WriteFile(unsaved, []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runCleanupJSON(t, repo.Dir, "-y")
+	if len(rep.Removed) != 0 || len(rep.Failed) != 1 || !strings.Contains(rep.Failed[0].Error, "uncommitted") {
+		t.Fatalf("want the worktree kept with an uncommitted-changes error, got removed=%+v failed=%+v", rep.Removed, rep.Failed)
+	}
+	if _, err := os.Stat(unsaved); err != nil {
+		t.Fatalf("the unsaved file inside the submodule is gone: %v", err)
 	}
 }
 

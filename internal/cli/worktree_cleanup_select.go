@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/x-mesh/gk/internal/config"
@@ -60,7 +59,10 @@ func cleanupSelectRows(report worktreeCleanupJSON, entries []WorktreeEntry, main
 		if !ok || (mainPath != "" && sameDir(mainPath, e.Path)) {
 			continue
 		}
+		// cleanup returns before its lock check for detached and protected
+		// worktrees, so their verdict does not carry the lock.
 		r.detached, r.head = e.Detached, e.Head
+		r.entry.Locked = r.entry.Locked || e.Locked
 		rows = append(rows, r)
 	}
 	return rows
@@ -331,6 +333,16 @@ func cleanupSelectHeader(branchW int) string {
 	return fmt.Sprintf("     %-*s  %7s  %6s  %s", branchW, "BRANCH", "SIZE", "COMMIT", "STATE")
 }
 
+// mainWorktreeOf names the main worktree, which git lists first. A bare main
+// has no checkout and is excluded as "bare" already, so no linked worktree
+// stands in for it.
+func mainWorktreeOf(entries []WorktreeEntry) string {
+	if len(entries) == 0 || entries[0].Bare {
+		return ""
+	}
+	return entries[0].Path
+}
+
 // cleanupSelectItems renders rows as checkbox items keyed by path, with
 // cleanup's candidates checked.
 func cleanupSelectItems(rows []cleanupSelectRow, sizes map[string]int64, branchW int) ([]ui.MultiSelectItem, map[string]bool) {
@@ -372,7 +384,21 @@ func cleanupSelectBranch(r cleanupSelectRow, maxLen int) string {
 // knows to force them.
 func cleanupSelectLoss(ctx context.Context, runner git.Runner, r *cleanupSelectRow) string {
 	if r.candidate {
-		return ""
+		// The verdict was made before the list opened. Work saved into the
+		// worktree since then must not go without asking.
+		if r.entry.Action == cleanupActionPruneRecord {
+			return ""
+		}
+		dirty := worktreeDirtyAt(ctx, r.entry.Path)
+		if dirty == nil {
+			return ""
+		}
+		untracked, only := worktreeUntrackedAt(ctx, r.entry.Path)
+		if disposableUntrackedOnly(untracked, only) != nil {
+			return ""
+		}
+		r.entry.Dirty, r.entry.Untracked = dirty, untracked
+		return "uncommitted changes made after the list opened (" + formatDirtyCounts(*dirty, untracked) + ")"
 	}
 	var losses []string
 	if r.entry.Dirty == nil && cleanupPrimaryReason(r.entry) != "prunable" {
@@ -439,11 +465,7 @@ func dirDiskUsage(ctx context.Context, root string) (int64, bool) {
 		if ierr != nil {
 			return nil
 		}
-		if st, isStat := info.Sys().(*syscall.Stat_t); isStat {
-			total += st.Blocks * 512
-		} else {
-			total += info.Size()
-		}
+		total += diskBytes(info)
 		return nil
 	})
 	return total, err == nil
@@ -483,8 +505,10 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 	if err != nil {
 		return err
 	}
-	mainPath, _ := mainWorktreePath(ctx, runner)
-	rows := cleanupSelectRows(report, entries, mainPath)
+	rows := cleanupSelectRows(report, entries, mainWorktreeOf(entries))
+	rows = slices.DeleteFunc(rows, func(r cleanupSelectRow) bool {
+		return r.entry.Locked && worktreeLockInfo(ctx, runner, r.entry.Path).Alive
+	})
 	if len(rows) == 0 {
 		stop()
 		fmt.Fprintln(w, "worktree cleanup: no worktree to remove besides the current and main ones")
@@ -555,13 +579,14 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 	lossByPath := map[string]bool{}
 	for _, k := range keys {
 		r := rows[byPath[k]]
-		if r.candidate {
-			safe = append(safe, r.entry)
-			continue
-		}
-		if loss := cleanupSelectLoss(ctx, runner, &r); loss != "" {
+		loss := cleanupSelectLoss(ctx, runner, &r)
+		if loss != "" {
 			lossy = append(lossy, fmt.Sprintf("%s: %s", r.entry.Path, loss))
 			lossByPath[r.entry.Path] = true
+		}
+		if r.candidate && loss == "" {
+			safe = append(safe, r.entry)
+			continue
 		}
 		chosen = append(chosen, r.entry)
 	}

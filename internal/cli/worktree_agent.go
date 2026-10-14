@@ -620,8 +620,9 @@ func collectWorktreeCleanup(ctx context.Context, runner *git.ExecRunner, cfg *co
 	}
 
 	// Each verdict costs several sequential git calls (parent config, merge
-	// base, squash check), so classify NumCPU worktrees at a time like the
-	// list's status scan; the report keeps the porcelain order.
+	// base, squash check, git status), so classify statusScanWorkers
+	// worktrees at a time like the list's status scan; the report keeps the
+	// porcelain order.
 	var scope []WorktreeEntry
 	for _, e := range entries {
 		if within != "" && !strings.HasPrefix(resolvePath(e.Path), within+string(filepath.Separator)) {
@@ -631,7 +632,7 @@ func collectWorktreeCleanup(ctx context.Context, runner *git.ExecRunner, cfg *co
 	}
 	rows := make([]worktreeCleanupEntry, len(scope))
 	isCandidate := make([]bool, len(scope))
-	sem := make(chan struct{}, runtime.NumCPU())
+	sem := make(chan struct{}, min(runtime.NumCPU(), statusScanWorkers))
 	var wg sync.WaitGroup
 	for i, e := range scope {
 		wg.Add(1)
@@ -697,7 +698,10 @@ func classifyCleanupEntry(ctx context.Context, runner *git.ExecRunner, e Worktre
 		row.Reasons = append(row.Reasons, "locked-stale")
 	}
 
-	if e.Prunable {
+	// git also marks a worktree on an unmounted volume prunable. Only when
+	// the parent directory still exists is the worktree directory known to
+	// be gone; otherwise the entry goes through the usual gates.
+	if e.Prunable && isDirPath(filepath.Dir(e.Path)) {
 		// Only the registration is left, so removing it loses no file and
 		// no commit: the merge and age gates do not apply. The branch is
 		// kept because its merge was never checked.
@@ -923,9 +927,19 @@ func removeCleanupWorktree(ctx context.Context, runner git.Runner, w io.Writer, 
 			return fmt.Errorf("remove %s: %s: %w", path, msg, err)
 		}
 		// Git refuses any worktree that ever checked out a submodule, even a
-		// clean one, unless remove is forced twice after a deinit. The
-		// caller already decided this worktree may go: it is clean, or the
-		// user accepted losing its changes.
+		// clean one, unless remove is forced twice after a deinit. git's own
+		// clean check never ran, and the caller's status scan honours
+		// submodule.<name>.ignore, which can hide unsaved work inside a
+		// submodule; check again before the forced removal deletes it.
+		if !discardDirty {
+			out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "--ignore-submodules=none")
+			if err != nil {
+				return fmt.Errorf("remove %s: check the submodules for changes: %s: %w", path, strings.TrimSpace(string(serr)), err)
+			}
+			if len(strings.TrimSpace(string(out))) > 0 {
+				return fmt.Errorf("remove %s: the worktree or one of its submodules has uncommitted changes", path)
+			}
+		}
 		if _, derr, err := runner.Run(ctx, "-C", path, "submodule", "deinit", "--all", "--force"); err != nil {
 			return fmt.Errorf("remove %s: deinitialize submodules: %s: %w", path, strings.TrimSpace(string(derr)), err)
 		}

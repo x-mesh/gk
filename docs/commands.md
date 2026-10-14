@@ -2864,7 +2864,10 @@ removes this registration also when the branch is not merged or not old enough,
 because no file and no commit is lost. Cleanup keeps the branch of such a
 worktree, even with `--delete-branches`. The rules for the current worktree,
 detached worktrees, and protected branches still apply. In `--json`, the reason
-is `prunable` and the action is `prune-record`.
+is `prunable` and the action is `prune-record`. Cleanup does this only when the
+parent directory of the worktree still exists. git also marks a worktree on a
+volume that is not mounted as prunable, and such an entry goes through the
+usual checks.
 
 A branch that did not move after it was created has no work of its own, so the
 merge check counts it as merged. Its worktree is often a workspace that an
@@ -2877,8 +2880,12 @@ If the reflog cannot be read, cleanup uses the merge check only.
 If a worktree checked out a submodule, git refuses a plain `git worktree remove`.
 For such a worktree, cleanup deinitializes the submodules and removes the
 worktree with `git worktree remove --force --force`. This also removes the
-submodule checkouts in the worktree. Cleanup does not check them for commits
-that their remote does not have.
+submodule checkouts in the worktree. Before that, cleanup runs
+`git status --ignore-submodules=none` in the worktree, because
+`submodule.<name>.ignore` can hide changes inside a submodule from its first
+check. If that status shows changes, cleanup keeps the worktree and reports it
+as failed. Cleanup does not check the submodule checkouts for commits that
+their remote does not have.
 
 #### Choose in a list (`-i`)
 

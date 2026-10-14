@@ -133,6 +133,9 @@ func TestSplitCleanupSelection(t *testing.T) {
 	if paths(safe) != "/wt/clean" || paths(changed) != "/wt/changed" || paths(chosen) != "/wt/kept" {
 		t.Fatalf("safe=%s changed=%s chosen=%s", paths(safe), paths(changed), paths(chosen))
 	}
+	if chosen[0].Action != cleanupActionRemove {
+		t.Fatalf("a row picked past the verdict must get an action that keeps the branch, got %q", chosen[0].Action)
+	}
 }
 
 func TestMainWorktreeOf(t *testing.T) {
@@ -377,8 +380,10 @@ func TestWorktreeRemove_DeinitSubmodulesKeepsHiddenChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	rm, buf := buildWorktreeCmd(repo.Dir, "remove", "--deinit-submodules", wtPath)
-	if err := rm.Execute(); err == nil || !strings.Contains(err.Error(), "uncommitted") {
-		t.Fatalf("want an uncommitted-changes refusal, got err=%v\n%s", err, buf.String())
+	err := rm.Execute()
+	var he *hintError
+	if !errors.As(err, &he) || he.code != "worktree-submodule-clean-required" {
+		t.Fatalf("want blocked code worktree-submodule-clean-required, got err=%v\n%s", err, buf.String())
 	}
 	if _, err := os.Stat(unsaved); err != nil {
 		t.Fatalf("the unsaved file inside the submodule is gone: %v", err)

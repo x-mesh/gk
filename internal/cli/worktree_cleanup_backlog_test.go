@@ -92,6 +92,18 @@ func TestApplyWorktreeCleanup_BranchFollowsAction(t *testing.T) {
 	if !branchExists(context.Background(), runner, "keep-me") {
 		t.Fatal("a remove-worktree action deleted its branch")
 	}
+
+	// cleanup -i passes the changed candidates without deleteBranches; their
+	// action alone carries --delete-branches.
+	path = addCleanupWorktree(t, repo.Dir, "drop-me")
+	entry = worktreeCleanupEntry{Path: path, Branch: "drop-me", Target: "main", Action: cleanupActionRemoveDeleteBranch}
+	removed, failed = applyWorktreeCleanup(context.Background(), &strings.Builder{}, runner, []worktreeCleanupEntry{entry}, worktreeCleanupOpts{})
+	if len(removed) != 1 || len(failed) != 0 || !removed[0].BranchDeleted {
+		t.Fatalf("removed=%+v failed=%+v", removed, failed)
+	}
+	if branchExists(context.Background(), runner, "drop-me") {
+		t.Fatal("a remove-worktree-delete-branch action kept its branch")
+	}
 }
 
 // TestCollectWorktreeCleanup_DetachedCarriesLock records the lock of a
@@ -132,5 +144,34 @@ func TestCheckSelectedLosses_KeepsPickOrder(t *testing.T) {
 		if !strings.HasPrefix(lossy[i], filepath.Join(missing, name)+":") {
 			t.Fatalf("loss %d = %q, want the row picked as %s", i, lossy[i], name)
 		}
+	}
+}
+
+// TestCleanupSelectLoss_RecheckReplacesListState forces only what the user saw
+// and confirmed: a worktree that was dirty when the list opened and is clean
+// at the recheck must lose its old counts, or the removal forces it without a
+// prompt; and a failed recheck must still show the counts the list knew.
+func TestCleanupSelectLoss_RecheckReplacesListState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	ctx := context.Background()
+	repo := testutil.NewRepo(t)
+	path := addCleanupWorktree(t, repo.Dir, "was-dirty")
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	r := cleanupSelectRow{entry: worktreeCleanupEntry{Path: path, Branch: "was-dirty", Reasons: []string{"dirty"}, Dirty: &contextDirtyJSON{Unstaged: 1}}}
+	if loss := cleanupSelectLoss(ctx, runner, &r); loss != "" {
+		t.Fatalf("a clean worktree listed a loss: %q", loss)
+	}
+	if r.entry.Dirty != nil {
+		t.Fatalf("the counts from the list survived a clean recheck: %+v", r.entry.Dirty)
+	}
+
+	broken, brokenPath := newMergedSubmoduleWorktree(t)
+	breakSubmodule(t, brokenPath)
+	r = cleanupSelectRow{entry: worktreeCleanupEntry{Path: brokenPath, Branch: "feat/sub-wt", Reasons: []string{"dirty"}, Dirty: &contextDirtyJSON{Unstaged: 2}}}
+	loss := cleanupSelectLoss(ctx, &git.ExecRunner{Dir: broken.Dir}, &r)
+	if !strings.Contains(loss, "could not check") || !strings.Contains(loss, "2 modified") {
+		t.Fatalf("a failed recheck must keep the known counts, loss=%q", loss)
 	}
 }

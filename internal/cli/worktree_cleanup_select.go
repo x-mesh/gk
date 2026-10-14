@@ -342,6 +342,8 @@ func splitCleanupSelection(picked []cleanupSelectRow, losses map[string]string) 
 		case r.candidate:
 			changed = append(changed, r.entry)
 		default:
+			// Nothing proved these merged, so their action keeps the branch.
+			r.entry.Action = cleanupActionRemove
 			chosen = append(chosen, r.entry)
 		}
 	}
@@ -409,8 +411,14 @@ func cleanupSelectLoss(ctx context.Context, runner git.Runner, r *cleanupSelectR
 		changes, err := worktreeChangesAt(ctx, runner, r.entry.Path)
 		switch {
 		case err != nil:
+			if r.entry.Dirty != nil {
+				losses = append(losses, "uncommitted changes when the list opened ("+formatDirtyCounts(*r.entry.Dirty, r.entry.Untracked)+")")
+			}
 			losses = append(losses, "could not check for uncommitted changes ("+err.Error()+")")
 		case changes.dirty == nil:
+			// The counts from the list are stale; leaving them would force
+			// the removal of a row whose loss nobody confirmed.
+			r.entry.Dirty, r.entry.Untracked = nil, nil
 		case r.candidate && disposableUntrackedOnly(changes.untracked, changes.onlyUntracked) != nil:
 			// Regenerable lockfiles only; cleanup deletes those itself.
 		default:
@@ -654,8 +662,7 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 	rc, fc := applyWorktreeCleanup(ctx, w, runner, changed, worktreeCleanupOpts{forceStaleLocks: opts.forceStaleLocks, discardDirty: true})
 	removed, failed = append(removed, rc...), append(failed, fc...)
 	// The user picked these past cleanup's verdict and confirmed any loss, so
-	// a stale lock or uncommitted changes no longer stop the removal. Their
-	// action never deletes the branch: nothing proved them merged.
+	// a stale lock or uncommitted changes no longer stop the removal.
 	r2, f2 := applyWorktreeCleanup(ctx, w, runner, chosen, worktreeCleanupOpts{forceStaleLocks: true, discardDirty: true})
 	removed, failed = append(removed, r2...), append(failed, f2...)
 	fmt.Fprintf(w, "worktree cleanup: removed %d, failed %d\n", len(removed), len(failed))

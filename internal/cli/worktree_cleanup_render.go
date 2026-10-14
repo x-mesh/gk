@@ -6,21 +6,21 @@ import (
 	"strings"
 )
 
-var cleanupSkipNotes = map[string]string{
-	"current":         "the worktree you are in",
-	"bare":            "bare repository",
-	"detached":        "detached HEAD, no branch to judge",
-	"no-branch":       "no branch checked out",
-	"protected":       "protected branch",
-	"locked-live":     "locked by a running process",
-	"locked-stale":    "locked; --force-stale-locks to override",
-	"fresh":           "newer than --stale",
-	"age-unknown":     "branch age unknown, cannot apply --stale",
-	"no-merge-target": "no parent/base to check the merge against",
-	"target-is-self":  "its merge target is itself",
-	"unmerged":        "not merged into its parent/base",
-	"unstarted":       "branch never moved since it was created; may be a workspace in use",
-	"repo-unreadable": "repository could not be read",
+var cleanupSkipNotes = map[cleanupReason]string{
+	reasonCurrent:        "the worktree you are in",
+	reasonBare:           "bare repository",
+	reasonDetached:       "detached HEAD, no branch to judge",
+	reasonNoBranch:       "no branch checked out",
+	reasonProtected:      "protected branch",
+	reasonLockedLive:     "locked by a running process",
+	reasonLockedStale:    "locked; --force-stale-locks to override",
+	reasonFresh:          "newer than --stale",
+	reasonAgeUnknown:     "branch age unknown, cannot apply --stale",
+	reasonNoMergeTarget:  "no parent/base to check the merge against",
+	reasonTargetIsSelf:   "its merge target is itself",
+	reasonUnmerged:       "not merged into its parent/base",
+	reasonUnstarted:      "branch never moved since it was created; may be a workspace in use",
+	reasonRepoUnreadable: "repository could not be read",
 }
 
 func renderWorktreeCleanup(w io.Writer, report worktreeCleanupJSON) {
@@ -53,8 +53,8 @@ func renderCleanupKept(w io.Writer, skipped []worktreeCleanupEntry) {
 	if len(skipped) == 0 {
 		return
 	}
-	counts := map[string]int{}
-	var order []string
+	counts := map[cleanupReason]int{}
+	var order []cleanupReason
 	dirtyKept := false
 	for _, s := range skipped {
 		reason := cleanupPrimaryReason(s)
@@ -62,7 +62,7 @@ func renderCleanupKept(w io.Writer, skipped []worktreeCleanupEntry) {
 			order = append(order, reason)
 		}
 		counts[reason]++
-		if reason == "dirty" {
+		if reason == reasonDirty {
 			dirtyKept = true
 		}
 	}
@@ -80,13 +80,17 @@ func renderCleanupKept(w io.Writer, skipped []worktreeCleanupEntry) {
 	}
 }
 
-// cleanupPrimaryReason names why a worktree was kept. The skip reason is the
-// last entry: earlier ones record checks the worktree passed, such as "clean".
-func cleanupPrimaryReason(s worktreeCleanupEntry) string {
+// cleanupPrimaryReason names why a worktree was kept: the verdict the
+// classifier recorded, or, for a row built from the JSON report, the last
+// reason, which the classifier appends last.
+func cleanupPrimaryReason(s worktreeCleanupEntry) cleanupReason {
+	if s.verdict != "" {
+		return s.verdict
+	}
 	if len(s.Reasons) == 0 {
 		return "skipped"
 	}
-	return s.Reasons[len(s.Reasons)-1]
+	return cleanupReason(s.Reasons[len(s.Reasons)-1])
 }
 
 func cleanupBranchNote(c worktreeCleanupEntry) string {
@@ -102,16 +106,16 @@ func cleanupBranchNote(c worktreeCleanupEntry) string {
 
 func cleanupSkipNote(s worktreeCleanupEntry) string {
 	reason := cleanupPrimaryReason(s)
-	if reason == "dirty" {
+	if reason == reasonDirty {
 		return "dirty: " + cleanupDirtyNote(s)
 	}
 	if s.Error != "" {
-		return reason + ": " + s.Error
+		return string(reason) + ": " + s.Error
 	}
 	if note, ok := cleanupSkipNotes[reason]; ok {
-		return reason + " (" + note + ")"
+		return string(reason) + " (" + note + ")"
 	}
-	return reason
+	return string(reason)
 }
 
 func cleanupDirtyNote(s worktreeCleanupEntry) string {

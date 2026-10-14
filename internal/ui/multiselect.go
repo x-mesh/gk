@@ -71,13 +71,12 @@ func (m multiSelectModel) selectedKeys() []string {
 func (m multiSelectModel) Init() tea.Cmd { return nil }
 
 func (m multiSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	model, cmd := m.update(msg)
-	next := model.(multiSelectModel)
+	next, cmd := m.update(msg)
 	next.keepCursorVisible()
 	return next, cmd
 }
 
-func (m multiSelectModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m multiSelectModel) update(msg tea.Msg) (multiSelectModel, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.height = ws.Height
 		return m, nil

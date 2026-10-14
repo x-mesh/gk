@@ -321,6 +321,11 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		if d := statuses[i].dirty; d != nil {
 			marks += fmt.Sprintf(" [dirty: %s]", formatDirtyCounts(*d, nil))
 		}
+		// Without this a worktree whose status failed reads as clean. A
+		// prunable row has no directory to read and says so already.
+		if statuses[i].err != nil && !e.Prunable {
+			marks += " [status unreadable]"
+		}
 		if e.Locked {
 			marks += " [locked]"
 			locked++
@@ -399,6 +404,9 @@ type worktreeListStatus struct {
 	dirty         *contextDirtyJSON
 	untracked     []string
 	onlyUntracked bool
+	// err is a git status that failed. The fields above are then unknown,
+	// not clean.
+	err error
 }
 
 // statusScanWorkers caps the concurrent `git status` runs of a list scan.
@@ -415,11 +423,11 @@ const statusScanWorkers = 8
 func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []worktreeListStatus {
 	out := make([]worktreeListStatus, len(entries))
 	sem := make(chan struct{}, min(runtime.NumCPU(), statusScanWorkers))
-	args := []string{"status", "--porcelain", "-z"}
+	var gitOpts []string
 	// Preload threads speed up one large worktree; across several worktrees
 	// the scan is already parallel and they only add contention.
 	if len(entries) > 1 {
-		args = append([]string{"-c", "core.preloadIndex=false"}, args...)
+		gitOpts = []string{"-c", "core.preloadIndex=false"}
 	}
 	var wg sync.WaitGroup
 	for i, e := range entries {
@@ -431,16 +439,31 @@ func scanWorktreeListStatuses(ctx context.Context, entries []WorktreeEntry) []wo
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			raw, _, err := (&git.ExecRunner{Dir: path}).Run(ctx, args...)
-			if err != nil {
-				return
-			}
-			out[i].dirty = dirtyPtrIfAny(parseWorktreeScan(string(raw), "").dirty)
-			out[i].untracked, out[i].onlyUntracked = parseUntrackedPorcelainZ(string(raw))
+			out[i] = readWorktreeListStatus(ctx, path, gitOpts...)
 		}(i, e.Path)
 	}
 	wg.Wait()
 	return out
+}
+
+// readWorktreeListStatus runs one `status --porcelain -z` in path, after the
+// git options in gitOpts, and reads both the dirty tally and the untracked
+// names from it.
+func readWorktreeListStatus(ctx context.Context, path string, gitOpts ...string) worktreeListStatus {
+	args := append(append([]string(nil), gitOpts...), "status", "--porcelain", "-z")
+	raw, stderr, err := (&git.ExecRunner{Dir: path}).Run(ctx, args...)
+	if err != nil {
+		// git's message alone; the runner's error repeats it after the
+		// command line. A chdir into a missing directory prints none.
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return worktreeListStatus{err: errors.New("git status: " + msg)}
+	}
+	st := worktreeListStatus{dirty: dirtyPtrIfAny(parseWorktreeScan(string(raw), "").dirty)}
+	st.untracked, st.onlyUntracked = parseUntrackedPorcelainZ(string(raw))
+	return st
 }
 
 // worktreeBranchMeta is the slice of branchInfo we actually consume in

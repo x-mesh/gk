@@ -175,3 +175,47 @@ func TestCleanupSelectLoss_RecheckReplacesListState(t *testing.T) {
 		t.Fatalf("a failed recheck must keep the known counts, loss=%q", loss)
 	}
 }
+
+// TestWorktreeCleanup_StatusUnreadableIsKept keeps a worktree whose git
+// status fails: nothing is known about its work, so neither cleanup nor the
+// [removable] mark of gk worktree list may treat it as clean.
+func TestWorktreeCleanup_StatusUnreadableIsKept(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo, wtPath := newMergedSubmoduleWorktree(t)
+	isCandidate := func(rep worktreeCleanupJSON) bool {
+		for _, c := range rep.Candidates {
+			if sameDir(c.Path, wtPath) {
+				return true
+			}
+		}
+		return false
+	}
+	if !isCandidate(runCleanupJSON(t, repo.Dir)) {
+		t.Fatal("setup: the merged worktree must be a candidate while its status reads")
+	}
+
+	breakSubmodule(t, wtPath)
+	rep := runCleanupJSON(t, repo.Dir)
+	if isCandidate(rep) {
+		t.Fatal("a worktree whose status fails is a cleanup candidate")
+	}
+	var kept *worktreeCleanupEntry
+	for i := range rep.Skipped {
+		if sameDir(rep.Skipped[i].Path, wtPath) {
+			kept = &rep.Skipped[i]
+		}
+	}
+	if kept == nil || cleanupPrimaryReason(*kept) != reasonStatusUnreadable || kept.Error == "" {
+		t.Fatalf("want the worktree kept as status-unreadable with the git error, got %+v", kept)
+	}
+
+	list, buf := buildWorktreeCmd(repo.Dir, "list")
+	if err := list.Execute(); err != nil {
+		t.Fatalf("worktree list: %v\n%s", err, buf.String())
+	}
+	if line := worktreeListLine(buf.String(), "feat/sub-wt"); !strings.Contains(line, "[status unreadable]") || strings.Contains(line, "[removable]") {
+		t.Fatalf("list must mark the worktree unreadable, not removable: %q\n%s", line, buf.String())
+	}
+}

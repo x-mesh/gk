@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.151.0] - 2026-10-14
+
 ### Added
 
 - `gk worktree cleanup -i` opens a checkbox list of the worktrees that you can remove, titled `█ CLEANUP`. Each row shows the branch, the size on disk, the age of the last commit, and a state: the verdict of cleanup with its numbers (`unmerged ↑3`, `unstarted, created 2h ago`), uncommitted changes, and whether the branch is pushed. The box under the list describes the row under the cursor: the path, the last commit message, when the branch was created, and the distance to its parent or base. `s` changes the order: safe first, oldest commit, largest, and name. The candidates of cleanup are checked, and the box shows the total size of the checked rows. You can also check a worktree that cleanup keeps. If it holds uncommitted changes, or a detached HEAD that no branch or tag contains, cleanup shows what is lost and asks again, with No as the default. The current, main, and bare worktrees and worktrees that a running process locked are not in the list. `-i` needs a terminal and cannot be combined with `-y`, `--global`, or `--json`.

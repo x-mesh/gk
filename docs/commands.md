@@ -2880,11 +2880,12 @@ If the reflog cannot be read, cleanup uses the merge check only.
 If a worktree checked out a submodule, git refuses a plain `git worktree remove`.
 For such a worktree, cleanup deinitializes the submodules and removes the
 worktree with `git worktree remove --force --force`. This also removes the
-submodule checkouts in the worktree. Before that, cleanup runs
-`git status --ignore-submodules=none` in the worktree, because
-`submodule.<name>.ignore` can hide changes inside a submodule from its first
-check. If that status shows changes, cleanup keeps the worktree and reports it
-as failed. Cleanup does not check the submodule checkouts for commits that
+submodule checkouts in the worktree. Before this removal, and before it
+removes a worktree with a stale lock (`--force-stale-locks`), cleanup runs
+`git status --ignore-submodules=none --untracked-files=normal` in the worktree.
+`submodule.<name>.ignore` and `status.showUntrackedFiles` can hide changes from
+its first check, and a forced removal skips the check of git itself. If that
+status shows changes, cleanup keeps the worktree and reports it as failed. Cleanup does not check the submodule checkouts for commits that
 their remote does not have.
 
 #### Choose in a list (`-i`)

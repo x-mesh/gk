@@ -113,6 +113,28 @@ func TestCleanupSelectRows(t *testing.T) {
 	}
 }
 
+// TestSplitCleanupSelection keeps --delete-branches on a candidate that
+// changed while the list was open: it is still merged, so it goes with the
+// candidates, not with the rows picked past the verdict.
+func TestSplitCleanupSelection(t *testing.T) {
+	picked := []cleanupSelectRow{
+		{entry: worktreeCleanupEntry{Path: "/wt/clean"}, candidate: true},
+		{entry: worktreeCleanupEntry{Path: "/wt/changed"}, candidate: true},
+		{entry: worktreeCleanupEntry{Path: "/wt/kept"}},
+	}
+	safe, changed, chosen := splitCleanupSelection(picked, map[string]string{"/wt/changed": "uncommitted changes"})
+	paths := func(es []worktreeCleanupEntry) string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.Path)
+		}
+		return strings.Join(out, ",")
+	}
+	if paths(safe) != "/wt/clean" || paths(changed) != "/wt/changed" || paths(chosen) != "/wt/kept" {
+		t.Fatalf("safe=%s changed=%s chosen=%s", paths(safe), paths(changed), paths(chosen))
+	}
+}
+
 func TestMainWorktreeOf(t *testing.T) {
 	if got := mainWorktreeOf([]WorktreeEntry{{Path: "/repo"}, {Path: "/wt/a"}}); got != "/repo" {
 		t.Errorf("main = %q, want the first entry /repo", got)
@@ -201,6 +223,7 @@ func TestCleanupSelectLoss(t *testing.T) {
 		{"uncommitted file", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Reasons: []string{"protected"}}}, "uncommitted changes"},
 		{"clean candidate", cleanupSelectRow{entry: worktreeCleanupEntry{Path: onRef, Branch: "x", Action: "remove-worktree"}, candidate: true}, ""},
 		{"candidate changed after the verdict", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree"}, candidate: true}, "made after the list opened"},
+		{"candidate the user chose to discard", cleanupSelectRow{entry: worktreeCleanupEntry{Path: dirty, Branch: "dirty-wt", Action: "remove-worktree", Reasons: []string{"dirty-discard", "merged"}}, candidate: true}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,6 +299,67 @@ func TestWorktreeCleanup_KeepsSubmoduleWithHiddenChanges(t *testing.T) {
 	if _, err := os.Stat(unsaved); err != nil {
 		t.Fatalf("the unsaved file inside the submodule is gone: %v", err)
 	}
+}
+
+// newMergedSubmoduleWorktree builds a repository with a submodule and a
+// merged, started worktree that checked the submodule out.
+func newMergedSubmoduleWorktree(t *testing.T) (*testutil.Repo, string) {
+	t.Helper()
+	sub := testutil.NewRepo(t)
+	repo := testutil.NewRepo(t)
+	repo.RunGit("-c", "protocol.file.allow=always", "submodule", "add", sub.Dir, "vendor/sub")
+	repo.Commit("add submodule")
+	wtPath := filepath.Join(t.TempDir(), "sub-wt")
+	add, abuf := buildWorktreeCmd(repo.Dir, "add", "--no-init", "-b", wtPath, "feat/sub-wt")
+	if err := add.Execute(); err != nil {
+		t.Fatalf("add worktree: %v\n%s", err, abuf.String())
+	}
+	testutil.Attach(t, wtPath).RunGit("-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+	startCleanupBranch(t, wtPath)
+	return repo, wtPath
+}
+
+func assertCleanupKept(t *testing.T, rep worktreeCleanupJSON, file string) {
+	t.Helper()
+	if len(rep.Removed) != 0 || len(rep.Failed) != 1 || !strings.Contains(rep.Failed[0].Error, "uncommitted") {
+		t.Fatalf("want the worktree kept with an uncommitted-changes error, got removed=%+v failed=%+v", rep.Removed, rep.Failed)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("the unsaved file is gone: %v", err)
+	}
+}
+
+// TestWorktreeCleanup_StaleLockKeepsHiddenSubmoduleChanges covers the stale
+// lock path: it removes with --force, which skips git's clean check, so the
+// submodule check must run there too.
+func TestWorktreeCleanup_StaleLockKeepsHiddenSubmoduleChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo, wtPath := newMergedSubmoduleWorktree(t)
+	repo.RunGit("config", "submodule.vendor/sub.ignore", "all")
+	unsaved := filepath.Join(wtPath, "vendor", "sub", "unsaved.txt")
+	if err := os.WriteFile(unsaved, []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo.RunGit("worktree", "lock", "--reason", "claude agent (pid 999999)", wtPath)
+	assertCleanupKept(t, runCleanupJSON(t, repo.Dir, "-y", "--force-stale-locks"), unsaved)
+}
+
+// TestWorktreeCleanup_SubmoduleCheckSeesHiddenUntracked covers
+// status.showUntrackedFiles=no, which hides untracked files from a plain
+// git status and so from the check before a forced removal.
+func TestWorktreeCleanup_SubmoduleCheckSeesHiddenUntracked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo, wtPath := newMergedSubmoduleWorktree(t)
+	repo.RunGit("config", "status.showUntrackedFiles", "no")
+	notes := filepath.Join(wtPath, "notes.md")
+	if err := os.WriteFile(notes, []byte("draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertCleanupKept(t, runCleanupJSON(t, repo.Dir, "-y"), notes)
 }
 
 func TestDirDiskUsage(t *testing.T) {

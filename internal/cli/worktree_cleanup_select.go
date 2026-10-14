@@ -333,6 +333,24 @@ func cleanupSelectHeader(branchW int) string {
 	return fmt.Sprintf("     %-*s  %7s  %6s  %s", branchW, "BRANCH", "SIZE", "COMMIT", "STATE")
 }
 
+// splitCleanupSelection sorts the picked rows by how they are removed:
+// unchanged candidates as cleanup would, candidates that changed while the
+// list was open with their changes dropped, and rows the user picked past
+// the verdict of cleanup.
+func splitCleanupSelection(picked []cleanupSelectRow, losses map[string]string) (safe, changed, chosen []worktreeCleanupEntry) {
+	for _, r := range picked {
+		switch {
+		case r.candidate && losses[r.entry.Path] == "":
+			safe = append(safe, r.entry)
+		case r.candidate:
+			changed = append(changed, r.entry)
+		default:
+			chosen = append(chosen, r.entry)
+		}
+	}
+	return safe, changed, chosen
+}
+
 // mainWorktreeOf names the main worktree, which git lists first. A bare main
 // has no checkout and is excluded as "bare" already, so no linked worktree
 // stands in for it.
@@ -386,7 +404,8 @@ func cleanupSelectLoss(ctx context.Context, runner git.Runner, r *cleanupSelectR
 	if r.candidate {
 		// The verdict was made before the list opened. Work saved into the
 		// worktree since then must not go without asking.
-		if r.entry.Action == cleanupActionPruneRecord {
+		// --discard-dirty already chose to drop the changes of such a row.
+		if r.entry.Action == cleanupActionPruneRecord || cleanupHasReason(r.entry, "dirty-discard") {
 			return ""
 		}
 		dirty := worktreeDirtyAt(ctx, r.entry.Path)
@@ -574,22 +593,18 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 	for i, r := range rows {
 		byPath[r.entry.Path] = i
 	}
-	var safe, chosen []worktreeCleanupEntry
+	picked := make([]cleanupSelectRow, 0, len(keys))
+	losses := map[string]string{}
 	var lossy []string
-	lossByPath := map[string]bool{}
 	for _, k := range keys {
 		r := rows[byPath[k]]
-		loss := cleanupSelectLoss(ctx, runner, &r)
-		if loss != "" {
+		if loss := cleanupSelectLoss(ctx, runner, &r); loss != "" {
+			losses[r.entry.Path] = loss
 			lossy = append(lossy, fmt.Sprintf("%s: %s", r.entry.Path, loss))
-			lossByPath[r.entry.Path] = true
 		}
-		if r.candidate && loss == "" {
-			safe = append(safe, r.entry)
-			continue
-		}
-		chosen = append(chosen, r.entry)
+		picked = append(picked, r)
 	}
+	safe, changed, chosen := splitCleanupSelection(picked, losses)
 	if len(lossy) > 0 {
 		ok, err := ui.ConfirmTUI(ctx,
 			fmt.Sprintf("remove %d worktrees that hold unsaved work?", len(lossy)),
@@ -601,23 +616,26 @@ func runWorktreeCleanupSelect(ctx context.Context, w io.Writer, runner *git.Exec
 			return err
 		}
 		if !ok {
-			kept := chosen[:0]
-			for _, c := range chosen {
-				if !lossByPath[c.Path] {
-					kept = append(kept, c)
-				}
-			}
-			chosen = kept
+			changed = nil
+			chosen = slices.DeleteFunc(chosen, func(c worktreeCleanupEntry) bool { return losses[c.Path] != "" })
 		}
 	}
 
 	if DryRun() {
-		for _, c := range append(safe, chosen...) {
-			fmt.Fprintf(w, "[dry-run] would remove worktree %s\n", c.Path)
+		for _, group := range [][]worktreeCleanupEntry{safe, changed, chosen} {
+			for _, c := range group {
+				fmt.Fprintf(w, "[dry-run] would remove worktree %s\n", c.Path)
+			}
 		}
 		return nil
 	}
 	removed, failed := applyWorktreeCleanup(ctx, w, runner, safe, opts)
+	// A candidate that changed while the list was open is still merged, so it
+	// keeps the user's --delete-branches; its confirmed changes are dropped.
+	changedOpts := opts
+	changedOpts.discardDirty = true
+	rc, fc := applyWorktreeCleanup(ctx, w, runner, changed, changedOpts)
+	removed, failed = append(removed, rc...), append(failed, fc...)
 	// The user picked these past cleanup's verdict and confirmed any loss, so
 	// a stale lock or uncommitted changes no longer stop the removal. Their
 	// branches stay: nothing proved them merged.

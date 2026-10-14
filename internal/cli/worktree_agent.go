@@ -914,6 +914,12 @@ func applyWorktreeCleanup(ctx context.Context, progress io.Writer, runner *git.E
 
 func removeCleanupWorktree(ctx context.Context, runner git.Runner, w io.Writer, path string, forceStaleLock, discardDirty bool) error {
 	if forceStaleLock {
+		// remove --force skips git's own clean check.
+		if !discardDirty {
+			if err := checkNoHiddenChanges(ctx, runner, path); err != nil {
+				return err
+			}
+		}
 		return forceRemoveWorktree(ctx, runner, w, path)
 	}
 	args := []string{"worktree", "remove"}
@@ -927,17 +933,11 @@ func removeCleanupWorktree(ctx context.Context, runner git.Runner, w io.Writer, 
 			return fmt.Errorf("remove %s: %s: %w", path, msg, err)
 		}
 		// Git refuses any worktree that ever checked out a submodule, even a
-		// clean one, unless remove is forced twice after a deinit. git's own
-		// clean check never ran, and the caller's status scan honours
-		// submodule.<name>.ignore, which can hide unsaved work inside a
-		// submodule; check again before the forced removal deletes it.
+		// clean one, unless remove is forced twice after a deinit, and its
+		// own clean check never ran.
 		if !discardDirty {
-			out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "--ignore-submodules=none")
-			if err != nil {
-				return fmt.Errorf("remove %s: check the submodules for changes: %s: %w", path, strings.TrimSpace(string(serr)), err)
-			}
-			if len(strings.TrimSpace(string(out))) > 0 {
-				return fmt.Errorf("remove %s: the worktree or one of its submodules has uncommitted changes", path)
+			if err := checkNoHiddenChanges(ctx, runner, path); err != nil {
+				return err
 			}
 		}
 		if _, derr, err := runner.Run(ctx, "-C", path, "submodule", "deinit", "--all", "--force"); err != nil {
@@ -948,6 +948,20 @@ func removeCleanupWorktree(ctx context.Context, runner git.Runner, w io.Writer, 
 		}
 	}
 	fmt.Fprintf(w, "removed worktree %s\n", path)
+	return nil
+}
+
+// checkNoHiddenChanges guards a forced removal. The caller's status scan
+// honours submodule.<name>.ignore and status.showUntrackedFiles, which can
+// hide unsaved work that the forced removal would delete.
+func checkNoHiddenChanges(ctx context.Context, runner git.Runner, path string) error {
+	out, serr, err := runner.Run(ctx, "-C", path, "status", "--porcelain", "--ignore-submodules=none", "--untracked-files=normal")
+	if err != nil {
+		return fmt.Errorf("remove %s: check for uncommitted changes: %s: %w", path, strings.TrimSpace(string(serr)), err)
+	}
+	if len(strings.TrimSpace(string(out))) > 0 {
+		return fmt.Errorf("remove %s: the worktree or one of its submodules has uncommitted changes", path)
+	}
 	return nil
 }
 

@@ -15,11 +15,19 @@ type confirmModel struct {
 	desc      string
 	value     bool
 	cancelled bool
+	// width is the terminal width from the last WindowSizeMsg, 0 until one
+	// arrives. The terminal cuts a line wider than itself, so description
+	// lines are wrapped to it.
+	width int
 }
 
 func (m confirmModel) Init() tea.Cmd { return nil }
 
 func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		return m, nil
+	}
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
 		case "ctrl+c", "esc":
@@ -47,9 +55,9 @@ func (m confirmModel) View() string {
 
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(m.title))
-	if m.desc != "" {
+	for _, line := range confirmDescLines(m.desc, m.width) {
 		b.WriteString("\n  ")
-		b.WriteString(hint.Render(m.desc))
+		b.WriteString(hint.Render(line))
 	}
 	b.WriteString("\n\n  ")
 
@@ -95,4 +103,23 @@ func ConfirmTUI(ctx context.Context, title, desc string, defaultYes bool) (bool,
 		return false, ErrPickerAborted
 	}
 	return m.value, nil
+}
+
+// confirmDescLines splits desc into lines and wraps each one to fit width
+// after the two-column indent. A width of 0 means unknown: lines stay whole.
+func confirmDescLines(desc string, width int) []string {
+	if desc == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(desc, "\n") {
+		if width <= 2 || lipgloss.Width(line) <= width-2 {
+			out = append(out, line)
+			continue
+		}
+		for _, w := range strings.Split(lipgloss.NewStyle().Width(width-2).Render(line), "\n") {
+			out = append(out, strings.TrimRight(w, " "))
+		}
+	}
+	return out
 }

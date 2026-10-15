@@ -45,7 +45,7 @@ By default gk refuses to start with tracked working-tree changes. Use
 	cmd.Flags().Bool("skip-precheck", false, "skip the merge-tree conflict precheck")
 	cmd.Flags().Bool("autostash", false, "stash tracked changes before merge and pop afterwards")
 	cmd.Flags().Bool("no-ai", false, "skip the merge plan summary")
-	cmd.Flags().Bool("ai", false, "force an AI merge plan even for a deterministic fast-forward")
+	cmd.Flags().Bool("ai", false, "force an AI merge plan even for a deterministic fast-forward or in agent mode (GK_AGENT)")
 	cmd.Flags().Bool("plan-only", false, "print the merge plan without running git merge")
 	cmd.Flags().String("into", "", "merge the source branch into this branch's checked-out worktree")
 	cmd.Flags().String("provider", "", "override ai.provider for the merge plan")
@@ -256,10 +256,9 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 
 	if !flags.noAI || flags.planOnly {
 		planDeps := deps
-		useAI := !flags.noAI && (!fastForward || flags.forceAI)
-		if !useAI {
+		if reason := mergePlanAISkipReason(flags, fastForward, deps.Config.AI.Enabled); reason != "" {
 			planDeps.Provider = nil
-			planDeps.ProviderErr = errors.New("deterministic fast-forward; AI plan skipped")
+			planDeps.ProviderErr = errors.New(reason)
 		} else if planDeps.Provider == nil && planDeps.ProviderErr == nil && deps.Cmd != nil {
 			ai := deps.Config.AI
 			if flags.provider != "" {
@@ -771,6 +770,26 @@ func renderMergeSummary(ctx context.Context, out io.Writer, runner git.Runner, p
 	delta := cellGreen(fmt.Sprintf("+%d commit%s", count, plural(count)))
 	fmt.Fprintf(out, "%s merged %s into %s: %s → %s (%s)\n",
 		check, target, current, shortSHA(pre), shortSHA(post), delta)
+}
+
+// mergePlanAISkipReason returns why the merge plan stays local, or "" when the
+// AI provider may run. An agent branches on the result envelope, not on the
+// plan prose, so agent mode does not send the diff to an external provider
+// unless --ai asks for it.
+func mergePlanAISkipReason(flags mergeFlags, fastForward, aiEnabled bool) string {
+	switch {
+	case flags.noAI:
+		return "--no-ai; AI plan skipped"
+	case !aiEnabled:
+		return "AI features are disabled (ai.enabled=false)"
+	case flags.forceAI:
+		return ""
+	case AgentOut():
+		return "agent mode; pass --ai for an AI plan"
+	case fastForward:
+		return "deterministic fast-forward; AI plan skipped"
+	}
+	return ""
 }
 
 func resolveMergePlanProvider(ctx context.Context, ai config.AIConfig) (provider.Provider, error) {

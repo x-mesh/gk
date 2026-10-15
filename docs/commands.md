@@ -847,6 +847,7 @@ branch on a different branch), use `--into`.
 | `--skip-precheck` | false | Skip the merge-tree conflict precheck |
 | `--autostash` | false | Stash tracked changes before merge and pop afterwards |
 | `--no-ai` | false | Skip the merge plan summary |
+| `--ai` | false | Run the AI merge plan also for a fast-forward or in agent mode (`GK_AGENT=1`). `ai.enabled=false` still turns it off |
 | `--plan-only` | false | Print the merge plan without running `git merge` |
 | `--into <branch>` | "" | Land the source branch (default: current) into `<branch>` |
 | `--provider <name>` | config | Override `ai.provider` for the merge plan |
@@ -900,6 +901,8 @@ the hints themselves still print using the normal-mode catalog.
 - `git diff --name-status HEAD..<target>`
 
 When an AI summarizer is available, the payload goes through the same privacy gate as other AI commands and is summarized as a merge plan. If no provider is available, gk prints a local fallback plan from the same git facts. If conflicts are predicted, the plan is printed and the actual merge is blocked.
+
+In agent mode (`GK_AGENT=1`), gk prints the local plan and sends nothing to a provider. Add `--ai` to get the AI plan. If `ai.enabled` is `false`, gk always prints the local plan.
 
 ### Examples
 
@@ -1839,6 +1842,8 @@ gk branch clean [flags]
 | `--worktrees` | false | Also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped) |
 | `--squash-merged` | false | Also include squash-merged branches — `git cherry` plus a merge-tree content check that catches multi-commit squashes (whose combined patch-id matches no original commit) |
 | `--all` | false | Include merged, gone, stale, and squash-merged branches |
+| `--no-ai` | false | Turn off the AI branch analysis |
+| `--ai` | false | Run the AI branch analysis in agent mode (`GK_AGENT=1`), where it is off by default |
 
 #### Examples
 

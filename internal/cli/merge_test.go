@@ -776,6 +776,113 @@ func TestRunMergeCorePlanUsesAISummary(t *testing.T) {
 	}
 }
 
+func TestRunMergeCoreAIPlanGates(t *testing.T) {
+	cases := []struct {
+		name        string
+		agent       bool
+		aiEnabled   bool
+		fastForward bool
+		flags       mergeFlags
+		wantAI      bool
+		wantWhy     string
+	}{
+		{name: "human default", aiEnabled: true, flags: mergeFlags{planOnly: true}, wantAI: true},
+		{name: "fast-forward skips", aiEnabled: true, fastForward: true, flags: mergeFlags{planOnly: true}, wantWhy: "deterministic fast-forward"},
+		{name: "fast-forward --ai forces", aiEnabled: true, fastForward: true, flags: mergeFlags{planOnly: true, forceAI: true}, wantAI: true},
+		{name: "ai.enabled=false wins over --ai", aiEnabled: false, flags: mergeFlags{planOnly: true, forceAI: true}, wantWhy: "ai.enabled=false"},
+		{name: "agent mode skips by default", agent: true, aiEnabled: true, flags: mergeFlags{planOnly: true}, wantWhy: "agent mode"},
+		{name: "agent mode --ai opts in", agent: true, aiEnabled: true, flags: mergeFlags{planOnly: true, forceAI: true}, wantAI: true},
+		{name: "--no-ai names itself", aiEnabled: true, flags: mergeFlags{planOnly: true, noAI: true}, wantWhy: "--no-ai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withAgentMode(t, tc.agent)
+			runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+				"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
+				"merge-base HEAD main":             {Stdout: "base123\n"},
+				"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
+				"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+				"diff --stat HEAD...main":        {Stdout: " file.go | 2 ++\n"},
+				"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
+			}}
+			if tc.fastForward {
+				runner.Responses["rev-parse HEAD"] = git.FakeResponse{Stdout: "base123\n"}
+			}
+			fake := provider.NewFake()
+			fake.NameVal = "nvidia"
+			fake.SummarizeResponses = []provider.SummarizeResult{{Text: "AI says merge is low risk."}}
+			cfg := config.Defaults()
+			cfg.AI.Enabled = tc.aiEnabled
+			var errOut bytes.Buffer
+
+			err := runMergeCore(context.Background(), mergeDeps{
+				Runner:   runner,
+				Config:   &cfg,
+				Provider: fake,
+				ErrOut:   &errOut,
+			}, "main", tc.flags)
+			if err != nil {
+				t.Fatalf("runMergeCore: %v", err)
+			}
+			if got := strings.Contains(errOut.String(), "MERGE PLAN (AI)"); got != tc.wantAI {
+				t.Fatalf("AI plan = %v, want %v; output:\n%s", got, tc.wantAI, errOut.String())
+			}
+			if tc.wantAI {
+				return
+			}
+			if len(fake.Calls) != 0 {
+				t.Errorf("provider must not be called, calls=%v", fake.Calls)
+			}
+			if !strings.Contains(errOut.String(), tc.wantWhy) {
+				t.Errorf("local plan should name the reason %q; output:\n%s", tc.wantWhy, errOut.String())
+			}
+		})
+	}
+}
+
+func TestRunMergeCoreAgentModeMergesWithoutAI(t *testing.T) {
+	withAgentMode(t, true)
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
+		"status --porcelain=v1 -uno":       {Stdout: ""},
+		"merge-base HEAD main":             {Stdout: "base123\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {Stdout: "tree123\n"},
+		"log --oneline HEAD..main":              {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":               {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main":        {Stdout: "M\tfile.go\n"},
+		"merge --no-edit main":                  {Stdout: "merged\n"},
+		"rev-list --count old123456..new123456": {Stdout: "2\n"},
+	}}
+	fake := provider.NewFake()
+	fake.SummarizeResponses = []provider.SummarizeResult{{Text: "AI says merge is low risk."}}
+	var errOut bytes.Buffer
+	var res mergeResultJSON
+
+	err := runMergeCore(context.Background(), mergeDeps{
+		Runner: &sequenceRunner{
+			FakeRunner: runner,
+			sequence: map[string][]git.FakeResponse{
+				"rev-parse HEAD": {{Stdout: "old123456\n"}, {Stdout: "new123456\n"}},
+			},
+		},
+		Provider: fake,
+		ErrOut:   &errOut,
+		Result:   &res,
+	}, "main", mergeFlags{})
+	if err != nil {
+		t.Fatalf("runMergeCore: %v", err)
+	}
+	if res.Result != mergeResultMerged {
+		t.Fatalf("result = %q, want %q", res.Result, mergeResultMerged)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("provider must not be called in agent mode, calls=%v", fake.Calls)
+	}
+	if !strings.Contains(errOut.String(), "MERGE PLAN (LOCAL)") {
+		t.Errorf("expected the local plan, got:\n%s", errOut.String())
+	}
+}
+
 func TestRenderAIMergePlanHeaderNoColor(t *testing.T) {
 	prev := color.NoColor
 	color.NoColor = true

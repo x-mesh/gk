@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestBuildMergePlanPayloadUses3DotDiff(t *testing.T) {
 		"diff --name-status HEAD...main": {Stdout: "M\tfile.go\n"},
 	}}
 
-	payload, commits := buildMergePlanPayload(context.Background(), runner, "main", "develop", nil)
+	payload, commits := buildMergePlanPayload(context.Background(), runner, "main", "develop", nil, false)
 
 	if len(commits) != 1 {
 		t.Fatalf("expected 1 incoming commit, got %d", len(commits))
@@ -130,6 +131,82 @@ func TestRunMergeCoreBlocksPrecheckConflicts(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "1 conflict(s)") {
 		t.Fatalf("expected conflict count in plan summary, got:\n%s", errOut.String())
+	}
+	if !strings.Contains(err.Error(), "merge not started") {
+		t.Fatalf("error must say the merge never started, got: %v", err)
+	}
+	var remedies []string
+	for _, r := range RemediesFrom(err) {
+		remedies = append(remedies, r.Command)
+	}
+	if got, want := strings.Join(remedies, " | "), "gk precheck main | gk merge main --skip-precheck"; got != want {
+		t.Fatalf("remedies = %q, want %q", got, want)
+	}
+	if strings.Contains(errOut.String(), "<target>") || !strings.Contains(errOut.String(), "gk precheck main") {
+		t.Fatalf("NEXT must name the real target, got:\n%s", errOut.String())
+	}
+}
+
+func TestRunMergeCorePlanOnlyReportsConflicts(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
+		"merge-base HEAD main":             {Stdout: "base123\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base base123 HEAD main": {
+			Stdout:   "0123456789abcdef0123456789abcdef01234567\nconflict.go\n",
+			ExitCode: 1,
+		},
+		"log --oneline HEAD..main":       {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":        {Stdout: " conflict.go | 2 ++\n"},
+		"diff --name-status HEAD...main": {Stdout: "M\tconflict.go\n"},
+	}}
+	var errOut bytes.Buffer
+	var res mergeResultJSON
+
+	err := runMergeCore(context.Background(), mergeDeps{Runner: runner, ErrOut: &errOut, Result: &res}, "main", mergeFlags{planOnly: true, noAI: true})
+	if err != nil {
+		t.Fatalf("plan-only must report conflicts as a result, got error: %v", err)
+	}
+	if res.Result != mergeResultPlanned || !res.PlanOnly {
+		t.Fatalf("result = %q plan_only=%v, want planned/true", res.Result, res.PlanOnly)
+	}
+	if strings.Join(res.Conflicts, ",") != "conflict.go" {
+		t.Fatalf("conflicts = %v, want [conflict.go]", res.Conflicts)
+	}
+	if strings.Contains(joinedShipCalls(runner.Calls), "merge --no-edit main") {
+		t.Fatal("plan-only should not merge")
+	}
+}
+
+func TestRunMergeCoreSkipPrecheckPlanSaysSkipped(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"rev-parse --verify main^{commit}": {Stdout: "abc123\n"},
+		"merge-base HEAD main":             {Stdout: "base123\n"},
+		"log --oneline HEAD..main":         {Stdout: "abc123 feat: incoming\n"},
+		"diff --stat HEAD...main":          {Stdout: " file.go | 2 ++\n"},
+		"diff --name-status HEAD...main":   {Stdout: "M\tfile.go\n"},
+	}}
+	var errOut bytes.Buffer
+
+	err := runMergeCore(context.Background(), mergeDeps{Runner: runner, ErrOut: &errOut}, "main", mergeFlags{planOnly: true, noAI: true, skipPrecheck: true})
+	if err != nil {
+		t.Fatalf("runMergeCore: %v", err)
+	}
+	out := errOut.String()
+	if strings.Contains(out, "clean") {
+		t.Fatalf("a skipped precheck must not be reported as clean, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Precheck: skipped") || !strings.Contains(out, "· precheck skipped ·") {
+		t.Fatalf("expected the plan to say the precheck was skipped, got:\n%s", out)
+	}
+}
+
+func TestBuildMergePlanPayloadKeepsDiffStatAlignment(t *testing.T) {
+	runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"diff --stat HEAD...main": {Stdout: " a.go | 2 +-\n b.go | 1 +\n 2 files changed\n"},
+	}}
+	payload, _ := buildMergePlanPayload(context.Background(), runner, "main", "feat", nil, false)
+	if !strings.Contains(payload, "Diff stat:\n a.go | 2 +-\n b.go | 1 +\n") {
+		t.Fatalf("diff stat lines must keep git's shared indentation, got:\n%s", payload)
 	}
 }
 
@@ -489,6 +566,35 @@ func TestRunMergeIntoBareConflictRefusesWithHint(t *testing.T) {
 	}
 	if strings.Contains(joinedShipCalls(sourceRunner.Calls), "update-ref") {
 		t.Fatalf("update-ref must not run on conflict")
+	}
+}
+
+func TestRunMergeIntoBarePlanOnlyReportsConflicts(t *testing.T) {
+	sourceRunner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+		"symbolic-ref --short HEAD":                   {Stdout: "ship\n"},
+		"status --porcelain=v1 -uno":                  {Stdout: ""},
+		"worktree list --porcelain":                   {Stdout: "worktree /repo/ship\nHEAD def456\nbranch refs/heads/ship\n"},
+		"rev-parse --verify refs/heads/main^{commit}": {Stdout: "aaa1111\n"},
+		"rev-parse --verify ship^{commit}":            {Stdout: "bbb2222\n"},
+		"merge-base main ship":                        {Stdout: "ccc3333\n"},
+		"merge-tree --write-tree --no-messages --name-only --merge-base ccc3333 main ship": {
+			Stdout:   "0123456789abcdef0123456789abcdef01234567\nfile.go\n",
+			ExitCode: 1,
+		},
+	}}
+	var errOut bytes.Buffer
+	var res mergeResultJSON
+
+	err := runMergeInto(context.Background(), mergeDeps{Runner: sourceRunner, ErrOut: &errOut, Result: &res}, nil, mergeFlags{into: "main", noAI: true, planOnly: true}, nil)
+	if err != nil {
+		t.Fatalf("plan-only must report conflicts as a result, got error: %v", err)
+	}
+	if res.Result != mergeResultPlanned || !res.PlanOnly || strings.Join(res.Conflicts, ",") != "file.go" {
+		t.Fatalf("result = %+v, want planned with conflicts [file.go]", res)
+	}
+	calls := joinedShipCalls(sourceRunner.Calls)
+	if strings.Contains(calls, "commit-tree") || strings.Contains(calls, "update-ref") {
+		t.Fatalf("plan-only must not write refs:\n%s", calls)
 	}
 }
 
@@ -888,7 +994,7 @@ func TestRenderAIMergePlanHeaderNoColor(t *testing.T) {
 	color.NoColor = true
 	t.Cleanup(func() { color.NoColor = prev })
 
-	got := renderAIMergePlanHeader("main", "feature", "gemini", 0, false)
+	got := renderAIMergePlanHeader("main", "feature", "gemini", "clean", false)
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("header should not contain ANSI escapes: %q", got)
 	}
@@ -1120,7 +1226,7 @@ func TestRunMergeAndEmit_AlreadyUpToDateEmitsEnvelope(t *testing.T) {
 	}
 	env := decodeMergeEnvelope(t, out.Bytes())
 	want := mergeResultJSON{Schema: 1, Result: mergeResultUpToDate, Noop: true, Receiver: "work", Source: "main", Pre: "abc123", Post: "abc123", HeadOID: "abc123"}
-	if env.Result != want {
+	if !reflect.DeepEqual(env.Result, want) {
 		t.Fatalf("result = %+v, want %+v", env.Result, want)
 	}
 	if !strings.Contains(errOut.String(), "work already contains main") {
@@ -1221,5 +1327,18 @@ func TestRunMergeAndEmit_NoJSONLeavesStdoutEmpty(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("human mode must not write to stdout, got:\n%s", out.String())
+	}
+}
+
+// Before the merge starts there are no conflict markers, so `gk resolve` has
+// nothing to work on; the verdict must point at the step that starts the merge.
+func TestMergeVerdictConflictPointsAtSkipPrecheck(t *testing.T) {
+	for name, got := range map[string]string{
+		"plain": plainVerdict("", 2),
+		"color": colorVerdict("", 2),
+	} {
+		if strings.Contains(got, "gk resolve") || !strings.Contains(got, "--skip-precheck") {
+			t.Errorf("%s verdict = %q, want the --skip-precheck step", name, got)
+		}
 	}
 }

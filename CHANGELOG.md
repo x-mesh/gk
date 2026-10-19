@@ -19,7 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The AI merge plan verdict for predicted conflicts tells you to rerun with `--skip-precheck`. Before, it told you to run `gk resolve`, which has nothing to resolve before the merge starts.
 - `gk merge --skip-precheck` shows `precheck skipped` in the merge plan. Before, it showed `clean`, and then the merge stopped at conflicts.
 - The merge plan keeps the diff stat column aligned. Before, the first row lost its indentation.
-
 - `gk merge` obeys `ai.enabled=false` and prints the local merge plan. Before, it sent the diff to the AI provider also when AI was disabled.
 - `gk merge --plan-only --no-ai` names `--no-ai` as the reason for the local plan. Before, it named a deterministic fast-forward for every merge.
 

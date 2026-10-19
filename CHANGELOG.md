@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- In agent mode (`GK_AGENT=1`), `gk merge` and `gk branch clean` do not call an AI provider unless you add `--ai`. `gk merge` prints the local merge plan, so the diff stays on the machine. An agent reads the result envelope, not the plan text. `gk branch clean` gets the `--ai` flag for this.
+
+### Fixed
+
+- `gk merge` obeys `ai.enabled=false` and prints the local merge plan. Before, it sent the diff to the AI provider also when AI was disabled.
+- `gk merge --plan-only --no-ai` names `--no-ai` as the reason for the local plan. Before, it named a deterministic fast-forward for every merge.
+
 ## [0.151.1] - 2026-10-14
 
 ### Fixed

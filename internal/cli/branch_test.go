@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/x-mesh/gk/internal/ai/provider"
 	"github.com/x-mesh/gk/internal/branchclean"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -1002,5 +1004,107 @@ func TestFormatCandidateLabel_AmbiguousExplains(t *testing.T) {
 	})
 	if !strings.Contains(label, "partially applied") {
 		t.Errorf("label = %q, want the partially-applied explainer", label)
+	}
+}
+
+func TestBranchCleanWantsAI(t *testing.T) {
+	cases := []struct {
+		name                     string
+		agent, enabled, noAI, ai bool
+		want                     bool
+	}{
+		{name: "human default", enabled: true, want: true},
+		{name: "ai.enabled=false", enabled: false, ai: true, want: false},
+		{name: "--no-ai", enabled: true, noAI: true, want: false},
+		{name: "agent mode skips by default", agent: true, enabled: true, want: false},
+		{name: "agent mode --ai opts in", agent: true, enabled: true, ai: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withAgentMode(t, tc.agent)
+			if got := branchCleanWantsAI(tc.enabled, tc.noAI, tc.ai); got != tc.want {
+				t.Errorf("branchCleanWantsAI = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func runBranchCleanViaRoot(t *testing.T, repoDir string, args ...string) error {
+	t.Helper()
+	// Flag values and Changed marks persist on rootCmd between tests, and a
+	// stale Changed mark on --no-ai trips the --ai/--no-ai exclusivity check.
+	reset := func() {
+		c, _, err := rootCmd.Find([]string{"branch", "clean"})
+		if err != nil {
+			return
+		}
+		for _, name := range []string{"ai", "no-ai", "dry-run"} {
+			if f := c.Flags().Lookup(name); f != nil {
+				_ = f.Value.Set(f.DefValue)
+				f.Changed = false
+			}
+		}
+	}
+	reset()
+	t.Cleanup(func() {
+		flagRepo = ""
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		reset()
+	})
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs(append([]string{"--repo", repoDir, "branch", "clean", "--dry-run"}, args...))
+	return rootCmd.Execute()
+}
+
+func TestBranchCleanBuildsProviderOnlyWhenWanted(t *testing.T) {
+	cases := []struct {
+		name      string
+		agent     bool
+		args      []string
+		wantBuilt bool
+	}{
+		{name: "human default", wantBuilt: true},
+		{name: "human --no-ai", args: []string{"--no-ai"}},
+		{name: "agent mode skips by default", agent: true},
+		{name: "agent mode --ai opts in", agent: true, args: []string{"--ai"}, wantBuilt: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withAgentMode(t, tc.agent)
+			repo := testutil.NewRepo(t)
+			repo.WriteFile("base.txt", "base")
+			repo.Commit("base")
+			repo.WriteFile(".gk.yaml", "base_branch: main\nai:\n  enabled: true\n")
+			built := 0
+			prev := branchCleanNewProvider
+			t.Cleanup(func() { branchCleanNewProvider = prev })
+			branchCleanNewProvider = func(context.Context, provider.FactoryOptions) (provider.Provider, error) {
+				built++
+				return nil, errors.New("test provider")
+			}
+
+			if err := runBranchCleanViaRoot(t, repo.Dir, tc.args...); err != nil {
+				t.Fatalf("branch clean: %v", err)
+			}
+			if got := built > 0; got != tc.wantBuilt {
+				t.Errorf("provider built = %v, want %v", got, tc.wantBuilt)
+			}
+		})
+	}
+}
+
+func TestBranchCleanRejectsAIAndNoAI(t *testing.T) {
+	withAgentMode(t, false)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("base.txt", "base")
+	repo.Commit("base")
+
+	err := runBranchCleanViaRoot(t, repo.Dir, "--ai", "--no-ai")
+	if err == nil || !strings.Contains(err.Error(), "[ai no-ai]") {
+		t.Fatalf("want the --ai/--no-ai exclusivity error, got %v", err)
 	}
 }

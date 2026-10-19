@@ -48,6 +48,8 @@ func init() {
 	cleanCmd.Flags().Bool("force", false, "use git branch -D")
 	cleanCmd.Flags().Bool("gone", false, "target branches whose upstream is gone instead of merged ones")
 	cleanCmd.Flags().Bool("no-ai", false, "disable AI analysis")
+	cleanCmd.Flags().Bool("ai", false, "run AI analysis in agent mode (GK_AGENT), where it is off by default")
+	cleanCmd.MarkFlagsMutuallyExclusive("ai", "no-ai")
 	cleanCmd.Flags().Int("stale", 0, "include branches with last commit older than N days")
 	cleanCmd.Flags().Bool("all", false, "include merged, gone, stale, and squash-merged branches")
 	cleanCmd.Flags().Bool("remote", false, "run git remote prune")
@@ -449,6 +451,15 @@ func renderBranchListRows(rows []branchListRow) []string {
 	return out
 }
 
+// branchCleanWantsAI keeps the AI branch analysis off in agent mode unless
+// --ai asks for it: the analysis sends branch data to an external provider,
+// and the agent asked only for a cleanup.
+func branchCleanWantsAI(aiEnabled, noAI, forceAI bool) bool {
+	return aiEnabled && !noAI && (forceAI || !AgentOut())
+}
+
+var branchCleanNewProvider = provider.NewProvider
+
 func runBranchClean(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -464,6 +475,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 	goneMode, _ := cmd.Flags().GetBool("gone")
 	noAI, _ := cmd.Flags().GetBool("no-ai")
+	forceAI, _ := cmd.Flags().GetBool("ai")
 	stale, _ := cmd.Flags().GetInt("stale")
 	all, _ := cmd.Flags().GetBool("all")
 	remote, _ := cmd.Flags().GetBool("remote")
@@ -509,8 +521,8 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 
 	// AI provider 구성
 	var prov provider.Provider
-	if cfg.AI.Enabled && !noAI {
-		p, err := provider.NewProvider(ctx, aiFactoryOptions(cfg))
+	if branchCleanWantsAI(cfg.AI.Enabled, noAI, forceAI) {
+		p, err := branchCleanNewProvider(ctx, aiFactoryOptions(cfg))
 		if err == nil {
 			// BranchAnalyzer type assertion으로 AI 지원 여부 확인
 			if _, ok := p.(provider.BranchAnalyzer); ok {

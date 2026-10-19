@@ -94,6 +94,9 @@ type mergeResultJSON struct {
 	PlanOnly bool   `json:"plan_only"`
 	NoCommit bool   `json:"no_commit"`
 	Squash   bool   `json:"squash"`
+	// Conflicts is set only on a planned result: a plan that finds conflicts
+	// reports them instead of failing.
+	Conflicts []string `json:"conflicts,omitempty"`
 }
 
 const (
@@ -269,20 +272,24 @@ func runMergeCore(ctx context.Context, deps mergeDeps, target string, flags merg
 				Dbg("merge plan provider unavailable: %v", planDeps.ProviderErr)
 			}
 		}
-		if err := renderMergePlan(ctx, planDeps, target, current, conflicts); err != nil && deps.ErrOut != nil {
+		if err := renderMergePlan(ctx, planDeps, target, current, conflicts, flags.skipPrecheck); err != nil && deps.ErrOut != nil {
 			fmt.Fprintf(deps.ErrOut, "merge plan unavailable: %v\n", err)
 		}
 	}
+	if flags.planOnly {
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: current, Source: target, Pre: preHEAD, Post: preHEAD, HeadOID: preHEAD, PlanOnly: true, Conflicts: conflicts})
+		return nil
+	}
 	if len(conflicts) > 0 {
 		popMergeStashBestEffort(ctx, deps.Runner, stashed)
-		return WithHint(
-			fmt.Errorf("precheck found %d conflict(s) merging %s", len(conflicts), target),
+		// An agent read the plan printed above as "gk merge only plans", so the
+		// error says outright that nothing ran and how to start the real merge.
+		return WithRemedy(
+			fmt.Errorf("merge not started, HEAD unchanged: precheck found %d conflict(s) merging %s", len(conflicts), target),
 			hintCommand("gk precheck "+target),
+			errRemedy{Command: "gk precheck " + target, Safety: "safe"},
+			errRemedy{Command: "gk merge " + target + " --skip-precheck", Safety: "safe"},
 		)
-	}
-	if flags.planOnly {
-		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: current, Source: target, Pre: preHEAD, Post: preHEAD, HeadOID: preHEAD})
-		return nil
 	}
 
 	if err := guardWorkingTreeReady(ctx, deps.Runner, "merge"); err != nil {
@@ -532,16 +539,16 @@ func runMergeIntoBare(ctx context.Context, deps mergeDeps, source string, flags 
 		renderBareMergePlan(deps.ErrOut, source, receiver, sourceSHA, receiverSHA, isFF, willMerge, conflicts)
 	}
 
+	if flags.planOnly {
+		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA, PlanOnly: true, Conflicts: conflicts})
+		return nil
+	}
+
 	if len(conflicts) > 0 {
 		return WithHint(
 			fmt.Errorf("precheck found %d conflict(s) merging %s into %s", len(conflicts), source, receiver),
 			"create a worktree to resolve interactively: `gk worktree add <path> "+receiver+"`",
 		)
-	}
-
-	if flags.planOnly {
-		deps.setResult(mergeResultJSON{Result: mergeResultPlanned, Receiver: receiver, Source: source, Pre: receiverSHA, Post: receiverSHA, HeadOID: receiverSHA})
-		return nil
 	}
 
 	var newSHA string
@@ -799,13 +806,13 @@ func resolveMergePlanProvider(ctx context.Context, ai config.AIConfig) (provider
 	return provider.NewProvider(ctx, aiFactoryOptionsFromAI(ai))
 }
 
-func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string, conflicts []string) error {
-	payload, commits := buildMergePlanPayload(ctx, deps.Runner, target, current, conflicts)
+func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string, conflicts []string, precheckSkipped bool) error {
+	payload, commits := buildMergePlanPayload(ctx, deps.Runner, target, current, conflicts, precheckSkipped)
 	reason := "AI provider unavailable or disabled"
 	if deps.ProviderErr != nil {
 		reason = deps.ProviderErr.Error()
 	}
-	text := fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
+	text := fallbackMergePlan(target, current, conflicts, precheckSkipped, payload, reason, !NoColorFlag())
 	if deps.Provider != nil {
 		lang := fallbackLang(deps.Config.AI.Lang)
 		answer, err := runAIQuery(ctx, deps.Cmd, deps.Runner, deps.Provider, deps.Config.AI, aiQuery{
@@ -844,14 +851,14 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 			if errors.Is(err, errAIUnsupported) {
 				reason = fmt.Sprintf("provider %q does not support merge-plan summaries", deps.Provider.Name())
 			}
-			text = fallbackMergePlan(target, current, conflicts, payload, reason, !NoColorFlag())
+			text = fallbackMergePlan(target, current, conflicts, precheckSkipped, payload, reason, !NoColorFlag())
 		} else {
 			summary := decorateMergePlanSummary(cleanMergePlanSummary(answer.Text), len(conflicts), !NoColorFlag())
 			// renderAIMergePlanHeader emits a complete bar section
 			// (header + trailing blank line); decorateMergePlanSummary
 			// already starts with the indented body so they concatenate
 			// without an explicit separator.
-			text = renderAIMergePlanHeader(target, current, answer.Attribution(), len(conflicts), !NoColorFlag()) + summary
+			text = renderAIMergePlanHeader(target, current, answer.Attribution(), mergePrecheckLabel(conflicts, precheckSkipped), !NoColorFlag()) + summary
 		}
 	}
 	if deps.ErrOut != nil {
@@ -860,16 +867,19 @@ func renderMergePlan(ctx context.Context, deps mergeDeps, target, current string
 	return nil
 }
 
-func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current string, conflicts []string) (string, []string) {
+func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current string, conflicts []string, precheckSkipped bool) (string, []string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Operation: git merge %s\n", target)
 	fmt.Fprintf(&b, "Current branch receiving changes: %s\n", current)
 	fmt.Fprintf(&b, "Target: %s\n", target)
 	fmt.Fprintf(&b, "Direction: %s -> %s\n", target, current)
 	fmt.Fprintf(&b, "Important: this merges %s into %s; it does NOT merge %s into %s.\n", target, current, current, target)
-	if len(conflicts) == 0 {
+	switch {
+	case precheckSkipped:
+		fmt.Fprintln(&b, "Precheck: skipped (--skip-precheck)")
+	case len(conflicts) == 0:
 		fmt.Fprintln(&b, "Precheck: clean")
-	} else {
+	default:
 		fmt.Fprintf(&b, "Precheck: %d conflict(s)\n", len(conflicts))
 		fmt.Fprintln(&b, "Conflicts:")
 		for _, path := range conflicts {
@@ -895,7 +905,9 @@ func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current st
 	// though the merge is purely additive. 3-dot = git diff $(merge-base
 	// HEAD target) target, which is exactly the incoming change set.
 	if out, _, err := r.Run(ctx, "diff", "--stat", "HEAD..."+target); err == nil {
-		trimmed := strings.TrimSpace(string(out))
+		// git indents every stat row by one space; TrimSpace would strip it
+		// from the first row only and misalign the column.
+		trimmed := strings.TrimRight(string(out), " \n")
 		if trimmed != "" {
 			fmt.Fprintln(&b, "\nDiff stat:")
 			b.WriteString(trimmed)
@@ -919,16 +931,12 @@ func buildMergePlanPayload(ctx context.Context, r git.Runner, target, current st
 // the conflict tally, and the fallback reason promoted to the title's
 // summary slot. A trailing NEXT section appears only when conflicts
 // were detected, matching the pull divergence layout.
-func fallbackMergePlan(target, current string, conflicts []string, payload string, reason string, colorize bool) string {
-	cleanLabel := "clean"
-	if len(conflicts) > 0 {
-		cleanLabel = fmt.Sprintf("%d conflict(s)", len(conflicts))
-	}
-	headerSummary := fmt.Sprintf("%s → %s · %s · via local git (%s)", target, current, cleanLabel, reason)
+func fallbackMergePlan(target, current string, conflicts []string, precheckSkipped bool, payload string, reason string, colorize bool) string {
+	headerSummary := fmt.Sprintf("%s → %s · %s · via local git (%s)", target, current, mergePrecheckLabel(conflicts, precheckSkipped), reason)
 
 	var body []string
 	if strings.TrimSpace(payload) != "" {
-		body = strings.Split(strings.TrimSpace(payload), "\n")
+		body = strings.Split(strings.Trim(payload, "\n"), "\n")
 	}
 
 	var b strings.Builder
@@ -937,7 +945,7 @@ func fallbackMergePlan(target, current string, conflicts []string, payload strin
 		Color:  ui.SectionDiverged,
 	}))
 	if len(conflicts) > 0 {
-		b.WriteString(ui.RenderSection("next", "inspect conflicts with `gk precheck <target>` before merging.", nil, ui.SectionOpts{
+		b.WriteString(ui.RenderSection("next", selfRewrite("inspect conflicts with `gk precheck "+target+"` before merging."), nil, ui.SectionOpts{
 			Layout: ui.SectionLayoutBar,
 			Color:  ui.SectionAction,
 		}))
@@ -950,16 +958,23 @@ func fallbackMergePlan(target, current string, conflicts []string, payload strin
 // blank line, no body. Body content (the AI summary) and the verdict
 // footer are appended separately via decorateMergePlanSummary so the
 // existing two-helper composition still works.
-func renderAIMergePlanHeader(target, current, providerName string, conflictCount int, colorize bool) string {
-	cleanLabel := "clean"
-	if conflictCount > 0 {
-		cleanLabel = fmt.Sprintf("%d conflict(s)", conflictCount)
-	}
-	summary := fmt.Sprintf("%s → %s · %s · via %s", target, current, cleanLabel, providerName)
+func renderAIMergePlanHeader(target, current, providerName, precheckLabel string, colorize bool) string {
+	summary := fmt.Sprintf("%s → %s · %s · via %s", target, current, precheckLabel, providerName)
 	return ui.RenderSection("merge plan (AI)", summary, nil, ui.SectionOpts{
 		Layout: ui.SectionLayoutBar,
 		Color:  ui.SectionDiverged,
 	})
+}
+
+func mergePrecheckLabel(conflicts []string, precheckSkipped bool) string {
+	switch {
+	case precheckSkipped:
+		return "precheck skipped"
+	case len(conflicts) > 0:
+		return fmt.Sprintf("%d conflict(s)", len(conflicts))
+	default:
+		return "clean"
+	}
 }
 
 func currentMergeBranch(ctx context.Context, client *git.Client) string {
@@ -1067,7 +1082,7 @@ func colorVerdict(text string, conflictCount int) string {
 	bad := color.New(color.FgRed, color.Bold).SprintFunc()
 
 	if conflictCount > 0 {
-		return bad(fmt.Sprintf("✗ %d conflict(s) — resolve with `gk resolve` before merging", conflictCount))
+		return bad(fmt.Sprintf("✗ %d conflict(s) — gk merge stops before merging; rerun with --skip-precheck to merge and resolve them", conflictCount))
 	}
 	severity := detectMergeRisk(text)
 	switch severity {
@@ -1082,7 +1097,7 @@ func colorVerdict(text string, conflictCount int) string {
 
 func plainVerdict(text string, conflictCount int) string {
 	if conflictCount > 0 {
-		return fmt.Sprintf("✗ %d conflict(s) — resolve with `gk resolve` before merging", conflictCount)
+		return fmt.Sprintf("✗ %d conflict(s) — gk merge stops before merging; rerun with --skip-precheck to merge and resolve them", conflictCount)
 	}
 	switch detectMergeRisk(text) {
 	case "high":

@@ -848,7 +848,7 @@ branch on a different branch), use `--into`.
 | `--autostash` | false | Stash tracked changes before merge and pop afterwards |
 | `--no-ai` | false | Skip the merge plan summary |
 | `--ai` | false | Run the AI merge plan also for a fast-forward or in agent mode (`GK_AGENT=1`). `ai.enabled=false` still turns it off |
-| `--plan-only` | false | Print the merge plan without running `git merge` |
+| `--plan-only` | false | Print the merge plan without running `git merge`. Predicted conflicts go into the result, not into an error |
 | `--into <branch>` | "" | Land the source branch (default: current) into `<branch>` |
 | `--provider <name>` | config | Override `ai.provider` for the merge plan |
 
@@ -900,7 +900,11 @@ the hints themselves still print using the normal-mode catalog.
 - `git diff --stat HEAD..<target>`
 - `git diff --name-status HEAD..<target>`
 
-When an AI summarizer is available, the payload goes through the same privacy gate as other AI commands and is summarized as a merge plan. If no provider is available, gk prints a local fallback plan from the same git facts. If conflicts are predicted, the plan is printed and the actual merge is blocked.
+When an AI summarizer is available, the payload goes through the same privacy gate as other AI commands and is summarized as a merge plan. If no provider is available, gk prints a local fallback plan from the same git facts.
+
+If the precheck finds conflicts, gk prints the plan and stops before `git merge`. HEAD does not change. The error has the code `conflict` and two remedies. `gk precheck <target>` shows the conflicts. `gk merge <target> --skip-precheck` starts the merge, which stops at the conflicts. Resolve them and run `gk continue`, or run `gk abort`.
+
+With `--plan-only`, gk reports the conflicts in the result and does not fail. The result has `result: "planned"` and a `conflicts` list. If you add `--skip-precheck`, the plan shows `precheck skipped`, because gk did not scan for conflicts.
 
 In agent mode (`GK_AGENT=1`), gk prints the local plan and sends nothing to a provider. Add `--ai` to get the AI plan. If `ai.enabled` is `false`, gk always prints the local plan.
 

@@ -13,10 +13,10 @@ func TestInboxSearchQuery(t *testing.T) {
 		onlyPR, onlyIssue bool
 		state, want       string
 	}{
-		{"pr only", true, false, "open", "involves:@me is:pr is:open"},
-		{"issue only", false, true, "open", "involves:@me is:issue is:open"},
-		{"untyped open", false, false, "open", "involves:@me is:open"},
-		{"untyped all", false, false, "all", "involves:@me"},
+		{"pr only", true, false, "open", "involves:@me is:pr is:open archived:false"},
+		{"issue only", false, true, "open", "involves:@me is:issue is:open archived:false"},
+		{"untyped open", false, false, "open", "involves:@me is:open archived:false"},
+		{"untyped all", false, false, "all", "involves:@me archived:false"},
 	}
 	for _, tc := range cases {
 		got, err := inboxSearchQuery(tc.onlyPR, tc.onlyIssue, tc.state, nil, "")

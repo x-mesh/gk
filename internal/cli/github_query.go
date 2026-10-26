@@ -298,6 +298,12 @@ func buildSearchQuery(prefix string, f githubSearchFilters) string {
 	default: // "open"
 		parts = append(parts, "is:open")
 	}
+	// An archived repo is read-only, so its open PRs/issues stay open forever
+	// and cannot be closed; they would clutter every cross-repo listing. A
+	// repo: scope names the repo explicitly, so it keeps them.
+	if !strings.HasPrefix(prefix, "repo:") && !strings.Contains(f.raw, "archived:") {
+		parts = append(parts, "archived:false")
+	}
 	if f.mine {
 		parts = append(parts, "author:@me")
 	}

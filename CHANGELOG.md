@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `gk pr`, `gk issue`, and `gk inbox` do not list items from archived repositories in an organization, user, or inbox scope. An archived repository is read-only, so its open pull requests stay open and you cannot close them. A `repo:` scope still lists them. To list them in other scopes, add `-q archived:true`.
+
 ## [0.151.2] - 2026-10-19
 
 ### Changed

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -24,11 +25,16 @@ type actionsWatchOptions struct {
 	run      int64
 	org      string
 	interval time.Duration
+	// onRateLimit reports a wait for the rate limit to reset, so a watch
+	// that pauses for minutes does not look hung.
+	onRateLimit func(reset time.Time)
 }
 
 type actionsClient interface {
 	ListWorkflowRuns(context.Context, string, string, string, string) ([]ghapi.WorkflowRun, error)
 	GetWorkflowRun(context.Context, string, string, int64) (ghapi.WorkflowRun, error)
+	ListWorkflowRunsForSHA(context.Context, string, string, string, string) ([]ghapi.WorkflowRun, string, bool, error)
+	GetWorkflowRunConditional(context.Context, string, string, int64, string) (ghapi.WorkflowRun, string, bool, error)
 }
 
 func init() {
@@ -88,6 +94,10 @@ func runActionsWatch(cmd *cobra.Command, _ []string) error {
 	owner, repo, sha, err := resolveActionsTarget(cmdCtx(cmd), *cfg, runner, opts)
 	if err != nil {
 		return err
+	}
+	errOut := cmd.ErrOrStderr()
+	opts.onRateLimit = func(reset time.Time) {
+		fmt.Fprintf(errOut, "gk actions: GitHub rate limit reached; waiting until %s\n", reset.Local().Format("15:04:05"))
 	}
 	runs, err := watchActionsRuns(cmdCtx(cmd), &ghapi.Client{Token: token}, owner, repo, sha, opts, waitActionsInterval)
 	if err != nil {
@@ -198,6 +208,44 @@ func waitActionsInterval(ctx context.Context, interval time.Duration) error {
 	}
 }
 
+// pollActionsRuns refreshes runs in place with one conditional request and
+// returns the ETag for the next poll. A watch on --run asks for that run; a
+// watch on a commit lists the commit's runs, and asks for a run on its own
+// only when it has fallen off that list.
+func pollActionsRuns(ctx context.Context, client actionsClient, owner, repo, sha string, opts actionsWatchOptions, runs []ghapi.WorkflowRun, etag string) (string, error) {
+	if opts.run > 0 {
+		run, newETag, notModified, err := client.GetWorkflowRunConditional(ctx, owner, repo, runs[0].ID, etag)
+		if err != nil || notModified {
+			return newETag, err
+		}
+		runs[0] = run
+		return newETag, nil
+	}
+	listed, newETag, notModified, err := client.ListWorkflowRunsForSHA(ctx, owner, repo, sha, etag)
+	if err != nil || notModified {
+		return newETag, err
+	}
+	byID := make(map[int64]ghapi.WorkflowRun, len(listed))
+	for _, run := range listed {
+		byID[run.ID] = run
+	}
+	for i := range runs {
+		if runs[i].Status == "completed" {
+			continue
+		}
+		if run, ok := byID[runs[i].ID]; ok {
+			runs[i] = run
+			continue
+		}
+		run, err := client.GetWorkflowRun(ctx, owner, repo, runs[i].ID)
+		if err != nil {
+			return etag, err
+		}
+		runs[i] = run
+	}
+	return newETag, nil
+}
+
 // watchActionsRuns waits until every matching run completes. Runs that
 // appear after the first listing are not picked up: the set is what GitHub
 // had started for the commit when the watch began.
@@ -222,20 +270,29 @@ func watchActionsRuns(ctx context.Context, client actionsClient, owner, repo, sh
 		}
 		runs = listed
 	}
+	// Each poll is one conditional request: an unchanged answer is a 304,
+	// which GitHub does not count against the rate limit. Polling every run
+	// separately and unconditionally spent hundreds of requests per watch.
+	etag := ""
+	delay := opts.interval
 	for actionsRunsPending(runs) {
-		if err := wait(ctx, opts.interval); err != nil {
+		if err := wait(ctx, delay); err != nil {
 			return runs, err
 		}
-		for i := range runs {
-			if runs[i].Status == "completed" {
-				continue
+		delay = opts.interval
+		newETag, err := pollActionsRuns(ctx, client, owner, repo, sha, opts, runs, etag)
+		var rl *ghapi.RateLimitError
+		if errors.As(err, &rl) {
+			delay = max(time.Until(rl.Reset), opts.interval)
+			if opts.onRateLimit != nil {
+				opts.onRateLimit(rl.Reset)
 			}
-			updated, err := client.GetWorkflowRun(ctx, owner, repo, runs[i].ID)
-			if err != nil {
-				return runs, err
-			}
-			runs[i] = updated
+			continue
 		}
+		if err != nil {
+			return runs, err
+		}
+		etag = newETag
 	}
 	var failed []string
 	for _, run := range runs {

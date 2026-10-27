@@ -37,10 +37,25 @@ command -v curl >/dev/null 2>&1 || err "curl is required"
 command -v tar  >/dev/null 2>&1 || err "tar is required"
 
 # --- pick version -----------------------------------------------------------
+# latest_tag reads the tag from github.com's /releases/latest redirect, which
+# api.github.com's 60/hour anonymous limit does not cover — shared CI and office
+# IPs used up that quota. The API is the fallback for networks that block the
+# redirect, the same order `gk update` uses.
+latest_tag() {
+  loc=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)
+  tag=${loc##*/releases/tag/}
+  if [ -n "$tag" ] && [ "$tag" != "$loc" ]; then
+    printf '%s\n' "$tag"
+    return
+  fi
+  printf "gk-install: %s\n" "release redirect gave no tag; asking api.github.com" >&2
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1
+}
+
 version=${GK_VERSION:-}
 if [ -z "$version" ]; then
-  version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+  version=$(latest_tag)
   [ -n "$version" ] || err "could not determine latest release tag"
 fi
 case "$version" in v*) ;; *) version="v$version" ;; esac

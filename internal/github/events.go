@@ -71,7 +71,7 @@ func (c *Client) ListRepoEvents(ctx context.Context, owner, repo, etag string) (
 		return nil, etag, true, pollIntervalSec, nil
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		return nil, etag, false, pollIntervalSec, rateLimitError(resp)
+		return nil, etag, false, pollIntervalSec, rateLimitError(resp, c.Token != "")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

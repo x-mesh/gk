@@ -4299,7 +4299,7 @@ gk pr --mine         # only PRs you opened
 | `--author <user>` | — | Only items opened by `<user>` |
 | `--assignee <user>` | — | Only items assigned to `<user>` |
 | `--label <name>` | — | Filter by label (repeatable; `label:<name>`) |
-| `-q, --query <raw>` | — | Extra raw GitHub search qualifiers, appended verbatim (e.g. `is:draft`) |
+| `-q, --query <raw>` | — | Extra raw GitHub search qualifiers, appended verbatim (e.g. `is:draft`). An org, user, or inbox scope hides archived repositories. Pass `-q archived:true` to list them. A `repo:` scope always lists its own items. |
 | `--sort <key>` | `updated` | Sort key: `updated`, `created`, or `comments` |
 | `--limit <n>` | 0 | Cap the number of results (0 = no cap) |
 | `--state <s>` | `open` | Which items: `open`, `closed`, or `all` |
@@ -4322,8 +4322,10 @@ filter; the typed filter survives an action and the picker re-opens on it.
 | `c` | Check out the PR locally (`gk pr checkout`) |
 | `y` | Copy the item URL |
 | `o` | Open the **scope layer** — pick this repo, your own account, any org you belong to, or the inbox |
-| `a` | Toggle state: open ↔ all |
-| `r` | Search GitHub again. The picker keeps each search result until you press `r`. |
+| `a` | Toggle state: open ↔ all. The picker stays open and shows `loading…` during the search. |
+| `r` | Search GitHub again. The picker keeps each search result until you press `r`. The picker stays open during the search. |
+
+If a search fails, for example at the search rate limit, the picker shows the error and keeps the old rows.
 
 The picker draws on the alternate screen of the terminal. A resize or a new
 open of the picker does not leave old copies of the list in the scrollback.
@@ -4332,6 +4334,10 @@ Non-interactive runs are untouched: `--json`, `GK_AGENT=1`, a pipe, or CI all
 print the static list (the gate is `promptAllowed()`). `--list` forces the static
 list in a terminal; `--pick` forces the picker. An empty scope shows an inline
 "press o to widen the scope" row instead of nothing.
+
+#### Closed items
+
+With `--state closed` or `--state all`, a closed PR names its outcome in the ITEM column. `merged#5` is a merged PR. `closed#5` is a PR that was closed without a merge. The picker and the static list dim closed items. Each `--json` item has `state: "closed"`, and a merged PR also has `merged: true`.
 
 #### What it does
 

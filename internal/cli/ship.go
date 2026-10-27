@@ -723,6 +723,15 @@ type shipPreflightJSON struct {
 	FailedStep string                  `json:"failed_step,omitempty"`
 }
 
+// agentState reports a failed preflight as blocked, so an agent that branches
+// on the envelope state does not read a failing check as a pass.
+func (r shipPreflightJSON) agentState() string {
+	if r.Result == "fail" {
+		return envStateBlocked
+	}
+	return ""
+}
+
 type shipPreflightStepJSON struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
@@ -784,15 +793,20 @@ func runShipPreflightOnly(ctx context.Context, deps shipDeps, flags shipFlags) e
 		res = "fail"
 	}
 	if flags.jsonOut {
-		return emitAgentResult(deps.Out, shipPreflightJSON{Result: res, Steps: results, FailedStep: failed})
+		if err := emitAgentResult(deps.Out, shipPreflightJSON{Result: res, Steps: results, FailedStep: failed}); err != nil {
+			return err
+		}
 	}
 	if failed != "" {
-		return WithHint(
+		return WithBlocked(
 			fmt.Errorf("ship: preflight failed (%s)", failed),
+			"preflight-failed",
 			"fix the reported step(s) and re-run `gk ship --preflight`; the real `gk ship` would stop here too",
 		)
 	}
-	fmt.Fprintln(deps.Out, ok("✓")+" preflight passed")
+	if !flags.jsonOut {
+		fmt.Fprintln(deps.Out, ok("✓")+" preflight passed")
+	}
 	return nil
 }
 
@@ -956,18 +970,26 @@ func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan 
 		}
 	}
 
-	stdout, stderr, err := r.Run(ctx, "push", plan.Remote, plan.Branch)
-	if err != nil {
+	// After a fast-forward, base carries the release, so a branch with no
+	// upstream (a one-off release branch) stays local instead of leaving a
+	// remote branch to delete by hand. A tracked branch such as develop is
+	// still pushed so its remote does not fall behind the release.
+	if !plan.MergeToBase || branchHasUpstream(ctx, r, plan.Branch) {
+		stdout, stderr, err := r.Run(ctx, "push", plan.Remote, plan.Branch)
+		if err != nil {
+			fmt.Fprint(errOut, string(stderr))
+			return fmt.Errorf("ship: push branch: %w", err)
+		}
+		fmt.Fprint(out, string(stdout))
 		fmt.Fprint(errOut, string(stderr))
-		return fmt.Errorf("ship: push branch: %w", err)
+	} else {
+		fmt.Fprintf(errOut, "ship: not pushing %s: it has no upstream and %s carries the release\n", plan.Branch, plan.Base)
 	}
-	fmt.Fprint(out, string(stdout))
-	fmt.Fprint(errOut, string(stderr))
 
 	// When we fast-forwarded base, publish it too so the remote base reflects
 	// the release (the tag push below is what triggers the release workflow).
 	if plan.MergeToBase {
-		stdout, stderr, err = r.Run(ctx, "push", plan.Remote, plan.Base)
+		stdout, stderr, err := r.Run(ctx, "push", plan.Remote, plan.Base)
 		if err != nil {
 			fmt.Fprint(errOut, string(stderr))
 			return WithHint(
@@ -980,7 +1002,7 @@ func runShipPush(ctx context.Context, r git.Runner, out, errOut io.Writer, plan 
 	}
 
 	if !flags.noRelease {
-		stdout, stderr, err = r.Run(ctx, "push", plan.Remote, plan.NextTag)
+		stdout, stderr, err := r.Run(ctx, "push", plan.Remote, plan.NextTag)
 		if err != nil {
 			fmt.Fprint(errOut, string(stderr))
 			return fmt.Errorf("ship: push tag: %w", err)

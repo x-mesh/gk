@@ -897,7 +897,7 @@ func Defaults() Config {
 		Branch: BranchConfig{
 			StaleDays:     30,
 			Protected:     []string{"main", "master", "develop"},
-			Patterns:      []string{`^(feat|fix|chore|docs|refactor|test|perf|build|ci|revert)/[a-z0-9._-]+$`},
+			Patterns:      []string{`^(feat|fix|chore|docs|refactor|test|perf|build|ci|revert|release|hotfix)/[a-z0-9._-]+$`},
 			AllowDetached: false,
 		},
 		Commit: CommitConfig{

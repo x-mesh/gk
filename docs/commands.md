@@ -49,10 +49,10 @@ gk ship [status|dry-run|squash|auto|patch|minor|major] [flags]
 | `--no-release` | false | Push the branch without creating or pushing a release tag |
 | `--push` | true | Push the branch and release tag; pass `--push=false` to tag locally only |
 | `--skip-preflight` | false | Skip configured preflight checks |
-| `--preflight` | false | Run only the configured preflight checks (lint/test/…) and exit — validate before a real ship. Builds no plan, so it works on a dirty tree and never tags or pushes. Runs every step (not fail-fast) so one call surfaces all problems; exits non-zero on failure (chainable: `gk ship --preflight && gk ship -y`). With `--json`/`GK_AGENT` emits `{result, steps:[{name,command,ok}], failed_step}` (exit 0 — branch on `result`). |
+| `--preflight` | false | Run only the configured preflight checks (lint/test/…) and exit — validate before a real ship. Builds no plan, so it works on a dirty tree and never tags or pushes. Runs every step (not fail-fast) so one call surfaces all problems; exits non-zero on failure (chainable: `gk ship --preflight && gk ship -y`). With `--json`/`GK_AGENT` emits `{result, steps:[{name,command,ok}], failed_step}`. A failed step sets the envelope `state` to `blocked` (error code `preflight-failed`) and exits non-zero. |
 | `-n`, `--no-verify` | false | Skip the secret-pattern scan before pushing (matches `gk commit -n` / `gk push -n`) |
 | `--allow-dirty` | false | Allow shipping with a dirty working tree |
-| `--allow-non-base` | false | Allow release tags from a non-base branch |
+| `--allow-non-base` | false | Allow release tags from a non-base branch. Without it, ship from a non-base branch fast-forwards base and releases from base. It pushes the branch only if the branch has an upstream. |
 | `-y`, `--yes` | false | Skip the final confirmation prompt. `ship.auto_confirm: true` makes this the default; `--yes=false` restores the prompt for one run |
 | `--wait` | true | Run the post-tag watch/verify pipeline. `--wait=false` returns right after the push and prints the skipped commands; `ship.wait: false` makes that the default, `--wait` re-enables it for one run |
 | `--dry-run` | false | Print the ship plan without tagging or pushing |

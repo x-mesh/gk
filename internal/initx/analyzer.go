@@ -416,7 +416,7 @@ func fileExists(path string) bool {
 var DefaultCommitTypes = []string{"feat", "fix", "chore", "docs", "style", "refactor", "perf", "test", "build", "ci", "revert"}
 
 // DefaultBranchPattern은 branch 패턴을 추출할 수 없을 때 사용하는 기본 패턴이다.
-var DefaultBranchPattern = "^(feat|fix|chore|docs|refactor|test|perf|build|ci|revert)/[a-z0-9._-]+"
+var DefaultBranchPattern = "^(feat|fix|chore|docs|refactor|test|perf|build|ci|revert|release|hotfix)/[a-z0-9._-]+"
 
 var defaultBranchPrefixes = []string{
 	"feat", "fix", "chore", "docs", "refactor", "test", "perf", "build", "ci", "revert",

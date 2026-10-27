@@ -67,6 +67,42 @@ func TestSearchIssuesParsesPRsAndIssues(t *testing.T) {
 	}
 }
 
+// TestSearchIssuesParsesMerged reads pull_request.merged_at: a timestamp
+// marks a merged PR, null a PR closed without merging.
+func TestSearchIssuesParsesMerged(t *testing.T) {
+	merged := searchItem("x-mesh", "gk", 5, "merged pr", "https://api.github.com/repos/x-mesh/gk/pulls/5")
+	merged["state"] = "closed"
+	merged["pull_request"] = map[string]any{"url": "https://api.github.com/repos/x-mesh/gk/pulls/5", "merged_at": "2026-08-11T00:24:48Z"}
+	closed := searchItem("x-mesh", "gk", 6, "closed pr", "https://api.github.com/repos/x-mesh/gk/pulls/6")
+	closed["state"] = "closed"
+	closed["pull_request"] = map[string]any{"url": "https://api.github.com/repos/x-mesh/gk/pulls/6", "merged_at": nil}
+	issue := searchItem("x-mesh", "gk", 7, "closed issue", "")
+	issue["state"] = "closed"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"total_count": 3, "items": []map[string]any{merged, closed, issue}})
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL}
+	issues, err := c.SearchIssues(context.Background(), "repo:x-mesh/gk is:closed", "", 0)
+	if err != nil {
+		t.Fatalf("SearchIssues: %v", err)
+	}
+	if len(issues) != 3 {
+		t.Fatalf("len(issues) = %d, want 3", len(issues))
+	}
+	if !issues[0].Merged || issues[0].State != "closed" {
+		t.Errorf("merged PR = %+v, want Merged with state closed", issues[0])
+	}
+	if issues[1].Merged {
+		t.Errorf("PR with merged_at null = %+v, want not merged", issues[1])
+	}
+	if issues[2].Merged {
+		t.Errorf("issue = %+v, want not merged", issues[2])
+	}
+}
+
 func TestSearchIssuesLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("per_page"); got != "3" {

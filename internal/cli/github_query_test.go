@@ -222,6 +222,34 @@ func TestRenderGitHubTableAligns(t *testing.T) {
 	}
 }
 
+func TestGitHubItemRefNamesState(t *testing.T) {
+	cases := []struct {
+		name string
+		is   ghapi.Issue
+		want string
+	}{
+		{"open PR", ghapi.Issue{Number: 1, State: "open", IsPR: true}, "PR#1"},
+		{"draft PR", ghapi.Issue{Number: 2, State: "open", IsPR: true, Draft: true}, "draft#2"},
+		{"merged PR", ghapi.Issue{Number: 3, State: "closed", IsPR: true, Merged: true}, "merged#3"},
+		{"closed PR", ghapi.Issue{Number: 4, State: "closed", IsPR: true}, "closed#4"},
+		{"closed draft PR", ghapi.Issue{Number: 5, State: "closed", IsPR: true, Draft: true}, "closed#5"},
+		{"open issue", ghapi.Issue{Number: 6, State: "open"}, "issue#6"},
+		{"closed issue", ghapi.Issue{Number: 7, State: "closed"}, "issue#7"},
+	}
+	for _, tc := range cases {
+		if got, _ := githubItemRef(tc.is); got != tc.want {
+			t.Errorf("%s: githubItemRef = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestToGitHubItemJSONMerged(t *testing.T) {
+	item := toGitHubItemJSON(ghapi.Issue{Number: 3, State: "closed", IsPR: true, Merged: true})
+	if !item.Merged || item.State != "closed" {
+		t.Fatalf("item = %+v, want merged with state closed", item)
+	}
+}
+
 func TestRenderGitHubTableURLColumn(t *testing.T) {
 	issues := []ghapi.Issue{
 		{Number: 4, Title: "t", State: "open", Owner: "x-mesh", Repo: "gk", Author: "a", IsPR: true, URL: "https://github.com/x-mesh/gk/pull/4"},

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.151.4] - 2026-10-27
+
 ### Fixed
 
 - `gk actions watch` makes one conditional request per poll, for the runs of the commit or for the `--run` run. A poll with no change gets a 304, which does not count against the GitHub rate limit. Before, each poll fetched every unfinished run without a condition, so a watch of three runs over eight minutes used about 480 requests. A rate-limited poll now waits until the reset time and says so on stderr. Before, it ended the watch.

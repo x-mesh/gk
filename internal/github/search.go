@@ -33,6 +33,7 @@ type Issue struct {
 	UpdatedAt time.Time
 	IsPR      bool
 	Draft     bool
+	Merged    bool // a closed PR that was merged; State stays "closed"
 	Labels    []string
 }
 
@@ -140,7 +141,8 @@ func (c *Client) searchPage(ctx context.Context, pathWithQuery string) ([]Issue,
 				Login string `json:"login"`
 			} `json:"user"`
 			PullRequest *struct {
-				URL string `json:"url"`
+				URL      string `json:"url"`
+				MergedAt string `json:"merged_at"`
 			} `json:"pull_request"`
 			Labels []struct {
 				Name string `json:"name"`
@@ -164,6 +166,7 @@ func (c *Client) searchPage(ctx context.Context, pathWithQuery string) ([]Issue,
 			Author: it.User.Login,
 			IsPR:   it.PullRequest != nil,
 			Draft:  it.Draft,
+			Merged: it.PullRequest != nil && it.PullRequest.MergedAt != "",
 		}
 		if t, err := time.Parse(time.RFC3339, it.UpdatedAt); err == nil {
 			iss.UpdatedAt = t

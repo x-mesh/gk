@@ -13,6 +13,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/config"
 	ghapi "github.com/x-mesh/gk/internal/github"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func pickerSearchItem(owner, repo string, number int) map[string]any {
@@ -123,14 +124,100 @@ func TestGHPickerRefreshRefetchesCachedQuery(t *testing.T) {
 		t.Fatalf("after refresh calls/total/len = %d/%d/%d, want 2/2/2 (a new search)", calls, total, len(issues))
 	}
 
-	found := false
-	for _, ex := range p.extras() {
-		if ex.Key == "r" {
-			found = ex.Exit
+}
+
+// TestGHPickerAAndRReloadInPlace: a and r must load through OnPress, not Exit,
+// so the picker stays on screen while GitHub answers.
+func TestGHPickerAAndRReloadInPlace(t *testing.T) {
+	load := func() (ui.TablePickerReload, error) { return ui.TablePickerReload{}, nil }
+	p := &ghPicker{}
+	seen := map[string]bool{}
+	for _, ex := range p.extras(load, load) {
+		if ex.Key == "a" || ex.Key == "r" {
+			seen[ex.Key] = true
+			if ex.Exit || ex.OnPress == nil {
+				t.Errorf("%s: Exit=%v OnPress=%v, want an in-place OnPress load", ex.Key, ex.Exit, ex.OnPress != nil)
+			}
 		}
 	}
-	if !found {
-		t.Fatal("picker has no r refresh key that exits to the loop")
+	if !seen["a"] || !seen["r"] {
+		t.Fatalf("extras missing a or r: %v", seen)
+	}
+}
+
+// TestGHPickerReloadCommitsOnApply: the toggle load leaves the picker's state
+// alone until Apply, then switches state, rows, subtitle, and cache together.
+func TestGHPickerReloadCommitsOnApply(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		n := 1
+		if !strings.Contains(r.URL.Query().Get("q"), "is:open") {
+			n = 2
+		}
+		items := make([]map[string]any, n)
+		for i := range items {
+			items[i] = pickerSearchItem("x-mesh", "gk", i+1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": n, "items": items})
+	}))
+	defer srv.Close()
+
+	p := newGHPicker(&cobra.Command{Use: "pr"}, &ghapi.Client{APIBase: srv.URL}, cacheRunner(t, ""), &config.Config{}, true, "repo", githubSearchFilters{typeFilter: "is:pr", state: "open"})
+	p.setScopeFromPrefix("repo:x-mesh/gk")
+	ctx := context.Background()
+	issues, _, _, err := p.fetch(ctx)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	_, byKey := p.pickerItems(issues)
+
+	next := p.filters
+	next.state = toggledState(next.state)
+	reload, err := p.reload(ctx, "repo:x-mesh/gk", next, false, &byKey)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if p.filters.state != "open" || len(byKey) != 1 || len(p.fetchCache) != 1 {
+		t.Fatalf("before Apply: state=%q rows=%d cache=%d, want open/1/1 untouched", p.filters.state, len(byKey), len(p.fetchCache))
+	}
+	if len(reload.Items) != 2 || !strings.Contains(reload.Subtitle, " · all · 2 item(s)") {
+		t.Fatalf("reload items=%d subtitle=%q, want 2 rows under all", len(reload.Items), reload.Subtitle)
+	}
+	reload.Apply()
+	if p.filters.state != "all" || len(byKey) != 2 || len(p.fetchCache) != 2 {
+		t.Fatalf("after Apply: state=%q rows=%d cache=%d, want all/2/2", p.filters.state, len(byKey), len(p.fetchCache))
+	}
+
+	// Toggling back is answered from the cache; refresh asks GitHub again.
+	back := p.filters
+	back.state = toggledState(back.state)
+	if _, err := p.reload(ctx, "repo:x-mesh/gk", back, false, &byKey); err != nil || calls != 2 {
+		t.Fatalf("cached toggle: err=%v calls=%d, want no new search", err, calls)
+	}
+	if _, err := p.reload(ctx, "repo:x-mesh/gk", p.filters, true, &byKey); err != nil || calls != 3 {
+		t.Fatalf("refresh: err=%v calls=%d, want a new search", err, calls)
+	}
+}
+
+// TestGHPickerReloadFailureKeepsState: a failed search (rate limit) is an
+// error for the picker to show, not a reason to change state or quit.
+func TestGHPickerReloadFailureKeepsState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := newGHPicker(&cobra.Command{Use: "pr"}, &ghapi.Client{APIBase: srv.URL}, cacheRunner(t, ""), &config.Config{}, true, "repo", githubSearchFilters{typeFilter: "is:pr", state: "open"})
+	byKey := map[string]ghapi.Issue{"u1": {Number: 1}}
+	next := p.filters
+	next.state = "all"
+	if _, err := p.reload(context.Background(), "repo:x-mesh/gk", next, false, &byKey); err == nil {
+		t.Fatal("reload against a failing server returned no error")
+	}
+	if p.filters.state != "open" || len(byKey) != 1 {
+		t.Fatalf("after failure: state=%q rows=%d, want open/1", p.filters.state, len(byKey))
 	}
 }
 
@@ -168,6 +255,26 @@ func TestGHPickerExplicitPickUsesNonTTYNumberedFallback(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, " 1) PR#1 row 1") || !strings.Contains(got, " 2) PR#2 row 2") {
 		t.Fatalf("numbered fallback was not rendered:\n%s", got)
+	}
+}
+
+// TestGHPickerRowsShowState: under state all, the ITEM cell tells an open PR
+// from a merged or closed one instead of printing PR#N for every row.
+func TestGHPickerRowsShowState(t *testing.T) {
+	issues := []ghapi.Issue{
+		{Number: 1, Title: "open", State: "open", IsPR: true, URL: "u1"},
+		{Number: 2, Title: "merged", State: "closed", IsPR: true, Merged: true, URL: "u2"},
+		{Number: 3, Title: "closed", State: "closed", IsPR: true, URL: "u3"},
+	}
+	items, _ := (&ghPicker{}).rows(issues)
+	want := []string{"PR#1", "merged#2", "closed#3"}
+	for i, it := range items {
+		if it.Cells[0] != want[i] {
+			t.Errorf("row %d ITEM = %q, want %q", i, it.Cells[0], want[i])
+		}
+		if !strings.HasPrefix(it.Display, want[i]+" ") {
+			t.Errorf("row %d Display = %q, want prefix %q", i, it.Display, want[i])
+		}
 	}
 }
 

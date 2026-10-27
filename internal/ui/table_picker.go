@@ -54,15 +54,17 @@ type TablePickerExtraKey struct {
 }
 
 // TablePickerReload is what an OnPress extra loaded. Items and Headers
-// replace the listing (nil Headers keeps the columns). Apply, when non-nil,
+// replace the listing (nil Headers keeps the columns), and a non-empty
+// Subtitle replaces the subtitle. Apply, when non-nil,
 // runs once after the new rows are applied, on the goroutine that called
 // Pick, so a caller can commit its own state exactly when the screen
 // changes. A failed load, or a picker that closed before the load
 // finished, never runs it.
 type TablePickerReload struct {
-	Items   []PickerItem
-	Headers []string
-	Apply   func()
+	Items    []PickerItem
+	Headers  []string
+	Subtitle string
+	Apply    func()
 }
 
 // tablePickerReloadMsg carries an OnPress result back into Update.
@@ -339,15 +341,17 @@ func (m *tablePickerModel) applyReload(msg tablePickerReloadMsg) {
 	}
 	m.errMsg = ""
 	m.all = msg.reload.Items
-	if msg.reload.Headers != nil {
-		// New column structure: re-fit it to the current width (reflow
-		// rebuilds rows too). With no size yet, width 0 makes fitColumns
-		// keep every column.
-		m.headers = msg.reload.Headers
-		m.reflowColumns(m.width)
-	} else {
-		m.applyFilter()
+	if msg.reload.Subtitle != "" {
+		m.subtitle = msg.reload.Subtitle
 	}
+	if msg.reload.Headers != nil {
+		m.headers = msg.reload.Headers
+	}
+	// Column widths come from the rows, so new rows re-fit them even under
+	// the same headers: a wider cell (merged#118 replacing PR#41) would be
+	// clipped otherwise. Reflow rebuilds the rows too; with no size yet,
+	// width 0 makes fitColumns keep every column.
+	m.reflowColumns(m.width)
 	if msg.reload.Apply != nil {
 		msg.reload.Apply()
 	}

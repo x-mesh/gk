@@ -49,6 +49,16 @@ type ghPickerFetch struct {
 	total  int
 }
 
+// ghPickerResult is one search answer plus what it was asked for, so the
+// caller can commit it (cache, filters, count warm-up) later than it ran.
+type ghPickerResult struct {
+	prefix  string
+	query   string
+	key     string
+	filters githubSearchFilters
+	ghPickerFetch
+}
+
 // ghInteractiveLimit keeps a single picker query inside one Search API page.
 // Static --list/JSON output retains its existing pagination behavior.
 const ghInteractiveLimit = 100
@@ -180,30 +190,101 @@ func (p *ghPicker) fetch(ctx context.Context) ([]ghapi.Issue, string, int, error
 	if err != nil {
 		return nil, "", 0, err
 	}
-	query := buildSearchQuery(prefix, p.filters)
-	limit := p.interactiveLimit()
-	key := fmt.Sprintf("%s\x00%s\x00%d", query, p.sort, limit)
-	if cached, ok := p.fetchCache[key]; ok {
-		return cached.issues, query, cached.total, nil
+	res, hit, err := p.search(ctx, prefix, p.filters, true)
+	if err != nil {
+		return nil, res.query, 0, err
 	}
+	if !hit {
+		p.remember(ctx, res)
+	}
+	return res.issues, res.query, res.total, nil
+}
 
+// search answers filters under prefix, from fetchCache when useCache allows.
+// It only reads the picker's state, so an OnPress load can run it off the UI
+// goroutine and leave the writes to remember.
+func (p *ghPicker) search(ctx context.Context, prefix string, filters githubSearchFilters, useCache bool) (ghPickerResult, bool, error) {
+	query := buildSearchQuery(prefix, filters)
+	limit := p.interactiveLimit()
+	res := ghPickerResult{
+		prefix:  prefix,
+		query:   query,
+		key:     fmt.Sprintf("%s\x00%s\x00%d", query, p.sort, limit),
+		filters: filters,
+	}
+	if cached, ok := p.fetchCache[res.key]; ok && useCache {
+		res.ghPickerFetch = cached
+		return res, true, nil
+	}
 	issues, total, err := p.client.SearchIssuesWithTotal(ctx, query, p.sort, limit)
 	if err != nil {
-		return nil, query, 0, fmt.Errorf("github search: %w", err)
+		return res, false, fmt.Errorf("github search: %w", err)
 	}
+	res.ghPickerFetch = ghPickerFetch{issues: issues, total: total}
+	return res, false, nil
+}
+
+// remember caches a fresh search answer.
+func (p *ghPicker) remember(ctx context.Context, res ghPickerResult) {
 	if p.fetchCache == nil {
 		p.fetchCache = make(map[string]ghPickerFetch)
 	}
-	p.fetchCache[key] = ghPickerFetch{issues: issues, total: total}
+	p.fetchCache[res.key] = res.ghPickerFetch
 
 	// The picker fetch is intentionally capped, so len(issues) is not a safe
 	// repository count. total_count remains exact and lets the default
 	// interactive path warm the same cache as a static plain-open listing.
 	if p.cfg != nil && p.cfg.GitHub.Counts.WarmOnList && p.limit == 0 &&
-		p.filters.isPlainOpen() && strings.HasPrefix(prefix, "repo:") {
-		warmGitHubCountFromList(ctx, p.runner, strings.TrimPrefix(prefix, "repo:"), p.isPR, total)
+		res.filters.isPlainOpen() && strings.HasPrefix(res.prefix, "repo:") {
+		warmGitHubCountFromList(ctx, p.runner, strings.TrimPrefix(res.prefix, "repo:"), p.isPR, res.total)
 	}
-	return issues, query, total, nil
+}
+
+// reload loads the listing for filters while the picker stays open. Apply
+// commits the filters, the cache, and the row lookup only once the new rows
+// are on screen, so a failed search leaves the picker exactly as it was.
+func (p *ghPicker) reload(ctx context.Context, prefix string, filters githubSearchFilters, refresh bool, byKey *map[string]ghapi.Issue) (ui.TablePickerReload, error) {
+	res, hit, err := p.search(ctx, prefix, filters, !refresh)
+	if err != nil {
+		return ui.TablePickerReload{}, err
+	}
+	items, keys := p.pickerItems(res.issues)
+	return ui.TablePickerReload{
+		Items:    items,
+		Subtitle: p.subtitle(prefix, filters.state, len(keys), res.total),
+		Apply: func() {
+			p.filters = filters
+			if refresh {
+				p.refresh()
+			}
+			if !hit {
+				p.remember(ctx, res)
+			}
+			*byKey = keys
+		},
+	}, nil
+}
+
+// pickerItems is rows plus a placeholder for an empty scope, which would
+// otherwise be a dead end in a picker: it offers the way out inline.
+func (p *ghPicker) pickerItems(issues []ghapi.Issue) ([]ui.PickerItem, map[string]ghapi.Issue) {
+	items, byKey := p.rows(issues)
+	if len(items) == 0 {
+		items = append(items, ui.PickerItem{
+			Key:     "",
+			Display: "(nothing here — press o to widen the scope)",
+			Cells:   []string{"", "", "(nothing here — press o to widen the scope)", "", "", ""},
+		})
+	}
+	return items, byKey
+}
+
+// toggledState is the state the a key switches to.
+func toggledState(state string) string {
+	if state == "all" {
+		return "open"
+	}
+	return "all"
 }
 
 var ghPickerHeaders = []string{"ITEM", "REPO", "TITLE", "LABELS", "AUTHOR", "AGE"}
@@ -218,14 +299,11 @@ func (p *ghPicker) rows(issues []ghapi.Issue) ([]ui.PickerItem, map[string]ghapi
 	byKey := make(map[string]ghapi.Issue, len(issues))
 	items := make([]ui.PickerItem, 0, len(issues))
 	for _, is := range issues {
-		typ := "issue"
-		if is.IsPR {
-			typ = "PR"
-			if is.Draft {
-				typ = "draft"
-			}
+		ref, refColored := githubItemRef(is)
+		title, labels := is.Title, strings.Join(is.Labels, ", ")
+		if is.State == "closed" {
+			title, labels = cellFaint(title), cellFaint(labels)
 		}
-		ref := fmt.Sprintf("%s#%d", typ, is.Number)
 		age := "-"
 		if !is.UpdatedAt.IsZero() {
 			age = relativeTime(time.Since(is.UpdatedAt))
@@ -236,10 +314,10 @@ func (p *ghPicker) rows(issues []ghapi.Issue) ([]ui.PickerItem, map[string]ghapi
 			Key:     key,
 			Display: fmt.Sprintf("%s %s", ref, is.Title),
 			Cells: []string{
-				ref,
+				refColored,
 				is.Owner + "/" + is.Repo,
-				is.Title,
-				strings.Join(is.Labels, ", "),
+				title,
+				labels,
 				"@" + is.Author,
 				age,
 			},
@@ -248,13 +326,16 @@ func (p *ghPicker) rows(issues []ghapi.Issue) ([]ui.PickerItem, map[string]ghapi
 	return items, byKey
 }
 
-func (p *ghPicker) extras() []ui.TablePickerExtraKey {
+// extras binds the hotkeys. a and r reload in place (OnPress) instead of
+// exiting: closing the alternate screen for the search made the picker look
+// like it had quit, and a failed search used to end the whole session.
+func (p *ghPicker) extras(toggle, refresh func() (ui.TablePickerReload, error)) []ui.TablePickerExtraKey {
 	return []ui.TablePickerExtraKey{
 		{Key: "c", Help: "c checkout", Exit: true},
 		{Key: "y", Help: "y copy url", Exit: true},
 		{Key: "o", Help: "o scope", Exit: true},
-		{Key: "a", Help: "a open/all", Exit: true},
-		{Key: "r", Help: "r refresh", Exit: true},
+		{Key: "a", Help: "a open/all", OnPress: toggle},
+		{Key: "r", Help: "r refresh", OnPress: refresh},
 	}
 }
 
@@ -265,8 +346,7 @@ func (p *ghPicker) refresh() {
 	p.fetchCache = nil
 }
 
-func (p *ghPicker) subtitle(scope string, shown, total int) string {
-	state := p.filters.state
+func (p *ghPicker) subtitle(scope, state string, shown, total int) string {
 	if state == "" {
 		state = "open"
 	}
@@ -341,22 +421,21 @@ func (p *ghPicker) run(ctx context.Context) error {
 			return err
 		}
 
-		items, byKey := p.rows(issues)
+		items, byKey := p.pickerItems(issues)
 		scope, _ := p.scopePrefix(ctx)
-		if len(items) == 0 {
-			// Empty scope is a dead end in a picker — offer the way out inline
-			// instead of just showing nothing.
-			items = append(items, ui.PickerItem{
-				Key:     "",
-				Display: "(nothing here — press o to widen the scope)",
-				Cells:   []string{"", "", "(nothing here — press o to widen the scope)", "", "", ""},
-			})
+		toggle := func() (ui.TablePickerReload, error) {
+			next := p.filters
+			next.state = toggledState(next.state)
+			return p.reload(ctx, scope, next, false, &byKey)
+		}
+		refresh := func() (ui.TablePickerReload, error) {
+			return p.reload(ctx, scope, p.filters, true, &byKey)
 		}
 
 		picker := &ui.TablePicker{
 			Headers:        ghPickerHeaders,
-			Extras:         p.extras(),
-			Subtitle:       p.subtitle(scope, len(byKey), total),
+			Extras:         p.extras(toggle, refresh),
+			Subtitle:       p.subtitle(scope, p.filters.state, len(byKey), total),
 			InitialFilter:  filter,
 			ColumnPriority: ghPickerColumnPriority(),
 			AltScreen:      true,
@@ -414,18 +493,6 @@ func (p *ghPicker) run(ctx context.Context) error {
 			if err := p.chooseScope(ctx); err != nil {
 				return err
 			}
-			continue
-
-		case "a":
-			if p.filters.state == "all" {
-				p.filters.state = "open"
-			} else {
-				p.filters.state = "all"
-			}
-			continue
-
-		case "r":
-			p.refresh()
 			continue
 		}
 	}

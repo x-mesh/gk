@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- In `gk pr`, `gk issue`, and `gk inbox` lists, a closed pull request shows its outcome: `merged#5` when it was merged, `closed#5` when it was closed without a merge. Before, both showed `PR#5`. The interactive picker also dims closed items, as the static table does. Before, the picker showed open and closed items the same way. The `--json` items get a `merged` field. `state` stays `closed`.
 - `gk pr`, `gk issue`, and `gk inbox` do not list items from archived repositories in an organization, user, or inbox scope. An archived repository is read-only, so its open pull requests stay open and you cannot close them. A `repo:` scope still lists them. To list them in other scopes, add `-q archived:true`.
+
+### Fixed
+
+- In the `gk pr`, `gk issue`, and `gk inbox` picker, `a` (open/all) and `r` (refresh) keep the picker on screen while they search. The picker shows `loading…` and keeps your filter. Before, the picker closed during the search and opened again, so it looked like it had quit. A failed search, for example at the search rate limit, now shows the error in the picker and keeps the old rows. Before, it ended the session.
 
 ## [0.151.2] - 2026-10-19
 

@@ -554,6 +554,53 @@ func TestTablePicker_NonExitHotkeyRunsOnPress(t *testing.T) {
 	}
 }
 
+// A loaded Subtitle replaces the old one; an empty one keeps it, so callers
+// that only swap rows need not repeat it.
+func TestTablePicker_ReloadSubtitle(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "alpha"}}
+	load := func(sub string) TablePickerExtraKey {
+		return TablePickerExtraKey{Key: "r", Help: "r reload",
+			OnPress: func() (TablePickerReload, error) {
+				return TablePickerReload{Items: items, Subtitle: sub}, nil
+			}}
+	}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{load("all · 2 item(s)")})
+	m.subtitle = "open · 1 item(s)"
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got, _ = updateAs(got, cmd())
+	if got.subtitle != "all · 2 item(s)" {
+		t.Errorf("subtitle = %q, want the loaded one", got.subtitle)
+	}
+
+	m = newTablePickerWithExtras(items, []TablePickerExtraKey{load("")})
+	m.subtitle = "open · 1 item(s)"
+	got, cmd = updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got, _ = updateAs(got, cmd())
+	if got.subtitle != "open · 1 item(s)" {
+		t.Errorf("subtitle = %q, want the old one kept", got.subtitle)
+	}
+}
+
+// New rows under the same headers re-fit the columns: a cell wider than
+// anything in the old rows must not be clipped to the old width.
+func TestTablePicker_ReloadRefitsColumnWidths(t *testing.T) {
+	items := []PickerItem{{Key: "a", Display: "PR#4", Cells: []string{"PR#4", "x"}}}
+	wide := []PickerItem{{Key: "b", Display: "merged#118", Cells: []string{"merged#118", "x"}}}
+	m := newTablePickerWithExtras(items, []TablePickerExtraKey{
+		{Key: "a", Help: "a toggle",
+			OnPress: func() (TablePickerReload, error) {
+				return TablePickerReload{Items: wide}, nil
+			}},
+	})
+	m.headers = []string{"ITEM", "TITLE"}
+	m.reflowColumns(0)
+	got, cmd := updateAs(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	got, _ = updateAs(got, cmd())
+	if w := got.t.cols[0].Width; w < len("merged#118") {
+		t.Errorf("ITEM width = %d after reload, want at least %d", w, len("merged#118"))
+	}
+}
+
 // A second press while a load is running must not start another load: two
 // in flight would land their rows in whichever order they finish.
 func TestTablePicker_PressWhileLoadingIsIgnored(t *testing.T) {

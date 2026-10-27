@@ -109,6 +109,7 @@ type githubItemJSON struct {
 	URL       string   `json:"url"`
 	IsPR      bool     `json:"is_pr"`
 	Draft     bool     `json:"draft,omitempty"`
+	Merged    bool     `json:"merged,omitempty"`
 	Labels    []string `json:"labels,omitempty"`
 	UpdatedAt string   `json:"updated_at,omitempty"`
 }
@@ -131,6 +132,7 @@ func toGitHubItemJSON(is ghapi.Issue) githubItemJSON {
 		URL:    is.URL,
 		IsPR:   is.IsPR,
 		Draft:  is.Draft,
+		Merged: is.Merged,
 		Labels: is.Labels,
 	}
 	if !is.UpdatedAt.IsZero() {
@@ -451,6 +453,32 @@ func (c *ghCol) width() int {
 	return max
 }
 
+// githubItemRef renders the copy-friendly <type>#<num> token (PR#4,
+// issue#128) shared by the static table and the picker. A closed PR names
+// its outcome (merged#5, closed#5) so the state survives --no-color; a closed
+// issue keeps its type and is only dimmed.
+func githubItemRef(is ghapi.Issue) (plain, colored string) {
+	num := "#" + strconv.Itoa(is.Number)
+	typ, typColored := "issue", cellCyan("issue")
+	if is.IsPR {
+		switch {
+		case is.Merged:
+			typ = "merged"
+		case is.State == "closed":
+			typ = "closed"
+		case is.Draft:
+			typ, typColored = "draft", cellFaint("draft")
+		default:
+			typ, typColored = "PR", cellGreen("PR")
+		}
+	}
+	plain = typ + num
+	if is.State == "closed" {
+		return plain, cellFaint(plain)
+	}
+	return plain, typColored + cellCyan(num)
+}
+
 // renderGitHubTable prints an aligned, colored list. Alignment is computed on
 // the PLAIN text (runewidth, ANSI-blind) and the color is applied afterward, so
 // the escape bytes never skew the columns. The repo column is shown only for
@@ -476,23 +504,7 @@ func renderGitHubTable(w io.Writer, scope string, issues []ghapi.Issue, links, s
 	for _, is := range issues {
 		closed := is.State == "closed"
 
-		// One copy-friendly token: <type>#<num> (e.g. PR#4, issue#128). Type
-		// keeps its color, the #number is cyan; a closed item dims the whole.
-		typ := "issue"
-		typColored := cellCyan("issue")
-		if is.IsPR {
-			if is.Draft {
-				typ, typColored = "draft", cellFaint("draft")
-			} else {
-				typ, typColored = "PR", cellGreen("PR")
-			}
-		}
-		num := "#" + strconv.Itoa(is.Number)
-		ref := typ + num
-		refColored := typColored + cellCyan(num)
-		if closed {
-			refColored = cellFaint(ref)
-		}
+		ref, refColored := githubItemRef(is)
 		if links {
 			refColored = osc8Link(is.URL, refColored)
 		}

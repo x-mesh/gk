@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.151.3] - 2026-10-27
+
 ### Changed
 
 - The default `branch.patterns` accept `release/` and `hotfix/` branches. `gk ship` releases from a release branch, so `branch-check` rejected that branch at preflight before. `gk init` writes the same pattern. A configured `branch.patterns` is not changed.

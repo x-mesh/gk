@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,6 +22,20 @@ func TestCheckBranch_Matches(t *testing.T) {
 	}
 	if res.Skipped {
 		t.Fatal("expected Skipped=false")
+	}
+}
+
+// TestCheckBranch_DefaultPatternsAllowReleaseBranches: gk ship releases from
+// a release branch, so the default patterns must not reject one.
+func TestCheckBranch_DefaultPatternsAllowReleaseBranches(t *testing.T) {
+	patterns := config.Defaults().Branch.Patterns
+	for _, name := range []string{"release/v9.9.9", "hotfix/v1.2.4", "feat/foo"} {
+		if res := checkBranch(name, patterns, nil); !res.Matched {
+			t.Errorf("%s: Matched=false under the default patterns (%s)", name, res.Reason)
+		}
+	}
+	if res := checkBranch("random/foo", patterns, nil); res.Matched {
+		t.Error("random/foo matched the default patterns")
 	}
 }
 

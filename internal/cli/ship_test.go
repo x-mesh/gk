@@ -549,6 +549,40 @@ func TestDraftShipChangelogUnmappedOnly(t *testing.T) {
 	}
 }
 
+// TestRunShipPushSkipsUntrackedReleaseBranch: after a fast-forward, base
+// carries the release, so a release branch with no upstream is not pushed,
+// while a tracked branch such as develop still is.
+func TestRunShipPushSkipsUntrackedReleaseBranch(t *testing.T) {
+	plan := shipPlan{Remote: "origin", Branch: "chore/release-v0.1.1", Base: "main", MergeToBase: true, NextTag: "v0.1.1"}
+	run := func(upstream bool) string {
+		up := git.FakeResponse{ExitCode: 128, Stderr: "no upstream configured"}
+		if upstream {
+			up = git.FakeResponse{Stdout: "origin/" + plan.Branch + "\n"}
+		}
+		runner := &git.FakeRunner{Responses: map[string]git.FakeResponse{
+			"rev-parse --abbrev-ref --symbolic-full-name " + plan.Branch + "@{upstream}": up,
+		}}
+		var out, errOut bytes.Buffer
+		if err := runShipPush(context.Background(), runner, &out, &errOut, plan, shipFlags{noVerify: true}); err != nil {
+			t.Fatalf("runShipPush(upstream=%v): %v", upstream, err)
+		}
+		return joinedShipCalls(runner.Calls)
+	}
+
+	calls := run(false)
+	if strings.Contains(calls, "push origin "+plan.Branch) {
+		t.Errorf("untracked release branch was pushed:\n%s", calls)
+	}
+	for _, want := range []string{"push origin main", "push origin v0.1.1"} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("missing %q:\n%s", want, calls)
+		}
+	}
+	if calls := run(true); !strings.Contains(calls, "push origin "+plan.Branch) {
+		t.Errorf("tracked branch was not pushed:\n%s", calls)
+	}
+}
+
 func shipCfgWithPreflight(steps ...config.PreflightStep) *config.Config {
 	c := testShipConfig()
 	c.Preflight.Steps = steps
@@ -591,8 +625,16 @@ func TestRunShipCorePreflightOnly(t *testing.T) {
 			config.PreflightStep{Name: "c", Command: "true"},
 		), Out: &jout,
 	}, shipFlags{mode: shipModePreflight, jsonOut: true})
-	if err != nil {
-		t.Fatalf("json mode must not return an error, got %v", err)
+	// A failure is blocked, not ok: an agent branching on state must not
+	// read it as a pass, and `gk ship --preflight --json && gk ship -y` stops.
+	if err == nil {
+		t.Fatal("json mode with a failing step returned no error")
+	}
+	if s := stateFrom(err); s != envStateBlocked {
+		t.Errorf("stateFrom = %q, want %q", s, envStateBlocked)
+	}
+	if c := errorCodeFromError(err); c != "preflight-failed" {
+		t.Errorf("error code = %q, want preflight-failed", c)
 	}
 	var res shipPreflightJSON
 	if e := json.Unmarshal(jout.Bytes(), &res); e != nil {
@@ -603,6 +645,12 @@ func TestRunShipCorePreflightOnly(t *testing.T) {
 	}
 	if !res.Steps[0].OK || res.Steps[1].OK || !res.Steps[2].OK {
 		t.Errorf("step OK flags = %v %v %v, want true false true (run-all)", res.Steps[0].OK, res.Steps[1].OK, res.Steps[2].OK)
+	}
+	if s := res.agentState(); s != envStateBlocked {
+		t.Errorf("payload agentState = %q, want %q", s, envStateBlocked)
+	}
+	if s := (shipPreflightJSON{Result: "pass"}).agentState(); s != "" {
+		t.Errorf("passing payload agentState = %q, want ok", s)
 	}
 
 	// No steps configured → pass, no-op.

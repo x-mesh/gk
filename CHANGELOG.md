@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default `branch.patterns` accept `release/` and `hotfix/` branches. `gk ship` releases from a release branch, so `branch-check` rejected that branch at preflight before. `gk init` writes the same pattern. A configured `branch.patterns` is not changed.
+- `gk ship --preflight --json` reports a failed step as `state: "blocked"` with error code `preflight-failed`, and exits non-zero. Before, it reported `state: "ok"` and exited 0, so an agent that read `state` took a failed check as a pass.
 - In `gk pr`, `gk issue`, and `gk inbox` lists, a closed pull request shows its outcome: `merged#5` when it was merged, `closed#5` when it was closed without a merge. Before, both showed `PR#5`. The interactive picker also dims closed items, as the static table does. Before, the picker showed open and closed items the same way. The `--json` items get a `merged` field. `state` stays `closed`.
 - `gk pr`, `gk issue`, and `gk inbox` do not list items from archived repositories in an organization, user, or inbox scope. An archived repository is read-only, so its open pull requests stay open and you cannot close them. A `repo:` scope still lists them. To list them in other scopes, add `-q archived:true`.
 
 ### Fixed
 
+- `gk ship` from a non-base branch does not push that branch when the branch has no upstream. Base carries the release after the fast-forward. Before, each release from a one-off branch left a remote branch to delete by hand. A branch with an upstream, such as `develop`, is still pushed.
 - In the `gk pr`, `gk issue`, and `gk inbox` picker, `a` (open/all) and `r` (refresh) keep the picker on screen while they search. The picker shows `loading…` and keeps your filter. Before, the picker closed during the search and opened again, so it looked like it had quit. A failed search, for example at the search rate limit, now shows the error in the picker and keeps the old rows. Before, it ended the session.
 
 ## [0.151.2] - 2026-10-19

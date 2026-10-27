@@ -85,6 +85,46 @@ func TestListRecentWorkflowRunsIsConditional(t *testing.T) {
 	}
 }
 
+// TestGetWorkflowRunConditional: the ETag goes out as If-None-Match, a 304
+// is reported as notModified, and a quota-exhausted 403 carries the reset.
+func TestGetWorkflowRunConditional(t *testing.T) {
+	limited := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/x-mesh/gk/actions/runs/7" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if limited {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", "1791339600")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("If-None-Match") == `W/"r1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `W/"r1"`)
+		writeJSON(t, w, map[string]any{"id": 7, "name": "CI", "status": "completed", "conclusion": "success"})
+	}))
+	defer srv.Close()
+	c := &Client{APIBase: srv.URL}
+
+	run, etag, notModified, err := c.GetWorkflowRunConditional(context.Background(), "x-mesh", "gk", 7, "")
+	if err != nil || notModified || etag != `W/"r1"` || run.Conclusion != "success" {
+		t.Fatalf("first call: run=%+v etag=%q notModified=%v err=%v", run, etag, notModified, err)
+	}
+	_, etag, notModified, err = c.GetWorkflowRunConditional(context.Background(), "x-mesh", "gk", 7, etag)
+	if err != nil || !notModified || etag != `W/"r1"` {
+		t.Fatalf("second call: etag=%q notModified=%v err=%v", etag, notModified, err)
+	}
+	limited = true
+	_, _, _, err = c.GetWorkflowRunConditional(context.Background(), "x-mesh", "gk", 7, etag)
+	var rl *RateLimitError
+	if !errors.As(err, &rl) || rl.Reset.Unix() != 1791339600 {
+		t.Fatalf("rate-limited call: err = %v", err)
+	}
+}
+
 func TestListRecentWorkflowRunsReportsRateLimitReset(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")

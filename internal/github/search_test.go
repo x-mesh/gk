@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // searchItem builds one /search/issues item. A non-empty prURL adds the
@@ -171,6 +172,31 @@ func TestSearchIssuesRateLimited(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "rate-limited") {
 		t.Fatalf("error = %q, want it to mention rate-limited", got)
+	}
+}
+
+// TestSearchRateLimitHintFollowsToken: with a token the quota is shared, so
+// the error must not tell the user to set GH_TOKEN; it names the retry time.
+func TestSearchRateLimitHintFollowsToken(t *testing.T) {
+	reset := time.Now().Add(42 * time.Second).Truncate(time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := (&Client{APIBase: srv.URL, Token: "t"}).SearchIssues(context.Background(), "org:x-mesh", "", 0)
+	got := err.Error()
+	if strings.Contains(got, "set GH_TOKEN") || !strings.Contains(got, "shared") {
+		t.Errorf("authed error = %q, want the shared-quota hint without set GH_TOKEN", got)
+	}
+	if !strings.Contains(got, "retry at "+reset.Local().Format("15:04:05")) {
+		t.Errorf("authed error = %q, want the reset time", got)
+	}
+	_, err = (&Client{APIBase: srv.URL}).SearchIssues(context.Background(), "org:x-mesh", "", 0)
+	if !strings.Contains(err.Error(), "set GH_TOKEN") {
+		t.Errorf("anonymous error = %q, want the set GH_TOKEN hint", err.Error())
 	}
 }
 

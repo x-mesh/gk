@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -115,7 +116,7 @@ func (c *Client) searchPage(ctx context.Context, pathWithQuery string) ([]Issue,
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		return nil, 0, rateLimitError(resp)
+		return nil, 0, rateLimitError(resp, c.Token != "")
 	}
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		return nil, 0, scopeError(resp)
@@ -226,18 +227,37 @@ func ownerRepoFromAPIURL(u string) (string, string) {
 // A 403 is only a rate limit when the remaining count is zero (or a
 // Retry-After is present); a 403 with quota left is a genuine permission
 // error, so it falls through to the generic body.
-func rateLimitError(resp *http.Response) error {
+//
+// The hint depends on authed: with a token the 30/min quota is shared by every
+// tool using that token, so telling the user to set GH_TOKEN misleads them.
+func rateLimitError(resp *http.Response, authed bool) error {
 	retryAfter := resp.Header.Get("Retry-After")
 	remaining := resp.Header.Get("X-RateLimit-Remaining")
 	if resp.StatusCode == http.StatusTooManyRequests || remaining == "0" || retryAfter != "" {
-		const hint = "the search API allows 30/min authenticated, 10/min anonymous — set GH_TOKEN to raise the limit"
-		if retryAfter != "" {
-			return fmt.Errorf("github search rate-limited (retry after %ss) — %s", retryAfter, hint)
+		hint := "the search API allows 10 requests/min without a token — set GH_TOKEN to raise it to 30/min"
+		if authed {
+			hint = "the search API allows 30 requests/min per token, shared by every tool that uses the token"
+		}
+		if when := searchRetryAt(resp, time.Now()); !when.IsZero() {
+			return fmt.Errorf("github search rate-limited (retry at %s) — %s", when.Local().Format("15:04:05"), hint)
 		}
 		return fmt.Errorf("github search rate-limited — %s", hint)
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("github search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+}
+
+// searchRetryAt reads when a rate-limited search may run again: Retry-After
+// (seconds) first, then X-RateLimit-Reset (unix time). Zero when neither is
+// usable.
+func searchRetryAt(resp *http.Response, now time.Time) time.Time {
+	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+		return now.Add(time.Duration(secs) * time.Second)
+	}
+	if unix, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && unix > 0 {
+		return time.Unix(unix, 0)
+	}
+	return time.Time{}
 }
 
 // scopeError turns a 422 search response into an actionable message. GitHub

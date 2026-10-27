@@ -4732,6 +4732,8 @@ gk actions watch --org <name> [--workflow <name>] [--interval <duration>]
 
 Without options, gk resolves the current GitHub remote and `HEAD`. If several runs match the commit, gk waits for all of them. One push can start several workflows, or the same workflow for `push` and `pull_request`. The command fails if a run fails. A `skipped` or `neutral` run is not a failure. To watch fewer runs, use `--workflow` or `--run`.
 
+Each poll is one conditional request: the runs of the commit, or the one run of `--run`. If nothing changed, GitHub answers 304, and a 304 does not count against the rate limit. If GitHub rejects a poll for the rate limit, gk prints the reset time on stderr and waits until then.
+
 With `--org`, gk streams every repository of an organization or user account. gk finds pushes from the `pushed_at` value of each repository. Each push reports `ci-expecting`, then `ci-start` and `ci-end` for each workflow run. If no run starts within 90 seconds, gk reports `ci-none`. The stream runs until you stop it and exits 0. A failed run is an event, not an exit code. If GitHub rejects a request for the rate limit, the stream pauses until the reset time. gk does not report scheduled or manually dispatched runs that have no push.
 
 ### Flags

@@ -76,6 +76,31 @@ func (c *Client) GetWorkflowRun(ctx context.Context, owner, repo string, runID i
 	return run, nil
 }
 
+// GetWorkflowRunConditional is GetWorkflowRun made conditional on etag, for a
+// poller that re-asks about one run until it finishes. notModified means
+// GitHub answered 304, which does not count against the rate limit.
+func (c *Client) GetWorkflowRunConditional(ctx context.Context, owner, repo string, runID int64, etag string) (run WorkflowRun, newETag string, notModified bool, err error) {
+	resp, err := c.getConditional(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d", url.PathEscape(owner), url.PathEscape(repo), runID), etag)
+	if err != nil {
+		return WorkflowRun{}, etag, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return WorkflowRun{}, etag, true, nil
+	}
+	if rl := asRateLimit(resp, time.Now()); rl != nil {
+		return WorkflowRun{}, etag, false, rl
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return WorkflowRun{}, etag, false, fmt.Errorf("github actions run returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		return WorkflowRun{}, etag, false, fmt.Errorf("decode actions run: %w", err)
+	}
+	return run, resp.Header.Get("ETag"), false, nil
+}
+
 // ListWorkflowRunsForSHA is ListWorkflowRuns made conditional on etag, for
 // a poller that re-asks about one pushed commit until its runs finish.
 // notModified means GitHub answered 304 and runs is nil.

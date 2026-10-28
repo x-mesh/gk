@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- When the `gitleaks` binary is not installed, `gk guard` scans with the gitleaks default ruleset that is built into gk (gitleaks v8.30.1, 222 rules). Before, the `secret_patterns` rule did nothing without gitleaks. The built-in scan does not read `.gitleaks.toml` or `.gitleaksignore`. A repository with a secret in its history can now fail `gk guard` where it passed before. If gitleaks is installed, `gk guard` still runs it.
+- `make gen-rules` regenerates the built-in ruleset from a gitleaks release. Set `GITLEAKS_RULES_VERSION` to change the release.
+
 ## [0.151.4] - 2026-10-27
 
 ### Fixed

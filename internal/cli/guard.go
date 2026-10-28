@@ -14,6 +14,7 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/policy/rules"
+	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 )
 
 func init() {
@@ -23,7 +24,8 @@ func init() {
 		Long: `gk guard evaluates every registered policy rule against the repo and
 surfaces violations. Rules live in .gk.yaml under the policies: block; the
 v0.9 MVP ships with secret_patterns (gitleaks-backed when installed). Without
-gitleaks the rule is a no-op and emits an info note instead of failing.
+gitleaks the rule scans with the gitleaks ruleset embedded in gk (a pinned
+release; .gitleaks.toml is not read) and emits an info note.
 `,
 	}
 
@@ -64,7 +66,12 @@ Exits non-zero when .gk.yaml already exists; pass --force to overwrite.
 // invocations and tests can swap rules via their own Registry when needed.
 func guardRegistry() *policy.Registry {
 	reg := policy.NewRegistry()
-	_ = reg.Register(rules.NewSecretPatternsRule())
+	secretRule := rules.NewSecretPatternsRule()
+	secretRule.ScanDiff = gitleaksrules.ScanDiff
+	secretRule.ScannerLabel = func() string {
+		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
+	}
+	_ = reg.Register(secretRule)
 	return reg
 }
 
@@ -212,7 +219,9 @@ policies:
 
   # ── secret_patterns ────────────────────────────────────────────────────────
   # Scans the full git history (or staged files) for secrets using gitleaks.
-  # Prerequisite: brew install gitleaks  (gk doctor will confirm)
+  # Without gitleaks, gk scans with its embedded gitleaks ruleset instead
+  # (.gitleaks.toml is not read in that mode).
+  # Optional: brew install gitleaks  (gk doctor will confirm)
   #
   # secret_patterns:
   #   enabled: true

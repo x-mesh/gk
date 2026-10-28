@@ -3750,7 +3750,7 @@ gk guard check [flags]
 
 | Name | Severity | Behavior |
 |------|----------|----------|
-| `secret_patterns` | `error` | Runs `gitleaks` (when present) and maps each finding to a Violation. When gitleaks is absent, emits a single `info` Violation so users see why the rule is a no-op. `gk doctor` detects the binary. |
+| `secret_patterns` | `error` | Runs `gitleaks` if it is installed and maps each finding to a Violation. If gitleaks is not installed, the rule scans with the ruleset that is built into gk. It also adds one `info` Violation that names the ruleset version. The built-in scan does not read `.gitleaks.toml`. `gk doctor` detects the binary. |
 
 #### Examples
 
@@ -3785,7 +3785,7 @@ gk guard init [flags]
 
 | Name | Description |
 |------|-------------|
-| `secret_patterns` | Gitleaks-backed secret scanning (full history or staged) |
+| `secret_patterns` | Secret scan with gitleaks, or with the ruleset built into gk (full history or staged) |
 | `max_commit_size` | Reject commits above a line / file count threshold |
 | `required_trailers` | Enforce git trailers (Signed-off-by, Jira-Ticket, …) |
 | `forbid_force_push_to` | Block force-pushes to protected branches (pre-push hook) |

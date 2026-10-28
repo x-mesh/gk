@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -203,31 +202,31 @@ func snapshotTree(ctx context.Context, runner *git.ExecRunner) (string, error) {
 	// either way: add -A makes the index mirror the working tree from
 	// whichever starting point. No real index (unborn repo) → remove the
 	// placeholder so git starts from a fresh empty index, the old behavior.
-	if data, rerr := os.ReadFile(filepath.Join(gitDir, "index")); rerr == nil {
+	//
+	// The copy must keep the real index's mtime. Git compares file times to
+	// the second and rehashes any entry whose mtime is not older than the index
+	// file's own mtime (racy-git protection). A fresh mtime makes a same-size
+	// rewrite from the same second look unchanged, so the snapshot would store
+	// the stale blob.
+	indexPath := filepath.Join(gitDir, "index")
+	// Stat before reading: an index rewritten in between then looks older than
+	// its content, which only adds rehashing.
+	info, serr := os.Stat(indexPath)
+	if serr != nil && !os.IsNotExist(serr) {
+		return "", fmt.Errorf("stat index: %w", serr)
+	}
+	if data, rerr := os.ReadFile(indexPath); rerr == nil && serr == nil {
 		if werr := os.WriteFile(tmpPath, data, 0o600); werr != nil {
 			return "", fmt.Errorf("seed temp index: %w", werr)
+		}
+		if terr := os.Chtimes(tmpPath, info.ModTime(), info.ModTime()); terr != nil {
+			return "", fmt.Errorf("keep index timestamp: %w", terr)
 		}
 	} else if rmErr := os.Remove(tmpPath); rmErr != nil {
 		return "", fmt.Errorf("reset temp index: %w", rmErr)
 	}
 
 	idx := &git.ExecRunner{Dir: runner.Dir, ExtraEnv: []string{"GIT_INDEX_FILE=" + tmpPath}}
-	// The copied index can be racily clean when a tracked file is rewritten
-	// within the filesystem timestamp tick to content of the same size. Mark
-	// every currently present tracked path intent-to-add in the temporary
-	// index, forcing add -A to rehash it; deleted paths are left for add -A to
-	// remove. This never touches the real index.
-	if paths, _, e := runner.Run(ctx, "ls-files", "-z"); e == nil {
-		for _, path := range bytes.Split(paths, []byte{0}) {
-			if len(path) == 0 {
-				continue
-			}
-			if _, statErr := os.Stat(filepath.Join(runner.Dir, filepath.FromSlash(string(path)))); statErr != nil {
-				continue
-			}
-			_, _, _ = idx.Run(ctx, "update-index", "--add", "--cacheinfo", "100644,0000000000000000000000000000000000000000,"+string(path))
-		}
-	}
 	if _, stderr, e := idx.Run(ctx, "add", "-A"); e != nil {
 		return "", fmt.Errorf("stage working tree: %s: %w", strings.TrimSpace(string(stderr)), e)
 	}

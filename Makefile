@@ -1,4 +1,4 @@
-.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration test-e2e lint fmt vet tidy clean install install-gk uninstall uninstall-gk release-snapshot check help
+.PHONY: build test test-pbt test-provider test-privacy test-cli test-integration test-e2e lint fmt vet tidy clean install install-gk uninstall uninstall-gk release-snapshot gen-rules check help
 
 BINARY       := gk
 # Installed as gk-dev so it never collides with the Homebrew-managed `gk`.
@@ -76,6 +76,15 @@ test-e2e:
 
 lint:
 	go tool -modfile=tools/go.mod golangci-lint run
+
+# Regenerates the embedded gitleaks ruleset. Pass GITLEAKS_RULES_VERSION to
+# update; review the rules.json diff before committing.
+GITLEAKS_RULES_VERSION ?= v8.30.1
+gen-rules:
+	@t=$$(mktemp -d) && \
+	curl -fsSL https://raw.githubusercontent.com/gitleaks/gitleaks/$(GITLEAKS_RULES_VERSION)/config/gitleaks.toml -o $$t/gitleaks.toml && \
+	curl -fsSL https://raw.githubusercontent.com/gitleaks/gitleaks/$(GITLEAKS_RULES_VERSION)/LICENSE -o internal/secrets/gitleaksrules/LICENSE-gitleaks && \
+	cd tools && go run ./genrules -in $$t/gitleaks.toml -version $(GITLEAKS_RULES_VERSION) -out ../internal/secrets/gitleaksrules/rules.json
 
 # `make check` mirrors what the CI jobs run end-to-end (vet → build → test
 # → e2e → lint). Run this before `gk ship` to catch lint/format regressions

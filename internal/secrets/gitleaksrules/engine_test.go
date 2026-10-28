@@ -245,3 +245,45 @@ func TestEngine_GenericRuleDroppedWhenSpecificRuleMatchesSameLine(t *testing.T) 
 		t.Errorf("surviving generic finding is at line %d, want 2", f.FileLine)
 	}
 }
+
+func TestScanDiff_QuotedPathsAreDecoded(t *testing.T) {
+	cases := []struct{ header, want string }{
+		{`"b/quote\"d.env"`, `quote"d.env`},
+		{`"b/back\\slash.env"`, `back\slash.env`},
+		{`"b/tab\there.env"`, "tab\there.env"},
+		{`"b/\355\225\234.env"`, "한.env"},
+	}
+	for _, c := range cases {
+		diff := "diff --git \"a/x\" " + c.header + "\n--- /dev/null\n+++ " + c.header + "\n@@ -0,0 +1,1 @@\n+export GH=" + githubPAT + "\n"
+		f, ok := find(ScanDiff(diff), "github-pat")
+		if !ok {
+			t.Errorf("%s: secret in a quoted path was skipped", c.header)
+			continue
+		}
+		if f.File != c.want {
+			t.Errorf("%s: File = %q, want %q", c.header, f.File, c.want)
+		}
+	}
+}
+
+func TestScanDiff_PathWithSpaceDropsTrailingTab(t *testing.T) {
+	diff := "diff --git a/my cert.p12 b/my cert.p12\nnew file mode 100644\n--- /dev/null\n+++ b/my cert.p12\t\n@@ -0,0 +1,1 @@\n+x\n"
+	f, ok := find(ScanDiff(diff), "pkcs12-file")
+	if !ok {
+		t.Fatal("pkcs12-file must match a path with a space")
+	}
+	if f.File != "my cert.p12" {
+		t.Errorf("File = %q, want %q", f.File, "my cert.p12")
+	}
+}
+
+func TestScanDiff_QuotedPathInHeaderOnlyForBinaryFile(t *testing.T) {
+	diff := "diff --git \"a/c\\\"x.p12\" \"b/c\\\"x.p12\"\nnew file mode 100644\nBinary files /dev/null and \"b/c\\\"x.p12\" differ\n"
+	f, ok := find(ScanDiff(diff), "pkcs12-file")
+	if !ok {
+		t.Fatal("pkcs12-file must match a quoted name that only the diff header carries")
+	}
+	if f.File != `c"x.p12` {
+		t.Errorf("File = %q", f.File)
+	}
+}

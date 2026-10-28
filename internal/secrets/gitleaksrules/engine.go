@@ -418,10 +418,11 @@ func parseDiff(diff string) []fileDiff {
 			cur = &files[len(files)-1]
 		case cur == nil:
 		case strings.HasPrefix(line, "+++ "):
-			if p, ok := strings.CutPrefix(line, "+++ b/"); ok {
-				cur.path = p
-			} else if line == "+++ /dev/null" {
+			rest := line[len("+++ "):]
+			if rest == "/dev/null" {
 				cur.path = ""
+			} else if p, ok := postImagePath(rest); ok {
+				cur.path = p
 			}
 		case strings.HasPrefix(line, "@@"):
 			flush()
@@ -443,8 +444,30 @@ func parseDiff(diff string) []fileDiff {
 }
 
 func pathFromGitHeader(line string) string {
+	if i := strings.LastIndex(line, ` "b/`); i >= 0 {
+		p, _ := postImagePath(line[i+1:])
+		return p
+	}
 	if i := strings.LastIndex(line, " b/"); i >= 0 {
 		return line[i+3:]
 	}
 	return ""
+}
+
+// postImagePath extracts the file path from a `b/<path>` header token. Git
+// wraps a name that holds a quote, backslash, control character, or (with
+// core.quotePath) non-ASCII byte in a C-style quoted string, and it appends a
+// tab to an unquoted name that holds a space. Skipping a quoted name would
+// silently drop that file from the scan.
+func postImagePath(token string) (string, bool) {
+	if strings.HasPrefix(token, `"`) {
+		unq, err := strconv.Unquote(token)
+		if err != nil {
+			return "", false
+		}
+		token = unq
+	} else {
+		token = strings.TrimRight(token, "\t")
+	}
+	return strings.CutPrefix(token, "b/")
 }

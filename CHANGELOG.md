@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make gen-rules` regenerates the built-in ruleset from a gitleaks release. Set `GITLEAKS_RULES_VERSION` to change the release.
 - `gk session audit` and the agent hook report `git fetch`, `git fetch origin` and `git fetch origin <branch>` (with `-q`, `-v` or `--no-tags`) as `raw-remote-refresh`, covered by `gk context --fetch`. Other fetch forms, such as another remote, `--all`, `--prune`, `--tags` or a refspec, stay in `uncovered-raw-git`. On the newest 2339 session files, uncovered raw git went from 2755 to 721 hits. Adoption and the turn metric did not change. Compare uncovered counts only between audits on the same side of this change. In the turn metric, a refresh no longer ends a `context` probe run, and a run that contains one names `git-kit context --fetch`. On the same files this saved 0 more turns: nearly every refresh fetch shares its turn with other work, so the turn is already one call.
 - The agent contract block is v28. It tells agents to add `--fetch` to `git-kit context` instead of running `git fetch` first. Run `gk agents install` to refresh installed blocks.
+- When `gk worktree remove` or `gk worktree rename` refuses a locked worktree, the agent output reports `state: "blocked"` with error code `worktree-locked` (the lock holder is running) or `worktree-lock-stale` (the holder is gone). Before, the state was `error` with code `unknown`. The exit code is still 1.
+
+### Fixed
+
+- `gk worktree remove --force-locked` removes a worktree that you give by a relative path or by its name, such as `.claude/worktrees/agent-x` or `agent-x`. Before, gk did not find the lock for these arguments and ran a plain `git worktree remove`, which failed with `cannot remove a locked working tree`. `--force` on a stale lock had the same problem. An absolute path worked before.
 
 ## [0.151.4] - 2026-10-27
 

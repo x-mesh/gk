@@ -1531,6 +1531,24 @@ func deriveWorktreeProjectSlug(ctx context.Context, runner git.Runner) (string, 
 	return filepath.Base(top), nil
 }
 
+// uniqueWorktreeBySuffix mirrors git's worktree lookup by trailing path
+// components ("agent-x", "worktrees/agent-x"): it returns the one entry
+// whose path ends with target on a component boundary, and false when none
+// or several match so git reports the ambiguity itself.
+func uniqueWorktreeBySuffix(entries []WorktreeEntry, target string) (string, bool) {
+	suffix := string(filepath.Separator) + filepath.Clean(target)
+	match := ""
+	for _, e := range entries {
+		if strings.HasSuffix(filepath.Clean(e.Path), suffix) {
+			if match != "" {
+				return "", false
+			}
+			match = e.Path
+		}
+	}
+	return match, match != ""
+}
+
 func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	ctx := cmd.Context()
@@ -1539,6 +1557,22 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	forceLocked, _ := cmd.Flags().GetBool("force-locked")
 	deinitSubmodules, _ := cmd.Flags().GetBool("deinit-submodules")
 	path := args[0]
+	// `worktree list` reports absolute paths, so a relative argument would
+	// never match its lock entry and skip the lock gate. Resolve it against
+	// the directory git runs in, as git itself does. A target that is not a
+	// path on disk stays as typed: git also accepts a unique trailing path
+	// component (e.g. "agent-x") and resolves that itself.
+	if !filepath.IsAbs(path) {
+		if abs, err := filepath.Abs(filepath.Join(RepoFlag(), path)); err == nil {
+			if _, statErr := os.Stat(abs); statErr == nil {
+				path = abs
+			} else if entries, lerr := listWorktreeEntries(ctx, runner); lerr == nil {
+				if p, ok := uniqueWorktreeBySuffix(entries, path); ok {
+					path = p
+				}
+			}
+		}
+	}
 
 	// --dry-run: report and stop BEFORE the lock gate — clearing a stale
 	// lock under --force is itself a mutation a preview must not perform.
@@ -1634,6 +1668,14 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 				"worktree-contains-submodules",
 				"deinitialize submodules before removing this clean worktree",
 				errRemedy{Command: selfCmd("worktree remove --deinit-submodules " + statusShellQuote(path)), Safety: "safe"},
+			)
+		}
+		if strings.Contains(msg, "cannot remove a locked working tree") {
+			return WithBlocked(
+				fmt.Errorf("worktree remove: %s: %w", msg, err),
+				"worktree-locked",
+				"the worktree is locked; rerun with --force for a stale lock or --force-locked for a running holder",
+				errRemedy{Command: selfCmd("worktree list --json"), Safety: "safe"},
 			)
 		}
 		return fmt.Errorf("worktree remove: %s: %w", msg, err)

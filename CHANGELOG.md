@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `gk snapshot` and `gk discard` store the current content of a file that was rewritten to the same size in the same second as the last `git add`. Before, the snapshot could store the old content of that file, because its throwaway index got a newer timestamp than the real index and git did not rehash the file.
 - `gk worktree remove --force-locked` removes a worktree that you give by a relative path or by its name, such as `.claude/worktrees/agent-x` or `agent-x`. Before, gk did not find the lock for these arguments and ran a plain `git worktree remove`, which failed with `cannot remove a locked working tree`. `--force` on a stale lock had the same problem. An absolute path worked before.
 
 ## [0.151.4] - 2026-10-27

@@ -518,7 +518,9 @@ The JSON schema reports per-file counts, totals, and aggregated findings such
 as `raw-context-probes`, `raw-conflict-probes`, `raw-release-sequence`,
 `raw-commit-sequence`, `raw-branch-switch`, `raw-worktree`, `raw-full-diff`,
 `raw-diff-check`, `raw-unstage`, `raw-apply` (covered by git-kit apply, collapse
-group `apply`), `gk-short-alias`, `shell-chain`, and `uncovered-raw-git`.
+group `apply`), `raw-remote-refresh` (a plain `git fetch [origin [<branch>]]`,
+covered by git-kit context --fetch, collapse group `context`), `gk-short-alias`,
+`shell-chain`, and `uncovered-raw-git`.
 Each finding carries a `status`:
 
 - `covered`: git-kit already has a replacement; read `covered_by`.
@@ -2736,9 +2738,13 @@ Project layout on disk:
 
 ### gk worktree remove
 
+`<path>` is an absolute or relative path, or a name that matches the end of one worktree path (as `git worktree remove` accepts). A locked worktree is refused unless its lock holder is gone (`--force`) or you override a running holder (`--force-locked`). With `--json`/`GK_AGENT`, the refusal reports `state: "blocked"` with error code `worktree-locked` (the holder is running) or `worktree-lock-stale` (the holder is gone).
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f, --force` | false | Force remove even when the worktree is dirty or locked |
+| `--force-locked` | false | Remove even when the lock holder is still running (dangerous: may be in active use) |
+| `--deinit-submodules` | false | Deinitialize submodules before removing a clean worktree |
 
 ### gk worktree prune
 

@@ -117,6 +117,7 @@ gk pull --with-base          # also fast-forward local main from origin (FF-only
 gk context --json            # one-call orientation for agents: branch/sync/dirty/next_actions
 gk context --include=all     # + diff digest, recent log, pull forecast, per-remote drift fused in
 gk context --delta           # repeat orientation: only the fields that changed since the last call
+gk context --fetch           # fetch origin first, so ahead/behind and base drift are current
 gk pull --from tape42        # integrate from a secondary remote (mirror/org fork); tracking untouched
 gk batch --plan - <plan.json # run several gk commands as one transaction from a JSON plan
 gk agents install            # install globally in ~/.claude/CLAUDE.md + ~/.codex/AGENTS.md
@@ -540,6 +541,7 @@ make install-gk     # installs ~/.local/bin/{gk,git-kit} (use the dev build AS g
 make test           # go test ./... -race -cover
 make lint           # golangci-lint run
 make fmt            # gofmt + go mod tidy
+make gen-rules      # regenerate the embedded gitleaks ruleset (GITLEAKS_RULES_VERSION, default v8.30.1)
 ```
 
 Requires Go 1.25+ and git 2.38+.

@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk context --fetch` fetches origin, and the remote of the current branch's upstream when that is another remote, before it counts ahead/behind and base drift. Before, the counts were as of the last fetch, so agents ran `git fetch` and then compared refs by hand. The `fetch` field reports each remote with `ok` and the error. A failed fetch, for example offline or a 15 s timeout, does not fail the call, and the counts stay as of the last fetch. Credential prompts are disabled. `--include=all` does not fetch.
+- `base.ahead_remote` in `gk context` counts local base commits that the remote base does not have. The text output shows them as `↑N unpushed`.
+
 ### Changed
 
 - When the `gitleaks` binary is not installed, `gk guard` scans with the gitleaks default ruleset that is built into gk (gitleaks v8.30.1, 222 rules). Before, the `secret_patterns` rule did nothing without gitleaks. The built-in scan does not read `.gitleaks.toml` or `.gitleaksignore`. A repository with a secret in its history can now fail `gk guard` where it passed before. If gitleaks is installed, `gk guard` still runs it.
 - `make gen-rules` regenerates the built-in ruleset from a gitleaks release. Set `GITLEAKS_RULES_VERSION` to change the release.
+- `gk session audit` and the agent hook report `git fetch`, `git fetch origin` and `git fetch origin <branch>` (with `-q`, `-v` or `--no-tags`) as `raw-remote-refresh`, covered by `gk context --fetch`. Other fetch forms, such as another remote, `--all`, `--prune`, `--tags` or a refspec, stay in `uncovered-raw-git`. On the newest 2339 session files, uncovered raw git went from 2755 to 721 hits. Adoption and the turn metric did not change. Compare uncovered counts only between audits on the same side of this change.
+- The agent contract block is v28. It tells agents to add `--fetch` to `git-kit context` instead of running `git fetch` first. Run `gk agents install` to refresh installed blocks.
 
 ## [0.151.4] - 2026-10-27
 

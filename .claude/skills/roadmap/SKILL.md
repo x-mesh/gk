@@ -101,13 +101,14 @@ entries written before this shipped — for those the honest verdict on a swing 
   a one-time step drop in `estimated_turns_saved`/`rate` across that boundary —
   do not read that step as an adoption regression.
 
-**Two classifier discontinuities — the history is measured with three different
+**Three classifier discontinuities — the history is measured with four different
 rulers. Never compare across a boundary.**
 
 | boundary | what changed | expected step |
 |---|---|---|
 | 2026-07 turn-estimator fix | stopped double-counting turns | `rate` / `estimated_turns_saved` drop |
 | **v0.122.0 (2026-07-13)** | `raw-context-probes` split into context / `gk find` / `gk branch list` / range-compare | **`rate` drops again** (5.8% → 3.1% on the full corpus) |
+| **context --fetch (2026-11-07, unreleased)** | `git fetch [origin [<branch>]]` moved from `uncovered-raw-git` to covered `raw-remote-refresh` | **uncovered drops** (2755 → 721 hits on the newest 2339 files); `adoption_rate`, `rate` and `by_group` unchanged — the fetch is not yet credited to the `context` collapse group |
 
 The v0.122.0 split removed savings that were never real: every `git log --grep` /
 `-S` / `git branch -a --merged` was being credited to `gk context`, which cannot

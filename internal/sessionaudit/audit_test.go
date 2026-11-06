@@ -1312,10 +1312,10 @@ func TestGitSegmentFinding_OpControlIsNotIntegration(t *testing.T) {
 		{"rebase skip has no gk verb", "rebase", []string{"--skip"}, ""},
 		{"cherry-pick a commit has no gk verb", "cherry-pick", []string{"77efc06"}, ""},
 		// gk pull --fetch-only fetches the current branch's upstream only, so
-		// it replaces neither `git fetch --all` nor `git fetch origin`, and a
-		// pull would also integrate.
+		// it does not replace `git fetch --all`, and a pull would also
+		// integrate. A plain refresh of origin is gk context --fetch.
 		{"fetch all has no gk verb", "fetch", []string{"--all"}, ""},
-		{"fetch a remote has no gk verb", "fetch", []string{"origin"}, ""},
+		{"fetch origin is a remote refresh", "fetch", []string{"origin"}, "raw-remote-refresh"},
 		{"rebase onto a ref stays integration", "rebase", []string{"origin/main"}, "raw-integration"},
 		{"merge a ref stays integration", "merge", []string{"feature/x"}, "raw-integration"},
 	}
@@ -1404,5 +1404,37 @@ func TestSynthesizeBatchPlan_FetchIsOmittedNotPull(t *testing.T) {
 	}
 	if !containsString(plan.Omitted, "git fetch") {
 		t.Errorf("Omitted = %v, want git fetch", plan.Omitted)
+	}
+}
+
+// gk context --fetch replaces a plain refresh of origin; every other fetch
+// shape does something the flag does not and stays in the gap.
+func TestGitSegmentFindingRemoteRefresh(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bare", nil, "raw-remote-refresh"},
+		{"quiet origin", []string{"-q", "origin"}, "raw-remote-refresh"},
+		{"origin quiet after", []string{"origin", "--quiet"}, "raw-remote-refresh"},
+		{"origin branch", []string{"-q", "origin", "develop"}, "raw-remote-refresh"},
+		{"redirects", []string{"-q", "origin", "2>&1"}, "raw-remote-refresh"},
+		{"split redirect target", []string{"origin", ">", "/dev/null"}, "raw-remote-refresh"},
+		{"other remote", []string{"upstream"}, ""},
+		{"all remotes", []string{"--all"}, ""},
+		{"prune", []string{"-q", "--prune", "origin"}, ""},
+		{"tags", []string{"origin", "--tags"}, ""},
+		{"refspec with destination", []string{"origin", "main:main"}, ""},
+		{"pr ref", []string{"origin", "pull/12/head"}, ""},
+		{"full ref", []string{"origin", "refs/heads/main"}, ""},
+		{"depth", []string{"--depth=1", "origin"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitSegmentFinding("fetch", tc.args); got != tc.want {
+				t.Errorf("gitSegmentFinding(fetch, %v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }

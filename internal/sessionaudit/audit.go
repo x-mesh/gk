@@ -409,6 +409,13 @@ var findingSpecs = map[string]findingSpec{
 		recommendation: "Use git-kit diff --check --json so whitespace/conflict-marker checks stay in the git-kit JSON contract.",
 		coveredBy:      []string{"git-kit diff --check", "git-kit diff --check --json"},
 	},
+	"raw-remote-refresh": {
+		kind:           "raw-remote-refresh",
+		severity:       "low",
+		status:         "covered",
+		recommendation: "To refresh origin and read ahead/behind, use git-kit context --fetch: it fetches, then reports branch and base drift in one call. To fetch and integrate, use git-kit pull, or git-kit pull --with-base for the base branch.",
+		coveredBy:      []string{"git-kit context --fetch"},
+	},
 	"raw-clone": {
 		kind:           "raw-clone",
 		severity:       "low",
@@ -2084,13 +2091,71 @@ func isRawOpControl(subcmd string, args []string) bool {
 	}
 }
 
+// remoteRefreshFlags are the fetch flags that leave a plain refresh of origin
+// unchanged. --prune, --tags, --all, depth and refspec-shaped forms are not
+// here: gk context --fetch does none of them, so claiming those would hand
+// the agent a verb that does something else.
+var remoteRefreshFlags = map[string]bool{
+	"-q": true, "--quiet": true, "-v": true, "--verbose": true, "--no-tags": true,
+}
+
+// isRawRemoteRefresh matches the fetch forms gk context --fetch replaces:
+// `git fetch [-q] [origin [<branch>]]`. Only origin is claimed, the remote
+// gk context fetches by default; another remote name (a fork's upstream)
+// may not be the one gk fetches. A refspec with a destination (`a:b`), a
+// PR ref (`pull/N/head`) or a full ref name updates or names something the
+// plain refresh does not, so those stay in the gap. Under-claiming is the
+// safe direction.
+func isRawRemoteRefresh(subcmd string, args []string) bool {
+	if subcmd != "fetch" {
+		return false
+	}
+	var operands []string
+	skipNext := false
+	for _, raw := range args {
+		a := trimShellToken(raw)
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "" {
+			continue
+		}
+		if strings.ContainsAny(a, "<>|&;()") {
+			// A bare operator (`>`, `2>`) leaves its target as the next token.
+			skipNext = strings.TrimLeft(a, "0123456789&") == ">" || strings.TrimLeft(a, "0123456789&") == ">>"
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			if !remoteRefreshFlags[a] {
+				return false
+			}
+			continue
+		}
+		operands = append(operands, a)
+	}
+	switch len(operands) {
+	case 0:
+		return true
+	case 1:
+		return operands[0] == "origin"
+	case 2:
+		ref := operands[1]
+		return operands[0] == "origin" && !strings.ContainsAny(ref, ":+*") &&
+			!strings.HasPrefix(ref, "refs/") && !strings.HasPrefix(ref, "pull/")
+	default:
+		return false
+	}
+}
+
 // isUnmappedIntegration matches integration-family forms no git-kit verb
 // replaces: picking a commit (gk has no cherry-pick), skipping or quitting a
-// paused operation, and fetch. gk pull --fetch-only fetches the current
-// branch's upstream only, so it replaces neither `git fetch --all` nor
-// `git fetch origin`, and plain gk pull would also integrate. They fall
-// through to the gap finding. isRawIntegration still lists fetch for the
-// digest, which counts integration attempts rather than replacements.
+// paused operation, and the fetch forms isRawRemoteRefresh does not claim.
+// gk pull --fetch-only fetches the current branch's upstream only, so it
+// replaces neither `git fetch --all` nor a refspec fetch, and plain gk pull
+// would also integrate. They fall through to the gap finding.
+// isRawIntegration still lists fetch for the digest, which counts
+// integration attempts rather than replacements.
 func isUnmappedIntegration(subcmd string, args []string) bool {
 	switch subcmd {
 	case "cherry-pick", "fetch":
@@ -2208,6 +2273,8 @@ func gitSegmentFinding(subcmd string, args []string) string {
 	// isRawIntegration, which matches on the subcommand alone.
 	case isRawOpControl(subcmd, args):
 		return "raw-op-control"
+	case isRawRemoteRefresh(subcmd, args):
+		return "raw-remote-refresh"
 	case isUnmappedIntegration(subcmd, args):
 		return ""
 	case isRawIntegration(subcmd):

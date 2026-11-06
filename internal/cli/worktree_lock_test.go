@@ -118,3 +118,74 @@ func TestRunWorktreeRemove_LiveLockRequiresForceLocked(t *testing.T) {
 		t.Fatalf("live-locked remove with --force-locked should succeed: %v\n%s", err, buf2.String())
 	}
 }
+
+// git resolves a relative path against the repo dir while `worktree list`
+// reports absolute paths, so the lock gate must compare on the same footing
+// (toss-20261106-e1e389c2: a relative path skipped the gate entirely).
+func TestRunWorktreeRemove_LiveLockRelativePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	rel := filepath.Join(".claude", "worktrees", "agent-x")
+	repo.RunGit("worktree", "add", rel, "-b", "agent-x")
+	repo.RunGit("worktree", "lock", "--reason", fmt.Sprintf("claude agent agent-x (pid %d start Fri Nov  6 08:38:01 2026)", os.Getpid()), rel)
+	abs := filepath.Join(repo.Dir, rel)
+
+	root, buf := buildWorktreeCmd(repo.Dir, "remove", rel, "--force")
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("live-locked remove with only --force should be refused\n%s", buf.String())
+	}
+	if got := errorCodeFromError(err); got != "worktree-locked" {
+		t.Errorf("refusal should come from the lock gate (code worktree-locked), got %q: %v", got, err)
+	}
+
+	root2, buf2 := buildWorktreeCmd(repo.Dir, "remove", rel, "--force-locked")
+	if err := root2.Execute(); err != nil {
+		t.Fatalf("live-locked remove by relative path with --force-locked should succeed: %v\n%s", err, buf2.String())
+	}
+	if _, err := os.Stat(abs); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be gone after removal")
+	}
+
+	// git also identifies a worktree by its unique trailing component; the
+	// lock gate must see through that spelling too.
+	byName := filepath.Join(t.TempDir(), "agent-y")
+	repo.RunGit("worktree", "add", byName, "-b", "agent-y")
+	repo.RunGit("worktree", "lock", "--reason", fmt.Sprintf("claude agent agent-y (pid %d)", os.Getpid()), byName)
+	root3, buf3 := buildWorktreeCmd(repo.Dir, "remove", "agent-y", "--force-locked")
+	if err := root3.Execute(); err != nil {
+		t.Fatalf("live-locked remove by name with --force-locked should succeed: %v\n%s", err, buf3.String())
+	}
+	if _, err := os.Stat(byName); !os.IsNotExist(err) {
+		t.Errorf("worktree named agent-y should be gone after removal")
+	}
+}
+
+func TestUniqueWorktreeBySuffix(t *testing.T) {
+	t.Parallel()
+	entries := []WorktreeEntry{
+		{Path: "/r"},
+		{Path: "/r/.claude/worktrees/agent-x"},
+		{Path: "/tmp/a/dup"},
+		{Path: "/tmp/b/dup"},
+	}
+	cases := []struct {
+		target string
+		want   string
+		ok     bool
+	}{
+		{"agent-x", "/r/.claude/worktrees/agent-x", true},
+		{"worktrees/agent-x", "/r/.claude/worktrees/agent-x", true},
+		{"nt-x", "", false},
+		{"dup", "", false},
+		{"a/dup", "/tmp/a/dup", true},
+	}
+	for _, tc := range cases {
+		got, ok := uniqueWorktreeBySuffix(entries, tc.target)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("uniqueWorktreeBySuffix(%q) = (%q, %v), want (%q, %v)", tc.target, got, ok, tc.want, tc.ok)
+		}
+	}
+}

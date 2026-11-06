@@ -2,13 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -319,5 +322,46 @@ func TestSnapshot_ListShowsEntries(t *testing.T) {
 	}
 	if !strings.Contains(out, "second") || !strings.Contains(out, "first") {
 		t.Fatalf("list should show notes, got: %s", out)
+	}
+}
+
+// TestSnapshotTree_CapturesSameSizeRewriteWithinIndexTimestamp pins the racy-git
+// case. Git compares file times to the second, so a same-size rewrite that
+// keeps the entry's mtime is invisible to the stat check. Git guards against
+// it by rehashing every entry whose mtime is not older than the index file's
+// own mtime. The throwaway index must keep that mtime: a fresh one makes the
+// entry look settled and the snapshot stores the stale blob.
+// core.checkStat=minimal drops the ctime and inode checks that the test cannot
+// set, and the hour-old stamp keeps the result independent of the clock tick.
+func TestSnapshotTree_CapturesSameSizeRewriteWithinIndexTimestamp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.RunGit("config", "core.checkStat", "minimal")
+	path := filepath.Join(repo.Dir, "a.txt")
+	indexPath := filepath.Join(repo.Dir, ".git", "index")
+	stamp := time.Now().Add(-time.Hour)
+
+	repo.WriteFile("a.txt", "one\n")
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	repo.RunGit("add", "a.txt")
+	repo.RunGit("commit", "-m", "seed")
+
+	repo.WriteFile("a.txt", "two\n")
+	for _, p := range []string{path, indexPath} {
+		if err := os.Chtimes(p, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tree, err := snapshotTree(context.Background(), &git.ExecRunner{Dir: repo.Dir})
+	if err != nil {
+		t.Fatalf("snapshotTree: %v", err)
+	}
+	if got := strings.TrimSpace(repo.RunGit("show", tree+":a.txt")); got != "two" {
+		t.Fatalf("snapshot tree holds %q for a.txt, want the rewritten content %q", got, "two")
 	}
 }

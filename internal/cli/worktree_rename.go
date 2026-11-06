@@ -263,13 +263,17 @@ func checkWorktreeLockGate(lock worktreeLock, force, forceLocked bool) error {
 		return nil
 	}
 	switch {
+	// No remedy command: overriding a live holder can yank a worktree from a
+	// running agent, so that choice stays with whoever reads the hint.
 	case lock.Alive && !forceLocked:
-		return WithHint(
+		return WithBlocked(
 			fmt.Errorf("worktree is locked and still in use: %s", lock.Reason),
+			"worktree-locked",
 			"the lock holder is still running — stop it first, or pass --force-locked to override")
 	case !lock.Alive && !force && !forceLocked:
-		return WithHint(
+		return WithBlocked(
 			fmt.Errorf("worktree is locked by a stale holder: %s", lock.Reason),
+			"worktree-lock-stale",
 			"the holder is no longer running — rerun with --force to unlock")
 	}
 	return nil

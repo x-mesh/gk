@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - When the `gitleaks` binary is not installed, `gk guard` scans with the gitleaks default ruleset that is built into gk (gitleaks v8.30.1, 222 rules). Before, the `secret_patterns` rule did nothing without gitleaks. The built-in scan does not read `.gitleaks.toml` or `.gitleaksignore`. A repository with a secret in its history can now fail `gk guard` where it passed before. If gitleaks is installed, `gk guard` still runs it.
 - `make gen-rules` regenerates the built-in ruleset from a gitleaks release. Set `GITLEAKS_RULES_VERSION` to change the release.
+- When `gk worktree remove` or `gk worktree rename` refuses a locked worktree, the agent output reports `state: "blocked"` with error code `worktree-locked` (the lock holder is running) or `worktree-lock-stale` (the holder is gone). Before, the state was `error` with code `unknown`. The exit code is still 1.
+
+### Fixed
+
+- `gk worktree remove --force-locked` removes a worktree that you give by a relative path or by its name, such as `.claude/worktrees/agent-x` or `agent-x`. Before, gk did not find the lock for these arguments and ran a plain `git worktree remove`, which failed with `cannot remove a locked working tree`. `--force` on a stale lock had the same problem. An absolute path worked before.
 
 ## [0.151.4] - 2026-10-27
 

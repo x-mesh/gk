@@ -108,7 +108,7 @@ rulers. Never compare across a boundary.**
 |---|---|---|
 | 2026-07 turn-estimator fix | stopped double-counting turns | `rate` / `estimated_turns_saved` drop |
 | **v0.122.0 (2026-07-13)** | `raw-context-probes` split into context / `gk find` / `gk branch list` / range-compare | **`rate` drops again** (5.8% → 3.1% on the full corpus) |
-| **context --fetch (2026-11-07, unreleased)** | `git fetch [origin [<branch>]]` moved from `uncovered-raw-git` to covered `raw-remote-refresh` | **uncovered drops** (2755 → 721 hits on the newest 2339 files); `adoption_rate`, `rate` and `by_group` unchanged — the fetch is not yet credited to the `context` collapse group |
+| **context --fetch (2026-11-07, unreleased)** | `git fetch [origin [<branch>]]` moved from `uncovered-raw-git` to covered `raw-remote-refresh` | **uncovered drops** (2755 → 721 hits on the newest 2339 files); `adoption_rate`, `rate` and `by_group` unchanged — the refresh joins the `context` collapse group, and that credit measured **0** turns: all 1352 refresh-fetch turns but 6 share their turn with other payload (`git-kit`, `gh`, `rev-parse`, a `for` loop), so no turn is removable |
 
 The v0.122.0 split removed savings that were never real: every `git log --grep` /
 `-S` / `git branch -a --merged` was being credited to `gk context`, which cannot
@@ -128,6 +128,8 @@ hook + contract block) on the next `by_group` target instead. Two methodology
 rules survive the question: (1) per-project lifetime rates bury recent change —
 always judge with overlapping `--since` windows; (2) re-ask this only if a later
 window breaks the monotonic trend.
+
+**Measure a candidate saving with the audit's own attribution, never with a next-call grep.** "The next call also ran a git probe" counts turns the collapse model discounts: a turn with non-git payload (`gh`, a `for` loop, `cat`) or an unclassified git verb (`rev-parse`, `merge-base`) is already one call and saves nothing. The `context --fetch` estimate of "~150 turns" came from that grep; `attributeTurns` + `commandPayloadTrivial` on the same files gave 0. Before ranking a build candidate by turns, run the classifier over the corpus (a throwaway test calling `attributeTurns(SessionTurns(data), gitLens)` is enough) and count what it attributes.
 
 ## Phase 2 — INTERPRET (five signal classes)
 

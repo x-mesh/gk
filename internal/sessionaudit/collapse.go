@@ -23,7 +23,10 @@ const CollapseLookback = collapseMaxGap + 1
 // call replaces a sequence of it". Kinds absent here (release tag/push) are not
 // turn-collapsed yet — the occurrence path still reports them.
 var collapseGroupForKind = map[string]string{
-	"raw-context-probes":  "context",
+	"raw-context-probes": "context",
+	// A plain origin refresh joins the probes it precedes: gk context --fetch
+	// fetches and then answers them in the same call.
+	"raw-remote-refresh":  "context",
 	"raw-commit-sequence": "commit",
 	"raw-integration":     "integration",
 	"raw-branch-switch":   "switch",
@@ -82,6 +85,9 @@ var gkForGroup = map[string]string{
 // the base, and inventing `gk sync <ref>` would be a syntax that does not exist.
 func gkCommandForRun(group string, cmds []string) string {
 	base := gkForGroup[group]
+	if group == "context" && runRefreshesRemote(cmds) {
+		return base + " --fetch"
+	}
 	if group != "integration" {
 		return base
 	}
@@ -193,6 +199,44 @@ func gitSegmentMutates(subcmd string, args []string) bool {
 	}
 }
 
+// runRefreshesRemote reports whether any command of a run fetches origin in
+// the form gk context --fetch replaces.
+func runRefreshesRemote(cmds []string) bool {
+	for _, cmd := range cmds {
+		for _, seg := range classifyCommand(cmd).Segments {
+			if seg.Tool != "git" {
+				continue
+			}
+			if sc, args, ok := gitSubcommand(seg.Text); ok && isRawRemoteRefresh(sc, args) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collapseCommandMutates is commandMutates for the raw-git collapse lens. A
+// plain origin refresh moves only remote-tracking refs, and gk context --fetch
+// does that same fetch before it answers, so the refresh does not sever a
+// context run. It stays a mutation everywhere else: the digest's unfinished
+// signal and the git-kit lens keep commandMutates, and any other fetch form
+// (--prune, another remote, a refspec) still mutates here.
+func collapseCommandMutates(cmd string) bool {
+	for _, seg := range classifyCommand(cmd).Segments {
+		if seg.Tool != "git" {
+			continue
+		}
+		subcmd, args, ok := gitSubcommand(seg.Text)
+		if !ok || isRawRemoteRefresh(subcmd, args) {
+			continue
+		}
+		if gitSegmentMutates(subcmd, args) {
+			return true
+		}
+	}
+	return false
+}
+
 // commandMutates reports whether any git segment of cmd mutates repo state.
 func commandMutates(cmd string) bool {
 	for _, seg := range classifyCommand(cmd).Segments {
@@ -240,7 +284,7 @@ func commandPayloadTrivial(cmd string) bool {
 		}
 	}
 	if len(groups) > 1 {
-		primary := primaryGroupOf(groups, commandMutates(cmd))
+		primary := primaryGroupOf(groups, collapseCommandMutates(cmd))
 		if readOnlyCollapseGroups[primary] {
 			return false
 		}
@@ -626,7 +670,7 @@ type collapseLens struct {
 var gitLens = collapseLens{
 	name:    "git",
 	groups:  commandGroups,
-	mutates: commandMutates,
+	mutates: collapseCommandMutates,
 	trivial: commandPayloadTrivial,
 	target:  groupTarget,
 }
@@ -968,7 +1012,7 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 	if lookback <= 0 || !commandPayloadTrivial(current) {
 		return nil
 	}
-	g := primaryGroupOf(commandGroups(current), commandMutates(current))
+	g := primaryGroupOf(commandGroups(current), collapseCommandMutates(current))
 	if g == "" {
 		return nil
 	}

@@ -764,3 +764,76 @@ func TestGkSubcommand_SkipsGlobalFlags(t *testing.T) {
 		t.Error("raw git must not parse as a gk segment")
 	}
 }
+
+// A plain origin refresh followed by a probe is one gk context --fetch call.
+func TestCollapse_RemoteRefreshJoinsContextRun(t *testing.T) {
+	runs := runsFor(session(
+		asst("m1", "t1", "git fetch -q origin"),
+		asst("m2", "t2", "git status -sb"),
+	))
+	if savedForGroup(runs, "context") != 1 {
+		t.Fatalf("context saved = %d, want 1: %+v", savedForGroup(runs, "context"), runs)
+	}
+	if len(runs) != 1 || runs[0].GkCommand != "git-kit context --fetch" {
+		t.Fatalf("want one run naming git-kit context --fetch, got %+v", runs)
+	}
+}
+
+// The refresh moves only remote-tracking refs, so it does not sever the probe
+// run around it; any other fetch form still does.
+func TestCollapse_RemoteRefreshDoesNotSeverButPruneDoes(t *testing.T) {
+	refresh := runsFor(session(
+		asst("m1", "t1", "git status"),
+		asst("m2", "t2", "git fetch origin"),
+		asst("m3", "t3", "git status"),
+	))
+	if savedForGroup(refresh, "context") != 2 {
+		t.Fatalf("refresh run saved = %d, want 2: %+v", savedForGroup(refresh, "context"), refresh)
+	}
+	prune := runsFor(session(
+		asst("m1", "t1", "git status"),
+		asst("m2", "t2", "git fetch --prune origin"),
+		asst("m3", "t3", "git status"),
+	))
+	if totalSaved(prune) != 0 {
+		t.Fatalf("a pruning fetch must still sever the probe run, got %+v", prune)
+	}
+}
+
+// Only the collapse lens treats the refresh as read-only: the digest's
+// unfinished signal and the git-kit lens still see a state change.
+func TestCollapseCommandMutates_OnlyTheCollapseLensIgnoresRefresh(t *testing.T) {
+	if collapseCommandMutates("git fetch -q origin") {
+		t.Error("collapse lens: a plain origin refresh must not mutate")
+	}
+	if !collapseCommandMutates("git fetch -q origin && git merge --ff-only origin/main") {
+		t.Error("collapse lens: the merge beside the refresh must still mutate")
+	}
+	if !commandMutates("git fetch -q origin") {
+		t.Error("commandMutates must keep treating fetch as a mutation")
+	}
+	if !gkCommandMutates("git fetch -q origin") {
+		t.Error("the git-kit lens must keep treating fetch as a mutation")
+	}
+}
+
+func TestCollapseNudgeFor_RefreshThenProbeNamesFetch(t *testing.T) {
+	recent, last := SessionTurnsWithLast(session(
+		asst("m1", "t1", "git fetch -q origin"),
+	))
+	n := CollapseNudgeFor("git status -sb", recent, last, collapseMaxGap+1)
+	if n == nil || n.GkCommand != "git-kit context --fetch" {
+		t.Fatalf("want a nudge naming git-kit context --fetch, got %+v", n)
+	}
+}
+
+// The refresh now sits in the context group, so a merge after it must not be
+// read as continuing anything: neither a pull nudge nor a context nudge.
+func TestCollapseNudgeFor_RefreshDoesNotStartAnIntegrationRun(t *testing.T) {
+	recent, last := SessionTurnsWithLast(session(
+		asst("m1", "t1", "git fetch origin"),
+	))
+	if n := CollapseNudgeFor("git merge --ff-only origin/main", recent, last, collapseMaxGap+1); n != nil {
+		t.Fatalf("a refresh followed by a merge must not nudge, got %+v", n)
+	}
+}

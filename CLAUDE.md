@@ -1,4 +1,4 @@
-<!-- gk:agents:begin v27 — managed by `gk agents install`; edit outside this block -->
+<!-- gk:agents:begin v28 — managed by `gk agents install`; edit outside this block -->
 ## Git workflow (git-kit)
 
 Use git-kit for git workflows whenever it has a path. In agent tool calls, run the full binary name with agent mode every time:
@@ -6,7 +6,7 @@ Use git-kit for git workflows whenever it has a path. In agent tool calls, run t
 `gk` can be shell-aliased, and environment variables do not persist across calls.
 
 Minimum rules:
-- Orient with `git-kit context` before git work; add `--include=diff,log,precheck,remotes,release` instead of separate status/log/diff probes.
+- Orient with `git-kit context` before git work; add `--include=diff,log,precheck,remotes,release` instead of separate status/log/diff probes. Add `--fetch` when you need current remote drift instead of running `git fetch` first.
 - Prefer git-kit verbs over raw git: `commit`, `land`, `pull --with-base`, `sync`, `merge`, `rebase --plan`, `diff --digest`, `diff --raw-patch --json`, `find`, `worktree ...`, `ship`, `batch --plan -`.
 - Keep read-only plumbing raw when needed: `git rev-parse`, `git config --get`, `git cat-file`, `git ls-files`.
 - Use raw git when git-kit has no equivalent, including `git show <object>` and the `git log` shapes git-kit log has no flag for (`--stat`, `--name-only`, `--until`); do not substitute `git-kit context` for object inspection.

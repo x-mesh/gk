@@ -54,7 +54,10 @@ type contextBaseJSON struct {
 	Name string `json:"name"`
 	// BehindRemote counts commits origin/<base> has that the local base
 	// lacks — the "morning sync" signal `gk pull --with-base` clears.
-	BehindRemote int    `json:"behind_remote"`
+	BehindRemote int `json:"behind_remote"`
+	// AheadRemote counts local base commits that origin/<base> lacks —
+	// unpushed work on the base branch itself.
+	AheadRemote  int    `json:"ahead_remote"`
 	CheckedOutIn string `json:"checked_out_in,omitempty"`
 }
 
@@ -97,6 +100,9 @@ type contextJSON struct {
 	Remotes  []contextRemoteJSON  `json:"remotes,omitempty"`
 	Release  *contextReleaseJSON  `json:"release,omitempty"`
 	GitHub   *contextGitHubJSON   `json:"github,omitempty"`
+	// Fetch is present only under --fetch: one entry per remote fetched
+	// before the counts above were computed.
+	Fetch []contextFetchJSON `json:"fetch,omitempty"`
 	// Notes records sections that were requested but degraded (e.g.
 	// precheck with no upstream) — absence of a section plus its note is
 	// the contract for "asked, not available".
@@ -214,7 +220,13 @@ replaces the usual status/branch/log/worktree probe sequence.
             hits the network, so it is opt-in only and NOT part of "all"
 
 A requested section that cannot be collected (e.g. precheck with no
-upstream) degrades to a note instead of failing the whole call.`,
+upstream) degrades to a note instead of failing the whole call.
+
+Without --fetch, ahead/behind and base drift are as of the last fetch.
+--fetch first fetches the base remote and the current branch's upstream
+remote (opt-in, network; not part of --include=all). A failed fetch does
+not fail the call: the "fetch" field reports ok:false with the error, and
+the counts stay as of the last successful fetch.`,
 		RunE: runContext,
 	}
 	cmd.Flags().StringSlice("include", nil,
@@ -223,6 +235,8 @@ upstream) degrades to a note instead of failing the whole call.`,
 		"emit only the core fields that changed since the last context call for this worktree")
 	cmd.Flags().String("worktrees", "all",
 		"worktree detail: off, current, summary, or all")
+	cmd.Flags().Bool("fetch", false,
+		"fetch the base and upstream remotes first so ahead/behind are current (opt-in, network)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -239,9 +253,23 @@ func runContext(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The fetch runs before collectContext so every count below — and the
+	// --delta snapshot — reflects the refreshed remote-tracking refs.
+	var fetched []contextFetchJSON
+	if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
+		branch, _ := git.NewClient(runner).CurrentBranch(ctx)
+		fetched = runContextFetch(ctx, runner, contextFetchRemotes(ctx, runner, cfg, branch))
+	}
+
 	out, err := collectContext(ctx, runner, cfg)
 	if err != nil {
 		return err
+	}
+	if doFetch, _ := cmd.Flags().GetBool("fetch"); doFetch {
+		out.Fetch = fetched
+		if len(fetched) == 0 {
+			out.Notes = append(out.Notes, "fetch: no configured remote to fetch")
+		}
 	}
 	worktreeMode, _ := cmd.Flags().GetString("worktrees")
 	if err := applyContextWorktreeMode(&out, worktreeMode); err != nil {
@@ -490,9 +518,10 @@ func collectContextBase(ctx context.Context, runner git.Runner, client *git.Clie
 	if !git.RefExists(ctx, runner, "refs/heads/"+name) || !git.RefExists(ctx, runner, remote+"/"+name) {
 		return b
 	}
-	if out, _, err := runner.Run(ctx, "rev-list", "--count", name+".."+remote+"/"+name); err == nil {
-		if n, perr := parsePositiveInt(strings.TrimSpace(string(out))); perr == nil {
-			b.BehindRemote = n
+	if out, _, err := runner.Run(ctx, "rev-list", "--left-right", "--count", name+"..."+remote+"/"+name); err == nil {
+		if fields := strings.Fields(strings.TrimSpace(string(out))); len(fields) == 2 {
+			b.AheadRemote, _ = parsePositiveInt(fields[0])
+			b.BehindRemote, _ = parsePositiveInt(fields[1])
 		}
 	}
 	if entry, err := findWorktreeForBranch(ctx, runner, name); err == nil && entry != nil {
@@ -567,10 +596,21 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 	}
 	if c.Base != nil {
 		line := fmt.Sprintf("base %s: ↓%d behind origin", c.Base.Name, c.Base.BehindRemote)
+		if c.Base.AheadRemote > 0 {
+			line += fmt.Sprintf(" · ↑%d unpushed", c.Base.AheadRemote)
+		}
 		if c.Base.CheckedOutIn != "" {
 			line += "  (checked out in " + c.Base.CheckedOutIn + ")"
 		}
 		fmt.Fprintln(w, line)
+	}
+	for _, f := range c.Fetch {
+		if f.OK {
+			fmt.Fprintf(w, "fetched %s\n", f.Remote)
+		} else {
+			first, _, _ := strings.Cut(f.Error, "\n")
+			fmt.Fprintf(w, "fetch %s failed (counts are as of the last fetch): %s\n", f.Remote, first)
+		}
 	}
 	if c.LatestTag != "" {
 		fmt.Fprintf(w, "latest tag: %s\n", c.LatestTag)

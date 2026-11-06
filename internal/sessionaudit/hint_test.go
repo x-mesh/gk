@@ -21,6 +21,8 @@ func TestHint(t *testing.T) {
 		{"stash bare", "git stash", true, "raw-stash"},
 		{"integration", "git rebase main", true, "raw-integration"},
 		{"apply", "git apply --cached fix.patch", true, "raw-apply"},
+		{"fetch origin", "git fetch -q origin", true, "raw-remote-refresh"},
+		{"fetch then compare", "git fetch -q origin && git rev-parse --short origin/main", true, "raw-remote-refresh"},
 		{"restore staged (unstage)", "git restore --staged a.go", true, "raw-unstage"},
 		{"gk short alias", "gk pull --with-base", true, "gk-short-alias"},
 		// Highest severity wins across a chain: conflict (high) over status (medium).

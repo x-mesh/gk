@@ -101,7 +101,7 @@ entries written before this shipped — for those the honest verdict on a swing 
   a one-time step drop in `estimated_turns_saved`/`rate` across that boundary —
   do not read that step as an adoption regression.
 
-**Four classifier discontinuities — the history is measured with five different
+**Five classifier discontinuities — the history is measured with six different
 rulers. Never compare across a boundary.**
 
 | boundary | what changed | expected step |
@@ -109,7 +109,8 @@ rulers. Never compare across a boundary.**
 | 2026-07 turn-estimator fix | stopped double-counting turns | `rate` / `estimated_turns_saved` drop |
 | **v0.122.0 (2026-07-13)** | `raw-context-probes` split into context / `gk find` / `gk branch list` / range-compare | **`rate` drops again** (5.8% → 3.1% on the full corpus) |
 | **context --fetch (v0.152.0, 2026-11-07)** | `git fetch [origin [<branch>]]` moved from `uncovered-raw-git` to covered `raw-remote-refresh` | **uncovered drops** (2755 → 721 hits on the newest 2339 files); `adoption_rate`, `rate` and `by_group` unchanged — the refresh joins the `context` collapse group, and that credit measured **0** turns: all 1352 refresh-fetch turns but 6 share their turn with other payload (`git-kit`, `gh`, `rev-parse`, a `for` loop), so no turn is removable |
-| **cwd-retry fix (after v0.152.0)** | a command re-run with only a `cd <dir> &&` prefix no longer forms a collapsible run | **`rate` drops** (0.59% → 0.09%, `estimated_turns_saved` 80 → 12 on the newest 2339 files; `gk_reprobe_saved` 36 → 7); `by_group` loses `diff`, `find`, `commit`, `stash`. Every `by_group` ranking before it rested on retries, not on distinct probes |
+| **cwd-retry fix (v0.152.1)** | a command re-run with only a `cd <dir> &&` prefix no longer forms a collapsible run | **`rate` drops** (0.59% → 0.09%, `estimated_turns_saved` 80 → 12 on the newest 2339 files; `gk_reprobe_saved` 36 → 7); `by_group` loses `diff`, `find`, `commit`, `stash`. Every `by_group` ranking before it rested on retries, not on distinct probes |
+| **identical-repeat fix (after v0.152.1)** | the same command run twice in the same directory no longer forms a collapsible run | **`estimated_turns_saved` reaches 0** (12 → 0 on the newest 2339 files, `rate` 0.09% → 0%; `gk_reprobe_saved` 7 → 2). From here the turn metric reports only distinct probes, and a non-zero value is a real adoption target |
 
 The v0.122.0 split removed savings that were never real: every `git log --grep` /
 `-S` / `git branch -a --merged` was being credited to `gk context`, which cannot

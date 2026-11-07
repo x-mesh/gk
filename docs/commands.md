@@ -577,9 +577,10 @@ real turn boundary per source — a Claude assistant message id, a Codex
 `estimated_turns_saved`, a per-gk-call breakdown, and `adoption`-style `rate`.
 Failed-then-retried calls (`is_error`), different repos, and the same verb aimed
 at different objects (`git show A` then `git show B` — paging) are not collapsed.
-A command re-run with only a `cd <dir> &&` prefix added (`git status --short`,
-then `cd /work/proj && git status --short`) is a retry in another directory, not
-a second probe: the pair counts as one turn, and the hook does not nudge on it.
+A command that runs again is a re-run, not a second probe. This includes a
+re-run with only a `cd <dir> &&` prefix added (`git status --short`, then
+`cd /work/proj && git status --short`) and the same command repeated in the same
+directory. The pair counts as one turn, and the hook does not nudge on it.
 
 ```bash
 gk session audit --metric=turns          # add the turn view to the report

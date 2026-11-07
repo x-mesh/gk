@@ -15,13 +15,14 @@ func withoutCdPrefix(cmd string) string {
 	return strings.TrimSpace(leadingCdRe.ReplaceAllString(cmd, ""))
 }
 
-// isCwdRetry reports whether two turns ran the same command and only one of
-// them named its directory: the agent re-ran it in the right place. That is a
-// wasted turn, but one gk call would not have saved it, so it never counts
-// as a collapse. The measured corpus had 69 of 80 "saved" turns in this shape
+// isRerun reports whether two turns ran the same command in a compatible
+// directory: a retry that added `cd <dir> &&`, or the same command run again.
+// The first call already asked the question, so one gk call would not have
+// saved the second turn, and it never counts as a collapse. The measured
+// corpus had all 80 "saved" turns in this shape (69 cwd retries, 11 repeats)
 // and none from distinct probes.
-func isCwdRetry(a turnHit, b turnHit) bool {
-	if (a.repo == "") == (b.repo == "") {
+func isRerun(a turnHit, b turnHit) bool {
+	if a.repo != "" && b.repo != "" && a.repo != b.repo {
 		return false
 	}
 	return withoutCdPrefix(a.cmd) == withoutCdPrefix(b.cmd)
@@ -1064,8 +1065,8 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 		if ta.subcmd == curSub && curTgt != "" && ta.target != "" && curTgt != ta.target {
 			continue // same verb, different target — paging, not a run
 		}
-		if isCwdRetry(ta.turnHit, turnHit{cmd: current, repo: curRepo}) {
-			continue // the pending command re-runs this one in another directory
+		if isRerun(ta.turnHit, turnHit{cmd: current, repo: curRepo}) {
+			continue // the pending command re-runs this one
 		}
 		prior = append(prior, ta.cmd)
 	}
@@ -1101,9 +1102,13 @@ func splitRuns(hits []turnHit, maxGap int, barriers []int) [][]turnHit {
 			continue
 		}
 		prev := cur[len(cur)-1]
-		if isCwdRetry(prev, h) {
-			// The retry replaces the attempt: keep the turn that named its
-			// directory, and count the pair once.
+		if isRerun(prev, h) {
+			// The re-run replaces the attempt and the pair counts once. The later
+			// turn stays so the gap to the next probe is measured from it, and it
+			// keeps whichever directory either turn named.
+			if h.repo == "" {
+				h.repo = prev.repo
+			}
 			cur[len(cur)-1] = h
 			continue
 		}

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.152.0] - 2026-11-07
+
 ### Added
 
 - `gk context --fetch` fetches origin, and the remote of the current branch's upstream when that is another remote, before it counts ahead/behind and base drift. Before, the counts were as of the last fetch, so agents ran `git fetch` and then compared refs by hand. The `fetch` field reports each remote with `ok` and the error. A failed fetch, for example offline or a 15 s timeout, does not fail the call, and the counts stay as of the last fetch. Credential prompts are disabled. `--include=all` does not fetch.

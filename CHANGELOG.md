@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.152.2] - 2026-11-07
+
 ### Fixed
 
 - `gk session audit --metric=turns` no longer counts the same command run twice in the same directory as a collapsible run, and the agent hook no longer nudges on it. The first call already answered the question, so one git-kit call would not have saved the second turn. v0.152.1 handled the retry that only added `cd <dir> &&`; this covers the plain repeat. On the newest 2339 session files, all 12 remaining saved turns were repeats: `estimated_turns_saved` went from 12 to 0 (`rate` 0.09% to 0%), and the git-kit re-probe count went from 7 to 2. Compare turn numbers only between audits on the same side of this change.

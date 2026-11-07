@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk switch` with `--json` or `GK_AGENT=1` now writes a result envelope (`branch`, `created`, `detached`, `tracking`) to stdout. Before, it wrote only the human line `✓ switched to <branch>`, so a caller that parsed stdout as JSON got nothing and had to branch on the exit code. The `--take` detach notice now goes to stderr in this mode, so stdout stays one JSON value.
+
 ## [0.152.2] - 2026-11-07
 
 ### Fixed

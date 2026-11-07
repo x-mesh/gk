@@ -1655,14 +1655,19 @@ func redirectIfWorktreeLocked(ctx context.Context, r git.Runner, w io.Writer, br
 	}
 	takeable := worktreeTakeable(ctx, entry)
 	if take && takeable {
+		// The notice is prose; under --json stdout carries only the result.
+		notice := w
+		if JSONOut() {
+			notice = os.Stderr
+		}
 		if flagDryRun {
-			fmt.Fprintf(w, "would detach HEAD in %s to release %s\n", entry.Path, branch)
+			fmt.Fprintf(notice, "would detach HEAD in %s to release %s\n", entry.Path, branch)
 			return true, nil
 		}
 		if _, stderr, err := (&git.ExecRunner{Dir: entry.Path}).Run(ctx, "switch", "--detach"); err != nil {
 			return false, fmt.Errorf("detach HEAD in %s: %s: %w", entry.Path, strings.TrimSpace(string(stderr)), err)
 		}
-		fmt.Fprintln(w, successLinef("detached", "HEAD in %s (%s released)", entry.Path, branch))
+		fmt.Fprintln(notice, successLinef("detached", "HEAD in %s (%s released)", entry.Path, branch))
 		return false, nil
 	}
 	dirtyMap := loadWorktreeDirtyStates(ctx, switchWorktreeMap{
@@ -1788,6 +1793,9 @@ func doSwitch(ctx context.Context, r git.Runner, w io.Writer, branch string, cre
 		}
 		return fmt.Errorf("git switch failed: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
+	if JSONOut() {
+		return emitAgentResult(w, switchResult{Branch: branch, Created: create, Detached: detach})
+	}
 	fmt.Fprintln(w, successLine("switched to", branch))
 	return nil
 }
@@ -1883,6 +1891,16 @@ func doSwitchTrack(ctx context.Context, r git.Runner, w io.Writer, trackRef stri
 	if i := strings.IndexByte(trackRef, '/'); i >= 0 {
 		short = trackRef[i+1:]
 	}
+	if JSONOut() {
+		return emitAgentResult(w, switchResult{Branch: short, Detached: detach, Tracking: trackRef})
+	}
 	fmt.Fprintln(w, successLinef("switched to", "%s (tracking %s)", short, trackRef))
 	return nil
+}
+
+type switchResult struct {
+	Branch   string `json:"branch"`
+	Created  bool   `json:"created,omitempty"`
+	Detached bool   `json:"detached,omitempty"`
+	Tracking string `json:"tracking,omitempty"`
 }

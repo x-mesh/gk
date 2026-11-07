@@ -2028,6 +2028,8 @@ Alias: `gk sw`.
 
 `--take` needs a branch name, `--main`, or `--develop`. It cannot combine with `--create` or `--detach`. It acts only if the other worktree is unlocked, has no tracked changes, and has no merge, rebase, or cherry-pick in progress. If any check fails, the command stops with the normal conflict error and changes nothing. With `--dry-run`, the command prints the planned detach and does not run it.
 
+With `--json` or `GK_AGENT=1`, stdout carries only the result: `branch`, plus `created` for `-c`, `detached` for `--detach`, and `tracking` (`<remote>/<branch>`) when the switch creates a local tracking branch. The `--take` detach notice goes to stderr.
+
 ### Keyword resolution
 
 `--main` resolves in this order:

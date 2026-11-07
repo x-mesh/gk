@@ -1,9 +1,31 @@
 package sessionaudit
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// leadingCdRe matches one leading `cd <dir> &&` or `cd <dir>;` prefix.
+var leadingCdRe = regexp.MustCompile(`^\s*cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*`)
+
+// withoutCdPrefix drops one leading directory change, so a command and its
+// re-run from another directory compare equal.
+func withoutCdPrefix(cmd string) string {
+	return strings.TrimSpace(leadingCdRe.ReplaceAllString(cmd, ""))
+}
+
+// isCwdRetry reports whether two turns ran the same command and only one of
+// them named its directory: the agent re-ran it in the right place. That is a
+// wasted turn, but one gk call would not have saved it, so it never counts
+// as a collapse. The measured corpus had 69 of 80 "saved" turns in this shape
+// and none from distinct probes.
+func isCwdRetry(a turnHit, b turnHit) bool {
+	if (a.repo == "") == (b.repo == "") {
+		return false
+	}
+	return withoutCdPrefix(a.cmd) == withoutCdPrefix(b.cmd)
+}
 
 // collapseMaxGap is how many interleaved turns may sit between two same-group
 // git turns and still count as one collapsible run. 1 tolerates the common
@@ -1042,6 +1064,9 @@ func CollapseNudgeFor(current string, recent []TurnEvent, lastTurn, lookback int
 		if ta.subcmd == curSub && curTgt != "" && ta.target != "" && curTgt != ta.target {
 			continue // same verb, different target — paging, not a run
 		}
+		if isCwdRetry(ta.turnHit, turnHit{cmd: current, repo: curRepo}) {
+			continue // the pending command re-runs this one in another directory
+		}
 		prior = append(prior, ta.cmd)
 	}
 	if len(prior) == 0 {
@@ -1076,6 +1101,12 @@ func splitRuns(hits []turnHit, maxGap int, barriers []int) [][]turnHit {
 			continue
 		}
 		prev := cur[len(cur)-1]
+		if isCwdRetry(prev, h) {
+			// The retry replaces the attempt: keep the turn that named its
+			// directory, and count the pair once.
+			cur[len(cur)-1] = h
+			continue
+		}
 		gapOK := h.turn-prev.turn <= maxGap+1
 		repoOK := prev.repo == "" || h.repo == "" || prev.repo == h.repo
 		// Paging guard: the same verb aimed at different objects (git show A,

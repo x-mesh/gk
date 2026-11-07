@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk session audit --metric=turns` no longer counts a command that was re-run with only a `cd <dir> &&` prefix as a collapsible run, and the agent hook no longer nudges on it. The first attempt has no known directory, so the repo guard let the pair through as two probes that one git-kit call would replace. On the newest 2339 session files, 69 of the 80 saved turns had this shape and none came from distinct probes: `estimated_turns_saved` went from 80 to 12 (`rate` 0.59% to 0.09%), and the git-kit re-probe count went from 36 to 7. Compare turn numbers only between audits on the same side of this change.
+
 ## [0.152.0] - 2026-11-07
 
 ### Added

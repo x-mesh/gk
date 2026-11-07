@@ -837,3 +837,48 @@ func TestCollapseNudgeFor_RefreshDoesNotStartAnIntegrationRun(t *testing.T) {
 		t.Fatalf("a refresh followed by a merge must not nudge, got %+v", n)
 	}
 }
+
+// A command re-run with only a `cd <dir> &&` prefix added is a retry in the
+// right directory, not a second probe: one gk call would not have saved it.
+func TestCollapse_CwdRetryIsNotACollapse(t *testing.T) {
+	runs := runsFor(session(
+		asst("m1", "t1", "git status --short"),
+		asst("m2", "t2", "cd /work/proj && git status --short"),
+	))
+	if totalSaved(runs) != 0 {
+		t.Fatalf("a cwd retry must not count as a collapse, got %+v", runs)
+	}
+	// A different probe after the retry still collapses with it.
+	runs = runsFor(session(
+		asst("m1", "t1", "git diff --stat"),
+		asst("m2", "t2", "cd /work/proj && git diff --stat"),
+		asst("m3", "t3", "cd /work/proj && git status --short"),
+	))
+	if savedForGroup(runs, "context") != 1 {
+		t.Fatalf("retry then a distinct probe: context saved = %d, want 1: %+v", savedForGroup(runs, "context"), runs)
+	}
+}
+
+func TestCollapseNudgeFor_CwdRetryDoesNotNudge(t *testing.T) {
+	recent, last := SessionTurnsWithLast(session(
+		asst("m1", "t1", "git status --short"),
+	))
+	if n := CollapseNudgeFor("cd /work/proj && git status --short", recent, last, collapseMaxGap+1); n != nil {
+		t.Fatalf("a cwd retry must not nudge, got %+v", n)
+	}
+}
+
+func TestWithoutCdPrefix(t *testing.T) {
+	cases := map[string]string{
+		"cd /a/b && git status":        "git status",
+		"cd /a/b; git status":          "git status",
+		`cd "/a b" && git log -1`:      "git log -1",
+		"git status":                   "git status",
+		"cd /a && cd /b && git status": "cd /b && git status",
+	}
+	for in, want := range cases {
+		if got := withoutCdPrefix(in); got != want {
+			t.Errorf("withoutCdPrefix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

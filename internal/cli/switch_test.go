@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1955,5 +1956,93 @@ func TestSwitchAction_DeleteUnmerged_Flow(t *testing.T) {
 	}
 	if _, _, err := runner.Run(ctx, "branch", "-D", "feat/diverged"); err != nil {
 		t.Fatalf("git branch -D: %v", err)
+	}
+}
+
+// decodeOneEnvelope fails unless out is exactly one agent envelope: prose
+// before or after the JSON breaks every caller that pipes stdout into a parser.
+func decodeOneEnvelope(t *testing.T, out []byte) map[string]any {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(out))
+	var env map[string]any
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("stdout is not a JSON envelope: %v\n%s", err, out)
+	}
+	if dec.More() {
+		t.Fatalf("stdout carries more than one JSON value:\n%s", out)
+	}
+	if env["state"] != "ok" {
+		t.Fatalf("state = %v, want ok:\n%s", env["state"], out)
+	}
+	res, _ := env["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("envelope has no result object:\n%s", out)
+	}
+	return res
+}
+
+func TestDoSwitch_AgentModeEmitsEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "none"))
+	withAgentMode(t, true)
+	repo := testutil.NewRepo(t)
+	r := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	if err := doSwitch(ctx, r, &buf, "feat", true, false, false); err != nil {
+		t.Fatalf("switch -c: %v", err)
+	}
+	if res := decodeOneEnvelope(t, buf.Bytes()); res["branch"] != "feat" || res["created"] != true {
+		t.Fatalf("switch -c result = %v, want branch feat created", res)
+	}
+
+	buf.Reset()
+	if err := doSwitch(ctx, r, &buf, "main", false, false, false); err != nil {
+		t.Fatalf("switch main: %v", err)
+	}
+	if res := decodeOneEnvelope(t, buf.Bytes()); res["branch"] != "main" || res["created"] != nil {
+		t.Fatalf("switch result = %v, want branch main, not created", res)
+	}
+
+	repo.RunGit("remote", "add", "origin", repo.Dir)
+	repo.RunGit("fetch", "-q", "origin")
+	repo.RunGit("branch", "-D", "feat")
+	buf.Reset()
+	if err := doSwitchTrack(ctx, r, &buf, "origin/feat", false, false); err != nil {
+		t.Fatalf("switch --track: %v", err)
+	}
+	if res := decodeOneEnvelope(t, buf.Bytes()); res["branch"] != "feat" || res["tracking"] != "origin/feat" {
+		t.Fatalf("track result = %v, want branch feat tracking origin/feat", res)
+	}
+}
+
+// --take detaches the other worktree before switching. Its notice is prose,
+// so in agent mode it must stay off stdout.
+func TestSwitchTake_AgentModeKeepsNoticeOffStdout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "none"))
+	withAgentMode(t, true)
+	repo := testutil.NewRepo(t)
+	repo.RunGit("branch", "feat")
+	wtDir := filepath.Join(t.TempDir(), "wt")
+	repo.RunGit("worktree", "add", wtDir, "feat")
+	r := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	done, err := redirectIfWorktreeLocked(ctx, r, &buf, "feat", true)
+	if err != nil || done {
+		t.Fatalf("take: done=%v err=%v", done, err)
+	}
+	if err := doSwitch(ctx, r, &buf, "feat", false, false, false); err != nil {
+		t.Fatalf("switch after take: %v", err)
+	}
+	if res := decodeOneEnvelope(t, buf.Bytes()); res["branch"] != "feat" {
+		t.Fatalf("take result = %v", res)
 	}
 }

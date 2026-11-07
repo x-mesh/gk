@@ -138,16 +138,35 @@ func TestCollapse_G_PagingDifferentTargetsDoNotCollapse(t *testing.T) {
 	}
 }
 
-// The paging guard must not over-break: the same verb with no/identical target
-// repeated across turns is still a collapsible probe sequence.
-func TestCollapse_RepeatedIdenticalProbeCollapses(t *testing.T) {
+// Running the same command again is a re-run, not a second question: the
+// first call already answered it, so one gk call saves nothing.
+func TestCollapse_IdenticalRerunIsNotACollapse(t *testing.T) {
 	runs := runsFor(session(
 		asst("m1", "t1", "git status"),
 		asst("m2", "t2", "git status"),
 		asst("m3", "t3", "git status"),
 	))
-	if savedForGroup(runs, "context") != 2 {
-		t.Fatalf("repeated identical status should collapse, want 2 saved: %+v", runs)
+	if totalSaved(runs) != 0 {
+		t.Fatalf("an identical re-run must not count as a collapse, got %+v", runs)
+	}
+	runs = runsFor(session(
+		asst("m1", "t1", "cd /work/proj && git log --oneline -5"),
+		asst("m2", "t2", "cd /work/proj && git log --oneline -5"),
+	))
+	if totalSaved(runs) != 0 {
+		t.Fatalf("an identical re-run in the same directory must not collapse, got %+v", runs)
+	}
+}
+
+// The paging guard must not over-break: the same verb with no target, asked
+// differently, is still a collapsible probe sequence.
+func TestCollapse_SameVerbDifferentFlagsCollapses(t *testing.T) {
+	runs := runsFor(session(
+		asst("m1", "t1", "git status"),
+		asst("m2", "t2", "git status --short"),
+	))
+	if savedForGroup(runs, "context") != 1 {
+		t.Fatalf("status then status --short should collapse, want 1 saved: %+v", runs)
 	}
 }
 
@@ -286,7 +305,7 @@ func TestCollapseNudgeFor_FarApartProbeDoesNotNudge(t *testing.T) {
 		readMsg("r2"),
 		readMsg("r3"),
 	))
-	if n := CollapseNudgeFor("git status", recent, last, CollapseLookback); n != nil {
+	if n := CollapseNudgeFor("git status --short", recent, last, CollapseLookback); n != nil {
 		t.Fatalf("probe beyond the gap tolerance must not nudge, got %+v", n)
 	}
 
@@ -295,7 +314,7 @@ func TestCollapseNudgeFor_FarApartProbeDoesNotNudge(t *testing.T) {
 		asst("m1", "t1", "git status"),
 		readMsg("r1"),
 	))
-	if n := CollapseNudgeFor("git status", recent, last, CollapseLookback); n == nil {
+	if n := CollapseNudgeFor("git status --short", recent, last, CollapseLookback); n == nil {
 		t.Fatal("one interleaved turn is within tolerance — the nudge must still fire")
 	}
 }
@@ -431,7 +450,7 @@ func TestCollapse_K_MixedReadGroupsDoNotCollapse(t *testing.T) {
 // raw git apply collapses into its own group, covered by git-kit apply.
 func TestCollapse_ApplyGroup(t *testing.T) {
 	runs := runsFor(session(
-		asst("m1", "t1", "git apply p.patch"),
+		asst("m1", "t1", "git apply --check p.patch"),
 		asst("m2", "t2", "git apply p.patch"),
 	))
 	if savedForGroup(runs, "apply") != 1 {
@@ -529,11 +548,11 @@ func TestAudit_TurnMetricOptInAndBothSources(t *testing.T) {
 	), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Codex: two function_call batches, each a git status → 2 turns, collapse 1.
+	// Codex: two function_call batches, status then log → 2 turns, collapse 1.
 	codex := filepath.Join(codexDir, "c.jsonl")
 	if err := os.WriteFile(codex, []byte(strings.Join([]string{
 		codexExec("c1", "git status"), codexOut("c1"),
-		codexExec("c2", "git status"), codexOut("c2"),
+		codexExec("c2", "git log --oneline -5"), codexOut("c2"),
 	}, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +573,7 @@ func TestAudit_TurnMetricOptInAndBothSources(t *testing.T) {
 	if got.Turns == nil {
 		t.Fatal("--metric=turns must populate Turns")
 	}
-	// Claude 3-context run saves 2; Codex 2-turn status run saves 1.
+	// Claude 3-context run saves 2; Codex 2-turn status+log run saves 1.
 	if got.Turns.EstimatedTurnsSaved != 3 {
 		t.Fatalf("estimated turns saved = %d, want 3: %+v", got.Turns.EstimatedTurnsSaved, got.Turns)
 	}
@@ -865,6 +884,9 @@ func TestCollapseNudgeFor_CwdRetryDoesNotNudge(t *testing.T) {
 	))
 	if n := CollapseNudgeFor("cd /work/proj && git status --short", recent, last, collapseMaxGap+1); n != nil {
 		t.Fatalf("a cwd retry must not nudge, got %+v", n)
+	}
+	if n := CollapseNudgeFor("git status --short", recent, last, collapseMaxGap+1); n != nil {
+		t.Fatalf("an identical re-run must not nudge, got %+v", n)
 	}
 }
 

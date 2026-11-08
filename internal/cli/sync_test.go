@@ -628,6 +628,39 @@ func TestSyncCmd_IgnoresInferredParent(t *testing.T) {
 	}
 }
 
+func TestSyncCmd_NoRemoteFallsBackToLocalMain(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hello\n")
+	repo.Commit("init")
+	repo.CreateBranch("develop")
+	repo.Checkout("develop")
+	repo.WriteFile("b.txt", "dev\n")
+	repo.Commit("develop ahead")
+
+	root, buf := buildSyncCmd(repo.Dir)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("sync failed in remote-less repo with local main: %v\n%s", err, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "up to date with main") {
+		t.Errorf("expected sync onto local main without a remote, got:\n%s", out)
+	}
+}
+
+func TestSyncCmd_NoRemoteNoLocalTrunkStillFails(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "hello\n")
+	repo.Commit("init")
+	repo.RunGit("branch", "-m", "trunk")
+	repo.CreateBranch("feat/x")
+	repo.Checkout("feat/x")
+
+	root, buf := buildSyncCmd(repo.Dir)
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "could not determine base branch") {
+		t.Fatalf("expected base-detection failure without main/master, got err=%v\n%s", err, buf.String())
+	}
+}
+
 // TestSyncCmd_ForkParentNoRemote proves the resolution order (gk-parent before
 // DefaultBranch): a repo with NO remote — where origin/HEAD cannot be resolved
 // — still syncs onto the recorded gk-parent instead of failing with "could not

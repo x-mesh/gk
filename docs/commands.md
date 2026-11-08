@@ -212,6 +212,7 @@ When `--base` is not set, gk resolves the base in priority order:
 2. `base_branch` config
 3. `origin/HEAD` (remote default branch)
 4. `develop` → `main` → `master` fallback
+5. local `main` → `master`, when no remote ref matches (for example, a repo with no remote)
 
 ### Examples
 

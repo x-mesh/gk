@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk sync` in a repository with no remote now falls back to the local `main` or `master` branch as the base. Before, it failed with `could not determine default branch` even when a local `main` existed.
+
 ## [0.152.3] - 2026-11-07
 
 ### Fixed

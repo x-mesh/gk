@@ -182,7 +182,13 @@ func runSyncCore(cmd *cobra.Command) error {
 	if base == "" {
 		detected, err := client.DefaultBranch(ctx, remote)
 		if err != nil {
-			return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+			// DefaultBranch only reads remote-tracking refs, but sync rebases
+			// onto the local base, so a repo with no remote yet can still name
+			// its trunk locally.
+			detected = localTrunkBranch(ctx, runner)
+			if detected == "" {
+				return fmt.Errorf("could not determine base branch: %w (use --base)", err)
+			}
 		}
 		base = detected
 	}
@@ -757,4 +763,13 @@ func writeSyncReport(w interface{ Write(p []byte) (int, error) }, reports []sync
 			fmt.Fprintf(w, "! %-28s diverged from %s — use `gk pull`\n", r.Branch, r.Upstream)
 		}
 	}
+}
+
+func localTrunkBranch(ctx context.Context, r git.Runner) string {
+	for _, cand := range []string{"main", "master"} {
+		if localBranchExists(ctx, r, cand) {
+			return cand
+		}
+	}
+	return ""
 }

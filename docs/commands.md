@@ -2991,6 +2991,16 @@ worktree roots at any depth. If git cannot read the repository of a worktree,
 cleanup skips it with the reason `repo-unreadable`. Cleanup does not delete these
 directories.
 
+Outside a repository, cleanup without `--global` works the same way as
+`--global`, for the report and for `-y`. A note on stderr names this scope
+before the scan starts. `-i` still needs a repository.
+
+While cleanup checks the worktrees, a spinner on stderr shows the progress. In
+`--global` mode it also shows the number of checked worktrees and the current
+project. The spinner does not appear when stderr is not a terminal or with
+`--debug`. In `--global` mode with `-y`, cleanup checks every repository first
+and then removes the candidates.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--merged` | true | Only remove branches merged into parent/base — including **squash-merged** ones, verified by a merge-tree content check (reason `squash-merged`), since a squash merge never becomes an ancestor. Does not apply to `[prunable]` registrations |
@@ -3003,8 +3013,9 @@ directories.
 | `-g, --global` | false | Clean worktrees of all projects under `worktree.base`, also outside a repository |
 
 With `--json` (or `GK_AGENT=1`) the result is
-`{dry_run, candidates, removed, skipped, failed}`. In `--global` mode, each
-entry also has a `project` field. A `dirty` skip carries `untracked` (the
+`{dry_run, global_fallback, candidates, removed, skipped, failed}`.
+`global_fallback` is true when cleanup ran outside a repository without
+`--global`. In `--global` mode, each entry also has a `project` field. A `dirty` skip carries `untracked` (the
 untracked paths); a candidate that will also delete lockfiles carries
 `disposable`.
 

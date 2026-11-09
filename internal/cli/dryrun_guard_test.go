@@ -165,3 +165,22 @@ func TestDryRunGuard_ExecuteBlocksBeforeRun(t *testing.T) {
 		t.Errorf("code = %q, want dry-run-unsupported (err: %v)", codeFrom(err), err)
 	}
 }
+
+// `gk worktree prune --dry-run` is usually a reach for a preview of finished
+// worktrees, which is cleanup's default report mode — the refusal must point
+// there instead of leaving the user to guess.
+func TestDryRunGuard_PruneHintNamesWorktreeCleanup(t *testing.T) {
+	t.Cleanup(func() { flagDryRun = false })
+	flagDryRun = true
+	cmd, _, err := rootCmd.Find([]string{"worktree", "prune"})
+	if err != nil || cmd == rootCmd {
+		t.Fatalf("worktree prune not found in tree: %v", err)
+	}
+	gerr := rejectUnsupportedDryRun(cmd)
+	if gerr == nil {
+		t.Fatal("worktree prune --dry-run must be refused, got nil")
+	}
+	if hint := HintFrom(gerr); !strings.Contains(hint, "gk worktree cleanup") {
+		t.Errorf("hint must name gk worktree cleanup, got %q", hint)
+	}
+}

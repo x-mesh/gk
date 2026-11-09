@@ -71,7 +71,7 @@ func rejectUnsupportedDryRun(cmd *cobra.Command) error {
 	return WithBlocked(
 		fmt.Errorf("%s does not support --dry-run — the flag would be ignored and the command would run for real", cmd.CommandPath()),
 		"dry-run-unsupported",
-		"drop --dry-run to run the command; verbs with a real preview document it in --help (gk ship, gk land, gk rebase --plan, gk reset, gk branch clean, …)",
+		"drop --dry-run to run the command; verbs with a real preview document it in --help (gk ship, gk land, gk rebase --plan, gk reset, gk branch clean, gk worktree cleanup, …)",
 	)
 }
 

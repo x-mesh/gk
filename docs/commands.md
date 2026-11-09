@@ -2993,7 +2993,8 @@ directories.
 
 Outside a repository, cleanup without `--global` works the same way as
 `--global`, for the report and for `-y`. A note on stderr names this scope
-before the scan starts. `-i` still needs a repository.
+before the scan starts. `-i` still needs a repository. If `--repo` or `GIT_DIR`
+names a path that is not a repository, cleanup fails instead.
 
 While cleanup checks the worktrees, a spinner on stderr shows the progress. In
 `--global` mode it also shows the number of checked worktrees and the current

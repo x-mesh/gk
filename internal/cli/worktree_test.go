@@ -2624,7 +2624,10 @@ func TestWorktreeCleanup_OutsideRepoFallsBackToGlobal(t *testing.T) {
 	mustRun(t, openRunner, "commit", "-m", "wip")
 
 	outside := t.TempDir()
+	// The helper passes --repo, which names a repository; cwd-style runs
+	// leave it unset, so drop it and let the flag default carry the dir.
 	root, buf := buildWorktreeCmd(outside, "cleanup", "--json")
+	root.SetArgs([]string{"worktree", "cleanup", "--json"})
 	t.Cleanup(func() { flagJSON = false })
 	if err := root.Execute(); err != nil {
 		t.Fatalf("worktree cleanup outside a repo failed: %v\nout: %s", err, buf.String())
@@ -2642,6 +2645,7 @@ func TestWorktreeCleanup_OutsideRepoFallsBackToGlobal(t *testing.T) {
 
 	flagJSON = false
 	root2, buf2 := buildWorktreeCmd(outside, "cleanup", "--yes")
+	root2.SetArgs([]string{"worktree", "cleanup", "--yes"})
 	if err := root2.Execute(); err != nil {
 		t.Fatalf("cleanup -y outside a repo failed: %v\nout: %s", err, buf2.String())
 	}
@@ -2653,5 +2657,48 @@ func TestWorktreeCleanup_OutsideRepoFallsBackToGlobal(t *testing.T) {
 	}
 	if out := strings.TrimSpace(repo.RunGit("branch", "--list", "feat/done")); out == "" {
 		t.Error("feat/done was deleted; cleanup keeps branches without --delete-branches")
+	}
+	out := buf2.String()
+	note := strings.Index(out, "cleaning gk-managed worktrees of every project")
+	summary := strings.Index(out, "worktree cleanup: removed")
+	if note < 0 || summary < 0 || note > summary {
+		t.Errorf("-y must print the global-scope note before the result (note at %d, summary at %d)\nout: %s", note, summary, out)
+	}
+}
+
+// A repository the user named with --repo or GIT_DIR that git cannot open
+// reports the same "not a git repository" text as a directory outside any
+// repository. That failure must stay an error: falling back would turn a
+// mistyped path into a removal across every project.
+func TestWorktreeCleanup_ExplicitBadRepoDoesNotFallBack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	base := filepath.Join(t.TempDir(), "wtbase")
+	t.Setenv("GK_WORKTREE_BASE", base)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a")
+	repo.Commit("base a")
+	done := filepath.Join(base, "proj-a", "done")
+	repo.RunGit("worktree", "add", "-b", "feat/done", done)
+	startCleanupBranch(t, done)
+
+	outside := t.TempDir()
+	root, buf := buildWorktreeCmd(outside, "cleanup", "--yes", "--repo", outside)
+	if err := root.Execute(); err == nil || !isNotAGitRepoError(err) {
+		t.Fatalf("cleanup --repo <not a repo> -y: err = %v, want the not-a-repository error\nout: %s", err, buf.String())
+	}
+	if _, err := os.Stat(done); err != nil {
+		t.Fatalf("explicit --repo failure removed %s: %v", done, err)
+	}
+
+	t.Setenv("GIT_DIR", filepath.Join(outside, "missing.git"))
+	root2, buf2 := buildWorktreeCmd(outside, "cleanup", "--yes")
+	root2.SetArgs([]string{"worktree", "cleanup", "--yes"})
+	if err := root2.Execute(); err == nil || !isNotAGitRepoError(err) {
+		t.Fatalf("cleanup -y with a bad GIT_DIR: err = %v, want the not-a-repository error\nout: %s", err, buf2.String())
+	}
+	if _, err := os.Stat(done); err != nil {
+		t.Errorf("bad GIT_DIR removed %s: %v", done, err)
 	}
 }

@@ -525,7 +525,7 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	globalFallback := false
 	if !global {
 		if err := ensureGitRepo(ctx, runner); err != nil {
-			if interactive {
+			if interactive || !cleanupOutsideAnyRepo(cmd, err) {
 				return err
 			}
 			// Outside a repository the global scope is the only meaning the
@@ -1104,6 +1104,23 @@ func isSubmoduleRemoveRefusal(msg string) bool {
 
 // cleanupProgress is where cleanup prints each removal: the command's
 // output, or nowhere when --json carries the result instead.
+// cleanupOutsideAnyRepo reports whether err means git searched the working
+// directory and every parent without finding a repository. An explicit --repo
+// or GIT_DIR names a repository the user meant, and git reports a bad one with
+// the same "not a git repository" text; widening that failure to every project
+// would turn a typo into a removal across all of them.
+func cleanupOutsideAnyRepo(cmd *cobra.Command, err error) bool {
+	if cmd.Flags().Changed("repo") || os.Getenv("GIT_DIR") != "" {
+		return false
+	}
+	msg := err.Error()
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) {
+		msg += exitErr.Stderr
+	}
+	return strings.Contains(msg, "(or any of the parent directories)")
+}
+
 // startCleanupSpinner covers the silent verdict pass, which takes seconds on a
 // cold cache. --debug writes subprocess logs to stderr, where a spinner would
 // redraw over them.

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `gk worktree cleanup` outside a repository now works on every project under `worktree.base`, as with `--global`, for the report and for `-y`. Before, it failed with `git 저장소가 아닙니다` unless you passed `-g`. A note on stderr names the scope before the scan starts, and `--json` reports `global_fallback: true`. `-i` still needs a repository.
+- `gk worktree cleanup` outside a repository now works on every project under `worktree.base`, as with `--global`, for the report and for `-y`. Before, it failed with `git 저장소가 아닙니다` unless you passed `-g`. A note on stderr names the scope before the scan starts, and `--json` reports `global_fallback: true`. `-i` still needs a repository. If `--repo` or `GIT_DIR` names a path that is not a repository, cleanup still fails.
 - `gk worktree cleanup` shows a spinner while it checks the worktrees. In `--global` mode it shows the checked count and the current project. Before, a cold first run printed nothing for several seconds. With `-g -y`, cleanup now checks every repository before it removes anything.
 - The `gk worktree cleanup` report colors each row by its state: candidates in green, `dirty` and `locked-stale` in yellow, `unmerged` in cyan, failures in red, and rows kept by design (`current`, `protected`, `unstarted`, …) faint. Output to a pipe has no color.
 - When a command refuses `--dry-run`, the hint now names `gk worktree cleanup` among the commands with a real preview. `gk worktree prune --dry-run` was the common case: prune has no preview, and cleanup is the report of finished worktrees.

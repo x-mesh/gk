@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.153.0] - 2026-11-09
+
 ### Changed
 
 - `gk worktree cleanup` outside a repository now works on every project under `worktree.base`, as with `--global`, for the report and for `-y`. Before, it failed with `git 저장소가 아닙니다` unless you passed `-g`. A note on stderr names the scope before the scan starts, and `--json` reports `global_fallback: true`. `-i` still needs a repository. If `--repo` or `GIT_DIR` names a path that is not a repository, cleanup still fails.

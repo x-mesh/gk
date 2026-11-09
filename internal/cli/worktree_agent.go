@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 	"github.com/x-mesh/gk/internal/branchparent"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 type worktreeAcquireJSON struct {
@@ -57,11 +59,14 @@ func (r worktreeFinishJSON) agentState() string {
 }
 
 type worktreeCleanupJSON struct {
-	DryRun     bool                   `json:"dry_run"`
-	Candidates []worktreeCleanupEntry `json:"candidates"`
-	Removed    []worktreeCleanupEntry `json:"removed,omitempty"`
-	Skipped    []worktreeCleanupEntry `json:"skipped,omitempty"`
-	Failed     []worktreeCleanupEntry `json:"failed,omitempty"`
+	DryRun bool `json:"dry_run"`
+	// GlobalFallback marks a report that covers every project because the
+	// command ran outside a repository without -g.
+	GlobalFallback bool                   `json:"global_fallback,omitempty"`
+	Candidates     []worktreeCleanupEntry `json:"candidates"`
+	Removed        []worktreeCleanupEntry `json:"removed,omitempty"`
+	Skipped        []worktreeCleanupEntry `json:"skipped,omitempty"`
+	Failed         []worktreeCleanupEntry `json:"failed,omitempty"`
 }
 
 // cleanupAction is what applying a cleanup row does. Only
@@ -491,7 +496,11 @@ list), only its registration in .git/worktrees is left. Cleanup removes that
 registration even if the branch is not merged or not old enough, because no
 file and no commit is lost. It never deletes the branch of such a worktree,
 even with --delete-branches. The current worktree, detached worktrees, and
-protected branches stay excluded.`,
+protected branches stay excluded.
+
+Outside a repository, cleanup works on every project under worktree.base, as
+with -g, and a note says so. This applies to the report and to -y. -i needs a
+repository.`,
 		Args: cobra.NoArgs,
 		RunE: runWorktreeCleanup,
 	}
@@ -510,9 +519,20 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	runner := &git.ExecRunner{Dir: RepoFlag()}
 	global, _ := cmd.Flags().GetBool("global")
+	yes, _ := cmd.Flags().GetBool("yes")
+	dryRun := DryRun() || !yes
+	interactive, _ := cmd.Flags().GetBool("interactive")
+	globalFallback := false
 	if !global {
 		if err := ensureGitRepo(ctx, runner); err != nil {
-			return err
+			if interactive || !cleanupOutsideAnyRepo(cmd, err) {
+				return err
+			}
+			// Outside a repository the global scope is the only meaning the
+			// command can have, and -y removes only rows that pass the same
+			// per-worktree gates as inside one, so both modes fall back.
+			global = true
+			globalFallback = true
 		}
 	}
 	cfg, _ := config.Load(cmd.Flags())
@@ -521,15 +541,13 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	yes, _ := cmd.Flags().GetBool("yes")
-	dryRun := DryRun() || !yes
 	opts := worktreeCleanupOpts{stale: stale}
 	opts.merged, _ = cmd.Flags().GetBool("merged")
 	opts.deleteBranches, _ = cmd.Flags().GetBool("delete-branches")
 	opts.forceStaleLocks, _ = cmd.Flags().GetBool("force-stale-locks")
 	opts.discardDirty, _ = cmd.Flags().GetBool("discard-dirty")
 
-	if interactive, _ := cmd.Flags().GetBool("interactive"); interactive {
+	if interactive {
 		switch {
 		case global:
 			return fmt.Errorf("worktree cleanup: -i works on one repository; run it without --global inside that repository")
@@ -541,6 +559,16 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 		return runWorktreeCleanupSelect(ctx, cmd.OutOrStdout(), runner, cfg, opts, currentWorktreePath(ctx, runner))
 	}
 
+	// Printed before the scan so that, with -y, the scope is on screen before
+	// the first removal.
+	if globalFallback && !JSONOut() {
+		verb := "reporting"
+		if !dryRun {
+			verb = "cleaning"
+		}
+		printNote(cmd.ErrOrStderr(), "not inside a git repository — "+verb+" gk-managed worktrees of every project (same as -g)")
+	}
+
 	var report worktreeCleanupJSON
 	if global {
 		report, err = runGlobalWorktreeCleanup(ctx, cmd, cfg, currentWorktreePath(ctx, runner), opts, dryRun)
@@ -548,7 +576,9 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	} else {
+		stop := startCleanupSpinner(func() string { return "checking worktrees" })
 		report, err = collectWorktreeCleanup(ctx, runner, cfg, opts, "", currentWorktreePath(ctx, runner))
+		stop()
 		if err != nil {
 			return err
 		}
@@ -557,6 +587,7 @@ func runWorktreeCleanup(cmd *cobra.Command, args []string) error {
 		}
 	}
 	report.DryRun = dryRun
+	report.GlobalFallback = globalFallback
 	if JSONOut() {
 		return emitAgentResult(cmd.OutOrStdout(), report)
 	}
@@ -592,8 +623,25 @@ func runGlobalWorktreeCleanup(ctx context.Context, cmd *cobra.Command, cfg *conf
 		return rows
 	}
 
+	// Collection runs to completion before any removal: the spinner owns
+	// stderr while it runs, and removal progress must not interleave with it.
+	type repoPlan struct {
+		runner     *git.ExecRunner
+		candidates []worktreeCleanupEntry
+	}
+	var plans []repoPlan
+	var checked atomic.Int32
+	var checking atomic.Value
+	checking.Store("")
+	stop := startCleanupSpinner(func() string {
+		return fmt.Sprintf("checking worktrees %d/%d %s", checked.Load(), len(roots), checking.Load())
+	})
+	defer stop()
+
 	seen := map[string]bool{}
 	for _, root := range roots {
+		checking.Store(root.Project)
+		checked.Add(1)
 		main, err := mainWorktreePath(ctx, &git.ExecRunner{Dir: root.Path})
 		if err != nil {
 			report.Skipped = append(report.Skipped, worktreeCleanupEntry{
@@ -622,8 +670,12 @@ func runGlobalWorktreeCleanup(ctx context.Context, cmd *cobra.Command, cfg *conf
 		}
 		report.Candidates = append(report.Candidates, tag(sub.Candidates)...)
 		report.Skipped = append(report.Skipped, tag(sub.Skipped)...)
-		if !dryRun {
-			removed, failed := applyWorktreeCleanup(ctx, cleanupProgress(cmd), runner, sub.Candidates, opts)
+		plans = append(plans, repoPlan{runner: runner, candidates: sub.Candidates})
+	}
+	stop()
+	if !dryRun {
+		for _, p := range plans {
+			removed, failed := applyWorktreeCleanup(ctx, cleanupProgress(cmd), p.runner, p.candidates, opts)
 			report.Removed = append(report.Removed, removed...)
 			report.Failed = append(report.Failed, failed...)
 		}
@@ -1052,6 +1104,33 @@ func isSubmoduleRemoveRefusal(msg string) bool {
 
 // cleanupProgress is where cleanup prints each removal: the command's
 // output, or nowhere when --json carries the result instead.
+// cleanupOutsideAnyRepo reports whether err means git searched the working
+// directory and every parent without finding a repository. An explicit --repo
+// or GIT_DIR names a repository the user meant, and git reports a bad one with
+// the same "not a git repository" text; widening that failure to every project
+// would turn a typo into a removal across all of them.
+func cleanupOutsideAnyRepo(cmd *cobra.Command, err error) bool {
+	if cmd.Flags().Changed("repo") || os.Getenv("GIT_DIR") != "" {
+		return false
+	}
+	msg := err.Error()
+	var exitErr *git.ExitError
+	if errors.As(err, &exitErr) {
+		msg += exitErr.Stderr
+	}
+	return strings.Contains(msg, "(or any of the parent directories)")
+}
+
+// startCleanupSpinner covers the silent verdict pass, which takes seconds on a
+// cold cache. --debug writes subprocess logs to stderr, where a spinner would
+// redraw over them.
+func startCleanupSpinner(label func() string) (stop func()) {
+	if flagDebug {
+		return func() {}
+	}
+	return ui.StartBubbleSpinnerLive(label)
+}
+
 func cleanupProgress(cmd *cobra.Command) io.Writer {
 	if JSONOut() {
 		return io.Discard

@@ -216,3 +216,39 @@ func TestRenderWorktreeCleanup_ExplainsDryRunAndKept(t *testing.T) {
 		}
 	}
 }
+
+// The report colors each row by its verdict on a terminal and writes plain
+// text otherwise, so piped output stays greppable.
+func TestRenderWorktreeCleanup_ColorsByState(t *testing.T) {
+	report := worktreeCleanupJSON{
+		DryRun:     true,
+		Candidates: []worktreeCleanupEntry{{Path: "/wt/done", Branch: "done", Target: "main", Reasons: []string{"clean", "merged"}}},
+		Skipped: []worktreeCleanupEntry{
+			{Path: "/wt/wip", Branch: "wip", verdict: reasonDirty},
+			{Path: "/wt/open", Branch: "open", verdict: reasonUnmerged},
+			{Path: "/wt/here", Branch: "here", verdict: reasonCurrent},
+		},
+	}
+	setNoColor(t, false, func() {
+		var b strings.Builder
+		renderWorktreeCleanup(&b, report)
+		out := b.String()
+		for _, want := range []string{
+			"\x1b[32;1mwould remove",
+			"\x1b[33mdirty:",
+			"\x1b[36munmerged (",
+			"\x1b[2mcurrent (",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("colored report lacks %q\nout: %q", want, out)
+			}
+		}
+	})
+	setNoColor(t, true, func() {
+		var b strings.Builder
+		renderWorktreeCleanup(&b, report)
+		if strings.Contains(b.String(), "\x1b[") {
+			t.Errorf("report without color still has escape codes: %q", b.String())
+		}
+	})
+}

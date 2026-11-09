@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/fatih/color"
 )
 
 var cleanupSkipNotes = map[cleanupReason]string{
@@ -23,29 +25,64 @@ var cleanupSkipNotes = map[cleanupReason]string{
 	reasonRepoUnreadable: "repository could not be read",
 }
 
+var (
+	cleanupRemoveColor = color.New(color.FgGreen, color.Bold)
+	cleanupFailColor   = color.New(color.FgRed, color.Bold)
+	cleanupFaint       = color.New(color.Faint)
+	cleanupBold        = color.New(color.Bold)
+)
+
+// cleanupReasonColor groups kept verdicts by what the reader must do: yellow
+// holds work or a lock that needs a decision, cyan is unfinished branch work,
+// red is a failure, and faint marks rows that are kept by design.
+func cleanupReasonColor(reason cleanupReason) *color.Color {
+	switch reason {
+	case reasonDirty, reasonLockedStale:
+		return color.New(color.FgYellow)
+	case reasonUnmerged, reasonFresh:
+		return color.New(color.FgCyan)
+	case reasonRepoUnreadable:
+		return color.New(color.FgRed)
+	case reasonCurrent, reasonBare, reasonDetached, reasonNoBranch, reasonProtected,
+		reasonLockedLive, reasonUnstarted:
+		return cleanupFaint
+	default:
+		return color.New(color.Reset)
+	}
+}
+
 func renderWorktreeCleanup(w io.Writer, report worktreeCleanupJSON) {
 	if report.DryRun {
-		fmt.Fprintf(w, "worktree cleanup (dry-run): %d would be removed, %d kept\n", len(report.Candidates), len(report.Skipped))
+		fmt.Fprintf(w, "%s %s, %d kept\n",
+			cleanupBold.Sprint("worktree cleanup (dry-run):"),
+			cleanupRemoveColor.Sprintf("%d would be removed", len(report.Candidates)), len(report.Skipped))
 		for _, c := range report.Candidates {
 			if c.Action == cleanupActionPruneRecord {
-				fmt.Fprintf(w, "  would prune record %s (%s; directory is gone, branch kept)\n", c.Path, c.Branch)
+				fmt.Fprintf(w, "  %s %s %s\n", cleanupRemoveColor.Sprint("would prune record"), c.Path,
+					cleanupFaint.Sprintf("(%s; directory is gone, branch kept)", c.Branch))
 				continue
 			}
-			fmt.Fprintf(w, "  would remove %s (%s)", c.Path, cleanupBranchNote(c))
+			fmt.Fprintf(w, "  %s %s %s", cleanupRemoveColor.Sprint("would remove"), c.Path,
+				cleanupFaint.Sprintf("(%s)", cleanupBranchNote(c)))
 			if len(c.Disposable) > 0 {
 				fmt.Fprintf(w, " + delete regenerable untracked: %s", strings.Join(c.Disposable, ", "))
 			}
 			fmt.Fprintln(w)
 		}
 	} else {
-		fmt.Fprintf(w, "worktree cleanup: removed %d, failed %d, kept %d\n", len(report.Removed), len(report.Failed), len(report.Skipped))
+		failed := fmt.Sprintf("failed %d", len(report.Failed))
+		if len(report.Failed) > 0 {
+			failed = cleanupFailColor.Sprint(failed)
+		}
+		fmt.Fprintf(w, "%s %s, %s, kept %d\n", cleanupBold.Sprint("worktree cleanup:"),
+			cleanupRemoveColor.Sprintf("removed %d", len(report.Removed)), failed, len(report.Skipped))
 	}
 	for _, c := range report.Failed {
-		fmt.Fprintf(w, "  failed %s: %s\n", c.Path, c.Error)
+		fmt.Fprintf(w, "  %s %s: %s\n", cleanupFailColor.Sprint("failed"), c.Path, c.Error)
 	}
 	renderCleanupKept(w, report.Skipped)
 	if report.DryRun && len(report.Candidates) > 0 {
-		fmt.Fprintln(w, "(dry-run) nothing was removed; re-run with -y to apply.")
+		fmt.Fprintf(w, "(dry-run) nothing was removed; re-run with %s to apply.\n", cleanupBold.Sprint("-y"))
 	}
 }
 
@@ -68,15 +105,16 @@ func renderCleanupKept(w io.Writer, skipped []worktreeCleanupEntry) {
 	}
 	summary := make([]string, 0, len(order))
 	for _, reason := range order {
-		summary = append(summary, fmt.Sprintf("%d %s", counts[reason], reason))
+		summary = append(summary, cleanupReasonColor(reason).Sprintf("%d %s", counts[reason], reason))
 	}
-	fmt.Fprintf(w, "kept (%s):\n", strings.Join(summary, ", "))
+	fmt.Fprintf(w, "%s (%s):\n", cleanupBold.Sprint("kept"), strings.Join(summary, ", "))
 	for _, s := range skipped {
-		fmt.Fprintf(w, "  %s (%s): %s\n", s.Path, s.Branch, cleanupSkipNote(s))
+		fmt.Fprintf(w, "  %s %s: %s\n", s.Path, cleanupFaint.Sprintf("(%s)", s.Branch),
+			cleanupReasonColor(cleanupPrimaryReason(s)).Sprint(cleanupSkipNote(s)))
 	}
 	if dirtyKept {
-		fmt.Fprintln(w, "dirty worktrees are kept because removing them loses uncommitted work.")
-		fmt.Fprintln(w, "  inspect: git -C <path> status   force (destructive): --discard-dirty")
+		fmt.Fprintln(w, cleanupFaint.Sprint("dirty worktrees are kept because removing them loses uncommitted work."))
+		fmt.Fprintf(w, "  inspect: git -C <path> status   force %s: --discard-dirty\n", cleanupFailColor.Sprint("(destructive)"))
 	}
 }
 

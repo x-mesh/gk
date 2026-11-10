@@ -4263,7 +4263,7 @@ EOF
 
 | Gate | Source | Behaviour |
 |------|--------|-----------|
-| Secret scan | `internal/secrets` + the gitleaks ruleset built into gk, on the commit payload only. If the repo has a gitleaks config, `gitleaks dir` runs instead of the built-in ruleset, and only findings in payload files count. | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
+| Secret scan | `internal/secrets` + the gitleaks ruleset built into gk, on the commit payload only. If the repo has a gitleaks config (`.gitleaks.toml`, `.gitleaksignore`, `GITLEAKS_CONFIG`, or `GITLEAKS_CONFIG_TOML`), `gitleaks dir` scans a temp copy of the payload files with the repo's config and ignore file instead. If gitleaks is not installed, the built-in ruleset scans. | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
 | Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
 | Noise guard | built-in path patterns | Build output / deps / caches / local DBs (`node_modules/`, `__pycache__/`, `.venv/`, `*.pyc`, `*.db`, `.DS_Store`, …) are excluded from the AI scope; on a TTY gk offers to add them to `.gitignore`. Opt out with `--include-noise` |
 | Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |

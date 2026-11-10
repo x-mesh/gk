@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -341,5 +344,42 @@ func TestRunAICommitPlanTemplate_Empty(t *testing.T) {
 	}
 	if len(tpl.Commits) != 0 {
 		t.Fatalf("clean tree should emit an empty plan, got %+v", tpl)
+	}
+}
+
+// gk commit does not chdir to the repo root, and payload paths are relative
+// to the root. Reading them from the process directory found nothing, so a
+// commit run from a subdirectory or with --repo passed the secret gate
+// unscanned. This test runs from the package directory with --repo set.
+func TestRunAICommitPlan_SecretGateReadsFromRepoRoot(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	// Assembled at runtime so this file does not trip secret scanners.
+	repo.WriteFile("cfg/app.conf", "token = \"ghp_"+"wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx\"\n")
+	before := commitCount(t, repo)
+
+	plan := `{"schema":1,"commits":[{"message":"feat(cfg): add config","files":["cfg/app.conf"]}]}`
+	_, stderr, err := runPlan(t, repo, plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("want the secret gate to abort, got err=%v\nstderr: %s", err, stderr)
+	}
+	if got := commitCount(t, repo) - before; got != 0 {
+		t.Fatalf("created %d commit(s), want 0", got)
+	}
+}
+
+func TestSummariseForSecretScan_ReadsFromRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "top.env"), []byte("token = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(root, "sub"))
+	payload := summariseForSecretScan(root, []aicommit.FileChange{{Path: "top.env"}})
+	if !strings.Contains(payload, "token = x") {
+		t.Fatalf("payload = %q, want top.env read from the repo root", payload)
 	}
 }

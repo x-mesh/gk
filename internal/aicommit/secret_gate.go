@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -31,11 +32,13 @@ type SecretFinding struct {
 // (matches internal/secrets.Scan's second arg). AllowKinds suppresses
 // findings whose Kind matches — used by `--allow-secret-kind` on the
 // CLI. RunGitleaks gates the second scan with the gitleaks ruleset;
-// default true.
+// default true. RepoDir is the repo root, where a gitleaks config is looked
+// up; payload paths are relative to it.
 type SecretGateOptions struct {
 	ExtraPatterns []*regexp.Regexp
 	AllowKinds    []string
 	RunGitleaks   bool
+	RepoDir       string
 }
 
 // Gitleaks lets tests inject a fake runner. When nil the payload is scanned
@@ -49,38 +52,59 @@ type Gitleaks interface {
 // gitleaks config (.gitleaks.toml, .gitleaksignore, GITLEAKS_CONFIG*) gets
 // the gitleaks binary, so its custom rules and ignores apply; every other
 // repo gets the embedded ruleset, which needs no binary.
-func defaultGitleaks(payload string) Gitleaks {
-	if scan.HasGitleaksConfig("") {
-		return configuredGitleaks{payload: payload}
+func defaultGitleaks(payload, repoDir string) Gitleaks {
+	if scan.HasGitleaksConfig(repoDir) {
+		return configuredGitleaks{payload: payload, repoDir: repoDir}
 	}
 	return embeddedGitleaks{payload: payload}
 }
 
-// configuredGitleaks runs `gitleaks dir` in the working directory, where it
-// reads the repo's config, and keeps only findings in payload files: a
-// secret in a file the commit does not touch must not block it. Without the
-// binary it falls back to the embedded ruleset.
-type configuredGitleaks struct{ payload string }
+// configuredGitleaks writes the payload files into a temp directory and runs
+// `gitleaks dir` there, so gitleaks scans exactly what the commit adds, not
+// the process working directory (gk commit does not chdir to the repo root).
+// The repo's config and ignore file are passed explicitly; reported paths
+// stay repo-relative, so .gitleaksignore fingerprints still match. Without
+// the binary it falls back to the embedded ruleset.
+type configuredGitleaks struct{ payload, repoDir string }
 
 func (c configuredGitleaks) Run(ctx context.Context) ([]scan.GitleaksFinding, error) {
-	findings, err := scan.RunGitleaks(ctx, scan.GitleaksOptions{Mode: "dir", Redact: true})
-	if errors.Is(err, scan.ErrGitleaksNotInstalled) {
-		return embeddedGitleaks(c).Run(ctx)
+	if _, _, ok := scan.FindGitleaks(); !ok {
+		return embeddedGitleaks{payload: c.payload}.Run(ctx)
 	}
+	tmp, err := os.MkdirTemp("", "gk-secret-gate-*")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("payload dir: %w", err)
 	}
-	inPayload := map[string]bool{}
+	defer func() { _ = os.RemoveAll(tmp) }()
 	for _, f := range splitPayload(c.payload) {
-		inPayload[filepath.ToSlash(filepath.Clean(f.path))] = true
-	}
-	var out []scan.GitleaksFinding
-	for _, f := range findings {
-		if inPayload[filepath.ToSlash(filepath.Clean(f.File))] {
-			out = append(out, f)
+		if !filepath.IsLocal(f.path) {
+			return nil, fmt.Errorf("payload path %q is outside the repo", f.path)
+		}
+		dst := filepath.Join(tmp, f.path)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(dst, []byte(f.content), 0o600); err != nil {
+			return nil, err
 		}
 	}
-	return out, nil
+
+	var args []string
+	// gitleaks prefers GITLEAKS_CONFIG* over the repo file; --config would
+	// override that, so it is passed only when the repo file is the source.
+	envConfig := os.Getenv("GITLEAKS_CONFIG") != "" || os.Getenv("GITLEAKS_CONFIG_TOML") != ""
+	if cfg := filepath.Join(c.repoDir, ".gitleaks.toml"); !envConfig && fileExists(cfg) {
+		args = append(args, "--config", cfg)
+	}
+	if fileExists(filepath.Join(c.repoDir, ".gitleaksignore")) {
+		args = append(args, "--gitleaks-ignore-path", c.repoDir)
+	}
+	return scan.RunGitleaks(ctx, scan.GitleaksOptions{WorkDir: tmp, Mode: "dir", Redact: true, ExtraArgs: args})
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // embeddedGitleaks scans each file of the payload with the embedded gitleaks
@@ -162,7 +186,7 @@ func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl
 
 	if opts.RunGitleaks {
 		if gl == nil {
-			gl = defaultGitleaks(payload)
+			gl = defaultGitleaks(payload, opts.RepoDir)
 		}
 		gf, err := gl.Run(ctx)
 		switch {

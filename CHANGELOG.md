@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk guard check` no longer reports `no violations` when gitleaks fails. gitleaks 8.30.1 on macOS rejected `--report-path /dev/stdout` and exited 1, and gk read that exit code as "findings" with an empty report. The scan never ran, but the result said the history was clean. gk now gives gitleaks a temp report file and a separate exit code for findings, so a gitleaks failure is an error.
+- The `gk commit` secret gate now reads the payload files from the repository root. Before, it read the root-relative paths from the current directory, so a commit run from a subdirectory or with `--repo` passed the gate without any file being scanned.
 
 ### Added
 
@@ -22,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `pre-commit` hook from `gk hooks install --pre-commit` now runs `gk guard check --staged`. Before, it ran a full scan on each commit, so a secret in an old commit stopped every new commit. Run `gk hooks install --pre-commit` again to update an installed hook.
 - `gk guard check` scans with the gitleaks ruleset that is built into gk, also when gitleaks is installed. The history scan now covers all refs with the same `git log` options as `gitleaks git`. On the gk repository (1,091 commits) it reports the same 28 findings as gitleaks 8.30.1 in about 0.6 s on 16 cores and 1.1 s on 4 cores, against 2.7 s for gitleaks. To get there, git diffs the commits in parallel chunks, each chunk is scanned when its diff arrives, large files are split across CPU cores, and the keyword prefilter finds all rule keywords in one pass. If the repository has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` is set, gk runs gitleaks instead, because the built-in ruleset does not read these files.
 - The built-in ruleset now skips a line that contains `gitleaks:allow`, as gitleaks does.
-- The `gk commit` secret gate counts only findings in the commit payload. Before, it ran `gitleaks dir` on the whole working directory. After the fix above, that run would stop every commit when a file outside the commit, such as a test fixture, contained a secret pattern. The gate scans the payload with the built-in gitleaks ruleset. If the repo has a gitleaks config, it runs `gitleaks dir` so that custom rules and `.gitleaksignore` apply, and then drops findings outside the payload.
+- The `gk commit` secret gate counts only findings in the commit payload. Before, it ran `gitleaks dir` on the whole working directory. After the fix above, that run would stop every commit when a file outside the commit, such as a test fixture, contained a secret pattern. The gate scans the payload with the built-in gitleaks ruleset. If the repo has a gitleaks config, `gitleaks dir` scans a temp copy of the payload files with the repo's config and `.gitleaksignore`.
 
 ## [0.153.0] - 2026-11-09
 

@@ -314,10 +314,11 @@ func runAICommit(cmd *cobra.Command, args []string) error {
 	// beat on large diffs; show a spinner so the user knows gk is
 	// actively guarding the payload rather than hung.
 	stopGate := ui.StartBubbleSpinner("scanning payload for secrets...")
-	payload := summariseForSecretScan(files)
+	payload := summariseForSecretScan(runner.Dir, files)
 	findings, err := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,
+		RepoDir:     runner.Dir,
 	}, nil)
 	stopGate()
 	if err != nil {
@@ -1063,8 +1064,10 @@ func applyAICommitFlagsToConfig(ai config.AIConfig, f aiCommitFlags) config.AICo
 // summariseForSecretScan builds the text blob the secret gate runs on.
 // We prefer file content over diff here — diffs include context lines
 // and hunk headers that inflate false positives, while whole-file
-// snapshots map 1:1 to what users see.
-func summariseForSecretScan(files []aicommit.FileChange) string {
+// snapshots map 1:1 to what users see. File paths are relative to root,
+// the repo root: gk commit does not chdir there, so reading them from the
+// process directory missed every file under a subdirectory run or --repo.
+func summariseForSecretScan(root string, files []aicommit.FileChange) string {
 	var b strings.Builder
 	for _, f := range files {
 		if f.DeniedBy != "" || f.IsBinary {
@@ -1076,7 +1079,7 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 		if isTestFile(f.Path) {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Clean(f.Path))
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f.Path)))
 		if err != nil {
 			continue
 		}

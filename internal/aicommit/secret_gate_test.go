@@ -140,54 +140,104 @@ func TestScanPayloadDefaultScansPayloadOnly(t *testing.T) {
 	}
 }
 
-// installFakeGitleaks puts a gitleaks script first on PATH that writes
-// report as its JSON report and exits with the findings code it was given.
-func installFakeGitleaks(t *testing.T, report string) {
+// installFakeGitleaks puts a gitleaks script first on PATH. It reports one
+// "custom-rule" finding at line 1 of every file under its working directory
+// and appends its arguments and working directory to the returned log file.
+func installFakeGitleaks(t *testing.T) (logPath string) {
 	t.Helper()
 	dir := t.TempDir()
+	logPath = filepath.Join(dir, "calls.log")
 	script := "#!/bin/sh\n" +
 		"[ \"$1\" = version ] && { echo 8.30.1; exit 0; }\n" +
+		"echo \"cwd=$(pwd -P) args=$*\" >> '" + logPath + "'\n" +
 		"out=''; code=1\n" +
 		"while [ $# -gt 0 ]; do case \"$1\" in --report-path) out=$2; shift;; --exit-code) code=$2; shift;; esac; shift; done\n" +
-		"printf '%s' '" + report + "' > \"$out\"; exit \"$code\"\n"
+		"json='['; sep=''\n" +
+		"for f in $(find . -type f | sed 's|^\\./||' | sort); do json=\"$json$sep{\\\"RuleID\\\":\\\"custom-rule\\\",\\\"File\\\":\\\"$f\\\",\\\"StartLine\\\":1}\"; sep=','; done\n" +
+		"printf '%s]' \"$json\" > \"$out\"\n" +
+		"[ \"$sep\" = ',' ] && exit \"$code\"; exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "gitleaks"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
 }
 
-func chdirWithGitleaksConfig(t *testing.T) {
+// repoWithGitleaksConfig returns a repo root holding .gitleaks.toml,
+// .gitleaksignore, and a file that is not part of any payload.
+func repoWithGitleaksConfig(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".gitleaks.toml"), []byte("[extend]\nuseDefault = true\n"), 0o644); err != nil {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(dir)
+	for name, body := range map[string]string{
+		".gitleaks.toml":  "[extend]\nuseDefault = true\n",
+		".gitleaksignore": "",
+		"other.env":       "corp = internal\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
 }
 
-// A repo with a gitleaks config gets gitleaks, so its custom rules and
-// .gitleaksignore apply; findings outside the payload are dropped.
-func TestScanPayloadDefaultUsesGitleaksWhenRepoHasConfig(t *testing.T) {
-	chdirWithGitleaksConfig(t)
-	installFakeGitleaks(t, `[{"RuleID":"custom-rule","File":"in.env","StartLine":2},{"RuleID":"custom-rule","File":"other.env","StartLine":1}]`)
-	payload := secrets.PayloadFileHeader("in.env") + "\nname = x\ncorp = internal\n"
-	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true}, nil)
+// With a gitleaks config, gitleaks scans the payload files themselves, with
+// the repo's config and ignore file, wherever the process runs: gk commit
+// does not chdir to the repo root.
+func TestScanPayloadConfiguredScansPayloadNotCwd(t *testing.T) {
+	t.Setenv("GITLEAKS_CONFIG", "")
+	t.Setenv("GITLEAKS_CONFIG_TOML", "")
+	root := repoWithGitleaksConfig(t)
+	t.Chdir(t.TempDir())
+	log := installFakeGitleaks(t)
+	payload := secrets.PayloadFileHeader("sub/in.env") + "\ncorp = internal\n"
+	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true, RepoDir: root}, nil)
 	if err != nil {
 		t.Fatalf("ScanPayload: %v", err)
 	}
-	if len(got) != 1 || got[0].Kind != "custom-rule" || got[0].File != "in.env" || got[0].Line != 2 {
-		t.Fatalf("findings = %+v, want only the custom rule hit in in.env", got)
+	if len(got) != 1 || got[0].Kind != "custom-rule" || got[0].File != "sub/in.env" || got[0].Line != 1 {
+		t.Fatalf("findings = %+v, want only the payload file sub/in.env", got)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--config " + filepath.Join(root, ".gitleaks.toml"),
+		"--gitleaks-ignore-path " + root,
+	} {
+		if !strings.Contains(string(calls), want) {
+			t.Errorf("gitleaks call %q lacks %q", calls, want)
+		}
+	}
+}
+
+// GITLEAKS_CONFIG takes precedence over the repo file in gitleaks itself, so
+// gk must not override it with --config.
+func TestScanPayloadConfiguredKeepsEnvConfig(t *testing.T) {
+	root := repoWithGitleaksConfig(t)
+	t.Setenv("GITLEAKS_CONFIG", "/elsewhere/gitleaks.toml")
+	log := installFakeGitleaks(t)
+	payload := secrets.PayloadFileHeader("in.env") + "\nx\n"
+	if _, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true, RepoDir: root}, nil); err != nil {
+		t.Fatalf("ScanPayload: %v", err)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "--config") {
+		t.Errorf("gitleaks call %q must leave GITLEAKS_CONFIG in charge", calls)
 	}
 }
 
 // Without the gitleaks binary the config cannot be honored; the embedded
 // ruleset still scans the payload instead of skipping it.
 func TestScanPayloadConfigWithoutGitleaksUsesEmbedded(t *testing.T) {
-	chdirWithGitleaksConfig(t)
+	root := repoWithGitleaksConfig(t)
 	t.Setenv("PATH", t.TempDir())
 	pat := "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
 	payload := secrets.PayloadFileHeader("cfg/app.env") + "\ntoken = \"" + pat + "\"\n"
-	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true}, nil)
+	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true, RepoDir: root}, nil)
 	if err != nil {
 		t.Fatalf("ScanPayload: %v", err)
 	}
@@ -197,6 +247,18 @@ func TestScanPayloadConfigWithoutGitleaksUsesEmbedded(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(kinds, ","), "gitleaks:github-pat") {
 		t.Fatalf("findings = %v, want the embedded github-pat hit", kinds)
+	}
+}
+
+// A payload path that escapes the temp directory must not be written there.
+func TestScanPayloadConfiguredRejectsEscapingPath(t *testing.T) {
+	t.Setenv("GITLEAKS_CONFIG", "")
+	t.Setenv("GITLEAKS_CONFIG_TOML", "")
+	root := repoWithGitleaksConfig(t)
+	installFakeGitleaks(t)
+	payload := secrets.PayloadFileHeader("../escape.env") + "\nx\n"
+	if _, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true, RepoDir: root}, nil); err == nil {
+		t.Fatal("want an error for a payload path outside the repo")
 	}
 }
 

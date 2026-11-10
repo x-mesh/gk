@@ -23,7 +23,7 @@
 - **드라이런 병합.** `gk precheck <target>`은 `git merge-tree`를 돌려 작업 트리를 건드리지 않고 충돌 경로를 보고합니다. CI는 충돌 시 exit 3을 받습니다.
 - **로컬 우선 rebase.** `gk sync`는 네트워크를 건드리지 않고 로컬 `<base>` 위로 현재 브랜치를 rebase합니다. 네트워크까지 같이 돌리고 싶으면 `gk sync --fetch` 한 번이면 끝납니다. 로컬 `<base>`가 `<remote>/<base>`보다 뒤처져 있으면 stale-base 힌트가 뜹니다.
 - **분기된 pull 안전망.** 히스토리가 분기된 상태에서 `gk pull`은 로컬 SHA를 조용히 덮어쓰지 않고 멈춰서 묻습니다. 선택지는 `--rebase`, `--merge`, `--fetch-only`이고, `pull.strategy` 설정(또는 직접 플래그)으로 게이트를 우회할 수 있습니다. 히스토리를 다시 쓰는 모든 작업은 먼저 `refs/gk/backup/<branch>/<ts>` ref를 남깁니다.
-- **Conventional Commits 인식 훅.** `gk hooks install`은 `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, `pre-commit` → `gk guard check`를 연결합니다. 관리되는 훅에는 마커가 있어 재설치는 idempotent하고, 외부 훅은 `--force` 없이는 덮어쓰지 않습니다.
+- **Conventional Commits 인식 훅.** `gk hooks install`은 `commit-msg` → `gk lint-commit`, `pre-push` → `gk preflight`, `pre-commit` → `gk guard check --staged`를 연결합니다. 관리되는 훅에는 마커가 있어 재설치는 idempotent하고, 외부 훅은 `--force` 없이는 덮어쓰지 않습니다.
 - **한눈에 보는 상태.** `gk doctor`는 git 버전, pager, `$EDITOR`, 설정 유효성, 훅 상태, gitleaks 설치 여부, gk 백업 ref 누적에 대해 PASS/WARN/FAIL을 보고합니다. WARN/FAIL 줄마다 복사해 붙여넣을 수 있는 수정 명령이 같이 출력되며, `--ai` 또는 `--verbose`를 붙이면 옵셔널 AI 통합 항목도 함께 진단합니다.
 - **설치 방식과 무관한 self-update.** `gk update`는 현재 실행 중인 바이너리 경로를 보고 Homebrew, `install.sh`, `go install` 중 어떤 경로로 깔렸는지 판단해 알맞게 분기합니다. brew면 `brew upgrade x-mesh/tap/gk`로 위임(바이너리가 Caskroom 아래라면 `--cask`까지 자동으로 붙입니다 — tap이 v0.55부터 formula→cask로 옮겨졌기 때문), manual이면 릴리즈에서 `gk_<os>_<arch>.tar.gz`를 받아 `checksums.txt`로 sha256을 검증한 뒤 같은 디렉토리에서 atomic rename(`/usr/local/bin`처럼 권한이 부족하면 sudo로 escalate, 이전 바이너리는 `.bak`으로 백업), go-install이면 `go install …@latest` 명령을 출력해 줍니다. `gk update --check`는 다운로드 없이 비교만 하고 새 버전이 있으면 exit 1을 반환해 cron/CI에서 게이트로 쓸 수 있습니다.
 - **history에서 경로 제거.** 실수로 커밋한 DB 덤프나 시크릿 파일을 history까지 지우고 싶을 때, `.gitignore`에 경로만 추가하고 `gk forget` 한 번이면 됩니다. tracked-but-ignored 파일을 자동 감지해 `git filter-repo`(deprecated `filter-branch`의 후속)에 넘기고, rewrite 전에 backup ref와 평문 manifest를 남겨 `git update-ref --stdin`로 되돌릴 수 있게 합니다. 명시적 경로(`gk forget db/ secrets.json`)도 받고, `--dry-run`은 영향받는 커밋 수만 보여줍니다.
@@ -234,7 +234,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 | `gk update [--check] [--force] [--to <vX.Y.Z>]` | self-update. `os.Executable()` 결과로 brew / `install.sh` / `go install`을 구분해 분기합니다. brew → `brew upgrade x-mesh/tap/gk` 위임(바이너리가 Caskroom 아래라면 `--cask` 자동 추가 — v0.55부터 tap이 formula→cask로 이전됨); manual → 릴리즈에서 `gk_<os>_<arch>.tar.gz` 받아 `checksums.txt`로 검증 후 atomic rename(필요 시 sudo escalate, 이전 바이너리는 `.bak` 백업); go-install → `go install …@latest` 명령 출력. `--check`는 다운로드 없이 비교만 (새 버전 있으면 exit 1), `--to`는 manual 설치에서 특정 태그 핀 |
 | `gk init [--only <target>] [--kiro] [--ai-gitignore] [--force]` | 프로젝트 분석 후 `.gitignore`와 `.gk.yaml`을 한 번에 스캐폴드. `--only gitignore\|config\|ai`로 범위 제한; `--kiro`는 `.kiro/steering/` 작성; `--ai-gitignore`는 확인 후 설정된 AI provider에 추가 ignore 패턴을 요청. 인터랙티브 huh 폼이 로컬 플랜을 미리 보여줌 |
 | `gk config init [--force] [--out <path>]` | `$XDG_CONFIG_HOME/gk/config.yaml`에 주석 달린 YAML 템플릿 스캐폴드 (첫 `gk` 실행 시 자동 생성; `GK_NO_AUTO_CONFIG=1`로 비활성화). `gk init config` 별칭은 호환용으로 유지 |
-| `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | `.git/hooks/` 아래 gk 관리 훅 심 설치 (`--pre-commit`은 `gk guard check` 연결) |
+| `gk hooks install [--commit-msg\|--pre-push\|--pre-commit\|--all] [--force]` | `.git/hooks/` 아래 gk 관리 훅 심 설치 (`--pre-commit`은 `gk guard check --staged` 연결) |
 | `gk hooks uninstall [...]` | gk 관리 훅 제거 (외부 훅은 삭제 거부) |
 | `gk config show` | 완전히 해석된 설정을 YAML로 출력 |
 | `gk config get <key>` | 점 경로로 단일 설정 값 출력 |
@@ -353,7 +353,7 @@ ai:
 
 ### 안전 장치
 
-- **Secret gate.** `internal/secrets.Scan`과 `gitleaks`(설치돼 있으면)가 payload를 함께 훑습니다. 하나라도 걸리면 `--force` 여부와 상관없이 abort합니다. 특정 종류만 이번 실행에서 무시하려면 `--allow-secret-kind <kind>`. 전부 우회해야 한다면 `--allow-secret-kind all`이나 `-n/--no-verify` — 단 검출 내용은 stderr에 보고된 뒤 그대로 git 기록에 들어가므로, 실제 자격증명이면 즉시 폐기·재발급해야 합니다. 원격 AI로 보내는 payload의 redaction은 항상 유지되며, `-n`은 아래 privacy gate의 abort 임계값까지 함께 끕니다.
+- **Secret gate.** `internal/secrets.Scan`과 gk에 내장된 gitleaks 규칙이 payload를 함께 훑습니다. 하나라도 걸리면 `--force` 여부와 상관없이 abort합니다. 특정 종류만 이번 실행에서 무시하려면 `--allow-secret-kind <kind>`. 전부 우회해야 한다면 `--allow-secret-kind all`이나 `-n/--no-verify` — 단 검출 내용은 stderr에 보고된 뒤 그대로 git 기록에 들어가므로, 실제 자격증명이면 즉시 폐기·재발급해야 합니다. 원격 AI로 보내는 payload의 redaction은 항상 유지되며, `-n`은 아래 privacy gate의 abort 임계값까지 함께 끕니다.
 - **Privacy gate.** remote provider(`Locality=remote`)로 나가는 payload는 자동으로 정리됩니다. secret, `deny_paths` 매치, 민감 패턴이 `[SECRET_1]`, `[PATH_1]` 같은 토큰으로 치환되고, 한 payload에서 10개를 넘게 감지하면 abort합니다(`ai.commit.privacy.max_secrets`로 조정하거나 `--skip-privacy`로 임계값만 우회 — `-n`/`--no-verify`가 이를 포함하며, 어느 쪽이든 redaction은 그대로 적용). `--show-prompt`로 redact된 payload를 확인할 수 있고, `ai.commit.audit`이 켜져 있으면 `.gk/ai-audit.jsonl`에 기록이 남습니다.
 - **Deny paths.** `.env`, 비공개 키, tfstate 같은 매칭 파일은 payload가 프로세스를 떠나기 전에 빠집니다.
 - **git-state 차단.** rebase/merge/cherry-pick이 진행 중이면 `gk commit`은 아예 실행하지 않습니다. `MERGE_MSG`를 덮어쓰지 않기 위함입니다.

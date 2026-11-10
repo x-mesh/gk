@@ -3765,6 +3765,11 @@ gk guard check [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | `false` | Emit NDJSON violations (one per line) for scripting |
+| `--staged` | `false` | Scan only the staged changes. The `pre-commit` hook uses this flag. |
+| `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
+| `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
+
+Without a flag, the scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned.
 
 #### Exit codes
 
@@ -3778,16 +3783,22 @@ gk guard check [flags]
 
 | Name | Severity | Behavior |
 |------|----------|----------|
-| `secret_patterns` | `error` | Runs `gitleaks` if it is installed and maps each finding to a Violation. If gitleaks is not installed, the rule scans with the ruleset that is built into gk. It also adds one `info` Violation that names the ruleset version. The built-in scan does not read `.gitleaks.toml`. `gk doctor` detects the binary. |
+| `secret_patterns` | `error` | Scans with the gitleaks ruleset that is built into gk. The default scope is the tracked files. `--history` uses the same `git log` options as `gitleaks git` and covers all refs. The engine follows the gitleaks detection steps. The rule adds one `info` Violation that names the ruleset version. If the repo has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` is set, the rule runs `gitleaks` instead, because the built-in scan does not read these files: `gitleaks dir` for the default scope, `gitleaks git --staged` for `--staged`, and `gitleaks git` for `--history`. `gitleaks dir` also reads untracked files. If gitleaks is not installed in that case, the rule uses the built-in scan. `gk doctor` detects the binary. |
 
 #### Examples
 
 ```bash
-# Human-readable table
+# Current content of the tracked files
 gk guard check
+
+# Full history of every local ref
+gk guard check --history
 
 # NDJSON for CI
 gk guard check --json | jq 'select(.severity == "error")'
+
+# Full history, including branches that exist only on a remote
+gk guard check --fetch
 ```
 
 ---
@@ -3813,7 +3824,7 @@ gk guard init [flags]
 
 | Name | Description |
 |------|-------------|
-| `secret_patterns` | Secret scan with gitleaks, or with the ruleset built into gk (full history or staged) |
+| `secret_patterns` | Secret scan with the ruleset built into gk, or with gitleaks (tracked files, staged changes, or full history) |
 | `max_commit_size` | Reject commits above a line / file count threshold |
 | `required_trailers` | Enforce git trailers (Signed-off-by, Jira-Ticket, …) |
 | `forbid_force_push_to` | Block force-pushes to protected branches (pre-push hook) |
@@ -4252,7 +4263,7 @@ EOF
 
 | Gate | Source | Behaviour |
 |------|--------|-----------|
-| Secret scan | `internal/secrets` + `gitleaks` (when installed) | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
+| Secret scan | `internal/secrets` + the gitleaks ruleset built into gk, on the commit payload only | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
 | Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
 | Noise guard | built-in path patterns | Build output / deps / caches / local DBs (`node_modules/`, `__pycache__/`, `.venv/`, `*.pyc`, `*.db`, `.DS_Store`, …) are excluded from the AI scope; on a TTY gk offers to add them to `.gitignore`. Opt out with `--include-noise` |
 | Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |
@@ -4690,7 +4701,7 @@ gk hooks install [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--pre-commit` | `false` | Install the `pre-commit` hook → `gk guard check` |
+| `--pre-commit` | `false` | Install the `pre-commit` hook → `gk guard check --staged` |
 | `--commit-msg` | `false` | Install the `commit-msg` hook → `gk lint-commit` |
 | `--pre-push` | `false` | Install the `pre-push` hook → `gk preflight` |
 | `--all` | `false` | Install every hook gk knows about |
@@ -4700,7 +4711,7 @@ gk hooks install [flags]
 
 | Hook | Invokes | Purpose |
 |------|---------|---------|
-| `pre-commit` | `gk guard check` | Policy rules: secrets, size, trailers |
+| `pre-commit` | `gk guard check --staged` | Policy rules on the staged changes: secrets, size, trailers |
 | `commit-msg` | `gk lint-commit --file "$1"` | Conventional Commits linting |
 | `pre-push` | `gk preflight` | Configured preflight sequence |
 

@@ -480,18 +480,17 @@ func statusMarker(s doctorStatus) string {
 	return "? ????"
 }
 
-// checkGitleaks detects the `gitleaks` binary and its version. gitleaks is
-// the industry-standard secret scanner; when present, gk guard (v0.9+) uses
-// it as the default `secret_patterns` rule evaluator. When missing, gk
-// scans with the gitleaks ruleset embedded in the binary, which does not
-// read .gitleaks.toml. This is a WARN, not FAIL, so doctor does not block CI
-// when gitleaks happens to be absent.
+// checkGitleaks detects the `gitleaks` binary and its version. gk guard
+// scans with the gitleaks ruleset embedded in the binary and runs gitleaks
+// only when the repo has .gitleaks.toml or .gitleaksignore, which the
+// embedded ruleset does not read. This is a WARN, not FAIL, so doctor does
+// not block CI when gitleaks happens to be absent.
 func checkGitleaks() doctorCheck {
 	path, err := exec.LookPath("gitleaks")
 	if err != nil {
 		return doctorCheck{
 			Name: "gitleaks", Status: statusWarn,
-			Detail: "not installed — gk guard will scan with the gitleaks ruleset built into gk (.gitleaks.toml is not read)",
+			Detail: "not installed — gk guard scans with the gitleaks ruleset built into gk; .gitleaks.toml and .gitleaksignore need gitleaks",
 			Fix:    "brew install gitleaks  # or: go install github.com/gitleaks/gitleaks/v8@latest",
 		}
 	}

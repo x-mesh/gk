@@ -32,7 +32,7 @@ func knownHooks() []hookSpec {
 		{
 			Name:        "pre-commit",
 			Description: "run gk guard policy rules (secret scan, …) before every commit",
-			Script:      `exec gk guard check`,
+			Script:      `exec gk guard check --staged`,
 		},
 		{
 			Name:        "commit-msg",
@@ -53,7 +53,7 @@ func init() {
 		Short: "Manage git hook shims that invoke gk",
 		Long: `Install or remove shim scripts under .git/hooks/ that invoke gk.
 
-  pre-commit  → gk guard check   (policy rules: secrets, size, …)
+  pre-commit  → gk guard check --staged   (policy rules on the staged changes)
   commit-msg  → gk lint-commit   (Conventional Commits linting)
   pre-push    → gk preflight     (configurable preflight sequence)
 
@@ -67,7 +67,7 @@ timestamped .bak backup).`,
 		Short: "Write shim scripts into .git/hooks/",
 		RunE:  runHooksInstall,
 	}
-	install.Flags().Bool("pre-commit", false, "install the pre-commit hook (gk guard check)")
+	install.Flags().Bool("pre-commit", false, "install the pre-commit hook (gk guard check --staged)")
 	install.Flags().Bool("commit-msg", false, "install the commit-msg hook")
 	install.Flags().Bool("pre-push", false, "install the pre-push hook")
 	install.Flags().Bool("all", false, "install every hook gk knows about")

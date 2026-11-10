@@ -10,6 +10,7 @@ import (
 
 	"github.com/x-mesh/gk/internal/scan"
 	"github.com/x-mesh/gk/internal/secrets"
+	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 )
 
 // SecretFinding is one hit from the secret gate. Source names which
@@ -28,7 +29,7 @@ type SecretFinding struct {
 // ExtraPatterns adds repo-configured regexes to the built-in scanner
 // (matches internal/secrets.Scan's second arg). AllowKinds suppresses
 // findings whose Kind matches — used by `--allow-secret-kind` on the
-// CLI. RunGitleaks gates whether to spawn gitleaks (when installed);
+// CLI. RunGitleaks gates the second scan with the gitleaks ruleset;
 // default true.
 type SecretGateOptions struct {
 	ExtraPatterns []*regexp.Regexp
@@ -36,24 +37,62 @@ type SecretGateOptions struct {
 	RunGitleaks   bool
 }
 
-// Gitleaks lets tests inject a fake runner. When nil the real
-// scan.RunGitleaks (subprocess) is used.
+// Gitleaks lets tests inject a fake runner. When nil the payload is scanned
+// with the gitleaks ruleset embedded in gk.
 type Gitleaks interface {
 	Run(ctx context.Context) ([]scan.GitleaksFinding, error)
 }
 
-// realGitleaks invokes the actual gitleaks binary on the process cwd
-// in "dir" mode (stage-agnostic) so unstaged + staged files are both
-// covered. `git` mode would miss unstaged changes.
-type realGitleaks struct{}
+// embeddedGitleaks scans each file of the payload with the embedded gitleaks
+// ruleset. It replaced a `gitleaks dir` run over the working directory, which
+// blocked commits on files outside the payload, including the test files the
+// payload deliberately leaves out.
+type embeddedGitleaks struct{ payload string }
 
-func (realGitleaks) Run(ctx context.Context) ([]scan.GitleaksFinding, error) {
-	return scan.RunGitleaks(ctx, scan.GitleaksOptions{Mode: "dir", Redact: true})
+func (e embeddedGitleaks) Run(context.Context) ([]scan.GitleaksFinding, error) {
+	var out []scan.GitleaksFinding
+	for _, f := range splitPayload(e.payload) {
+		for _, hit := range gitleaksrules.ScanFile(f.path, f.content) {
+			out = append(out, scan.GitleaksFinding{
+				RuleID:    hit.Kind,
+				File:      hit.File,
+				StartLine: hit.FileLine,
+				Match:     hit.Sample,
+			})
+		}
+	}
+	return out, nil
+}
+
+type payloadFile struct{ path, content string }
+
+// splitPayload cuts a payload at its secrets.PayloadFileHeader lines. Text
+// before the first header has no file and is left to the built-in scanner.
+func splitPayload(payload string) []payloadFile {
+	var files []payloadFile
+	var body strings.Builder
+	flush := func() {
+		if len(files) > 0 {
+			files[len(files)-1].content = body.String()
+		}
+		body.Reset()
+	}
+	for line := range strings.SplitSeq(payload, "\n") {
+		if m := secrets.PayloadFileHeaderRE.FindStringSubmatch(line); m != nil {
+			flush()
+			files = append(files, payloadFile{path: m[1]})
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	flush()
+	return files
 }
 
 // ScanPayload runs both scanners over the supplied text (usually the
-// aggregated diff) and returns deduplicated SecretFindings. Errors
-// from gitleaks not being installed are swallowed silently — the
+// aggregated diff) and returns deduplicated SecretFindings. An injected
+// Gitleaks reporting ErrGitleaksNotInstalled is skipped silently — the
 // built-in scanner is always the baseline.
 func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl Gitleaks) ([]SecretFinding, error) {
 	allow := map[string]bool{}
@@ -80,7 +119,7 @@ func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl
 
 	if opts.RunGitleaks {
 		if gl == nil {
-			gl = realGitleaks{}
+			gl = embeddedGitleaks{payload: payload}
 		}
 		gf, err := gl.Run(ctx)
 		switch {

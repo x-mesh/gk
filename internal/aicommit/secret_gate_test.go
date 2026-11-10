@@ -111,3 +111,28 @@ func TestScanPayloadMarkdownHeadingNotMistakenForFile(t *testing.T) {
 		t.Errorf("file: want README.md, got %q (markdown H3 leaked in)", got[0].File)
 	}
 }
+
+// The default gitleaks-ruleset scan covers only the payload. It used to run
+// `gitleaks dir` over the whole working directory, which reported files the
+// commit does not touch (here: this package's own test fixtures).
+func TestScanPayloadDefaultScansPayloadOnly(t *testing.T) {
+	pat := "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
+	payload := secrets.PayloadFileHeader("cfg/app.env") + "\n# creds\nname = x\ntoken = \"" + pat + "\"\n"
+	got, err := ScanPayload(context.Background(), payload, SecretGateOptions{RunGitleaks: true}, nil)
+	if err != nil {
+		t.Fatalf("ScanPayload: %v", err)
+	}
+	var fromRuleset []SecretFinding
+	for _, f := range got {
+		if f.Source == "gitleaks" {
+			fromRuleset = append(fromRuleset, f)
+		}
+	}
+	if len(fromRuleset) != 1 {
+		t.Fatalf("gitleaks-ruleset findings = %+v, want exactly the payload secret", fromRuleset)
+	}
+	f := fromRuleset[0]
+	if f.Kind != "github-pat" || f.File != "cfg/app.env" || f.Line != 3 {
+		t.Errorf("finding = %+v, want github-pat at cfg/app.env:3", f)
+	}
+}

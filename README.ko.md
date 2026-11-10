@@ -130,7 +130,9 @@ gk timemachine restore <sha> # 안전 리셋 — 먼저 백업 ref 기록
 
 # 정책
 gk guard init        # .gk.yaml에 주석 처리된 정책 스텁 생성
-gk guard check       # 모든 정책 규칙 평가; exit 0/1/2
+gk guard check       # 추적 파일에 모든 정책 규칙 평가; exit 0/1/2
+gk guard check --history   # 모든 ref에서 닿는 커밋 전체 검사
+gk guard check --fetch     # 모든 원격을 받은 뒤 히스토리 검사
 
 # 온보딩
 gk doctor            # 환경 상태 보고 + 수정 명령
@@ -194,7 +196,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 
 | 명령어 | 설명 |
 |---|---|
-| `gk guard check` | 모든 정책 규칙을 병렬로 평가; human 또는 `--json` 출력; exit 0 clean / 1 warn / 2 error |
+| `gk guard check` | 모든 정책 규칙을 병렬로 평가; human 또는 `--json` 출력; exit 0 clean / 1 warn / 2 error. 기본은 추적 파일 검사이고, `--staged`는 스테이징된 변경, `--history`는 모든 ref에서 닿는 커밋 전체, `--fetch`는 모든 원격을 먼저 받고 `--history`를 포함합니다 |
 | `gk guard init` | 완전히 주석 처리된 `policies:` 블록으로 `.gk.yaml` 스캐폴드; `--force` 덮어쓰기, `--out` 경로 지정 |
 
 ### 복구

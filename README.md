@@ -153,7 +153,9 @@ gk timemachine restore <sha> # safe reset — writes backup ref first
 
 # Policies
 gk guard init        # scaffold .gk.yaml with commented policy stubs
-gk guard check       # evaluate all policy rules; exit 0/1/2
+gk guard check       # evaluate all policy rules on the tracked files; exit 0/1/2
+gk guard check --history   # scan every commit reachable from any ref
+gk guard check --fetch     # fetch every remote, then scan the history
 
 # Onboarding
 gk doctor            # report env health + fix commands
@@ -224,7 +226,7 @@ gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 ### Policies
 | Command | Description |
 |---|---|
-| `gk guard check` | Evaluate all policy rules in parallel; human or `--json` output; exit 0 clean / 1 warn / 2 error |
+| `gk guard check` | Evaluate all policy rules in parallel; human or `--json` output; exit 0 clean / 1 warn / 2 error. Scans the tracked files by default; `--staged` scans the staged changes, `--history` every commit reachable from any ref, `--fetch` fetches every remote first and implies `--history` |
 | `gk guard init` | Scaffold `.gk.yaml` with a fully-commented `policies:` block; `--force` to overwrite, `--out` for custom path |
 
 ### Recovery

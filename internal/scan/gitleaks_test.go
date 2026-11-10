@@ -3,6 +3,8 @@ package scan
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -152,5 +154,61 @@ func TestFindGitleaks_GracefullyHandlesMissing(t *testing.T) {
 		if path != "" || version != "" {
 			t.Errorf("ok=false but fields non-empty: path=%q version=%q", path, version)
 		}
+	}
+}
+
+// fakeGitleaks puts a shell script named gitleaks first on PATH. body runs
+// with $report bound to the --report-path argument and $code to --exit-code.
+func fakeGitleaks(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = version ] && { echo 8.30.1; exit 0; }\n" +
+		"report=''; code=1\n" +
+		"while [ $# -gt 0 ]; do case \"$1\" in --report-path) report=$2; shift;; --exit-code) code=$2; shift;; esac; shift; done\n" +
+		body + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "gitleaks"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// gitleaks exits 1 both on a fatal setup error and, by default, on findings.
+// 8.30.1 on macOS rejected --report-path /dev/stdout that way, and gk used to
+// read the empty output as "no findings".
+func TestRunGitleaks_FatalErrorIsNotZeroFindings(t *testing.T) {
+	fakeGitleaks(t, `echo 'FTL Report path is not writable' >&2; exit 1`)
+	findings, err := RunGitleaks(context.Background(), GitleaksOptions{WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatalf("want error, got %d findings and nil error", len(findings))
+	}
+	if !strings.Contains(err.Error(), "Report path is not writable") {
+		t.Errorf("err = %v, want the gitleaks stderr line", err)
+	}
+}
+
+func TestRunGitleaks_FindingsReadFromReportFile(t *testing.T) {
+	fakeGitleaks(t, `echo '[{"RuleID":"github-pat","File":"a.go","StartLine":3}]' > "$report"; exit "$code"`)
+	findings, err := RunGitleaks(context.Background(), GitleaksOptions{WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("RunGitleaks: %v", err)
+	}
+	if len(findings) != 1 || findings[0].RuleID != "github-pat" || findings[0].StartLine != 3 {
+		t.Fatalf("findings = %+v", findings)
+	}
+}
+
+func TestRunGitleaks_CleanRun(t *testing.T) {
+	fakeGitleaks(t, `echo '[]' > "$report"; exit 0`)
+	findings, err := RunGitleaks(context.Background(), GitleaksOptions{WorkDir: t.TempDir()})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestRunGitleaks_LeakExitWithoutReportIsError(t *testing.T) {
+	fakeGitleaks(t, `exit "$code"`)
+	if _, err := RunGitleaks(context.Background(), GitleaksOptions{WorkDir: t.TempDir()}); err == nil {
+		t.Fatal("want error when gitleaks reports leaks but writes no report")
 	}
 }

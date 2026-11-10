@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/aicommit"
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/testutil"
@@ -341,5 +344,145 @@ func TestRunAICommitPlanTemplate_Empty(t *testing.T) {
 	}
 	if len(tpl.Commits) != 0 {
 		t.Fatalf("clean tree should emit an empty plan, got %+v", tpl)
+	}
+}
+
+// gk commit does not chdir to the repo root, and payload paths are relative
+// to the root. Reading them from the process directory found nothing, so a
+// commit run from a subdirectory or with --repo passed the secret gate
+// unscanned. This test runs from the package directory with --repo set.
+func TestRunAICommitPlan_SecretGateReadsFromRepoRoot(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	// Assembled at runtime so this file does not trip secret scanners.
+	repo.WriteFile("cfg/app.conf", "token = \"ghp_"+"wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx\"\n")
+	before := commitCount(t, repo)
+
+	plan := `{"schema":1,"commits":[{"message":"feat(cfg): add config","files":["cfg/app.conf"]}]}`
+	_, stderr, err := runPlan(t, repo, plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("want the secret gate to abort, got err=%v\nstderr: %s", err, stderr)
+	}
+	if got := commitCount(t, repo) - before; got != 0 {
+		t.Fatalf("created %d commit(s), want 0", got)
+	}
+}
+
+func TestSummariseForSecretScan_ReadsFromRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "top.env"), []byte("token = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(root, "sub"))
+	payload, err := summariseForSecretScan(root, []aicommit.FileChange{{Path: "top.env"}, {Path: "deleted.env"}})
+	if err != nil {
+		t.Fatalf("summariseForSecretScan: %v", err)
+	}
+	if !strings.Contains(payload, "token = x") {
+		t.Fatalf("payload = %q, want top.env read from the repo root", payload)
+	}
+}
+
+// repoAtTrailingSpacePath moves the repo to a directory whose name ends in a
+// space and leaves a symlink at repo.Dir, so the test helpers keep working
+// while `git rev-parse --show-toplevel` reports the real path.
+func repoAtTrailingSpacePath(t *testing.T, repo *testutil.Repo) string {
+	t.Helper()
+	real := repo.Dir + "-real "
+	if err := os.Rename(repo.Dir, real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, repo.Dir); err != nil {
+		t.Fatal(err)
+	}
+	return real
+}
+
+// A repo root that ends in a space must not lose the space: the trimmed
+// path does not exist, and the gate would read no payload file.
+func TestRunAICommitPlan_SecretGateRootWithTrailingSpace(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	repo.WriteFile("app.conf", "token = \"ghp_"+"wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx\"\n")
+	real := repoAtTrailingSpacePath(t, repo)
+	if out := repo.RunGit("rev-parse", "--show-toplevel"); !strings.HasSuffix(strings.TrimSuffix(out, "\n"), " ") {
+		t.Skipf("git reported %q; cannot build a root with a trailing space here (real %q)", out, real)
+	}
+	before := commitCount(t, repo)
+
+	plan := `{"schema":1,"commits":[{"message":"feat(app): add config","files":["app.conf"]}]}`
+	_, stderr, err := runPlan(t, repo, plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("want the secret gate to abort, got err=%v\nstderr: %s", err, stderr)
+	}
+	if got := commitCount(t, repo) - before; got != 0 {
+		t.Fatalf("created %d commit(s), want 0", got)
+	}
+}
+
+func TestRootedCommitRunner_KeepsTrailingSpace(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	real := repoAtTrailingSpacePath(t, repo)
+	if out := repo.RunGit("rev-parse", "--show-toplevel"); !strings.HasSuffix(strings.TrimSuffix(out, "\n"), " ") {
+		t.Skipf("git reported %q; cannot build a root with a trailing space here (real %q)", out, real)
+	}
+	runner, err := rootedCommitRunner(context.Background(), repo.Dir)
+	if err != nil {
+		t.Fatalf("rootedCommitRunner: %v", err)
+	}
+	if !strings.HasSuffix(runner.Dir, " ") {
+		t.Fatalf("runner dir %q lost the trailing space", runner.Dir)
+	}
+	if _, err := os.Stat(runner.Dir); err != nil {
+		t.Fatalf("runner dir %q does not exist: %v", runner.Dir, err)
+	}
+}
+
+// A payload file the gate cannot read must fail the commit, not pass it.
+func TestSummariseForSecretScan_UnreadableFileFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of mode")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "locked.env")
+	if err := os.WriteFile(path, []byte("token = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := summariseForSecretScan(root, []aicommit.FileChange{{Path: "locked.env"}}); err == nil {
+		t.Fatal("want an error for an unreadable payload file")
+	}
+}
+
+// git commits a symlink as its target path, so the gate scans that text: a
+// broken link is not a deleted file. A directory (a submodule) has no
+// content to scan and must not fail the commit.
+func TestSummariseForSecretScan_SymlinkAndDirectory(t *testing.T) {
+	root := t.TempDir()
+	target := "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
+	if err := os.Symlink(target, filepath.Join(root, "broken.link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "submodule"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := summariseForSecretScan(root, []aicommit.FileChange{{Path: "broken.link"}, {Path: "submodule"}})
+	if err != nil {
+		t.Fatalf("summariseForSecretScan: %v", err)
+	}
+	if !strings.Contains(payload, target) {
+		t.Fatalf("payload = %q, want the symlink target scanned", payload)
+	}
+	if strings.Contains(payload, "submodule") {
+		t.Errorf("payload = %q, want the directory skipped", payload)
 	}
 }

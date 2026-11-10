@@ -62,6 +62,9 @@ type Input struct {
 	// (pre-push hook scenario). Rules that care about history scoping read
 	// this; otherwise they fall back to default behavior.
 	PushRange string
+	// History widens evaluation to every commit reachable from any ref.
+	// The default scope is the current content of the tracked files.
+	History bool
 }
 
 // Violation describes a single policy breach. Severity is assigned by the

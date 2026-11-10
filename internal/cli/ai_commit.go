@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -314,10 +315,15 @@ func runAICommit(cmd *cobra.Command, args []string) error {
 	// beat on large diffs; show a spinner so the user knows gk is
 	// actively guarding the payload rather than hung.
 	stopGate := ui.StartBubbleSpinner("scanning payload for secrets...")
-	payload := summariseForSecretScan(files)
+	payload, err := summariseForSecretScan(runner.Dir, files)
+	if err != nil {
+		stopGate()
+		return err
+	}
 	findings, err := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,
+		RepoDir:     runner.Dir,
 	}, nil)
 	stopGate()
 	if err != nil {
@@ -622,7 +628,8 @@ func rootedCommitRunner(ctx context.Context, repo string) (*git.ExecRunner, erro
 	if err != nil {
 		return nil, fmt.Errorf("commit: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	return &git.ExecRunner{Dir: strings.TrimSpace(string(out))}, nil
+	// Only the newline: a repo path may start or end with a space.
+	return &git.ExecRunner{Dir: strings.TrimSuffix(string(out), "\n")}, nil
 }
 
 type wipCommitForAICommit struct {
@@ -1063,8 +1070,10 @@ func applyAICommitFlagsToConfig(ai config.AIConfig, f aiCommitFlags) config.AICo
 // summariseForSecretScan builds the text blob the secret gate runs on.
 // We prefer file content over diff here — diffs include context lines
 // and hunk headers that inflate false positives, while whole-file
-// snapshots map 1:1 to what users see.
-func summariseForSecretScan(files []aicommit.FileChange) string {
+// snapshots map 1:1 to what users see. File paths are relative to root,
+// the repo root: gk commit does not chdir there, so reading them from the
+// process directory missed every file under a subdirectory run or --repo.
+func summariseForSecretScan(root string, files []aicommit.FileChange) (string, error) {
 	var b strings.Builder
 	for _, f := range files {
 		if f.DeniedBy != "" || f.IsBinary {
@@ -1076,15 +1085,43 @@ func summariseForSecretScan(files []aicommit.FileChange) string {
 		if isTestFile(f.Path) {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Clean(f.Path))
+		content, ok, err := committedContent(filepath.Join(root, filepath.FromSlash(f.Path)))
 		if err != nil {
+			// A file the gate cannot read would otherwise pass unscanned.
+			return "", fmt.Errorf("commit: secret scan: %w", err)
+		}
+		if !ok {
 			continue
 		}
 		fmt.Fprintf(&b, "%s\n", secrets.PayloadFileHeader(f.Path))
 		b.Write(content)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return b.String(), nil
+}
+
+// committedContent returns what git stores for the working-tree path:
+// the file content, or for a symlink the target path (followed, a broken
+// link would read as a deleted file and pass unscanned). ok is false for a
+// path with nothing to commit as content: a deleted file, or a directory
+// such as a submodule.
+func committedContent(path string) (content []byte, ok bool, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		return []byte(target), err == nil, err
+	case info.IsDir():
+		return nil, false, nil
+	}
+	content, err = os.ReadFile(path)
+	return content, err == nil, err
 }
 
 // isTestFile returns true for files that are test sources and may

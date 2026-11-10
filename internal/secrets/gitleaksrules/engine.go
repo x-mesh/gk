@@ -13,10 +13,12 @@ import (
 	"encoding/json"
 	"math"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/x-mesh/gk/internal/secrets"
 )
@@ -70,7 +72,7 @@ type rule struct {
 	id          string
 	regex       *regexp.Regexp
 	path        *regexp.Regexp
-	keywords    []string
+	keywordIDs  []int32
 	entropy     float64
 	secretGroup int
 	allowlists  []ruleAllow
@@ -82,6 +84,7 @@ type engine struct {
 	globalRegexes   []*regexp.Regexp
 	globalStopwords []string
 	rules           []rule
+	keywords        *keywordMatcher
 }
 
 var (
@@ -140,14 +143,24 @@ func compile(rs ruleset) *engine {
 		globalRegexes:   mustCompileAll(rs.Allowlist.Regexes),
 		globalStopwords: lowerAll(rs.Allowlist.Stopwords),
 	}
+	var words []string
+	wordID := map[string]int32{}
 	for _, jr := range rs.Rules {
 		r := rule{
 			id:          jr.ID,
 			regex:       mustCompile(jr.Regex),
 			path:        mustCompile(jr.Path),
-			keywords:    lowerAll(jr.Keywords),
 			entropy:     jr.Entropy,
 			secretGroup: jr.SecretGroup,
+		}
+		for _, kw := range lowerAll(jr.Keywords) {
+			id, ok := wordID[kw]
+			if !ok {
+				id = int32(len(words))
+				wordID[kw] = id
+				words = append(words, kw)
+			}
+			r.keywordIDs = append(r.keywordIDs, id)
 		}
 		for _, ja := range jr.Allowlists {
 			r.allowlists = append(r.allowlists, ruleAllow{
@@ -160,6 +173,7 @@ func compile(rs ruleset) *engine {
 		}
 		e.rules = append(e.rules, r)
 	}
+	e.keywords = newKeywordMatcher(words)
 	return e
 }
 
@@ -167,27 +181,125 @@ func compile(rs ruleset) *engine {
 // `git log -p` output) and returns one finding per matched secret.
 func ScanDiff(diff string) []secrets.Finding { return get().scanDiff(diff) }
 
-func (e *engine) scanDiff(diff string) []secrets.Finding {
-	var out []secrets.Finding
-	for _, f := range parseDiff(diff) {
+func (e *engine) scanDiff(diff string) []secrets.Finding { return e.scanFiles(parseDiff(diff)) }
+
+// ScanFile scans the whole content of one file, the unit gitleaks scans in
+// dir mode. FileLine counts from the first line of content.
+func ScanFile(path, content string) []secrets.Finding {
+	h := hunk{lines: strings.Split(strings.TrimSuffix(content, "\n"), "\n")}
+	h.numbers = make([]int, len(h.lines))
+	for i := range h.numbers {
+		h.numbers[i] = i + 1
+	}
+	h.joined = strings.Join(h.lines, "\n")
+	h.lower = strings.ToLower(h.joined)
+	return get().scanFiles([]fileDiff{{path: path, hunks: []hunk{h}}})
+}
+
+// splitBytes is the scanned size above which one file is spread over several
+// workers. Per-rule cost is roughly even, so splitting the rule list balances
+// a large file (the embedded rules.json alone took 0.8s on one core).
+const splitBytes = 8 << 10
+
+// scanUnit is one slice of the rule list applied to one file.
+type scanUnit struct {
+	file       int
+	rules      []rule
+	findings   []secrets.Finding
+	lastOfFile bool
+}
+
+// scanFiles scans files concurrently and returns findings in file order, so
+// a report is identical between runs.
+func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
+	workers := runtime.GOMAXPROCS(0)
+	var units []scanUnit
+	for i, f := range files {
 		if f.path == "" || matchAny(e.globalPaths, f.path) {
 			continue
 		}
-		var fileFindings []secrets.Finding
-		for _, r := range e.rules {
-			if r.path != nil && !r.path.MatchString(f.path) {
-				continue
+		size := 0
+		for _, h := range f.hunks {
+			size += len(h.joined)
+		}
+		chunks := min(workers, 1+size/splitBytes)
+		per := (len(e.rules) + chunks - 1) / chunks
+		for lo := 0; lo < len(e.rules); lo += per {
+			units = append(units, scanUnit{file: i, rules: e.rules[lo:min(lo+per, len(e.rules))]})
+		}
+		units[len(units)-1].lastOfFile = true
+	}
+
+	// The keyword pass runs once per file, by whichever unit of the file
+	// starts first; the other units of a split file reuse it.
+	type fileKeywords struct {
+		once sync.Once
+		seen []keywordSet
+	}
+	keywords := make([]fileKeywords, len(files))
+
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(workers, len(units)) {
+		wg.Go(func() {
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(units) {
+					return
+				}
+				u := &units[i]
+				kw := &keywords[u.file]
+				kw.once.Do(func() { kw.seen = e.findKeywords(files[u.file]) })
+				u.findings = e.scanRules(files[u.file], u.rules, kw.seen)
 			}
-			if r.regex == nil {
-				// gitleaks reports a path-only match at line 0.
-				fileFindings = append(fileFindings, secrets.Finding{Kind: r.id, File: f.path})
-				continue
-			}
-			for _, h := range f.hunks {
-				fileFindings = append(fileFindings, e.scanHunk(r, f.path, h)...)
+		})
+	}
+	wg.Wait()
+
+	var out, fileFindings []secrets.Finding
+	for _, u := range units {
+		fileFindings = append(fileFindings, u.findings...)
+		if u.lastOfFile {
+			out = append(out, dropShadowedGeneric(fileFindings)...)
+			fileFindings = nil
+		}
+	}
+	return out
+}
+
+func (e *engine) scanFile(f fileDiff) []secrets.Finding {
+	if f.path == "" || matchAny(e.globalPaths, f.path) {
+		return nil
+	}
+	return dropShadowedGeneric(e.scanRules(f, e.rules, e.findKeywords(f)))
+}
+
+// findKeywords returns, per hunk, the rule keywords the hunk contains.
+func (e *engine) findKeywords(f fileDiff) []keywordSet {
+	seen := make([]keywordSet, len(f.hunks))
+	for i, h := range f.hunks {
+		seen[i] = e.keywords.newSet()
+		e.keywords.find(h.lower, seen[i])
+	}
+	return seen
+}
+
+func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []secrets.Finding {
+	var out []secrets.Finding
+	for _, r := range rules {
+		if r.path != nil && !r.path.MatchString(f.path) {
+			continue
+		}
+		if r.regex == nil {
+			// gitleaks reports a path-only match at line 0.
+			out = append(out, secrets.Finding{Kind: r.id, File: f.path})
+			continue
+		}
+		for i, h := range f.hunks {
+			if hasKeyword(r, seen[i]) {
+				out = append(out, e.scanHunk(r, f.path, h)...)
 			}
 		}
-		out = append(out, dropShadowedGeneric(fileFindings)...)
 	}
 	return out
 }
@@ -216,12 +328,12 @@ func dropShadowedGeneric(fs []secrets.Finding) []secrets.Finding {
 
 func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 	text := h.joined
-	if len(r.keywords) > 0 && !containsAny(h.lower, r.keywords) {
-		return nil
-	}
 	var out []secrets.Finding
 	for _, loc := range r.regex.FindAllStringSubmatchIndex(text, -1) {
 		match := text[loc[0]:loc[1]]
+		if allowedInline(text, loc) {
+			continue
+		}
 		secret := pickSecret(text, loc, r.secretGroup)
 		if r.entropy > 0 && shannon(secret) < r.entropy {
 			continue
@@ -239,6 +351,20 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 		})
 	}
 	return out
+}
+
+// gitleaksAllow is the inline marker gitleaks honors on the matched lines.
+const gitleaksAllow = "gitleaks:allow"
+
+// allowedInline reports whether the lines spanned by a match carry the
+// gitleaks:allow marker.
+func allowedInline(text string, loc []int) bool {
+	start := strings.LastIndexByte(text[:loc[0]], '\n') + 1
+	end := len(text)
+	if i := strings.IndexByte(text[loc[1]:], '\n'); i >= 0 {
+		end = loc[1] + i
+	}
+	return strings.Contains(text[start:end], gitleaksAllow)
 }
 
 // pickSecret follows the gitleaks rule: an explicit secretGroup wins, then the
@@ -318,9 +444,14 @@ func hasStopword(lowerWords []string, s string) bool {
 	return false
 }
 
-func containsAny(lower string, words []string) bool {
-	for _, w := range words {
-		if strings.Contains(lower, w) {
+// hasKeyword is the gitleaks keyword prefilter: a rule with keywords runs
+// its regex only on a hunk that contains one of them, case-insensitively.
+func hasKeyword(r rule, seen keywordSet) bool {
+	if len(r.keywordIDs) == 0 {
+		return true
+	}
+	for _, id := range r.keywordIDs {
+		if seen.has(id) {
 			return true
 		}
 	}

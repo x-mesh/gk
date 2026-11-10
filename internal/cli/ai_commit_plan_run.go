@@ -218,10 +218,19 @@ func applyCommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner,
 	// We reuse summariseForSecretScan / secretBypass / renderFindings verbatim
 	// so the abort + bypass semantics match the AI path exactly; the only
 	// difference is the scan scope (plan files, not the whole dirty set).
-	payload := summariseForSecretScan(planFiles)
+	root, _, rerr := runner.Run(ctx, "rev-parse", "--show-toplevel")
+	if rerr != nil {
+		return fmt.Errorf("commit: secret scan: repo root: %w", rerr)
+	}
+	repoRoot := strings.TrimSuffix(string(root), "\n")
+	payload, perr := summariseForSecretScan(repoRoot, planFiles)
+	if perr != nil {
+		return perr
+	}
 	findings, serr := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,
+		RepoDir:     repoRoot,
 	}, nil)
 	if serr != nil {
 		return serr

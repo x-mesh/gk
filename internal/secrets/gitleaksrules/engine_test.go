@@ -2,6 +2,7 @@ package gitleaksrules
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -285,5 +286,71 @@ func TestScanDiff_QuotedPathInHeaderOnlyForBinaryFile(t *testing.T) {
 	}
 	if f.File != `c"x.p12` {
 		t.Errorf("File = %q", f.File)
+	}
+}
+
+// gitleaks skips a finding whose line carries the gitleaks:allow marker.
+// Checked against gitleaks 8.30.1 with a two-line file: only the unmarked
+// line was reported.
+func TestScanDiff_InlineGitleaksAllowSkipsLine(t *testing.T) {
+	diff := addDiff("s.txt", 1,
+		"+aws = \""+awsKey+"\"",
+		"+aws2 = \""+awsKey+"\" // gitleaks:allow")
+	fs := ScanDiff(diff)
+	if len(fs) != 1 || fs[0].FileLine != 1 {
+		t.Fatalf("findings = %+v, want only line 1", fs)
+	}
+}
+
+func TestScanFile_ReportsPathAndLine(t *testing.T) {
+	fs := ScanFile("cfg/app.env", "# creds\nname = x\ntoken = \""+githubPAT+"\"\n")
+	f, ok := find(fs, "github-pat")
+	if !ok {
+		t.Fatalf("github-pat not found in %v", kinds(fs))
+	}
+	if f.File != "cfg/app.env" || f.FileLine != 3 {
+		t.Errorf("finding = %+v, want cfg/app.env:3", f)
+	}
+}
+
+// Files are scanned concurrently; the output order must still follow the
+// diff so reports stay stable between runs.
+func TestScanDiff_OutputFollowsDiffOrder(t *testing.T) {
+	var b strings.Builder
+	var want []string
+	for i := range 64 {
+		path := fmt.Sprintf("dir/f%02d.txt", i)
+		want = append(want, path)
+		b.WriteString(addDiff(path, 1, "+token = \""+githubPAT+"\""))
+	}
+	fs := ScanDiff(b.String())
+	var got []string
+	for _, f := range fs {
+		got = append(got, f.File)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v", got)
+	}
+}
+
+// A file above splitBytes is spread over several workers by rule slice; the
+// findings must match a single-worker scan, including rules late in the list.
+func TestScanDiff_LargeFileSplitAcrossWorkersKeepsEveryRule(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
+	body := []string{"+aws = \"" + awsKey + "\""}
+	for range 4 * splitBytes / 40 {
+		body = append(body, "+// filler line that matches no rule at all")
+	}
+	body = append(body, "+token = \""+githubPAT+"\"")
+	diff := addDiff("big.txt", 1, body...)
+
+	files := parseDiff(diff)
+	want := get().scanFile(files[0])
+	got := ScanDiff(diff)
+	if len(want) < 2 {
+		t.Fatalf("single-worker scan found %v, want aws and github findings", kinds(want))
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("split scan = %+v, want %+v", got, want)
 	}
 }

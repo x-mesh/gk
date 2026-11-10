@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk guard check` no longer reports `no violations` when gitleaks fails. gitleaks 8.30.1 on macOS rejected `--report-path /dev/stdout` and exited 1, and gk read that exit code as "findings" with an empty report. The scan never ran, but the result said the history was clean. gk now gives gitleaks a temp report file and a separate exit code for findings, so a gitleaks failure is an error.
+- The `gk commit` secret gate now reads the payload files from the repository root. Before, it read the root-relative paths from the current directory, so a commit run from a subdirectory or with `--repo` passed the gate without any file being scanned. A payload file that the gate cannot read now stops the commit with an error, and a repository path that starts or ends with a space keeps the space. A symlink is scanned as its target path, which is what git commits, so a broken link no longer passes as a deleted file.
+
+### Added
+
+- `gk guard check --history` scans every commit that a local ref (branch, remote-tracking branch, tag, stash) can reach. `gk guard check --staged` scans only the staged changes.
+- `gk guard check --fetch` fetches every remote and then scans the history, so one command also covers branches that exist only on a remote. A branch that was never fetched has no local ref, so `--history` alone does not reach it. If a fetch fails, the scan continues on the local refs and reports a warning that names the remote.
+
+### Changed
+
+- `gk guard check` without a flag now scans the current content of the tracked files, uncommitted edits included. Before, it scanned the full history. Use `--history` for the old scope.
+- The `pre-commit` hook from `gk hooks install --pre-commit` now runs `gk guard check --staged`. Before, it ran a full scan on each commit, so a secret in an old commit stopped every new commit. Run `gk hooks install --pre-commit` again to update an installed hook.
+- `gk guard check` scans with the gitleaks ruleset that is built into gk, also when gitleaks is installed. The history scan now covers all refs with the same `git log` options as `gitleaks git`. On the gk repository (1,091 commits) it reports the same 28 findings as gitleaks 8.30.1 in about 0.6 s on 16 cores and 1.1 s on 4 cores, against 2.7 s for gitleaks. To get there, git diffs the commits in parallel chunks, each chunk is scanned when its diff arrives, large files are split across CPU cores, and the keyword prefilter finds all rule keywords in one pass. If the repository has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` is set, gk runs gitleaks instead, because the built-in ruleset does not read these files.
+- The built-in ruleset now skips a line that contains `gitleaks:allow`, as gitleaks does.
+- The `gk commit` secret gate counts only findings in the commit payload. Before, it ran `gitleaks dir` on the whole working directory. After the fix above, that run would stop every commit when a file outside the commit, such as a test fixture, contained a secret pattern. The gate scans the payload with the built-in gitleaks ruleset. If the repo has a gitleaks config, `gitleaks dir` scans a temp copy of the payload files with the repo's config and `.gitleaksignore`.
+
 ## [0.153.0] - 2026-11-09
 
 ### Changed

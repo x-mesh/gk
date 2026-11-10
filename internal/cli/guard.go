@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,9 +24,13 @@ func init() {
 		Short: "Declarative repo policies (secret scan, signing, commit rules)",
 		Long: `gk guard evaluates every registered policy rule against the repo and
 surfaces violations. Rules live in .gk.yaml under the policies: block; the
-v0.9 MVP ships with secret_patterns (gitleaks-backed when installed). Without
-gitleaks the rule scans with the gitleaks ruleset embedded in gk (a pinned
-release; .gitleaks.toml is not read) and emits an info note.
+v0.9 MVP ships with secret_patterns. By default it scans the current content
+of the tracked files; --staged scans the staged changes, and --history scans
+every commit reachable from any ref. It uses the gitleaks ruleset embedded in
+gk (a pinned release), which follows the gitleaks detection steps and runs
+faster than the gitleaks binary. gk runs the gitleaks binary instead when the
+repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG is set),
+because the embedded ruleset does not read those files.
 `,
 	}
 
@@ -42,6 +47,11 @@ by severity (error → warn → info). Exit codes:
 		RunE: runGuardCheck,
 	}
 	checkCmd.Flags().Bool("json", false, "emit NDJSON violations (one per line) for scripting")
+	checkCmd.Flags().Bool("staged", false, "scan only the staged changes (what the next commit adds); the pre-commit hook uses this")
+	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
+	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
+	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
+	checkCmd.MarkFlagsMutuallyExclusive("staged", "fetch")
 
 	initCmd := &cobra.Command{
 		Use:   "init",
@@ -68,11 +78,49 @@ func guardRegistry() *policy.Registry {
 	reg := policy.NewRegistry()
 	secretRule := rules.NewSecretPatternsRule()
 	secretRule.ScanDiff = gitleaksrules.ScanDiff
+	secretRule.ScanFile = gitleaksrules.ScanFile
 	secretRule.ScannerLabel = func() string {
 		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
 	}
 	_ = reg.Register(secretRule)
 	return reg
+}
+
+// guardFetch fetches every remote so the history scan reaches branches that
+// exist only on a remote. It does not prune: a remote-tracking ref whose
+// branch was deleted upstream still names commits worth scanning. A failed
+// fetch becomes a warning instead of an error, because the local refs are
+// still worth scanning, but the result must not read as a full scan.
+func guardFetch(ctx context.Context, runner *git.ExecRunner) []policy.Violation {
+	out, stderr, err := runner.Run(ctx, "remote")
+	if err != nil {
+		return []policy.Violation{{
+			RuleID:   "fetch",
+			Severity: policy.SeverityWarn,
+			Message:  fmt.Sprintf("could not list remotes; scanned local refs only: %s", strings.TrimSpace(string(stderr))),
+		}}
+	}
+	remotes := strings.Fields(string(out))
+	if len(remotes) == 0 {
+		return []policy.Violation{{
+			RuleID:   "fetch",
+			Severity: policy.SeverityInfo,
+			Message:  "no remote configured; scanned local refs only",
+		}}
+	}
+	var vs []policy.Violation
+	for _, res := range runContextFetch(ctx, runner, remotes) {
+		if res.OK {
+			continue
+		}
+		vs = append(vs, policy.Violation{
+			RuleID:   "fetch",
+			Severity: policy.SeverityWarn,
+			Message:  fmt.Sprintf("fetch %s failed; branches only on %s were not scanned: %s", res.Remote, res.Remote, res.Error),
+			Hint:     "check the remote URL and credentials, then rerun gk guard check --fetch",
+		})
+	}
+	return vs
 }
 
 // violationJSON is the NDJSON shape for --json output. Keep stable.
@@ -92,13 +140,25 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	}
 
 	repo := RepoFlag()
+	runner := &git.ExecRunner{Dir: repo}
+	staged, _ := cmd.Flags().GetBool("staged")
+	history, _ := cmd.Flags().GetBool("history")
+	doFetch, _ := cmd.Flags().GetBool("fetch")
+	var fetchViolations []policy.Violation
+	if doFetch {
+		fetchViolations = guardFetch(ctx, runner)
+	}
+
 	reg := guardRegistry()
 	in := policy.Input{
-		Runner:  &git.ExecRunner{Dir: repo},
+		Runner:  runner,
 		WorkDir: repo,
+		Staged:  staged,
+		History: history || doFetch,
 	}
 
 	violations, errs := reg.Evaluate(ctx, in)
+	violations = append(fetchViolations, violations...)
 
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asJSON = asJSON || JSONOut()
@@ -218,14 +278,16 @@ const gkYAMLTemplate = `# .gk.yaml — gk repository policy configuration
 policies:
 
   # ── secret_patterns ────────────────────────────────────────────────────────
-  # Scans the full git history (or staged files) for secrets using gitleaks.
-  # Without gitleaks, gk scans with its embedded gitleaks ruleset instead
-  # (.gitleaks.toml is not read in that mode).
+  # Scans the tracked files (or, with --staged / --history, the staged
+  # changes or the full history) for secrets with the gitleaks ruleset
+  # embedded in gk. If .gitleaks.toml or .gitleaksignore
+  # exists, gk runs gitleaks instead, because the embedded ruleset does not
+  # read those files.
   # Optional: brew install gitleaks  (gk doctor will confirm)
   #
   # secret_patterns:
   #   enabled: true
-  #   mode: git        # git (full history) | staged | unstaged
+  #   mode: files      # files (tracked files) | staged | history
   #   redact: true     # replace the matched value with REDACTED in output
 
   # ── max_commit_size ────────────────────────────────────────────────────────

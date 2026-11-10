@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -70,6 +71,24 @@ func FindGitleaks() (path, version string, ok bool) {
 		return p, "", true
 	}
 	return p, strings.TrimSpace(string(out)), true
+}
+
+// gitleaksConfigFiles are read by gitleaks from the scanned directory.
+var gitleaksConfigFiles = []string{".gitleaks.toml", ".gitleaksignore"}
+
+// HasGitleaksConfig reports whether gitleaks would load a config or ignore
+// file from dir (or from GITLEAKS_CONFIG*). The ruleset embedded in gk does
+// not read them, so a scan that must honor them has to run gitleaks.
+func HasGitleaksConfig(dir string) bool {
+	if os.Getenv("GITLEAKS_CONFIG") != "" || os.Getenv("GITLEAKS_CONFIG_TOML") != "" {
+		return true
+	}
+	for _, name := range gitleaksConfigFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrGitleaksNotInstalled is returned by callers that require gitleaks but

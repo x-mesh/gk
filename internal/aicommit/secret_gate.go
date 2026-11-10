@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,9 +39,48 @@ type SecretGateOptions struct {
 }
 
 // Gitleaks lets tests inject a fake runner. When nil the payload is scanned
-// with the gitleaks ruleset embedded in gk.
+// with the gitleaks ruleset embedded in gk, or with the gitleaks binary when
+// the repo has a gitleaks config (see defaultGitleaks).
 type Gitleaks interface {
 	Run(ctx context.Context) ([]scan.GitleaksFinding, error)
+}
+
+// defaultGitleaks picks the second scanner for a payload. A repo with a
+// gitleaks config (.gitleaks.toml, .gitleaksignore, GITLEAKS_CONFIG*) gets
+// the gitleaks binary, so its custom rules and ignores apply; every other
+// repo gets the embedded ruleset, which needs no binary.
+func defaultGitleaks(payload string) Gitleaks {
+	if scan.HasGitleaksConfig("") {
+		return configuredGitleaks{payload: payload}
+	}
+	return embeddedGitleaks{payload: payload}
+}
+
+// configuredGitleaks runs `gitleaks dir` in the working directory, where it
+// reads the repo's config, and keeps only findings in payload files: a
+// secret in a file the commit does not touch must not block it. Without the
+// binary it falls back to the embedded ruleset.
+type configuredGitleaks struct{ payload string }
+
+func (c configuredGitleaks) Run(ctx context.Context) ([]scan.GitleaksFinding, error) {
+	findings, err := scan.RunGitleaks(ctx, scan.GitleaksOptions{Mode: "dir", Redact: true})
+	if errors.Is(err, scan.ErrGitleaksNotInstalled) {
+		return embeddedGitleaks(c).Run(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	inPayload := map[string]bool{}
+	for _, f := range splitPayload(c.payload) {
+		inPayload[filepath.ToSlash(filepath.Clean(f.path))] = true
+	}
+	var out []scan.GitleaksFinding
+	for _, f := range findings {
+		if inPayload[filepath.ToSlash(filepath.Clean(f.File))] {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // embeddedGitleaks scans each file of the payload with the embedded gitleaks
@@ -49,9 +89,12 @@ type Gitleaks interface {
 // payload deliberately leaves out.
 type embeddedGitleaks struct{ payload string }
 
-func (e embeddedGitleaks) Run(context.Context) ([]scan.GitleaksFinding, error) {
+func (e embeddedGitleaks) Run(ctx context.Context) ([]scan.GitleaksFinding, error) {
 	var out []scan.GitleaksFinding
 	for _, f := range splitPayload(e.payload) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for _, hit := range gitleaksrules.ScanFile(f.path, f.content) {
 			out = append(out, scan.GitleaksFinding{
 				RuleID:    hit.Kind,
@@ -119,7 +162,7 @@ func ScanPayload(ctx context.Context, payload string, opts SecretGateOptions, gl
 
 	if opts.RunGitleaks {
 		if gl == nil {
-			gl = embeddedGitleaks{payload: payload}
+			gl = defaultGitleaks(payload)
 		}
 		gf, err := gl.Run(ctx)
 		switch {

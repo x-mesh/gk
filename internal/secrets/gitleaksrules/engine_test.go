@@ -350,7 +350,7 @@ func TestScanDiff_LargeFileSplitAcrossWorkersKeepsEveryRule(t *testing.T) {
 	if len(want) < 2 {
 		t.Fatalf("single-worker scan found %v, want aws and github findings", kinds(want))
 	}
-	if fmt.Sprint(kinds(got)) != fmt.Sprint(kinds(want)) {
-		t.Fatalf("split scan = %v, want %v", kinds(got), kinds(want))
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("split scan = %+v, want %+v", got, want)
 	}
 }

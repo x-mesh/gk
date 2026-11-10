@@ -3769,7 +3769,7 @@ gk guard check [flags]
 | `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
 | `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
 
-Without a flag, the scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned.
+Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
 #### Exit codes
 
@@ -4263,7 +4263,7 @@ EOF
 
 | Gate | Source | Behaviour |
 |------|--------|-----------|
-| Secret scan | `internal/secrets` + the gitleaks ruleset built into gk, on the commit payload only | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
+| Secret scan | `internal/secrets` + the gitleaks ruleset built into gk, on the commit payload only. If the repo has a gitleaks config, `gitleaks dir` runs instead of the built-in ruleset, and only findings in payload files count. | Abort on any finding; opt a kind out with `--allow-secret-kind <kind>`, or bypass everything with `--allow-secret-kind all` / `-n`/`--no-verify` (findings still reported, then committed) |
 | Deny paths | `ai.commit.deny_paths` globs | Matching files (`.env*`, `*.pem`, `id_rsa*`, `credentials.json`, `*.kdbx`, lockfiles, `terraform.tfstate*`) never leave the process |
 | Noise guard | built-in path patterns | Build output / deps / caches / local DBs (`node_modules/`, `__pycache__/`, `.venv/`, `*.pyc`, `*.db`, `.DS_Store`, …) are excluded from the AI scope; on a TTY gk offers to add them to `.gitignore`. Opt out with `--include-noise` |
 | Git state | `gitstate.Detect` | Refuse to run mid-rebase / mid-merge / mid-cherry-pick |

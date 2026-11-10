@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,7 +66,7 @@ func (*SecretPatternsRule) Name() string { return "secret_patterns" }
 // embedded ruleset with a notice that the config was not read.
 func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]policy.Violation, error) {
 	opts := r.gitleaksOptions(in)
-	if in.Runner != nil && r.builtinReady() && !hasGitleaksConfig(opts.WorkDir) {
+	if in.Runner != nil && r.builtinReady() && !scan.HasGitleaksConfig(opts.WorkDir) {
 		return r.evaluateBuiltin(ctx, in, r.embeddedNotice(in))
 	}
 	run := r.runGitleaks
@@ -120,23 +121,6 @@ func scopeLabel(in policy.Input) string {
 	default:
 		return "tracked files"
 	}
-}
-
-// gitleaksConfigFiles are read by gitleaks from the scanned directory.
-var gitleaksConfigFiles = []string{".gitleaks.toml", ".gitleaksignore"}
-
-// hasGitleaksConfig reports whether gitleaks would load a config or ignore
-// file that the embedded engine cannot honor.
-func hasGitleaksConfig(dir string) bool {
-	if os.Getenv("GITLEAKS_CONFIG") != "" || os.Getenv("GITLEAKS_CONFIG_TOML") != "" {
-		return true
-	}
-	for _, name := range gitleaksConfigFiles {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 // evaluateBuiltin scans with the built-in patterns. Scope follows the input:
@@ -231,9 +215,17 @@ func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Ru
 	for i, p := range paths {
 		g.Go(func() error {
 			full := filepath.Join(root, filepath.FromSlash(p))
-			// Deleted files, symlinks, and submodule directories have no
-			// regular content in the working tree.
-			if info, err := os.Lstat(full); err != nil || !info.Mode().IsRegular() {
+			info, err := os.Lstat(full)
+			if errors.Is(err, fs.ErrNotExist) {
+				// Deleted in the working tree: nothing left to scan.
+				return nil
+			}
+			if err != nil {
+				// An unreadable path is not a clean one.
+				return fmt.Errorf("secret_patterns: stat %s: %w", p, err)
+			}
+			if !info.Mode().IsRegular() {
+				// Symlinks and submodule directories have no content of their own.
 				return nil
 			}
 			data, err := os.ReadFile(full)

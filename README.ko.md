@@ -353,7 +353,7 @@ ai:
 
 ### 안전 장치
 
-- **Secret gate.** `internal/secrets.Scan`과 gk에 내장된 gitleaks 규칙이 payload를 함께 훑습니다. 하나라도 걸리면 `--force` 여부와 상관없이 abort합니다. 특정 종류만 이번 실행에서 무시하려면 `--allow-secret-kind <kind>`. 전부 우회해야 한다면 `--allow-secret-kind all`이나 `-n/--no-verify` — 단 검출 내용은 stderr에 보고된 뒤 그대로 git 기록에 들어가므로, 실제 자격증명이면 즉시 폐기·재발급해야 합니다. 원격 AI로 보내는 payload의 redaction은 항상 유지되며, `-n`은 아래 privacy gate의 abort 임계값까지 함께 끕니다.
+- **Secret gate.** `internal/secrets.Scan`과 gk에 내장된 gitleaks 규칙이 payload를 함께 훑습니다. 저장소에 `.gitleaks.toml`이나 `.gitleaksignore`가 있으면 내장 규칙 대신 `gitleaks`를 실행하고, payload에 든 파일의 발견만 반영합니다. 하나라도 걸리면 `--force` 여부와 상관없이 abort합니다. 특정 종류만 이번 실행에서 무시하려면 `--allow-secret-kind <kind>`. 전부 우회해야 한다면 `--allow-secret-kind all`이나 `-n/--no-verify` — 단 검출 내용은 stderr에 보고된 뒤 그대로 git 기록에 들어가므로, 실제 자격증명이면 즉시 폐기·재발급해야 합니다. 원격 AI로 보내는 payload의 redaction은 항상 유지되며, `-n`은 아래 privacy gate의 abort 임계값까지 함께 끕니다.
 - **Privacy gate.** remote provider(`Locality=remote`)로 나가는 payload는 자동으로 정리됩니다. secret, `deny_paths` 매치, 민감 패턴이 `[SECRET_1]`, `[PATH_1]` 같은 토큰으로 치환되고, 한 payload에서 10개를 넘게 감지하면 abort합니다(`ai.commit.privacy.max_secrets`로 조정하거나 `--skip-privacy`로 임계값만 우회 — `-n`/`--no-verify`가 이를 포함하며, 어느 쪽이든 redaction은 그대로 적용). `--show-prompt`로 redact된 payload를 확인할 수 있고, `ai.commit.audit`이 켜져 있으면 `.gk/ai-audit.jsonl`에 기록이 남습니다.
 - **Deny paths.** `.env`, 비공개 키, tfstate 같은 매칭 파일은 payload가 프로세스를 떠나기 전에 빠집니다.
 - **git-state 차단.** rebase/merge/cherry-pick이 진행 중이면 `gk commit`은 아예 실행하지 않습니다. `MERGE_MSG`를 덮어쓰지 않기 위함입니다.

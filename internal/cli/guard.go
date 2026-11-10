@@ -92,9 +92,16 @@ func guardRegistry() *policy.Registry {
 // fetch becomes a warning instead of an error, because the local refs are
 // still worth scanning, but the result must not read as a full scan.
 func guardFetch(ctx context.Context, runner *git.ExecRunner) []policy.Violation {
-	out, _, err := runner.Run(ctx, "remote")
+	out, stderr, err := runner.Run(ctx, "remote")
+	if err != nil {
+		return []policy.Violation{{
+			RuleID:   "fetch",
+			Severity: policy.SeverityWarn,
+			Message:  fmt.Sprintf("could not list remotes; scanned local refs only: %s", strings.TrimSpace(string(stderr))),
+		}}
+	}
 	remotes := strings.Fields(string(out))
-	if err != nil || len(remotes) == 0 {
+	if len(remotes) == 0 {
 		return []policy.Violation{{
 			RuleID:   "fetch",
 			Severity: policy.SeverityInfo,

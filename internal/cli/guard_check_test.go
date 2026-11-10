@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -139,5 +142,40 @@ func TestHooks_PreCommitScansStagedChanges(t *testing.T) {
 		if h.Name == "pre-commit" && h.Script != "exec gk guard check --staged" {
 			t.Errorf("pre-commit script = %q; a full scan would block every commit on old secrets", h.Script)
 		}
+	}
+}
+
+// `git remote` failing is not the same as having no remote: the scan did not
+// cover the remotes, so it must warn instead of noting a normal state.
+func TestGuardFetch_RemoteListFailureWarns(t *testing.T) {
+	vs := guardFetch(context.Background(), &git.ExecRunner{Dir: filepath.Join(t.TempDir(), "missing")})
+	if len(vs) != 1 || vs[0].Severity != policy.SeverityWarn || !strings.Contains(vs[0].Message, "could not list remotes") {
+		t.Fatalf("violations = %+v, want one warning about listing remotes", vs)
+	}
+}
+
+// The flag groups live on the real command built in init(), so check that
+// command, not a copy.
+func TestGuardCheck_ScopeFlagsAreExclusive(t *testing.T) {
+	check, _, err := rootCmd.Find([]string{"guard", "check"})
+	if err != nil {
+		t.Fatalf("find guard check: %v", err)
+	}
+	for _, args := range [][]string{{"--staged", "--history"}, {"--staged", "--fetch"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Cleanup(func() {
+				for _, name := range []string{"staged", "history", "fetch"} {
+					f := check.Flags().Lookup(name)
+					_ = f.Value.Set(f.DefValue)
+					f.Changed = false
+				}
+			})
+			if err := check.ParseFlags(args); err != nil {
+				t.Fatalf("parse %v: %v", args, err)
+			}
+			if err := check.ValidateFlagGroups(); err == nil {
+				t.Errorf("%v must be rejected", args)
+			}
+		})
 	}
 }

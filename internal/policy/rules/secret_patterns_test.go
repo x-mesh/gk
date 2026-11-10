@@ -245,19 +245,24 @@ func TestSecretPatternsRule_GitleaksConfig_RunsGitleaks(t *testing.T) {
 }
 
 func TestSecretPatternsRule_GitleaksConfigEnv_RunsGitleaks(t *testing.T) {
-	t.Setenv("GITLEAKS_CONFIG", "/elsewhere/gitleaks.toml")
-	called := false
-	r := NewSecretPatternsRule()
-	r.runGitleaks = func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error) {
-		called = true
-		return nil, nil
-	}
-	r.ScanDiff = func(string) []secrets.Finding { return nil }
-	if _, err := r.Evaluate(context.Background(), policy.Input{Runner: &stubRunner{}, WorkDir: t.TempDir()}); err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if !called {
-		t.Fatal("gitleaks must run when GITLEAKS_CONFIG is set")
+	for _, env := range []string{"GITLEAKS_CONFIG", "GITLEAKS_CONFIG_TOML"} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv("GITLEAKS_CONFIG", "")
+			t.Setenv("GITLEAKS_CONFIG_TOML", "")
+			t.Setenv(env, "/elsewhere/gitleaks.toml")
+			called := false
+			r := builtinRule()
+			r.runGitleaks = func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error) {
+				called = true
+				return nil, nil
+			}
+			if _, err := r.Evaluate(context.Background(), policy.Input{Runner: &stubRunner{}, WorkDir: t.TempDir()}); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if !called {
+				t.Fatalf("gitleaks must run when %s is set", env)
+			}
+		})
 	}
 }
 
@@ -475,5 +480,32 @@ func TestSecretPatternsRule_GitleaksModeFollowsScope(t *testing.T) {
 				t.Errorf("gitleaks opts = %+v, want mode %s args %q redact", got, c.mode, c.args)
 			}
 		})
+	}
+}
+
+// A tracked file the scan cannot stat is an error, not a deleted file: a
+// skipped file would read as clean.
+func TestSecretPatternsRule_UnreadableTrackedFileFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "a.env"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "locked/a.env\x00",
+	}}
+	if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()}); err == nil {
+		t.Fatal("want an error for a tracked file that cannot be read")
 	}
 }

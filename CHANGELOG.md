@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk guard check` no longer reports `no violations` when gitleaks fails. gitleaks 8.30.1 on macOS rejected `--report-path /dev/stdout` and exited 1, and gk read that exit code as "findings" with an empty report. The scan never ran, but the result said the history was clean. gk now gives gitleaks a temp report file and a separate exit code for findings, so a gitleaks failure is an error.
-- The `gk commit` secret gate now reads the payload files from the repository root. Before, it read the root-relative paths from the current directory, so a commit run from a subdirectory or with `--repo` passed the gate without any file being scanned.
+- The `gk commit` secret gate now reads the payload files from the repository root. Before, it read the root-relative paths from the current directory, so a commit run from a subdirectory or with `--repo` passed the gate without any file being scanned. A payload file that the gate cannot read now stops the commit with an error, and a repository path that starts or ends with a space keeps the space.
 
 ### Added
 

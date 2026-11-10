@@ -196,7 +196,8 @@ func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Ru
 	if err != nil {
 		return nil, err
 	}
-	root := strings.TrimSpace(top)
+	// Only the newline: a repo path may start or end with a space.
+	root := strings.TrimSuffix(top, "\n")
 	// The :/ pathspec lists the whole repo even when gk runs in a subdirectory.
 	listing, err := scanCommand(ctx, runner, "ls-files", "-z", "--full-name", "--", ":/")
 	if err != nil {

@@ -222,8 +222,11 @@ func applyCommitPlan(cmd *cobra.Command, ctx context.Context, runner git.Runner,
 	if rerr != nil {
 		return fmt.Errorf("commit: secret scan: repo root: %w", rerr)
 	}
-	repoRoot := strings.TrimSpace(string(root))
-	payload := summariseForSecretScan(repoRoot, planFiles)
+	repoRoot := strings.TrimSuffix(string(root), "\n")
+	payload, perr := summariseForSecretScan(repoRoot, planFiles)
+	if perr != nil {
+		return perr
+	}
 	findings, serr := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,

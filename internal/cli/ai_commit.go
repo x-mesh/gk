@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -314,7 +315,11 @@ func runAICommit(cmd *cobra.Command, args []string) error {
 	// beat on large diffs; show a spinner so the user knows gk is
 	// actively guarding the payload rather than hung.
 	stopGate := ui.StartBubbleSpinner("scanning payload for secrets...")
-	payload := summariseForSecretScan(runner.Dir, files)
+	payload, err := summariseForSecretScan(runner.Dir, files)
+	if err != nil {
+		stopGate()
+		return err
+	}
 	findings, err := aicommit.ScanPayload(ctx, payload, aicommit.SecretGateOptions{
 		AllowKinds:  flags.allowSecretKinds,
 		RunGitleaks: true,
@@ -623,7 +628,8 @@ func rootedCommitRunner(ctx context.Context, repo string) (*git.ExecRunner, erro
 	if err != nil {
 		return nil, fmt.Errorf("commit: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	return &git.ExecRunner{Dir: strings.TrimSpace(string(out))}, nil
+	// Only the newline: a repo path may start or end with a space.
+	return &git.ExecRunner{Dir: strings.TrimSuffix(string(out), "\n")}, nil
 }
 
 type wipCommitForAICommit struct {
@@ -1067,7 +1073,7 @@ func applyAICommitFlagsToConfig(ai config.AIConfig, f aiCommitFlags) config.AICo
 // snapshots map 1:1 to what users see. File paths are relative to root,
 // the repo root: gk commit does not chdir there, so reading them from the
 // process directory missed every file under a subdirectory run or --repo.
-func summariseForSecretScan(root string, files []aicommit.FileChange) string {
+func summariseForSecretScan(root string, files []aicommit.FileChange) (string, error) {
 	var b strings.Builder
 	for _, f := range files {
 		if f.DeniedBy != "" || f.IsBinary {
@@ -1080,14 +1086,19 @@ func summariseForSecretScan(root string, files []aicommit.FileChange) string {
 			continue
 		}
 		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f.Path)))
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// A deleted file adds no content to the commit.
 			continue
+		}
+		if err != nil {
+			// A file the gate cannot read would otherwise pass unscanned.
+			return "", fmt.Errorf("commit: secret scan: %w", err)
 		}
 		fmt.Fprintf(&b, "%s\n", secrets.PayloadFileHeader(f.Path))
 		b.Write(content)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // isTestFile returns true for files that are test sources and may

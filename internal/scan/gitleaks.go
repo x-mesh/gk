@@ -1,10 +1,9 @@
 // Package scan centralizes secret-scanning helpers used by gk guard.
 //
-// Per the 2026-04-22 probe verdict, gk prefers the industry-standard
-// `gitleaks` binary over maintaining a parallel scanner. This file provides
-// adapter primitives: JSON parsing of gitleaks output, version probing,
-// and binary detection. Invocation wiring (spawning gitleaks and piping
-// findings into gk guard rules) lives in SCAN-10 and GD-07.
+// gk guard scans with the gitleaks ruleset embedded in gk and spawns the
+// gitleaks binary only for repos with a gitleaks config. This file provides
+// the adapter primitives for that path: JSON parsing of gitleaks output,
+// version probing, binary detection, and invocation.
 package scan
 
 import (
@@ -12,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -91,28 +92,36 @@ type GitleaksOptions struct {
 	Redact bool
 }
 
-// RunGitleaks spawns the gitleaks binary with the canonical "emit JSON to
-// stdout" flags and parses the findings via ParseGitleaksFindings.
-//
-// Exit codes:
-//   - 0  → no findings (empty slice returned)
-//   - 1  → findings present (parsed + returned; NOT an error)
-//   - other → surfaced as error
-//
-// If gitleaks is not installed (FindGitleaks returns ok=false) this function
-// returns ErrGitleaksNotInstalled immediately without spawning.
+// findingsExitCode is passed as --exit-code. gitleaks exits 1 both on a
+// fatal error (an unwritable report path, a bad config) and, by default, on
+// findings, so a distinct code is the only way to tell them apart.
+const findingsExitCode = 42
+
+// RunGitleaks spawns the gitleaks binary, has it write a JSON report to a
+// temp file, and parses the findings via ParseGitleaksFindings. The report
+// goes to a file because gitleaks 8.30.1 on macOS rejected
+// --report-path /dev/stdout with "permission denied".
 func RunGitleaks(ctx context.Context, opts GitleaksOptions) ([]GitleaksFinding, error) {
 	path, _, ok := FindGitleaks()
 	if !ok {
 		return nil, ErrGitleaksNotInstalled
 	}
+	report, err := os.CreateTemp("", "gk-gitleaks-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("gitleaks report file: %w", err)
+	}
+	reportPath := report.Name()
+	_ = report.Close()
+	defer os.Remove(reportPath)
+
 	mode := opts.Mode
 	if mode == "" {
 		mode = "git"
 	}
 	args := []string{mode,
 		"--report-format", "json",
-		"--report-path", "/dev/stdout",
+		"--report-path", reportPath,
+		"--exit-code", strconv.Itoa(findingsExitCode),
 		"--no-banner",
 	}
 	if opts.Redact {
@@ -124,41 +133,46 @@ func RunGitleaks(ctx context.Context, opts GitleaksOptions) ([]GitleaksFinding, 
 	if opts.WorkDir != "" {
 		cmd.Dir = opts.WorkDir
 	}
-	out, runErr := cmd.Output()
-
-	findings, parseErr := interpretGitleaksExit(out, runErr)
-	return findings, parseErr
+	_, runErr := cmd.Output()
+	if runErr != nil && !isExitCode(runErr, findingsExitCode) {
+		return nil, gitleaksFailure(runErr)
+	}
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		return nil, fmt.Errorf("read gitleaks report: %w", err)
+	}
+	return interpretGitleaksExit(data, runErr)
 }
 
-// interpretGitleaksExit isolates the exit-code handling from the actual
-// subprocess call so the logic is unit-testable via synthetic
-// exec.ExitError / nil pairs.
-func interpretGitleaksExit(out []byte, runErr error) ([]GitleaksFinding, error) {
-	if runErr == nil {
-		// Exit 0 — no findings.
-		return ParseGitleaksFindings(out)
-	}
+func isExitCode(err error, code int) bool {
 	var ee *exec.ExitError
-	if errors.As(runErr, &ee) {
-		code := ee.ExitCode()
-		switch code {
-		case 1:
-			// Findings present — not an error per the gitleaks contract.
-			return ParseGitleaksFindings(out)
-		default:
-			// Anything else is a real failure. Include stderr tail when
-			// available so diagnostics stay useful.
-			stderrTail := strings.TrimSpace(string(ee.Stderr))
-			if stderrTail == "" {
-				return nil, fmt.Errorf("gitleaks exited %d", code)
-			}
-			// Keep the first line only — gitleaks is verbose on setup errors.
-			if idx := strings.IndexByte(stderrTail, '\n'); idx >= 0 {
-				stderrTail = stderrTail[:idx]
-			}
-			return nil, fmt.Errorf("gitleaks exited %d: %s", code, stderrTail)
-		}
+	return errors.As(err, &ee) && ee.ExitCode() == code
+}
+
+func gitleaksFailure(runErr error) error {
+	var ee *exec.ExitError
+	if !errors.As(runErr, &ee) {
+		// Not an ExitError (timeout, binary missing mid-run, etc.).
+		return runErr
 	}
-	// Not an ExitError (timeout, binary missing mid-run, etc.) — surface as-is.
-	return nil, runErr
+	// gitleaks is verbose on setup errors; the first stderr line names the cause.
+	first, _, _ := strings.Cut(strings.TrimSpace(string(ee.Stderr)), "\n")
+	if first == "" {
+		return fmt.Errorf("gitleaks exited %d", ee.ExitCode())
+	}
+	return fmt.Errorf("gitleaks exited %d: %s", ee.ExitCode(), first)
+}
+
+// interpretGitleaksExit maps a finished run onto findings. The temp report
+// starts empty and gitleaks writes "[]" on a clean run, so an empty report
+// means gitleaks never wrote it; returning zero findings then would turn a
+// failed scan into a clean one.
+func interpretGitleaksExit(report []byte, runErr error) ([]GitleaksFinding, error) {
+	if strings.TrimSpace(string(report)) == "" {
+		if runErr != nil {
+			return nil, fmt.Errorf("gitleaks reported leaks but wrote no report")
+		}
+		return nil, fmt.Errorf("gitleaks exited 0 but wrote no report")
+	}
+	return ParseGitleaksFindings(report)
 }

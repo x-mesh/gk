@@ -452,10 +452,37 @@ func TestSummariseForSecretScan_UnreadableFileFails(t *testing.T) {
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "locked.env")
-	if err := os.WriteFile(path, []byte("token = x\n"), 0); err != nil {
+	if err := os.WriteFile(path, []byte("token = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := summariseForSecretScan(root, []aicommit.FileChange{{Path: "locked.env"}}); err == nil {
 		t.Fatal("want an error for an unreadable payload file")
+	}
+}
+
+// git commits a symlink as its target path, so the gate scans that text: a
+// broken link is not a deleted file. A directory (a submodule) has no
+// content to scan and must not fail the commit.
+func TestSummariseForSecretScan_SymlinkAndDirectory(t *testing.T) {
+	root := t.TempDir()
+	target := "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
+	if err := os.Symlink(target, filepath.Join(root, "broken.link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "submodule"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := summariseForSecretScan(root, []aicommit.FileChange{{Path: "broken.link"}, {Path: "submodule"}})
+	if err != nil {
+		t.Fatalf("summariseForSecretScan: %v", err)
+	}
+	if !strings.Contains(payload, target) {
+		t.Fatalf("payload = %q, want the symlink target scanned", payload)
+	}
+	if strings.Contains(payload, "submodule") {
+		t.Errorf("payload = %q, want the directory skipped", payload)
 	}
 }

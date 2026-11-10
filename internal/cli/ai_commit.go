@@ -1085,20 +1085,43 @@ func summariseForSecretScan(root string, files []aicommit.FileChange) (string, e
 		if isTestFile(f.Path) {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f.Path)))
-		if errors.Is(err, fs.ErrNotExist) {
-			// A deleted file adds no content to the commit.
-			continue
-		}
+		content, ok, err := committedContent(filepath.Join(root, filepath.FromSlash(f.Path)))
 		if err != nil {
 			// A file the gate cannot read would otherwise pass unscanned.
 			return "", fmt.Errorf("commit: secret scan: %w", err)
+		}
+		if !ok {
+			continue
 		}
 		fmt.Fprintf(&b, "%s\n", secrets.PayloadFileHeader(f.Path))
 		b.Write(content)
 		b.WriteString("\n")
 	}
 	return b.String(), nil
+}
+
+// committedContent returns what git stores for the working-tree path:
+// the file content, or for a symlink the target path (followed, a broken
+// link would read as a deleted file and pass unscanned). ok is false for a
+// path with nothing to commit as content: a deleted file, or a directory
+// such as a submodule.
+func committedContent(path string) (content []byte, ok bool, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		return []byte(target), err == nil, err
+	case info.IsDir():
+		return nil, false, nil
+	}
+	content, err = os.ReadFile(path)
+	return content, err == nil, err
 }
 
 // isTestFile returns true for files that are test sources and may

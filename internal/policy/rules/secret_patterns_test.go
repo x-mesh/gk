@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -510,29 +511,34 @@ func TestSecretPatternsRule_UnreadableTrackedFileFails(t *testing.T) {
 	}
 }
 
-// A repo root that ends in a space must keep it, or no tracked file is found.
-func TestSecretPatternsRule_TrackedFilesRootWithTrailingSpace(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "repo ")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.env"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run := &stubRunner{out: map[string]string{
-		"rev-parse --show-toplevel":     root + "\n",
-		"ls-files -z --full-name -- :/": "a.env\x00",
-	}}
-	var scanned []string
-	r := builtinRule()
-	r.ScanFile = func(path, _ string) []secrets.Finding {
-		scanned = append(scanned, path)
-		return nil
-	}
-	if _, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()}); err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if len(scanned) != 1 {
-		t.Fatalf("scanned = %v, want a.env", scanned)
+// A repo root that starts or ends with a space must keep it, or no tracked
+// file is found.
+func TestSecretPatternsRule_TrackedFilesRootWithSpaces(t *testing.T) {
+	for _, name := range []string{"repo ", " repo", " repo "} {
+		t.Run(strconv.Quote(name), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), name)
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "a.env"), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run := &stubRunner{out: map[string]string{
+				"rev-parse --show-toplevel":     root + "\n",
+				"ls-files -z --full-name -- :/": "a.env\x00",
+			}}
+			var scanned []string
+			r := builtinRule()
+			r.ScanFile = func(path, _ string) []secrets.Finding {
+				scanned = append(scanned, path)
+				return nil
+			}
+			if _, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()}); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if len(scanned) != 1 {
+				t.Fatalf("scanned = %v, want a.env", scanned)
+			}
+		})
 	}
 }

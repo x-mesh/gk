@@ -337,7 +337,8 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 		if allowedInline(text, loc) {
 			continue
 		}
-		secret := pickSecret(text, loc, r.secretGroup)
+		secretStart, secretEnd := secretSpan(loc, r.secretGroup)
+		secret := text[secretStart:secretEnd]
 		if r.entropy > 0 && shannon(secret) < r.entropy {
 			continue
 		}
@@ -355,7 +356,12 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 		if r.id == awsAccessRuleID {
 			f.Credential = secrets.PairAWS(h.lines, line, secret)
 		} else {
-			f.Credential = secrets.TokenCredential(r.id, h.lineText(line), secret)
+			lineStart := strings.LastIndexByte(text[:secretStart], '\n') + 1
+			lineEnd := len(text)
+			if i := strings.IndexByte(text[secretStart:], '\n'); i >= 0 {
+				lineEnd = secretStart + i
+			}
+			f.Credential = secrets.TokenCredential(r.id, text[lineStart:lineEnd], secretStart-lineStart, secret)
 		}
 		out = append(out, f)
 	}
@@ -376,18 +382,19 @@ func allowedInline(text string, loc []int) bool {
 	return strings.Contains(text[start:end], gitleaksAllow)
 }
 
-// pickSecret follows the gitleaks rule: an explicit secretGroup wins, then the
-// first non-empty capture group, then the whole match.
-func pickSecret(text string, loc []int, group int) string {
+// secretSpan follows the gitleaks rule: an explicit secretGroup wins, then the
+// first non-empty capture group, then the whole match. It returns the
+// secret's byte range in the scanned text.
+func secretSpan(loc []int, group int) (start, end int) {
 	if group > 0 && 2*group+1 < len(loc) && loc[2*group] >= 0 {
-		return text[loc[2*group]:loc[2*group+1]]
+		return loc[2*group], loc[2*group+1]
 	}
 	for g := 1; 2*g+1 < len(loc); g++ {
 		if loc[2*g] >= 0 && loc[2*g] != loc[2*g+1] {
-			return text[loc[2*g]:loc[2*g+1]]
+			return loc[2*g], loc[2*g+1]
 		}
 	}
-	return text[loc[0]:loc[1]]
+	return loc[0], loc[1]
 }
 
 func (e *engine) allowed(r rule, path, secret, match, line string) bool {

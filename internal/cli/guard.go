@@ -48,7 +48,8 @@ by severity (error → warn → info). Exit codes:
   2 — one or more errors
 
 --verify checks each AWS access key, Slack token, and GCP API key that the
-embedded ruleset finds, with one read-only identity call to its issuer:
+embedded ruleset finds, with a read-only identity call to its issuer (one
+call for a Slack token or a GCP API key, up to three for an AWS key):
 
   AWS    STS GetCallerIdentity. gk pairs the key ID with a secret access key
          on the same or nearby lines and tries up to three candidates. The

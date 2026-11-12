@@ -419,3 +419,38 @@ func TestScan_SlackTokenLongerThanRuleIsExtended(t *testing.T) {
 		t.Errorf("xoxr- token: found=%v credential=%v, want found without a credential", ok, f.Credential)
 	}
 }
+
+// Two tokens on one line can have the same regex match when the rule bounds
+// the tail length. Each finding must carry its own token, not the first one.
+func TestScan_TruncatedTokensOnOneLineKeepOwnValue(t *testing.T) {
+	workspace := "xoxa-" + "2-" + strings.Repeat("Ab3Cd9", 8)
+	legacyBot := "xoxb-" + "12345678-" + strings.Repeat("Ab3Cd9", 4) + "Ab"
+	cases := []struct {
+		name, kind, first, second string
+		scan                      func(line string) []secrets.Finding
+	}{
+		{"workspace token in a file", "slack-legacy-workspace-token", workspace + "Zz1Yy2Xx3Ww4", workspace + "Qq5Rr6Ss7Tt8",
+			func(line string) []secrets.Finding { return ScanFile("app.env", line+"\n") }},
+		{"workspace token in a diff", "slack-legacy-workspace-token", workspace + "Zz1Yy2Xx3Ww4", workspace + "Qq5Rr6Ss7Tt8",
+			func(line string) []secrets.Finding { return ScanDiff(addDiff("app.env", 1, "+"+line)) }},
+		{"legacy bot token in a file", "slack-legacy-bot-token", legacyBot + "Zz1Yy2", legacyBot + "Qq5Rr6",
+			func(line string) []secrets.Finding { return ScanFile("app.env", line+"\n") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, f := range tc.scan("STAGING=" + tc.first + " PROD=" + tc.second) {
+				if f.Kind != tc.kind {
+					continue
+				}
+				if f.Credential == nil {
+					t.Fatalf("%s finding without a credential", tc.kind)
+				}
+				got = append(got, f.Credential.Value())
+			}
+			if len(got) != 2 || got[0] != tc.first || got[1] != tc.second {
+				t.Errorf("credential values = %q, want %q then %q", got, tc.first, tc.second)
+			}
+		})
+	}
+}

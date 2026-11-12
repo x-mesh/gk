@@ -304,7 +304,10 @@ func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []secret
 	return out
 }
 
-const genericRuleID = "generic-api-key"
+const (
+	genericRuleID   = "generic-api-key"
+	awsAccessRuleID = "aws-access-token"
+)
 
 // dropShadowedGeneric removes a generic-api-key finding when a more specific
 // rule matched on the same line, because gitleaks reports the specific rule
@@ -342,13 +345,17 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 		if e.allowed(r, path, secret, match, h.lineText(line)) {
 			continue
 		}
-		out = append(out, secrets.Finding{
+		f := secrets.Finding{
 			Kind:     r.id,
 			File:     path,
 			FileLine: h.fileLine(line),
 			Line:     h.fileLine(line),
 			Sample:   maskSecret(secret),
-		})
+		}
+		if r.id == awsAccessRuleID {
+			f.AWS = secrets.PairAWS(h.lines, line, secret)
+		}
+		out = append(out, f)
 	}
 	return out
 }

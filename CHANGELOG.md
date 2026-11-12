@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk guard check --verify` checks whether the AWS access keys that the scan finds are live. gk pairs each key ID with a secret access key on the same or nearby lines and sends an STS `GetCallerIdentity` request for each distinct key, with at most three requests when several nearby values can be the secret. The secret signs the request but is not sent. Each finding gets a status: `valid` with the account ID and ARN, `rejected`, `unknown`, or `unverifiable` when no secret or session token was found. The status does not remove a finding or change its severity. `--verify` cannot run with `--staged`, so the pre-commit hook makes no network calls.
+
 ## [0.154.0] - 2026-11-10
 
 ### Fixed

@@ -46,6 +46,11 @@ type SecretPatternsRule struct {
 	// actually falls back. Nil reports the built-in pattern count.
 	ScannerLabel func() string
 
+	// VerifyAWS checks the AWS credentials paired by the embedded engine when
+	// Input.Verify is set, keyed by raw key ID. The caller injects it so this
+	// package makes no network calls. Nil skips verification.
+	VerifyAWS func(context.Context, []*secrets.AWSCredential) map[string]policy.Verification
+
 	// runGitleaks is a test seam; nil means scan.RunGitleaks.
 	runGitleaks func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error)
 }
@@ -81,7 +86,16 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 		return nil, fmt.Errorf("secret_patterns: %w", err)
 	}
 
-	return convertFindings(findings), nil
+	out := convertFindings(findings)
+	if in.Verify {
+		out = append(out, policy.Violation{
+			RuleID:   r.Name(),
+			Severity: policy.SeverityInfo,
+			Message:  "nothing was verified: --verify checks findings of the embedded ruleset, and gitleaks ran instead",
+			Hint:     "gitleaks runs because the repo has .gitleaks.toml or .gitleaksignore, or GITLEAKS_CONFIG is set",
+		})
+	}
+	return out, nil
 }
 
 func (r *SecretPatternsRule) builtinReady() bool { return r.ScanDiff != nil && r.ScanFile != nil }
@@ -162,18 +176,71 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		}
 	}
 
+	var verified map[string]policy.Verification
+	if in.Verify && r.VerifyAWS != nil {
+		var creds []*secrets.AWSCredential
+		for _, f := range findings {
+			if f.AWS != nil {
+				creds = append(creds, f.AWS)
+			}
+		}
+		if len(creds) > 0 {
+			verified = r.VerifyAWS(ctx, creds)
+		}
+	}
+
 	out := []policy.Violation{notice}
 	for _, f := range findings {
-		out = append(out, policy.Violation{
+		v := policy.Violation{
 			RuleID:   r.Name(),
 			Severity: policy.SeverityError,
 			File:     f.File,
 			Line:     f.FileLine,
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
-		})
+		}
+		if f.AWS != nil && verified != nil {
+			if res, ok := verified[f.AWS.KeyID()]; ok {
+				v.Verification = &res
+				if res.Status == verifyStatusValid {
+					v.Hint = "the key is live: deactivate it in IAM now, then rotate it"
+				}
+			}
+		}
+		out = append(out, v)
+	}
+	if in.Verify && r.VerifyAWS != nil {
+		out = append(out, verifySummary(r.Name(), verified))
 	}
 	return out, nil
+}
+
+// verifyStatusValid mirrors awsverify.StatusValid without importing the
+// network package here.
+const verifyStatusValid = "valid"
+
+// verifySummary counts the distinct keys per outcome, so a key repeated
+// across files or commits counts once.
+func verifySummary(rule string, verified map[string]policy.Verification) policy.Violation {
+	if len(verified) == 0 {
+		return policy.Violation{RuleID: rule, Severity: policy.SeverityInfo, Message: "verify: no AWS access key to check"}
+	}
+	counts := map[string]int{}
+	for _, v := range verified {
+		counts[v.Status]++
+	}
+	var parts []string
+	for _, s := range []string{"valid", "rejected", "unknown", "unverifiable"} {
+		if counts[s] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[s], s))
+		}
+	}
+	return policy.Violation{
+		RuleID:   rule,
+		Severity: policy.SeverityInfo,
+		Message:  fmt.Sprintf("verify: checked %d AWS access key(s) with STS GetCallerIdentity: %s", len(verified), strings.Join(parts, ", ")),
+		Hint:     "rejected means the global STS endpoint refused the key; a China or GovCloud key is refused there too",
+	}
 }
 
 func scanCommand(ctx context.Context, runner git.Runner, args ...string) (string, error) {

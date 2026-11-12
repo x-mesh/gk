@@ -354,3 +354,28 @@ func TestScanDiff_LargeFileSplitAcrossWorkersKeepsEveryRule(t *testing.T) {
 		t.Fatalf("split scan = %+v, want %+v", got, want)
 	}
 }
+
+func TestScan_AWSKeyCarriesPairedSecret(t *testing.T) {
+	secret := "q8Hk2nVd/7Rm" + "Tz4bLw9pXc3Jf6Ys1Ae0Gu5Ko+Ni"
+	sameLine := `cfg := aws.Config{AccessKey: "` + awsKey + `", SecretKey: "` + secret + `"}`
+	cases := map[string][]secrets.Finding{
+		"file same line": ScanFile("main.go", sameLine+"\n"),
+		"diff next line": ScanDiff(addDiff("creds", 1, "+aws_access_key_id = "+awsKey, "+aws_secret_access_key = "+secret)),
+	}
+	for name, fs := range cases {
+		f, ok := find(fs, "aws-access-token")
+		if !ok || f.AWS == nil {
+			t.Fatalf("%s: aws-access-token without credential in %v", name, kinds(fs))
+		}
+		if f.AWS.KeyID() != awsKey || len(f.AWS.SecretCandidates()) != 1 || f.AWS.SecretCandidates()[0] != secret {
+			t.Errorf("%s: credential = %s with %d candidates", name, f.AWS, len(f.AWS.SecretCandidates()))
+		}
+	}
+	f, ok := find(ScanDiff(addDiff("a.sh", 1, "+export GH="+githubPAT)), "github-pat")
+	if !ok {
+		t.Fatal("github-pat not found")
+	}
+	if f.AWS != nil {
+		t.Errorf("non-AWS finding carries a credential")
+	}
+}

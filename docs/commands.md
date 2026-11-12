@@ -3768,6 +3768,7 @@ gk guard check [flags]
 | `--staged` | `false` | Scan only the staged changes. The `pre-commit` hook uses this flag. |
 | `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
 | `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
+| `--verify` | `false` | Check each AWS access key that the built-in scan finds with STS `GetCallerIdentity`. You cannot use this flag with `--staged`. See "Live AWS key check" below. |
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
@@ -3778,6 +3779,21 @@ Without a flag, the built-in scan reads the current content of every tracked fil
 | 0 | no violations (or info-only) |
 | 1 | at least one warning |
 | 2 | at least one error |
+
+#### Live AWS key check
+
+`--verify` pairs each AWS access key ID with a secret access key on the same line or on the five lines above or below it. Then it sends an STS `GetCallerIdentity` request to `sts.amazonaws.com` for each distinct key ID. If more than one nearby value can be the secret, gk tries up to three values. Thus one key ID causes at most three requests. The secret signs the request, but gk does not send the secret. The request can appear in the CloudTrail log of the key owner. Use this flag only on keys that you are authorized to check.
+
+Each checked finding gets one status:
+
+| Status | Meaning |
+|--------|---------|
+| `valid` | STS accepted the key at the time of the call. The result shows the account ID and the ARN. |
+| `rejected` | STS refused the key ID or the session token (`InvalidClientTokenId`, `ExpiredToken`). The global endpoint also refuses a China or GovCloud key. |
+| `unknown` | The check did not decide. Examples are a network error, a timeout, or a nearby secret that did not match (`SignatureDoesNotMatch`). |
+| `unverifiable` | No request was sent. gk did not find a secret or a session token, or the key type is not `AKIA` or `ASIA`. |
+
+The status annotates the finding. It does not remove the finding or change its severity. The human output adds a `verify:` line, and `--json` adds a `verification` object. The scan adds one `info` violation that counts the keys for each status. If gitleaks scans instead of the built-in scan, gk does not verify, and it adds an `info` violation that tells you.
 
 #### Rules shipped in v0.9
 
@@ -3799,6 +3815,9 @@ gk guard check --json | jq 'select(.severity == "error")'
 
 # Full history, including branches that exist only on a remote
 gk guard check --fetch
+
+# Check whether the AWS keys found are live
+gk guard check --verify
 ```
 
 ---

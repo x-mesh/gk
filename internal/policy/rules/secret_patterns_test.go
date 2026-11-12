@@ -542,3 +542,91 @@ func TestSecretPatternsRule_TrackedFilesRootWithSpaces(t *testing.T) {
 		})
 	}
 }
+
+func TestSecretPatternsRule_VerifyAnnotatesAWSFindings(t *testing.T) {
+	live := secrets.NewAWSCredential("AKIA"+"LIVE000000000000", []string{"s"}, "")
+	dead := secrets.NewAWSCredential("AKIA"+"DEAD000000000000", []string{"s"}, "")
+	r := builtinRule(
+		secrets.Finding{Kind: "aws-access-token", File: "a", FileLine: 1, AWS: live},
+		secrets.Finding{Kind: "aws-access-token", File: "b", FileLine: 2, AWS: live},
+		secrets.Finding{Kind: "aws-access-token", File: "c", FileLine: 3, AWS: dead},
+		secrets.Finding{Kind: "generic-api-key", File: "c", FileLine: 4},
+	)
+	var calls int
+	var got []*secrets.AWSCredential
+	r.VerifyAWS = func(_ context.Context, creds []*secrets.AWSCredential) map[string]policy.Verification {
+		calls++
+		got = creds
+		return map[string]policy.Verification{
+			live.KeyID(): {Status: "valid", Account: "123456789012"},
+			dead.KeyID(): {Status: "rejected", Code: "InvalidClientTokenId"},
+		}
+	}
+	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("VerifyAWS ran without Input.Verify")
+	}
+	for _, x := range v {
+		if x.Verification != nil {
+			t.Errorf("unverified scan annotated %s", x.File)
+		}
+	}
+
+	v, err = r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(got) != 3 {
+		t.Fatalf("VerifyAWS calls = %d with %d credentials, want 1 call with 3", calls, len(got))
+	}
+	byFile := map[string]policy.Violation{}
+	for _, x := range v {
+		if x.File != "" {
+			byFile[x.File+strconv.Itoa(x.Line)] = x
+		}
+	}
+	for _, k := range []string{"a1", "b2"} {
+		x := byFile[k]
+		if x.Verification == nil || x.Verification.Status != "valid" || !strings.Contains(x.Hint, "live") {
+			t.Errorf("%s: %+v", k, x)
+		}
+		if x.Severity != policy.SeverityError {
+			t.Errorf("%s: severity changed to %v", k, x.Severity)
+		}
+	}
+	if x := byFile["c3"]; x.Verification == nil || x.Verification.Status != "rejected" || x.Severity != policy.SeverityError {
+		t.Errorf("rejected finding = %+v, want annotated and still an error", x)
+	}
+	if byFile["c4"].Verification != nil {
+		t.Errorf("generic finding annotated")
+	}
+	summary := v[len(v)-1]
+	if summary.Severity != policy.SeverityInfo || !strings.Contains(summary.Message, "checked 2 AWS access key(s)") || !strings.Contains(summary.Message, "1 valid, 1 rejected") {
+		t.Errorf("summary = %q", summary.Message)
+	}
+}
+
+func TestSecretPatternsRule_VerifyWithGitleaksSaysNothingVerified(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitleaks.toml"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := builtinRule()
+	r.runGitleaks = func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error) { return nil, nil }
+	r.VerifyAWS = func(context.Context, []*secrets.AWSCredential) map[string]policy.Verification {
+		t.Fatal("VerifyAWS called on the gitleaks path")
+		return nil
+	}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &stubRunner{}, WorkDir: dir, Verify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 1 || !strings.Contains(v[0].Message, "nothing was verified") {
+		t.Errorf("violations = %+v", v)
+	}
+}

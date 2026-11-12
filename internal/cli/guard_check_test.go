@@ -161,10 +161,10 @@ func TestGuardCheck_ScopeFlagsAreExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find guard check: %v", err)
 	}
-	for _, args := range [][]string{{"--staged", "--history"}, {"--staged", "--fetch"}} {
+	for _, args := range [][]string{{"--staged", "--history"}, {"--staged", "--fetch"}, {"--staged", "--verify"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Cleanup(func() {
-				for _, name := range []string{"staged", "history", "fetch"} {
+				for _, name := range []string{"staged", "history", "fetch", "verify"} {
 					f := check.Flags().Lookup(name)
 					_ = f.Value.Set(f.DefValue)
 					f.Changed = false
@@ -177,5 +177,39 @@ func TestGuardCheck_ScopeFlagsAreExclusive(t *testing.T) {
 				t.Errorf("%v must be rejected", args)
 			}
 		})
+	}
+}
+
+func TestGuardCheck_VerificationOutput(t *testing.T) {
+	vs := []policy.Violation{
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "a", Line: 1, Message: "m",
+			Verification: &policy.Verification{Status: "valid", Account: "123456789012", ARN: "arn:aws:iam::123456789012:user/ci"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "b", Line: 2, Message: "m",
+			Verification: &policy.Verification{Status: "rejected", Code: "InvalidClientTokenId"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "c", Line: 3, Message: "m"},
+	}
+	var human bytes.Buffer
+	printViolationsHuman(&human, vs)
+	for _, want := range []string{
+		"verify: valid (account 123456789012, arn:aws:iam::123456789012:user/ci)",
+		"verify: rejected (InvalidClientTokenId)",
+	} {
+		if !strings.Contains(human.String(), want) {
+			t.Errorf("human output lacks %q:\n%s", want, human.String())
+		}
+	}
+	if strings.Count(human.String(), "verify:") != 2 {
+		t.Errorf("unverified finding got a verify line:\n%s", human.String())
+	}
+
+	var nd bytes.Buffer
+	if err := printViolationsNDJSON(&nd, vs); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(nd.String()), "\n")
+	if !strings.Contains(lines[0], `"verification":{"status":"valid","account":"123456789012","arn":"arn:aws:iam::123456789012:user/ci"}`) ||
+		!strings.Contains(lines[1], `"verification":{"status":"rejected","code":"InvalidClientTokenId"}`) ||
+		strings.Contains(lines[2], "verification") {
+		t.Errorf("NDJSON =\n%s", nd.String())
 	}
 }

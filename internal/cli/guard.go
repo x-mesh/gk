@@ -15,6 +15,8 @@ import (
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/policy/rules"
+	"github.com/x-mesh/gk/internal/secrets"
+	"github.com/x-mesh/gk/internal/secrets/awsverify"
 	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 )
 
@@ -43,6 +45,17 @@ by severity (error → warn → info). Exit codes:
   0 — no violations, or info-only
   1 — one or more warnings
   2 — one or more errors
+
+--verify checks each AWS access key that the embedded ruleset finds with STS
+GetCallerIdentity, after it pairs the key ID with a secret access key on the
+same or nearby lines. When several nearby values could be the secret, it tries
+up to three of them, so one key costs at most three requests. The request is signed with the secret, so
+the secret is not sent, but the call can appear in the key owner's
+CloudTrail. Each key gets a status: valid (STS accepted it), rejected (STS
+refused the key ID or token), unknown (the check failed or no nearby secret
+matched), or unverifiable (no secret or session token was found, or the key
+type is not supported). The status annotates the finding; it never removes
+it or changes its severity.
 `,
 		RunE: runGuardCheck,
 	}
@@ -50,7 +63,9 @@ by severity (error → warn → info). Exit codes:
 	checkCmd.Flags().Bool("staged", false, "scan only the staged changes (what the next commit adds); the pre-commit hook uses this")
 	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
 	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
+	checkCmd.Flags().Bool("verify", false, "check each AWS access key found against STS GetCallerIdentity (network; never with --staged)")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
+	checkCmd.MarkFlagsMutuallyExclusive("staged", "verify")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "fetch")
 
 	initCmd := &cobra.Command{
@@ -82,8 +97,18 @@ func guardRegistry() *policy.Registry {
 	secretRule.ScannerLabel = func() string {
 		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
 	}
+	secretRule.VerifyAWS = verifyAWSCredentials
 	_ = reg.Register(secretRule)
 	return reg
+}
+
+func verifyAWSCredentials(ctx context.Context, creds []*secrets.AWSCredential) map[string]policy.Verification {
+	results := (&awsverify.Verifier{}).Verify(ctx, creds)
+	out := make(map[string]policy.Verification, len(results))
+	for id, r := range results {
+		out[id] = policy.Verification{Status: string(r.Status), Account: r.Account, ARN: r.ARN, Code: r.Code}
+	}
+	return out
 }
 
 // guardFetch fetches every remote so the history scan reaches branches that
@@ -131,6 +156,15 @@ type violationJSON struct {
 	Line     int    `json:"line,omitempty"`
 	Message  string `json:"message"`
 	Hint     string `json:"hint,omitempty"`
+	// Verification is present only on findings that --verify checked.
+	Verification *verificationJSON `json:"verification,omitempty"`
+}
+
+type verificationJSON struct {
+	Status  string `json:"status"`
+	Account string `json:"account,omitempty"`
+	ARN     string `json:"arn,omitempty"`
+	Code    string `json:"code,omitempty"`
 }
 
 func runGuardCheck(cmd *cobra.Command, _ []string) error {
@@ -156,6 +190,7 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		Staged:  staged,
 		History: history || doFetch,
 	}
+	in.Verify, _ = cmd.Flags().GetBool("verify")
 
 	violations, errs := reg.Evaluate(ctx, in)
 	violations = append(fetchViolations, violations...)
@@ -197,14 +232,18 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 func violationsJSON(vs []policy.Violation) []violationJSON {
 	out := make([]violationJSON, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, violationJSON{
+		j := violationJSON{
 			RuleID:   v.RuleID,
 			Severity: v.Severity.String(),
 			File:     v.File,
 			Line:     v.Line,
 			Message:  v.Message,
 			Hint:     v.Hint,
-		})
+		}
+		if r := v.Verification; r != nil {
+			j.Verification = &verificationJSON{Status: r.Status, Account: r.Account, ARN: r.ARN, Code: r.Code}
+		}
+		out = append(out, j)
 	}
 	return out
 }
@@ -234,9 +273,23 @@ func printViolationsHuman(w io.Writer, vs []policy.Violation) {
 			}
 		}
 		fmt.Fprintf(w, "%-5s  %s  %s\n", v.Severity, loc, v.Message)
+		if v.Verification != nil {
+			fmt.Fprintf(w, "       verify: %s\n", verificationLabel(*v.Verification))
+		}
 		if v.Hint != "" {
 			fmt.Fprintf(w, "       hint: %s\n", v.Hint)
 		}
+	}
+}
+
+func verificationLabel(r policy.Verification) string {
+	switch {
+	case r.Account != "":
+		return fmt.Sprintf("%s (account %s, %s)", r.Status, r.Account, r.ARN)
+	case r.Code != "":
+		return fmt.Sprintf("%s (%s)", r.Status, r.Code)
+	default:
+		return r.Status
 	}
 }
 

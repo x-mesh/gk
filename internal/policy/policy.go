@@ -65,6 +65,9 @@ type Input struct {
 	// History widens evaluation to every commit reachable from any ref.
 	// The default scope is the current content of the tracked files.
 	History bool
+	// Verify asks rules that can test a finding against its issuer (live
+	// credential checks) to do so. It adds network calls, so it is opt-in.
+	Verify bool
 }
 
 // Violation describes a single policy breach. Severity is assigned by the
@@ -76,6 +79,18 @@ type Violation struct {
 	Line     int      // 0 when N/A
 	Message  string   // human-readable one-liner
 	Hint     string   // optional fix suggestion
+	// Verification is set when Input.Verify ran a live check for this finding.
+	Verification *Verification
+}
+
+// Verification is the outcome of a live credential check. Status is one of
+// valid, rejected, unknown, or unverifiable; Code names the reason when the
+// status is not valid.
+type Verification struct {
+	Status  string
+	Account string
+	ARN     string
+	Code    string
 }
 
 // Rule is the contract every policy implementation satisfies.

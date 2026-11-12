@@ -156,6 +156,7 @@ gk guard init        # scaffold .gk.yaml with commented policy stubs
 gk guard check       # evaluate all policy rules on the tracked files; exit 0/1/2
 gk guard check --history   # scan every commit reachable from any ref
 gk guard check --fetch     # fetch every remote, then scan the history
+gk guard check --verify    # check each AWS key found against STS (network)
 
 # Onboarding
 gk doctor            # report env health + fix commands

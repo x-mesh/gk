@@ -96,19 +96,19 @@ func TestTokenCredential_ExtendsTruncatedMatch(t *testing.T) {
 	// match stops inside this 60-character tail.
 	match := token[:len("xoxa-2-")+48]
 	line := `SLACK_TOKEN="` + token + `".`
-	c := TokenCredential("slack-legacy-workspace-token", line, match)
+	c := TokenCredential("slack-legacy-workspace-token", line, strings.Index(line, match), match)
 	if c == nil || c.Value() != token || c.Provider() != ProviderSlack {
 		t.Fatalf("credential = %v, want the full token", c)
 	}
 	gcp := "AIza" + strings.Repeat("Ab_-9", 7)
-	if c := TokenCredential("gcp-api-key", "key: "+gcp+";", gcp); c == nil || c.Value() != gcp || c.Provider() != ProviderGCP {
+	if c := TokenCredential("gcp-api-key", "key: "+gcp+";", len("key: "), gcp); c == nil || c.Value() != gcp || c.Provider() != ProviderGCP {
 		t.Errorf("gcp credential = %v", c)
 	}
 }
 
 func TestTokenCredential_SkipsUncheckableRules(t *testing.T) {
 	for _, rule := range []string{"slack-webhook-url", "slack-config-refresh-token", "github-pat", "aws-access-token"} {
-		if c := TokenCredential(rule, "x", "x"); c != nil {
+		if c := TokenCredential(rule, "x", 0, "x"); c != nil {
 			t.Errorf("%s: credential = %v, want nil", rule, c)
 		}
 	}
@@ -119,5 +119,24 @@ func TestCredential_IDSeparatesProviders(t *testing.T) {
 	b := NewTokenCredential(ProviderGCP, "k", "v1")
 	if a.ID() == b.ID() {
 		t.Error("same value under two providers shares one ID")
+	}
+}
+
+func TestTokenCredential_ExtendsFromItsOwnColumn(t *testing.T) {
+	match := "xoxa-" + "2-" + strings.Repeat("aB3", 16)
+	first, second := match+"FIRSTtail", match+"SECONDtail"
+	line := "A=" + first + " B=" + second
+	col := strings.LastIndex(line, match)
+	if c := TokenCredential("slack-legacy-workspace-token", line, col, match); c == nil || c.Value() != second {
+		t.Errorf("second occurrence: credential = %v, want the second token", c)
+	}
+	if c := TokenCredential("slack-legacy-workspace-token", line, 2, match); c == nil || c.Value() != first {
+		t.Errorf("first occurrence: credential = %v, want the first token", c)
+	}
+	// A column that does not hold the match must not pick another token.
+	for _, bad := range []int{-1, 0, len(line), len(line) + 5} {
+		if c := TokenCredential("slack-legacy-workspace-token", line, bad, match); c == nil || c.Value() != match {
+			t.Errorf("col %d: credential = %v, want the match unextended", bad, c)
+		}
 	}
 }

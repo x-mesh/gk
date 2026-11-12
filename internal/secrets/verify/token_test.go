@@ -96,6 +96,7 @@ func TestGCP_Outcomes(t *testing.T) {
 		gcpKey[:38] + "2": {http.StatusForbidden, gcpErrorBody(403, "RATE_LIMIT_EXCEEDED", "")},
 		gcpKey[:38] + "3": {http.StatusBadGateway, ""},
 		gcpKey[:38] + "4": {http.StatusOK, `<html>proxy login</html>`},
+		gcpKey[:38] + "5": {http.StatusForbidden, gcpErrorBody(403, "SERVICE_DISABLED", "projects/654321")},
 	}
 	var leaked atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +121,9 @@ func TestGCP_Outcomes(t *testing.T) {
 		gcpKey[:38] + "2": {Status: StatusUnknown, Code: "RATE_LIMIT_EXCEEDED"},
 		gcpKey[:38] + "3": {Status: StatusUnknown, Code: "http_502"},
 		gcpKey[:38] + "4": {Status: StatusUnknown, Code: CodeRequestFailed},
+		// Google resolves the key to a project before it reports a disabled
+		// API, so the key exists.
+		gcpKey[:38] + "5": {Status: StatusValid, Account: "projects/654321", Code: "SERVICE_DISABLED"},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("Verify =\n %v\nwant\n %v", got, want)

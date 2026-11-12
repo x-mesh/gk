@@ -95,19 +95,21 @@ var tokenRules = map[string]struct {
 // nil for any other rule. Several Slack rules bound the length of the token
 // tail, so the match can stop inside a longer token, and a truncated token
 // would read as invalid. The value is therefore extended to the end of the
-// token's character run on the raw line.
-func TokenCredential(ruleID, line, match string) *Credential {
+// token's character run on the raw line. col is where match starts in line:
+// two tokens on one line can share the same truncated match, so the match
+// text alone does not say which token a finding belongs to. If line does not
+// hold match at col, the value is match as is.
+func TokenCredential(ruleID, line string, col int, match string) *Credential {
 	r, ok := tokenRules[ruleID]
 	if !ok || match == "" {
 		return nil
 	}
 	value := match
-	if i := strings.Index(line, match); i >= 0 {
-		end := i + len(match)
+	if end := col + len(match); col >= 0 && end <= len(line) && line[col:end] == match {
 		for end < len(line) && r.char(line[end]) {
 			end++
 		}
-		value = line[i:end]
+		value = line[col:end]
 	}
 	// slack-legacy-workspace-token also matches xoxr-, which looks like a
 	// refresh token; Slack does not document it, so it is not sent.

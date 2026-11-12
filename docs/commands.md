@@ -3782,7 +3782,7 @@ Without a flag, the built-in scan reads the current content of every tracked fil
 
 #### Live credential check
 
-`--verify` sends one read-only identity request to the issuer of each distinct credential that the built-in scan finds. Use this flag only on credentials that you are authorized to check.
+`--verify` sends a read-only identity request to the issuer of each distinct credential that the built-in scan finds. One Slack token or one GCP API key causes one request. One AWS access key ID can cause a maximum of three requests. Use this flag only on credentials that you are authorized to check.
 
 | Provider | Rules | Request | What gk sends |
 |----------|-------|---------|---------------|

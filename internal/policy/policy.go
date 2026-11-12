@@ -83,14 +83,23 @@ type Violation struct {
 	Verification *Verification
 }
 
-// Verification is the outcome of a live credential check. Status is one of
-// valid, rejected, unknown, or unverifiable; Code names the reason when the
-// status is not valid.
+// Verification is the outcome of a live credential check. Provider is aws,
+// slack, or gcp. Status is one of valid, rejected, unknown, or unverifiable.
+// Account is the AWS account, Slack team ID, or GCP project; ARN is the AWS
+// caller; Identity is the Slack user ID. AccountName, URL, and IdentityName
+// are the Slack workspace name, workspace URL, and user name. Code is the
+// issuer's error code or a local reason, and on a valid GCP key the
+// restriction it hit.
 type Verification struct {
-	Status  string
-	Account string
-	ARN     string
-	Code    string
+	Provider     string
+	Status       string
+	Account      string
+	AccountName  string
+	URL          string
+	ARN          string
+	Identity     string
+	IdentityName string
+	Code         string
 }
 
 // Rule is the contract every policy implementation satisfies.

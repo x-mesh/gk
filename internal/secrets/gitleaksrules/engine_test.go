@@ -364,18 +364,58 @@ func TestScan_AWSKeyCarriesPairedSecret(t *testing.T) {
 	}
 	for name, fs := range cases {
 		f, ok := find(fs, "aws-access-token")
-		if !ok || f.AWS == nil {
+		if !ok || f.Credential == nil {
 			t.Fatalf("%s: aws-access-token without credential in %v", name, kinds(fs))
 		}
-		if f.AWS.KeyID() != awsKey || len(f.AWS.SecretCandidates()) != 1 || f.AWS.SecretCandidates()[0] != secret {
-			t.Errorf("%s: credential = %s with %d candidates", name, f.AWS, len(f.AWS.SecretCandidates()))
+		if f.Credential.Value() != awsKey || len(f.Credential.SecretCandidates()) != 1 || f.Credential.SecretCandidates()[0] != secret {
+			t.Errorf("%s: credential = %s with %d candidates", name, f.Credential, len(f.Credential.SecretCandidates()))
 		}
 	}
 	f, ok := find(ScanDiff(addDiff("a.sh", 1, "+export GH="+githubPAT)), "github-pat")
 	if !ok {
 		t.Fatal("github-pat not found")
 	}
-	if f.AWS != nil {
+	if f.Credential != nil {
 		t.Errorf("non-AWS finding carries a credential")
+	}
+}
+
+func TestScan_TokenFindingsCarryCredential(t *testing.T) {
+	bot := "xoxb-" + "123456789012-1234567890123-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+	gcp := "AIza" + "SyD3x4mpl3K3yV4lu3F0rT3st1ngPurp0sX"
+	hook := "https://hooks.slack.com/services/" + "T00000000/B00000000/" + "XXXXXXXXXXXXXXXXXXXXXXXX"
+	fs := ScanFile("app.env", "SLACK="+bot+"\nGOOGLE_KEY="+gcp+"\nHOOK="+hook+"\n")
+	for kind, want := range map[string]string{"slack-bot-token": bot, "gcp-api-key": gcp} {
+		f, ok := find(fs, kind)
+		if !ok {
+			t.Fatalf("%s not found in %v", kind, kinds(fs))
+		}
+		if f.Credential == nil || f.Credential.Value() != want {
+			t.Errorf("%s: credential = %v", kind, f.Credential)
+		}
+	}
+	f, ok := find(fs, "slack-webhook-url")
+	if !ok {
+		t.Fatalf("slack-webhook-url not found in %v", kinds(fs))
+	}
+	if f.Credential != nil {
+		t.Error("webhook URL carries a credential")
+	}
+}
+
+// slack-legacy-workspace-token caps the tail at 48 characters, so the
+// engine's match stops inside a longer token and must be extended.
+func TestScan_SlackTokenLongerThanRuleIsExtended(t *testing.T) {
+	token := "xoxa-" + "2-" + strings.Repeat("Ab3Cd9", 10)
+	f, ok := find(ScanFile("app.env", "SLACK_TOKEN="+token+"\n"), "slack-legacy-workspace-token")
+	if !ok {
+		t.Fatal("slack-legacy-workspace-token not found")
+	}
+	if f.Credential == nil || f.Credential.Value() != token {
+		t.Errorf("credential = %v, want the %d-character token", f.Credential, len(token))
+	}
+	refresh := "xoxr-" + strings.Repeat("Ab3Cd9", 4)
+	if f, ok := find(ScanFile("app.env", "R="+refresh+"\n"), "slack-legacy-workspace-token"); !ok || f.Credential != nil {
+		t.Errorf("xoxr- token: found=%v credential=%v, want found without a credential", ok, f.Credential)
 	}
 }

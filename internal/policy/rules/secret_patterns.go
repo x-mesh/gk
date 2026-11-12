@@ -46,10 +46,11 @@ type SecretPatternsRule struct {
 	// actually falls back. Nil reports the built-in pattern count.
 	ScannerLabel func() string
 
-	// VerifyAWS checks the AWS credentials paired by the embedded engine when
-	// Input.Verify is set, keyed by raw key ID. The caller injects it so this
-	// package makes no network calls. Nil skips verification.
-	VerifyAWS func(context.Context, []*secrets.AWSCredential) map[string]policy.Verification
+	// Verify checks the credentials the embedded engine attached to its
+	// findings when Input.Verify is set, keyed by Credential.ID. The caller
+	// injects it so this package makes no network calls. Nil skips
+	// verification.
+	Verify func(context.Context, []*secrets.Credential) map[string]policy.Verification
 
 	// runGitleaks is a test seam; nil means scan.RunGitleaks.
 	runGitleaks func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error)
@@ -177,15 +178,15 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 	}
 
 	var verified map[string]policy.Verification
-	if in.Verify && r.VerifyAWS != nil {
-		var creds []*secrets.AWSCredential
+	if in.Verify && r.Verify != nil {
+		var creds []*secrets.Credential
 		for _, f := range findings {
-			if f.AWS != nil {
-				creds = append(creds, f.AWS)
+			if f.Credential != nil {
+				creds = append(creds, f.Credential)
 			}
 		}
 		if len(creds) > 0 {
-			verified = r.VerifyAWS(ctx, creds)
+			verified = r.Verify(ctx, creds)
 		}
 	}
 
@@ -199,48 +200,75 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
 		}
-		if f.AWS != nil && verified != nil {
-			if res, ok := verified[f.AWS.KeyID()]; ok {
+		if f.Credential != nil && verified != nil {
+			if res, ok := verified[f.Credential.ID()]; ok {
 				v.Verification = &res
-				if res.Status == verifyStatusValid {
-					v.Hint = "the key is live: deactivate it in IAM now, then rotate it"
+				if hint, ok := liveHint[res.Provider]; ok && res.Status == verifyStatusValid {
+					v.Hint = hint
 				}
 			}
 		}
 		out = append(out, v)
 	}
-	if in.Verify && r.VerifyAWS != nil {
+	if in.Verify && r.Verify != nil {
 		out = append(out, verifySummary(r.Name(), verified))
 	}
 	return out, nil
 }
 
-// verifyStatusValid mirrors awsverify.StatusValid without importing the
+// verifyStatusValid mirrors verify.StatusValid without importing the
 // network package here.
 const verifyStatusValid = "valid"
 
-// verifySummary counts the distinct keys per outcome, so a key repeated
-// across files or commits counts once.
+// liveHint replaces the generic hint on a finding the issuer accepted. A
+// live GCP API key can be a client key that is public by design, so its
+// hint points at restrictions instead of deletion only.
+var liveHint = map[string]string{
+	secrets.ProviderAWS:   "the key is live: deactivate it in IAM now, then rotate it",
+	secrets.ProviderSlack: "the token is live: revoke it now (auth.revoke, or reinstall the app), then issue a new one",
+	secrets.ProviderGCP:   "the key exists: delete it, or if it is a client key that must stay public, restrict it to its APIs and apps in the Google Cloud console",
+}
+
+var providerLabel = map[string]string{
+	secrets.ProviderAWS:   "AWS",
+	secrets.ProviderSlack: "Slack",
+	secrets.ProviderGCP:   "GCP",
+}
+
+// verifySummary counts the distinct credentials per outcome, so a value
+// repeated across files or commits counts once.
 func verifySummary(rule string, verified map[string]policy.Verification) policy.Violation {
 	if len(verified) == 0 {
-		return policy.Violation{RuleID: rule, Severity: policy.SeverityInfo, Message: "verify: no AWS access key to check"}
+		return policy.Violation{RuleID: rule, Severity: policy.SeverityInfo, Message: "verify: no AWS, Slack, or GCP credential to check"}
 	}
-	counts := map[string]int{}
+	counts := map[string]map[string]int{}
 	for _, v := range verified {
-		counts[v.Status]++
+		if counts[v.Provider] == nil {
+			counts[v.Provider] = map[string]int{}
+		}
+		counts[v.Provider][v.Status]++
 	}
-	var parts []string
-	for _, s := range []string{"valid", "rejected", "unknown", "unverifiable"} {
-		if counts[s] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[s], s))
+	var groups []string
+	for _, p := range []string{secrets.ProviderAWS, secrets.ProviderSlack, secrets.ProviderGCP} {
+		var parts []string
+		for _, s := range []string{"valid", "rejected", "unknown", "unverifiable"} {
+			if n := counts[p][s]; n > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", n, s))
+			}
+		}
+		if len(parts) > 0 {
+			groups = append(groups, providerLabel[p]+" "+strings.Join(parts, ", "))
 		}
 	}
-	return policy.Violation{
+	v := policy.Violation{
 		RuleID:   rule,
 		Severity: policy.SeverityInfo,
-		Message:  fmt.Sprintf("verify: checked %d AWS access key(s) with STS GetCallerIdentity: %s", len(verified), strings.Join(parts, ", ")),
-		Hint:     "rejected means the global STS endpoint refused the key; a China or GovCloud key is refused there too",
+		Message:  fmt.Sprintf("verify: checked %d credential(s): %s", len(verified), strings.Join(groups, "; ")),
 	}
+	if counts[secrets.ProviderAWS]["rejected"] > 0 {
+		v.Hint = "AWS rejected means the global STS endpoint refused the key; a China or GovCloud key is refused there too"
+	}
+	return v
 }
 
 func scanCommand(ctx context.Context, runner git.Runner, args ...string) (string, error) {

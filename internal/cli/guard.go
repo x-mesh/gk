@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,8 +17,8 @@ import (
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/policy/rules"
 	"github.com/x-mesh/gk/internal/secrets"
-	"github.com/x-mesh/gk/internal/secrets/awsverify"
 	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
+	"github.com/x-mesh/gk/internal/secrets/verify"
 )
 
 func init() {
@@ -46,16 +47,25 @@ by severity (error → warn → info). Exit codes:
   1 — one or more warnings
   2 — one or more errors
 
---verify checks each AWS access key that the embedded ruleset finds with STS
-GetCallerIdentity, after it pairs the key ID with a secret access key on the
-same or nearby lines. When several nearby values could be the secret, it tries
-up to three of them, so one key costs at most three requests. The request is signed with the secret, so
-the secret is not sent, but the call can appear in the key owner's
-CloudTrail. Each key gets a status: valid (STS accepted it), rejected (STS
-refused the key ID or token), unknown (the check failed or no nearby secret
-matched), or unverifiable (no secret or session token was found, or the key
-type is not supported). The status annotates the finding; it never removes
-it or changes its severity.
+--verify checks each AWS access key, Slack token, and GCP API key that the
+embedded ruleset finds, with one read-only identity call to its issuer:
+
+  AWS    STS GetCallerIdentity. gk pairs the key ID with a secret access key
+         on the same or nearby lines and tries up to three candidates. The
+         secret signs the request and is not sent. The call can appear in
+         the key owner's CloudTrail.
+  Slack  auth.test on slack.com. The token is sent in the Authorization
+         header. Webhook URLs and refresh tokens are not checked, because
+         the checks for them post a message or rotate the token.
+  GCP    the Discovery API on googleapis.com. The key is sent in the
+         X-Goog-Api-Key header.
+
+Each credential gets a status: valid (the issuer accepted it; for a GCP key,
+also a key whose restrictions blocked the call), rejected (the issuer said
+it is invalid, revoked, or expired), unknown (the check failed or did not
+decide), or unverifiable (no AWS secret or session token was found, or the
+key type is not supported). The status annotates the finding; it never
+removes it or changes its severity.
 `,
 		RunE: runGuardCheck,
 	}
@@ -63,7 +73,7 @@ it or changes its severity.
 	checkCmd.Flags().Bool("staged", false, "scan only the staged changes (what the next commit adds); the pre-commit hook uses this")
 	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
 	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
-	checkCmd.Flags().Bool("verify", false, "check each AWS access key found against STS GetCallerIdentity (network; never with --staged)")
+	checkCmd.Flags().Bool("verify", false, "check each AWS key, Slack token, and GCP API key found with its issuer (network; sends Slack and GCP values; never with --staged)")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "verify")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "fetch")
@@ -97,16 +107,24 @@ func guardRegistry() *policy.Registry {
 	secretRule.ScannerLabel = func() string {
 		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
 	}
-	secretRule.VerifyAWS = verifyAWSCredentials
+	secretRule.Verify = verifyCredentials
 	_ = reg.Register(secretRule)
 	return reg
 }
 
-func verifyAWSCredentials(ctx context.Context, creds []*secrets.AWSCredential) map[string]policy.Verification {
-	results := (&awsverify.Verifier{}).Verify(ctx, creds)
+func verifyCredentials(ctx context.Context, creds []*secrets.Credential) map[string]policy.Verification {
+	provider := make(map[string]string, len(creds))
+	for _, c := range creds {
+		provider[c.ID()] = c.Provider()
+	}
+	results := (&verify.Verifier{}).Verify(ctx, creds)
 	out := make(map[string]policy.Verification, len(results))
 	for id, r := range results {
-		out[id] = policy.Verification{Status: string(r.Status), Account: r.Account, ARN: r.ARN, Code: r.Code}
+		out[id] = policy.Verification{
+			Provider: provider[id], Status: string(r.Status),
+			Account: r.Account, AccountName: r.AccountName, URL: r.URL,
+			ARN: r.ARN, Identity: r.Identity, IdentityName: r.IdentityName, Code: r.Code,
+		}
 	}
 	return out
 }
@@ -161,10 +179,16 @@ type violationJSON struct {
 }
 
 type verificationJSON struct {
-	Status  string `json:"status"`
-	Account string `json:"account,omitempty"`
-	ARN     string `json:"arn,omitempty"`
-	Code    string `json:"code,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Status   string `json:"status"`
+	Account  string `json:"account,omitempty"`
+	ARN      string `json:"arn,omitempty"`
+	Identity string `json:"identity,omitempty"`
+	Code     string `json:"code,omitempty"`
+	// Slack only: the workspace name and URL, and the user name.
+	AccountName  string `json:"account_name,omitempty"`
+	URL          string `json:"url,omitempty"`
+	IdentityName string `json:"identity_name,omitempty"`
 }
 
 func runGuardCheck(cmd *cobra.Command, _ []string) error {
@@ -241,7 +265,10 @@ func violationsJSON(vs []policy.Violation) []violationJSON {
 			Hint:     v.Hint,
 		}
 		if r := v.Verification; r != nil {
-			j.Verification = &verificationJSON{Status: r.Status, Account: r.Account, ARN: r.ARN, Code: r.Code}
+			j.Verification = &verificationJSON{
+				Provider: r.Provider, Status: r.Status, Account: r.Account, ARN: r.ARN, Identity: r.Identity, Code: r.Code,
+				AccountName: r.AccountName, URL: r.URL, IdentityName: r.IdentityName,
+			}
 		}
 		out = append(out, j)
 	}
@@ -283,14 +310,36 @@ func printViolationsHuman(w io.Writer, vs []policy.Violation) {
 }
 
 func verificationLabel(r policy.Verification) string {
-	switch {
-	case r.Account != "":
-		return fmt.Sprintf("%s (account %s, %s)", r.Status, r.Account, r.ARN)
-	case r.Code != "":
-		return fmt.Sprintf("%s (%s)", r.Status, r.Code)
-	default:
+	var parts []string
+	if r.Account != "" {
+		parts = append(parts, "account "+r.Account+namedSuffix(r.AccountName, r.URL))
+	}
+	if r.ARN != "" {
+		parts = append(parts, r.ARN)
+	}
+	if r.Identity != "" {
+		parts = append(parts, "user "+r.Identity+namedSuffix(r.IdentityName, ""))
+	}
+	if r.Code != "" {
+		parts = append(parts, r.Code)
+	}
+	if len(parts) == 0 {
 		return r.Status
 	}
+	return r.Status + " (" + strings.Join(parts, ", ") + ")"
+}
+
+// namedSuffix quotes a display name, which can contain spaces or commas, so
+// it stays distinct from the ID before it and the parts after it.
+func namedSuffix(name, url string) string {
+	var s string
+	if name != "" {
+		s += " " + strconv.Quote(name)
+	}
+	if url != "" {
+		s += " " + url
+	}
+	return s
 }
 
 // worstSeverity finds the lowest numeric Severity in vs (most severe).

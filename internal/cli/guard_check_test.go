@@ -187,18 +187,24 @@ func TestGuardCheck_VerificationOutput(t *testing.T) {
 		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "b", Line: 2, Message: "m",
 			Verification: &policy.Verification{Status: "rejected", Code: "InvalidClientTokenId"}},
 		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "c", Line: 3, Message: "m"},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "d", Line: 4, Message: "m",
+			Verification: &policy.Verification{Provider: "slack", Status: "valid", Account: "T0123", AccountName: "Acme, Inc", URL: "https://acme.slack.com/", Identity: "U0456", IdentityName: "deploy bot"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "e", Line: 5, Message: "m",
+			Verification: &policy.Verification{Provider: "gcp", Status: "valid", Account: "projects/123", Code: "API_KEY_HTTP_REFERRER_BLOCKED"}},
 	}
 	var human bytes.Buffer
 	printViolationsHuman(&human, vs)
 	for _, want := range []string{
 		"verify: valid (account 123456789012, arn:aws:iam::123456789012:user/ci)",
 		"verify: rejected (InvalidClientTokenId)",
+		`verify: valid (account T0123 "Acme, Inc" https://acme.slack.com/, user U0456 "deploy bot")`,
+		"verify: valid (account projects/123, API_KEY_HTTP_REFERRER_BLOCKED)",
 	} {
 		if !strings.Contains(human.String(), want) {
 			t.Errorf("human output lacks %q:\n%s", want, human.String())
 		}
 	}
-	if strings.Count(human.String(), "verify:") != 2 {
+	if strings.Count(human.String(), "verify:") != 4 {
 		t.Errorf("unverified finding got a verify line:\n%s", human.String())
 	}
 
@@ -209,7 +215,8 @@ func TestGuardCheck_VerificationOutput(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(nd.String()), "\n")
 	if !strings.Contains(lines[0], `"verification":{"status":"valid","account":"123456789012","arn":"arn:aws:iam::123456789012:user/ci"}`) ||
 		!strings.Contains(lines[1], `"verification":{"status":"rejected","code":"InvalidClientTokenId"}`) ||
-		strings.Contains(lines[2], "verification") {
+		strings.Contains(lines[2], "verification") ||
+		!strings.Contains(lines[3], `"verification":{"provider":"slack","status":"valid","account":"T0123","identity":"U0456","account_name":"Acme, Inc","url":"https://acme.slack.com/","identity_name":"deploy bot"}`) {
 		t.Errorf("NDJSON =\n%s", nd.String())
 	}
 }

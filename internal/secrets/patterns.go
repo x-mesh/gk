@@ -23,9 +23,9 @@ type Finding struct {
 	LineText      string `json:"line_text,omitempty"`
 	ContextBefore string `json:"context_before,omitempty"`
 	ContextAfter  string `json:"context_after,omitempty"`
-	// AWS is set on an embedded-engine aws-access-token finding so
-	// `gk guard check --verify` can test the key; it formats masked.
-	AWS *AWSCredential `json:"-"`
+	// Credential is set on an embedded-engine finding that
+	// `gk guard check --verify` can test (AWS, Slack, GCP); it formats masked.
+	Credential *Credential `json:"-"`
 }
 
 // Location renders the finding's position for display: "file:line" when the

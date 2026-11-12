@@ -31,8 +31,8 @@ func TestPairAWS_FindsSecretInCommonLayouts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := PairAWS(tc.lines, tc.idx, pairKeyID)
-			if c.KeyID() != pairKeyID {
-				t.Errorf("KeyID = %q", c.KeyID())
+			if c.Value() != pairKeyID {
+				t.Errorf("KeyID = %q", c.Value())
 			}
 			if got := c.SecretCandidates(); !slices.Equal(got, []string{pairSecret}) {
 				t.Errorf("SecretCandidates = %q, want the paired secret", got)
@@ -74,7 +74,7 @@ func TestPairAWS_SessionToken(t *testing.T) {
 
 func TestAWSCredential_FormatsMasked(t *testing.T) {
 	c := NewAWSCredential(pairKeyID, []string{pairSecret}, "tok")
-	f := Finding{Kind: "aws-access-token", AWS: c}
+	f := Finding{Kind: "aws-access-token", Credential: c}
 	data, err := json.Marshal(f)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,40 @@ func TestAWSCredential_FormatsMasked(t *testing.T) {
 			t.Errorf("formatted output leaks a raw value: %s", out)
 		}
 	}
-	if c.MaskedKeyID() != "AKIA...ZAM2" {
-		t.Errorf("MaskedKeyID = %q", c.MaskedKeyID())
+	if c.Masked() != "AKIA...ZAM2" {
+		t.Errorf("MaskedKeyID = %q", c.Masked())
+	}
+}
+
+func TestTokenCredential_ExtendsTruncatedMatch(t *testing.T) {
+	tail := strings.Repeat("aB3", 20)
+	token := "xoxa-" + "2-" + tail
+	// slack-legacy-workspace-token caps the tail at 48 characters, so its
+	// match stops inside this 60-character tail.
+	match := token[:len("xoxa-2-")+48]
+	line := `SLACK_TOKEN="` + token + `".`
+	c := TokenCredential("slack-legacy-workspace-token", line, match)
+	if c == nil || c.Value() != token || c.Provider() != ProviderSlack {
+		t.Fatalf("credential = %v, want the full token", c)
+	}
+	gcp := "AIza" + strings.Repeat("Ab_-9", 7)
+	if c := TokenCredential("gcp-api-key", "key: "+gcp+";", gcp); c == nil || c.Value() != gcp || c.Provider() != ProviderGCP {
+		t.Errorf("gcp credential = %v", c)
+	}
+}
+
+func TestTokenCredential_SkipsUncheckableRules(t *testing.T) {
+	for _, rule := range []string{"slack-webhook-url", "slack-config-refresh-token", "github-pat", "aws-access-token"} {
+		if c := TokenCredential(rule, "x", "x"); c != nil {
+			t.Errorf("%s: credential = %v, want nil", rule, c)
+		}
+	}
+}
+
+func TestCredential_IDSeparatesProviders(t *testing.T) {
+	a := NewTokenCredential(ProviderSlack, "k", "v1")
+	b := NewTokenCredential(ProviderGCP, "k", "v1")
+	if a.ID() == b.ID() {
+		t.Error("same value under two providers shares one ID")
 	}
 }

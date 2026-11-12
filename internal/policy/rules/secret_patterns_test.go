@@ -547,19 +547,19 @@ func TestSecretPatternsRule_VerifyAnnotatesAWSFindings(t *testing.T) {
 	live := secrets.NewAWSCredential("AKIA"+"LIVE000000000000", []string{"s"}, "")
 	dead := secrets.NewAWSCredential("AKIA"+"DEAD000000000000", []string{"s"}, "")
 	r := builtinRule(
-		secrets.Finding{Kind: "aws-access-token", File: "a", FileLine: 1, AWS: live},
-		secrets.Finding{Kind: "aws-access-token", File: "b", FileLine: 2, AWS: live},
-		secrets.Finding{Kind: "aws-access-token", File: "c", FileLine: 3, AWS: dead},
+		secrets.Finding{Kind: "aws-access-token", File: "a", FileLine: 1, Credential: live},
+		secrets.Finding{Kind: "aws-access-token", File: "b", FileLine: 2, Credential: live},
+		secrets.Finding{Kind: "aws-access-token", File: "c", FileLine: 3, Credential: dead},
 		secrets.Finding{Kind: "generic-api-key", File: "c", FileLine: 4},
 	)
 	var calls int
-	var got []*secrets.AWSCredential
-	r.VerifyAWS = func(_ context.Context, creds []*secrets.AWSCredential) map[string]policy.Verification {
+	var got []*secrets.Credential
+	r.Verify = func(_ context.Context, creds []*secrets.Credential) map[string]policy.Verification {
 		calls++
 		got = creds
 		return map[string]policy.Verification{
-			live.KeyID(): {Status: "valid", Account: "123456789012"},
-			dead.KeyID(): {Status: "rejected", Code: "InvalidClientTokenId"},
+			live.ID(): {Provider: "aws", Status: "valid", Account: "123456789012"},
+			dead.ID(): {Provider: "aws", Status: "rejected", Code: "InvalidClientTokenId"},
 		}
 	}
 	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
@@ -606,7 +606,7 @@ func TestSecretPatternsRule_VerifyAnnotatesAWSFindings(t *testing.T) {
 		t.Errorf("generic finding annotated")
 	}
 	summary := v[len(v)-1]
-	if summary.Severity != policy.SeverityInfo || !strings.Contains(summary.Message, "checked 2 AWS access key(s)") || !strings.Contains(summary.Message, "1 valid, 1 rejected") {
+	if summary.Severity != policy.SeverityInfo || !strings.Contains(summary.Message, "checked 2 credential(s)") || !strings.Contains(summary.Message, "AWS 1 valid, 1 rejected") {
 		t.Errorf("summary = %q", summary.Message)
 	}
 }
@@ -618,8 +618,8 @@ func TestSecretPatternsRule_VerifyWithGitleaksSaysNothingVerified(t *testing.T) 
 	}
 	r := builtinRule()
 	r.runGitleaks = func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error) { return nil, nil }
-	r.VerifyAWS = func(context.Context, []*secrets.AWSCredential) map[string]policy.Verification {
-		t.Fatal("VerifyAWS called on the gitleaks path")
+	r.Verify = func(context.Context, []*secrets.Credential) map[string]policy.Verification {
+		t.Fatal("Verify called on the gitleaks path")
 		return nil
 	}
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &stubRunner{}, WorkDir: dir, Verify: true})
@@ -628,5 +628,35 @@ func TestSecretPatternsRule_VerifyWithGitleaksSaysNothingVerified(t *testing.T) 
 	}
 	if len(v) != 1 || !strings.Contains(v[0].Message, "nothing was verified") {
 		t.Errorf("violations = %+v", v)
+	}
+}
+
+func TestSecretPatternsRule_VerifyHintAndSummaryPerProvider(t *testing.T) {
+	slack := secrets.NewTokenCredential(secrets.ProviderSlack, "slack-bot-token", "xoxb-1")
+	gcp := secrets.NewTokenCredential(secrets.ProviderGCP, "gcp-api-key", "AIza-1")
+	r := builtinRule(
+		secrets.Finding{Kind: "slack-bot-token", File: "a", FileLine: 1, Credential: slack},
+		secrets.Finding{Kind: "gcp-api-key", File: "b", FileLine: 1, Credential: gcp},
+	)
+	r.Verify = func(context.Context, []*secrets.Credential) map[string]policy.Verification {
+		return map[string]policy.Verification{
+			slack.ID(): {Provider: secrets.ProviderSlack, Status: "valid", Account: "T1", Identity: "U1"},
+			gcp.ID():   {Provider: secrets.ProviderGCP, Status: "rejected", Code: "API_KEY_INVALID"},
+		}
+	}
+	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(v[1].Hint, "revoke") {
+		t.Errorf("slack hint = %q", v[1].Hint)
+	}
+	if strings.Contains(v[2].Hint, "live") {
+		t.Errorf("rejected gcp finding got the live hint: %q", v[2].Hint)
+	}
+	summary := v[len(v)-1]
+	if summary.Message != "verify: checked 2 credential(s): Slack 1 valid; GCP 1 rejected" || summary.Hint != "" {
+		t.Errorf("summary = %q hint %q", summary.Message, summary.Hint)
 	}
 }

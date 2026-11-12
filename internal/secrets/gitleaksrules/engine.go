@@ -353,7 +353,9 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 			Sample:   maskSecret(secret),
 		}
 		if r.id == awsAccessRuleID {
-			f.AWS = secrets.PairAWS(h.lines, line, secret)
+			f.Credential = secrets.PairAWS(h.lines, line, secret)
+		} else {
+			f.Credential = secrets.TokenCredential(r.id, h.lineText(line), secret)
 		}
 		out = append(out, f)
 	}

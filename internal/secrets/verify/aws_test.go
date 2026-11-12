@@ -1,4 +1,4 @@
-package awsverify
+package verify
 
 import (
 	"context"
@@ -31,7 +31,7 @@ func TestSign_MatchesSDKSigner(t *testing.T) {
 		{exampleToken, "content-length;content-type;host;x-amz-date;x-amz-security-token", "a64daa929bff643eed239bb24fb5eb57832724ed73e66f95ba962da6970fa5ac"},
 	}
 	for _, tc := range cases {
-		req, err := (&Verifier{Now: func() time.Time { return now }}).newRequest(context.Background(), exampleKeyID, exampleSecret, tc.token)
+		req, err := (&Verifier{Now: func() time.Time { return now }}).newSTSRequest(context.Background(), exampleKeyID, exampleSecret, tc.token)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,11 +93,11 @@ func TestVerify_Outcomes(t *testing.T) {
 	}
 	srv := httptest.NewServer(sts.handler(t))
 	defer srv.Close()
-	v := &Verifier{Endpoint: srv.URL + "/", Client: srv.Client()}
+	v := &Verifier{AWSEndpoint: srv.URL + "/", Client: srv.Client()}
 
 	wrong := "Wrong0" + exampleSecret[6:]
 	asia := "ASIA" + exampleKeyID[4:]
-	creds := []*secrets.AWSCredential{
+	creds := []*secrets.Credential{
 		// The first candidate is wrong, so the second is tried.
 		secrets.NewAWSCredential(exampleKeyID, []string{wrong, exampleSecret}, ""),
 		// The same key found again in another file is checked once.
@@ -111,7 +111,7 @@ func TestVerify_Outcomes(t *testing.T) {
 		secrets.NewAWSCredential("AKIA"+"AAAAAAAAAAAAAAA4", []string{"Wrong1" + exampleSecret[6:], "Wrong2" + exampleSecret[6:]}, ""),
 		secrets.NewAWSCredential("AKIA"+"AAAAAAAAAAAAAAA4", []string{"Wrong3" + exampleSecret[6:], "Wrong4" + exampleSecret[6:]}, ""),
 	}
-	got := v.Verify(context.Background(), creds)
+	got := byValue(v.Verify(context.Background(), creds))
 	want := map[string]Result{
 		exampleKeyID:                {Status: StatusValid, Account: "123456789012", ARN: "arn:aws:iam::123456789012:user/ci"},
 		"AKIA" + "AAAAAAAAAAAAAAA1": {Status: StatusUnknown, Code: "SignatureDoesNotMatch"},
@@ -137,8 +137,8 @@ func TestVerify_InvalidKeyIDIsRejected(t *testing.T) {
 		fmt.Fprint(w, stsError("InvalidClientTokenId"))
 	}))
 	defer srv.Close()
-	got := (&Verifier{Endpoint: srv.URL + "/", Client: srv.Client()}).Verify(context.Background(),
-		[]*secrets.AWSCredential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret, "Other0" + exampleSecret[6:]}, "")})
+	got := byValue((&Verifier{AWSEndpoint: srv.URL + "/", Client: srv.Client()}).Verify(context.Background(),
+		[]*secrets.Credential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret, "Other0" + exampleSecret[6:]}, "")}))
 	if r := got[exampleKeyID]; r != (Result{Status: StatusRejected, Code: "InvalidClientTokenId"}) {
 		t.Errorf("result = %+v", r)
 	}
@@ -148,8 +148,8 @@ func TestVerify_NetworkFailureIsUnknown(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL + "/"
 	srv.Close()
-	got := (&Verifier{Endpoint: url}).Verify(context.Background(),
-		[]*secrets.AWSCredential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret}, "")})
+	got := byValue((&Verifier{AWSEndpoint: url}).Verify(context.Background(),
+		[]*secrets.Credential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret}, "")}))
 	if r := got[exampleKeyID]; r != (Result{Status: StatusUnknown, Code: CodeRequestFailed}) {
 		t.Errorf("result = %+v", r)
 	}
@@ -160,9 +160,19 @@ func TestVerify_NonXMLErrorIsUnknown(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
-	got := (&Verifier{Endpoint: srv.URL + "/", Client: srv.Client()}).Verify(context.Background(),
-		[]*secrets.AWSCredential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret}, "")})
+	got := byValue((&Verifier{AWSEndpoint: srv.URL + "/", Client: srv.Client()}).Verify(context.Background(),
+		[]*secrets.Credential{secrets.NewAWSCredential(exampleKeyID, []string{exampleSecret}, "")}))
 	if r := got[exampleKeyID]; r != (Result{Status: StatusUnknown, Code: "http_502"}) {
 		t.Errorf("result = %+v", r)
 	}
+}
+
+// byValue rekeys results by the raw value, since every credential in a test
+// has one provider.
+func byValue(rs map[string]Result) map[string]Result {
+	out := make(map[string]Result, len(rs))
+	for id, r := range rs {
+		out[id[strings.IndexByte(id, 0)+1:]] = r
+	}
+	return out
 }

@@ -3768,7 +3768,7 @@ gk guard check [flags]
 | `--staged` | `false` | Scan only the staged changes. The `pre-commit` hook uses this flag. |
 | `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
 | `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
-| `--verify` | `false` | Check each AWS access key that the built-in scan finds with STS `GetCallerIdentity`. You cannot use this flag with `--staged`. See "Live AWS key check" below. |
+| `--verify` | `false` | Check each AWS access key, Slack token, and GCP API key that the built-in scan finds with its issuer. This flag sends Slack tokens and GCP API keys to `slack.com` and `googleapis.com`. You cannot use this flag with `--staged`. See "Live credential check" below. |
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
@@ -3780,20 +3780,30 @@ Without a flag, the built-in scan reads the current content of every tracked fil
 | 1 | at least one warning |
 | 2 | at least one error |
 
-#### Live AWS key check
+#### Live credential check
 
-`--verify` pairs each AWS access key ID with a secret access key on the same line or on the five lines above or below it. Then it sends an STS `GetCallerIdentity` request to `sts.amazonaws.com` for each distinct key ID. If more than one nearby value can be the secret, gk tries up to three values. Thus one key ID causes at most three requests. The secret signs the request, but gk does not send the secret. The request can appear in the CloudTrail log of the key owner. Use this flag only on keys that you are authorized to check.
+`--verify` sends one read-only identity request to the issuer of each distinct credential that the built-in scan finds. Use this flag only on credentials that you are authorized to check.
+
+| Provider | Rules | Request | What gk sends |
+|----------|-------|---------|---------------|
+| AWS | `aws-access-token` | STS `GetCallerIdentity` on `sts.amazonaws.com` | A request that the secret signs. gk does not send the secret. |
+| Slack | `slack-bot-token`, `slack-user-token`, `slack-app-token`, `slack-config-access-token`, and the `slack-legacy-*` token rules | `auth.test` on `slack.com` | The token, in the `Authorization` header. |
+| GCP | `gcp-api-key` | The Discovery API on `www.googleapis.com` | The key, in the `X-Goog-Api-Key` header. |
+
+For AWS, gk pairs each access key ID with a secret access key on the same line or on the five lines above or below it. If more than one nearby value can be the secret, gk tries up to three values. Thus one key ID causes at most three requests. The request can appear in the CloudTrail log of the key owner.
+
+For Slack and GCP, gk extends the match to the end of the token on the line, because some rules match only the start of a long token. gk does not check `slack-webhook-url` or `slack-config-refresh-token`, because the checks for them post a message or rotate the token. gk also does not send `xoxr-` values that `slack-legacy-workspace-token` matches, because Slack does not document that token type. gk sends credentials only in headers and does not follow redirects.
 
 Each checked finding gets one status:
 
 | Status | Meaning |
 |--------|---------|
-| `valid` | STS accepted the key at the time of the call. The result shows the account ID and the ARN. |
-| `rejected` | STS refused the key ID or the session token (`InvalidClientTokenId`, `ExpiredToken`). The global endpoint also refuses a China or GovCloud key. |
-| `unknown` | The check did not decide. Examples are a network error, a timeout, or a nearby secret that did not match (`SignatureDoesNotMatch`). |
-| `unverifiable` | No request was sent. gk did not find a secret or a session token, or the key type is not `AKIA` or `ASIA`. |
+| `valid` | The issuer accepted the credential at the time of the call. For GCP, the response must be the Discovery API response. AWS shows the account ID and the ARN. Slack shows the workspace ID, name, and URL, and the user ID and name. For GCP, `valid` also means that the key exists but its restrictions blocked the call (`API_KEY_SERVICE_BLOCKED`, `API_KEY_HTTP_REFERRER_BLOCKED`, `API_KEY_IP_ADDRESS_BLOCKED`, `API_KEY_ANDROID_APP_BLOCKED`, `API_KEY_IOS_APP_BLOCKED`). The code names the restriction, and the account shows the project when Google returns it. gk also reads `SERVICE_DISABLED` as a key that exists. This is an inference: Google returns that reason after it finds the key's project. |
+| `rejected` | The issuer said that the credential itself is invalid, revoked, or expired: `InvalidClientTokenId` or `ExpiredToken` for AWS, `invalid_auth`, `token_revoked`, `token_expired`, or `account_inactive` for Slack, and `API_KEY_INVALID` for GCP. The global STS endpoint also refuses a China or GovCloud key. Slack documents `auth.test` for bot (`xoxb-`) and user (`xoxp-`) tokens only. For other Slack token types, these errors give `unknown`. |
+| `unknown` | The check did not decide. Examples are a network error, a timeout, a rate limit, a redirect, or a nearby AWS secret that did not match (`SignatureDoesNotMatch`). |
+| `unverifiable` | No request was sent. gk did not find an AWS secret or session token, or the AWS key type is not `AKIA` or `ASIA`. |
 
-The status annotates the finding. It does not remove the finding or change its severity. The human output adds a `verify:` line, and `--json` adds a `verification` object. The scan adds one `info` violation that counts the keys for each status. If gitleaks scans instead of the built-in scan, gk does not verify, and it adds an `info` violation that tells you.
+The status annotates the finding. It does not remove the finding or change its severity. The human output adds a `verify:` line. `--json` adds a `verification` object with `provider`, `status`, `account`, `arn`, `identity`, and `code`. Slack results also have `account_name` (the workspace name), `url` (the workspace URL), and `identity_name` (the user name). The scan adds one `info` violation that counts the credentials for each provider and status. If gitleaks scans instead of the built-in scan, gk does not verify, and it adds an `info` violation that tells you.
 
 #### Rules shipped in v0.9
 
@@ -3816,7 +3826,7 @@ gk guard check --json | jq 'select(.severity == "error")'
 # Full history, including branches that exist only on a remote
 gk guard check --fetch
 
-# Check whether the AWS keys found are live
+# Check whether the AWS keys, Slack tokens, and GCP API keys found are live
 gk guard check --verify
 ```
 

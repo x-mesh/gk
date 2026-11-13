@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"math"
 	"regexp"
+	"regexp/syntax"
 	"runtime"
 	"slices"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/secrets/gitleaksrules/codec"
@@ -79,6 +81,9 @@ type rule struct {
 	entropy     float64
 	secretGroup int
 	allowlists  []ruleAllow
+	// windowed is set when a decoded pass may search only the windows
+	// around its segments; see windowable.
+	windowed bool
 }
 
 type engine struct {
@@ -155,6 +160,7 @@ func compile(rs ruleset) *engine {
 			path:        mustCompile(jr.Path),
 			entropy:     jr.Entropy,
 			secretGroup: jr.SecretGroup,
+			windowed:    windowable(jr.Regex),
 		}
 		for _, kw := range lowerAll(jr.Keywords) {
 			id, ok := wordID[kw]
@@ -327,9 +333,64 @@ const maxDecodeDepth = 5
 // decodeWindowMargin is how far around its decoded segments a decoded pass is
 // searched. A decoded pass matters only where a match touches a segment, and
 // searching only there instead of the whole hunk cut a bundle-heavy repo's
-// decoding cost about tenfold; the margin is several times the longest match
-// of a length-bounded rule.
+// decoding cost about tenfold. Rules whose matches can be longer than half
+// the margin search the whole decoded text instead.
 const decodeWindowMargin = 16 << 10
+
+// windowable reports whether no match of pattern is longer than half of
+// decodeWindowMargin. A match that touches a segment then starts inside the
+// segment's window, and a match that starts before the window ends before it
+// reaches one that touches the segment. This is a limit, not a proof of equal
+// results: a run of overlapping matches that crosses the window start can
+// still shift which matches the window search reports.
+func windowable(pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return false
+	}
+	n := maxMatchBytes(re)
+	return n >= 0 && 2*n <= decodeWindowMargin
+}
+
+// maxMatchBytes returns the longest match of re in bytes, or -1 when its
+// length has no bound.
+func maxMatchBytes(re *syntax.Regexp) int {
+	switch re.Op {
+	case syntax.OpLiteral:
+		return utf8.UTFMax * len(re.Rune)
+	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return utf8.UTFMax
+	case syntax.OpCapture, syntax.OpQuest:
+		return maxMatchBytes(re.Sub[0])
+	case syntax.OpStar, syntax.OpPlus:
+		return -1
+	case syntax.OpRepeat:
+		n := maxMatchBytes(re.Sub[0])
+		if re.Max < 0 || n < 0 {
+			return -1
+		}
+		return n * re.Max
+	case syntax.OpConcat, syntax.OpAlternate:
+		total := 0
+		for _, sub := range re.Sub {
+			n := maxMatchBytes(sub)
+			if n < 0 {
+				return -1
+			}
+			if re.Op == syntax.OpConcat {
+				total += n
+			} else {
+				total = max(total, n)
+			}
+		}
+		return total
+	}
+	// Anchors, word boundaries, and empty matches consume no text.
+	return 0
+}
 
 // pass is one decoding pass over a hunk: the text the rules run on, the
 // rule keywords it contains, the segments this pass decoded (none for the
@@ -394,12 +455,12 @@ func segmentWindows(segments []*codec.EncodedSegment, textLen int) [][2]int {
 	return out
 }
 
-// passMatches returns the rule's matches in a pass. In a decoded pass it
-// searches only the windows; a match that reaches a window edge inside the
-// text may be cut short or exist only because of the cut (`^`, `$`, `\b`), so
-// the whole text is searched instead.
+// passMatches returns the rule's matches in a pass. In a decoded pass a
+// windowed rule searches only the windows; a match that reaches a window edge
+// inside the text may be cut short or exist only because of the cut (`^`, `$`,
+// `\b`), so the whole text is searched instead.
 func passMatches(r rule, p pass) [][]int {
-	if p.windows == nil {
+	if p.windows == nil || !r.windowed {
 		return r.regex.FindAllStringSubmatchIndex(p.text, -1)
 	}
 	var out [][]int

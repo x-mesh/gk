@@ -318,6 +318,31 @@ func TestEngine_DecodedSecretFarIntoLargeHunkIsFound(t *testing.T) {
 	}
 }
 
+func TestEngine_LongMatchIntoDecodedTextIsFound(t *testing.T) {
+	e := synth([]jsonRule{{ID: "long", Regex: `start[xyz ]+tok_[a-z0-9]{8}`}}, allowlist{})
+	prefix := "start " + strings.Repeat("xyz ", decodeWindowMargin/2)
+	fs := e.scanDiff(addDiff("a", 1, "+"+prefix+base64.StdEncoding.EncodeToString([]byte("tok_wxyz9876"))))
+	if len(fs) != 1 || fs[0].FileLine != 1 {
+		t.Fatalf("got %v, want the match that starts %d bytes before the decoded text", fs, len(prefix))
+	}
+}
+
+func TestWindowable(t *testing.T) {
+	cases := map[string]bool{
+		`tok_[a-z0-9]{8}`: true,
+		`a|b{10}`:         true,
+		`\bkey=\S+`:       false,
+		`[a-z]{3000}`:     false,
+		`x{4,}`:           false,
+		``:                false,
+	}
+	for pattern, want := range cases {
+		if got := windowable(pattern); got != want {
+			t.Errorf("windowable(%q) = %v, want %v", pattern, got, want)
+		}
+	}
+}
+
 func TestPassMatches_WindowEdgeFallsBackToWholeText(t *testing.T) {
 	cases := []struct {
 		name, regex, text string
@@ -331,7 +356,7 @@ func TestPassMatches_WindowEdgeFallsBackToWholeText(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := rule{regex: regexp.MustCompile(c.regex)}
+			r := rule{regex: regexp.MustCompile(c.regex), windowed: true}
 			got := passMatches(r, pass{text: c.text, windows: [][2]int{c.window}})
 			if fmt.Sprint(got) != fmt.Sprint(c.want) {
 				t.Errorf("passMatches = %v, want %v", got, c.want)

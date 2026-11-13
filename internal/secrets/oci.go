@@ -27,9 +27,9 @@ const (
 	// searched. A config profile that inherits tenancy and region from
 	// [DEFAULT] keeps them within a few lines of its own fingerprint.
 	ociProfileWindow = 10
-	// ociMaxProfiles bounds the candidates for one fingerprint, and so the
-	// requests a verifier spends on one key.
-	ociMaxProfiles = 3
+	// OCIMaxSendable bounds the profiles that can be sent for one key, and
+	// so the requests a verifier spends on it.
+	OCIMaxSendable = 3
 	// ociFingerprintColons is the number of colons in an MD5 fingerprint.
 	ociFingerprintColons = 15
 	// ociMaxPEMBytes is above the PEM size of an 8192-bit RSA key, so a
@@ -50,8 +50,9 @@ var (
 // FindOCIProfiles returns the OCI profile candidates in text, which is a
 // file's content or a raw diff. A fingerprint anchors each profile; the user
 // OCID, tenancy OCID, and region come from the lines around it. When several
-// values are in range, the nearest combinations come first, at most
-// ociMaxProfiles for each fingerprint occurrence. A region counts only on a
+// values are in range, the nearest combinations come first, bounded for
+// each fingerprint occurrence as AppendOCIProfile describes. A region counts
+// only on a
 // line that mentions "region", so another hyphenated word is not taken for
 // one.
 //
@@ -125,11 +126,76 @@ func ociProfilesAround(lines []string, idx int, fingerprint string) []OCIProfile
 		}
 	}
 	slices.SortStableFunc(combos, func(a, b combo) int { return a.dist - b.dist })
-	out := make([]OCIProfile, 0, ociMaxProfiles)
-	for _, c := range combos[:min(len(combos), ociMaxProfiles)] {
-		out = append(out, c.profile)
+	var out []OCIProfile
+	for _, c := range combos {
+		out = AppendOCIProfile(out, c.profile)
 	}
 	return out
+}
+
+// Reasons a profile cannot be sent to OCI.
+const (
+	OCIProfileInvalid          = "invalid_profile"
+	OCIProfileUnsupportedRealm = "unsupported_realm"
+	OCIProfileNoRegion         = "region_not_found"
+)
+
+// ociRealm is the commercial realm, the only one that is checked. Each other
+// realm has its own domain, and none of them could be tried against a real
+// endpoint.
+const ociRealm = "oc1"
+
+var (
+	ociStrictOCIDRe   = regexp.MustCompile(`^ocid1\.(user|tenancy)\.(oc[0-9]{1,2})\.\.[a-z0-9]{20,100}$`)
+	ociStrictRegionRe = regexp.MustCompile(`^[a-z]{2,3}(-[a-z]+){1,3}-[0-9]{1,2}$`)
+)
+
+// Problem returns the reason the profile cannot be sent to OCI, or "". The
+// values come from repository text and become the request host, path, and
+// key ID, so the patterns here are anchored. A verifier must call Problem on
+// each profile right before it builds the request, whatever filtered the
+// list before.
+func (p OCIProfile) Problem() string {
+	user := ociStrictOCIDRe.FindStringSubmatch(p.User)
+	tenancy := ociStrictOCIDRe.FindStringSubmatch(p.Tenancy)
+	switch {
+	case user == nil || tenancy == nil || user[1] != "user" || tenancy[1] != "tenancy":
+		return OCIProfileInvalid
+	case user[2] != ociRealm || tenancy[2] != ociRealm:
+		return OCIProfileUnsupportedRealm
+	case p.Region == "":
+		return OCIProfileNoRegion
+	case !ociStrictRegionRe.MatchString(p.Region):
+		return OCIProfileInvalid
+	}
+	return ""
+}
+
+// AppendOCIProfile adds p to the candidates for one key and keeps the list
+// bounded: at most OCIMaxSendable profiles that can be sent, and at most one
+// that cannot. Only sendable profiles count toward the limit, because a
+// profile that cannot be sent would otherwise push out one that can. The
+// one unsendable profile stays for two reasons: it carries the reason when
+// nothing can be sent, and it keeps a key that has other candidates from
+// looking like a key with a single profile.
+func AppendOCIProfile(list []OCIProfile, p OCIProfile) []OCIProfile {
+	if slices.Contains(list, p) {
+		return list
+	}
+	sendable := 0
+	for _, q := range list {
+		if q.Problem() == "" {
+			sendable++
+		}
+	}
+	if p.Problem() == "" {
+		if sendable >= OCIMaxSendable {
+			return list
+		}
+	} else if len(list)-sendable >= 1 {
+		return list
+	}
+	return append(list, p)
 }
 
 func isDiffFileHeader(line string) bool { return strings.HasPrefix(line, "diff --git ") }
@@ -158,8 +224,8 @@ func nearestOCICandidates(cands []ociCandidate) []ociCandidate {
 // unencrypted RSA key of an accepted size or no profile names it. The
 // fingerprint is computed from the key, so the pairing does not depend on
 // where the profile and the key sit: they can be in different files or
-// commits. At most ociMaxProfiles distinct profiles are kept, in the order
-// given.
+// commits. The profiles are kept in the order given, bounded as
+// AppendOCIProfile describes.
 func BindOCI(candidate *Credential, profiles []OCIProfile) *Credential {
 	if candidate == nil || candidate.pem == "" || len(profiles) == 0 {
 		return nil
@@ -171,12 +237,8 @@ func BindOCI(candidate *Credential, profiles []OCIProfile) *Credential {
 	fingerprint := ociFingerprint(&key.PublicKey)
 	var matched []OCIProfile
 	for _, p := range profiles {
-		if p.Fingerprint != fingerprint || slices.Contains(matched, p) {
-			continue
-		}
-		matched = append(matched, p)
-		if len(matched) == ociMaxProfiles {
-			break
+		if p.Fingerprint == fingerprint {
+			matched = AppendOCIProfile(matched, p)
 		}
 	}
 	if len(matched) == 0 {

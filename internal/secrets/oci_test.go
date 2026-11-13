@@ -63,8 +63,8 @@ func TestFindOCIProfiles_ConfigWithInheritedProfile(t *testing.T) {
 		counts[p.Fingerprint]++
 	}
 	for fp, n := range counts {
-		if n > ociMaxProfiles {
-			t.Errorf("%s has %d candidates, want at most %d", fp, n, ociMaxProfiles)
+		if n > OCIMaxSendable {
+			t.Errorf("%s has %d candidates, want at most %d", fp, n, OCIMaxSendable)
 		}
 	}
 }
@@ -334,8 +334,8 @@ func TestBindOCI_KeepsDistinctMatchingProfiles(t *testing.T) {
 		profiles = append(profiles, p)
 	}
 	got := BindOCI(KeyCandidate(pkcs1PEM(key)), profiles).OCIProfiles()
-	if len(got) != ociMaxProfiles || got[0] != match || got[1].Region != "ap-seoul-2" || got[2].Region != "ap-seoul-3" {
-		t.Errorf("profiles = %+v, want the first %d distinct matches in order", got, ociMaxProfiles)
+	if len(got) != OCIMaxSendable || got[0] != match || got[1].Region != "ap-seoul-2" || got[2].Region != "ap-seoul-3" {
+		t.Errorf("profiles = %+v, want the first %d distinct matches in order", got, OCIMaxSendable)
 	}
 }
 
@@ -359,5 +359,80 @@ func TestOCICredential_NeverFormatsThePEM(t *testing.T) {
 	}
 	if candidate.Value() != "" {
 		t.Errorf("candidate value = %q, want empty", candidate.Value())
+	}
+}
+
+// A profile that cannot be sent must not take the place of one that can.
+// Here the first three profiles that name the key have no region.
+func TestBindOCI_UnsendableProfilesDoNotUseUpTheLimit(t *testing.T) {
+	key := testRSAKey()
+	sendable := profileFor(key)
+	var profiles []OCIProfile
+	for i := range 3 {
+		p := sendable
+		p.Region = ""
+		p.User = "ocid1.user.oc1.." + strings.Repeat(string(rune('d'+i)), 60)
+		profiles = append(profiles, p)
+	}
+	profiles = append(profiles, sendable)
+	got := BindOCI(KeyCandidate(pkcs1PEM(key)), profiles).OCIProfiles()
+	var found bool
+	for _, p := range got {
+		found = found || p == sendable
+	}
+	if !found {
+		t.Errorf("profiles = %+v, want the one with a region among them", got)
+	}
+	// One profile that cannot be sent stays, so the key does not look like
+	// a key with a single profile.
+	if len(got) != 2 {
+		t.Errorf("kept %d profiles, want the sendable one and one of the others", len(got))
+	}
+}
+
+// Around one fingerprint, values of another realm can be nearer than the
+// values that can be sent. The combination that can be sent must survive.
+func TestFindOCIProfiles_UnsendableCombinationsDoNotUseUpTheLimit(t *testing.T) {
+	otherUser := "ocid1.user.oc2.." + strings.Repeat("g", 60)
+	otherTenancy := "ocid1.tenancy.oc2.." + strings.Repeat("h", 60)
+	text := strings.Join([]string{
+		"tenancy=" + ociTenancy,
+		"tenancy=" + otherTenancy,
+		"fingerprint=" + ociFP1,
+		"user=" + otherUser,
+		"user=" + ociUser1,
+		"region=ap-seoul-1",
+	}, "\n")
+	want := OCIProfile{ociFP1, ociUser1, ociTenancy, "ap-seoul-1"}
+	var found bool
+	got := FindOCIProfiles(text)
+	for _, p := range got {
+		found = found || p == want
+	}
+	if !found {
+		t.Errorf("profiles = %+v, want the oc1 combination among them", got)
+	}
+}
+
+func TestAppendOCIProfile_CountsOnlySendableProfiles(t *testing.T) {
+	sendable := func(i int) OCIProfile {
+		return OCIProfile{Fingerprint: ociFP1, User: ociUser1, Tenancy: ociTenancy, Region: fmt.Sprintf("ap-seoul-%d", i)}
+	}
+	unsendable := func(i int) OCIProfile {
+		return OCIProfile{Fingerprint: ociFP1, User: "ocid1.user.oc1.." + strings.Repeat(string(rune('d'+i)), 60), Tenancy: ociTenancy}
+	}
+	order := []OCIProfile{unsendable(0), unsendable(1), sendable(1), sendable(1), unsendable(2), sendable(2), sendable(3), sendable(4), sendable(5)}
+	var got []OCIProfile
+	for _, p := range order {
+		got = AppendOCIProfile(got, p)
+	}
+	want := []OCIProfile{unsendable(0), sendable(1), sendable(2), sendable(3)}
+	if len(got) != len(want) {
+		t.Fatalf("list = %+v, want %d sendable profiles and one that cannot be sent", got, OCIMaxSendable)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("list[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }

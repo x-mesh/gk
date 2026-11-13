@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,14 +18,11 @@ import (
 )
 
 const (
-	// Only the commercial realm is checked. Each other realm has its own
-	// domain, and none of them could be tried against a real endpoint.
-	ociRealm          = "oc1"
 	ociEndpointFormat = "https://identity.%s.oci.oraclecloud.com"
 	ociAPIVersion     = "20160918"
 	// maxOCIAttempts bounds the requests for one key when several profiles
 	// name its fingerprint.
-	maxOCIAttempts = 3
+	maxOCIAttempts = secrets.OCIMaxSendable
 	// OCI answers 401 when the client clock is more than five minutes off.
 	ociMaxClockSkew     = 5 * time.Minute
 	ociNotAuthenticated = "NotAuthenticated"
@@ -34,19 +30,11 @@ const (
 
 // Local reason codes for OCI.
 const (
-	CodeRegionNotFound       = "region_not_found"
-	CodeInvalidProfile       = "invalid_profile"
-	CodeUnsupportedRealm     = "unsupported_realm"
+	CodeRegionNotFound       = secrets.OCIProfileNoRegion
+	CodeInvalidProfile       = secrets.OCIProfileInvalid
+	CodeUnsupportedRealm     = secrets.OCIProfileUnsupportedRealm
 	CodeClockSkew            = "clock_skew"
 	CodeFingerprintNotListed = "fingerprint_not_listed"
-)
-
-// The profile values come from repository text and become the request host,
-// path, and key ID, so they are checked here again and not taken on trust
-// from the scanner.
-var (
-	ociOCIDRe   = regexp.MustCompile(`^ocid1\.(user|tenancy)\.(oc[0-9]{1,2})\.\.[a-z0-9]{20,100}$`)
-	ociRegionRe = regexp.MustCompile(`^[a-z]{2,3}(-[a-z]+){1,3}-[0-9]{1,2}$`)
 )
 
 // checkOCI lists the API keys of the profile's own user, a call every OCI
@@ -66,12 +54,18 @@ func (v *Verifier) checkOCI(ctx context.Context, c *mergedCred) Result {
 	}
 	var first, skipped Result
 	sent := 0
-	for _, p := range c.ociProfiles[:min(len(c.ociProfiles), maxOCIAttempts)] {
-		if code := ociProfileProblem(p); code != "" {
+	for _, p := range c.ociProfiles {
+		// The profile values come from repository text and become the
+		// request host, path, and key ID. They are checked here, right
+		// before the request is built, whatever filtered the list before.
+		if code := p.Problem(); code != "" {
 			if skipped.Code == "" {
 				skipped = Result{Status: StatusUnverifiable, Code: code}
 			}
 			continue
+		}
+		if sent == maxOCIAttempts {
+			break
 		}
 		r := v.callOCI(ctx, c.ociKey, c.value, p)
 		sent++
@@ -89,23 +83,6 @@ func (v *Verifier) checkOCI(ctx context.Context, c *mergedCred) Result {
 		return first
 	}
 	return Result{Status: StatusUnknown, Code: first.Code}
-}
-
-// ociProfileProblem returns the reason a profile cannot be sent, or "".
-func ociProfileProblem(p secrets.OCIProfile) string {
-	user := ociOCIDRe.FindStringSubmatch(p.User)
-	tenancy := ociOCIDRe.FindStringSubmatch(p.Tenancy)
-	switch {
-	case user == nil || tenancy == nil || user[1] != "user" || tenancy[1] != "tenancy":
-		return CodeInvalidProfile
-	case user[2] != ociRealm || tenancy[2] != ociRealm:
-		return CodeUnsupportedRealm
-	case p.Region == "":
-		return CodeRegionNotFound
-	case !ociRegionRe.MatchString(p.Region):
-		return CodeInvalidProfile
-	}
-	return ""
 }
 
 type ociAPIKey struct {

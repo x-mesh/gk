@@ -315,3 +315,56 @@ func TestOCI_RedirectAndNetworkFailure(t *testing.T) {
 		t.Errorf("network failure: result = %+v", r)
 	}
 }
+
+// A profile that cannot be sent must not take the place of one that can.
+// Three distinct profiles that cannot be sent come first here.
+func TestOCI_UnsendableProfilesDoNotUseUpTheCandidateLimit(t *testing.T) {
+	unsendable := []secrets.OCIProfile{
+		ociProfile(ociUser, ""),
+		ociProfile(ociUser, "x.evil.example/"),
+		ociProfile(strings.Replace(ociUser, ".oc1.", ".oc2.", 1), "us-langley-1"),
+	}
+	respond := func(valid bool) func(http.ResponseWriter, string) {
+		return func(w http.ResponseWriter, user string) {
+			if valid && user == ociUserB {
+				fmt.Fprint(w, ociKeyList(ociFixtureFingerprint))
+				return
+			}
+			w.WriteHeader(401)
+			fmt.Fprint(w, ociErrorBody("NotAuthenticated"))
+		}
+	}
+	profiles := append(append([]secrets.OCIProfile{}, unsendable...), ociProfile(ociUserB, "ap-seoul-1"))
+	t.Run("the sendable profile is still tried", func(t *testing.T) {
+		got, calls := runOCI(t, profiles, respond(true))
+		if want := (Result{Status: StatusValid, Account: ociTenancy, Identity: ociUserB}); got != want || calls != 1 {
+			t.Errorf("result = %+v after %d requests, want %+v after 1", got, calls, want)
+		}
+	})
+	// The key has other candidates, so a 401 for the one that could be sent
+	// does not read as a rejected key.
+	t.Run("a 401 stays unknown", func(t *testing.T) {
+		got, calls := runOCI(t, profiles, respond(false))
+		if want := (Result{Status: StatusUnknown, Code: "NotAuthenticated"}); got != want || calls != 1 {
+			t.Errorf("result = %+v after %d requests, want %+v after 1", got, calls, want)
+		}
+	})
+	// The limit is on requests sent. A profile that cannot be sent, ahead
+	// in the list, must not shorten the run of the ones that can.
+	t.Run("the third sendable profile after an unsendable one is tried", func(t *testing.T) {
+		list := []secrets.OCIProfile{
+			ociProfile(ociUser, ""),
+			ociProfile(ociUser, "ap-seoul-1"), ociProfile(ociUser, "ap-tokyo-1"), ociProfile(ociUserB, "ap-seoul-1"),
+		}
+		got, calls := runOCI(t, list, respond(true))
+		if want := (Result{Status: StatusValid, Account: ociTenancy, Identity: ociUserB}); got != want || calls != 3 {
+			t.Errorf("result = %+v after %d requests, want %+v after 3", got, calls, want)
+		}
+	})
+	t.Run("nothing can be sent", func(t *testing.T) {
+		got, calls := runOCI(t, unsendable, respond(true))
+		if want := (Result{Status: StatusUnverifiable, Code: CodeRegionNotFound}); got != want || calls != 0 {
+			t.Errorf("result = %+v after %d requests, want %+v after 0", got, calls, want)
+		}
+	})
+}

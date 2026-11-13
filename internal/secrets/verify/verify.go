@@ -164,9 +164,7 @@ func merge(creds []*secrets.Credential) []*mergedCred {
 			m.ociKey = c.OCIKey()
 		}
 		for _, p := range c.OCIProfiles() {
-			if len(m.ociProfiles) < maxOCIAttempts && !slices.Contains(m.ociProfiles, p) {
-				m.ociProfiles = append(m.ociProfiles, p)
-			}
+			m.ociProfiles = secrets.AppendOCIProfile(m.ociProfiles, p)
 		}
 	}
 	return order

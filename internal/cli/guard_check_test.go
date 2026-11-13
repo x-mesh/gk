@@ -3,6 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +15,9 @@ import (
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
+	"github.com/x-mesh/gk/internal/policy/rules"
+	"github.com/x-mesh/gk/internal/secrets"
+	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -218,5 +225,136 @@ func TestGuardCheck_VerificationOutput(t *testing.T) {
 		strings.Contains(lines[2], "verification") ||
 		!strings.Contains(lines[3], `"verification":{"provider":"slack","status":"valid","account":"T0123","identity":"U0456","account_name":"Acme, Inc","url":"https://acme.slack.com/","identity_name":"deploy bot"}`) {
 		t.Errorf("NDJSON =\n%s", nd.String())
+	}
+}
+
+// An OCI API key is checked with the profile that names its fingerprint.
+// The profile and the key are in different files, and after the removal
+// commit they are only in different commits of the history. This runs the
+// real engine on real git output; only the network call is replaced.
+func TestGuardCheck_OCIKeyIsPairedAcrossFilesAndCommits(t *testing.T) {
+	newKey := func() *rsa.PrivateKey {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	pemOf := func(key *rsa.PrivateKey) string {
+		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	}
+	key, sshKey := newKey(), newKey()
+	fingerprint := secrets.NewOCICredential(key, nil).Value()
+	user := "ocid1.user.oc1.." + strings.Repeat("u", 60)
+	tenancy := "ocid1.tenancy.oc1.." + strings.Repeat("t", 60)
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".oci/config", "[DEFAULT]\nuser="+user+"\nfingerprint="+fingerprint+"\nkey_file=~/.oci/oci_api_key.pem\ntenancy="+tenancy+"\nregion=ap-seoul-1\n")
+	repo.Commit("chore: add the oci config")
+	repo.WriteFile("keys/oci_api_key.pem", pemOf(key))
+	repo.WriteFile("ssh/id_rsa", pemOf(sshKey))
+	repo.Commit("chore: add keys")
+
+	var sent []*secrets.Credential
+	rule := rules.NewSecretPatternsRule()
+	rule.ScanDiff, rule.ScanFile = gitleaksrules.ScanDiff, gitleaksrules.ScanFile
+	rule.Verify = func(_ context.Context, creds []*secrets.Credential) map[string]policy.Verification {
+		sent = creds
+		out := map[string]policy.Verification{}
+		for _, c := range creds {
+			p := c.OCIProfiles()[0]
+			out[c.ID()] = policy.Verification{Provider: c.Provider(), Status: "valid", Account: p.Tenancy, Identity: p.User}
+		}
+		return out
+	}
+	evaluate := func(in policy.Input) []policy.Violation {
+		t.Helper()
+		sent = nil
+		in.Runner, in.WorkDir, in.Verify = &git.ExecRunner{Dir: repo.Dir}, repo.Dir, true
+		vs, err := rule.Evaluate(context.Background(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vs
+	}
+	checkPaired := func(name string, vs []policy.Violation) {
+		t.Helper()
+		want := secrets.OCIProfile{Fingerprint: fingerprint, User: user, Tenancy: tenancy, Region: "ap-seoul-1"}
+		if len(sent) != 1 || sent[0].Provider() != secrets.ProviderOCI || sent[0].Value() != fingerprint || sent[0].OCIProfiles()[0] != want {
+			t.Fatalf("%s: credentials sent to Verify = %v, want the one OCI key with its profile", name, sent)
+		}
+		var paired, unpaired int
+		for _, v := range vs {
+			switch v.File {
+			case "keys/oci_api_key.pem":
+				paired++
+				if v.Verification == nil || v.Verification.Provider != "oci" || v.Verification.Account != tenancy || v.Verification.Identity != user {
+					t.Errorf("%s: OCI key verification = %+v", name, v.Verification)
+				}
+				if !strings.Contains(v.Hint, "OCI console") || v.Severity != policy.SeverityError {
+					t.Errorf("%s: OCI key hint = %q, severity %v", name, v.Hint, v.Severity)
+				}
+			case "ssh/id_rsa":
+				unpaired++
+				if v.Verification != nil {
+					t.Errorf("%s: the SSH key got a verification: %+v", name, v.Verification)
+				}
+			}
+		}
+		if paired != 1 || unpaired != 1 {
+			t.Errorf("%s: findings for the OCI key = %d and the SSH key = %d, want 1 and 1", name, paired, unpaired)
+		}
+		if got, want := vs[len(vs)-1].Message, "verify: checked 1 credential(s): OCI 1 valid"; got != want {
+			t.Errorf("%s: summary = %q, want %q", name, got, want)
+		}
+	}
+
+	checkPaired("tracked files", evaluate(policy.Input{}))
+
+	repo.RunGit("rm", "-q", "-r", ".oci", "keys", "ssh")
+	repo.Commit("chore: remove the config and the keys")
+	checkPaired("history", evaluate(policy.Input{History: true}))
+
+	// The working tree no longer holds them, so the default scope finds nothing to check.
+	vs := evaluate(policy.Input{})
+	if len(sent) != 0 || !strings.Contains(vs[len(vs)-1].Message, "no AWS, Slack, GCP, or OCI credential") {
+		t.Errorf("after removal: sent = %v, summary = %q", sent, vs[len(vs)-1].Message)
+	}
+}
+
+// A key is often not a plain PEM file: it is indented in a YAML block or a
+// heredoc, or it is one line with escaped line breaks in an environment or
+// JSON file. The engine must still match it, and the match must bind.
+func TestGuardCheck_OCIKeyInIndentedAndEscapedPEM(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := strings.TrimSuffix(string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), "\n")
+	fingerprint := secrets.NewOCICredential(key, nil).Value()
+	profile := secrets.OCIProfile{
+		Fingerprint: fingerprint,
+		User:        "ocid1.user.oc1.." + strings.Repeat("u", 60),
+		Tenancy:     "ocid1.tenancy.oc1.." + strings.Repeat("t", 60),
+		Region:      "ap-seoul-1",
+	}
+	files := map[string]string{
+		"deploy/values.yaml": "oci:\n  private_key: |\n    " + strings.ReplaceAll(plain, "\n", "\n    ") + "\n  region: ap-seoul-1\n",
+		"main.tf":            "variable \"private_key\" {\n\tdefault = <<-EOT\n\t\t" + strings.ReplaceAll(plain, "\n", "\n\t\t") + "\n\tEOT\n}\n",
+		"deploy.env":         `OCI_CLI_KEY_CONTENT="` + strings.ReplaceAll(plain, "\n", `\n`) + `\n"` + "\n",
+		"sa.json":            `{"private_key": "` + strings.ReplaceAll(plain, "\n", `\n`) + `\n", "region": "ap-seoul-1"}` + "\n",
+	}
+	for path, content := range files {
+		t.Run(path, func(t *testing.T) {
+			var bound *secrets.Credential
+			for _, f := range gitleaksrules.ScanFile(path, content) {
+				if f.Kind == "private-key" {
+					bound = secrets.BindOCI(f.Credential, []secrets.OCIProfile{profile})
+				}
+			}
+			if bound == nil || bound.Value() != fingerprint || !bound.OCIKey().Equal(key) {
+				t.Errorf("the key in %s did not bind to its profile: %v", path, bound)
+			}
+		})
 	}
 }

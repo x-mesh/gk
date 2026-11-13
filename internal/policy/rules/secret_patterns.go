@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -54,6 +55,36 @@ type SecretPatternsRule struct {
 
 	// runGitleaks is a test seam; nil means scan.RunGitleaks.
 	runGitleaks func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error)
+	// findOCIProfiles is a test seam; nil means secrets.FindOCIProfiles.
+	findOCIProfiles func(string) []secrets.OCIProfile
+}
+
+// ociProfileSink collects the OCI profiles in the text a scan reads. A nil
+// sink collects nothing, which is the case unless verification asked for
+// them. Scans run in parallel, so each unit of work fills its own slot and
+// the slots are joined in order afterwards.
+type ociProfileSink struct {
+	find  func(string) []secrets.OCIProfile
+	slots [][]secrets.OCIProfile
+}
+
+func (s *ociProfileSink) grow(n int) {
+	if s != nil {
+		s.slots = make([][]secrets.OCIProfile, n)
+	}
+}
+
+func (s *ociProfileSink) scan(slot int, text string) {
+	if s != nil {
+		s.slots[slot] = s.find(text)
+	}
+}
+
+func (s *ociProfileSink) profiles() []secrets.OCIProfile {
+	if s == nil {
+		return nil
+	}
+	return slices.Concat(s.slots...)
 }
 
 // NewSecretPatternsRule returns a SecretPatternsRule with redaction enabled.
@@ -151,6 +182,17 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		}}, nil
 	}
 
+	// An OCI key is checked with the profile that names its fingerprint, and
+	// the profile is not a finding, so the scan collects profiles on the side.
+	verify := in.Verify && r.Verify != nil
+	var oci *ociProfileSink
+	if verify {
+		oci = &ociProfileSink{find: r.findOCIProfiles}
+		if oci.find == nil {
+			oci.find = secrets.FindOCIProfiles
+		}
+	}
+
 	var findings []secrets.Finding
 	switch {
 	case in.Staged:
@@ -159,29 +201,36 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			return nil, err
 		}
 		findings = r.ScanDiff(diff)
+		oci.grow(1)
+		oci.scan(0, diff)
 	case in.PushRange != "":
 		diff, err := scanCommand(ctx, in.Runner, "diff", "--no-color", in.PushRange)
 		if err != nil {
 			return nil, err
 		}
 		findings = r.ScanDiff(diff)
+		oci.grow(1)
+		oci.scan(0, diff)
 	case in.History:
 		var err error
-		if findings, err = r.scanHistory(ctx, in.Runner); err != nil {
+		if findings, err = r.scanHistory(ctx, in.Runner, oci); err != nil {
 			return nil, err
 		}
 	default:
 		var err error
-		if findings, err = r.scanTrackedFiles(ctx, in.Runner); err != nil {
+		if findings, err = r.scanTrackedFiles(ctx, in.Runner, oci); err != nil {
 			return nil, err
 		}
 	}
 
 	var verified map[string]policy.Verification
-	if in.Verify && r.Verify != nil {
+	if verify {
+		bindOCIKeys(findings, oci.profiles())
 		var creds []*secrets.Credential
 		for _, f := range findings {
-			if f.Credential != nil {
+			// A private-key finding that no OCI profile names stays a
+			// candidate and is not checked.
+			if f.Credential.Verifiable() {
 				creds = append(creds, f.Credential)
 			}
 		}
@@ -200,7 +249,7 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
 		}
-		if f.Credential != nil && verified != nil {
+		if f.Credential.Verifiable() && verified != nil {
 			if res, ok := verified[f.Credential.ID()]; ok {
 				v.Verification = &res
 				if hint, ok := liveHint[res.Provider]; ok && res.Status == verifyStatusValid {
@@ -210,10 +259,26 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		}
 		out = append(out, v)
 	}
-	if in.Verify && r.Verify != nil {
+	if verify {
 		out = append(out, verifySummary(r.Name(), verified))
 	}
 	return out, nil
+}
+
+// bindOCIKeys replaces the private-key candidates that a profile names with
+// OCI credentials. The match is by key fingerprint, so the profile and the
+// key can be in different files or commits.
+func bindOCIKeys(findings []secrets.Finding, profiles []secrets.OCIProfile) {
+	if len(profiles) == 0 {
+		return
+	}
+	for i := range findings {
+		if c := findings[i].Credential; c != nil && !c.Verifiable() {
+			if bound := secrets.BindOCI(c, profiles); bound != nil {
+				findings[i].Credential = bound
+			}
+		}
+	}
 }
 
 // verifyStatusValid mirrors verify.StatusValid without importing the
@@ -227,19 +292,21 @@ var liveHint = map[string]string{
 	secrets.ProviderAWS:   "the key is live: deactivate it in IAM now, then rotate it",
 	secrets.ProviderSlack: "the token is live: revoke it now (auth.revoke, or reinstall the app), then issue a new one",
 	secrets.ProviderGCP:   "the key exists: delete it, or if it is a client key that must stay public, restrict it to its APIs and apps in the Google Cloud console",
+	secrets.ProviderOCI:   "the key is live: delete this API key from its user in the OCI console now, then add a new key",
 }
 
 var providerLabel = map[string]string{
 	secrets.ProviderAWS:   "AWS",
 	secrets.ProviderSlack: "Slack",
 	secrets.ProviderGCP:   "GCP",
+	secrets.ProviderOCI:   "OCI",
 }
 
 // verifySummary counts the distinct credentials per outcome, so a value
 // repeated across files or commits counts once.
 func verifySummary(rule string, verified map[string]policy.Verification) policy.Violation {
 	if len(verified) == 0 {
-		return policy.Violation{RuleID: rule, Severity: policy.SeverityInfo, Message: "verify: no AWS, Slack, or GCP credential to check"}
+		return policy.Violation{RuleID: rule, Severity: policy.SeverityInfo, Message: "verify: no AWS, Slack, GCP, or OCI credential to check"}
 	}
 	counts := map[string]map[string]int{}
 	for _, v := range verified {
@@ -249,7 +316,7 @@ func verifySummary(rule string, verified map[string]policy.Verification) policy.
 		counts[v.Provider][v.Status]++
 	}
 	var groups []string
-	for _, p := range []string{secrets.ProviderAWS, secrets.ProviderSlack, secrets.ProviderGCP} {
+	for _, p := range []string{secrets.ProviderAWS, secrets.ProviderSlack, secrets.ProviderGCP, secrets.ProviderOCI} {
 		var parts []string
 		for _, s := range []string{"valid", "rejected", "unknown", "unverifiable"} {
 			if n := counts[p][s]; n > 0 {
@@ -265,9 +332,14 @@ func verifySummary(rule string, verified map[string]policy.Verification) policy.
 		Severity: policy.SeverityInfo,
 		Message:  fmt.Sprintf("verify: checked %d credential(s): %s", len(verified), strings.Join(groups, "; ")),
 	}
+	var hints []string
 	if counts[secrets.ProviderAWS]["rejected"] > 0 {
-		v.Hint = "AWS rejected means the global STS endpoint refused the key; a China or GovCloud key is refused there too"
+		hints = append(hints, "AWS rejected means the global STS endpoint refused the key; a China or GovCloud key is refused there too")
 	}
+	if counts[secrets.ProviderOCI]["rejected"] > 0 {
+		hints = append(hints, "OCI rejected means OCI answered 401 for the key in the profile's region; a tenancy that is not subscribed to that region gets the same answer")
+	}
+	v.Hint = strings.Join(hints, "; ")
 	return v
 }
 
@@ -286,7 +358,7 @@ const binarySniff = 8000
 // uncommitted edits count and ignored files do not. Files are read and
 // scanned in parallel; findings keep `git ls-files` order. A binary file is
 // matched by path only, which is what path rules such as pkcs12-file need.
-func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Runner) ([]secrets.Finding, error) {
+func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Runner, oci *ociProfileSink) ([]secrets.Finding, error) {
 	top, err := scanCommand(ctx, runner, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, err
@@ -306,6 +378,7 @@ func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Ru
 	}
 
 	results := make([][]secrets.Finding, len(paths))
+	oci.grow(len(paths))
 	var g errgroup.Group
 	g.SetLimit(runtime.GOMAXPROCS(0))
 	for i, p := range paths {
@@ -333,6 +406,7 @@ func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Ru
 				content = ""
 			}
 			results[i] = r.ScanFile(p, content)
+			oci.scan(i, content)
 			return nil
 		})
 	}
@@ -360,7 +434,7 @@ const (
 // parallel, and each chunk is scanned as soon as its diff arrives. The
 // options match gitleaks' git mode (-U0, all refs), and findings keep
 // rev-list order.
-func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner) ([]secrets.Finding, error) {
+func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner, oci *ociProfileSink) ([]secrets.Finding, error) {
 	revs, err := scanCommand(ctx, runner, "rev-list", "--all")
 	if err != nil {
 		return nil, err
@@ -377,6 +451,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner)
 	}
 
 	results := make([][]secrets.Finding, len(chunks))
+	oci.grow(len(chunks))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(workers)
 	for i, chunk := range chunks {
@@ -387,6 +462,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner)
 				return err
 			}
 			results[i] = r.ScanDiff(diff)
+			oci.scan(i, diff)
 			return nil
 		})
 	}

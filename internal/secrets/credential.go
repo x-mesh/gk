@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"crypto/rsa"
 	"regexp"
 	"slices"
 	"strings"
@@ -11,28 +12,42 @@ const (
 	ProviderAWS   = "aws"
 	ProviderSlack = "slack"
 	ProviderGCP   = "gcp"
+	ProviderOCI   = "oci"
 )
 
 // Credential is a raw credential a scan found, kept for live verification:
 // an AWS access key ID with the secret candidates and session token next to
-// it, a Slack token, or a GCP API key. Every formatter and encoder sees only
+// it, a Slack token, a GCP API key, or an OCI API signing key with the
+// profiles that name its fingerprint. Every formatter and encoder sees only
 // the masked value, so a finding that carries one can be printed or marshaled
 // without leaking.
+//
+// A private-key finding carries a candidate: the PEM text with no provider.
+// It is not verifiable until BindOCI pairs it with a profile.
 type Credential struct {
 	provider string
 	kind     string
 	value    string
 	secrets  []string
 	token    string
+	pem      string
+	key      *rsa.PrivateKey
+	profiles []OCIProfile
 }
 
 // Provider returns one of the Provider constants.
 func (c *Credential) Provider() string { return c.provider }
 
+// Verifiable reports whether an issuer can check the credential. A
+// private-key candidate that no OCI profile names is not verifiable.
+func (c *Credential) Verifiable() bool { return c != nil && c.provider != "" }
+
 // Kind returns the scanner rule ID that found the credential.
 func (c *Credential) Kind() string { return c.kind }
 
-// Value returns the raw AWS access key ID, Slack token, or GCP API key.
+// Value returns the raw AWS access key ID, Slack token, or GCP API key. For
+// an OCI key it is the key fingerprint, which is not a secret, and for a
+// private-key candidate it is empty: the PEM is never part of Value or ID.
 func (c *Credential) Value() string { return c.value }
 
 // ID identifies the credential across findings: the same value found in
@@ -45,6 +60,13 @@ func (c *Credential) SecretCandidates() []string { return slices.Clone(c.secrets
 
 // SessionToken returns the raw AWS session token, or "" when none was found.
 func (c *Credential) SessionToken() string { return c.token }
+
+// OCIKey returns the parsed private key of an OCI credential, or nil.
+func (c *Credential) OCIKey() *rsa.PrivateKey { return c.key }
+
+// OCIProfiles returns the profile candidates of an OCI credential, nearest
+// first.
+func (c *Credential) OCIProfiles() []OCIProfile { return slices.Clone(c.profiles) }
 
 // Masked shows the value's first and last four characters.
 func (c *Credential) Masked() string {
@@ -65,6 +87,27 @@ func (c *Credential) MarshalJSON() ([]byte, error) {
 // NewAWSCredential builds an AWS credential directly; scanners use PairAWS.
 func NewAWSCredential(keyID string, secretCandidates []string, token string) *Credential {
 	return &Credential{provider: ProviderAWS, kind: "aws-access-token", value: keyID, secrets: slices.Clone(secretCandidates), token: token}
+}
+
+// privateKeyRule is the scanner rule whose match is a whole PEM block.
+const privateKeyRule = "private-key"
+
+// KeyCandidate wraps the PEM text of a private-key finding so a later pass
+// can test whether it is an OCI API signing key. It returns nil for a block
+// too large to be one.
+func KeyCandidate(pemText string) *Credential {
+	if pemText == "" || len(pemText) > ociMaxPEMBytes {
+		return nil
+	}
+	return &Credential{kind: privateKeyRule, pem: pemText}
+}
+
+// NewOCICredential builds an OCI credential directly; scanners use BindOCI.
+func NewOCICredential(key *rsa.PrivateKey, profiles []OCIProfile) *Credential {
+	return &Credential{
+		provider: ProviderOCI, kind: privateKeyRule, value: ociFingerprint(&key.PublicKey),
+		key: key, profiles: slices.Clone(profiles),
+	}
 }
 
 // NewTokenCredential builds a single-value credential directly; scanners use

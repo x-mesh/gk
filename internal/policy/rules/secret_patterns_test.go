@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -658,5 +659,108 @@ func TestSecretPatternsRule_VerifyHintAndSummaryPerProvider(t *testing.T) {
 	summary := v[len(v)-1]
 	if summary.Message != "verify: checked 2 credential(s): Slack 1 valid; GCP 1 rejected" || summary.Hint != "" {
 		t.Errorf("summary = %q hint %q", summary.Message, summary.Hint)
+	}
+}
+
+// A private-key finding carries a candidate for OCI pairing. With no profile
+// that names it, such as for an SSH or TLS key, it must not reach Verify.
+func TestSecretPatternsRule_UnpairedPrivateKeyIsNotVerified(t *testing.T) {
+	r := builtinRule(secrets.Finding{
+		Kind: "private-key", File: "ssh/id_rsa", FileLine: 1,
+		Credential: secrets.KeyCandidate("-----BEGIN " + "OPENSSH PRIVATE KEY-----\nabc\n-----END " + "OPENSSH PRIVATE KEY-----"),
+	})
+	r.Verify = func(context.Context, []*secrets.Credential) map[string]policy.Verification {
+		t.Fatal("Verify called for a private key that no OCI profile names")
+		return nil
+	}
+	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 3 || v[1].File != "ssh/id_rsa" || v[1].Verification != nil || v[1].Severity != policy.SeverityError {
+		t.Fatalf("violations = %+v, want the finding unchanged and without a verification", v)
+	}
+	if got, want := v[2].Message, "verify: no AWS, Slack, GCP, or OCI credential to check"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+// Profiles matter only to verification, so a scan without it must not pay
+// for the search.
+func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &stubRunner{out: map[string]string{
+		"diff --cached --no-color":                       "staged diff",
+		"rev-parse --show-toplevel":                      root + "\n",
+		"ls-files -z --full-name -- :/":                  "a.txt\x00b.txt\x00",
+		"rev-list --all":                                 "c1\nc2\n",
+		"log -p -U0 --no-color --no-walk=unsorted c1 c2": "history diff",
+	}}
+	var mu sync.Mutex
+	var seen []string
+	r := builtinRule()
+	r.findOCIProfiles = func(text string) []secrets.OCIProfile {
+		mu.Lock()
+		seen = append(seen, text)
+		mu.Unlock()
+		return nil
+	}
+	r.Verify = func(context.Context, []*secrets.Credential) map[string]policy.Verification { return nil }
+	cases := []struct {
+		name string
+		in   policy.Input
+		want []string
+	}{
+		{"staged without verify", policy.Input{Staged: true}, nil},
+		{"tracked files without verify", policy.Input{}, nil},
+		{"history without verify", policy.Input{History: true}, nil},
+		{"staged", policy.Input{Staged: true, Verify: true}, []string{"staged diff"}},
+		{"tracked files", policy.Input{Verify: true}, []string{"a.txt\n", "b.txt\n"}},
+		{"history", policy.Input{History: true, Verify: true}, []string{"history diff"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen = nil
+			tc.in.Runner, tc.in.WorkDir = run, t.TempDir()
+			if _, err := r.Evaluate(context.Background(), tc.in); err != nil {
+				t.Fatal(err)
+			}
+			slices.Sort(seen)
+			if !slices.Equal(seen, tc.want) {
+				t.Errorf("profile search saw %q, want %q", seen, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifySummary_RejectedHintsNameTheirProvider(t *testing.T) {
+	cases := map[string]struct {
+		verified map[string]policy.Verification
+		hint     []string
+	}{
+		"OCI rejected": {map[string]policy.Verification{"a": {Provider: secrets.ProviderOCI, Status: "rejected"}}, []string{"OCI rejected", "not subscribed"}},
+		"AWS and OCI rejected": {map[string]policy.Verification{
+			"a": {Provider: secrets.ProviderAWS, Status: "rejected"}, "b": {Provider: secrets.ProviderOCI, Status: "rejected"},
+		}, []string{"AWS rejected", "OCI rejected"}},
+		"OCI unknown": {map[string]policy.Verification{"a": {Provider: secrets.ProviderOCI, Status: "unknown"}}, nil},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			hint := verifySummary("secret_patterns", tc.verified).Hint
+			if len(tc.hint) == 0 && hint != "" {
+				t.Errorf("hint = %q, want none", hint)
+			}
+			for _, want := range tc.hint {
+				if !strings.Contains(hint, want) {
+					t.Errorf("hint = %q, want it to mention %q", hint, want)
+				}
+			}
+		})
 	}
 }

@@ -454,3 +454,30 @@ func TestScan_TruncatedTokensOnOneLineKeepOwnValue(t *testing.T) {
 		})
 	}
 }
+
+// A private-key finding carries the PEM as a candidate for OCI pairing. The
+// candidate is not verifiable, and the finding itself does not change.
+func TestScan_PrivateKeyCarriesCandidate(t *testing.T) {
+	// The body lines are not real key material. They are bound to short
+	// names first so this file adds no finding of its own to a scan.
+	row1 := strings.Repeat("Ab3Cd9Ef", 8)
+	row2 := strings.Repeat("Gh4Ij0Kl", 8)
+	body := []string{"-----BEGIN " + "RSA PRIVATE KEY-----", row1, row2, "-----END " + "RSA PRIVATE KEY-----"}
+	var diffLines []string
+	for _, l := range body {
+		diffLines = append(diffLines, "+"+l)
+	}
+	cases := map[string][]secrets.Finding{
+		"file": ScanFile("id_rsa", strings.Join(body, "\n")+"\n"),
+		"diff": ScanDiff(addDiff("id_rsa", 1, diffLines...)),
+	}
+	for name, fs := range cases {
+		if len(fs) != 1 || fs[0].Kind != "private-key" || fs[0].FileLine != 1 {
+			t.Fatalf("%s: findings = %v", name, kinds(fs))
+		}
+		c := fs[0].Credential
+		if c == nil || c.Verifiable() || c.Value() != "" {
+			t.Errorf("%s: credential = %v, want a candidate that is not verifiable", name, c)
+		}
+	}
+}

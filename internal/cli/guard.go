@@ -47,9 +47,10 @@ by severity (error → warn → info). Exit codes:
   1 — one or more warnings
   2 — one or more errors
 
---verify checks each AWS access key, Slack token, and GCP API key that the
-embedded ruleset finds, with a read-only identity call to its issuer (one
-call for a Slack token or a GCP API key, up to three for an AWS key):
+--verify checks each AWS access key, Slack token, GCP API key, and OCI API
+signing key that the embedded ruleset finds, with a read-only identity call
+to its issuer (one call for a Slack token or a GCP API key, up to three for
+an AWS key or an OCI key):
 
   AWS    STS GetCallerIdentity. gk pairs the key ID with a secret access key
          on the same or nearby lines and tries up to three candidates. The
@@ -60,12 +61,22 @@ call for a Slack token or a GCP API key, up to three for an AWS key):
          the checks for them post a message or rotate the token.
   GCP    the Discovery API on googleapis.com. The key is sent in the
          X-Goog-Api-Key header.
+  OCI    Identity ListApiKeys for the key's own user. gk checks a private
+         key when an OCI profile in the scanned content (a fingerprint with
+         a user, a tenancy, and a region) has the fingerprint of that key.
+         The profile and the key can be in different files or commits. The
+         key signs the request and is not sent. Only the commercial realm
+         (oc1) is checked.
 
 Each credential gets a status: valid (the issuer accepted it; for a GCP key,
 also a key whose restrictions blocked the call), rejected (the issuer said
 it is invalid, revoked, or expired), unknown (the check failed or did not
-decide), or unverifiable (no AWS secret or session token was found, or the
-key type is not supported). The status annotates the finding; it never
+decide), or unverifiable (no AWS secret or session token was found, an OCI
+profile has no region, or the key type is not supported). For OCI, a 401
+is rejected when exactly one profile names the key, and unknown when several
+do or when the response shows that the local clock is off. OCI gives the
+same 401 for a region the tenancy is not subscribed to, so rejected does not
+prove that the key was deleted. The status annotates the finding; it never
 removes it or changes its severity.
 `,
 		RunE: runGuardCheck,
@@ -74,7 +85,7 @@ removes it or changes its severity.
 	checkCmd.Flags().Bool("staged", false, "scan only the staged changes (what the next commit adds); the pre-commit hook uses this")
 	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
 	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
-	checkCmd.Flags().Bool("verify", false, "check each AWS key, Slack token, and GCP API key found with its issuer (network; sends Slack and GCP values; never with --staged)")
+	checkCmd.Flags().Bool("verify", false, "check each AWS key, Slack token, GCP API key, and OCI API key found with its issuer (network; sends Slack and GCP values; never with --staged)")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "verify")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "fetch")

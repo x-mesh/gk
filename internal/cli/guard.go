@@ -30,7 +30,9 @@ func init() {
 surfaces violations. Rules live in .gk.yaml under the policies: block; the
 v0.9 MVP ships with secret_patterns. By default it scans the current content
 of the tracked files; --staged scans the staged changes, and --history scans
-every commit reachable from any ref. It uses the gitleaks ruleset embedded in
+every commit reachable from any ref. It also scans the files inside the .jar,
+.war, .ear, and .zip archives in that scope and reports them as archive!file.
+It uses the gitleaks ruleset embedded in
 gk (a pinned release), which follows the gitleaks detection steps and runs
 faster than the gitleaks binary. gk runs the gitleaks binary instead when the
 repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG is set),

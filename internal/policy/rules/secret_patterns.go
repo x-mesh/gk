@@ -613,7 +613,7 @@ func joinArchives(results []archiveResult) archiveReport {
 // paths carry it, and scans the files inside it. Findings keep the order of
 // refs. One `cat-file --batch` reads every blob: the versions of a jar are
 // stored as deltas of each other, and a process per blob rebuilt each delta
-// chain from the start (115s of CPU against 29s for 192 jars of 14 GB).
+// chain from the start (114s of CPU against 29s for 192 jars of 14 GB).
 func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Runner, oci *ociProfileSink, refs []archiveRef) ([]secrets.Finding, archiveReport, error) {
 	seen := make(map[string]bool, len(refs))
 	var unique []archiveRef

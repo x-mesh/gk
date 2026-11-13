@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 
 	"github.com/x-mesh/gk/internal/secrets"
+	"github.com/x-mesh/gk/internal/secrets/gitleaksrules/codec"
 )
 
 //go:embed rules.json
@@ -237,13 +238,13 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 		units[len(units)-1].lastOfFile = true
 	}
 
-	// The keyword pass runs once per file, by whichever unit of the file
-	// starts first; the other units of a split file reuse it.
-	type fileKeywords struct {
-		once sync.Once
-		seen []keywordSet
+	// Decoding and the keyword pass run once per file, by whichever unit of
+	// the file starts first; the other units of a split file reuse them.
+	type filePasses struct {
+		once   sync.Once
+		passes [][]pass
 	}
-	keywords := make([]fileKeywords, len(files))
+	prepared := make([]filePasses, len(files))
 
 	var next atomic.Int64
 	var wg sync.WaitGroup
@@ -255,9 +256,9 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 					return
 				}
 				u := &units[i]
-				kw := &keywords[u.file]
-				kw.once.Do(func() { kw.seen = e.findKeywords(files[u.file]) })
-				u.hits = e.scanRules(files[u.file], u.rules, kw.seen)
+				fp := &prepared[u.file]
+				fp.once.Do(func() { fp.passes = e.preparePasses(files[u.file]) })
+				u.hits = e.scanRules(files[u.file], u.rules, fp.passes)
 			}
 		})
 	}
@@ -279,20 +280,48 @@ func (e *engine) scanFile(f fileDiff) []secrets.Finding {
 	if f.path == "" || matchAny(e.globalPaths, f.path) {
 		return nil
 	}
-	return dropShadowedGeneric(e.scanRules(f, e.rules, e.findKeywords(f)))
+	return dropShadowedGeneric(e.scanRules(f, e.rules, e.preparePasses(f)))
 }
 
-// findKeywords returns, per hunk, the rule keywords the hunk contains.
-func (e *engine) findKeywords(f fileDiff) []keywordSet {
-	seen := make([]keywordSet, len(f.hunks))
+// maxDecodeDepth is the gitleaks default for --max-decode-depth.
+const maxDecodeDepth = 5
+
+// pass is one decoding pass over a hunk: the text the rules run on, the
+// rule keywords it contains, and the segments this pass decoded (none for
+// the raw text).
+type pass struct {
+	text     string
+	keywords keywordSet
+	segments []*codec.EncodedSegment
+}
+
+// preparePasses returns, per hunk, the raw pass followed by up to
+// maxDecodeDepth passes that decode base64, hex, percent, and unicode
+// escapes in place, as gitleaks does for every fragment.
+func (e *engine) preparePasses(f fileDiff) [][]pass {
+	out := make([][]pass, len(f.hunks))
 	for i, h := range f.hunks {
-		seen[i] = e.keywords.newSet()
-		e.keywords.find(h.lower, seen[i])
+		out[i] = []pass{{text: h.joined, keywords: e.findKeywords(h.lower)}}
+		decoder := codec.NewDecoder()
+		text, segments := h.joined, []*codec.EncodedSegment{}
+		for range maxDecodeDepth {
+			text, segments = decoder.Decode(text, segments)
+			if len(segments) == 0 {
+				break
+			}
+			out[i] = append(out[i], pass{text: text, keywords: e.findKeywords(strings.ToLower(text)), segments: segments})
+		}
 	}
+	return out
+}
+
+func (e *engine) findKeywords(lower string) keywordSet {
+	seen := e.keywords.newSet()
+	e.keywords.find(lower, seen)
 	return seen
 }
 
-func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []hit {
+func (e *engine) scanRules(f fileDiff, rules []rule, passes [][]pass) []hit {
 	var out []hit
 	for _, r := range rules {
 		if r.path != nil && !r.path.MatchString(f.path) {
@@ -304,8 +333,10 @@ func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []hit {
 			continue
 		}
 		for i, h := range f.hunks {
-			if hasKeyword(r, seen[i]) {
-				out = append(out, e.scanHunk(r, f.path, h)...)
+			for _, p := range passes[i] {
+				if hasKeyword(r, p.keywords) {
+					out = append(out, e.scanPass(r, f.path, h, p)...)
+				}
 			}
 		}
 	}
@@ -344,12 +375,25 @@ func shadowed(g hit, hs []hit) bool {
 
 func isGeneric(id string) bool { return strings.Contains(strings.ToLower(id), "generic") }
 
-func (e *engine) scanHunk(r rule, path string, h hunk) []hit {
-	text := h.joined
+// scanPass applies one rule to one pass of a hunk. A match in a decoded pass
+// counts only when it touches text decoded in that pass; earlier passes
+// already reported the rest. Its location maps back to the raw hunk.
+func (e *engine) scanPass(r rule, path string, h hunk, p pass) []hit {
+	text := p.text
 	var out []hit
 	for _, loc := range r.regex.FindAllStringSubmatchIndex(text, -1) {
 		match := text[loc[0]:loc[1]]
-		if allowedInline(text, loc) {
+		span := loc[:2]
+		allowLine := ""
+		if len(p.segments) > 0 {
+			segments := codec.SegmentsWithDecodedOverlap(p.segments, loc[0], loc[1])
+			if len(segments) == 0 {
+				continue
+			}
+			span = codec.AdjustMatchIndex(segments, span)
+			allowLine = codec.CurrentLine(segments, text)
+		}
+		if allowedInline(h.joined, span) {
 			continue
 		}
 		secretStart, secretEnd := secretSpan(loc, r.secretGroup)
@@ -357,8 +401,11 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []hit {
 		if r.entropy > 0 && shannon(secret) < r.entropy {
 			continue
 		}
-		line := h.lineAt(loc[0])
-		if e.allowed(r, path, secret, match, h.lineText(line)) {
+		line := h.lineAt(span[0])
+		if allowLine == "" {
+			allowLine = h.lineText(line)
+		}
+		if e.allowed(r, path, secret, match, allowLine) {
 			continue
 		}
 		f := secrets.Finding{
@@ -370,7 +417,15 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []hit {
 		}
 		switch r.id {
 		case awsAccessRuleID:
-			f.Credential = secrets.PairAWS(h.lines, line, secret)
+			lines, idx := h.lines, line
+			if len(p.segments) > 0 {
+				// An encoded key ID usually sits beside an encoded secret,
+				// as in the data of a Kubernetes Secret, so the pair is
+				// searched in the decoded text.
+				lines = strings.Split(text, "\n")
+				idx = strings.Count(text[:secretStart], "\n")
+			}
+			f.Credential = secrets.PairAWS(lines, idx, secret)
 		case privateKeyRuleID:
 			f.Credential = secrets.KeyCandidate(secret)
 		default:

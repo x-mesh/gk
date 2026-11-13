@@ -1,7 +1,9 @@
 package gitleaksrules
 
 import (
+	"encoding/base64"
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -244,6 +246,122 @@ func TestEngine_GenericRuleDroppedWhenSpecificRuleMatchesSameLine(t *testing.T) 
 	}
 	if f, _ := find(fs, genericRuleID); f.FileLine != 2 {
 		t.Errorf("surviving generic finding is at line %d, want 2", f.FileLine)
+	}
+}
+
+func TestEngine_GenericRuleKeptWhenSpecificRuleMatchesOtherSecretOnSameLine(t *testing.T) {
+	e := synth([]jsonRule{
+		{ID: "specific", Regex: `tok_[a-z0-9]{8}`},
+		{ID: genericRuleID, Regex: `key=([a-z0-9]{8})`},
+	}, allowlist{})
+	fs := e.scanDiff(addDiff("a", 1, "+tok_abcd1234 key=wxyz9876"))
+	if len(fs) != 2 {
+		t.Fatalf("got %v, want specific and generic on line 1", kinds(fs))
+	}
+}
+
+func TestScanDiff_Base64EncodedSecretIsDecoded(t *testing.T) {
+	// The decoder skips base64 without a digit or one of "+/-_", which the
+	// base64 of awsKey lacks, so this test uses another key.
+	encoded := base64.StdEncoding.EncodeToString([]byte("AKIA" + "Z3MMNQW4XPLR7TQB"))
+	diff := addDiff("secret.yml", 1, "+kind: Secret", "+data:", "+  AWS_ACCESS_KEY_ID: "+encoded)
+	f, ok := find(ScanDiff(diff), "aws-access-token")
+	if !ok {
+		t.Fatalf("aws-access-token not found in %v", kinds(ScanDiff(diff)))
+	}
+	if f.FileLine != 3 {
+		t.Errorf("FileLine = %d, want 3 (the line of the encoded value)", f.FileLine)
+	}
+}
+
+func TestScanDiff_DecodedAWSKeyPairsWithDecodedSecret(t *testing.T) {
+	key := "AKIA" + "Z3MMNQW4XPLR7TQB"
+	secret := "q8Hk2nVd/7Rm" + "Tz4bLw9pXc3Jf6Ys1Ae0Gu5Ko+Ni"
+	b64 := base64.StdEncoding.EncodeToString
+	diff := addDiff("secret.yml", 1, "+kind: Secret", "+data:",
+		"+  AWS_ACCESS_KEY_ID: "+b64([]byte(key)),
+		"+  AWS_SECRET_ACCESS_KEY: "+b64([]byte(secret)))
+	f, ok := find(ScanDiff(diff), "aws-access-token")
+	if !ok || f.Credential == nil {
+		t.Fatalf("aws-access-token without credential in %v", kinds(ScanDiff(diff)))
+	}
+	if got := f.Credential.SecretCandidates(); f.Credential.Value() != key || len(got) != 1 || got[0] != secret {
+		t.Errorf("credential = %s with %d candidates, want the decoded secret", f.Credential, len(got))
+	}
+}
+
+func TestEngine_DecodedPassReportsOnlyMatchesTouchingDecodedText(t *testing.T) {
+	e := synth([]jsonRule{{ID: "tok", Regex: `tok_[a-z0-9]{8}`}}, allowlist{})
+	encoded := base64.StdEncoding.EncodeToString([]byte("tok_wxyz9876"))
+	fs := e.scanDiff(addDiff("a", 1, "+tok_abcd1234", "+v="+encoded))
+	if len(fs) != 2 {
+		t.Fatalf("got %d findings %v, want the plain one on line 1 and the decoded one on line 2", len(fs), fs)
+	}
+	if fs[0].FileLine+fs[1].FileLine != 3 {
+		t.Errorf("lines = %d, %d, want 1 and 2", fs[0].FileLine, fs[1].FileLine)
+	}
+}
+
+func TestEngine_DecodedSecretFarIntoLargeHunkIsFound(t *testing.T) {
+	e := synth([]jsonRule{{ID: "tok", Regex: `tok_[a-z0-9]{8}`}}, allowlist{})
+	lines := []string{"+tok_abcd1234"}
+	for i := range 3 * decodeWindowMargin / 32 {
+		lines = append(lines, fmt.Sprintf("+filler line %06d padding text", i))
+	}
+	lines = append(lines, "+v="+base64.StdEncoding.EncodeToString([]byte("tok_wxyz9876")))
+	fs := e.scanDiff(addDiff("a", 1, lines...))
+	if len(fs) != 2 {
+		t.Fatalf("got %d findings %v, want the plain one and the decoded one", len(fs), fs)
+	}
+	if fs[0].FileLine != 1 || fs[1].FileLine != len(lines) {
+		t.Errorf("lines = %d, %d, want 1 and %d", fs[0].FileLine, fs[1].FileLine, len(lines))
+	}
+}
+
+func TestEngine_LongMatchIntoDecodedTextIsFound(t *testing.T) {
+	e := synth([]jsonRule{{ID: "long", Regex: `start[xyz ]+tok_[a-z0-9]{8}`}}, allowlist{})
+	prefix := "start " + strings.Repeat("xyz ", decodeWindowMargin/2)
+	fs := e.scanDiff(addDiff("a", 1, "+"+prefix+base64.StdEncoding.EncodeToString([]byte("tok_wxyz9876"))))
+	if len(fs) != 1 || fs[0].FileLine != 1 {
+		t.Fatalf("got %v, want the match that starts %d bytes before the decoded text", fs, len(prefix))
+	}
+}
+
+func TestWindowable(t *testing.T) {
+	cases := map[string]bool{
+		`tok_[a-z0-9]{8}`: true,
+		`a|b{10}`:         true,
+		`\bkey=\S+`:       false,
+		`[a-z]{3000}`:     false,
+		`x{4,}`:           false,
+		``:                false,
+	}
+	for pattern, want := range cases {
+		if got := windowable(pattern); got != want {
+			t.Errorf("windowable(%q) = %v, want %v", pattern, got, want)
+		}
+	}
+}
+
+func TestPassMatches_WindowEdgeFallsBackToWholeText(t *testing.T) {
+	cases := []struct {
+		name, regex, text string
+		window            [2]int
+		want              [][]int
+	}{
+		{"interior match is offset", `tok`, "..tok..tok..", [2]int{4, 12}, [][]int{{7, 10}}},
+		{"run cut by the window", `x+`, strings.Repeat("x", 30), [2]int{10, 20}, [][]int{{0, 30}}},
+		{"anchor true only at the cut", `^b`, "ab", [2]int{1, 2}, nil},
+		{"window covers the text", `b$`, "ab", [2]int{0, 2}, [][]int{{1, 2}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := rule{regex: regexp.MustCompile(c.regex), windowed: true}
+			got := passMatches(r, pass{text: c.text, windows: [][2]int{c.window}})
+			if fmt.Sprint(got) != fmt.Sprint(c.want) {
+				t.Errorf("passMatches = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

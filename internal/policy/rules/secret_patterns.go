@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
@@ -528,7 +529,9 @@ type archiveLimit struct {
 var defaultArchiveLimit = archiveLimit{
 	bytes: 512 << 20,
 	// A jar shaded with its dependencies lists tens of thousands of classes.
-	zip: secrets.ZipLimits{Entries: 1 << 18, EntryBytes: 64 << 20},
+	// TotalBytes bounds the work one archive can cause: a zip of many files
+	// at the entry limit would otherwise expand without end.
+	zip: secrets.ZipLimits{Entries: 1 << 18, EntryBytes: 64 << 20, TotalBytes: 1 << 30},
 }
 
 func (r *SecretPatternsRule) limit() archiveLimit {
@@ -609,52 +612,72 @@ func joinArchives(results []archiveResult) archiveReport {
 	return rep
 }
 
-// scanArchiveBlobs reads each archive blob once, however many commits or
-// paths carry it, and scans the files inside it. Findings keep the order of
-// refs. One `cat-file --batch` reads every blob: the versions of a jar are
-// stored as deltas of each other, and a process per blob rebuilt each delta
-// chain from the start (114s of CPU against 29s for 192 jars of 14 GB).
+// scanArchiveBlobs reads each archive blob once, however many commits carry
+// it, and scans the files inside it under each distinct path it was committed
+// at: a path allowlist that skips the blob at one path must not hide it at
+// another. Findings keep the order of refs. One `cat-file --batch` reads
+// every blob: the versions of a jar are stored as deltas of each other, and a
+// process per blob rebuilt each delta chain from the start (114s of CPU
+// against 29s for 192 jars of 14 GB).
 func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Runner, oci *ociProfileSink, refs []archiveRef) ([]secrets.Finding, archiveReport, error) {
-	seen := make(map[string]bool, len(refs))
-	var unique []archiveRef
-	for _, ref := range refs {
-		if !seen[ref.blob] {
-			seen[ref.blob] = true
-			unique = append(unique, ref)
-		}
+	// targets are the distinct (blob, path) pairs; blobs lists each blob
+	// once with the indexes of its targets.
+	type blobTargets struct {
+		blob    string
+		targets []int
 	}
-	if len(unique) == 0 {
+	var targets []archiveRef
+	var blobs []blobTargets
+	seenTarget := make(map[archiveRef]bool, len(refs))
+	blobAt := make(map[string]int, len(refs))
+	for _, ref := range refs {
+		if seenTarget[ref] {
+			continue
+		}
+		seenTarget[ref] = true
+		i, ok := blobAt[ref.blob]
+		if !ok {
+			i = len(blobs)
+			blobAt[ref.blob] = i
+			blobs = append(blobs, blobTargets{blob: ref.blob})
+		}
+		blobs[i].targets = append(blobs[i].targets, len(targets))
+		targets = append(targets, ref)
+	}
+	if len(blobs) == 0 {
 		return nil, archiveReport{}, nil
 	}
 	stream, ok := runner.(git.Streamer)
 	if !ok {
 		return nil, archiveReport{}, errors.New("secret_patterns: the git runner cannot stream the archive blobs")
 	}
-	results := make([]archiveResult, len(unique))
-	base := oci.grow(len(unique))
+	results := make([]archiveResult, len(targets))
+	base := oci.grow(len(targets))
 
 	// Sizes first, so an archive over the limit is never inflated.
 	var ids strings.Builder
-	for _, ref := range unique {
-		ids.WriteString(ref.blob + "\n")
+	for _, b := range blobs {
+		ids.WriteString(b.blob + "\n")
 	}
 	var check bytes.Buffer
 	if err := stream.Stream(ctx, strings.NewReader(ids.String()), &check, "cat-file", "--batch-check"); err != nil {
 		return nil, archiveReport{}, fmt.Errorf("secret_patterns: built-in scan: %w", err)
 	}
-	var keep []int
+	var keep []blobTargets
 	ids.Reset()
-	for i, ref := range unique {
-		size, err := batchHeader(&check, ref.blob)
+	for _, b := range blobs {
+		size, err := batchHeader(&check, b.blob)
 		if err != nil {
 			return nil, archiveReport{}, err
 		}
-		if n := r.tooLarge(ref.path, size); n != nil {
-			results[i].notice = n
+		if r.limit().bytes < size {
+			for _, t := range b.targets {
+				results[t].notice = r.tooLarge(targets[t].path, size)
+			}
 			continue
 		}
-		keep = append(keep, i)
-		ids.WriteString(ref.blob + "\n")
+		keep = append(keep, b)
+		ids.WriteString(b.blob + "\n")
 	}
 
 	pr, pw := io.Pipe()
@@ -664,32 +687,37 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		pw.CloseWithError(err)
 		done <- err
 	}()
-	var scans errgroup.Group
-	scans.SetLimit(archiveWorkers)
+	// A slot is taken before a blob is read, so at most archiveWorkers
+	// blobs are in memory at once.
+	slots := make(chan struct{}, archiveWorkers)
+	var scans sync.WaitGroup
 	in := bufio.NewReaderSize(pr, 1<<16)
 	var readErr error
-	for _, i := range keep {
-		ref := unique[i]
-		size, err := batchHeader(in, ref.blob)
+	for _, b := range keep {
+		size, err := batchHeader(in, b.blob)
 		if err != nil {
 			readErr = err
 			break
 		}
+		slots <- struct{}{}
 		// The content is followed by a newline.
 		data := make([]byte, size+1)
 		if _, err := io.ReadFull(in, data); err != nil {
-			readErr = fmt.Errorf("secret_patterns: read %s: %w", ref.path, err)
+			<-slots
+			readErr = fmt.Errorf("secret_patterns: read %s: %w", targets[b.targets[0]].path, err)
 			break
 		}
-		scans.Go(func() error {
-			results[i] = r.scanArchive(ref.path, data[:size], oci, base+i)
-			return nil
+		scans.Go(func() {
+			defer func() { <-slots }()
+			for _, t := range b.targets {
+				results[t] = r.scanArchive(targets[t].path, data[:size], oci, base+t)
+			}
 		})
 	}
 	// Closing the read end ends a git process that a read error left
 	// blocked on a full pipe. Close of a PipeReader always returns nil.
 	_ = pr.Close()
-	_ = scans.Wait()
+	scans.Wait()
 	if err := <-done; err != nil && readErr == nil {
 		readErr = fmt.Errorf("secret_patterns: built-in scan: %w", err)
 	}
@@ -746,7 +774,7 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 	res.opened = true
 	if unread > 0 {
 		res.notice = r.archiveNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
-			fmt.Sprintf("a file larger than %d MiB once decompressed, compressed with a method other than store or deflate, or corrupt is not checked for secrets", mib(limit.EntryBytes)))
+			fmt.Sprintf("a file larger than %d MiB once decompressed, a file past the first %d MiB that the archive decompresses to, a file compressed with a method other than store or deflate, or a corrupt file is not checked for secrets", mib(limit.EntryBytes), mib(limit.TotalBytes)))
 	}
 	return res
 }

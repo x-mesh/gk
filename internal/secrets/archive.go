@@ -50,13 +50,17 @@ type ZipLimits struct {
 	Entries int
 	// EntryBytes is the largest decompressed size of one entry.
 	EntryBytes int64
+	// TotalBytes is the most that the entries of one archive may
+	// decompress to together.
+	TotalBytes int64
 }
 
 // WalkZip calls fn for each regular file in the zip archive data, in archive
 // order, and returns how many files it could not read. Content is "" for a
 // binary file, so only path rules apply to it. A file that is larger than
-// limits.EntryBytes, that uses a compression method Go cannot read, or whose
-// data is corrupt is not passed to fn. Archives inside the archive are not
+// limits.EntryBytes or than what is left of limits.TotalBytes, that uses a
+// compression method Go cannot read, or whose data is corrupt is not passed
+// to fn. Archives inside the archive are not
 // opened: content scanned there is the archive's own configuration, and a
 // nested jar is a dependency.
 func WalkZip(data []byte, limits ZipLimits, fn func(name, content string)) (unread int, err error) {
@@ -69,11 +73,13 @@ func WalkZip(data []byte, limits ZipLimits, fn func(name, content string)) (unre
 	if len(zr.File) > limits.Entries {
 		return 0, fmt.Errorf("%d entries, more than the limit of %d", len(zr.File), limits.Entries)
 	}
+	left := limits.TotalBytes
 	for _, f := range zr.File {
 		if !f.Mode().IsRegular() {
 			continue
 		}
-		content, ok := readZipFile(f, limits.EntryBytes)
+		content, used, ok := readZipFile(f, min(limits.EntryBytes, left))
+		left -= used
 		if !ok {
 			unread++
 			continue
@@ -83,28 +89,31 @@ func WalkZip(data []byte, limits ZipLimits, fn func(name, content string)) (unre
 	return unread, nil
 }
 
-func readZipFile(f *zip.File, maxBytes int64) (string, bool) {
+// readZipFile returns the content of f, "" for a binary file, and how many
+// bytes it decompressed.
+func readZipFile(f *zip.File, maxBytes int64) (string, int64, bool) {
 	// archive/zip fails a read that passes the size in the header, so the
 	// header bounds how much a file can expand.
 	if f.UncompressedSize64 > uint64(maxBytes) {
-		return "", false
+		return "", 0, false
 	}
 	rc, err := f.Open()
 	if err != nil {
-		return "", false
+		return "", 0, false
 	}
 	defer rc.Close()
 	head := make([]byte, binarySniff)
 	n, err := io.ReadFull(rc, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return "", false
+		return "", int64(n), false
 	}
 	if LooksBinary(head[:n]) {
-		return "", true
+		return "", int64(n), true
 	}
 	rest, err := io.ReadAll(rc)
+	used := int64(n + len(rest))
 	if err != nil {
-		return "", false
+		return "", used, false
 	}
-	return string(head[:n]) + string(rest), true
+	return string(head[:n]) + string(rest), used, true
 }

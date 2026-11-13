@@ -67,7 +67,7 @@ func TestWalkZip_PassesTextAndBinaryFilesAndCountsUnread(t *testing.T) {
 		zipFile{name: "empty.txt"},
 	)
 	var got []string
-	unread, err := WalkZip(data, ZipLimits{Entries: 10, EntryBytes: 64}, func(name, content string) {
+	unread, err := WalkZip(data, ZipLimits{Entries: 10, EntryBytes: 64, TotalBytes: 1 << 20}, func(name, content string) {
 		got = append(got, name+"="+content)
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestWalkZip_LongTextFileIsWhole(t *testing.T) {
 	text := strings.Repeat("key: value\n", 2000)
 	data := buildZip(t, zipFile{name: "a.yml", data: text})
 	var got string
-	if _, err := WalkZip(data, ZipLimits{Entries: 1, EntryBytes: 1 << 20}, func(_, content string) { got = content }); err != nil {
+	if _, err := WalkZip(data, ZipLimits{Entries: 1, EntryBytes: 1 << 20, TotalBytes: 1 << 20}, func(_, content string) { got = content }); err != nil {
 		t.Fatal(err)
 	}
 	if got != text {
@@ -108,8 +108,29 @@ func TestWalkZip_Rejects(t *testing.T) {
 	}
 	for name, data := range cases {
 		called := false
-		if _, err := WalkZip(data, ZipLimits{Entries: 1, EntryBytes: 64}, func(string, string) { called = true }); err == nil || called {
+		if _, err := WalkZip(data, ZipLimits{Entries: 1, EntryBytes: 64, TotalBytes: 1 << 20}, func(string, string) { called = true }); err == nil || called {
 			t.Errorf("%s: err=%v called=%v, want an error before any file", name, err, called)
 		}
+	}
+}
+
+// Files that fit the entry limit can still add up without end, so the files
+// of one archive share a budget. A file that does not fit what is left is
+// not read, and a smaller one after it still is.
+func TestWalkZip_FilesShareTheTotalBudget(t *testing.T) {
+	data := buildZip(t,
+		zipFile{name: "a.txt", data: strings.Repeat("a", 80)},
+		zipFile{name: "b.txt", data: strings.Repeat("b", 80)},
+		zipFile{name: "c.txt", data: strings.Repeat("c", 30)},
+	)
+	var got []string
+	unread, err := WalkZip(data, ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 150}, func(name, _ string) {
+		got = append(got, name)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "a.txt,c.txt" || unread != 1 {
+		t.Errorf("read %v with %d unread, want a.txt,c.txt with 1 unread", got, unread)
 	}
 }

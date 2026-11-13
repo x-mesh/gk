@@ -883,9 +883,9 @@ const rawHistoryCmd = "log --raw -z --no-abbrev --no-renames --format= --no-walk
 
 // A patch shows an archive only as "Binary files differ", so the history
 // scan reads each archive blob that a commit adds or changes and scans the
-// files in it. A blob that several commits or paths carry is read once, and
-// a deleted file, a symlink, a submodule, and a file that is no archive are
-// not read.
+// files in it. A blob that several commits carry is read once and scanned
+// once per path, and a deleted file, a symlink, a submodule, and a file that
+// is no archive are not read.
 func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 	jar := makeZip(t, "BOOT-INF/classes/application.yml", "a: 1\n", "App.class", "\xca\xfe\x00")
 	renamed := makeZip(t, "BOOT-INF/classes/application.yml", "a: 2\n")
@@ -911,6 +911,8 @@ func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 	}
 	slices.Sort(*scanned)
 	want := []string{
+		"copy/app.jar!App.class=",
+		"copy/app.jar!BOOT-INF/classes/application.yml=a: 1\n",
 		"moved/new.JAR!application.yml=a: 3\n",
 		"was/app-1.0.jar!App.class=",
 		"was/app-1.0.jar!BOOT-INF/classes/application.yml=a: 1\n",
@@ -923,13 +925,13 @@ func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 	for _, x := range v[1:] {
 		files = append(files, x.File)
 	}
-	if got := strings.Join(files, ","); got != "was/app-1.0.jar!BOOT-INF/classes/application.yml,was/app-1.1.jar!BOOT-INF/classes/application.yml,moved/new.JAR!application.yml" {
+	if got := strings.Join(files, ","); got != "was/app-1.0.jar!BOOT-INF/classes/application.yml,was/app-1.1.jar!BOOT-INF/classes/application.yml,copy/app.jar!BOOT-INF/classes/application.yml,moved/new.JAR!application.yml" {
 		t.Errorf("findings = %s, want listing order", got)
 	}
 	if fmt.Sprint(run.reads) != fmt.Sprint(map[string]int{blobID(1): 1, blobID(2): 1, blobID(3): 1}) {
 		t.Errorf("blob reads = %v", run.reads)
 	}
-	if !strings.HasSuffix(v[0].Message, "including the files in 3 archive(s)") {
+	if !strings.HasSuffix(v[0].Message, "including the files in 4 archive(s)") {
 		t.Errorf("notice = %q", v[0].Message)
 	}
 }
@@ -952,7 +954,7 @@ func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	archiveStub(run, map[string]string{blobID(4): "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"})
 	archiveStub(run, map[string]string{blobID(1): strings.Repeat("x", 3<<20), blobID(3): partly})
 	r := builtinRule()
-	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100}}
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 1 << 20}}
 	recordFiles(r)
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
 	if err != nil {
@@ -1093,5 +1095,33 @@ func TestSecretPatternsRule_ArchivesNeedAStreamingRunner(t *testing.T) {
 	run := runOnly{&stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n", rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar")}}}
 	if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+// A path allowlist can skip an archive at one path, so a blob committed at
+// several paths is scanned under each of them, from one read.
+func TestSecretPatternsRule_ArchiveBlobIsScannedAtEachPath(t *testing.T) {
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "node_modules/pkg/app.jar") +
+			rawEntry("A", "100644", blobID(1), "lib/app.jar") +
+			rawEntry("M", "100644", blobID(1), "lib/app.jar"),
+	}}
+	archiveStub(run, map[string]string{blobID(1): makeZip(t, "application.yml", "a: 1\n")})
+	r := builtinRule()
+	scanned := recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(*scanned)
+	if want := []string{"lib/app.jar!application.yml=a: 1\n", "node_modules/pkg/app.jar!application.yml=a: 1\n"}; !slices.Equal(*scanned, want) {
+		t.Errorf("scanned = %q, want %q", *scanned, want)
+	}
+	if run.reads[blobID(1)] != 1 {
+		t.Errorf("blob read %d times, want once", run.reads[blobID(1)])
+	}
+	if _, errs := severities(v); errs != 2 {
+		t.Errorf("errs = %d, want one finding per path", errs)
 	}
 }

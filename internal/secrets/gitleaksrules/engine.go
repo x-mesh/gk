@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/x-mesh/gk/internal/secrets"
@@ -84,6 +85,11 @@ type rule struct {
 	// windowed is set when a decoded pass may search only the windows
 	// around its segments; see windowable.
 	windowed bool
+	// keywords are the lower-case keywords of the rule, and anchorLen is
+	// its longest match in bytes when the raw text may be searched only
+	// around those keywords, 0 otherwise; see anchorLength.
+	keywords  []string
+	anchorLen int
 }
 
 type engine struct {
@@ -161,8 +167,10 @@ func compile(rs ruleset) *engine {
 			entropy:     jr.Entropy,
 			secretGroup: jr.SecretGroup,
 			windowed:    windowable(jr.Regex),
+			keywords:    lowerAll(jr.Keywords),
 		}
-		for _, kw := range lowerAll(jr.Keywords) {
+		r.anchorLen = anchorLength(jr.Regex, r.keywords)
+		for _, kw := range r.keywords {
 			id, ok := wordID[kw]
 			if !ok {
 				id = int32(len(words))
@@ -387,8 +395,18 @@ func windowable(pattern string) bool {
 func maxMatchBytes(re *syntax.Regexp) int {
 	switch re.Op {
 	case syntax.OpLiteral:
-		return utf8.UTFMax * len(re.Rune)
-	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		n := 0
+		for _, r := range re.Rune {
+			n += runeBytes(r, re.Flags&syntax.FoldCase != 0)
+		}
+		return n
+	case syntax.OpCharClass:
+		// The ranges ascend, so the last one ends at the widest rune.
+		if len(re.Rune) == 0 {
+			return 0
+		}
+		return runeBytes(re.Rune[len(re.Rune)-1], false)
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
 		return utf8.UTFMax
 	case syntax.OpCapture, syntax.OpQuest:
 		return maxMatchBytes(re.Sub[0])
@@ -419,21 +437,41 @@ func maxMatchBytes(re *syntax.Regexp) int {
 	return 0
 }
 
+// runeBytes returns the most bytes a literal rune can match. Under case
+// folding that is the widest rune of its fold orbit: `(?i)k` also matches
+// the three-byte Kelvin sign U+212A.
+func runeBytes(r rune, fold bool) int {
+	n := utf8.RuneLen(r)
+	if fold {
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			n = max(n, utf8.RuneLen(f))
+		}
+	}
+	if n < 0 {
+		return utf8.UTFMax
+	}
+	return n
+}
+
 // pass is one decoding pass over a hunk: the text the rules run on, the
 // rule keywords it contains, the segments this pass decoded (none for the
-// raw text), and the windows of text around those segments to search.
+// raw text), and the windows of text around those segments to search. The
+// raw pass also holds the lower-case text and whether anchored rules may
+// search it by keyword position; see anchorSafe.
 type pass struct {
 	text     string
 	keywords keywordSet
 	segments []*codec.EncodedSegment
 	windows  [][2]int
+	lower    string
+	anchorOK bool
 }
 
 // rawPasses returns the undecoded pass of each hunk.
 func (e *engine) rawPasses(f fileDiff) []pass {
 	out := make([]pass, len(f.hunks))
 	for i, h := range f.hunks {
-		out[i] = pass{text: h.joined, keywords: e.findKeywords(h.lower)}
+		out[i] = pass{text: h.joined, keywords: e.findKeywords(h.lower), lower: h.lower, anchorOK: anchorSafe(h.joined)}
 	}
 	return out
 }
@@ -482,11 +520,15 @@ func segmentWindows(segments []*codec.EncodedSegment, textLen int) [][2]int {
 	return out
 }
 
-// passMatches returns the rule's matches in a pass. In a decoded pass a
+// passMatches returns the rule's matches in a pass. In the raw pass an
+// anchored rule searches only around its keywords. In a decoded pass a
 // windowed rule searches only the windows; a match that reaches a window edge
 // inside the text may be cut short or exist only because of the cut (`^`, `$`,
 // `\b`), so the whole text is searched instead.
 func passMatches(r rule, p pass) [][]int {
+	if len(p.segments) == 0 && r.anchorLen > 0 && p.anchorOK {
+		return anchoredMatches(r, p)
+	}
 	if p.windows == nil || !r.windowed {
 		return r.regex.FindAllStringSubmatchIndex(p.text, -1)
 	}

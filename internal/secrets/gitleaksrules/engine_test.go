@@ -332,9 +332,12 @@ func TestWindowable(t *testing.T) {
 		`tok_[a-z0-9]{8}`: true,
 		`a|b{10}`:         true,
 		`\bkey=\S+`:       false,
-		`[a-z]{3000}`:     false,
 		`x{4,}`:           false,
 		``:                false,
+		// The regexp package caps one repeat at 1000, so a match longer
+		// than half the margin needs several: 2 x 4000 bytes fit, 3 do not.
+		`.{1000}.{1000}`:        true,
+		`.{1000}.{1000}.{1000}`: false,
 	}
 	for pattern, want := range cases {
 		if got := windowable(pattern); got != want {

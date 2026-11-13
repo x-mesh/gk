@@ -247,6 +247,17 @@ func TestEngine_GenericRuleDroppedWhenSpecificRuleMatchesSameLine(t *testing.T) 
 	}
 }
 
+func TestEngine_GenericRuleKeptWhenSpecificRuleMatchesOtherSecretOnSameLine(t *testing.T) {
+	e := synth([]jsonRule{
+		{ID: "specific", Regex: `tok_[a-z0-9]{8}`},
+		{ID: genericRuleID, Regex: `key=([a-z0-9]{8})`},
+	}, allowlist{})
+	fs := e.scanDiff(addDiff("a", 1, "+tok_abcd1234 key=wxyz9876"))
+	if len(fs) != 2 {
+		t.Fatalf("got %v, want specific and generic on line 1", kinds(fs))
+	}
+}
+
 func TestScanDiff_QuotedPathsAreDecoded(t *testing.T) {
 	cases := []struct{ header, want string }{
 		{`"b/quote\"d.env"`, `quote"d.env`},

@@ -205,8 +205,15 @@ const splitBytes = 8 << 10
 type scanUnit struct {
 	file       int
 	rules      []rule
-	findings   []secrets.Finding
+	hits       []hit
 	lastOfFile bool
+}
+
+// hit is a finding plus its unmasked secret, which the generic-rule filter
+// compares. The secret never leaves the engine.
+type hit struct {
+	secrets.Finding
+	secret string
 }
 
 // scanFiles scans files concurrently and returns findings in file order, so
@@ -250,18 +257,19 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 				u := &units[i]
 				kw := &keywords[u.file]
 				kw.once.Do(func() { kw.seen = e.findKeywords(files[u.file]) })
-				u.findings = e.scanRules(files[u.file], u.rules, kw.seen)
+				u.hits = e.scanRules(files[u.file], u.rules, kw.seen)
 			}
 		})
 	}
 	wg.Wait()
 
-	var out, fileFindings []secrets.Finding
+	var out []secrets.Finding
+	var fileHits []hit
 	for _, u := range units {
-		fileFindings = append(fileFindings, u.findings...)
+		fileHits = append(fileHits, u.hits...)
 		if u.lastOfFile {
-			out = append(out, dropShadowedGeneric(fileFindings)...)
-			fileFindings = nil
+			out = append(out, dropShadowedGeneric(fileHits)...)
+			fileHits = nil
 		}
 	}
 	return out
@@ -284,15 +292,15 @@ func (e *engine) findKeywords(f fileDiff) []keywordSet {
 	return seen
 }
 
-func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []secrets.Finding {
-	var out []secrets.Finding
+func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []hit {
+	var out []hit
 	for _, r := range rules {
 		if r.path != nil && !r.path.MatchString(f.path) {
 			continue
 		}
 		if r.regex == nil {
 			// gitleaks reports a path-only match at line 0.
-			out = append(out, secrets.Finding{Kind: r.id, File: f.path})
+			out = append(out, hit{Finding: secrets.Finding{Kind: r.id, File: f.path}})
 			continue
 		}
 		for i, h := range f.hunks {
@@ -310,29 +318,35 @@ const (
 	privateKeyRuleID = "private-key"
 )
 
-// dropShadowedGeneric removes a generic-api-key finding when a more specific
-// rule matched on the same line, because gitleaks reports the specific rule
-// only. Observed against gitleaks 8.30.1, not taken from its source.
-func dropShadowedGeneric(fs []secrets.Finding) []secrets.Finding {
-	specific := map[int]bool{}
-	for _, f := range fs {
-		if f.Kind != genericRuleID {
-			specific[f.FileLine] = true
+// dropShadowedGeneric removes a generic finding when a specific rule matched
+// on the same line and its secret contains the generic secret. This follows
+// filter() in gitleaks v8.30.1 detect/utils.go; a specific match of another
+// secret on the line does not hide the generic one.
+func dropShadowedGeneric(hs []hit) []secrets.Finding {
+	out := make([]secrets.Finding, 0, len(hs))
+	for _, h := range hs {
+		if !isGeneric(h.Kind) || !shadowed(h, hs) {
+			out = append(out, h.Finding)
 		}
-	}
-	out := fs[:0]
-	for _, f := range fs {
-		if f.Kind == genericRuleID && specific[f.FileLine] {
-			continue
-		}
-		out = append(out, f)
 	}
 	return out
 }
 
-func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
+func shadowed(g hit, hs []hit) bool {
+	for _, s := range hs {
+		if s.FileLine == g.FileLine && s.Kind != g.Kind && !isGeneric(s.Kind) &&
+			strings.Contains(s.secret, g.secret) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGeneric(id string) bool { return strings.Contains(strings.ToLower(id), "generic") }
+
+func (e *engine) scanHunk(r rule, path string, h hunk) []hit {
 	text := h.joined
-	var out []secrets.Finding
+	var out []hit
 	for _, loc := range r.regex.FindAllStringSubmatchIndex(text, -1) {
 		match := text[loc[0]:loc[1]]
 		if allowedInline(text, loc) {
@@ -367,7 +381,7 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 			}
 			f.Credential = secrets.TokenCredential(r.id, text[lineStart:lineEnd], secretStart-lineStart, secret)
 		}
-		out = append(out, f)
+		out = append(out, hit{Finding: f, secret: secret})
 	}
 	return out
 }

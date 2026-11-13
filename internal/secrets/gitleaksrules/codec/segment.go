@@ -171,3 +171,9 @@ func toOriginal(predecessors []*EncodedSegment, decoded startEnd) startEnd {
 	// (NOTE: each segment references all the predecessors)
 	return toOriginal(predecessors[0].predecessors, encoded)
 }
+
+// DecodedRange returns where the segment's decoded value sits in the text of
+// its decoding pass.
+func (s *EncodedSegment) DecodedRange() (start, end int) {
+	return s.decoded.start, s.decoded.end
+}

@@ -9,11 +9,13 @@
 package gitleaksrules
 
 import (
+	"cmp"
 	_ "embed"
 	"encoding/json"
 	"math"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,12 +204,22 @@ func ScanFile(path, content string) []secrets.Finding {
 // a large file (the embedded rules.json alone took 0.8s on one core).
 const splitBytes = 8 << 10
 
-// scanUnit is one slice of the rule list applied to one file.
+// unitKind is the work a scanUnit does on its file.
+type unitKind int
+
+const (
+	decodeUnit  unitKind = iota // decodes the file's hunks
+	rawUnit                     // applies rules to the raw passes
+	decodedUnit                 // applies rules to the decoded passes
+)
+
+// scanUnit is one piece of work on one file: decoding it, or applying one
+// slice of the rule list to its raw or decoded passes.
 type scanUnit struct {
-	file       int
-	rules      []rule
-	hits       []hit
-	lastOfFile bool
+	kind  unitKind
+	file  int
+	rules []rule
+	hits  []hit
 }
 
 // hit is a finding plus its unmasked secret, which the generic-rule filter
@@ -219,9 +231,14 @@ type hit struct {
 
 // scanFiles scans files concurrently and returns findings in file order, so
 // a report is identical between runs.
+//
+// Each file queues its decode unit ahead of its raw units, and every decoded
+// unit goes to the end of the queue. A worker decodes while the others scan
+// raw text, and a decoded unit rarely waits: when each split unit waited for
+// its file's decoding, the idle workers added a third to the wall time.
 func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 	workers := runtime.GOMAXPROCS(0)
-	var units []scanUnit
+	var units, decodedUnits []scanUnit
 	for i, f := range files {
 		if f.path == "" || matchAny(e.globalPaths, f.path) {
 			continue
@@ -230,21 +247,29 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 		for _, h := range f.hunks {
 			size += len(h.joined)
 		}
+		units = append(units, scanUnit{kind: decodeUnit, file: i})
 		chunks := min(workers, 1+size/splitBytes)
 		per := (len(e.rules) + chunks - 1) / chunks
 		for lo := 0; lo < len(e.rules); lo += per {
-			units = append(units, scanUnit{file: i, rules: e.rules[lo:min(lo+per, len(e.rules))]})
+			rules := e.rules[lo:min(lo+per, len(e.rules))]
+			units = append(units, scanUnit{kind: rawUnit, file: i, rules: rules})
+			decodedUnits = append(decodedUnits, scanUnit{kind: decodedUnit, file: i, rules: rules})
 		}
-		units[len(units)-1].lastOfFile = true
 	}
+	units = append(units, decodedUnits...)
 
-	// Decoding and the keyword pass run once per file, by whichever unit of
-	// the file starts first; the other units of a split file reuse them.
+	// The keyword pass of the raw text runs once per file, by whichever raw
+	// unit of the file starts first; the other units of a split file reuse it.
 	type filePasses struct {
-		once   sync.Once
-		passes [][]pass
+		rawOnce sync.Once
+		raw     []pass
+		decoded [][]pass
+		ready   chan struct{}
 	}
 	prepared := make([]filePasses, len(files))
+	for i := range prepared {
+		prepared[i].ready = make(chan struct{})
+	}
 
 	var next atomic.Int64
 	var wg sync.WaitGroup
@@ -257,21 +282,32 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 				}
 				u := &units[i]
 				fp := &prepared[u.file]
-				fp.once.Do(func() { fp.passes = e.preparePasses(files[u.file]) })
-				u.hits = e.scanRules(files[u.file], u.rules, fp.passes)
+				f := files[u.file]
+				switch u.kind {
+				case decodeUnit:
+					fp.decoded = e.decodedPasses(f)
+					close(fp.ready)
+				case rawUnit:
+					fp.rawOnce.Do(func() { fp.raw = e.rawPasses(f) })
+					u.hits = e.scanRaw(f, u.rules, fp.raw)
+				case decodedUnit:
+					// The decode unit is ahead in the queue, so a worker
+					// already holds it and this wait ends.
+					<-fp.ready
+					u.hits = e.scanDecoded(f, u.rules, fp.decoded)
+				}
 			}
 		})
 	}
 	wg.Wait()
 
-	var out []secrets.Finding
-	var fileHits []hit
+	fileHits := make([][]hit, len(files))
 	for _, u := range units {
-		fileHits = append(fileHits, u.hits...)
-		if u.lastOfFile {
-			out = append(out, dropShadowedGeneric(fileHits)...)
-			fileHits = nil
-		}
+		fileHits[u.file] = append(fileHits[u.file], u.hits...)
+	}
+	var out []secrets.Finding
+	for _, hs := range fileHits {
+		out = append(out, dropShadowedGeneric(hs)...)
 	}
 	return out
 }
@@ -280,28 +316,46 @@ func (e *engine) scanFile(f fileDiff) []secrets.Finding {
 	if f.path == "" || matchAny(e.globalPaths, f.path) {
 		return nil
 	}
-	return dropShadowedGeneric(e.scanRules(f, e.rules, e.preparePasses(f)))
+	hs := e.scanRaw(f, e.rules, e.rawPasses(f))
+	hs = append(hs, e.scanDecoded(f, e.rules, e.decodedPasses(f))...)
+	return dropShadowedGeneric(hs)
 }
 
 // maxDecodeDepth is the gitleaks default for --max-decode-depth.
 const maxDecodeDepth = 5
 
+// decodeWindowMargin is how far around its decoded segments a decoded pass is
+// searched. A decoded pass matters only where a match touches a segment, and
+// searching only there instead of the whole hunk cut a bundle-heavy repo's
+// decoding cost about tenfold; the margin is several times the longest match
+// of a length-bounded rule.
+const decodeWindowMargin = 16 << 10
+
 // pass is one decoding pass over a hunk: the text the rules run on, the
-// rule keywords it contains, and the segments this pass decoded (none for
-// the raw text).
+// rule keywords it contains, the segments this pass decoded (none for the
+// raw text), and the windows of text around those segments to search.
 type pass struct {
 	text     string
 	keywords keywordSet
 	segments []*codec.EncodedSegment
+	windows  [][2]int
 }
 
-// preparePasses returns, per hunk, the raw pass followed by up to
-// maxDecodeDepth passes that decode base64, hex, percent, and unicode
-// escapes in place, as gitleaks does for every fragment.
-func (e *engine) preparePasses(f fileDiff) [][]pass {
+// rawPasses returns the undecoded pass of each hunk.
+func (e *engine) rawPasses(f fileDiff) []pass {
+	out := make([]pass, len(f.hunks))
+	for i, h := range f.hunks {
+		out[i] = pass{text: h.joined, keywords: e.findKeywords(h.lower)}
+	}
+	return out
+}
+
+// decodedPasses returns, per hunk, up to maxDecodeDepth passes that decode
+// base64, hex, percent, and unicode escapes in place, as gitleaks does for
+// every fragment.
+func (e *engine) decodedPasses(f fileDiff) [][]pass {
 	out := make([][]pass, len(f.hunks))
 	for i, h := range f.hunks {
-		out[i] = []pass{{text: h.joined, keywords: e.findKeywords(h.lower)}}
 		decoder := codec.NewDecoder()
 		text, segments := h.joined, []*codec.EncodedSegment{}
 		for range maxDecodeDepth {
@@ -309,7 +363,57 @@ func (e *engine) preparePasses(f fileDiff) [][]pass {
 			if len(segments) == 0 {
 				break
 			}
-			out[i] = append(out[i], pass{text: text, keywords: e.findKeywords(strings.ToLower(text)), segments: segments})
+			out[i] = append(out[i], pass{
+				text:     text,
+				keywords: e.findKeywords(strings.ToLower(text)),
+				segments: segments,
+				windows:  segmentWindows(segments, len(text)),
+			})
+		}
+	}
+	return out
+}
+
+// segmentWindows returns the merged ranges that cover each segment plus
+// decodeWindowMargin on both sides, clamped to the text.
+func segmentWindows(segments []*codec.EncodedSegment, textLen int) [][2]int {
+	ranges := make([][2]int, 0, len(segments))
+	for _, s := range segments {
+		start, end := s.DecodedRange()
+		ranges = append(ranges, [2]int{max(0, start-decodeWindowMargin), min(textLen, end+decodeWindowMargin)})
+	}
+	slices.SortFunc(ranges, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	var out [][2]int
+	for _, r := range ranges {
+		if n := len(out); n > 0 && r[0] <= out[n-1][1] {
+			out[n-1][1] = max(out[n-1][1], r[1])
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// passMatches returns the rule's matches in a pass. In a decoded pass it
+// searches only the windows; a match that reaches a window edge inside the
+// text may be cut short or exist only because of the cut (`^`, `$`, `\b`), so
+// the whole text is searched instead.
+func passMatches(r rule, p pass) [][]int {
+	if p.windows == nil {
+		return r.regex.FindAllStringSubmatchIndex(p.text, -1)
+	}
+	var out [][]int
+	for _, w := range p.windows {
+		for _, loc := range r.regex.FindAllStringSubmatchIndex(p.text[w[0]:w[1]], -1) {
+			if (loc[0] == 0 && w[0] > 0) || (loc[1] == w[1]-w[0] && w[1] < len(p.text)) {
+				return r.regex.FindAllStringSubmatchIndex(p.text, -1)
+			}
+			for i := range loc {
+				if loc[i] >= 0 {
+					loc[i] += w[0]
+				}
+			}
+			out = append(out, loc)
 		}
 	}
 	return out
@@ -321,7 +425,8 @@ func (e *engine) findKeywords(lower string) keywordSet {
 	return seen
 }
 
-func (e *engine) scanRules(f fileDiff, rules []rule, passes [][]pass) []hit {
+// scanRaw applies the rules to the raw pass of every hunk.
+func (e *engine) scanRaw(f fileDiff, rules []rule, raw []pass) []hit {
 	var out []hit
 	for _, r := range rules {
 		if r.path != nil && !r.path.MatchString(f.path) {
@@ -333,7 +438,23 @@ func (e *engine) scanRules(f fileDiff, rules []rule, passes [][]pass) []hit {
 			continue
 		}
 		for i, h := range f.hunks {
-			for _, p := range passes[i] {
+			if hasKeyword(r, raw[i].keywords) {
+				out = append(out, e.scanPass(r, f.path, h, raw[i])...)
+			}
+		}
+	}
+	return out
+}
+
+// scanDecoded applies the regex rules to the decoded passes of every hunk.
+func (e *engine) scanDecoded(f fileDiff, rules []rule, decoded [][]pass) []hit {
+	var out []hit
+	for _, r := range rules {
+		if r.regex == nil || (r.path != nil && !r.path.MatchString(f.path)) {
+			continue
+		}
+		for i, h := range f.hunks {
+			for _, p := range decoded[i] {
 				if hasKeyword(r, p.keywords) {
 					out = append(out, e.scanPass(r, f.path, h, p)...)
 				}
@@ -381,7 +502,7 @@ func isGeneric(id string) bool { return strings.Contains(strings.ToLower(id), "g
 func (e *engine) scanPass(r rule, path string, h hunk, p pass) []hit {
 	text := p.text
 	var out []hit
-	for _, loc := range r.regex.FindAllStringSubmatchIndex(text, -1) {
+	for _, loc := range passMatches(r, p) {
 		match := text[loc[0]:loc[1]]
 		span := loc[:2]
 		allowLine := ""

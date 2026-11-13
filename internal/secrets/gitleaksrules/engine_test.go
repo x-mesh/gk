@@ -3,6 +3,7 @@ package gitleaksrules
 import (
 	"encoding/base64"
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -298,6 +299,44 @@ func TestEngine_DecodedPassReportsOnlyMatchesTouchingDecodedText(t *testing.T) {
 	}
 	if fs[0].FileLine+fs[1].FileLine != 3 {
 		t.Errorf("lines = %d, %d, want 1 and 2", fs[0].FileLine, fs[1].FileLine)
+	}
+}
+
+func TestEngine_DecodedSecretFarIntoLargeHunkIsFound(t *testing.T) {
+	e := synth([]jsonRule{{ID: "tok", Regex: `tok_[a-z0-9]{8}`}}, allowlist{})
+	lines := []string{"+tok_abcd1234"}
+	for i := range 3 * decodeWindowMargin / 32 {
+		lines = append(lines, fmt.Sprintf("+filler line %06d padding text", i))
+	}
+	lines = append(lines, "+v="+base64.StdEncoding.EncodeToString([]byte("tok_wxyz9876")))
+	fs := e.scanDiff(addDiff("a", 1, lines...))
+	if len(fs) != 2 {
+		t.Fatalf("got %d findings %v, want the plain one and the decoded one", len(fs), fs)
+	}
+	if fs[0].FileLine != 1 || fs[1].FileLine != len(lines) {
+		t.Errorf("lines = %d, %d, want 1 and %d", fs[0].FileLine, fs[1].FileLine, len(lines))
+	}
+}
+
+func TestPassMatches_WindowEdgeFallsBackToWholeText(t *testing.T) {
+	cases := []struct {
+		name, regex, text string
+		window            [2]int
+		want              [][]int
+	}{
+		{"interior match is offset", `tok`, "..tok..tok..", [2]int{4, 12}, [][]int{{7, 10}}},
+		{"run cut by the window", `x+`, strings.Repeat("x", 30), [2]int{10, 20}, [][]int{{0, 30}}},
+		{"anchor true only at the cut", `^b`, "ab", [2]int{1, 2}, nil},
+		{"window covers the text", `b$`, "ab", [2]int{0, 2}, [][]int{{1, 2}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := rule{regex: regexp.MustCompile(c.regex)}
+			got := passMatches(r, pass{text: c.text, windows: [][2]int{c.window}})
+			if fmt.Sprint(got) != fmt.Sprint(c.want) {
+				t.Errorf("passMatches = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

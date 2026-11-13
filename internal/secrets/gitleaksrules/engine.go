@@ -235,16 +235,36 @@ type hit struct {
 	secret string
 }
 
+// decodedLag is how many worker counts of units sit between a file's raw
+// units and its decoded units in the queue. With a lag of one, decoded units
+// often waited for their file's decoding to finish (40.0s against 36.3s on a
+// 137 MB history diff).
+const decodedLag = 16
+
 // scanFiles scans files concurrently and returns findings in file order, so
 // a report is identical between runs.
 //
-// Each file queues its decode unit ahead of its raw units, and every decoded
-// unit goes to the end of the queue. A worker decodes while the others scan
-// raw text, and a decoded unit rarely waits: when each split unit waited for
-// its file's decoding, the idle workers added a third to the wall time.
+// Each file queues its decode unit ahead of its raw units, and its decoded
+// units decodedLag worker counts of units after its raw units. A worker
+// decodes while the others scan raw text, and a decoded unit rarely waits:
+// when each split unit waited for its file's decoding, the idle workers added
+// a third to the wall time. The last decoded unit of a file frees its decoded
+// passes, so only the files inside that lag hold decoded copies at once.
 func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 	workers := runtime.GOMAXPROCS(0)
-	var units, decodedUnits []scanUnit
+	type heldUnits struct {
+		releaseAt int // queue length at which the units join the queue
+		units     []scanUnit
+	}
+	var units []scanUnit
+	var held []heldUnits
+	release := func(all bool) {
+		for len(held) > 0 && (all || len(units) >= held[0].releaseAt) {
+			units = append(units, held[0].units...)
+			held = held[1:]
+		}
+	}
+	decodedLeft := make([]atomic.Int32, len(files))
 	for i, f := range files {
 		if f.path == "" || matchAny(e.globalPaths, f.path) {
 			continue
@@ -256,13 +276,17 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 		units = append(units, scanUnit{kind: decodeUnit, file: i})
 		chunks := min(workers, 1+size/splitBytes)
 		per := (len(e.rules) + chunks - 1) / chunks
+		var decoded []scanUnit
 		for lo := 0; lo < len(e.rules); lo += per {
 			rules := e.rules[lo:min(lo+per, len(e.rules))]
 			units = append(units, scanUnit{kind: rawUnit, file: i, rules: rules})
-			decodedUnits = append(decodedUnits, scanUnit{kind: decodedUnit, file: i, rules: rules})
+			decoded = append(decoded, scanUnit{kind: decodedUnit, file: i, rules: rules})
 		}
+		decodedLeft[i].Store(int32(len(decoded)))
+		held = append(held, heldUnits{releaseAt: len(units) + decodedLag*workers, units: decoded})
+		release(false)
 	}
-	units = append(units, decodedUnits...)
+	release(true)
 
 	// The keyword pass of the raw text runs once per file, by whichever raw
 	// unit of the file starts first; the other units of a split file reuse it.
@@ -301,6 +325,9 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 					// already holds it and this wait ends.
 					<-fp.ready
 					u.hits = e.scanDecoded(f, u.rules, fp.decoded)
+					if decodedLeft[u.file].Add(-1) == 0 {
+						fp.decoded = nil
+					}
 				}
 			}
 		})

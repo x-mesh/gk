@@ -475,19 +475,26 @@ const (
 // filter() in gitleaks v8.30.1 detect/utils.go; a specific match of another
 // secret on the line does not hide the generic one.
 func dropShadowedGeneric(hs []hit) []secrets.Finding {
+	specific := map[int][]hit{}
+	for _, h := range hs {
+		if !isGeneric(h.Kind) {
+			specific[h.FileLine] = append(specific[h.FileLine], h)
+		}
+	}
 	out := make([]secrets.Finding, 0, len(hs))
 	for _, h := range hs {
-		if !isGeneric(h.Kind) || !shadowed(h, hs) {
+		if !isGeneric(h.Kind) || !shadowed(h, specific[h.FileLine]) {
 			out = append(out, h.Finding)
 		}
 	}
 	return out
 }
 
-func shadowed(g hit, hs []hit) bool {
-	for _, s := range hs {
-		if s.FileLine == g.FileLine && s.Kind != g.Kind && !isGeneric(s.Kind) &&
-			strings.Contains(s.secret, g.secret) {
+// shadowed reports whether a specific hit on the generic hit's line holds
+// the generic secret.
+func shadowed(g hit, sameLine []hit) bool {
+	for _, s := range sameLine {
+		if strings.Contains(s.secret, g.secret) {
 			return true
 		}
 	}

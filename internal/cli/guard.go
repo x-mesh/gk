@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -178,6 +179,28 @@ func guardFetch(ctx context.Context, runner *git.ExecRunner) []policy.Violation 
 	return vs
 }
 
+// ruleErrorID is the rule ID of the report entry for a rule that failed to
+// run. No rule registers under it, so a consumer that counts findings by
+// rule can tell a failed scan from a finding.
+const ruleErrorID = "rule_error"
+
+// ruleErrorViolations returns one error entry per rule failure. A rule that
+// fails has checked nothing: without the entry, a scan that never ran (a
+// directory that is not a repository, a bare repository without --history)
+// printed "no violations" and exited 0.
+func ruleErrorViolations(errs []error) []policy.Violation {
+	out := make([]policy.Violation, 0, len(errs))
+	for _, e := range errs {
+		out = append(out, policy.Violation{
+			RuleID:   ruleErrorID,
+			Severity: policy.SeverityError,
+			Message:  "rule did not run, so its checks were skipped: " + strings.TrimSpace(e.Error()),
+			Hint:     "fix the cause and rerun; this result is incomplete",
+		})
+	}
+	return out
+}
+
 // violationJSON is the NDJSON shape for --json output. Keep stable.
 type violationJSON struct {
 	RuleID   string `json:"rule_id"`
@@ -229,7 +252,7 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	in.Verify, _ = cmd.Flags().GetBool("verify")
 
 	violations, errs := reg.Evaluate(ctx, in)
-	violations = append(fetchViolations, violations...)
+	violations = slices.Concat(ruleErrorViolations(errs), fetchViolations, violations)
 
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asJSON = asJSON || JSONOut()

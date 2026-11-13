@@ -3772,6 +3772,8 @@ gk guard check [flags]
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
+A rule can fail before it scans. Examples are a directory that is not a git repository, and a bare repository without `--history`. For each rule that fails, the report has one `error` violation with the rule ID `rule_error`. Thus the command does not print `no violations`, and it does not exit with code 0.
+
 #### Exit codes
 
 | Code | Condition |

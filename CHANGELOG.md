@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An existing `gk guard check --verify` command now also sends the Slack tokens and GCP API keys that it finds to `slack.com` and `googleapis.com`. Before, it checked only AWS keys, and it sent no credential value.
 - The `--verify` summary now counts credentials for each provider, for example `verify: checked 3 credential(s): AWS 1 valid; Slack 2 rejected`. Before, it counted only AWS keys.
 
+### Fixed
+
+- `gk guard check` now fails when a rule cannot run. In a directory that is not a git repository, or in a bare repository without `--history`, the secret scan did not run, but the command printed `no violations` and exited with code 0. Now the report has one `error` violation with the rule ID `rule_error` for each rule that fails, in the human output, in `--json`, and in agent mode. The `pre-commit` hook runs `gk guard check --staged`, so it now stops a commit when the scan cannot run.
+
 ## [0.155.0] - 2026-11-13
 
 ### Added

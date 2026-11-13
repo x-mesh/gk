@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +44,13 @@ func newGuardFetchFixture(t *testing.T) *testutil.Repo {
 
 func runGuardCheckCmd(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
+	return runGuardCheckArgs(t, dir, append([]string{"--json"}, args...)...)
+}
+
+// runGuardCheckArgs runs the check with exactly args, so a test can pick the
+// human output by leaving --json out.
+func runGuardCheckArgs(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
 	prevRepo, prevJSON := flagRepo, flagJSON
 	flagRepo, flagJSON = dir, false
 	t.Cleanup(func() { flagRepo, flagJSON = prevRepo, prevJSON })
@@ -52,13 +60,79 @@ func runGuardCheckCmd(t *testing.T, dir string, args ...string) (string, error) 
 	cmd.Flags().Bool("staged", false, "")
 	cmd.Flags().Bool("history", false, "")
 	cmd.Flags().Bool("fetch", false, "")
-	cmd.SetArgs(append([]string{"--json"}, args...))
+	cmd.SetArgs(args)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetContext(context.Background())
 	err := cmd.Execute()
 	return buf.String(), err
+}
+
+// A rule that cannot run has scanned nothing. In a directory that is not a
+// git repository the check printed "no violations" and exited 0; it must fail
+// and name the failed rule in every output mode.
+func TestRunGuardCheck_RuleFailureIsReportedAndFailsTheCheck(t *testing.T) {
+	dir := t.TempDir()
+	// Stop git from finding a repository above the temp directory.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
+
+	t.Run("ndjson", func(t *testing.T) {
+		out, err := runGuardCheckCmd(t, dir)
+		if err == nil {
+			t.Fatalf("want a non-zero result:\n%s", out)
+		}
+		if !strings.Contains(out, `"rule_id":"rule_error"`) || !strings.Contains(out, `"severity":"error"`) {
+			t.Errorf("want an error entry with rule_id rule_error:\n%s", out)
+		}
+		if !strings.Contains(out, "secret_patterns") {
+			t.Errorf("the entry must name the rule that failed:\n%s", out)
+		}
+	})
+	t.Run("human", func(t *testing.T) {
+		out, err := runGuardCheckArgs(t, dir)
+		if err == nil {
+			t.Fatalf("want a non-zero result:\n%s", out)
+		}
+		if strings.Contains(out, "no violations") {
+			t.Errorf("a scan that did not run must not print \"no violations\":\n%s", out)
+		}
+		if !strings.Contains(out, "rule_error") {
+			t.Errorf("want the rule_error entry in the report:\n%s", out)
+		}
+	})
+	t.Run("agent", func(t *testing.T) {
+		withAgentMode(t, true)
+		out, err := runGuardCheckCmd(t, dir)
+		if err == nil {
+			t.Fatalf("want a non-zero result:\n%s", out)
+		}
+		if !strings.Contains(out, `"rule_id": "rule_error"`) {
+			t.Errorf("want the rule_error entry in the result array:\n%s", out)
+		}
+	})
+}
+
+func TestRuleErrorViolations(t *testing.T) {
+	if got := ruleErrorViolations(nil); len(got) != 0 {
+		t.Fatalf("no rule failed, got %v", got)
+	}
+	got := ruleErrorViolations([]error{errors.New("rule_a: git failed\n"), errors.New("rule_b: read x: permission denied")})
+	if len(got) != 2 {
+		t.Fatalf("want one entry per failed rule, got %v", got)
+	}
+	for i, want := range []string{"rule_a: git failed", "rule_b: read x: permission denied"} {
+		v := got[i]
+		if v.RuleID != ruleErrorID || v.Severity != policy.SeverityError || !strings.HasSuffix(v.Message, want) {
+			t.Errorf("entry %d = %+v, want an error entry that ends with %q", i, v, want)
+		}
+	}
+	// One failed rule makes the whole check an error, whatever the other
+	// rules reported.
+	report := append(got[:1:1], policy.Violation{RuleID: "fetch", Severity: policy.SeverityWarn})
+	if worstSeverity(report) != policy.SeverityError {
+		t.Errorf("worst severity = %v, want error", worstSeverity(report))
+	}
 }
 
 func TestRunGuardCheck_FetchScansRemoteOnlyBranch(t *testing.T) {

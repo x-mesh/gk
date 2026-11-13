@@ -1,9 +1,13 @@
 package rules
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,8 +31,11 @@ func gitleaksMissing(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFind
 type stubRunner struct {
 	out   map[string]string
 	fail  map[string]bool
+	blobs map[string]string
 	mu    sync.Mutex
 	calls []string
+	// reads counts the blobs `cat-file --batch` printed.
+	reads map[string]int
 }
 
 func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, error) {
@@ -40,6 +47,40 @@ func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, err
 		return nil, nil, errors.New("exit 1")
 	}
 	return []byte(s.out[key]), nil, nil
+}
+
+// Stream answers `cat-file --batch-check` and `cat-file --batch` from blobs,
+// the way git prints them, and a blob it does not hold as missing.
+func (s *stubRunner) Stream(_ context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	key := strings.Join(args, " ")
+	s.mu.Lock()
+	s.calls = append(s.calls, key)
+	s.mu.Unlock()
+	if s.fail[key] {
+		return errors.New("exit 128")
+	}
+	ids, err := io.ReadAll(stdin)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Fields(string(ids)) {
+		data, ok := s.blobs[id]
+		if !ok {
+			fmt.Fprintf(w, "%s missing\n", id)
+			continue
+		}
+		fmt.Fprintf(w, "%s blob %d\n", id, len(data))
+		if key == "cat-file --batch" {
+			s.mu.Lock()
+			if s.reads == nil {
+				s.reads = map[string]int{}
+			}
+			s.reads[id]++
+			s.mu.Unlock()
+			fmt.Fprintf(w, "%s\n", data)
+		}
+	}
+	return nil
 }
 
 func builtinRule(diffFinding ...secrets.Finding) *SecretPatternsRule {
@@ -81,7 +122,7 @@ func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
 	if f.File != "a.env" || f.Line != 3 || !strings.Contains(f.Message, "aws-access-key") {
 		t.Errorf("violation = %+v", f)
 	}
-	if len(run.calls) != 1 || run.calls[0] != "diff --cached --no-color" {
+	if want := "diff --cached --no-color,diff --cached --raw -z --no-abbrev --no-renames"; strings.Join(run.calls, ",") != want {
 		t.Errorf("calls = %v", run.calls)
 	}
 }
@@ -96,7 +137,7 @@ func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
 	if _, errs := severities(v); errs != 1 {
 		t.Fatalf("errs=%d, want 1", errs)
 	}
-	if len(run.calls) != 1 || run.calls[0] != "diff --no-color origin/main..HEAD" {
+	if want := "diff --no-color origin/main..HEAD,diff --raw -z --no-abbrev --no-renames origin/main..HEAD"; strings.Join(run.calls, ",") != want {
 		t.Errorf("calls = %v", run.calls)
 	}
 }
@@ -783,5 +824,274 @@ func TestSecretPatternsRule_VerifyWithFindingWithoutCredential(t *testing.T) {
 	}
 	if len(v) != 3 || v[1].File != "a" || v[1].Verification != nil || v[1].Severity != policy.SeverityError {
 		t.Errorf("violations = %+v, want the finding reported without a verification", v)
+	}
+}
+
+func makeZip(t *testing.T, files ...string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < len(files); i += 2 {
+		w, err := zw.Create(files[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(files[i+1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+// rawEntry is one record of `git diff --raw -z --no-abbrev`.
+func rawEntry(status, mode, blob string, paths ...string) string {
+	old := strings.Repeat("0", 40)
+	return ":100644 " + mode + " " + old + " " + blob + " " + status + "\x00" + strings.Join(paths, "\x00") + "\x00"
+}
+
+func blobID(n int) string { return fmt.Sprintf("%040x", n) }
+
+// archiveStub serves the size and content of each blob in blobs.
+func archiveStub(run *stubRunner, blobs map[string]string) {
+	if run.blobs == nil {
+		run.blobs = map[string]string{}
+	}
+	maps.Copy(run.blobs, blobs)
+}
+
+// recordFiles makes ScanFile record each path and content it is given and
+// report a finding for every file named application.yml.
+func recordFiles(r *SecretPatternsRule) *[]string {
+	var mu sync.Mutex
+	var scanned []string
+	r.ScanFile = func(path, content string) []secrets.Finding {
+		mu.Lock()
+		scanned = append(scanned, path+"="+content)
+		mu.Unlock()
+		if strings.HasSuffix(path, "application.yml") {
+			return []secrets.Finding{{Kind: "k", File: path, FileLine: 1}}
+		}
+		return nil
+	}
+	return &scanned
+}
+
+const rawHistoryCmd = "log --raw -z --no-abbrev --no-renames --format= --no-walk=unsorted c1 c2"
+
+// A patch shows an archive only as "Binary files differ", so the history
+// scan reads each archive blob that a commit adds or changes and scans the
+// files in it. A blob that several commits or paths carry is read once, and
+// a deleted file, a symlink, a submodule, and a file that is no archive are
+// not read.
+func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
+	jar := makeZip(t, "BOOT-INF/classes/application.yml", "a: 1\n", "App.class", "\xca\xfe\x00")
+	renamed := makeZip(t, "BOOT-INF/classes/application.yml", "a: 2\n")
+	moved := makeZip(t, "application.yml", "a: 3\n")
+	zero := strings.Repeat("0", 40)
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "was/app-1.0.jar") +
+			":100644 000000 " + blobID(1) + " " + zero + " D\x00was/app-1.0.jar\x00" +
+			rawEntry("A", "100644", blobID(2), "was/app-1.1.jar") +
+			rawEntry("M", "100755", blobID(1), "copy/app.jar") +
+			rawEntry("R100", "100644", blobID(3), "old.jar", "moved/new.JAR") +
+			rawEntry("A", "100644", blobID(4), "lib.so") +
+			rawEntry("A", "120000", blobID(5), "link.jar") +
+			rawEntry("A", "160000", blobID(6), "sub.jar"),
+	}}
+	archiveStub(run, map[string]string{blobID(1): jar, blobID(2): renamed, blobID(3): moved})
+	r := builtinRule()
+	scanned := recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	slices.Sort(*scanned)
+	want := []string{
+		"moved/new.JAR!application.yml=a: 3\n",
+		"was/app-1.0.jar!App.class=",
+		"was/app-1.0.jar!BOOT-INF/classes/application.yml=a: 1\n",
+		"was/app-1.1.jar!BOOT-INF/classes/application.yml=a: 2\n",
+	}
+	if !slices.Equal(*scanned, want) {
+		t.Errorf("scanned = %q, want %q", *scanned, want)
+	}
+	var files []string
+	for _, x := range v[1:] {
+		files = append(files, x.File)
+	}
+	if got := strings.Join(files, ","); got != "was/app-1.0.jar!BOOT-INF/classes/application.yml,was/app-1.1.jar!BOOT-INF/classes/application.yml,moved/new.JAR!application.yml" {
+		t.Errorf("findings = %s, want listing order", got)
+	}
+	if fmt.Sprint(run.reads) != fmt.Sprint(map[string]int{blobID(1): 1, blobID(2): 1, blobID(3): 1}) {
+		t.Errorf("blob reads = %v", run.reads)
+	}
+	if !strings.HasSuffix(v[0].Message, "including the files in 3 archive(s)") {
+		t.Errorf("notice = %q", v[0].Message)
+	}
+}
+
+// An archive the scan could not open, or opened only in part, is reported
+// with an informational notice instead of reading as clean, and it does not
+// fail the check: a blob deep in the history stays there.
+func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
+	partly := makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200))
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "huge.war") +
+			rawEntry("A", "100644", blobID(2), "notes.zip") +
+			rawEntry("A", "100644", blobID(3), "app.jar") +
+			rawEntry("A", "100644", blobID(4), "lfs.jar"),
+	}}
+	archiveStub(run, map[string]string{blobID(2): "not a zip file"})
+	// Git LFS keeps the archive outside the repository; its pointer is no
+	// archive that could not be read.
+	archiveStub(run, map[string]string{blobID(4): "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"})
+	archiveStub(run, map[string]string{blobID(1): strings.Repeat("x", 3<<20), blobID(3): partly})
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100}}
+	recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	var notices []string
+	for _, x := range v[1:] {
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
+		}
+	}
+	want := []string{
+		"huge.war: archive not scanned: 3 MiB, more than the limit of 1 MiB",
+		"notes.zip: archive not scanned: zip: not a valid zip file",
+		"app.jar: archive partly scanned: 1 file(s) in it could not be read",
+	}
+	if !slices.Equal(notices, want) {
+		t.Errorf("notices = %q, want %q", notices, want)
+	}
+	if _, errs := severities(v); errs != 1 {
+		t.Errorf("errs = %d, want the finding in app.jar only", errs)
+	}
+	if run.reads[blobID(1)] != 0 {
+		t.Error("an archive over the size limit must not be read")
+	}
+	if !strings.HasSuffix(v[0].Message, "including the files in 1 archive(s)") {
+		t.Errorf("notice = %q", v[0].Message)
+	}
+}
+
+// A git failure while reading an archive is a failed scan, like a failed
+// history chunk, and so is a blob that git cannot find.
+func TestSecretPatternsRule_ArchiveReadFailureSurfaces(t *testing.T) {
+	jar := makeZip(t, "application.yml", "a: 1\n")
+	cases := map[string]*stubRunner{
+		"batch-check fails": {fail: map[string]bool{"cat-file --batch-check": true}, blobs: map[string]string{blobID(1): jar}},
+		"batch fails":       {fail: map[string]bool{"cat-file --batch": true}, blobs: map[string]string{blobID(1): jar}},
+		"blob missing":      {},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			run.out = map[string]string{"rev-list --all": "c1\nc2\n", rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar")}
+			if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
+				t.Fatal("want an error")
+			}
+		})
+	}
+}
+
+func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
+	jar := makeZip(t, "application.yml", "a: 1\n")
+	listing := rawEntry("A", "100644", blobID(7), "app.jar")
+	cases := map[string]struct {
+		in  policy.Input
+		cmd string
+	}{
+		"staged":     {policy.Input{Staged: true}, "diff --cached --raw -z --no-abbrev --no-renames"},
+		"push range": {policy.Input{PushRange: "main..feat"}, "diff --raw -z --no-abbrev --no-renames main..feat"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			run := &stubRunner{out: map[string]string{tc.cmd: listing}}
+			archiveStub(run, map[string]string{blobID(7): jar})
+			r := builtinRule()
+			r.ScanDiff = func(string) []secrets.Finding { return nil }
+			recordFiles(r)
+			tc.in.Runner = run
+			v, err := r.Evaluate(context.Background(), tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(v) != 2 || v[1].File != "app.jar!application.yml" {
+				t.Errorf("violations = %+v", v)
+			}
+		})
+	}
+}
+
+func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.jar"), []byte(makeZip(t, "application.yml", "a: 1\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "app.jar\x00",
+	}}
+	r := builtinRule()
+	scanned := recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"app.jar=", "app.jar!application.yml=a: 1\n"}; !slices.Equal(*scanned, want) {
+		t.Errorf("scanned = %q, want %q", *scanned, want)
+	}
+	if len(v) != 2 || v[1].File != "app.jar!application.yml" {
+		t.Errorf("violations = %+v", v)
+	}
+}
+
+// The archives of a scan add profile slots after the diff's, so an OCI key
+// in one place still pairs with a profile in the other.
+func TestSecretPatternsRule_ArchiveOCIProfilesKeepDiffProfiles(t *testing.T) {
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		"log -p -U0 --no-color --no-walk=unsorted c1 c2": "history diff",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar"),
+	}}
+	archiveStub(run, map[string]string{blobID(1): makeZip(t, "oci.conf", "profile in jar")})
+	r := builtinRule()
+	r.findOCIProfiles = func(text string) []secrets.OCIProfile {
+		return []secrets.OCIProfile{{Fingerprint: text}}
+	}
+	oci := &ociProfileSink{find: r.findOCIProfiles}
+	if _, _, err := r.scanHistory(context.Background(), run, oci); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range oci.profiles() {
+		got = append(got, p.Fingerprint)
+	}
+	if want := []string{"history diff", "profile in jar"}; !slices.Equal(got, want) {
+		t.Errorf("profiles = %q, want %q", got, want)
+	}
+}
+
+// runOnly is a Runner that cannot stream.
+type runOnly struct{ *stubRunner }
+
+func (r runOnly) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	return r.stubRunner.Run(ctx, args...)
+}
+
+// Without a way to stream the blobs the archives are not read, and the scan
+// fails instead of reporting them clean.
+func TestSecretPatternsRule_ArchivesNeedAStreamingRunner(t *testing.T) {
+	run := runOnly{&stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n", rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar")}}}
+	if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
+		t.Fatal("want an error")
 	}
 }

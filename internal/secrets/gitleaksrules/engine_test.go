@@ -104,6 +104,25 @@ func TestScanDiff_GlobalPathAllowlistSkipsLockfile(t *testing.T) {
 	}
 }
 
+// Gitleaks matches the global path allowlist against the path inside an
+// archive as well, so a dependency folder packed into a zip is skipped like
+// one in the tree. A "!" in a path that does not follow an archive name is
+// part of a file name.
+func TestScanFile_ArchivePathAllowlist(t *testing.T) {
+	content := "token = \"" + githubPAT + "\"\n"
+	for path, want := range map[string]bool{
+		"dist/site.zip!node_modules/pkg/index.js":    false,
+		"app.jar!BOOT-INF/classes/package-lock.json": false,
+		"app.jar!BOOT-INF/classes/application.yml":   true,
+		"notes!node_modules/a.txt":                   true,
+	} {
+		_, ok := find(ScanFile(path, content), "github-pat")
+		if ok != want {
+			t.Errorf("%s: reported = %v, want %v", path, ok, want)
+		}
+	}
+}
+
 func TestScanDiff_LowEntropyTokenSkipped(t *testing.T) {
 	fs := ScanDiff(addDiff("a.sh", 1, "+export GH=ghp_"+strings.Repeat("a", 36)))
 	if _, ok := find(fs, "github-pat"); ok {

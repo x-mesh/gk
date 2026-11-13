@@ -3772,6 +3772,8 @@ gk guard check [flags]
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
+The built-in scan also opens each zip archive (`.jar`, `.war`, `.ear`, `.zip`) in its scope and scans the files in it. A build often packs its configuration, such as `BOOT-INF/classes/application.yml`, into a jar. A finding in an archive has the path `<archive>!<file>` and the line in that file. With `--history`, the scan reads each archive blob one time. A renamed archive with new content is scanned too. The scan does not open an archive in an archive. An archive that is larger than 512 MiB or that is not a valid zip file is not scanned. A file in an archive that is larger than 64 MiB, or that uses a compression method other than store or deflate, is not scanned. For each archive that the scan cannot read fully, the report has one `info` violation with the archive path. If Git LFS stores an archive, the history has only a pointer to it, and `--history` does not scan that archive. If gitleaks scans instead of the built-in scan, the archives are not opened.
+
 A rule can fail before it scans. Examples are a directory that is not a git repository, and a bare repository without `--history`. For each rule that fails, the report has one `error` violation with the rule ID `rule_error`. Thus the command does not print `no violations`, and it does not exit with code 0.
 
 #### Exit codes
@@ -3814,7 +3816,7 @@ The status annotates the finding. It does not remove the finding or change its s
 
 | Name | Severity | Behavior |
 |------|----------|----------|
-| `secret_patterns` | `error` | Scans with the gitleaks ruleset that is built into gk. The default scope is the tracked files. `--history` uses the same `git log` options as `gitleaks git` and covers all refs. The engine follows the gitleaks detection steps. The rule adds one `info` Violation that names the ruleset version. If the repo has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` is set, the rule runs `gitleaks` instead, because the built-in scan does not read these files: `gitleaks dir` for the default scope, `gitleaks git --staged` for `--staged`, and `gitleaks git` for `--history`. `gitleaks dir` also reads untracked files. If gitleaks is not installed in that case, the rule uses the built-in scan. `gk doctor` detects the binary. |
+| `secret_patterns` | `error` | Scans with the gitleaks ruleset that is built into gk. The default scope is the tracked files. `--history` uses the same `git log` options as `gitleaks git` and covers all refs. The engine follows the gitleaks detection steps. It also scans the files in zip archives (see above). The rule adds one `info` Violation that names the ruleset version. If the repo has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` is set, the rule runs `gitleaks` instead, because the built-in scan does not read these files: `gitleaks dir` for the default scope, `gitleaks git --staged` for `--staged`, and `gitleaks git` for `--history`. `gitleaks dir` also reads untracked files. If gitleaks is not installed in that case, the rule uses the built-in scan. `gk doctor` detects the binary. |
 
 #### Examples
 

@@ -305,8 +305,9 @@ func (e *engine) scanRules(f fileDiff, rules []rule, seen []keywordSet) []secret
 }
 
 const (
-	genericRuleID   = "generic-api-key"
-	awsAccessRuleID = "aws-access-token"
+	genericRuleID    = "generic-api-key"
+	awsAccessRuleID  = "aws-access-token"
+	privateKeyRuleID = "private-key"
 )
 
 // dropShadowedGeneric removes a generic-api-key finding when a more specific
@@ -353,9 +354,12 @@ func (e *engine) scanHunk(r rule, path string, h hunk) []secrets.Finding {
 			Line:     h.fileLine(line),
 			Sample:   maskSecret(secret),
 		}
-		if r.id == awsAccessRuleID {
+		switch r.id {
+		case awsAccessRuleID:
 			f.Credential = secrets.PairAWS(h.lines, line, secret)
-		} else {
+		case privateKeyRuleID:
+			f.Credential = secrets.KeyCandidate(secret)
+		default:
 			lineStart := strings.LastIndexByte(text[:secretStart], '\n') + 1
 			lineEnd := len(text)
 			if i := strings.IndexByte(text[secretStart:], '\n'); i >= 0 {

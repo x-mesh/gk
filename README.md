@@ -156,7 +156,7 @@ gk guard init        # scaffold .gk.yaml with commented policy stubs
 gk guard check       # evaluate all policy rules on the tracked files; exit 0/1/2
 gk guard check --history   # scan every commit reachable from any ref
 gk guard check --fetch     # fetch every remote, then scan the history
-gk guard check --verify    # check each AWS key, Slack token, and GCP API key found with its issuer (network)
+gk guard check --verify    # check each AWS key, Slack token, GCP API key, and OCI API key found with its issuer (network)
 
 # Onboarding
 gk doctor            # report env health + fix commands

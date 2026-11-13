@@ -228,10 +228,11 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		bindOCIKeys(findings, oci.profiles())
 		var creds []*secrets.Credential
 		for _, f := range findings {
-			// A private-key finding that no OCI profile names stays a
-			// candidate and is not checked.
-			if f.Credential.Verifiable() {
-				creds = append(creds, f.Credential)
+			// Most findings carry no credential. A private-key finding
+			// that no OCI profile names carries a candidate, which is not
+			// checked either.
+			if c := f.Credential; c != nil && c.Verifiable() {
+				creds = append(creds, c)
 			}
 		}
 		if len(creds) > 0 {
@@ -249,8 +250,8 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
 		}
-		if f.Credential.Verifiable() && verified != nil {
-			if res, ok := verified[f.Credential.ID()]; ok {
+		if c := f.Credential; c != nil && c.Verifiable() && verified != nil {
+			if res, ok := verified[c.ID()]; ok {
 				v.Verification = &res
 				if hint, ok := liveHint[res.Provider]; ok && res.Status == verifyStatusValid {
 					v.Hint = hint

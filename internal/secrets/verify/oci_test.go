@@ -225,6 +225,49 @@ func TestOCI_TriesProfileCandidatesInOrder(t *testing.T) {
 			t.Errorf("result = %+v after %d requests, want %+v after 1", got, calls, want)
 		}
 	})
+	// A candidate can fail for a reason of its own. A line that mentions
+	// "region" can supply a value that is not an OCI region, and that request
+	// fails before it reaches OCI. The next candidate must still be tried.
+	firstFails := map[string]func(http.ResponseWriter){
+		"500": func(w http.ResponseWriter) { w.WriteHeader(500) },
+		"404": func(w http.ResponseWriter) {
+			w.WriteHeader(404)
+			fmt.Fprint(w, ociErrorBody("NotAuthorizedOrNotFound"))
+		},
+		"200 without this fingerprint": func(w http.ResponseWriter) { fmt.Fprint(w, ociKeyList("00:11")) },
+	}
+	for name, fail := range firstFails {
+		t.Run("first candidate answers "+name+", second is right", func(t *testing.T) {
+			got, calls := runOCI(t, []secrets.OCIProfile{ociProfile(ociUser, "ap-seoul-1"), ociProfile(ociUserB, "ap-seoul-1")},
+				func(w http.ResponseWriter, user string) {
+					if user == ociUserB {
+						fmt.Fprint(w, ociKeyList(ociFixtureFingerprint))
+						return
+					}
+					fail(w)
+				})
+			if want := (Result{Status: StatusValid, Account: ociTenancy, Identity: ociUserB}); got != want || calls != 2 {
+				t.Errorf("result = %+v after %d requests, want %+v after 2", got, calls, want)
+			}
+		})
+	}
+	// With several candidates and none valid, the result is unknown with the
+	// code of the nearest candidate. A 401 for a later one must not read as a
+	// rejected key.
+	t.Run("first candidate answers 500, second 401", func(t *testing.T) {
+		got, calls := runOCI(t, []secrets.OCIProfile{ociProfile(ociUser, "ap-seoul-1"), ociProfile(ociUserB, "ap-seoul-1")},
+			func(w http.ResponseWriter, user string) {
+				if user == ociUser {
+					w.WriteHeader(500)
+					return
+				}
+				w.WriteHeader(401)
+				fmt.Fprint(w, ociErrorBody("NotAuthenticated"))
+			})
+		if want := (Result{Status: StatusUnknown, Code: "http_500"}); got != want || calls != 2 {
+			t.Errorf("result = %+v after %d requests, want %+v after 2", got, calls, want)
+		}
+	})
 	// With more than one candidate a 401 can come from a wrong candidate, so
 	// it does not read as a rejected key.
 	t.Run("the only candidate that can be sent fails", func(t *testing.T) {

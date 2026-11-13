@@ -54,6 +54,9 @@ var (
 // ociMaxProfiles for each fingerprint occurrence. A region counts only on a
 // line that mentions "region", so another hyphenated word is not taken for
 // one.
+//
+// In a diff, removed lines count too. The pair is made by fingerprint, so a
+// profile that a commit deleted still names its key.
 func FindOCIProfiles(text string) []OCIProfile {
 	if !strings.Contains(text, "ocid1.") {
 		return nil

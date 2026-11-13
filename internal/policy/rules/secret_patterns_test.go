@@ -697,6 +697,7 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 	}
 	run := &stubRunner{out: map[string]string{
 		"diff --cached --no-color":                       "staged diff",
+		"diff --no-color main..feat":                     "range diff",
 		"rev-parse --show-toplevel":                      root + "\n",
 		"ls-files -z --full-name -- :/":                  "a.txt\x00b.txt\x00",
 		"rev-list --all":                                 "c1\nc2\n",
@@ -720,7 +721,9 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 		{"staged without verify", policy.Input{Staged: true}, nil},
 		{"tracked files without verify", policy.Input{}, nil},
 		{"history without verify", policy.Input{History: true}, nil},
+		{"push range without verify", policy.Input{PushRange: "main..feat"}, nil},
 		{"staged", policy.Input{Staged: true, Verify: true}, []string{"staged diff"}},
+		{"push range", policy.Input{PushRange: "main..feat", Verify: true}, []string{"range diff"}},
 		{"tracked files", policy.Input{Verify: true}, []string{"a.txt\n", "b.txt\n"}},
 		{"history", policy.Input{History: true, Verify: true}, []string{"history diff"}},
 	}
@@ -762,5 +765,23 @@ func TestVerifySummary_RejectedHintsNameTheirProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Most findings carry no credential. Verification must leave them as they
+// are: reported, and without a verification.
+func TestSecretPatternsRule_VerifyWithFindingWithoutCredential(t *testing.T) {
+	r := builtinRule(secrets.Finding{Kind: "generic-api-key", File: "a", FileLine: 1})
+	r.Verify = func(context.Context, []*secrets.Credential) map[string]policy.Verification {
+		t.Fatal("Verify called with no credential to check")
+		return nil
+	}
+	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 3 || v[1].File != "a" || v[1].Verification != nil || v[1].Severity != policy.SeverityError {
+		t.Errorf("violations = %+v, want the finding reported without a verification", v)
 	}
 }

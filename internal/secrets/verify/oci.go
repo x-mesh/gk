@@ -51,19 +51,20 @@ var (
 
 // checkOCI lists the API keys of the profile's own user, a call every OCI
 // user may make for itself, signed with the key. When several profiles name
-// the fingerprint they are tried in order, because a 401 does not say which
-// part of a profile is wrong.
+// the fingerprint, every one that can be sent is tried until one is valid. A
+// candidate can fail for a reason of its own, such as a region value that
+// is not an OCI region, so no failure of one candidate ends the search.
 //
 // A 401 is rejected only when it is OCI's own answer for the one profile
-// that names the key. With several candidates it stays unknown: the 401 can
-// come from a wrong candidate and not from the key. OCI also answers 401
-// for a region the tenancy is not subscribed to, so rejected does not prove
-// that the key was deleted.
+// that names the key. With several candidates the result is unknown, with
+// the code of the nearest one: the 401 can come from a wrong candidate and
+// not from the key. OCI also answers 401 for a region the tenancy is not
+// subscribed to, so rejected does not prove that the key was deleted.
 func (v *Verifier) checkOCI(ctx context.Context, c *mergedCred) Result {
 	if c.ociKey == nil || len(c.ociProfiles) == 0 {
 		return Result{Status: StatusUnverifiable, Code: CodeUnsupportedKeyType}
 	}
-	var last, skipped Result
+	var first, skipped Result
 	sent := 0
 	for _, p := range c.ociProfiles[:min(len(c.ociProfiles), maxOCIAttempts)] {
 		if code := ociProfileProblem(p); code != "" {
@@ -72,19 +73,22 @@ func (v *Verifier) checkOCI(ctx context.Context, c *mergedCred) Result {
 			}
 			continue
 		}
-		last = v.callOCI(ctx, c.ociKey, c.value, p)
+		r := v.callOCI(ctx, c.ociKey, c.value, p)
 		sent++
-		if last.Code != ociNotAuthenticated {
-			return last
+		if r.Status == StatusValid {
+			return r
+		}
+		if sent == 1 {
+			first = r
 		}
 	}
-	if sent == 0 {
+	switch {
+	case sent == 0:
 		return skipped
+	case len(c.ociProfiles) == 1:
+		return first
 	}
-	if last.Status == StatusRejected && len(c.ociProfiles) == 1 {
-		return last
-	}
-	return Result{Status: StatusUnknown, Code: ociNotAuthenticated}
+	return Result{Status: StatusUnknown, Code: first.Code}
 }
 
 // ociProfileProblem returns the reason a profile cannot be sent, or "".

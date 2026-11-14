@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/x-mesh/gk/internal/secrets"
 )
@@ -701,4 +702,30 @@ func TestGKRules(t *testing.T) {
 			t.Errorf("gk rule %s cannot be searched by window", r.id)
 		}
 	}
+}
+
+// A finding outlives the diff it came from. A path that shares the diff's
+// memory keeps the whole diff alive, which ran a long history out of memory.
+func TestScanDiff_FindingPathsDoNotShareTheDiff(t *testing.T) {
+	diff := addDiff("config/app.env", 1, "+aws_access_key_id = "+awsKey) +
+		"diff --git a/certs/client.p12 b/certs/client.p12\nnew file mode 100644\nBinary files /dev/null and b/certs/client.p12 differ\n"
+	fs := ScanDiff(diff)
+	for _, kind := range []string{"aws-access-token", "pkcs12-file"} {
+		f, ok := find(fs, kind)
+		if !ok {
+			t.Fatalf("%s not found in %v", kind, kinds(fs))
+		}
+		if sharesMemory(f.File, diff) {
+			t.Errorf("%s: File %q shares the memory of the diff", kind, f.File)
+		}
+	}
+}
+
+func sharesMemory(s, text string) bool {
+	if s == "" || text == "" {
+		return false
+	}
+	p := uintptr(unsafe.Pointer(unsafe.StringData(s)))
+	lo := uintptr(unsafe.Pointer(unsafe.StringData(text)))
+	return p >= lo && p < lo+uintptr(len(text))
 }

@@ -128,7 +128,13 @@ func ociProfilesAround(lines []string, idx int, fingerprint string) []OCIProfile
 	slices.SortStableFunc(combos, func(a, b combo) int { return a.dist - b.dist })
 	var out []OCIProfile
 	for _, c := range combos {
-		out = AppendOCIProfile(out, c.profile)
+		p := c.profile
+		// The profiles outlive the scanned text, and a substring of it
+		// would keep all of it in memory.
+		out = AppendOCIProfile(out, OCIProfile{
+			Fingerprint: strings.Clone(p.Fingerprint), User: strings.Clone(p.User),
+			Tenancy: strings.Clone(p.Tenancy), Region: strings.Clone(p.Region),
+		})
 	}
 	return out
 }

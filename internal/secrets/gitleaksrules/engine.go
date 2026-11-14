@@ -920,7 +920,9 @@ func parseDiff(diff string) []fileDiff {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
-			files = append(files, fileDiff{path: pathFromGitHeader(line)})
+			// A finding outlives the diff, and a substring of the diff
+			// would keep all of it in memory.
+			files = append(files, fileDiff{path: strings.Clone(pathFromGitHeader(line))})
 			cur = &files[len(files)-1]
 		case cur == nil:
 		case strings.HasPrefix(line, "+++ "):
@@ -928,7 +930,7 @@ func parseDiff(diff string) []fileDiff {
 			if rest == "/dev/null" {
 				cur.path = ""
 			} else if p, ok := postImagePath(rest); ok {
-				cur.path = p
+				cur.path = strings.Clone(p)
 			}
 		case strings.HasPrefix(line, "@@"):
 			flush()

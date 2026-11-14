@@ -216,11 +216,11 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 	switch {
 	case in.Staged:
 		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
-			[]string{"diff", "--cached", "--no-color"},
+			append([]string{"diff", "--cached", "--no-color"}, archivePatchExclude...),
 			[]string{"diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames"})
 	case in.PushRange != "":
 		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
-			[]string{"diff", "--no-color", in.PushRange},
+			append([]string{"diff", "--no-color", in.PushRange}, archivePatchExclude...),
 			[]string{"diff", "--raw", "-z", "--no-abbrev", "--no-renames", in.PushRange})
 	case in.History:
 		findings, archives, err = r.scanHistory(ctx, in.Runner, oci, readers)
@@ -277,6 +277,19 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 	}
 	return out, nil
 }
+
+// archivePatchExclude leaves the archives out of the patches, because the
+// archive scan reads them. Git decompresses a whole blob to call it binary,
+// and on histories with many committed jars that took up to half of the
+// scan time. A patch shows an archive only as "Binary files differ", and
+// no built-in path rule matches an archive name.
+var archivePatchExclude = func() []string {
+	args := []string{"--"}
+	for _, ext := range secrets.ZipArchiveExts {
+		args = append(args, ":(top,exclude,glob,icase)**/*"+ext)
+	}
+	return args
+}()
 
 // scanDiff scans the patch of one `git diff` and the archives that the raw
 // form of the same diff adds or changes.
@@ -490,7 +503,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	for i, chunk := range chunks {
 		g.Go(func() error {
 			args := append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, chunk...)
-			diff, err := scanCommand(gctx, runner, args...)
+			diff, err := scanCommand(gctx, runner, append(args, archivePatchExclude...)...)
 			if err != nil {
 				return err
 			}

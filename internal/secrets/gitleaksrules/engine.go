@@ -354,7 +354,12 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 		fileHits[u.file] = append(fileHits[u.file], u.hits...)
 	}
 	var out []secrets.Finding
-	for _, hs := range fileHits {
+	for i, hs := range fileHits {
+		// pathSkipped runs the global path regexes, so the cheap test of
+		// the extension goes first.
+		if isYAML(files[i].path) && !e.pathSkipped(files[i].path) {
+			hs = e.withYAMLPaths(files[i], hs)
+		}
 		out = append(out, dropShadowedGeneric(hs)...)
 	}
 	return out
@@ -366,7 +371,7 @@ func (e *engine) scanFile(f fileDiff) []secrets.Finding {
 	}
 	hs := e.scanRaw(f, e.rules, e.rawPasses(f))
 	hs = append(hs, e.scanDecoded(f, e.rules, e.decodedPasses(f))...)
-	return dropShadowedGeneric(hs)
+	return dropShadowedGeneric(e.withYAMLPaths(f, hs))
 }
 
 // pathSkipped reports whether the global allowlist skips the file at p. For

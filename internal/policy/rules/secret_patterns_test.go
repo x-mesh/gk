@@ -71,6 +71,13 @@ func (s *stubRunner) Stream(ctx context.Context, stdin io.Reader, w io.Writer, a
 	if s.fail[key] {
 		return errors.New("exit 128")
 	}
+	if out, ok := s.out[key]; ok {
+		_, err := io.WriteString(w, out)
+		return err
+	}
+	if stdin == nil {
+		return nil
+	}
 	ids, err := io.ReadAll(stdin)
 	if err != nil {
 		return err

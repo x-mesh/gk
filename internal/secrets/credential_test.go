@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // Fixture values are assembled at runtime so this file does not trip secret
@@ -139,4 +140,54 @@ func TestTokenCredential_ExtendsFromItsOwnColumn(t *testing.T) {
 			t.Errorf("col %d: credential = %v, want the match unextended", bad, c)
 		}
 	}
+}
+
+// A credential and an OCI profile outlive the text they were found in. A
+// value that shares the text's memory keeps all of it alive, which ran a
+// long history out of memory.
+func TestScannerValues_DoNotShareTheScannedText(t *testing.T) {
+	text := strings.Join([]string{
+		"aws_access_key_id = " + pairKeyID,
+		"aws_session_token = " + strings.Repeat("Ab3/", 30),
+		"aws_secret_access_key = " + pairSecret,
+		"user=" + ociUser1,
+		"fingerprint=" + ociFP1,
+		"tenancy=" + ociTenancy,
+		"region=ap-seoul-1",
+	}, "\n")
+	lines := strings.Split(text, "\n")
+	aws := PairAWS(lines, 0, strings.TrimPrefix(lines[0], "aws_access_key_id = "))
+	values := map[string]string{"AWS key ID": aws.value, "AWS session token": aws.token}
+	for i, s := range aws.secrets {
+		values[fmt.Sprint("AWS secret ", i)] = s
+	}
+	values["PEM"] = KeyCandidate(text[:len(text)/2]).pem
+	bot := "xoxb-" + "123456789012-1234567890123-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+	line := text + "\nSLACK=" + bot
+	values["token"] = TokenCredential("slack-bot-token", line, len(line)-len(bot), bot).value
+	profiles := FindOCIProfiles(text)
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %+v, want 1", profiles)
+	}
+	p := profiles[0]
+	for name, s := range map[string]string{"OCI fingerprint": p.Fingerprint, "OCI user": p.User, "OCI tenancy": p.Tenancy, "OCI region": p.Region} {
+		values[name] = s
+	}
+	for name, s := range values {
+		if s == "" {
+			t.Errorf("%s is empty", name)
+		}
+		if sharesMemory(s, text) || sharesMemory(s, line) {
+			t.Errorf("%s shares the memory of the scanned text", name)
+		}
+	}
+}
+
+func sharesMemory(s, text string) bool {
+	if s == "" || text == "" {
+		return false
+	}
+	p := uintptr(unsafe.Pointer(unsafe.StringData(s)))
+	lo := uintptr(unsafe.Pointer(unsafe.StringData(text)))
+	return p >= lo && p < lo+uintptr(len(text))
 }

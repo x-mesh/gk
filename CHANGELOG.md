@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk guard check --history` no longer runs out of memory on a history that adds large generated files, such as committed source maps and JavaScript bundles. gk read the whole patch of each group of commits before it scanned the patch. On a repository with 255 commits and a 21.9 GB patch, `--history` stopped at a 16 GB memory limit after 24 seconds. gk now reads the patch in batches that end between files, and the batches that are read at the same time share 1 GiB. A finding now keeps a copy of its file path and values, so a batch is freed after its scan. The same repository finished with a peak of 5.9 GB. `--staged` and the push range read their patches the same way. On 11 other repositories the output did not change, and the time changed by 1.5% or less.
+
 ## [0.158.0] - 2026-11-14
 
 ### Added

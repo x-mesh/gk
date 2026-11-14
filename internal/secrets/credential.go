@@ -24,6 +24,9 @@ const (
 //
 // A private-key finding carries a candidate: the PEM text with no provider.
 // It is not verifiable until BindOCI pairs it with a profile.
+//
+// The scanner constructors copy their values: a credential outlives the
+// scanned text, and a substring of it would keep all of it in memory.
 type Credential struct {
 	provider string
 	kind     string
@@ -99,7 +102,7 @@ func KeyCandidate(pemText string) *Credential {
 	if pemText == "" || len(pemText) > ociMaxPEMBytes {
 		return nil
 	}
-	return &Credential{kind: privateKeyRule, pem: pemText}
+	return &Credential{kind: privateKeyRule, pem: strings.Clone(pemText)}
 }
 
 // NewOCICredential builds an OCI credential directly; scanners use BindOCI.
@@ -159,7 +162,7 @@ func TokenCredential(ruleID, line string, col int, match string) *Credential {
 	if strings.HasPrefix(value, "xoxr-") {
 		return nil
 	}
-	return &Credential{provider: r.provider, kind: ruleID, value: value}
+	return &Credential{provider: r.provider, kind: ruleID, value: strings.Clone(value)}
 }
 
 func isAlnum(b byte) bool {
@@ -223,13 +226,13 @@ func PairAWS(lines []string, idx int, keyID string) *Credential {
 	var secrets []string
 	for _, c := range cands {
 		if !slices.Contains(secrets, c.value) {
-			secrets = append(secrets, c.value)
+			secrets = append(secrets, strings.Clone(c.value))
 		}
 		if len(secrets) == awsMaxSecretCandidates {
 			break
 		}
 	}
-	return &Credential{provider: ProviderAWS, kind: "aws-access-token", value: keyID, secrets: secrets, token: token}
+	return &Credential{provider: ProviderAWS, kind: "aws-access-token", value: strings.Clone(keyID), secrets: secrets, token: strings.Clone(token)}
 }
 
 // looksLikeAWSSecret drops 40-character runs that are not random base64,

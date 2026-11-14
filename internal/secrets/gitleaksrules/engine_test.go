@@ -621,3 +621,18 @@ func TestScan_PrivateKeyCarriesCandidate(t *testing.T) {
 		}
 	}
 }
+
+// The secret scan leaves archives out of its patches, because the archive
+// scan reads them. That drops nothing only while no path rule matches an
+// archive name.
+func TestNoPathRuleMatchesAnArchive(t *testing.T) {
+	for _, ext := range secrets.ZipArchiveExts {
+		for _, name := range []string{"app" + ext, "lib/app" + strings.ToUpper(ext)} {
+			for _, r := range get().rules {
+				if r.path != nil && r.path.MatchString(name) {
+					t.Errorf("rule %s matches %s", r.id, name)
+				}
+			}
+		}
+	}
+}

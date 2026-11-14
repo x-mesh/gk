@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -29,12 +30,17 @@ func LooksBinary(data []byte) bool {
 // treat .jar, .war, or .ear as zip files, so it never reads the
 // configuration packed into a Java build.
 func IsZipArchive(p string) bool {
-	switch strings.ToLower(path.Ext(p)) {
-	case ".jar", ".war", ".ear", ".zip":
-		return true
-	}
-	return false
+	return slices.Contains(ZipArchiveExts, strings.ToLower(path.Ext(p)))
 }
+
+// OpensAsZip reports whether archive/zip can open data as a zip file.
+func OpensAsZip(data []byte) bool {
+	_, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	return err == nil || errors.Is(err, zip.ErrInsecurePath)
+}
+
+// ZipArchiveExts are the lowercase file extensions that IsZipArchive accepts.
+var ZipArchiveExts = []string{".jar", ".war", ".ear", ".zip"}
 
 // lfsPointer starts the text Git LFS commits in place of a file it stores.
 const lfsPointer = "version https://git-lfs.github.com/spec/v1\n"

@@ -47,6 +47,9 @@ type stubRunner struct {
 	waits string
 }
 
+// patch is cmd with the pathspecs that leave archives out of a patch.
+func patch(cmd string) string { return cmd + " " + strings.Join(archivePatchExclude, " ") }
+
 func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, error) {
 	key := strings.Join(args, " ")
 	s.mu.Lock()
@@ -130,7 +133,7 @@ func severities(v []policy.Violation) (info, errs int) {
 }
 
 func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "DIFF"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "DIFF"}}
 	r := builtinRule(secrets.Finding{Kind: "aws-access-key", File: "a.env", FileLine: 3, Sample: "AKIA****"})
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true})
 	if err != nil {
@@ -148,13 +151,13 @@ func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
 	if f.File != "a.env" || f.Line != 3 || !strings.Contains(f.Message, "aws-access-key") {
 		t.Errorf("violation = %+v", f)
 	}
-	if want := "diff --cached --no-color,diff --cached --raw -z --no-abbrev --no-renames"; strings.Join(run.calls, ",") != want {
+	if want := patch("diff --cached --no-color") + ",diff --cached --raw -z --no-abbrev --no-renames"; strings.Join(run.calls, ",") != want {
 		t.Errorf("calls = %v", run.calls)
 	}
 }
 
 func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
-	run := &stubRunner{out: map[string]string{"diff --no-color origin/main..HEAD": "DIFF"}}
+	run := &stubRunner{out: map[string]string{patch("diff --no-color origin/main..HEAD"): "DIFF"}}
 	r := builtinRule(secrets.Finding{Kind: "github-token", File: "x.go", FileLine: 9})
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, PushRange: "origin/main..HEAD"})
 	if err != nil {
@@ -163,7 +166,7 @@ func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
 	if _, errs := severities(v); errs != 1 {
 		t.Fatalf("errs=%d, want 1", errs)
 	}
-	if want := "diff --no-color origin/main..HEAD,diff --raw -z --no-abbrev --no-renames origin/main..HEAD"; strings.Join(run.calls, ",") != want {
+	if want := patch("diff --no-color origin/main..HEAD") + ",diff --raw -z --no-abbrev --no-renames origin/main..HEAD"; strings.Join(run.calls, ",") != want {
 		t.Errorf("calls = %v", run.calls)
 	}
 }
@@ -171,7 +174,7 @@ func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
 // The history scan diffs every commit reachable from any ref with -U0, as
 // gitleaks' git mode does, so both scanners see the same hunks.
 func TestSecretPatternsRule_NoGitleaks_DefaultScansHistory(t *testing.T) {
-	const logCmd = "log -p -U0 --no-color --no-walk=unsorted c1 c2"
+	logCmd := patch("log -p -U0 --no-color --no-walk=unsorted c1 c2")
 	run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n", logCmd: "LOG"}}
 	r := NewSecretPatternsRule()
 	r.runGitleaks = gitleaksMissing
@@ -225,7 +228,7 @@ func TestSecretPatternsRule_HistoryChunksKeepOrderAndCoverEveryCommit(t *testing
 	const prefix = "log -p -U0 --no-color --no-walk=unsorted "
 	for lo := 0; lo < len(shas); lo += historyChunkMin {
 		chunk := shas[lo:min(lo+historyChunkMin, len(shas))]
-		run.out[prefix+strings.Join(chunk, " ")] = chunk[0]
+		run.out[patch(prefix+strings.Join(chunk, " "))] = chunk[0]
 	}
 	r := builtinRule()
 	r.ScanDiff = func(d string) []secrets.Finding { return []secrets.Finding{{Kind: "k", File: d}} }
@@ -258,7 +261,7 @@ func TestSecretPatternsRule_HistoryChunksKeepOrderAndCoverEveryCommit(t *testing
 func TestSecretPatternsRule_HistoryChunkFailureSurfaces(t *testing.T) {
 	run := &stubRunner{
 		out:  map[string]string{"rev-list --all": "c1\n"},
-		fail: map[string]bool{"log -p -U0 --no-color --no-walk=unsorted c1": true},
+		fail: map[string]bool{patch("log -p -U0 --no-color --no-walk=unsorted c1"): true},
 	}
 	if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
 		t.Fatal("want error when a history chunk fails")
@@ -266,7 +269,7 @@ func TestSecretPatternsRule_HistoryChunkFailureSurfaces(t *testing.T) {
 }
 
 func TestSecretPatternsRule_NoGitleaks_GitFailureSurfaces(t *testing.T) {
-	run := &stubRunner{fail: map[string]bool{"diff --cached --no-color": true}}
+	run := &stubRunner{fail: map[string]bool{patch("diff --cached --no-color"): true}}
 	r := builtinRule()
 	if _, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true}); err == nil {
 		t.Fatal("want error when the diff command fails")
@@ -338,7 +341,7 @@ func TestSecretPatternsRule_GitleaksConfigEnv_RunsGitleaks(t *testing.T) {
 // Without a gitleaks config the embedded engine scans even when gitleaks is
 // installed: it reports the same findings and runs faster.
 func TestSecretPatternsRule_NoConfig_PrefersEmbeddedOverGitleaks(t *testing.T) {
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "DIFF"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "DIFF"}}
 	r := NewSecretPatternsRule()
 	r.runGitleaks = func(context.Context, scan.GitleaksOptions) ([]scan.GitleaksFinding, error) {
 		t.Fatal("gitleaks must not run without a gitleaks config")
@@ -359,7 +362,7 @@ func TestSecretPatternsRule_NoConfig_PrefersEmbeddedOverGitleaks(t *testing.T) {
 }
 
 func TestSecretPatternsRule_ConfigButNoGitleaks_FallsBackWithNotice(t *testing.T) {
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "DIFF"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "DIFF"}}
 	r := builtinRule(secrets.Finding{Kind: "k", File: "f", FileLine: 2})
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true, WorkDir: gitleaksConfigDir(t, ".gitleaks.toml")})
 	if err != nil {
@@ -456,7 +459,7 @@ func TestConvertFindings_Empty(t *testing.T) {
 }
 
 func TestSecretPatternsRule_NoGitleaks_NoticeUsesScannerLabel(t *testing.T) {
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "DIFF"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "DIFF"}}
 	r := builtinRule()
 	r.ScannerLabel = func() string { return "the embedded ruleset vX" }
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true})
@@ -630,7 +633,7 @@ func TestSecretPatternsRule_VerifyAnnotatesAWSFindings(t *testing.T) {
 			dead.ID(): {Provider: "aws", Status: "rejected", Code: "InvalidClientTokenId"},
 		}
 	}
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "x"}}
 
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true})
 	if err != nil {
@@ -712,7 +715,7 @@ func TestSecretPatternsRule_VerifyHintAndSummaryPerProvider(t *testing.T) {
 			gcp.ID():   {Provider: secrets.ProviderGCP, Status: "rejected", Code: "API_KEY_INVALID"},
 		}
 	}
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "x"}}
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
 	if err != nil {
 		t.Fatal(err)
@@ -740,7 +743,7 @@ func TestSecretPatternsRule_UnpairedPrivateKeyIsNotVerified(t *testing.T) {
 		t.Fatal("Verify called for a private key that no OCI profile names")
 		return nil
 	}
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "x"}}
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
 	if err != nil {
 		t.Fatal(err)
@@ -763,12 +766,12 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 		}
 	}
 	run := &stubRunner{out: map[string]string{
-		"diff --cached --no-color":                       "staged diff",
-		"diff --no-color main..feat":                     "range diff",
-		"rev-parse --show-toplevel":                      root + "\n",
-		"ls-files -z --full-name -- :/":                  "a.txt\x00b.txt\x00",
-		"rev-list --all":                                 "c1\nc2\n",
-		"log -p -U0 --no-color --no-walk=unsorted c1 c2": "history diff",
+		patch("diff --cached --no-color"):                       "staged diff",
+		patch("diff --no-color main..feat"):                     "range diff",
+		"rev-parse --show-toplevel":                             root + "\n",
+		"ls-files -z --full-name -- :/":                         "a.txt\x00b.txt\x00",
+		"rev-list --all":                                        "c1\nc2\n",
+		patch("log -p -U0 --no-color --no-walk=unsorted c1 c2"): "history diff",
 	}}
 	var mu sync.Mutex
 	var seen []string
@@ -843,7 +846,7 @@ func TestSecretPatternsRule_VerifyWithFindingWithoutCredential(t *testing.T) {
 		t.Fatal("Verify called with no credential to check")
 		return nil
 	}
-	run := &stubRunner{out: map[string]string{"diff --cached --no-color": "x"}}
+	run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "x"}}
 	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir(), Staged: true, Verify: true})
 	if err != nil {
 		t.Fatal(err)
@@ -962,6 +965,52 @@ func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 	}
 }
 
+// A text file at an archive path is scanned as text, because the patches
+// leave out archive paths, even when it starts as a zip file does. A binary
+// file that is no zip is still reported, and a zip file is still opened,
+// also behind a launch script without a NUL byte in its first 8000 bytes.
+func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "notes.zip") +
+			rawEntry("A", "100644", blobID(2), "bin.zip") +
+			rawEntry("A", "100644", blobID(3), "lfs.jar") +
+			rawEntry("A", "100644", blobID(4), "app.jar") +
+			rawEntry("A", "100644", blobID(5), "pk.zip") +
+			rawEntry("A", "100644", blobID(6), "boot.jar"),
+	}}
+	script := "#!/bin/sh\n" + strings.Repeat("# launch\n", 1000)
+	archiveStub(run, map[string]string{
+		blobID(1): "password: x\n",
+		blobID(2): "no zip\x00",
+		blobID(3): pointer,
+		blobID(4): makeZip(t, "application.yml", "a: 1\n"),
+		blobID(5): "PK password: x\n",
+		blobID(6): script + makeZip(t, "application.yml", "b: 2\n"),
+	})
+	r := builtinRule()
+	scanned := recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	got := slices.Sorted(slices.Values(*scanned))
+	want := []string{"app.jar!application.yml=a: 1\n", "boot.jar!application.yml=b: 2\n", "lfs.jar=" + pointer, "notes.zip=password: x\n", "pk.zip=PK password: x\n"}
+	if !slices.Equal(got, want) {
+		t.Errorf("scanned = %q, want %q", got, want)
+	}
+	var notices []string
+	for _, x := range v[1:] {
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
+		}
+	}
+	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(notices, want) {
+		t.Errorf("notices = %q, want %q", notices, want)
+	}
+}
+
 // An archive the scan could not open, or opened only in part, is reported
 // with an informational notice instead of reading as clean, and it does not
 // fail the check: a blob deep in the history stays there.
@@ -974,7 +1023,7 @@ func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 			rawEntry("A", "100644", blobID(3), "app.jar") +
 			rawEntry("A", "100644", blobID(4), "lfs.jar"),
 	}}
-	archiveStub(run, map[string]string{blobID(2): "not a zip file"})
+	archiveStub(run, map[string]string{blobID(2): "not a zip file\x00"})
 	// Git LFS keeps the archive outside the repository; its pointer is no
 	// archive that could not be read.
 	archiveStub(run, map[string]string{blobID(4): "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"})
@@ -1087,7 +1136,7 @@ func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {
 func TestSecretPatternsRule_ArchiveOCIProfilesKeepDiffProfiles(t *testing.T) {
 	run := &stubRunner{out: map[string]string{
 		"rev-list --all": "c1\nc2\n",
-		"log -p -U0 --no-color --no-walk=unsorted c1 c2": "history diff",
+		patch("log -p -U0 --no-color --no-walk=unsorted c1 c2"): "history diff",
 		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar"),
 	}}
 	archiveStub(run, map[string]string{blobID(1): makeZip(t, "oci.conf", "profile in jar")})

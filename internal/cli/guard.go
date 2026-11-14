@@ -35,8 +35,9 @@ every commit reachable from any ref. It also scans the files inside the .jar,
 It uses the gitleaks ruleset embedded in
 gk (a pinned release), which follows the gitleaks detection steps and runs
 faster than the gitleaks binary. gk runs the gitleaks binary instead when the
-repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG is set),
-because the embedded ruleset does not read those files.
+repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG or
+GITLEAKS_CONFIG_TOML is set), because the embedded ruleset does not read
+those files.
 `,
 	}
 
@@ -121,7 +122,7 @@ func guardRegistry() *policy.Registry {
 	secretRule.ScanDiff = gitleaksrules.ScanDiff
 	secretRule.ScanFile = gitleaksrules.ScanFile
 	secretRule.ScannerLabel = func() string {
-		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
+		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules) and %d gk rule(s)", gitleaksrules.Version(), gitleaksrules.RuleCount(), gitleaksrules.GKRuleCount())
 	}
 	secretRule.Verify = verifyCredentials
 	_ = reg.Register(secretRule)

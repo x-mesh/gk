@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk guard check` and the secret gate of `gk commit` find a password whose key names a database or another service, with the new rule `gk-service-password`. Examples are `ENV DB_PASS='...'` in a Dockerfile, `MYSQL_ROOT_PASSWORD=` in an env file, `REDIS_PASSWORD`, and `spring.datasource.password` in a properties file inside a jar. `generic-api-key` did not report these passwords when they were shorter than 10 characters, had an entropy of 3.5 or less, or had a key with `pass` and no `password`. gitleaks does not have this rule, so gk can report findings that gitleaks does not. The rule does not run when a gitleaks config makes gitleaks scan instead.
+
 ## [0.157.0] - 2026-11-14
 
 ### Changed

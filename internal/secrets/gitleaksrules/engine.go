@@ -98,6 +98,7 @@ type engine struct {
 	globalRegexes   []*regexp.Regexp
 	globalStopwords []string
 	rules           []rule
+	gkRules         int
 	keywords        *keywordMatcher
 }
 
@@ -109,8 +110,12 @@ var (
 // Version returns the gitleaks release the embedded ruleset came from.
 func Version() string { return get().version }
 
-// RuleCount returns the number of embedded rules.
-func RuleCount() int { return len(get().rules) }
+// RuleCount returns the number of embedded gitleaks rules.
+func RuleCount() int { return len(get().rules) - get().gkRules }
+
+// GKRuleCount returns the number of rules that gk adds to the gitleaks
+// ruleset.
+func GKRuleCount() int { return get().gkRules }
 
 // get compiles the ruleset on first use so commands that never scan do not
 // pay for compiling hundreds of regexes.
@@ -120,7 +125,9 @@ func get() *engine {
 		if err := json.Unmarshal(rulesJSON, &rs); err != nil {
 			panic("gitleaksrules: corrupt embedded rules.json: " + err.Error())
 		}
+		rs.Rules = append(rs.Rules, gkRules...)
 		loaded = compile(rs)
+		loaded.gkRules = len(gkRules)
 	})
 	return loaded
 }

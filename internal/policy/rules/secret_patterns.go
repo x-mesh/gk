@@ -135,7 +135,7 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 			RuleID:   r.Name(),
 			Severity: policy.SeverityInfo,
 			Message:  "nothing was verified: --verify checks findings of the embedded ruleset, and gitleaks ran instead",
-			Hint:     "gitleaks runs because the repo has .gitleaks.toml or .gitleaksignore, or GITLEAKS_CONFIG is set",
+			Hint:     "gitleaks runs because the repo has .gitleaks.toml or .gitleaksignore, or GITLEAKS_CONFIG or GITLEAKS_CONFIG_TOML is set",
 		})
 	}
 	return out, nil

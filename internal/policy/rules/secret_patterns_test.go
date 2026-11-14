@@ -965,6 +965,46 @@ func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 	}
 }
 
+// A text file at an archive path is scanned as text, because the patches
+// leave out archive paths. A binary file that is no zip is still reported,
+// and a zip file is still opened.
+func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"
+	run := &stubRunner{out: map[string]string{
+		"rev-list --all": "c1\nc2\n",
+		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "notes.zip") +
+			rawEntry("A", "100644", blobID(2), "bin.zip") +
+			rawEntry("A", "100644", blobID(3), "lfs.jar") +
+			rawEntry("A", "100644", blobID(4), "app.jar"),
+	}}
+	archiveStub(run, map[string]string{
+		blobID(1): "password: x\n",
+		blobID(2): "no zip\x00",
+		blobID(3): pointer,
+		blobID(4): makeZip(t, "application.yml", "a: 1\n"),
+	})
+	r := builtinRule()
+	scanned := recordFiles(r)
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	got := slices.Sorted(slices.Values(*scanned))
+	want := []string{"app.jar!application.yml=a: 1\n", "lfs.jar=" + pointer, "notes.zip=password: x\n"}
+	if !slices.Equal(got, want) {
+		t.Errorf("scanned = %q, want %q", got, want)
+	}
+	var notices []string
+	for _, x := range v[1:] {
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
+		}
+	}
+	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(notices, want) {
+		t.Errorf("notices = %q, want %q", notices, want)
+	}
+}
+
 // An archive the scan could not open, or opened only in part, is reported
 // with an informational notice instead of reading as clean, and it does not
 // fail the check: a blob deep in the history stays there.
@@ -977,7 +1017,7 @@ func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 			rawEntry("A", "100644", blobID(3), "app.jar") +
 			rawEntry("A", "100644", blobID(4), "lfs.jar"),
 	}}
-	archiveStub(run, map[string]string{blobID(2): "not a zip file"})
+	archiveStub(run, map[string]string{blobID(2): "not a zip file\x00"})
 	// Git LFS keeps the archive outside the repository; its pointer is no
 	// archive that could not be read.
 	archiveStub(run, map[string]string{blobID(4): "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"})

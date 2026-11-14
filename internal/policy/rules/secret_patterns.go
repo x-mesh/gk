@@ -757,7 +757,7 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 			scans.Go(func() {
 				defer func() { <-slots }()
 				for _, t := range b.targets {
-					results[t] = r.scanArchive(targets[t].path, data[:size], oci, base+t)
+					results[t] = r.scanArchiveBlob(targets[t].path, data[:size], oci, base+t)
 				}
 			})
 		}
@@ -832,6 +832,19 @@ func batchHeader(r interface{ ReadString(byte) (string, error) }, blob string) (
 		return 0, fmt.Errorf("secret_patterns: size of blob %s: %w", blob, err)
 	}
 	return size, nil
+}
+
+// scanArchiveBlob scans a blob committed at an archive path. The patches
+// leave out every archive path, so a text file at one is scanned as text
+// here. A zip file starts with "PK", and a text file has no NUL byte where
+// git looks for one.
+func (r *SecretPatternsRule) scanArchiveBlob(name string, data []byte, oci *ociProfileSink, slot int) archiveResult {
+	if !bytes.HasPrefix(data, []byte("PK")) && !secrets.LooksBinary(data) {
+		content := string(data)
+		oci.scan(slot, content)
+		return archiveResult{findings: r.ScanFile(name, content)}
+	}
+	return r.scanArchive(name, data, oci, slot)
 }
 
 // scanArchive scans each file in one zip archive under the path

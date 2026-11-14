@@ -966,8 +966,9 @@ func TestSecretPatternsRule_HistoryScansEachArchiveBlobOnce(t *testing.T) {
 }
 
 // A text file at an archive path is scanned as text, because the patches
-// leave out archive paths. A binary file that is no zip is still reported,
-// and a zip file is still opened.
+// leave out archive paths, even when it starts as a zip file does. A binary
+// file that is no zip is still reported, and a zip file is still opened,
+// also behind a launch script without a NUL byte in its first 8000 bytes.
 func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n"
 	run := &stubRunner{out: map[string]string{
@@ -975,13 +976,18 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "notes.zip") +
 			rawEntry("A", "100644", blobID(2), "bin.zip") +
 			rawEntry("A", "100644", blobID(3), "lfs.jar") +
-			rawEntry("A", "100644", blobID(4), "app.jar"),
+			rawEntry("A", "100644", blobID(4), "app.jar") +
+			rawEntry("A", "100644", blobID(5), "pk.zip") +
+			rawEntry("A", "100644", blobID(6), "boot.jar"),
 	}}
+	script := "#!/bin/sh\n" + strings.Repeat("# launch\n", 1000)
 	archiveStub(run, map[string]string{
 		blobID(1): "password: x\n",
 		blobID(2): "no zip\x00",
 		blobID(3): pointer,
 		blobID(4): makeZip(t, "application.yml", "a: 1\n"),
+		blobID(5): "PK password: x\n",
+		blobID(6): script + makeZip(t, "application.yml", "b: 2\n"),
 	})
 	r := builtinRule()
 	scanned := recordFiles(r)
@@ -990,7 +996,7 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	got := slices.Sorted(slices.Values(*scanned))
-	want := []string{"app.jar!application.yml=a: 1\n", "lfs.jar=" + pointer, "notes.zip=password: x\n"}
+	want := []string{"app.jar!application.yml=a: 1\n", "boot.jar!application.yml=b: 2\n", "lfs.jar=" + pointer, "notes.zip=password: x\n", "pk.zip=PK password: x\n"}
 	if !slices.Equal(got, want) {
 		t.Errorf("scanned = %q, want %q", got, want)
 	}

@@ -33,6 +33,12 @@ func IsZipArchive(p string) bool {
 	return slices.Contains(ZipArchiveExts, strings.ToLower(path.Ext(p)))
 }
 
+// OpensAsZip reports whether archive/zip can open data as a zip file.
+func OpensAsZip(data []byte) bool {
+	_, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	return err == nil || errors.Is(err, zip.ErrInsecurePath)
+}
+
 // ZipArchiveExts are the lowercase file extensions that IsZipArchive accepts.
 var ZipArchiveExts = []string{".jar", ".war", ".ear", ".zip"}
 

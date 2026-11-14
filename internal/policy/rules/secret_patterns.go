@@ -835,11 +835,11 @@ func batchHeader(r interface{ ReadString(byte) (string, error) }, blob string) (
 }
 
 // scanArchiveBlob scans a blob committed at an archive path. The patches
-// leave out every archive path, so a text file at one is scanned as text
-// here. A zip file starts with "PK", and a text file has no NUL byte where
-// git looks for one.
+// leave out every archive path, so a text file at one that does not open as
+// a zip file is scanned as text here. A jar with a launch script in front
+// can pass git's text test and still opens as a zip file.
 func (r *SecretPatternsRule) scanArchiveBlob(name string, data []byte, oci *ociProfileSink, slot int) archiveResult {
-	if !bytes.HasPrefix(data, []byte("PK")) && !secrets.LooksBinary(data) {
+	if !secrets.LooksBinary(data) && !secrets.OpensAsZip(data) {
 		content := string(data)
 		oci.scan(slot, content)
 		return archiveResult{findings: r.ScanFile(name, content)}

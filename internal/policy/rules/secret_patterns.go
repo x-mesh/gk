@@ -63,6 +63,8 @@ type SecretPatternsRule struct {
 	findOCIProfiles func(string) []secrets.OCIProfile
 	// archiveLimit is a test seam; nil means defaultArchiveLimit.
 	archiveLimit *archiveLimit
+	// patchBatch overrides patchBatchBytes in tests.
+	patchBatch int
 }
 
 // ociProfileSink collects the OCI profiles in the text a scan reads. A nil
@@ -291,15 +293,92 @@ var archivePatchExclude = func() []string {
 	return args
 }()
 
+// patchBudgetBytes is how much patch text the patch scans of one run hold
+// together before they scan it. The patch of a history with committed
+// build output reached 21.9 GB, and holding chunks of it whole ran out of
+// a 16 GB memory limit. A history scan splits the budget among the chunks
+// that it reads at once. The engine leaves cores idle at the end of each
+// batch, and with few chunks no other chunk fills them: with 4 chunks,
+// 32 MiB batches made a scan 16% slower and 256 MiB batches 1.7% slower.
+const patchBudgetBytes = 1 << 30
+
+// patchBatchBytes is the batch size of each of n patch scans that run at
+// once. A batch ends only between files, so it can hold one file more.
+func (r *SecretPatternsRule) patchBatchBytes(n int) int {
+	if r.patchBatch > 0 {
+		return r.patchBatch
+	}
+	return patchBudgetBytes / max(n, 1)
+}
+
+// scanPatch scans the patch that git prints for args, a batch of whole
+// files at a time. The engine scans each file on its own, and the OCI
+// profile search stops at a file header, so the findings do not depend on
+// where a batch ends.
+func (r *SecretPatternsRule) scanPatch(ctx context.Context, runner git.Runner, oci *ociProfileSink, slot, limit int, args []string) ([]secrets.Finding, error) {
+	stream, ok := runner.(git.Streamer)
+	if !ok {
+		diff, err := scanCommand(ctx, runner, args...)
+		if err != nil {
+			return nil, err
+		}
+		oci.scan(slot, diff)
+		return r.ScanDiff(diff), nil
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := stream.Stream(ctx, nil, pw, args...)
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	var found []secrets.Finding
+	var batch strings.Builder
+	flush := func() {
+		if batch.Len() == 0 {
+			return
+		}
+		diff := batch.String()
+		batch.Reset()
+		found = append(found, r.ScanDiff(diff)...)
+		oci.scan(slot, diff)
+	}
+	in := bufio.NewReaderSize(pr, 1<<20)
+	var readErr error
+	for {
+		// ReadString has no line limit: a source map is one line of many MB.
+		line, err := in.ReadString('\n')
+		if strings.HasPrefix(line, "diff --git ") && batch.Len() >= limit {
+			flush()
+		}
+		batch.WriteString(line)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+	}
+	// Closing the read end ends a git process that a read error left
+	// blocked on a full pipe. Close of a PipeReader always returns nil.
+	_ = pr.Close()
+	if err := <-done; err != nil {
+		return nil, fmt.Errorf("secret_patterns: built-in scan: %w", err)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("secret_patterns: built-in scan: %w", readErr)
+	}
+	flush()
+	return found, nil
+}
+
 // scanDiff scans the patch of one `git diff` and the archives that the raw
 // form of the same diff adds or changes.
 func (r *SecretPatternsRule) scanDiff(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int, patchArgs, rawArgs []string) ([]secrets.Finding, archiveReport, error) {
-	diff, err := scanCommand(ctx, runner, patchArgs...)
+	findings, err := r.scanPatch(ctx, runner, oci, oci.grow(1), r.patchBatchBytes(1), patchArgs)
 	if err != nil {
 		return nil, archiveReport{}, err
 	}
-	findings := r.ScanDiff(diff)
-	oci.scan(oci.grow(1), diff)
 	raw, err := scanCommand(ctx, runner, rawArgs...)
 	if err != nil {
 		return nil, archiveReport{}, err
@@ -498,17 +577,17 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	results := make([][]secrets.Finding, len(chunks))
 	refs := make([][]archiveRef, len(chunks))
 	oci.grow(len(chunks))
+	batch := r.patchBatchBytes(min(len(chunks), workers))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(workers)
 	for i, chunk := range chunks {
 		g.Go(func() error {
 			args := append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, chunk...)
-			diff, err := scanCommand(gctx, runner, append(args, archivePatchExclude...)...)
+			found, err := r.scanPatch(gctx, runner, oci, i, batch, append(args, archivePatchExclude...))
 			if err != nil {
 				return err
 			}
-			results[i] = r.ScanDiff(diff)
-			oci.scan(i, diff)
+			results[i] = found
 			// A patch shows only "Binary files differ" for an archive, so
 			// the blob ids come from a raw diff. Without rename detection a
 			// renamed archive is listed as added, and its new content is

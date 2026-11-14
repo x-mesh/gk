@@ -2,14 +2,19 @@ package rules
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/secrets"
+	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -64,5 +69,63 @@ func TestSecretPatternsRule_PatchesLeaveOutArchives(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A history patch is scanned a batch of whole files at a time. The findings
+// and their order do not depend on the batch size, also with a line longer
+// than the read buffer.
+func TestSecretPatternsRule_PatchBatchesGiveTheSameFindings(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	pw := "Zk" + "8q" + "Lm2x"
+	for i := range 4 {
+		repo.WriteFile(fmt.Sprintf("svc%d/.env", i), fmt.Sprintf("DB_PASS=%s%d\n", pw, i))
+		repo.WriteFile(fmt.Sprintf("svc%d/notes.txt", i), "no secret here\n")
+		repo.Commit(fmt.Sprintf("c%d", i))
+	}
+	repo.WriteFile("dist/app.js.map", strings.Repeat("x", 3<<19)+" REDIS_PASSWORD="+pw+"\n")
+	repo.Commit("bundle")
+
+	scan := func(batch int) []policy.Violation {
+		r := NewSecretPatternsRule()
+		r.runGitleaks = gitleaksMissing
+		r.ScanDiff = gitleaksrules.ScanDiff
+		r.ScanFile = gitleaksrules.ScanFile
+		r.patchBatch = batch
+		v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	whole, batched := scan(1<<30), scan(1)
+	if !slices.EqualFunc(whole, batched, func(a, b policy.Violation) bool {
+		return a.File == b.File && a.Line == b.Line && a.Message == b.Message
+	}) {
+		t.Errorf("batched findings differ:\nwhole   %v\nbatched %v", whole, batched)
+	}
+	if n := len(whole) - 1; n != 5 {
+		t.Errorf("%d findings, want 5: %v", n, whole)
+	}
+}
+
+// failAfterRunner prints part of a patch and then fails, as git does when
+// it dies in the middle of a history.
+type failAfterRunner struct{}
+
+func (failAfterRunner) Run(context.Context, ...string) ([]byte, []byte, error) {
+	return nil, nil, errors.New("unexpected Run")
+}
+
+func (failAfterRunner) Stream(_ context.Context, _ io.Reader, w io.Writer, _ ...string) error {
+	_, _ = io.WriteString(w, "diff --git a/x b/x\n+++ b/x\n@@ -0,0 +1 @@\n+line\n")
+	return errors.New("exit 128")
+}
+
+func TestSecretPatternsRule_PatchStreamFailureFailsTheScan(t *testing.T) {
+	r := builtinRule(secrets.Finding{Kind: "k", File: "x", FileLine: 1})
+	found, err := r.scanPatch(context.Background(), failAfterRunner{}, nil, 0, 1, []string{"log", "-p"})
+	if err == nil || !strings.Contains(err.Error(), "exit 128") || found != nil {
+		t.Errorf("scanPatch = %v, %v; want no findings and the git error", found, err)
 	}
 }

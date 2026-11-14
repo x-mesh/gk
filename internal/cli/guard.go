@@ -35,8 +35,9 @@ every commit reachable from any ref. It also scans the files inside the .jar,
 It uses the gitleaks ruleset embedded in
 gk (a pinned release), which follows the gitleaks detection steps and runs
 faster than the gitleaks binary. gk runs the gitleaks binary instead when the
-repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG is set),
-because the embedded ruleset does not read those files.
+repo has .gitleaks.toml or .gitleaksignore (or GITLEAKS_CONFIG or
+GITLEAKS_CONFIG_TOML is set), because the embedded ruleset does not read
+those files.
 `,
 	}
 

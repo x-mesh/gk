@@ -102,3 +102,21 @@ func TestYAMLKey(t *testing.T) {
 		}
 	}
 }
+
+// A parent key can carry an anchor or a tag and still open a block.
+func TestYAMLPaths_AnchoredAndTaggedParents(t *testing.T) {
+	pw := "Zk" + "8q" + "Lm2x"
+	content := "spring:\n" + // 1
+		"  datasource: &main\n" + // 2
+		"    password: " + pw + "\n" + // 3
+		"  redis: !!map\n" + // 4
+		"    password: " + pw + "\n" + // 5
+		"  mail: &m !!map # shared\n" + // 6
+		"    password: " + pw + "\n" + // 7
+		"  other: &o\n" + // 8
+		"    password: " + pw + "\n" // 9
+	want := []string{"a.yml:03", "a.yml:05", "a.yml:07"}
+	if got := servicePasswordLines(t, "a.yml", content); !slices.Equal(got, want) {
+		t.Errorf("findings at %v, want %v", got, want)
+	}
+}

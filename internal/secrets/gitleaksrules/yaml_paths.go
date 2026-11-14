@@ -82,7 +82,7 @@ func yamlPaths(f fileDiff) fileDiff {
 			for len(parents) > 0 && parents[len(parents)-1].indent >= indent {
 				parents = parents[:len(parents)-1]
 			}
-			if value == "" || strings.HasPrefix(value, "#") {
+			if opensBlock(value) {
 				parents = append(parents, parent{indent, key})
 				continue
 			}
@@ -108,6 +108,23 @@ func yamlPaths(f fileDiff) fileDiff {
 		}
 	}
 	return out
+}
+
+// opensBlock reports whether the value of a key leaves the key a parent:
+// nothing, a comment, or only an anchor (&name) and tags (!!map).
+func opensBlock(value string) bool {
+	if i := strings.Index(value, " #"); i >= 0 {
+		value = value[:i]
+	}
+	if strings.HasPrefix(value, "#") {
+		return true
+	}
+	for _, f := range strings.Fields(value) {
+		if f[0] != '&' && f[0] != '!' {
+			return false
+		}
+	}
+	return true
 }
 
 // withYAMLPaths adds the hits of the gk rules on the key paths of a YAML

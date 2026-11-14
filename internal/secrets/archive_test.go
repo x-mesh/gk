@@ -3,6 +3,7 @@ package secrets
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,33 @@ func TestIsZipArchive(t *testing.T) {
 	} {
 		if got := IsZipArchive(p); got != want {
 			t.Errorf("IsZipArchive(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+// A zip file with a name that leaves the archive still opens: the names are
+// only reported, never written to disk. Go returns ErrInsecurePath for such
+// a name only when GODEBUG has zipinsecurepath=0.
+func TestOpensAsZip(t *testing.T) {
+	t.Setenv("GODEBUG", "zipinsecurepath=0")
+	insecure := buildZip(t, zipFile{name: "../escape.yml", data: "a: 1\n"})
+	if _, err := zip.NewReader(bytes.NewReader(insecure), int64(len(insecure))); !errors.Is(err, zip.ErrInsecurePath) {
+		t.Fatalf("zip.NewReader error = %v, want ErrInsecurePath", err)
+	}
+	plain := buildZip(t, zipFile{name: "app.yml", data: "a: 1\n"})
+	for name, c := range map[string]struct {
+		data []byte
+		want bool
+	}{
+		"zip":           {plain, true},
+		"insecure name": {insecure, true},
+		"launch script": {append([]byte("#!/bin/sh\nexec java -jar \"$0\"\n"), plain...), true},
+		"text":          {[]byte("password: x\n"), false},
+		"text with PK":  {[]byte("PK password: x\n"), false},
+		"empty":         {nil, false},
+	} {
+		if got := OpensAsZip(c.data); got != c.want {
+			t.Errorf("%s: OpensAsZip = %v, want %v", name, got, c.want)
 		}
 	}
 }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `gk guard check` leaves the `.jar`, `.war`, `.ear`, and `.zip` files out of the patches of `--staged`, the push range, and `--history`, because the archive scan reads them. Git decompressed each archive in full only to print `Binary files differ`. On seven repositories with many committed jars, `--history` took 8.5s to 36.9s instead of 18.1s to 58.0s, with the same output.
+- In `--staged`, the push range, and `--history`, a file at an archive path that is text and that does not open as a zip file, such as a Git LFS pointer, is now scanned as one text file. Before, gk scanned the added lines of its patch, and the archive scan reported it as an archive that is not a valid zip or skipped it as an LFS pointer. A secret in such a file is now reported for each version of the file that has it.
+
 ## [0.156.0] - 2026-11-14
 
 ### Added

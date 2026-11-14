@@ -274,7 +274,7 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 	}
 	decodedLeft := make([]atomic.Int32, len(files))
 	for i, f := range files {
-		if f.path == "" || matchAny(e.globalPaths, f.path) {
+		if e.pathSkipped(f.path) {
 			continue
 		}
 		size := 0
@@ -354,12 +354,28 @@ func (e *engine) scanFiles(files []fileDiff) []secrets.Finding {
 }
 
 func (e *engine) scanFile(f fileDiff) []secrets.Finding {
-	if f.path == "" || matchAny(e.globalPaths, f.path) {
+	if e.pathSkipped(f.path) {
 		return nil
 	}
 	hs := e.scanRaw(f, e.rules, e.rawPasses(f))
 	hs = append(hs, e.scanDecoded(f, e.rules, e.decodedPasses(f))...)
 	return dropShadowedGeneric(hs)
+}
+
+// pathSkipped reports whether the global allowlist skips the file at p. For
+// a file inside an archive (app.zip!node_modules/x.js) gitleaks also matches
+// the path inside the archive on its own, so a pattern anchored at the start
+// of a path, such as (?:^|/)node_modules/, applies there too.
+func (e *engine) pathSkipped(p string) bool {
+	if p == "" || matchAny(e.globalPaths, p) {
+		return true
+	}
+	for i := 0; i < len(p); i++ {
+		if strings.HasPrefix(p[i:], secrets.ArchiveSeparator) && secrets.IsZipArchive(p[:i]) {
+			return matchAny(e.globalPaths, p[i+len(secrets.ArchiveSeparator):])
+		}
+	}
+	return false
 }
 
 // maxDecodeDepth is the gitleaks default for --max-decode-depth.

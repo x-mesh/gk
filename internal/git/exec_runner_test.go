@@ -1,8 +1,11 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -83,4 +86,31 @@ func lastValue(env []string, key string) string {
 		}
 	}
 	return last
+}
+
+// Stream feeds stdin to git and passes its stdout on; a non-zero exit is an
+// *ExitError, as from Run.
+func TestExecRunnerStream(t *testing.T) {
+	dir := t.TempDir()
+	r := &ExecRunner{Dir: dir}
+	ctx := context.Background()
+	if _, _, err := r.Run(ctx, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	var id bytes.Buffer
+	if err := r.Stream(ctx, strings.NewReader("hello\n"), &id, "hash-object", "-w", "--stdin"); err != nil {
+		t.Fatal(err)
+	}
+	blob := strings.TrimSpace(id.String())
+	var out bytes.Buffer
+	if err := r.Stream(ctx, strings.NewReader(blob+"\n"), &out, "cat-file", "--batch"); err != nil {
+		t.Fatal(err)
+	}
+	if want := blob + " blob 6\nhello\n\n"; out.String() != want {
+		t.Errorf("cat-file --batch = %q, want %q", out.String(), want)
+	}
+	var exit *ExitError
+	if err := r.Stream(ctx, strings.NewReader(""), &out, "cat-file", "--no-such-flag"); !errors.As(err, &exit) || exit.Code == 0 {
+		t.Errorf("err = %v, want an *ExitError", err)
+	}
 }

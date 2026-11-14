@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -60,6 +61,7 @@ func runGuardCheckArgs(t *testing.T, dir string, args ...string) (string, error)
 	cmd.Flags().Bool("staged", false, "")
 	cmd.Flags().Bool("history", false, "")
 	cmd.Flags().Bool("fetch", false, "")
+	cmd.Flags().Int("archive-readers", rules.DefaultArchiveReaders, "")
 	cmd.SetArgs(args)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -215,6 +217,81 @@ func TestRunGuardCheck_ScopeDefaultHistoryStaged(t *testing.T) {
 	out, err = runGuardCheckCmd(t, repo.Dir, "--staged")
 	if err == nil || !strings.Contains(out, `"file":"seed.txt"`) {
 		t.Fatalf("--staged must report the staged secret: err=%v\n%s", err, out)
+	}
+}
+
+// bootJar returns a Spring Boot style jar whose configuration holds a token.
+// filler changes the bytes, as a rebuild of the same application does.
+func bootJar(t *testing.T, filler string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range [][2]string{
+		{"BOOT-INF/classes/App.class", "\xca\xfe\xba\xbe\x00" + filler},
+		{"BOOT-INF/classes/application.yml", "server:\n  port: 8080\ngithub:\n  token: \"" + testPAT + "\"\n"},
+	} {
+		w, err := zw.Create(f[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(f[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+// A token in the configuration packed into a committed jar is reported in
+// every scope, at the path jar!file and the line inside the file. A jar that
+// a version bump renames and rebuilds is scanned too: it is not a pure
+// rename, so its new content is new.
+func TestGuardCheck_ArchivesInEveryScope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	const entry = "!BOOT-INF/classes/application.yml"
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed: initial")
+	repo.WriteFile("was/app-1.0.jar", bootJar(t, "v1"))
+	repo.Commit("build: add jar")
+
+	out, err := runGuardCheckCmd(t, repo.Dir)
+	if err == nil || !strings.Contains(out, `"file":"was/app-1.0.jar`+entry+`","line":4`) {
+		t.Fatalf("default scope must report the token in the tracked jar: err=%v\n%s", err, out)
+	}
+
+	repo.RunGit("mv", "was/app-1.0.jar", "was/app-1.1.jar")
+	repo.WriteFile("was/app-1.1.jar", bootJar(t, "v2"))
+	repo.RunGit("add", "was")
+	out, err = runGuardCheckCmd(t, repo.Dir, "--staged")
+	if err == nil || !strings.Contains(out, `"file":"was/app-1.1.jar`+entry+`"`) || strings.Contains(out, "app-1.0.jar") {
+		t.Fatalf("--staged must report the rebuilt jar only: err=%v\n%s", err, out)
+	}
+	repo.Commit("build: bump version")
+	repo.RunGit("rm", "-q", "was/app-1.1.jar")
+	repo.Commit("build: stop committing jars")
+
+	out, err = runGuardCheckCmd(t, repo.Dir, "--history")
+	for _, jar := range []string{"app-1.0.jar", "app-1.1.jar"} {
+		if err == nil || !strings.Contains(out, `"file":"was/`+jar+entry+`"`) {
+			t.Fatalf("--history must report the token in %s: err=%v\n%s", jar, err, out)
+		}
+	}
+	if !strings.Contains(out, "including the files in 2 archive(s)") {
+		t.Errorf("the notice must count the opened archives:\n%s", out)
+	}
+	// The two archive blobs went to two cat-file processes; one process must
+	// report the same.
+	one, oneErr := runGuardCheckCmd(t, repo.Dir, "--history", "--archive-readers", "1")
+	if one != out || (oneErr == nil) != (err == nil) {
+		t.Errorf("--archive-readers 1 changed the report:\n%s\nwant:\n%s", one, out)
+	}
+	if _, err := runGuardCheckCmd(t, repo.Dir, "--history", "--archive-readers", "0"); err == nil || !strings.Contains(err.Error(), "--archive-readers must be at least 1") {
+		t.Errorf("--archive-readers 0: err = %v", err)
 	}
 }
 

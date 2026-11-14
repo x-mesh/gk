@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -12,6 +13,13 @@ type Runner interface {
 	// Run executes `git <args...>` and returns captured stdout/stderr.
 	// Non-zero exit codes produce a non-nil error; stdout/stderr are still returned.
 	Run(ctx context.Context, args ...string) (stdout, stderr []byte, err error)
+}
+
+// Streamer is a Runner that also feeds stdin to git and writes its stdout to
+// w as it arrives, for output such as `cat-file --batch` that is too large
+// to buffer. ExecRunner implements it.
+type Streamer interface {
+	Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error
 }
 
 // ExitError wraps a non-zero git exit with its code.

@@ -68,6 +68,10 @@ type Input struct {
 	// Verify asks rules that can test a finding against its issuer (live
 	// credential checks) to do so. It adds network calls, so it is opt-in.
 	Verify bool
+	// ArchiveReaders is how many git processes read committed archives at
+	// once. Each holds the archive it rebuilds in memory. Zero means the
+	// rule's default.
+	ArchiveReaders int
 }
 
 // Violation describes a single policy breach. Severity is assigned by the

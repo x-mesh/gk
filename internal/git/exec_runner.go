@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -71,32 +72,33 @@ func (r *ExecRunner) Run(ctx context.Context, args ...string) (stdout, stderr []
 	cmd.Stderr = &errBuf
 
 	start := time.Now()
-	runErr := cmd.Run()
-	dur := time.Since(start)
-	stdout = outBuf.Bytes()
-	stderr = errBuf.Bytes()
-
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			wrapped := &ExitError{
-				Code:   exitErr.ExitCode(),
-				Args:   args,
-				Stderr: string(stderr),
-			}
-			if ExecHook != nil {
-				ExecHook(args, dur, wrapped)
-			}
-			return stdout, stderr, wrapped
-		}
-		if ExecHook != nil {
-			ExecHook(args, dur, runErr)
-		}
-		return stdout, stderr, runErr
-	}
-
+	err = wrapExit(args, cmd.Run(), errBuf.Bytes())
 	if ExecHook != nil {
-		ExecHook(args, dur, nil)
+		ExecHook(args, time.Since(start), err)
 	}
-	return stdout, stderr, nil
+	return outBuf.Bytes(), errBuf.Bytes(), err
+}
+
+// Stream runs `git <args...>` with stdin and writes stdout to w as git
+// produces it. Errors are those of Run.
+func (r *ExecRunner) Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	cmd := r.buildCmd(ctx, args...)
+	var errBuf bytes.Buffer
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, w, &errBuf
+
+	start := time.Now()
+	err := wrapExit(args, cmd.Run(), errBuf.Bytes())
+	if ExecHook != nil {
+		ExecHook(args, time.Since(start), err)
+	}
+	return err
+}
+
+// wrapExit turns a non-zero git exit into an *ExitError.
+func wrapExit(args []string, runErr error, stderr []byte) error {
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		return &ExitError{Code: exitErr.ExitCode(), Args: args, Stderr: string(stderr)}
+	}
+	return runErr
 }

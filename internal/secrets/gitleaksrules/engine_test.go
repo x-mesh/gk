@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -633,6 +634,71 @@ func TestNoPathRuleMatchesAnArchive(t *testing.T) {
 					t.Errorf("rule %s matches %s", r.id, name)
 				}
 			}
+		}
+	}
+}
+
+// gk-service-password finds a password whose key names a database or
+// another service. Such passwords are often short or low in entropy, so
+// generic-api-key does not report them.
+func TestScanDiff_ServicePassword(t *testing.T) {
+	pw := "s3" + "cr" + "et!" + "Pw"
+	for _, c := range []struct {
+		line string
+		want bool
+	}{
+		{"ENV DB_PASS='" + pw + "'", true},
+		{"ENV APP_DB1_PASSWORD=" + pw, true},
+		{"app_dbPasswd=" + pw, true},
+		{"spring.datasource.password=" + pw, true},
+		{"    POSTGRES_PASSWORD: " + pw, true},
+		{"MYSQL_ROOT_PASSWORD=" + pw, true},
+		{"spring.partner-datasource.hikari.password=" + pw, true},
+		{"REDIS_PASSWORD = " + pw, true},
+		{"ENV RABBITMQ_5672_PWD=" + pw, true},
+		{"SPRING_MAIL_PASSWORD=" + pw, true},
+		{"DB_PASS='ab$" + "cd#12'", true},
+		{"DB_PASS=abc" + "123 # comment", true},
+		{"sandbox_password=" + pw, false},
+		{"feedbackPassword=" + pw, false},
+		{"gmail_password=" + pw, false},
+		{"mail.password-reset-url=" + pw, false},
+		{"DB_PASSWORD_FILE=/run/secrets/db", false},
+		{"DB_PASS=${DB_PASS}", false},
+		{"DB_PASS=$DB_PASS", false},
+		{"DB_PASS=%(pw)s", false},
+		{"db_password: changeme", false},
+		{"db_password: abc", false},
+		{"dbPassword = cfg.get(\"x\")", false},
+		{"password: " + pw, false},
+	} {
+		var kinds []string
+		for _, f := range ScanDiff("diff --git a/x b/x\n+++ b/x\n@@ -0,0 +1 @@\n+" + c.line + "\n") {
+			kinds = append(kinds, f.Kind)
+		}
+		if got := slices.Contains(kinds, "gk-service-password"); got != c.want {
+			t.Errorf("%q: findings %v, want gk-service-password = %v", c.line, kinds, c.want)
+		}
+	}
+}
+
+// The gk rules are counted apart from the gitleaks rules, and their IDs do
+// not collide with gitleaks IDs.
+func TestGKRules(t *testing.T) {
+	if n := GKRuleCount(); n < 1 || RuleCount()+n != len(get().rules) {
+		t.Fatalf("RuleCount() = %d, GKRuleCount() = %d, %d rules in all", RuleCount(), n, len(get().rules))
+	}
+	ids := map[string]bool{}
+	for i, r := range get().rules {
+		if ids[r.id] {
+			t.Errorf("duplicate rule ID %s", r.id)
+		}
+		ids[r.id] = true
+		if gk := i >= RuleCount(); gk != strings.HasPrefix(r.id, "gk-") {
+			t.Errorf("rule %s: gk rule = %v", r.id, gk)
+		}
+		if i >= RuleCount() && !r.windowed {
+			t.Errorf("gk rule %s cannot be searched by window", r.id)
 		}
 	}
 }

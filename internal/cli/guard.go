@@ -121,7 +121,7 @@ func guardRegistry() *policy.Registry {
 	secretRule.ScanDiff = gitleaksrules.ScanDiff
 	secretRule.ScanFile = gitleaksrules.ScanFile
 	secretRule.ScannerLabel = func() string {
-		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules)", gitleaksrules.Version(), gitleaksrules.RuleCount())
+		return fmt.Sprintf("the embedded gitleaks %s ruleset (%d rules) and %d gk rule(s)", gitleaksrules.Version(), gitleaksrules.RuleCount(), gitleaksrules.GKRuleCount())
 	}
 	secretRule.Verify = verifyCredentials
 	_ = reg.Register(secretRule)

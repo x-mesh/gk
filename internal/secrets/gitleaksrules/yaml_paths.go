@@ -113,13 +113,10 @@ func yamlPaths(f fileDiff) fileDiff {
 // opensBlock reports whether the value of a key leaves the key a parent:
 // nothing, a comment, or only an anchor (&name) and tags (!!map).
 func opensBlock(value string) bool {
-	if i := strings.Index(value, " #"); i >= 0 {
-		value = value[:i]
-	}
-	if strings.HasPrefix(value, "#") {
-		return true
-	}
 	for _, f := range strings.Fields(value) {
+		if f[0] == '#' {
+			return true
+		}
 		if f[0] != '&' && f[0] != '!' {
 			return false
 		}

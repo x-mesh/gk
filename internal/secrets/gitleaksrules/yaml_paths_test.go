@@ -114,8 +114,10 @@ func TestYAMLPaths_AnchoredAndTaggedParents(t *testing.T) {
 		"  mail: &m !!map # shared\n" + // 6
 		"    password: " + pw + "\n" + // 7
 		"  other: &o\n" + // 8
-		"    password: " + pw + "\n" // 9
-	want := []string{"a.yml:03", "a.yml:05", "a.yml:07"}
+		"    password: " + pw + "\n" + // 9
+		"  ldap: &l\t# shared\n" + // 10
+		"    password: " + pw + "\n" // 11
+	want := []string{"a.yml:03", "a.yml:05", "a.yml:07", "a.yml:11"}
 	if got := servicePasswordLines(t, "a.yml", content); !slices.Equal(got, want) {
 		t.Errorf("findings at %v, want %v", got, want)
 	}

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.157.0] - 2026-11-14
+
 ### Changed
 
 - `gk guard check` leaves the `.jar`, `.war`, `.ear`, and `.zip` files out of the patches of `--staged`, the push range, and `--history`, because the archive scan reads them. Git decompressed each archive in full only to print `Binary files differ`. On seven repositories with many committed jars, `--history` took 8.5s to 36.9s instead of 18.1s to 58.0s, with the same output.

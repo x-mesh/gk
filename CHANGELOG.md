@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.156.0] - 2026-11-14
+
 ### Added
 
 - `gk guard check --verify` also checks Slack tokens with `auth.test` and GCP API keys with the Discovery API. These are bearer values, so gk sends the token or key to `slack.com` or `googleapis.com`. gk sends them only in headers and does not follow redirects. AWS keys are still signed and not sent. Slack findings show the workspace ID, name, and URL, and the user ID and name. A GCP key that exists but whose restrictions block the call is `valid`, and the code names the restriction. gk reports `rejected` only when the issuer says that the credential is invalid, revoked, or expired, and for Slack only for bot (`xoxb-`) and user (`xoxp-`) tokens. gk does not check Slack webhook URLs or refresh tokens, because the checks for them post a message or rotate the token. Some Slack rules match only the start of a long token, so gk now checks the full token on the line.

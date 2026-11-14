@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/scan"
@@ -41,6 +42,9 @@ type stubRunner struct {
 	// dies makes `cat-file --batch` fail when it comes to this blob, after
 	// it printed the blobs before it.
 	dies string
+	// waits makes `cat-file --batch` wait before it prints this blob until
+	// its context ends, and then fail, as git does when gk cancels it.
+	waits string
 }
 
 func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, error) {
@@ -56,7 +60,7 @@ func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, err
 
 // Stream answers `cat-file --batch-check` and `cat-file --batch` from blobs,
 // the way git prints them, and a blob it does not hold as missing.
-func (s *stubRunner) Stream(_ context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+func (s *stubRunner) Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
 	key := strings.Join(args, " ")
 	s.mu.Lock()
 	s.calls = append(s.calls, key)
@@ -76,6 +80,15 @@ func (s *stubRunner) Stream(_ context.Context, stdin io.Reader, w io.Writer, arg
 	for _, id := range strings.Fields(string(ids)) {
 		if key == "cat-file --batch" && id == s.dies {
 			return errors.New("exit 128")
+		}
+		if key == "cat-file --batch" && id == s.waits {
+			// The limit keeps a scan that never cancels from hanging the
+			// test; the blob it then prints fails the test.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
 		}
 		data, ok := s.blobs[id]
 		if !ok {
@@ -1215,7 +1228,9 @@ func TestSecretPatternsRule_ArchiveReadersSplitTheListing(t *testing.T) {
 // other readers finish.
 func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
 	listing := ""
-	run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n"}, dies: blobID(4)}
+	// The first reader gets blobs 1 and 2 and waits before blob 2; the
+	// second gets blobs 3 and 4 and fails at blob 3.
+	run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n"}, dies: blobID(3), waits: blobID(2)}
 	for i := 1; i <= 4; i++ {
 		listing += rawEntry("A", "100644", blobID(i), fmt.Sprintf("app-%d.jar", i))
 		archiveStub(run, map[string]string{blobID(i): makeZip(t, "application.yml", "a: 1\n")})
@@ -1224,10 +1239,10 @@ func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
 	r := builtinRule()
 	recordFiles(r)
 	_, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true, ArchiveReaders: 2})
-	if err == nil || !strings.Contains(err.Error(), "exit 128") {
+	if err == nil || !strings.Contains(err.Error(), "exit 128") || errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the failure of the second reader", err)
 	}
-	if run.reads[blobID(1)] != 1 || run.reads[blobID(2)] != 1 {
-		t.Errorf("reads = %v, want the first run read", run.reads)
+	if run.reads[blobID(2)] != 0 {
+		t.Errorf("reads = %v, want the first reader stopped before blob 2", run.reads)
 	}
 }

@@ -693,6 +693,12 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		sizes = append(sizes, size)
 	}
 
+	// A failed reader cancels the others, so the scan fails without reading
+	// the rest of their runs. The cause is the error to return: the errors of
+	// the cancelled readers only echo it.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	// A slot is taken before a blob is read, so at most archiveWorkers
 	// blobs are in memory at once, whatever the number of readers.
 	slots := make(chan struct{}, archiveWorkers)
@@ -711,13 +717,23 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		}()
 		in := bufio.NewReaderSize(pr, 1<<16)
 		var readErr error
+	reading:
 		for _, b := range run {
+			if ctx.Err() != nil {
+				readErr = context.Cause(ctx)
+				break
+			}
 			size, err := batchHeader(in, b.blob)
 			if err != nil {
 				readErr = err
 				break
 			}
-			slots <- struct{}{}
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				readErr = context.Cause(ctx)
+				break reading
+			}
 			// The content is followed by a newline.
 			data := make([]byte, size+1)
 			if _, err := io.ReadFull(in, data); err != nil {
@@ -740,21 +756,23 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		}
 		return readErr
 	}
-	ends := splitRuns(sizes, min(readers, len(keep)))
-	errs := make([]error, len(ends))
 	var reads sync.WaitGroup
 	lo := 0
-	for i, hi := range ends {
+	for _, hi := range splitRuns(sizes, min(readers, len(keep))) {
 		run := keep[lo:hi]
 		lo = hi
-		reads.Go(func() { errs[i] = read(run) })
+		reads.Go(func() {
+			if err := read(run); err != nil {
+				cancel(err)
+			}
+		})
 	}
 	reads.Wait()
 	scans.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, archiveReport{}, err
-		}
+	// A context that the caller cancelled ends the scan too, and a scan
+	// that stopped early must not pass for a complete one.
+	if err := context.Cause(ctx); err != nil {
+		return nil, archiveReport{}, err
 	}
 	var out []secrets.Finding
 	for _, a := range results {

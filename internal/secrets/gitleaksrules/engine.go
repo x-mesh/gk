@@ -32,12 +32,6 @@ import (
 //go:embed rules.json
 var rulesJSON []byte
 
-// gkRulesJSON holds the rules gk adds to the gitleaks ruleset, which
-// rules.json keeps as gitleaks ships it.
-//
-//go:embed gk-rules.json
-var gkRulesJSON []byte
-
 type ruleset struct {
 	Source    source     `json:"source"`
 	Allowlist allowlist  `json:"allowlist"`
@@ -131,13 +125,9 @@ func get() *engine {
 		if err := json.Unmarshal(rulesJSON, &rs); err != nil {
 			panic("gitleaksrules: corrupt embedded rules.json: " + err.Error())
 		}
-		var gk ruleset
-		if err := json.Unmarshal(gkRulesJSON, &gk); err != nil {
-			panic("gitleaksrules: corrupt embedded gk-rules.json: " + err.Error())
-		}
-		rs.Rules = append(rs.Rules, gk.Rules...)
+		rs.Rules = append(rs.Rules, gkRules...)
 		loaded = compile(rs)
-		loaded.gkRules = len(gk.Rules)
+		loaded.gkRules = len(gkRules)
 	})
 	return loaded
 }

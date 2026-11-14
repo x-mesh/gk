@@ -3769,6 +3769,7 @@ gk guard check [flags]
 | `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
 | `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
 | `--verify` | `false` | Check each AWS access key, Slack token, GCP API key, and OCI API signing key that the built-in scan finds with its issuer. This flag sends Slack tokens and GCP API keys to `slack.com` and `googleapis.com`. You cannot use this flag with `--staged`. See "Live credential check" below. |
+| `--archive-readers` | `2` | Set the number of git processes that read the committed archives at the same time. Each process keeps the archive that it rebuilds in memory. More processes make a scan of many archives faster, and they use more memory. The value must be 1 or more. The default scope reads the archives from the work tree, so this flag has no effect on it. |
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 

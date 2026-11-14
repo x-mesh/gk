@@ -61,6 +61,7 @@ func runGuardCheckArgs(t *testing.T, dir string, args ...string) (string, error)
 	cmd.Flags().Bool("staged", false, "")
 	cmd.Flags().Bool("history", false, "")
 	cmd.Flags().Bool("fetch", false, "")
+	cmd.Flags().Int("archive-readers", rules.DefaultArchiveReaders, "")
 	cmd.SetArgs(args)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -282,6 +283,15 @@ func TestGuardCheck_ArchivesInEveryScope(t *testing.T) {
 	}
 	if !strings.Contains(out, "including the files in 2 archive(s)") {
 		t.Errorf("the notice must count the opened archives:\n%s", out)
+	}
+	// The two archive blobs went to two cat-file processes; one process must
+	// report the same.
+	one, oneErr := runGuardCheckCmd(t, repo.Dir, "--history", "--archive-readers", "1")
+	if one != out || (oneErr == nil) != (err == nil) {
+		t.Errorf("--archive-readers 1 changed the report:\n%s\nwant:\n%s", one, out)
+	}
+	if _, err := runGuardCheckCmd(t, repo.Dir, "--history", "--archive-readers", "0"); err == nil || !strings.Contains(err.Error(), "--archive-readers must be at least 1") {
+		t.Errorf("--archive-readers 0: err = %v", err)
 	}
 }
 

@@ -209,17 +209,21 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		archives archiveReport
 		err      error
 	)
+	readers := in.ArchiveReaders
+	if readers < 1 {
+		readers = DefaultArchiveReaders
+	}
 	switch {
 	case in.Staged:
-		findings, archives, err = r.scanDiff(ctx, in.Runner, oci,
+		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
 			[]string{"diff", "--cached", "--no-color"},
 			[]string{"diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames"})
 	case in.PushRange != "":
-		findings, archives, err = r.scanDiff(ctx, in.Runner, oci,
+		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
 			[]string{"diff", "--no-color", in.PushRange},
 			[]string{"diff", "--raw", "-z", "--no-abbrev", "--no-renames", in.PushRange})
 	case in.History:
-		findings, archives, err = r.scanHistory(ctx, in.Runner, oci)
+		findings, archives, err = r.scanHistory(ctx, in.Runner, oci, readers)
 	default:
 		findings, archives, err = r.scanTrackedFiles(ctx, in.Runner, oci)
 	}
@@ -276,7 +280,7 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 
 // scanDiff scans the patch of one `git diff` and the archives that the raw
 // form of the same diff adds or changes.
-func (r *SecretPatternsRule) scanDiff(ctx context.Context, runner git.Runner, oci *ociProfileSink, patchArgs, rawArgs []string) ([]secrets.Finding, archiveReport, error) {
+func (r *SecretPatternsRule) scanDiff(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int, patchArgs, rawArgs []string) ([]secrets.Finding, archiveReport, error) {
 	diff, err := scanCommand(ctx, runner, patchArgs...)
 	if err != nil {
 		return nil, archiveReport{}, err
@@ -287,7 +291,7 @@ func (r *SecretPatternsRule) scanDiff(ctx context.Context, runner git.Runner, oc
 	if err != nil {
 		return nil, archiveReport{}, err
 	}
-	found, report, err := r.scanArchiveBlobs(ctx, runner, oci, rawArchives(raw))
+	found, report, err := r.scanArchiveBlobs(ctx, runner, oci, readers, rawArchives(raw))
 	return append(findings, found...), report, err
 }
 
@@ -462,7 +466,7 @@ const (
 // parallel, and each chunk is scanned as soon as its diff arrives. The
 // options match gitleaks' git mode (-U0, all refs), and findings keep
 // rev-list order.
-func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner, oci *ociProfileSink) ([]secrets.Finding, archiveReport, error) {
+func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int) ([]secrets.Finding, archiveReport, error) {
 	revs, err := scanCommand(ctx, runner, "rev-list", "--all")
 	if err != nil {
 		return nil, archiveReport{}, err
@@ -512,7 +516,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	for _, f := range results {
 		out = append(out, f...)
 	}
-	found, report, err := r.scanArchiveBlobs(ctx, runner, oci, slices.Concat(refs...))
+	found, report, err := r.scanArchiveBlobs(ctx, runner, oci, readers, slices.Concat(refs...))
 	return append(out, found...), report, err
 }
 
@@ -544,6 +548,13 @@ func (r *SecretPatternsRule) limit() archiveLimit {
 // archiveWorkers bounds how many archives are scanned at once. Each holds its
 // whole blob in memory, because a zip file is read from its end.
 const archiveWorkers = 4
+
+// DefaultArchiveReaders is how many cat-file processes read the archive
+// blobs. Each one holds the blob it rebuilds. On histories of 132 to 202
+// jars where the archives took most of the time, two readers took 16-27%
+// less time than one for up to 0.25 GB more memory, and four took 22-39%
+// less for up to 0.6 GB more.
+const DefaultArchiveReaders = 2
 
 // archiveRef is an archive blob and the path it was committed at.
 type archiveRef struct{ blob, path string }
@@ -615,11 +626,13 @@ func joinArchives(results []archiveResult) archiveReport {
 // scanArchiveBlobs reads each archive blob once, however many commits carry
 // it, and scans the files inside it under each distinct path it was committed
 // at: a path allowlist that skips the blob at one path must not hide it at
-// another. Findings keep the order of refs. One `cat-file --batch` reads
-// every blob: the versions of a jar are stored as deltas of each other, and a
-// process per blob rebuilt each delta chain from the start (114s of CPU
-// against 29s for 192 jars of 14 GB).
-func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Runner, oci *ociProfileSink, refs []archiveRef) ([]secrets.Finding, archiveReport, error) {
+// another. Findings keep the order of refs. Up to readers `cat-file --batch`
+// processes read the blobs. The versions of a jar are stored as deltas of
+// each other, and a process per blob rebuilt each delta chain from the start
+// (114s of CPU against 29s for 192 jars of 14 GB). So each process reads a
+// contiguous run of refs in history order: in hash order, the same jars took
+// 102s to read.
+func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int, refs []archiveRef) ([]secrets.Finding, archiveReport, error) {
 	// targets are the distinct (blob, path) pairs; blobs lists each blob
 	// once with the indexes of its targets.
 	type blobTargets struct {
@@ -664,7 +677,7 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		return nil, archiveReport{}, fmt.Errorf("secret_patterns: built-in scan: %w", err)
 	}
 	var keep []blobTargets
-	ids.Reset()
+	var sizes []int64
 	for _, b := range blobs {
 		size, err := batchHeader(&check, b.blob)
 		if err != nil {
@@ -677,58 +690,99 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 			continue
 		}
 		keep = append(keep, b)
-		ids.WriteString(b.blob + "\n")
+		sizes = append(sizes, size)
 	}
 
-	pr, pw := io.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		err := stream.Stream(ctx, strings.NewReader(ids.String()), pw, "cat-file", "--batch")
-		pw.CloseWithError(err)
-		done <- err
-	}()
 	// A slot is taken before a blob is read, so at most archiveWorkers
-	// blobs are in memory at once.
+	// blobs are in memory at once, whatever the number of readers.
 	slots := make(chan struct{}, archiveWorkers)
 	var scans sync.WaitGroup
-	in := bufio.NewReaderSize(pr, 1<<16)
-	var readErr error
-	for _, b := range keep {
-		size, err := batchHeader(in, b.blob)
-		if err != nil {
-			readErr = err
-			break
+	read := func(run []blobTargets) error {
+		var ids strings.Builder
+		for _, b := range run {
+			ids.WriteString(b.blob + "\n")
 		}
-		slots <- struct{}{}
-		// The content is followed by a newline.
-		data := make([]byte, size+1)
-		if _, err := io.ReadFull(in, data); err != nil {
-			<-slots
-			readErr = fmt.Errorf("secret_patterns: read %s: %w", targets[b.targets[0]].path, err)
-			break
-		}
-		scans.Go(func() {
-			defer func() { <-slots }()
-			for _, t := range b.targets {
-				results[t] = r.scanArchive(targets[t].path, data[:size], oci, base+t)
+		pr, pw := io.Pipe()
+		done := make(chan error, 1)
+		go func() {
+			err := stream.Stream(ctx, strings.NewReader(ids.String()), pw, "cat-file", "--batch")
+			pw.CloseWithError(err)
+			done <- err
+		}()
+		in := bufio.NewReaderSize(pr, 1<<16)
+		var readErr error
+		for _, b := range run {
+			size, err := batchHeader(in, b.blob)
+			if err != nil {
+				readErr = err
+				break
 			}
-		})
+			slots <- struct{}{}
+			// The content is followed by a newline.
+			data := make([]byte, size+1)
+			if _, err := io.ReadFull(in, data); err != nil {
+				<-slots
+				readErr = fmt.Errorf("secret_patterns: read %s: %w", targets[b.targets[0]].path, err)
+				break
+			}
+			scans.Go(func() {
+				defer func() { <-slots }()
+				for _, t := range b.targets {
+					results[t] = r.scanArchive(targets[t].path, data[:size], oci, base+t)
+				}
+			})
+		}
+		// Closing the read end ends a git process that a read error left
+		// blocked on a full pipe. Close of a PipeReader always returns nil.
+		_ = pr.Close()
+		if err := <-done; err != nil && readErr == nil {
+			readErr = fmt.Errorf("secret_patterns: built-in scan: %w", err)
+		}
+		return readErr
 	}
-	// Closing the read end ends a git process that a read error left
-	// blocked on a full pipe. Close of a PipeReader always returns nil.
-	_ = pr.Close()
+	ends := splitRuns(sizes, min(readers, len(keep)))
+	errs := make([]error, len(ends))
+	var reads sync.WaitGroup
+	lo := 0
+	for i, hi := range ends {
+		run := keep[lo:hi]
+		lo = hi
+		reads.Go(func() { errs[i] = read(run) })
+	}
+	reads.Wait()
 	scans.Wait()
-	if err := <-done; err != nil && readErr == nil {
-		readErr = fmt.Errorf("secret_patterns: built-in scan: %w", err)
-	}
-	if readErr != nil {
-		return nil, archiveReport{}, readErr
+	for _, err := range errs {
+		if err != nil {
+			return nil, archiveReport{}, err
+		}
 	}
 	var out []secrets.Finding
 	for _, a := range results {
 		out = append(out, a.findings...)
 	}
 	return out, joinArchives(results), nil
+}
+
+// splitRuns cuts items with these sizes, in order, into at most n runs of
+// about the same number of bytes, and returns the end index of each run. No
+// run is empty.
+func splitRuns(sizes []int64, n int) []int {
+	var total int64
+	for _, s := range sizes {
+		total += s
+	}
+	var ends []int
+	var acc int64
+	for i, s := range sizes[:max(len(sizes)-1, 0)] {
+		acc += s
+		if len(ends) < n-1 && acc*int64(n) >= total*int64(len(ends)+1) {
+			ends = append(ends, i+1)
+		}
+	}
+	if len(sizes) > 0 {
+		ends = append(ends, len(sizes))
+	}
+	return ends
 }
 
 // batchHeader reads the `<blob> blob <size>` line that `git cat-file

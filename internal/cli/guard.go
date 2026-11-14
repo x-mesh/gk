@@ -89,6 +89,7 @@ removes it or changes its severity.
 	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
 	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
 	checkCmd.Flags().Bool("verify", false, "check each AWS key, Slack token, GCP API key, and OCI API key found with its issuer (network; sends Slack and GCP values; never with --staged)")
+	checkCmd.Flags().Int("archive-readers", rules.DefaultArchiveReaders, "git processes that read the committed .jar/.war/.ear/.zip archives at once; each holds the archive it rebuilds in memory, so more is faster and uses more memory")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "verify")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "fetch")
@@ -239,6 +240,10 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	staged, _ := cmd.Flags().GetBool("staged")
 	history, _ := cmd.Flags().GetBool("history")
 	doFetch, _ := cmd.Flags().GetBool("fetch")
+	readers, err := cmd.Flags().GetInt("archive-readers")
+	if err == nil && readers < 1 {
+		return fmt.Errorf("gk guard check: --archive-readers must be at least 1")
+	}
 	var fetchViolations []policy.Violation
 	if doFetch {
 		fetchViolations = guardFetch(ctx, runner)
@@ -250,6 +255,8 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		WorkDir: repo,
 		Staged:  staged,
 		History: history || doFetch,
+		// Zero when the flag is not defined: the rule's default.
+		ArchiveReaders: readers,
 	}
 	in.Verify, _ = cmd.Flags().GetBool("verify")
 

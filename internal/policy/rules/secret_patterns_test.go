@@ -36,6 +36,11 @@ type stubRunner struct {
 	calls []string
 	// reads counts the blobs `cat-file --batch` printed.
 	reads map[string]int
+	// batches lists the blob ids of each `cat-file --batch` call.
+	batches [][]string
+	// dies makes `cat-file --batch` fail when it comes to this blob, after
+	// it printed the blobs before it.
+	dies string
 }
 
 func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, error) {
@@ -63,7 +68,15 @@ func (s *stubRunner) Stream(_ context.Context, stdin io.Reader, w io.Writer, arg
 	if err != nil {
 		return err
 	}
+	if key == "cat-file --batch" {
+		s.mu.Lock()
+		s.batches = append(s.batches, strings.Fields(string(ids)))
+		s.mu.Unlock()
+	}
 	for _, id := range strings.Fields(string(ids)) {
+		if key == "cat-file --batch" && id == s.dies {
+			return errors.New("exit 128")
+		}
 		data, ok := s.blobs[id]
 		if !ok {
 			fmt.Fprintf(w, "%s missing\n", id)
@@ -1070,7 +1083,7 @@ func TestSecretPatternsRule_ArchiveOCIProfilesKeepDiffProfiles(t *testing.T) {
 		return []secrets.OCIProfile{{Fingerprint: text}}
 	}
 	oci := &ociProfileSink{find: r.findOCIProfiles}
-	if _, _, err := r.scanHistory(context.Background(), run, oci); err != nil {
+	if _, _, err := r.scanHistory(context.Background(), run, oci, 1); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -1123,5 +1136,98 @@ func TestSecretPatternsRule_ArchiveBlobIsScannedAtEachPath(t *testing.T) {
 	}
 	if _, errs := severities(v); errs != 2 {
 		t.Errorf("errs = %d, want one finding per path", errs)
+	}
+}
+
+func TestSplitRuns(t *testing.T) {
+	cases := []struct {
+		sizes []int64
+		n     int
+		want  []int
+	}{
+		{nil, 2, nil},
+		{[]int64{5}, 2, []int{1}},
+		{[]int64{1, 1, 1, 1}, 1, []int{4}},
+		{[]int64{1, 1, 1, 1}, 2, []int{2, 4}},
+		{[]int64{10, 20, 30, 40}, 2, []int{3, 4}},
+		{[]int64{100, 1, 1}, 2, []int{1, 3}},
+		{[]int64{1, 1, 100}, 2, []int{3}},
+		{[]int64{0, 0, 0, 0}, 3, []int{1, 2, 4}},
+		{[]int64{5, 5}, 4, []int{1, 2}},
+	}
+	for _, c := range cases {
+		if got := splitRuns(c.sizes, c.n); !slices.Equal(got, c.want) {
+			t.Errorf("splitRuns(%v, %d) = %v, want %v", c.sizes, c.n, got, c.want)
+		}
+	}
+}
+
+// Each reader takes a contiguous run of the listing, which keeps the versions
+// of a jar that share delta bases in one git process. The findings and their
+// order do not depend on the number of readers.
+func TestSecretPatternsRule_ArchiveReadersSplitTheListing(t *testing.T) {
+	listing := ""
+	var order []string
+	blobs := map[string]string{}
+	for i := 1; i <= 4; i++ {
+		listing += rawEntry("A", "100644", blobID(i), fmt.Sprintf("was/app-1.%d.jar", i))
+		order = append(order, blobID(i))
+		blobs[blobID(i)] = makeZip(t, "BOOT-INF/classes/application.yml", fmt.Sprintf("v: %d\n", i))
+	}
+	findings := func(readers int) ([]string, [][]string) {
+		t.Helper()
+		run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n", rawHistoryCmd: listing}}
+		archiveStub(run, blobs)
+		r := builtinRule()
+		recordFiles(r)
+		v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true, ArchiveReaders: readers})
+		if err != nil {
+			t.Fatalf("readers=%d: %v", readers, err)
+		}
+		var files []string
+		for _, x := range v[1:] {
+			files = append(files, x.File)
+		}
+		// The readers run at once, so their calls arrive in any order.
+		slices.SortFunc(run.batches, func(a, b []string) int { return strings.Compare(a[0], b[0]) })
+		return files, run.batches
+	}
+	one, batches := findings(1)
+	if len(batches) != 1 || len(batches[0]) != 4 {
+		t.Fatalf("one reader: batches = %v", batches)
+	}
+	for _, readers := range []int{0, 2, 3} {
+		got, batches := findings(readers)
+		if !slices.Equal(got, one) {
+			t.Errorf("readers=%d: findings %v, want %v", readers, got, one)
+		}
+		want := readers
+		if readers == 0 {
+			want = DefaultArchiveReaders
+		}
+		if len(batches) != want || !slices.Equal(slices.Concat(batches...), order) {
+			t.Errorf("readers=%d: batches = %v, want %d contiguous runs of the listing", readers, batches, want)
+		}
+	}
+}
+
+// A git process that dies in the middle of its run fails the scan, while the
+// other readers finish.
+func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
+	listing := ""
+	run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n"}, dies: blobID(4)}
+	for i := 1; i <= 4; i++ {
+		listing += rawEntry("A", "100644", blobID(i), fmt.Sprintf("app-%d.jar", i))
+		archiveStub(run, map[string]string{blobID(i): makeZip(t, "application.yml", "a: 1\n")})
+	}
+	run.out[rawHistoryCmd] = listing
+	r := builtinRule()
+	recordFiles(r)
+	_, err := r.Evaluate(context.Background(), policy.Input{Runner: run, History: true, ArchiveReaders: 2})
+	if err == nil || !strings.Contains(err.Error(), "exit 128") {
+		t.Fatalf("err = %v, want the failure of the second reader", err)
+	}
+	if run.reads[blobID(1)] != 1 || run.reads[blobID(2)] != 1 {
+		t.Errorf("reads = %v, want the first run read", run.reads)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"path/filepath"
@@ -252,6 +253,49 @@ func TestRunGuardCheck_ScopeDefaultHistoryStaged(t *testing.T) {
 	if err == nil || !strings.Contains(out, `"file":"seed.txt"`) {
 		t.Fatalf("--staged must report the staged secret: err=%v\n%s", err, out)
 	}
+}
+
+// In agent mode the result envelope carries the outcome: blocked when the
+// check exits non-zero, and no error envelope follows it on stderr.
+func TestRunGuardCheck_AgentEnvelopeReportsTheOutcome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	withAgentMode(t, true)
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed: initial")
+	repo.AddRemote("origin", repo.Dir+"/missing-remote.git")
+
+	check := func(wantState string, wantCode int, args ...string) {
+		t.Helper()
+		out, err := runGuardCheckCmd(t, repo.Dir, args...)
+		var env struct {
+			State  string          `json:"state"`
+			OK     bool            `json:"ok"`
+			Result []violationJSON `json:"result"`
+		}
+		// The test command lets cobra print the error after the result; the
+		// root command silences it.
+		if e := json.NewDecoder(strings.NewReader(out)).Decode(&env); e != nil {
+			t.Fatalf("%v: want an envelope on the output, got %v:\n%s", args, e, out)
+		}
+		code, rendered := ExitCodeFor(err)
+		if env.State != wantState || env.OK != (wantState == envStateOK) || code != wantCode {
+			t.Errorf("%v: state=%q ok=%v exit=%d, want state=%q exit=%d\n%s", args, env.State, env.OK, code, wantState, wantCode, out)
+		}
+		if err != nil && !rendered {
+			t.Errorf("%v: main.go would print an error envelope after the result", args)
+		}
+		if len(env.Result) == 0 {
+			t.Errorf("%v: want the violations in the result:\n%s", args, out)
+		}
+	}
+	check(envStateOK, 0)
+	check(envStateBlocked, 1, "--fetch")
+	repo.WriteFile("leak.env", "token = \""+testPAT+"\"\n")
+	repo.Commit("feat: add secret")
+	check(envStateBlocked, 2)
 }
 
 // bootJar returns a Spring Boot style jar whose configuration holds a token.

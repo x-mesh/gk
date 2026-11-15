@@ -3785,6 +3785,8 @@ A rule can fail before it scans. Examples are a directory that is not a git repo
 | 1 | at least one warning |
 | 2 | at least one error |
 
+With `GK_AGENT=1`, the result envelope has `state: "blocked"` and `ok: false` when the exit code is 1 or 2. No error envelope follows it on stderr.
+
 #### Live credential check
 
 `--verify` sends a read-only identity request to the issuer of each distinct credential that the built-in scan finds. One Slack token or one GCP API key causes one request. One AWS access key ID or one OCI key can cause a maximum of three requests. Use this flag only on credentials that you are authorized to check.

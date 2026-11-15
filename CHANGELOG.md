@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- With `GK_AGENT=1`, `gk guard check` reports a warning or an error in one envelope with `state: "blocked"`. The result on stdout had `state: "ok"`, and a second envelope with `state: "error"` and the code `unknown` followed it on stderr. The exit codes do not change.
+
 ## [0.159.0] - 2026-11-15
 
 ### Fixed

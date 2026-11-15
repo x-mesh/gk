@@ -43,19 +43,111 @@ func (f Finding) Location() string {
 type Pattern struct {
 	Kind  string
 	Regex *regexp.Regexp
+	// literals lists the strings that every match of Regex starts with,
+	// after a \b when wordStart is set, compared ASCII case-insensitively
+	// when fold is set. Scan then tries anchored, which is Regex anchored at
+	// the start, only where a literal occurs. The regexp package does not
+	// search for the literal itself when a pattern starts with \b or (?i),
+	// and on the long lines of minified files the push scan of a large
+	// history spent most of its time there. A nil anchored means Regex runs
+	// on the whole line.
+	literals  []string
+	fold      bool
+	wordStart bool
+	anchored  *regexp.Regexp
+}
+
+// literalPattern returns a Pattern whose matches all start with one of
+// literals, after a \b when wordStart is set.
+func literalPattern(kind, expr string, wordStart, fold bool, literals ...string) Pattern {
+	return Pattern{
+		Kind: kind, Regex: regexp.MustCompile(expr),
+		literals: literals, fold: fold, wordStart: wordStart,
+		anchored: regexp.MustCompile(`^(?:` + expr + `)`),
+	}
+}
+
+// find returns what p.Regex.FindStringSubmatch(line) returns. lower is
+// asciiLower(line).
+func (p Pattern) find(line, lower string) []string {
+	// (?i) also matches U+017F for s and U+212A (Kelvin sign) for k, the
+	// only non-ASCII letters that fold to ASCII ones.
+	if p.anchored == nil || p.fold && strings.ContainsAny(line, "\u017f\u212a") {
+		return p.Regex.FindStringSubmatch(line)
+	}
+	in := line
+	if p.fold {
+		in = lower
+	}
+	// next[i] is the next start of literals[i] at or after pos, -1 when
+	// there is none. The leftmost start that matches gives the leftmost
+	// match, so the first hit is the match that Regex finds.
+	var buf [4]int
+	next := buf[:0]
+	for _, lit := range p.literals {
+		next = append(next, strings.Index(in, lit))
+	}
+	for pos := 0; ; {
+		at := -1
+		for i, lit := range p.literals {
+			if next[i] >= 0 && next[i] < pos {
+				if j := strings.Index(in[pos:], lit); j >= 0 {
+					next[i] = pos + j
+				} else {
+					next[i] = -1
+				}
+			}
+			if next[i] >= 0 && (at < 0 || next[i] < at) {
+				at = next[i]
+			}
+		}
+		if at < 0 {
+			return nil
+		}
+		// The anchored regex sees the start of its input as a word
+		// boundary, so the character before the literal decides \b.
+		if !p.wordStart || at == 0 || !isWordByte(line[at-1]) {
+			if sm := p.anchored.FindStringSubmatch(line[at:]); sm != nil {
+				return sm
+			}
+		}
+		pos = at + 1
+	}
+}
+
+// isWordByte reports whether c is an ASCII word character, which is what
+// \b in the regexp package tests. Any byte of a multi-byte rune is not one.
+func isWordByte(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// asciiLower returns s with A-Z mapped to a-z, and s itself when it has no
+// upper-case ASCII letter.
+func asciiLower(s string) string {
+	i := strings.IndexFunc(s, func(r rune) bool { return r >= 'A' && r <= 'Z' })
+	if i < 0 {
+		return s
+	}
+	b := []byte(s)
+	for j := i; j < len(b); j++ {
+		if c := b[j]; c >= 'A' && c <= 'Z' {
+			b[j] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // BuiltinPatterns is the default scan set. Keep it small and high-signal.
 // Each entry must be broadly unambiguous (avoid matching normal code).
 var BuiltinPatterns = []Pattern{
-	{Kind: "aws-access-key", Regex: regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)},
-	{Kind: "aws-secret-key", Regex: regexp.MustCompile(`(?i)aws[_-]?(?:secret|sk)[^"']{0,5}["']?([A-Za-z0-9/+=]{40})`)},
-	{Kind: "github-token", Regex: regexp.MustCompile(`\bghp_[A-Za-z0-9]{36}\b`)},
-	{Kind: "github-fine", Regex: regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{82}\b`)},
-	{Kind: "slack-token", Regex: regexp.MustCompile(`\bxox[abpr]-[A-Za-z0-9-]{10,}\b`)},
-	{Kind: "openai-key", Regex: regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`)},
+	literalPattern("aws-access-key", `\bAKIA[0-9A-Z]{16}\b`, true, false, "AKIA"),
+	literalPattern("aws-secret-key", `(?i)aws[_-]?(?:secret|sk)[^"']{0,5}["']?([A-Za-z0-9/+=]{40})`, false, true, "aws"),
+	literalPattern("github-token", `\bghp_[A-Za-z0-9]{36}\b`, true, false, "ghp_"),
+	literalPattern("github-fine", `\bgithub_pat_[A-Za-z0-9_]{82}\b`, true, false, "github_pat_"),
+	literalPattern("slack-token", `\bxox[abpr]-[A-Za-z0-9-]{10,}\b`, true, false, "xox"),
+	literalPattern("openai-key", `\bsk-[A-Za-z0-9]{20,}\b`, true, false, "sk-"),
 	{Kind: "private-key", Regex: regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY-----`)},
-	{Kind: "generic-secret", Regex: regexp.MustCompile(`(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*["']([A-Za-z0-9/_\-+=]{24,})["']`)},
+	literalPattern("generic-secret", `(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*["']([A-Za-z0-9/_\-+=]{24,})["']`, false, true, "api", "secret", "token", "password"),
 }
 
 // Scan scans blob for secret findings.
@@ -75,8 +167,9 @@ func Scan(blob string, extra []*regexp.Regexp) []Finding {
 			header = i + 1
 			continue // boundary marker is metadata, never scanned
 		}
+		lower := asciiLower(line)
 		for _, p := range BuiltinPatterns {
-			if sm := p.Regex.FindStringSubmatch(line); sm != nil {
+			if sm := p.find(line, lower); sm != nil {
 				val := SecretValue(sm)
 				// Drop fixture/example credentials. Applied to every kind
 				// except private-key, whose PEM header is an unambiguous

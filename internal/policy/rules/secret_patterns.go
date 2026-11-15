@@ -641,6 +641,29 @@ func (r *SecretPatternsRule) limit() archiveLimit {
 // whole blob in memory, because a zip file is read from its end.
 const archiveWorkers = 4
 
+// archiveDeltaBaseCache is the delta base cache of the processes that read
+// the archives when no git config sets core.deltaBaseCacheLimit.
+// The versions of a jar are deltas of each other. On a history of 192 jars
+// of 14 GB, one process read them in 29.9s with git's 96 MiB default and in
+// 18.0s with 512 MiB, for 380 MB more memory; 1 GiB took 17.0s for 890 MB
+// more. Where the jars are not deltas, the cache stays small.
+const archiveDeltaBaseCache = "512m"
+
+// archiveBatchArgs returns the cat-file command that reads the archives.
+func archiveBatchArgs(ctx context.Context, runner git.Runner) ([]string, error) {
+	out, _, err := runner.Run(ctx, "config", "--get", "core.deltaBaseCacheLimit")
+	var exitErr *git.ExitError
+	switch {
+	case err == nil && strings.TrimSpace(string(out)) != "":
+		return []string{"cat-file", "--batch"}, nil
+	case err == nil, errors.As(err, &exitErr) && exitErr.Code == 1:
+		// `git config --get` exits with 1 when the key is not set.
+		return []string{"-c", "core.deltaBaseCacheLimit=" + archiveDeltaBaseCache, "cat-file", "--batch"}, nil
+	default:
+		return nil, fmt.Errorf("secret_patterns: built-in scan: %w", err)
+	}
+}
+
 // DefaultArchiveReaders is how many cat-file processes read the archive
 // blobs. Each one holds the blob it rebuilds. On histories of 132 to 202
 // jars where the archives took most of the time, two readers took 16-27%
@@ -785,6 +808,11 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		sizes = append(sizes, size)
 	}
 
+	batch, err := archiveBatchArgs(ctx, runner)
+	if err != nil {
+		return nil, archiveReport{}, err
+	}
+
 	// A failed reader cancels the others, so the scan fails without reading
 	// the rest of their runs. The cause is the error to return: the errors of
 	// the cancelled readers only echo it.
@@ -803,7 +831,7 @@ func (r *SecretPatternsRule) scanArchiveBlobs(ctx context.Context, runner git.Ru
 		pr, pw := io.Pipe()
 		done := make(chan error, 1)
 		go func() {
-			err := stream.Stream(ctx, strings.NewReader(ids.String()), pw, "cat-file", "--batch")
+			err := stream.Stream(ctx, strings.NewReader(ids.String()), pw, batch...)
 			pw.CloseWithError(err)
 			done <- err
 		}()

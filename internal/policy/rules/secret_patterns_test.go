@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/scan"
 	"github.com/x-mesh/gk/internal/secrets"
@@ -45,6 +46,9 @@ type stubRunner struct {
 	// waits makes `cat-file --batch` wait before it prints this blob until
 	// its context ends, and then fail, as git does when gk cancels it.
 	waits string
+	// configs lists, by key, the `-c` settings of each streamed call, which
+	// the key leaves out.
+	configs map[string][][]string
 }
 
 // patch is cmd with the pathspecs that leave archives out of a patch.
@@ -64,9 +68,18 @@ func (s *stubRunner) Run(_ context.Context, args ...string) ([]byte, []byte, err
 // Stream answers `cat-file --batch-check` and `cat-file --batch` from blobs,
 // the way git prints them, and a blob it does not hold as missing.
 func (s *stubRunner) Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	var configs []string
+	for len(args) >= 2 && args[0] == "-c" {
+		configs = append(configs, args[1])
+		args = args[2:]
+	}
 	key := strings.Join(args, " ")
 	s.mu.Lock()
 	s.calls = append(s.calls, key)
+	if s.configs == nil {
+		s.configs = map[string][][]string{}
+	}
+	s.configs[key] = append(s.configs[key], configs)
 	s.mu.Unlock()
 	if s.fail[key] {
 		return errors.New("exit 128")
@@ -1081,6 +1094,63 @@ func TestSecretPatternsRule_ArchiveReadFailureSurfaces(t *testing.T) {
 			run.out = map[string]string{"rev-list --all": "c1\nc2\n", rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar")}
 			if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
 				t.Fatal("want an error")
+			}
+		})
+	}
+}
+
+// deltaCacheStub answers `git config --get core.deltaBaseCacheLimit` with out
+// and err.
+type deltaCacheStub struct {
+	*stubRunner
+	out string
+	err error
+}
+
+func (d deltaCacheStub) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	if strings.Join(args, " ") == "config --get core.deltaBaseCacheLimit" {
+		return []byte(d.out), nil, d.err
+	}
+	return d.stubRunner.Run(ctx, args...)
+}
+
+func TestSecretPatternsRule_ArchiveReadersGetALargerDeltaCache(t *testing.T) {
+	jar := makeZip(t, "application.yml", "a: 1\n")
+	cases := map[string]struct {
+		out     string
+		err     error
+		want    []string
+		wantErr bool
+	}{
+		"not set":   {err: &git.ExitError{Code: 1}, want: []string{"core.deltaBaseCacheLimit=512m"}},
+		"set":       {out: "2g\n"},
+		"git fails": {err: &git.ExitError{Code: 128}, wantErr: true},
+		"run fails": {err: errors.New("no git"), wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			run := &stubRunner{out: map[string]string{
+				"diff --cached --raw -z --no-abbrev --no-renames": rawEntry("A", "100644", blobID(7), "app.jar"),
+			}}
+			archiveStub(run, map[string]string{blobID(7): jar})
+			r := builtinRule()
+			r.ScanDiff = func(string) []secrets.Finding { return nil }
+			_, err := r.Evaluate(context.Background(), policy.Input{Runner: deltaCacheStub{run, tc.out, tc.err}, Staged: true})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := run.configs["cat-file --batch"]
+			if len(got) != 1 || !slices.Equal(got[0], tc.want) {
+				t.Errorf("cat-file --batch settings = %q, want one call with %q", got, tc.want)
+			}
+			if c := run.configs["cat-file --batch-check"]; len(c) != 1 || len(c[0]) != 0 {
+				t.Errorf("cat-file --batch-check settings = %q, want none", c)
 			}
 		})
 	}

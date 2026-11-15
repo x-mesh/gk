@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk guard check` reports a rule that cannot run once, as the `rule_error` entry. It also printed the failure as a `rule error: ...` text line on stderr, so the human output showed it twice, and under `GK_AGENT=1` stderr had text that is not an envelope.
+
 ## [0.160.0] - 2026-11-15
 
 ### Fixed

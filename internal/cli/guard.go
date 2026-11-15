@@ -282,11 +282,6 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		printViolationsHuman(w, violations)
 	}
 
-	// Surface rule infra errors after violations so the report is still useful.
-	for _, e := range errs {
-		fmt.Fprintf(cmd.ErrOrStderr(), "rule error: %v\n", e)
-	}
-
 	// Exit code derives from the worst severity. In agent mode the result
 	// envelope already reports the check as blocked, so no error envelope
 	// follows it on stderr.

@@ -91,6 +91,7 @@ func TestRunGuardCheck_RuleFailureIsReportedAndFailsTheCheck(t *testing.T) {
 		if !strings.Contains(out, "secret_patterns") {
 			t.Errorf("the entry must name the rule that failed:\n%s", out)
 		}
+		noRuleErrorLine(t, out)
 	})
 	t.Run("human", func(t *testing.T) {
 		out, err := runGuardCheckArgs(t, dir)
@@ -103,6 +104,7 @@ func TestRunGuardCheck_RuleFailureIsReportedAndFailsTheCheck(t *testing.T) {
 		if !strings.Contains(out, "rule_error") {
 			t.Errorf("want the rule_error entry in the report:\n%s", out)
 		}
+		noRuleErrorLine(t, out)
 	})
 	t.Run("agent", func(t *testing.T) {
 		withAgentMode(t, true)
@@ -113,7 +115,18 @@ func TestRunGuardCheck_RuleFailureIsReportedAndFailsTheCheck(t *testing.T) {
 		if !strings.Contains(out, `"rule_id": "rule_error"`) {
 			t.Errorf("want the rule_error entry in the result array:\n%s", out)
 		}
+		noRuleErrorLine(t, out)
 	})
+}
+
+// noRuleErrorLine fails when the output repeats a rule failure as a text
+// line: the rule_error entry already reports it, and a text line on stderr
+// breaks a consumer that reads stderr as an agent envelope.
+func noRuleErrorLine(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, "rule error: ") {
+		t.Errorf("the rule failure must be reported once, as the rule_error entry:\n%s", out)
+	}
 }
 
 func TestRuleErrorViolations(t *testing.T) {

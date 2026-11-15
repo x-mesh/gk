@@ -90,6 +90,11 @@ type rule struct {
 	// around those keywords, 0 otherwise; see anchorLength.
 	keywords  []string
 	anchorLen int
+	// prefixLen is, for a rule with no anchorLen, the most bytes from the
+	// start of a match to a keyword in it, and prefixed are the regexes
+	// that prefixedMatches runs; see prefixLength.
+	prefixLen int
+	prefixed  [2]*regexp.Regexp
 }
 
 type engine struct {
@@ -177,6 +182,11 @@ func compile(rs ruleset) *engine {
 			keywords:    lowerAll(jr.Keywords),
 		}
 		r.anchorLen = anchorLength(jr.Regex, r.keywords)
+		if r.anchorLen == 0 {
+			if r.prefixLen = prefixLength(jr.Regex, r.keywords); r.prefixLen > 0 {
+				r.prefixed = prefixRegexes(jr.Regex, r.prefixLen)
+			}
+		}
 		for _, kw := range r.keywords {
 			id, ok := wordID[kw]
 			if !ok {
@@ -483,9 +493,9 @@ func runeBytes(r rune, fold bool) int {
 
 // pass is one decoding pass over a hunk: the text the rules run on, the
 // rule keywords it contains, the segments this pass decoded (none for the
-// raw text), and the windows of text around those segments to search. The
-// raw pass also holds the lower-case text and whether anchored rules may
-// search it by keyword position; see anchorSafe.
+// raw text), and the windows of text around those segments to search. A
+// pass also holds the lower-case text and whether rules may search it by
+// keyword position; see anchorSafe.
 type pass struct {
 	text     string
 	keywords keywordSet
@@ -517,9 +527,12 @@ func (e *engine) decodedPasses(f fileDiff) [][]pass {
 			if len(segments) == 0 {
 				break
 			}
+			lower := strings.ToLower(text)
 			out[i] = append(out[i], pass{
 				text:     text,
-				keywords: e.findKeywords(strings.ToLower(text)),
+				keywords: e.findKeywords(lower),
+				lower:    lower,
+				anchorOK: anchorSafe(text),
 				segments: segments,
 				windows:  segmentWindows(segments, len(text)),
 			})
@@ -549,13 +562,17 @@ func segmentWindows(segments []*codec.EncodedSegment, textLen int) [][2]int {
 }
 
 // passMatches returns the rule's matches in a pass. In the raw pass an
-// anchored rule searches only around its keywords. In a decoded pass a
+// anchored rule searches only around its keywords, and in any pass a rule
+// with a prefix length searches only from its keywords. In a decoded pass a
 // windowed rule searches only the windows; a match that reaches a window edge
 // inside the text may be cut short or exist only because of the cut (`^`, `$`,
 // `\b`), so the whole text is searched instead.
 func passMatches(r rule, p pass) [][]int {
 	if len(p.segments) == 0 && r.anchorLen > 0 && p.anchorOK {
 		return anchoredMatches(r, p)
+	}
+	if r.prefixLen > 0 && p.anchorOK && (p.windows == nil || !r.windowed) {
+		return prefixedMatches(r, p)
 	}
 	if p.windows == nil || !r.windowed {
 		return r.regex.FindAllStringSubmatchIndex(p.text, -1)

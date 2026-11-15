@@ -290,9 +290,9 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	// Exit code derives from the worst severity.
 	switch worstSeverity(violations) {
 	case policy.SeverityError:
-		return fmt.Errorf("%d error(s)", countSeverity(violations, policy.SeverityError))
+		return &ExitError{Code: 2, printErr: true, err: fmt.Errorf("%d error(s)", countSeverity(violations, policy.SeverityError))}
 	case policy.SeverityWarn:
-		return fmt.Errorf("%d warning(s)", countSeverity(violations, policy.SeverityWarn))
+		return &ExitError{Code: 1, printErr: true, err: fmt.Errorf("%d warning(s)", countSeverity(violations, policy.SeverityWarn))}
 	default:
 		return nil
 	}

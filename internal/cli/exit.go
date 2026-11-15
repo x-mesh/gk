@@ -17,6 +17,9 @@ type ExitError struct {
 	// suppresses extra output for an ExitError (rendered==true), but the chain is
 	// preserved so HintFrom/RemediesFrom still work for callers and tests.
 	err error
+	// printErr makes main.go print err as it prints a plain error, for a
+	// command that needs a code other than 1 but has not rendered err.
+	printErr bool
 }
 
 func (e *ExitError) Error() string {
@@ -35,13 +38,14 @@ func (e *ExitError) ExitCode() int { return e.Code }
 // command already rendered its output. rendered==true means main.go must NOT
 // print an error envelope/prose on top (the paused result is already on stdout).
 // A nil error is exit 0; a plain error is exit 1.
+// An ExitError with printErr set is not rendered.
 func ExitCodeFor(err error) (code int, rendered bool) {
 	if err == nil {
 		return 0, false
 	}
 	var ee *ExitError
 	if errors.As(err, &ee) {
-		return ee.Code, true
+		return ee.Code, !ee.printErr
 	}
 	return 1, false
 }

@@ -16,6 +16,9 @@ func TestExitCodeFor(t *testing.T) {
 	if c, r := ExitCodeFor(fmt.Errorf("wrapped: %w", &ExitError{Code: 3})); c != 3 || !r {
 		t.Errorf("wrapped ExitError{3} → (%d,%v), want (3,true)", c, r)
 	}
+	if c, r := ExitCodeFor(&ExitError{Code: 2, printErr: true, err: errors.New("2 error(s)")}); c != 2 || r {
+		t.Errorf("ExitError{2, printErr} → (%d,%v), want (2,false)", c, r)
+	}
 	if c, r := ExitCodeFor(errors.New("boom")); c != 1 || r {
 		t.Errorf("plain error → (%d,%v), want (1,false)", c, r)
 	}

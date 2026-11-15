@@ -381,7 +381,7 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, remote, cmp string) ([
 		// not exist on the target remote): scan every HEAD commit that is not
 		// already reachable from another ref on that remote. With no matching
 		// remote-tracking refs this naturally scans the whole history.
-		stdout, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD", "--not", "--remotes="+remote)
+		stdout, _, err := r.Run(ctx, pushHistoryArgs(remote)...)
 		if err != nil {
 			return nil, err
 		}
@@ -392,7 +392,7 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, remote, cmp string) ([
 	// with hunk line numbers anchored to the current HEAD file so a reported
 	// line matches what the user sees in their editor. This covers every
 	// secret that still survives in the final tree (the common case).
-	netOut, _, err := r.Run(ctx, "diff", "--no-color", cmp+"...HEAD")
+	netOut, _, err := r.Run(ctx, pushNetDiffArgs(cmp)...)
 	if err != nil {
 		return nil, err
 	}
@@ -406,11 +406,36 @@ func scanCommitsToPush(ctx context.Context, r git.Runner, remote, cmp string) ([
 	// unpushed commits cancels out of the net diff above but remains recoverable
 	// from history; this pass still catches it. Its hunk numbers are per-commit,
 	// so pass A's accurate lines win on overlap.
-	histOut, _, err := r.Run(ctx, "log", "-p", "--no-color", "HEAD", "--not", "--remotes="+remote)
+	histOut, _, err := r.Run(ctx, pushHistoryArgs(remote)...)
 	if err != nil {
 		return nil, err
 	}
 	return mergeScanFindings(findings, scanDiffAdditions(string(histOut))), nil
+}
+
+// pushScanExclude leaves the archives out of the patches of the push scan.
+// The scan does not open archives, and a patch shows one only as "Binary
+// files differ", but git decompresses each archive in full to decide that.
+// On a history with many committed jars that was most of the scan time.
+var pushScanExclude = func() []string {
+	args := []string{"--"}
+	for _, ext := range secrets.ZipArchiveExts {
+		args = append(args, ":(top,exclude,glob,icase)**/*"+ext)
+	}
+	return args
+}()
+
+// pushHistoryArgs is the git command for the commits that the push adds.
+// A pathspec turns on history simplification, which leaves out a merged
+// branch whose changes the merge does not keep, so the command asks for the
+// full history.
+func pushHistoryArgs(remote string) []string {
+	return append([]string{"log", "-p", "--no-color", "--full-history", "HEAD", "--not", "--remotes=" + remote}, pushScanExclude...)
+}
+
+// pushNetDiffArgs is the git command for what HEAD adds over cmp.
+func pushNetDiffArgs(cmp string) []string {
+	return append([]string{"diff", "--no-color", cmp + "...HEAD"}, pushScanExclude...)
 }
 
 // mergeScanFindings returns primary plus any finding in extra that primary does

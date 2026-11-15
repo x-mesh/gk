@@ -272,7 +272,7 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		// --json NDJSON stream (one violation per line) stays for existing
 		// line-oriented consumers.
 		if AgentOut() {
-			if err := emitAgentResult(w, violationsJSON(violations)); err != nil {
+			if err := emitAgentResult(w, guardResultJSON(violationsJSON(violations))); err != nil {
 				return err
 			}
 		} else if err := printViolationsNDJSON(w, violations); err != nil {
@@ -287,15 +287,31 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "rule error: %v\n", e)
 	}
 
-	// Exit code derives from the worst severity.
+	// Exit code derives from the worst severity. In agent mode the result
+	// envelope already reports the check as blocked, so no error envelope
+	// follows it on stderr.
+	printErr := !AgentOut()
 	switch worstSeverity(violations) {
 	case policy.SeverityError:
-		return &ExitError{Code: 2, printErr: true, err: fmt.Errorf("%d error(s)", countSeverity(violations, policy.SeverityError))}
+		return &ExitError{Code: 2, printErr: printErr, err: fmt.Errorf("%d error(s)", countSeverity(violations, policy.SeverityError))}
 	case policy.SeverityWarn:
-		return &ExitError{Code: 1, printErr: true, err: fmt.Errorf("%d warning(s)", countSeverity(violations, policy.SeverityWarn))}
+		return &ExitError{Code: 1, printErr: printErr, err: fmt.Errorf("%d warning(s)", countSeverity(violations, policy.SeverityWarn))}
 	default:
 		return nil
 	}
+}
+
+// guardResultJSON is the agent-mode result. A warning or an error makes the
+// check exit non-zero, and the envelope state is blocked to match.
+type guardResultJSON []violationJSON
+
+func (r guardResultJSON) agentState() string {
+	for _, v := range r {
+		if v.Severity == policy.SeverityError.String() || v.Severity == policy.SeverityWarn.String() {
+			return envStateBlocked
+		}
+	}
+	return ""
 }
 
 func violationsJSON(vs []policy.Violation) []violationJSON {

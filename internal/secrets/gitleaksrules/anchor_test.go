@@ -318,3 +318,146 @@ func TestAnchoredMatches_EqualWholeTextSearch(t *testing.T) {
 	}
 	t.Logf("anchored %d, with a match %d, searched by window %d", anchored, matched, windowed)
 }
+
+func TestPrefixLength(t *testing.T) {
+	cases := []struct {
+		name, regex string
+		keywords    []string
+		want        int
+	}{
+		{"keyword after a bounded prefix", `[\w.-]{0,50}?(?:token)=([a-z]+)`, []string{"token"}, 56},
+		{"keyword first", `\b(ey[a-z]{17,})`, []string{"ey"}, 2},
+		{"case folding widens the prefix", `(?i)k{0,2}key=[a-z]+`, []string{"key"}, 12},
+		{"no bound before the keyword", `[a-z]*token=[a-z]+`, []string{"token"}, 0},
+		{"keyword is optional", `(?:token)?=[a-z]+`, []string{"token"}, 0},
+		{"one branch has no keyword", `(?:token|pass)=[a-z]+`, []string{"token"}, 0},
+		{"not a sequence", `token[a-z]+|key[a-z]+`, []string{"token", "key"}, 0},
+		{"prefix over the repeat limit", `[a-z]{0,1000}token=[a-z]+`, []string{"token"}, 0},
+		{"no keywords", `token=[a-z]+`, nil, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := prefixLength(c.regex, c.keywords); got != c.want {
+				t.Errorf("prefixLength = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// The rules that prefixedMatches searches. A ruleset update that adds or
+// drops one shows up here.
+func TestPrefixLength_Rules(t *testing.T) {
+	var got []string
+	for _, r := range get().rules {
+		if r.prefixLen > 0 {
+			got = append(got, r.id)
+		}
+	}
+	want := []string{
+		"1password-service-account-token", "curl-auth-header", "curl-auth-user",
+		"facebook-page-access-token", "freemius-secret-key", "generic-api-key",
+		"jwt", "jwt-base64", "nuget-config-password", "private-key",
+		"slack-app-token", "slack-bot-token", "slack-legacy-token", "yandex-access-token",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rules with a prefix length = %v, want %v", got, want)
+	}
+}
+
+// prefixTexts returns texts with samples of re where prefixedMatches can go
+// wrong: at the start and end of the text, after a word character and after
+// a multi-byte rune, next to each other, and after keywords that start no
+// match within the prefix length.
+func prefixTexts(s *sampler, re *syntax.Regexp, r rule, filler func(int, string) string) []string {
+	decoy := r.keywords[s.rng.IntN(len(r.keywords))]
+	gap := 2 * r.prefixLen
+	return []string{
+		s.sample(re) + "\n" + filler(gap, " ") + s.sample(re),
+		"x" + s.sample(re) + " _" + s.sample(re) + "한" + s.sample(re),
+		filler(gap, "\n") + s.sample(re) + s.sample(re) + "\n" + s.sample(re),
+		decoy + " " + decoy + strings.ToUpper(decoy) + filler(r.prefixLen/2, " ") + s.sample(re) + filler(gap, ";"),
+		strings.Repeat(decoy+" ", 20) + s.sample(re) + strings.Repeat(" "+decoy, 20),
+	}
+}
+
+func TestPrefixedMatches_EqualWholeTextSearch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs every prefixed rule over generated text")
+	}
+	rng := rand.New(rand.NewPCG(3, 4))
+	s := &sampler{rng: rng}
+	allWords := []string{"lorem", "ipsum", "dolor", "sit", "amet", "return", "function", "const", "value", "한글", "주석", "0x1f", "42"}
+	for _, r := range get().rules {
+		if r.prefixLen == 0 {
+			continue
+		}
+		re, err := syntax.Parse(r.regex.String(), syntax.Perl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var words []string
+		for _, w := range allWords {
+			if !allContain([]string{w}, r.keywords) {
+				words = append(words, w)
+			}
+		}
+		filler := func(n int, sep string) string {
+			var b strings.Builder
+			for b.Len() < n {
+				b.WriteString(words[rng.IntN(len(words))])
+				b.WriteString(sep)
+			}
+			return b.String()
+		}
+		matched := false
+		for round := 0; round < 20; round++ {
+			for i, text := range prefixTexts(s, re, r, filler) {
+				if !anchorSafe(text) {
+					continue
+				}
+				want := r.regex.FindAllStringSubmatchIndex(text, -1)
+				got := prefixedMatches(r, pass{text: text, lower: strings.ToLower(text)})
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: text %d %q: prefixed search found %v, whole-text search found %v", r.id, i, text, got, want)
+				}
+				matched = matched || len(want) > 0
+			}
+		}
+		if !matched {
+			t.Errorf("%s: no generated text matched, so the rule was not checked", r.id)
+		}
+	}
+}
+
+func FuzzPrefixedMatches(f *testing.F) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	s := &sampler{rng: rng}
+	filler := func(n int, sep string) string { return strings.Repeat("lorem"+sep, n/6+1) }
+	for _, r := range get().rules {
+		if r.prefixLen == 0 {
+			continue
+		}
+		re, err := syntax.Parse(r.regex.String(), syntax.Perl)
+		if err != nil {
+			f.Fatal(err)
+		}
+		for _, text := range prefixTexts(s, re, r, filler) {
+			f.Add(text)
+		}
+	}
+	rules := get().rules
+	f.Fuzz(func(t *testing.T, text string) {
+		if !anchorSafe(text) {
+			return
+		}
+		p := pass{text: text, lower: strings.ToLower(text)}
+		for _, r := range rules {
+			if r.prefixLen == 0 {
+				continue
+			}
+			if got, want := prefixedMatches(r, p), r.regex.FindAllStringSubmatchIndex(text, -1); !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s on %q: prefixed search found %v, whole-text search found %v", r.id, text, got, want)
+			}
+		}
+	})
+}

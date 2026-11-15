@@ -2,6 +2,8 @@ package gitleaksrules
 
 import (
 	"cmp"
+	"fmt"
+	"regexp"
 	"regexp/syntax"
 	"slices"
 	"strings"
@@ -17,9 +19,16 @@ import (
 // runs them about ten times slower per byte than a rule with a literal
 // prefix, while their keywords cover a fraction of a percent of such text.
 //
+// A rule whose matches have no length bound, such as generic-api-key, can
+// still have a bounded part before its keyword. Every match then starts
+// within that bound before a keyword, so the search tries only those starts;
+// see prefixedMatches. generic-api-key was the most expensive rule left: on
+// a history of minified bundles it took 46% of the regex time.
+//
 // gitleaks uses keywords only to skip a fragment, so the ruleset does not
-// promise that a match contains one. anchorLength proves it per rule from
-// the regex; a rule that fails the proof searches the whole text as before.
+// promise that a match contains one. anchorLength and prefixLength prove it
+// per rule from the regex; a rule that fails the proof searches the whole
+// text as before.
 
 // anchorSlack is the context kept around a window so that the rune before and
 // after any match is inside the window, as `\b`, `^`, and `$` need.
@@ -45,6 +54,49 @@ func anchorLength(pattern string, keywords []string) int {
 		return 0
 	}
 	return n
+}
+
+// maxPrefixLen is the longest prefixLength, because the regexp package
+// accepts a repeat count of at most 1000.
+const maxPrefixLen = 1000
+
+// prefixLength returns, for a rule whose matches have no length bound, the
+// most bytes from the start of a match to the start of a keyword in it, and
+// 0 when that has no proven bound. The regex is a sequence of parts; the
+// first leading run of parts whose every match contains a keyword, and whose
+// length is bounded, gives the bound.
+func prefixLength(pattern string, keywords []string) int {
+	if pattern == "" || len(keywords) == 0 {
+		return 0
+	}
+	for _, kw := range keywords {
+		if kw == "" || !isASCII(kw) {
+			return 0
+		}
+	}
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return 0
+	}
+	for re.Op == syntax.OpCapture {
+		re = re.Sub[0]
+	}
+	if re.Op != syntax.OpConcat {
+		return 0
+	}
+	parts := flattenConcat(re.Sub)
+	n := 0
+	for i, part := range parts {
+		m := maxMatchBytes(part)
+		if m < 0 || n+m > maxPrefixLen {
+			return 0
+		}
+		n += m
+		if concatRequires(parts[:i+1], keywords, exactDepth) {
+			return n
+		}
+	}
+	return 0
 }
 
 func isASCII(s string) bool {
@@ -357,6 +409,86 @@ func anchoredMatches(r rule, p pass) [][]int {
 			}
 			out = append(out, loc)
 		}
+	}
+	return out
+}
+
+// prefixRegexes returns the regexes that prefixedMatches runs for a rule with
+// prefix length n: the rule's regex after m runes of context, and after at
+// most n more runes, for m of 0 and 1.
+func prefixRegexes(pattern string, n int) [2]*regexp.Regexp {
+	var out [2]*regexp.Regexp
+	for m := range out {
+		out[m] = regexp.MustCompile(fmt.Sprintf(`^(?s:.){%d}(?s:.){0,%d}?(%s)`, m, n, pattern))
+	}
+	return out
+}
+
+// prefixedMatches returns the matches of a rule with a prefix length in the
+// pass p, as r.regex.FindAllStringSubmatchIndex(p.text, -1) returns them.
+// p.lower is strings.ToLower(p.text), and anchorSafe(p.text) must hold.
+//
+// A whole-text search returns the leftmost match at or after pos, then
+// continues at its end. A match at or after pos starts at most prefixLen
+// bytes before a keyword occurrence at or after pos, so the leftmost match
+// starts at lo, the later of pos and the first such occurrence minus
+// prefixLen, or later. The prefixed regex tries the starts from lo in order,
+// as the whole-text search does, but stops prefixLen runes after lo. Its one
+// rune of context before lo lets `\b` and `^` read the same rune as in the
+// whole text.
+func prefixedMatches(r rule, p pass) [][]int {
+	text, lower := p.text, p.lower
+	next := make([]int, len(r.keywords))
+	for i, kw := range r.keywords {
+		next[i] = strings.Index(lower, kw)
+	}
+	var out [][]int
+	for pos := 0; pos < len(text); {
+		k := -1
+		for i, kw := range r.keywords {
+			if next[i] >= 0 && next[i] < pos {
+				if j := strings.Index(lower[pos:], kw); j >= 0 {
+					next[i] = pos + j
+				} else {
+					next[i] = -1
+				}
+			}
+			if next[i] >= 0 && (k < 0 || next[i] < k) {
+				k = next[i]
+			}
+		}
+		if k < 0 {
+			break
+		}
+		lo := max(pos, k-r.prefixLen)
+		for lo > pos && !utf8.RuneStart(text[lo]) {
+			lo--
+		}
+		ctx, m := lo, 0
+		if lo > 0 {
+			_, w := utf8.DecodeLastRuneInString(text[:lo])
+			ctx, m = lo-w, 1
+		}
+		loc := r.prefixed[m].FindStringSubmatchIndex(text[ctx:])
+		if loc == nil {
+			// Every start from lo to prefixLen runes after it failed, and
+			// a rune is at least one byte long.
+			pos = min(len(text), lo+r.prefixLen+1)
+			for pos < len(text) && !utf8.RuneStart(text[pos]) {
+				pos++
+			}
+			continue
+		}
+		// Group 1 of the prefixed regex is the rule's whole match.
+		match := loc[2:]
+		for i := range match {
+			if match[i] >= 0 {
+				match[i] += ctx
+			}
+		}
+		out = append(out, match)
+		// A match contains a keyword, so it is not empty.
+		pos = match[1]
 	}
 	return out
 }

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The secret scan of `gk push` and `gk ship` is faster on large pushes, with the same findings. A first push of a history with a 1.47 GB patch took 31 s instead of 253 s, and one with a 380 MB patch took 10 s instead of 76 s. The scan tries each built-in pattern only where its literal, such as `AKIA` or `token`, occurs. It also leaves the `.jar`, `.war`, `.ear`, and `.zip` files out of the patches, as `gk guard check` does, because git decompressed each archive only to print `Binary files differ`. On a history with many committed jars, the scan took 0.01 s instead of 67 s. A text file with one of these extensions is no longer scanned.
+- The secret scan of `gk push` and `gk ship` is faster on large pushes. A first push of a history with a 1.47 GB patch took 31 s instead of 253 s, and one with a 380 MB patch took 10 s instead of 76 s. The scan tries each built-in pattern only where its literal, such as `AKIA` or `token`, occurs. It also leaves the `.jar`, `.war`, `.ear`, and `.zip` files out of the patches, as `gk guard check` does, because git decompressed each archive only to print `Binary files differ`. On a history with many committed jars, the scan took 0.01 s instead of 67 s. On 16 repositories the findings did not change. A text file with one of these extensions, which is not an archive, is no longer scanned.
 
 ## [0.161.0] - 2026-11-15
 

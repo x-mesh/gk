@@ -180,6 +180,40 @@ func TestRunGuardCheck_FetchFailureWarnsAndStillScans(t *testing.T) {
 // testPAT is assembled at runtime so this file does not trip secret scanners.
 var testPAT = "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
 
+// The exit code tells a warning from an error: 0 with info only, 1 with a
+// warning, 2 with an error. Both used to exit 1.
+func TestRunGuardCheck_ExitCodeFollowsTheWorstSeverity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed: initial")
+	repo.AddRemote("origin", repo.Dir+"/missing-remote.git")
+
+	code := func(args ...string) int {
+		t.Helper()
+		out, err := runGuardCheckCmd(t, repo.Dir, args...)
+		c, _ := ExitCodeFor(err)
+		t.Logf("%v: exit %d\n%s", args, c, out)
+		return c
+	}
+	if c := code(); c != 0 {
+		t.Errorf("info only: exit %d, want 0", c)
+	}
+	if c := code("--fetch"); c != 1 {
+		t.Errorf("a failed fetch is a warning: exit %d, want 1", c)
+	}
+	repo.WriteFile("leak.env", "token = \""+testPAT+"\"\n")
+	repo.Commit("feat: add secret")
+	if c := code("--fetch"); c != 2 {
+		t.Errorf("a secret with a warning: exit %d, want 2", c)
+	}
+	if c := code(); c != 2 {
+		t.Errorf("a secret: exit %d, want 2", c)
+	}
+}
+
 // The default scope is the current content of the tracked files: a secret
 // removed in a later commit is history-only, and an uncommitted edit counts.
 // --staged sees only what is staged.

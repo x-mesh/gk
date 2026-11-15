@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -356,6 +357,87 @@ func TestIsLowEntropySecret(t *testing.T) {
 	for _, tt := range tests {
 		if got := IsLowEntropySecret(tt.value); got != tt.want {
 			t.Errorf("IsLowEntropySecret(%q) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}
+
+// literalSeeds are lines that each pattern matches, in the case and fold
+// forms that (?i) accepts, and lines that none of them match. Values are
+// assembled at runtime so this file does not trip secret scanners.
+func literalSeeds() []string {
+	v40 := "Q7f" + "Kp2Lm9Xr4Tz8Wb1Nc6Hd3Js5Gv0Ay7Ue2Ri9Oq4P"
+	v30 := "Zr8" + "Mq3Vt6Lp1Xw9Kb4Nd7Hc2Jf5Gs0Ay"
+	minified := strings.Repeat("a.b(c,d);", 20000)
+	return []string{
+		"export AWS_KEY=AKIA" + "1234567890ABCDEF",
+		"AWS_SECRET_ACCESS_KEY = '" + v40 + "'",
+		"aws_secret = \"" + v40 + "\"",
+		"Aws-Sk: " + v40,
+		"AWſ_SECRET = '" + v40 + "'",
+		"token = ghp" + "_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+		"x = github" + "_pat_" + strings.Repeat("A1b2_", 16) + "Zz",
+		"slack = xox" + "b-abcdefghij-klmnopqrstuv",
+		"OPENAI_KEY=sk" + "-abcdefghijklmnopqrstuvwxyz123456",
+		"-----BEGIN " + "RSA PRIVATE KEY-----",
+		`api_key = "` + v30 + `"`,
+		`API-KEY: '` + v30 + `'`,
+		`Password = "` + v30 + `"`,
+		`SECRET: "` + v30 + `"`,
+		`to` + "K" + `en = "` + v30 + `"`,
+		`pa` + "ſ" + `sword = "` + v30 + `"`,
+		minified + `token = "` + v30 + `"` + minified,
+		// A literal after a word character is not at a \b, and a later
+		// one is.
+		"xAKIA" + "1234567890ABCDEF AKIA" + "ABCDEF1234567890",
+		"task-" + strings.Repeat("ab", 12) + " sk-" + strings.Repeat("cd", 12),
+		// The first occurrence of a literal does not match, a later one does.
+		`token_name = 1; token = "` + v30 + `"`,
+		`aws_region = 1; aws_secret = "` + v40 + `"`,
+		minified,
+		"func password_hasher(input string) string {",
+		"",
+	}
+}
+
+// find must return what the regex returns on the whole line.
+func TestPatternFind_SameAsTheRegex(t *testing.T) {
+	for _, line := range literalSeeds() {
+		checkFind(t, line)
+	}
+}
+
+func FuzzPatternFind(f *testing.F) {
+	for _, line := range literalSeeds() {
+		f.Add(line)
+	}
+	f.Fuzz(checkFind)
+}
+
+func checkFind(t *testing.T, line string) {
+	lower := asciiLower(line)
+	for _, p := range BuiltinPatterns {
+		want := p.Regex.FindStringSubmatch(line)
+		if got := p.find(line, lower); !slices.Equal(got, want) {
+			t.Errorf("%s on %q: find = %q, the regex = %q", p.Kind, line, got, want)
+		}
+	}
+}
+
+// (?i) folds U+017F to s and U+212A to k, so a key name spelled with them
+// is still a finding.
+func TestScan_FoldedKeyNamesAreFound(t *testing.T) {
+	v40 := "Q7f" + "Kp2Lm9Xr4Tz8Wb1Nc6Hd3Js5Gv0Ay7Ue2Ri9Oq4P"
+	v30 := "Zr8" + "Mq3Vt6Lp1Xw9Kb4Nd7Hc2Jf5Gs0Ay"
+	for line, kind := range map[string]string{
+		"AWſ_SECRET = '" + v40 + "'":      "aws-secret-key",
+		`to` + "K" + `en = "` + v30 + `"`: "generic-secret",
+	} {
+		found := false
+		for _, f := range Scan(line, nil) {
+			found = found || f.Kind == kind
+		}
+		if !found {
+			t.Errorf("want a %s finding in %q", kind, line)
 		}
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/policy/rules"
@@ -503,28 +504,57 @@ func runGuardInit(cmd *cobra.Command, _ []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 
 	if outPath == "" {
-		repo := RepoFlag()
-		if repo == "" {
-			var err error
-			repo, err = os.Getwd()
-			if err != nil {
-				return fmt.Errorf("guard init: cannot determine working directory: %w", err)
-			}
+		repo, err := guardInitRepoRoot(RepoFlag())
+		if err != nil {
+			return err
 		}
 		outPath = filepath.Join(repo, ".gk.yaml")
 	}
 
-	if _, err := os.Stat(outPath); err == nil && !force {
+	existing, statErr := os.Stat(outPath)
+	if statErr == nil && !force {
 		return fmt.Errorf("%s already exists (use --force to overwrite)", outPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("guard init: stat %s: %w", outPath, err)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("guard init: stat %s: %w", outPath, statErr)
 	}
 
-	if err := os.WriteFile(outPath, []byte(gkYAMLTemplate), 0o644); err != nil {
+	body := []byte(gkYAMLTemplate)
+	if statErr == nil && force {
+		prev, err := os.ReadFile(outPath)
+		if err != nil {
+			return fmt.Errorf("guard init: read %s: %w", outPath, err)
+		}
+		if merged, ok := mergeGuardInitPolicies(prev, []byte(gkYAMLTemplate)); ok {
+			body = merged
+		} else {
+			bak := outPath + ".bak"
+			if err := os.WriteFile(bak, prev, existing.Mode()); err != nil {
+				return fmt.Errorf("guard init: backup %s: %w", bak, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "backed up existing config to %s\n", bak)
+		}
+	}
+
+	if err := os.WriteFile(outPath, body, 0o644); err != nil {
 		return fmt.Errorf("guard init: write %s: %w", outPath, err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "created %s\n", outPath)
 	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine("next: uncomment rules, then run `gk guard check`"))
 	return nil
+}
+
+func guardInitRepoRoot(repoFlag string) (string, error) {
+	search := repoFlag
+	if root, _ := config.GitRepoRootIn(search); root != "" {
+		return root, nil
+	}
+	if repoFlag != "" {
+		return repoFlag, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("guard init: cannot determine working directory: %w", err)
+	}
+	return wd, nil
 }

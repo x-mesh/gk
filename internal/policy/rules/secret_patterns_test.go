@@ -378,6 +378,9 @@ func TestSecretPatternsRule_ConfigButNoGitleaks_FallsBackWithNotice(t *testing.T
 	if len(v) != 2 || !strings.Contains(v[0].Message, "gitleaks not installed") {
 		t.Fatalf("violations = %+v", v)
 	}
+	if !strings.Contains(v[0].Message, "were not applied") {
+		t.Fatalf("notice must say gitleaks config was not applied: %q", v[0].Message)
+	}
 }
 
 func TestSecretPatternsRule_Name(t *testing.T) {

@@ -126,7 +126,7 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 	findings, err := run(ctx, opts)
 	if err != nil {
 		if errors.Is(err, scan.ErrGitleaksNotInstalled) {
-			return r.evaluateBuiltin(ctx, in, r.builtinNotice(in))
+			return r.evaluateBuiltin(ctx, in, r.builtinNotice(in, scan.HasGitleaksConfig(opts.WorkDir)))
 		}
 		return nil, fmt.Errorf("secret_patterns: %w", err)
 	}
@@ -988,12 +988,18 @@ func (r *SecretPatternsRule) embeddedNotice(in policy.Input) policy.Violation {
 	}
 }
 
-func (r *SecretPatternsRule) builtinNotice(in policy.Input) policy.Violation {
+func (r *SecretPatternsRule) builtinNotice(in policy.Input, gitleaksConfigPresent bool) policy.Violation {
+	msg := "gitleaks not installed; scanned " + scopeLabel(in) + " with " + r.scannerLabel()
+	hint := "brew install gitleaks for the latest rules and .gitleaks.toml support  (gk doctor will confirm)"
+	if gitleaksConfigPresent {
+		msg = "gitleaks not installed; repo .gitleaks.toml/.gitleaksignore (or GITLEAKS_CONFIG*) were not applied — scanned " + scopeLabel(in) + " with " + r.scannerLabel()
+		hint = "install gitleaks so guard honors the repo gitleaks config  (gk doctor will confirm)"
+	}
 	return policy.Violation{
 		RuleID:   r.Name(),
 		Severity: policy.SeverityInfo,
-		Message:  "gitleaks not installed; scanned " + scopeLabel(in) + " with " + r.scannerLabel(),
-		Hint:     "brew install gitleaks for the latest rules and .gitleaks.toml support  (gk doctor will confirm)",
+		Message:  msg,
+		Hint:     hint,
 	}
 }
 

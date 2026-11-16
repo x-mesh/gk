@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gk guard init` wrote `.gk.yaml` into the current subdirectory.** When `--repo` was unset the command used `os.Getwd()`, so running it inside `pkg/foo` created `pkg/foo/.gk.yaml` instead of the repository root. It now resolves the root with `git rev-parse --show-toplevel` (and honors `--repo` the same way). With `--force`, an existing valid `.gk.yaml` keeps its other top-level keys (`ai`, `branch`, …) and only the `policies:` block is replaced; when the file is not valid YAML, gk writes `.gk.yaml.bak` before overwriting with the scaffold.
+- **`gk guard check` did not say that repo gitleaks config was ignored without gitleaks.** When `.gitleaks.toml`, `.gitleaksignore`, or `GITLEAKS_CONFIG*` was present but the gitleaks binary was missing, the info notice only said gitleaks was not installed. The notice now states that those repo config files were not applied and that the embedded ruleset ran instead.
+
 ## [0.162.0] - 2026-11-16
 
 ### Changed

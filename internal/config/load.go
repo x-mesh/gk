@@ -357,6 +357,11 @@ func xdgConfigDir() string {
 	return filepath.Join(base, "gk")
 }
 
+// GitRepoRootIn returns the working-tree root of the git repository at dir
+// (via `git -C dir`), or of the cwd when dir is empty. Returns empty string
+// (nil error) when not in a git repository.
+func GitRepoRootIn(dir string) (string, error) { return gitRepoRootIn(dir) }
+
 // gitRepoRoot returns the working-tree root of the current git repository
 // (cwd). Returns empty string (nil error) when not in a git repo.
 func gitRepoRoot() (string, error) { return gitRepoRootIn("") }

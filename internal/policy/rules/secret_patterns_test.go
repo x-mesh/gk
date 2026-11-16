@@ -1170,28 +1170,129 @@ func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
 	}
 }
 
+// In the default scope an archive the scan could not open is a warn, because
+// the file can be removed, unlike a blob in the history. An archive read only
+// in part stays info.
 func TestSecretPatternsRule_ArchiveUnscannedIsWarnOutsideHistory(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"huge.war":  strings.Repeat("x", 3<<20),
+		"notes.zip": "not a zip\x00",
+		"app.jar":   makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200)),
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "huge.war\x00notes.zip\x00app.jar\x00",
+	}}
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 1 << 20}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]policy.Severity{}
+	for _, x := range v {
+		if strings.HasPrefix(x.Message, "archive ") {
+			got[x.File] = x.Severity
+		}
+	}
+	want := map[string]policy.Severity{
+		"huge.war":  policy.SeverityWarn,
+		"notes.zip": policy.SeverityWarn,
+		"app.jar":   policy.SeverityInfo,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("archive notices = %v, want %v", got, want)
+	}
+}
+
+// --staged is the scope of the pre-commit hook. An archive the scan could not
+// open is a warn there too, so a commit that adds one stops at the hook. An
+// archive read only in part stays info.
+func TestSecretPatternsRule_StagedArchiveUnscannedIsWarn(t *testing.T) {
+	run := &stubRunner{out: map[string]string{
+		"diff --cached --raw -z --no-abbrev --no-renames": rawEntry("A", "100644", blobID(1), "huge.war") +
+			rawEntry("A", "100644", blobID(2), "notes.zip") +
+			rawEntry("A", "100644", blobID(3), "app.jar"),
+	}}
+	archiveStub(run, map[string]string{
+		blobID(1): strings.Repeat("x", 3<<20),
+		blobID(2): "not a zip\x00",
+		blobID(3): makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200)),
+	})
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 1 << 20}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]policy.Severity{}
+	for _, x := range v {
+		if strings.HasPrefix(x.Message, "archive ") {
+			got[x.File] = x.Severity
+		}
+	}
+	want := map[string]policy.Severity{
+		"huge.war":  policy.SeverityWarn,
+		"notes.zip": policy.SeverityWarn,
+		"app.jar":   policy.SeverityInfo,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("archive notices = %v, want %v", got, want)
+	}
+}
+
+// The rule keeps no state of one evaluation: one instance evaluated for the
+// history and for the tracked files at the same time reports each scope with
+// its own severity.
+func TestSecretPatternsRule_ConcurrentScopesKeepTheirArchiveSeverity(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.zip"), []byte("not a zip\x00"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run := &stubRunner{out: map[string]string{
-		"rev-parse --show-toplevel":     root + "\n",
-		"ls-files -z --full-name -- :/": "notes.zip\x00",
-	}}
-	v, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, x := range v {
-		if x.File == "notes.zip" && strings.HasPrefix(x.Message, "archive not scanned") {
-			if x.Severity != policy.SeverityWarn {
-				t.Fatalf("severity = %v, want warn", x.Severity)
-			}
-			return
+	r := builtinRule()
+	evaluate := func(in policy.Input) policy.Severity {
+		v, err := r.Evaluate(context.Background(), in)
+		if err != nil {
+			t.Error(err)
+			return policy.SeverityError
 		}
+		for _, x := range v {
+			if x.File == "notes.zip" {
+				return x.Severity
+			}
+		}
+		t.Error("want the notes.zip notice")
+		return policy.SeverityError
 	}
-	t.Fatal("want unscanned archive notice")
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			run := &stubRunner{out: map[string]string{
+				"rev-list --all": "c1\nc2\n",
+				rawHistoryCmd:    rawEntry("A", "100644", blobID(1), "notes.zip"),
+			}}
+			archiveStub(run, map[string]string{blobID(1): "not a zip\x00"})
+			if sev := evaluate(policy.Input{Runner: run, History: true}); sev != policy.SeverityInfo {
+				t.Errorf("history severity = %v, want info", sev)
+			}
+		})
+		wg.Go(func() {
+			run := &stubRunner{out: map[string]string{
+				"rev-parse --show-toplevel":     root + "\n",
+				"ls-files -z --full-name -- :/": "notes.zip\x00",
+			}}
+			if sev := evaluate(policy.Input{Runner: run, WorkDir: root}); sev != policy.SeverityWarn {
+				t.Errorf("tracked files severity = %v, want warn", sev)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {

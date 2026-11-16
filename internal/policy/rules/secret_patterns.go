@@ -578,7 +578,10 @@ const (
 // the scan itself, so the commits are split into chunks that git diffs in
 // parallel, and each chunk is scanned as soon as its diff arrives. The
 // options match gitleaks' git mode (-U0, all refs), and findings keep
-// rev-list order.
+// rev-list order. --remerge-diff also diffs each merge commit against the
+// automatic merge of its parents, which plain `git log -p` leaves out, so a
+// secret added while resolving a conflict is scanned. gk needs git 2.38 or
+// later, and --remerge-diff came in 2.36.
 func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int) ([]secrets.Finding, archiveReport, error) {
 	revs, err := scanCommand(ctx, runner, "rev-list", "--all")
 	if err != nil {
@@ -605,7 +608,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 		g.Go(func() error {
 			// The commit of a finding comes from the "commit <sha>" header,
 			// so the format must not follow format.pretty or log.decorate.
-			args := append([]string{"log", "-p", "-U0", "--no-color", "--pretty=medium", "--no-decorate", "--no-walk=unsorted"}, chunk...)
+			args := append([]string{"log", "-p", "-U0", "--no-color", "--pretty=medium", "--no-decorate", "--remerge-diff", "--no-walk=unsorted"}, chunk...)
 			found, err := r.scanPatch(gctx, runner, oci, i, batch, append(args, archivePatchExclude...))
 			if err != nil {
 				return err
@@ -615,7 +618,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 			// the blob ids come from a raw diff. Without rename detection a
 			// renamed archive is listed as added, and its new content is
 			// scanned even when the rename changed it.
-			args = append([]string{"log", "--raw", "-z", "--no-abbrev", "--no-renames", "--format=", "--no-walk=unsorted"}, chunk...)
+			args = append([]string{"log", "--raw", "-z", "--no-abbrev", "--no-renames", "--remerge-diff", "--format=", "--no-walk=unsorted"}, chunk...)
 			raw, err := scanCommand(gctx, runner, args...)
 			if err != nil {
 				return err

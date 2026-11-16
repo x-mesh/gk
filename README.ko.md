@@ -197,7 +197,7 @@ gk ship --dry-run          # squash/version/changelog/tag/push 플랜 미리보�
 | 명령어 | 설명 |
 |---|---|
 | `gk guard check` | 모든 정책 규칙을 병렬로 평가; human 또는 `--json` 출력; exit 0 clean / 1 warn / 2 error. 기본은 추적 파일 검사이고, `--staged`는 스테이징된 변경, `--history`는 모든 ref에서 닿는 커밋 전체, `--fetch`는 모든 원격을 먼저 받고 `--history`를 포함합니다 |
-| `gk guard init` | 완전히 주석 처리된 `policies:` 블록으로 `.gk.yaml` 스캐폴드; `--force` 덮어쓰기, `--out` 경로 지정 |
+| `gk guard init` | `gk guard check`와 `gitleaks:allow` 안내가 든 `.gk.yaml` 생성. `--force`는 기존 파일을 백업한 뒤 덮어쓰고, `--out`은 경로를 지정 |
 
 ### 복구
 

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk guard check --history` scans what a merge commit adds while it resolves a conflict. A plain `git log -p` shows no patch for a merge commit, so a secret added only in the resolution was not found. The scan now passes `--remerge-diff`. On a repository with 625 merge commits, `--history` took 5.1 s to 5.7 s instead of 4.7 s to 4.9 s, and the output did not change.
+- `gk guard init` writes `.gk.yaml` in the repository root when you run it in a subdirectory. It used the current directory, so it created `pkg/foo/.gk.yaml`.
+- `gk guard init --force` copies the old `.gk.yaml` to `.gk.yaml.bak.<unix time>` before it writes the scaffold. `.gk.yaml` is the shared project config, and `--force` replaced it without a copy. If a backup with that name exists, the command fails and changes no file.
+- If the repository has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` or `GITLEAKS_CONFIG_TOML` is set, but gitleaks is not installed, the notice of `gk guard check` says that this config was not applied. It said only that gitleaks was not installed.
 - `gk guard init` and `gk init` no longer scaffold a `policies:` block or `.gk/allow.yaml` examples; config loading does not read those keys yet. The template documents `gitleaks:allow` for intentional findings. Secret finding hints point at the same marker instead of a non-existent allow list.
 - An archive that the built-in `secret_patterns` scan does not open, because it is over 512 MiB or is not a valid zip, is a `warn` violation in the default scope and `--staged`, and an `info` violation in `--history`, so a corrupt jar deep in the history does not fail every check. An archive with only some files unread stays `info`.
 - `gk guard check --history` now reports the introducing commit on each finding in human output (short SHA) and in JSON (`commit`), for both the built-in scanner and gitleaks.

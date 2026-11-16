@@ -556,8 +556,9 @@ const (
 // `git log -p --all` produces the diffs on one core and took longer than
 // the scan itself, so the commits are split into chunks that git diffs in
 // parallel, and each chunk is scanned as soon as its diff arrives. The
-// options match gitleaks' git mode (-U0, all refs), and findings keep
-// rev-list order.
+// options match gitleaks' git mode (-U0, all refs), and use --remerge-diff
+// (git 2.36+) or --cc so merge commits, including conflict resolution,
+// contribute patches. Findings keep rev-list order.
 func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner, oci *ociProfileSink, readers int) ([]secrets.Finding, archiveReport, error) {
 	revs, err := scanCommand(ctx, runner, "rev-list", "--all")
 	if err != nil {
@@ -566,6 +567,10 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	shas := strings.Fields(revs)
 	if len(shas) == 0 {
 		return nil, archiveReport{}, nil
+	}
+	mergeDiff, err := historyLogMergeDiffFlag(ctx, runner)
+	if err != nil {
+		return nil, archiveReport{}, err
 	}
 	workers := runtime.GOMAXPROCS(0)
 	per := min(max((len(shas)+workers-1)/workers, historyChunkMin), historyChunkMax)
@@ -582,7 +587,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	g.SetLimit(workers)
 	for i, chunk := range chunks {
 		g.Go(func() error {
-			args := append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, chunk...)
+			args := append([]string{"log", "-p", "-U0", "--no-color", mergeDiff, "--no-walk=unsorted"}, chunk...)
 			found, err := r.scanPatch(gctx, runner, oci, i, batch, append(args, archivePatchExclude...))
 			if err != nil {
 				return err
@@ -592,7 +597,7 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 			// the blob ids come from a raw diff. Without rename detection a
 			// renamed archive is listed as added, and its new content is
 			// scanned even when the rename changed it.
-			args = append([]string{"log", "--raw", "-z", "--no-abbrev", "--no-renames", "--format=", "--no-walk=unsorted"}, chunk...)
+			args = append([]string{"log", "--raw", "-z", "--no-abbrev", "--no-renames", mergeDiff, "--format=", "--no-walk=unsorted"}, chunk...)
 			raw, err := scanCommand(gctx, runner, args...)
 			if err != nil {
 				return err
@@ -610,6 +615,15 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	}
 	found, report, err := r.scanArchiveBlobs(ctx, runner, oci, readers, slices.Concat(refs...))
 	return append(out, found...), report, err
+}
+
+func historyLogMergeDiffFlag(ctx context.Context, runner git.Runner) (string, error) {
+	out, _, err := runner.Run(ctx, "--version")
+	if err != nil {
+		return "", fmt.Errorf("secret_patterns: git version: %w", err)
+	}
+	major, minor := git.ParseVersion(string(out))
+	return git.HistoryLogMergeDiffFlag(major, minor), nil
 }
 
 // archiveLimit bounds the archives the built-in scan opens. An archive over

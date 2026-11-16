@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk guard check --history` now scans secrets that appear only in a merge commit's conflict resolution. The history scan asks git for `--remerge-diff` on git 2.36 and later, and `--cc` on older git, on both the patch stream and the raw blob listing that feeds archive scans.
+
 ## [0.162.0] - 2026-11-16
 
 ### Changed

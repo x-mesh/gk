@@ -129,3 +129,89 @@ func TestSecretPatternsRule_PatchStreamFailureFailsTheScan(t *testing.T) {
 		t.Errorf("scanPatch = %v, %v; want no findings and the git error", found, err)
 	}
 }
+
+// Merge commits hide their patches from a plain `git log -p`. The history
+// scan must still see secrets that appear only in conflict resolution.
+func TestSecretPatternsRule_HistoryMergeConflictResolutionSecret(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	const secret = "DB_PASS=Zk8qLm2xMergeOnly"
+	repo.WriteFile("config/app.env", "token: safe\n")
+	repo.Commit("base")
+	repo.RunGit("branch", "side")
+	repo.RunGit("checkout", "side")
+	repo.WriteFile("config/app.env", "token: side\n")
+	repo.Commit("side change")
+	repo.RunGit("checkout", "main")
+	repo.WriteFile("config/app.env", "token: main\n")
+	repo.Commit("main change")
+	if out, err := repo.TryGit("merge", "side", "--no-edit"); err == nil {
+		t.Fatalf("merge unexpectedly clean: %s", out)
+	}
+	repo.WriteFile("config/app.env", "token: merged\n"+secret+"\n")
+	repo.RunGit("add", "config/app.env")
+	repo.Commit("merge resolution")
+
+	mergeSha := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
+	plain := repo.RunGit("log", "-p", "-U0", "-1", mergeSha)
+	if strings.Contains(plain, secret) {
+		t.Fatalf("git already shows the secret without merge flags; cannot test the gap:\n%s", plain)
+	}
+
+	r := NewSecretPatternsRule()
+	r.runGitleaks = gitleaksMissing
+	r.ScanDiff = gitleaksrules.ScanDiff
+	r.ScanFile = gitleaksrules.ScanFile
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, x := range v {
+		if x.Severity == policy.SeverityError && strings.Contains(x.Message, "gk-service-password") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("want password from merge resolution; violations=%v", v)
+	}
+}
+
+// On a linear history, merge-diff flags must not change `git log -p` output or
+// the findings the scan reports.
+func TestSecretPatternsRule_HistoryLinearUnchangedWithMergeFlags(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	const secret = "DB_PASS=Zk8qLm2xLinear"
+	for i := range 3 {
+		repo.WriteFile(fmt.Sprintf("doc%d.txt", i), fmt.Sprintf("doc %d\n", i))
+		repo.Commit(fmt.Sprintf("doc %d", i))
+	}
+	repo.WriteFile("svc0/.env", secret+"\n")
+	repo.Commit("secret")
+
+	shas := strings.Fields(repo.RunGit("rev-list", "--all"))
+	flag := historyMergeDiffFlag()
+	withFlag := repo.RunGit(append([]string{"log", "-p", "-U0", "--no-color", flag, "--no-walk=unsorted"}, shas...)...)
+	without := repo.RunGit(append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, shas...)...)
+	if withFlag != without {
+		t.Fatalf("linear patches differ with %s", flag)
+	}
+
+	r := NewSecretPatternsRule()
+	r.runGitleaks = gitleaksMissing
+	r.ScanDiff = gitleaksrules.ScanDiff
+	r.ScanFile = gitleaksrules.ScanFile
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pw int
+	for _, x := range v {
+		if x.Severity == policy.SeverityError && strings.Contains(x.Message, "gk-service-password") {
+			pw++
+		}
+	}
+	if pw != 1 {
+		t.Fatalf("%d password findings, want 1: %v", pw, v)
+	}
+}

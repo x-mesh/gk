@@ -522,16 +522,28 @@ func (f trackedWorktreeFile) sniff() ([]byte, error) {
 
 func (f trackedWorktreeFile) readAll() ([]byte, error) { return os.ReadFile(f.full) }
 
-// scanWorktreeFile scans one tracked file. An archive over the size limit is
-// not read, and a binary file that is not an archive is read only as far as
-// the binary test needs. A text file is scanned whole at any size, because a
-// part that is not scanned would read as clean.
+// scanWorktreeFile scans one tracked file. A binary archive over the size
+// limit is not read, and a binary file that is not an archive is read only as
+// far as the binary test needs. A text file is scanned whole at any size, also
+// at an archive path, because a part that is not scanned would read as clean.
 func (r *SecretPatternsRule) scanWorktreeFile(f trackedWorktreeFile, oci *ociProfileSink, slot int) ([]secrets.Finding, archiveResult, error) {
 	readErr := func(err error) error { return fmt.Errorf("secret_patterns: read %s: %w", f.rel, err) }
 	if secrets.IsZipArchive(f.rel) {
 		if n := r.tooLarge(f.rel, f.size); n != nil {
-			oci.scan(slot, "")
-			return r.ScanFile(f.rel, ""), archiveResult{notice: n}, nil
+			prefix, err := f.sniff()
+			if err != nil {
+				return nil, archiveResult{}, readErr(err)
+			}
+			content := ""
+			if !secrets.LooksBinary(prefix) {
+				data, err := f.readAll()
+				if err != nil {
+					return nil, archiveResult{}, readErr(err)
+				}
+				content = string(data)
+			}
+			oci.scan(slot, content)
+			return r.ScanFile(f.rel, content), archiveResult{notice: n}, nil
 		}
 		data, err := f.readAll()
 		if err != nil {

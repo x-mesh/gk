@@ -1633,3 +1633,50 @@ func TestConvertFindings_SecretHintMentionsGitleaksAllow(t *testing.T) {
 		t.Errorf("hint = %q, want %q", v[0].Hint, secretFindingHint)
 	}
 }
+
+// A tracked text file at an archive path over the size limit is still scanned
+// whole as text, so a secret at its end is found. Only a binary file there is
+// left unread. Both keep the archive notice, as before the scan sniffed them.
+func TestSecretPatternsRule_TrackedLargeTextAtArchivePathIsScanned(t *testing.T) {
+	root := t.TempDir()
+	text := strings.Repeat("x\n", 1<<20) + "password: x\n"
+	binary := "PK\x03\x04\x00" + strings.Repeat("y", 3<<20)
+	for name, data := range map[string]string{"notes.zip": text, "huge.jar": binary} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "notes.zip\x00huge.jar\x00",
+	}}
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: defaultArchiveLimit.zip}
+	var mu sync.Mutex
+	scanned := map[string]string{}
+	r.ScanFile = func(name, content string) []secrets.Finding {
+		mu.Lock()
+		defer mu.Unlock()
+		scanned[name] = content
+		return nil
+	}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := scanned["notes.zip"]; got != text {
+		t.Errorf("notes.zip scanned %d bytes, want the whole text of %d bytes", len(got), len(text))
+	}
+	if got, ok := scanned["huge.jar"]; !ok || got != "" {
+		t.Errorf("huge.jar scanned %d bytes (called %v), want empty content", len(got), ok)
+	}
+	notices := map[string]policy.Severity{}
+	for _, x := range v {
+		if strings.HasPrefix(x.Message, "archive ") {
+			notices[x.File] = x.Severity
+		}
+	}
+	if want := map[string]policy.Severity{"notes.zip": policy.SeverityWarn, "huge.jar": policy.SeverityWarn}; !maps.Equal(notices, want) {
+		t.Errorf("archive notices = %v, want %v", notices, want)
+	}
+}

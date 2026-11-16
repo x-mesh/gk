@@ -66,6 +66,9 @@ type SecretPatternsRule struct {
 	archiveLimit *archiveLimit
 	// patchBatch overrides patchBatchBytes in tests.
 	patchBatch int
+	// unscanArchiveSev is set at the start of evaluateBuiltin for archive
+	// notices that could not be read fully.
+	unscanArchiveSev policy.Severity
 }
 
 // ociProfileSink collects the OCI profiles in the text a scan reads. A nil
@@ -183,7 +186,15 @@ func scopeLabel(in policy.Input) string {
 // evaluateBuiltin scans with the built-in patterns. Scope follows the input:
 // staged changes, the history of every ref, or by default the current content
 // of the tracked files.
+func archiveUnscannedSeverity(in policy.Input) policy.Severity {
+	if in.History {
+		return policy.SeverityInfo
+	}
+	return policy.SeverityWarn
+}
+
 func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Input, notice policy.Violation) ([]policy.Violation, error) {
+	r.unscanArchiveSev = archiveUnscannedSeverity(in)
 	if in.Runner == nil || !r.builtinReady() {
 		return []policy.Violation{{
 			RuleID:   r.Name(),
@@ -967,12 +978,12 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 		oci.scan(slot, content)
 	})
 	if err != nil {
-		return archiveResult{notice: r.archiveNotice(name, "archive not scanned: "+err.Error(),
+		return archiveResult{notice: r.archiveUnscannedNotice(name, "archive not scanned: "+err.Error(),
 			"the files in it were not checked for secrets")}
 	}
 	res.opened = true
 	if unread > 0 {
-		res.notice = r.archiveNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
+		res.notice = r.archiveInfoNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
 			fmt.Sprintf("a file larger than %d MiB once decompressed, a file past the first %d MiB that the archive decompresses to, a file compressed with a method other than store or deflate, or a corrupt file is not checked for secrets", mib(limit.EntryBytes), mib(limit.TotalBytes)))
 	}
 	return res
@@ -981,13 +992,21 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 // tooLarge returns the notice for an archive over the size limit, or nil.
 func (r *SecretPatternsRule) tooLarge(name string, size int64) *policy.Violation {
 	if limit := r.limit().bytes; size > limit {
-		return r.archiveNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
+		return r.archiveUnscannedNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
 			"the files in it were not checked for secrets")
 	}
 	return nil
 }
 
-func (r *SecretPatternsRule) archiveNotice(name, msg, hint string) *policy.Violation {
+func (r *SecretPatternsRule) archiveUnscannedNotice(name, msg, hint string) *policy.Violation {
+	sev := r.unscanArchiveSev
+	if sev == 0 {
+		sev = policy.SeverityInfo
+	}
+	return &policy.Violation{RuleID: r.Name(), Severity: sev, File: name, Message: msg, Hint: hint}
+}
+
+func (r *SecretPatternsRule) archiveInfoNotice(name, msg, hint string) *policy.Violation {
 	return &policy.Violation{RuleID: r.Name(), Severity: policy.SeverityInfo, File: name, Message: msg, Hint: hint}
 }
 

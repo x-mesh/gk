@@ -1014,8 +1014,8 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 }
 
 // An archive the scan could not open, or opened only in part, is reported
-// with an informational notice instead of reading as clean, and it does not
-// fail the check: a blob deep in the history stays there.
+// instead of reading as clean. In --history unscanned archives stay info so
+// the check does not fail on a blob deep in the history.
 func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	partly := makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200))
 	run := &stubRunner{out: map[string]string{
@@ -1164,6 +1164,30 @@ func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSecretPatternsRule_ArchiveUnscannedIsWarnOutsideHistory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes.zip"), []byte("not a zip\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "notes.zip\x00",
+	}}
+	v, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range v {
+		if x.File == "notes.zip" && strings.HasPrefix(x.Message, "archive not scanned") {
+			if x.Severity != policy.SeverityWarn {
+				t.Fatalf("severity = %v, want warn", x.Severity)
+			}
+			return
+		}
+	}
+	t.Fatal("want unscanned archive notice")
 }
 
 func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {

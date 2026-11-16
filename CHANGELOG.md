@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk guard init` and `gk init` no longer scaffold a `policies:` block or `.gk/allow.yaml` examples; config loading does not read those keys yet. The template documents `gitleaks:allow` for intentional findings. Secret finding hints point at the same marker instead of a non-existent allow list.
+- An archive that the built-in `secret_patterns` scan cannot open fully is a `warn` violation in the default scope and `--staged`, and an `info` violation in `--history`, so a corrupt jar deep in the history does not fail every check.
 
 ### Removed
 

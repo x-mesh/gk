@@ -179,7 +179,7 @@ func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
 // The history scan diffs every commit reachable from any ref with -U0, as
 // gitleaks' git mode does, so both scanners see the same hunks.
 func TestSecretPatternsRule_NoGitleaks_DefaultScansHistory(t *testing.T) {
-	logCmd := patch("log -p -U0 --no-color --no-walk=unsorted c1 c2")
+	logCmd := patch("log -p -U0 --no-color --pretty=medium --no-decorate --no-walk=unsorted c1 c2")
 	run := &stubRunner{out: map[string]string{"rev-list --all": "c1\nc2\n", logCmd: "LOG"}}
 	r := NewSecretPatternsRule()
 	r.runGitleaks = gitleaksMissing
@@ -230,7 +230,7 @@ func TestSecretPatternsRule_HistoryChunksKeepOrderAndCoverEveryCommit(t *testing
 		shas = append(shas, fmt.Sprintf("c%03d", i))
 	}
 	run := &stubRunner{out: map[string]string{"rev-list --all": strings.Join(shas, "\n")}}
-	const prefix = "log -p -U0 --no-color --no-walk=unsorted "
+	const prefix = "log -p -U0 --no-color --pretty=medium --no-decorate --no-walk=unsorted "
 	for lo := 0; lo < len(shas); lo += historyChunkMin {
 		chunk := shas[lo:min(lo+historyChunkMin, len(shas))]
 		run.out[patch(prefix+strings.Join(chunk, " "))] = chunk[0]
@@ -266,7 +266,7 @@ func TestSecretPatternsRule_HistoryChunksKeepOrderAndCoverEveryCommit(t *testing
 func TestSecretPatternsRule_HistoryChunkFailureSurfaces(t *testing.T) {
 	run := &stubRunner{
 		out:  map[string]string{"rev-list --all": "c1\n"},
-		fail: map[string]bool{patch("log -p -U0 --no-color --no-walk=unsorted c1"): true},
+		fail: map[string]bool{patch("log -p -U0 --no-color --pretty=medium --no-decorate --no-walk=unsorted c1"): true},
 	}
 	if _, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, History: true}); err == nil {
 		t.Fatal("want error when a history chunk fails")
@@ -421,6 +421,7 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 			Description: "AWS Access Key",
 			File:        "config/secrets.yml",
 			StartLine:   5,
+			Commit:      "abc123deadbeef",
 		},
 		{
 			RuleID:      "generic-api-key",
@@ -444,6 +445,9 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 	}
 	if first.File != "config/secrets.yml" || first.Line != 5 {
 		t.Errorf("file/line = %q:%d, want config/secrets.yml:5", first.File, first.Line)
+	}
+	if first.Commit != "abc123deadbeef" {
+		t.Errorf("Commit = %q, want abc123deadbeef", first.Commit)
 	}
 	if !strings.Contains(first.Message, "AWS Access Key") ||
 		!strings.Contains(first.Message, "aws-access-key-id") {
@@ -770,12 +774,12 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 		}
 	}
 	run := &stubRunner{out: map[string]string{
-		patch("diff --cached --no-color"):                       "staged diff",
-		patch("diff --no-color main..feat"):                     "range diff",
-		"rev-parse --show-toplevel":                             root + "\n",
-		"ls-files -z --full-name -- :/":                         "a.txt\x00b.txt\x00",
-		"rev-list --all":                                        "c1\nc2\n",
-		patch("log -p -U0 --no-color --no-walk=unsorted c1 c2"): "history diff",
+		patch("diff --cached --no-color"):   "staged diff",
+		patch("diff --no-color main..feat"): "range diff",
+		"rev-parse --show-toplevel":         root + "\n",
+		"ls-files -z --full-name -- :/":     "a.txt\x00b.txt\x00",
+		"rev-list --all":                    "c1\nc2\n",
+		patch("log -p -U0 --no-color --pretty=medium --no-decorate --no-walk=unsorted c1 c2"): "history diff",
 	}}
 	var mu sync.Mutex
 	var seen []string
@@ -1218,7 +1222,7 @@ func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {
 func TestSecretPatternsRule_ArchiveOCIProfilesKeepDiffProfiles(t *testing.T) {
 	run := &stubRunner{out: map[string]string{
 		"rev-list --all": "c1\nc2\n",
-		patch("log -p -U0 --no-color --no-walk=unsorted c1 c2"): "history diff",
+		patch("log -p -U0 --no-color --pretty=medium --no-decorate --no-walk=unsorted c1 c2"): "history diff",
 		rawHistoryCmd: rawEntry("A", "100644", blobID(1), "app.jar"),
 	}}
 	archiveStub(run, map[string]string{blobID(1): makeZip(t, "oci.conf", "profile in jar")})

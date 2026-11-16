@@ -77,6 +77,7 @@ type Violation struct {
 	Severity Severity // rule-assigned severity
 	File     string   // empty when the violation is not file-local
 	Line     int      // 0 when N/A
+	Commit   string   // introducing commit SHA for history scans; empty otherwise
 	Message  string   // human-readable one-liner
 	Hint     string   // optional fix suggestion
 	// Verification is set when Input.Verify ran a live check for this finding.

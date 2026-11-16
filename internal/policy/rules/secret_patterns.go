@@ -183,9 +183,6 @@ func scopeLabel(in policy.Input) string {
 	}
 }
 
-// evaluateBuiltin scans with the built-in patterns. Scope follows the input:
-// staged changes, the history of every ref, or by default the current content
-// of the tracked files.
 func archiveUnscannedSeverity(in policy.Input) policy.Severity {
 	if in.History {
 		return policy.SeverityInfo
@@ -193,6 +190,9 @@ func archiveUnscannedSeverity(in policy.Input) policy.Severity {
 	return policy.SeverityWarn
 }
 
+// evaluateBuiltin scans with the built-in patterns. Scope follows the input:
+// staged changes, the history of every ref, or by default the current content
+// of the tracked files.
 func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Input, notice policy.Violation) ([]policy.Violation, error) {
 	r.unscanArchiveSev = archiveUnscannedSeverity(in)
 	if in.Runner == nil || !r.builtinReady() {
@@ -265,6 +265,7 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Severity: policy.SeverityError,
 			File:     f.File,
 			Line:     f.FileLine,
+			Commit:   f.Commit,
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     secretFindingHint,
 		}
@@ -339,13 +340,25 @@ func (r *SecretPatternsRule) scanPatch(ctx context.Context, runner git.Runner, o
 	}()
 	var found []secrets.Finding
 	var batch strings.Builder
+	var currentCommit string
+	attachCommit := func(fs []secrets.Finding) []secrets.Finding {
+		if currentCommit == "" {
+			return fs
+		}
+		for i := range fs {
+			if fs[i].Commit == "" {
+				fs[i].Commit = currentCommit
+			}
+		}
+		return fs
+	}
 	flush := func() {
 		if batch.Len() == 0 {
 			return
 		}
 		diff := batch.String()
 		batch.Reset()
-		found = append(found, r.ScanDiff(diff)...)
+		found = append(found, attachCommit(r.ScanDiff(diff))...)
 		oci.scan(slot, diff)
 	}
 	in := bufio.NewReaderSize(pr, 1<<20)
@@ -353,6 +366,12 @@ func (r *SecretPatternsRule) scanPatch(ctx context.Context, runner git.Runner, o
 	for {
 		// ReadString has no line limit: a source map is one line of many MB.
 		line, err := in.ReadString('\n')
+		if strings.HasPrefix(line, "commit ") {
+			if batch.Len() > 0 && strings.Contains(batch.String(), "diff --git ") {
+				flush()
+			}
+			currentCommit = strings.TrimSpace(strings.TrimPrefix(line, "commit "))
+		}
 		if strings.HasPrefix(line, "diff --git ") && batch.Len() >= limit {
 			flush()
 		}
@@ -587,7 +606,9 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	g.SetLimit(workers)
 	for i, chunk := range chunks {
 		g.Go(func() error {
-			args := append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, chunk...)
+			// The commit of a finding comes from the "commit <sha>" header,
+			// so the format must not follow format.pretty or log.decorate.
+			args := append([]string{"log", "-p", "-U0", "--no-color", "--pretty=medium", "--no-decorate", "--no-walk=unsorted"}, chunk...)
 			found, err := r.scanPatch(gctx, runner, oci, i, batch, append(args, archivePatchExclude...))
 			if err != nil {
 				return err
@@ -1053,6 +1074,7 @@ func convertFindings(findings []scan.GitleaksFinding) []policy.Violation {
 			Severity: policy.SeverityError,
 			File:     f.File,
 			Line:     f.StartLine,
+			Commit:   f.Commit,
 			Message:  fmt.Sprintf("%s (%s)", msg, f.RuleID),
 			Hint:     secretFindingHint,
 		})

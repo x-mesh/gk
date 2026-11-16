@@ -167,11 +167,17 @@ func TestScanDiff_GitLogPatchesAreScannedPerCommit(t *testing.T) {
 	log := "commit abc\nAuthor: t\n\n    add key\n\n" + addDiff("a.env", 1, "+k="+awsKey) +
 		"\ncommit def\nAuthor: t\n\n    add other\n\n" + addDiff("b.sh", 1, "+export GH="+githubPAT)
 	fs := ScanDiff(log)
-	if _, ok := find(fs, "aws-access-token"); !ok {
+	a, ok := find(fs, "aws-access-token")
+	if !ok {
 		t.Errorf("first commit missed: %v", kinds(fs))
+	} else if a.Commit != "abc" {
+		t.Errorf("aws commit = %q, want abc", a.Commit)
 	}
-	if _, ok := find(fs, "github-pat"); !ok {
+	b, ok := find(fs, "github-pat")
+	if !ok {
 		t.Errorf("second commit missed: %v", kinds(fs))
+	} else if b.Commit != "def" {
+		t.Errorf("github commit = %q, want def", b.Commit)
 	}
 }
 

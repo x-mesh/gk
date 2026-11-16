@@ -211,6 +211,7 @@ type violationJSON struct {
 	Severity string `json:"severity"`
 	File     string `json:"file,omitempty"`
 	Line     int    `json:"line,omitempty"`
+	Commit   string `json:"commit,omitempty"`
 	Message  string `json:"message"`
 	Hint     string `json:"hint,omitempty"`
 	// Verification is present only on findings that --verify checked.
@@ -317,6 +318,7 @@ func violationsJSON(vs []policy.Violation) []violationJSON {
 			Severity: v.Severity.String(),
 			File:     v.File,
 			Line:     v.Line,
+			Commit:   v.Commit,
 			Message:  v.Message,
 			Hint:     v.Hint,
 		}
@@ -329,6 +331,16 @@ func violationsJSON(vs []policy.Violation) []violationJSON {
 		out = append(out, j)
 	}
 	return out
+}
+
+func guardCommitShort(sha string) string {
+	if sha == "" {
+		return ""
+	}
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 func printViolationsNDJSON(w io.Writer, vs []policy.Violation) error {
@@ -354,6 +366,9 @@ func printViolationsHuman(w io.Writer, vs []policy.Violation) {
 			} else {
 				loc = fmt.Sprintf("%s (%s)", v.RuleID, v.File)
 			}
+		}
+		if short := guardCommitShort(v.Commit); short != "" {
+			loc += " @" + short
 		}
 		fmt.Fprintf(w, "%-5s  %s  %s\n", v.Severity, loc, v.Message)
 		if v.Verification != nil {

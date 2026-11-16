@@ -239,7 +239,7 @@ func TestRunGuardCheck_ScopeDefaultHistoryStaged(t *testing.T) {
 	repo.WriteFile("seed.txt", "seed\n")
 	repo.Commit("seed: initial")
 	repo.WriteFile("old.env", "token = \""+testPAT+"\"\n")
-	repo.Commit("feat: add secret")
+	leakSHA := repo.Commit("feat: add secret")
 	repo.RunGit("rm", "-q", "old.env")
 	repo.Commit("fix: remove secret")
 
@@ -247,9 +247,15 @@ func TestRunGuardCheck_ScopeDefaultHistoryStaged(t *testing.T) {
 	if err != nil || strings.Contains(out, "old.env") {
 		t.Fatalf("default scope must not report a history-only secret: err=%v\n%s", err, out)
 	}
+	if strings.Contains(out, `"commit"`) {
+		t.Fatalf("default scope must not emit commit in JSON:\n%s", out)
+	}
 	out, err = runGuardCheckCmd(t, repo.Dir, "--history")
 	if err == nil || !strings.Contains(out, `"file":"old.env"`) {
 		t.Fatalf("--history must report the removed secret: err=%v\n%s", err, out)
+	}
+	if !strings.Contains(out, `"commit":"`+leakSHA+`"`) {
+		t.Fatalf("--history JSON must carry introducing commit %s:\n%s", leakSHA, out)
 	}
 
 	repo.WriteFile("seed.txt", "seed\ntoken = \""+testPAT+"\"\n")
@@ -265,6 +271,9 @@ func TestRunGuardCheck_ScopeDefaultHistoryStaged(t *testing.T) {
 	out, err = runGuardCheckCmd(t, repo.Dir, "--staged")
 	if err == nil || !strings.Contains(out, `"file":"seed.txt"`) {
 		t.Fatalf("--staged must report the staged secret: err=%v\n%s", err, out)
+	}
+	if strings.Contains(out, `"commit"`) {
+		t.Fatalf("--staged must not emit commit in JSON:\n%s", out)
 	}
 }
 

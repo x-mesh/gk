@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `gk guard check` reads the committed `.jar`, `.war`, `.ear`, and `.zip` archives with a 512 MiB delta base cache in each git process, instead of the 96 MiB git default. The versions of a jar are stored as deltas of each other, and with the small cache git rebuilt the same bases again. `--history` on a repository with 192 jars of 14 GB took 16.1 s instead of 21.8 s, and it used up to 1.0 GB more memory. On three other repositories the time and the memory did not change, and on all four the output did not change. If your git config sets `core.deltaBaseCacheLimit`, gk uses your value.
 
+### Fixed
+
+- `gk guard init` and `gk init` no longer scaffold a `policies:` block or `.gk/allow.yaml` examples; config loading does not read those keys yet. The template documents `gitleaks:allow` for intentional findings. Secret finding hints point at the same marker instead of a non-existent allow list.
+- `gk guard check` reports archives that are too large or corrupt as `warn` instead of `info`, so CI can treat an unscanned archive like other warnings.
+
+### Removed
+
+- Dead `policy.Default` registry, unused `Input.PushRange` handling in `secret_patterns` (never set outside tests on develop; push still scans unpushed commits via `scanCommitsToPush` in `gk push`), and v0.9 MVP wording in guard help and docs.
+
 ## [0.162.0] - 2026-11-16
 
 ### Changed

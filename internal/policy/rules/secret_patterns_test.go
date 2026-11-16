@@ -176,21 +176,6 @@ func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
 	}
 }
 
-func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
-	run := &stubRunner{out: map[string]string{patch("diff --no-color origin/main..HEAD"): "DIFF"}}
-	r := builtinRule(secrets.Finding{Kind: "github-token", File: "x.go", FileLine: 9})
-	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, PushRange: "origin/main..HEAD"})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if _, errs := severities(v); errs != 1 {
-		t.Fatalf("errs=%d, want 1", errs)
-	}
-	if want := patch("diff --no-color origin/main..HEAD") + ",diff --raw -z --no-abbrev --no-renames origin/main..HEAD"; strings.Join(run.calls, ",") != want {
-		t.Errorf("calls = %v", run.calls)
-	}
-}
-
 // The history scan diffs every commit reachable from any ref with -U0, as
 // gitleaks' git mode does, so both scanners see the same hunks.
 func TestSecretPatternsRule_NoGitleaks_DefaultScansHistory(t *testing.T) {
@@ -552,7 +537,6 @@ func TestSecretPatternsRule_GitleaksModeFollowsScope(t *testing.T) {
 	}{
 		{"default", policy.Input{}, "dir", "--x"},
 		{"staged", policy.Input{Staged: true}, "git", "--staged --x"},
-		{"push", policy.Input{PushRange: "a..b"}, "git", "--log-opts=a..b --x"},
 		{"history", policy.Input{History: true}, "git", "--x"},
 	}
 	for _, c := range cases {
@@ -811,9 +795,7 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 		{"staged without verify", policy.Input{Staged: true}, nil},
 		{"tracked files without verify", policy.Input{}, nil},
 		{"history without verify", policy.Input{History: true}, nil},
-		{"push range without verify", policy.Input{PushRange: "main..feat"}, nil},
 		{"staged", policy.Input{Staged: true, Verify: true}, []string{"staged diff"}},
-		{"push range", policy.Input{PushRange: "main..feat", Verify: true}, []string{"range diff"}},
 		{"tracked files", policy.Input{Verify: true}, []string{"a.txt\n", "b.txt\n"}},
 		{"history", policy.Input{History: true, Verify: true}, []string{"history diff"}},
 	}
@@ -1020,20 +1002,19 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("scanned = %q, want %q", got, want)
 	}
-	var notices []string
+	var warns []string
 	for _, x := range v[1:] {
-		if x.Severity == policy.SeverityInfo {
-			notices = append(notices, x.File+": "+x.Message)
+		if x.Severity == policy.SeverityWarn {
+			warns = append(warns, x.File+": "+x.Message)
 		}
 	}
-	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(notices, want) {
-		t.Errorf("notices = %q, want %q", notices, want)
+	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(warns, want) {
+		t.Errorf("warns = %q, want %q", warns, want)
 	}
 }
 
-// An archive the scan could not open, or opened only in part, is reported
-// with an informational notice instead of reading as clean, and it does not
-// fail the check: a blob deep in the history stays there.
+// An archive the scan could not open is reported at warn; a partly-read archive
+// stays at info. Neither reads as a clean scan.
 func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	partly := makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200))
 	run := &stubRunner{out: map[string]string{
@@ -1055,19 +1036,25 @@ func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	var notices []string
+	var warns, infos []string
 	for _, x := range v[1:] {
-		if x.Severity == policy.SeverityInfo {
-			notices = append(notices, x.File+": "+x.Message)
+		switch x.Severity {
+		case policy.SeverityWarn:
+			warns = append(warns, x.File+": "+x.Message)
+		case policy.SeverityInfo:
+			infos = append(infos, x.File+": "+x.Message)
 		}
 	}
-	want := []string{
+	wantWarns := []string{
 		"huge.war: archive not scanned: 3 MiB, more than the limit of 1 MiB",
 		"notes.zip: archive not scanned: zip: not a valid zip file",
-		"app.jar: archive partly scanned: 1 file(s) in it could not be read",
 	}
-	if !slices.Equal(notices, want) {
-		t.Errorf("notices = %q, want %q", notices, want)
+	if !slices.Equal(warns, wantWarns) {
+		t.Errorf("warns = %q, want %q", warns, wantWarns)
+	}
+	wantInfos := []string{"app.jar: archive partly scanned: 1 file(s) in it could not be read"}
+	if !slices.Equal(infos, wantInfos) {
+		t.Errorf("infos = %q, want %q", infos, wantInfos)
 	}
 	if _, errs := severities(v); errs != 1 {
 		t.Errorf("errs = %d, want the finding in app.jar only", errs)
@@ -1163,8 +1150,7 @@ func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
 		in  policy.Input
 		cmd string
 	}{
-		"staged":     {policy.Input{Staged: true}, "diff --cached --raw -z --no-abbrev --no-renames"},
-		"push range": {policy.Input{PushRange: "main..feat"}, "diff --raw -z --no-abbrev --no-renames main..feat"},
+		"staged": {policy.Input{Staged: true}, "diff --cached --raw -z --no-abbrev --no-renames"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1370,5 +1356,19 @@ func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
 	}
 	if run.reads[blobID(2)] != 0 {
 		t.Errorf("reads = %v, want the first reader stopped before blob 2", run.reads)
+	}
+}
+
+func TestConvertFindings_SecretHintMentionsGitleaksAllow(t *testing.T) {
+	v := convertFindings([]scan.GitleaksFinding{{RuleID: "generic-api-key", File: "f", StartLine: 1, Description: "found"}})
+	if len(v) != 1 || v[0].Hint != secretFindingHint || !strings.Contains(v[0].Hint, "gitleaks:allow") {
+		t.Errorf("hint = %q, want %q", v[0].Hint, secretFindingHint)
+	}
+}
+
+func TestSecretPatternsRule_ArchiveUnscannedIsWarn(t *testing.T) {
+	v := NewSecretPatternsRule().tooLarge("big.zip", 600<<20)
+	if v == nil || v.Severity != policy.SeverityWarn {
+		t.Fatalf("tooLarge = %+v, want warn severity", v)
 	}
 }

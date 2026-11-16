@@ -64,14 +64,10 @@ func defaultDenyPaths() []string {
 	return config.DefaultDenyPaths()
 }
 
-// policiesComment는 commented-out policies 블록이다.
-// gk guard init template을 흡수한 opt-in 설정.
-const policiesComment = `
-# policies: (commented-out, opt-in)
-#   secret_patterns:
-#     enabled: true
-#     mode: git
-#     redact: true
+// guardNote는 gk guard 동작에 대한 짧은 주석이다. .gk.yaml의 policies 키는
+// 아직 로드되지 않는다.
+const guardNote = `
+# gk guard check runs secret_patterns; add # gitleaks:allow on a line to allow it.
 `
 
 // configHeader는 .gk.yaml 파일 상단 주석이다.
@@ -91,7 +87,7 @@ func GenerateConfig(result *AnalysisResult) string {
 	var b strings.Builder
 	b.WriteString(configHeader)
 	b.Write(data)
-	b.WriteString(policiesComment)
+	b.WriteString(guardNote)
 	return b.String()
 }
 

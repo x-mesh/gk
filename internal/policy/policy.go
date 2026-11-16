@@ -56,12 +56,8 @@ type Input struct {
 	// (scanners, linters) pass this as cwd.
 	WorkDir string
 	// Staged restricts evaluation to staged changes only. Pre-commit hook
-	// sets this true; pre-push sets false to scan the push range.
+	// sets this true.
 	Staged bool
-	// PushRange, when non-empty, is the `<base>..<head>` ref range pushed
-	// (pre-push hook scenario). Rules that care about history scoping read
-	// this; otherwise they fall back to default behavior.
-	PushRange string
 	// History widens evaluation to every commit reachable from any ref.
 	// The default scope is the current content of the tracked files.
 	History bool
@@ -118,9 +114,8 @@ type Rule interface {
 	Evaluate(ctx context.Context, in Input) ([]Violation, error)
 }
 
-// Registry holds rule instances. A global Default registry exists for
-// convenience; callers that need isolated rule sets (tests, scoped
-// evaluations) can construct a fresh Registry via NewRegistry.
+// Registry holds rule instances. Callers construct a Registry via NewRegistry
+// and register the rules they need.
 type Registry struct {
 	mu    sync.RWMutex
 	rules map[string]Rule
@@ -236,9 +231,3 @@ func (r *Registry) Evaluate(ctx context.Context, in Input) ([]Violation, []error
 
 	return allV, errs
 }
-
-// Default is a process-wide Registry. Built-in rules (max_commit_size,
-// required_trailers, …) register themselves here via init(). Callers that
-// need isolation (tests, subcommands with limited rule sets) should build
-// a fresh Registry with NewRegistry and Register rules explicitly.
-var Default = NewRegistry()

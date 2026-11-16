@@ -27,8 +27,8 @@ func init() {
 		Use:   "guard",
 		Short: "Declarative repo policies (secret scan, signing, commit rules)",
 		Long: `gk guard evaluates every registered policy rule against the repo and
-surfaces violations. Rules live in .gk.yaml under the policies: block; the
-v0.9 MVP ships with secret_patterns. By default it scans the current content
+surfaces violations. It currently runs secret_patterns on every check; .gk.yaml
+does not enable or configure rules yet. By default it scans the current content
 of the tracked files; --staged scans the staged changes, and --history scans
 every commit reachable from any ref. It also scans the files inside the .jar,
 .war, .ear, and .zip archives in that scope and reports them as archive!file.
@@ -97,9 +97,9 @@ removes it or changes its severity.
 
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "Scaffold .gk.yaml with a commented policies block",
-		Long: `Creates .gk.yaml in the repository root (or --repo path) with a
-fully-commented policies: block so you can opt in rules one by one.
+		Short: "Scaffold .gk.yaml with gk guard notes",
+		Long: `Creates .gk.yaml in the repository root (or --repo path) with notes
+on gk guard and how to suppress an intentional secret finding (gitleaks:allow).
 
 Exits non-zero when .gk.yaml already exists; pass --force to overwrite.
 `,
@@ -423,79 +423,17 @@ func countSeverity(vs []policy.Violation, s policy.Severity) int {
 	return n
 }
 
-// gkYAMLTemplate is the scaffold written by `gk guard init`. Every rule block
-// is commented out so the file is valid YAML and the user opts in explicitly.
-const gkYAMLTemplate = `# .gk.yaml — gk repository policy configuration
+// gkYAMLTemplate is the scaffold written by `gk guard init`.
+const gkYAMLTemplate = `# .gk.yaml — gk project configuration (shared with the team)
 # Run: gk guard check
 # Docs: https://github.com/x-mesh/gk/blob/main/docs/commands.md#gk-guard
 #
-# Uncomment the rules you want to enforce. Each rule maps to a built-in
-# gk guard policy; unknown keys are silently ignored so future rule names
-# can be added here before upgrading gk.
-
-policies:
-
-  # ── secret_patterns ────────────────────────────────────────────────────────
-  # Scans the tracked files (or, with --staged / --history, the staged
-  # changes or the full history) for secrets with the gitleaks ruleset
-  # embedded in gk. If .gitleaks.toml or .gitleaksignore
-  # exists, gk runs gitleaks instead, because the embedded ruleset does not
-  # read those files.
-  # Optional: brew install gitleaks  (gk doctor will confirm)
-  #
-  # secret_patterns:
-  #   enabled: true
-  #   mode: files      # files (tracked files) | staged | history
-  #   redact: true     # replace the matched value with REDACTED in output
-
-  # ── max_commit_size ────────────────────────────────────────────────────────
-  # Rejects commits whose diff exceeds a line or file count threshold.
-  # Helps keep PRs reviewable and avoids accidental large-file check-ins.
-  #
-  # max_commit_size:
-  #   enabled: true
-  #   max_lines: 1000
-  #   max_files: 50
-
-  # ── required_trailers ──────────────────────────────────────────────────────
-  # Enforces that every commit message contains specified git trailers
-  # (e.g., Signed-off-by, Change-Id, Jira-Ticket).
-  #
-  # required_trailers:
-  #   enabled: true
-  #   trailers:
-  #     - Signed-off-by
-  #     # - Jira-Ticket
-
-  # ── forbid_force_push_to ───────────────────────────────────────────────────
-  # Blocks force-pushes to the listed branches when used as a pre-push hook.
-  #
-  # forbid_force_push_to:
-  #   enabled: true
-  #   branches:
-  #     - main
-  #     - master
-  #     - develop
-
-  # ── require_signed ─────────────────────────────────────────────────────────
-  # Verifies that every commit in the push range carries a GPG/SSH signature.
-  #
-  # require_signed:
-  #   enabled: false
-
-
-# ── Allow-list ─────────────────────────────────────────────────────────────
-# To suppress a specific finding, add an entry to .gk/allow.yaml instead of
-# disabling the rule entirely. Each entry requires a justification and an
-# optional expiry date so suppressions self-audit over time.
+# gk guard always runs the built-in secret_patterns rule. Keys under policies:
+# in this file are not read yet; use scope flags on gk guard check instead
+# (--staged, --history).
 #
-# Example .gk/allow.yaml:
-#
-#   - rule: secret_patterns
-#     file: scripts/seed.sh
-#     line: 42
-#     reason: "Test credential — rotated monthly, never reaches prod"
-#     expires: 2026-12-31
+# To suppress one intentional finding, add a gitleaks:allow marker on the line:
+#   api_key = "example"  # gitleaks:allow
 `
 
 func runGuardInit(cmd *cobra.Command, _ []string) error {

@@ -3748,7 +3748,7 @@ gk config doctor
 
 ## gk guard
 
-Declarative repo policies. Rules live in `.gk.yaml` under the `policies:` block (v0.9 MVP ships the `secret_patterns` rule; more land incrementally).
+Declarative repo policies. `gk guard check` runs built-in rules (today: `secret_patterns`). A future release may read rule settings from `.gk.yaml`; today the `policies:` block in that file is not loaded.
 
 ### gk guard check
 
@@ -3773,7 +3773,7 @@ gk guard check [flags]
 
 Without a flag, the built-in scan reads the current content of every tracked file. Uncommitted edits are scanned. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
 
-The built-in scan also opens each zip archive (`.jar`, `.war`, `.ear`, `.zip`) in its scope and scans the files in it. A build often packs its configuration, such as `BOOT-INF/classes/application.yml`, into a jar. A finding in an archive has the path `<archive>!<file>` and the line in that file. With `--history`, the scan reads each archive blob one time and scans it at each path where it was committed. A renamed archive with new content is scanned too. The scan does not open an archive in an archive. An archive that is larger than 512 MiB or that is not a valid zip file is not scanned. A file in an archive is not scanned if it is larger than 64 MiB, if the files before it in the archive used up 1 GiB, or if it uses a compression method other than store or deflate. For each archive that the scan cannot read fully, the report has one `info` violation with the archive path. If Git LFS stores an archive, the history has only a pointer to it, and `--history` does not scan that archive. If gitleaks scans instead of the built-in scan, the archives are not opened.
+The built-in scan also opens each zip archive (`.jar`, `.war`, `.ear`, `.zip`) in its scope and scans the files in it. A build often packs its configuration, such as `BOOT-INF/classes/application.yml`, into a jar. A finding in an archive has the path `<archive>!<file>` and the line in that file. With `--history`, the scan reads each archive blob one time and scans it at each path where it was committed. A renamed archive with new content is scanned too. The scan does not open an archive in an archive. An archive that is larger than 512 MiB or that is not a valid zip file is not scanned and is reported as one `warn` violation with the archive path. A file in an archive is not scanned if it is larger than 64 MiB, if the files before it in the archive used up 1 GiB, or if it uses a compression method other than store or deflate. When only some files inside an archive could not be read, the report has one `info` violation. If Git LFS stores an archive, the history has only a pointer to it, and `--history` does not scan that archive. If gitleaks scans instead of the built-in scan, the archives are not opened.
 
 A rule can fail before it scans. Examples are a directory that is not a git repository, and a bare repository without `--history`. For each rule that fails, the report has one `error` violation with the rule ID `rule_error`. Thus the command does not print `no violations`, and it does not exit with code 0.
 
@@ -3815,11 +3815,11 @@ Each checked finding gets one status:
 
 The status annotates the finding. It does not remove the finding or change its severity. The human output adds a `verify:` line. `--json` adds a `verification` object with `provider`, `status`, `account`, `arn`, `identity`, and `code`. Slack results also have `account_name` (the workspace name), `url` (the workspace URL), and `identity_name` (the user name). For OCI, `account` is the tenancy OCID and `identity` is the user OCID. The scan adds one `info` violation that counts the credentials for each provider and status. If gitleaks scans instead of the built-in scan, gk does not verify, and it adds an `info` violation that tells you.
 
-#### Rules shipped in v0.9
+#### Built-in rules
 
 | Name | Severity | Behavior |
 |------|----------|----------|
-| `secret_patterns` | `error` | Scans with the gitleaks ruleset that is built into gk. The default scope is the tracked files. `--history` uses the same `git log` options as `gitleaks git` and covers all refs. The engine follows the gitleaks detection steps. It also scans the files in zip archives (see above). gk adds one rule that gitleaks does not have, `gk-service-password`. It finds a password whose key names a database or another service, for example `DB_PASS`, `MYSQL_ROOT_PASSWORD`, `REDIS_PASSWORD`, or `spring.datasource.password`. The value must be 6 to 64 characters long, but the rule has no entropy limit, because such passwords are often short. In a YAML file, the rule also reads a `password` key with the keys of its parents in front, so `password` under `spring:` and `datasource:` counts as `spring.datasource.password`. A patch shows only the changed lines, so in `--staged`, the push range, and `--history` the rule sees only the parents that the same hunk adds. It does not find a password whose key and parent keys name no service. The rule adds one `info` Violation that names the ruleset version. If the repo has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` or `GITLEAKS_CONFIG_TOML` is set, the rule runs `gitleaks` instead, because the built-in scan does not read these files: `gitleaks dir` for the default scope, `gitleaks git --staged` for `--staged`, and `gitleaks git` for `--history`. `gitleaks dir` also reads untracked files. If gitleaks is not installed in that case, the rule uses the built-in scan. `gk doctor` detects the binary. |
+| `secret_patterns` | `error` | Scans with the gitleaks ruleset that is built into gk. The default scope is the tracked files. `--history` uses the same `git log` options as `gitleaks git` and covers all refs. The engine follows the gitleaks detection steps. It also scans the files in zip archives (see above). gk adds one rule that gitleaks does not have, `gk-service-password`. It finds a password whose key names a database or another service, for example `DB_PASS`, `MYSQL_ROOT_PASSWORD`, `REDIS_PASSWORD`, or `spring.datasource.password`. The value must be 6 to 64 characters long, but the rule has no entropy limit, because such passwords are often short. In a YAML file, the rule also reads a `password` key with the keys of its parents in front, so `password` under `spring:` and `datasource:` counts as `spring.datasource.password`. A patch shows only the changed lines, so in `--staged` and `--history` the rule sees only the parents that the same hunk adds. It does not find a password whose key and parent keys name no service. To allow one intentional match, add a `gitleaks:allow` comment on the line (same as gitleaks). The rule adds one `info` Violation that names the ruleset version. If the repo has `.gitleaks.toml` or `.gitleaksignore`, or `GITLEAKS_CONFIG` or `GITLEAKS_CONFIG_TOML` is set, the rule runs `gitleaks` instead, because the built-in scan does not read these files: `gitleaks dir` for the default scope, `gitleaks git --staged` for `--staged`, and `gitleaks git` for `--history`. `gitleaks dir` also reads untracked files. If gitleaks is not installed in that case, the rule uses the built-in scan. `gk doctor` detects the binary. |
 
 #### Examples
 
@@ -3844,7 +3844,7 @@ gk guard check --verify
 
 ### gk guard init
 
-Scaffold `.gk.yaml` in the repository root with a fully-commented `policies:` block. Uncomment and tune rules you want to enforce, then run `gk guard check`.
+Scaffold `.gk.yaml` in the repository root with a short note on `gk guard check` and the `gitleaks:allow` inline suppression marker.
 
 #### Synopsis
 
@@ -3858,18 +3858,6 @@ gk guard init [flags]
 |------|---------|-------------|
 | `--force` | `false` | Overwrite existing `.gk.yaml` |
 | `--out` | `<repo>/.gk.yaml` | Write to a custom path instead |
-
-#### Rules scaffolded (all commented-out)
-
-| Name | Description |
-|------|-------------|
-| `secret_patterns` | Secret scan with the ruleset built into gk, or with gitleaks (tracked files, staged changes, or full history) |
-| `max_commit_size` | Reject commits above a line / file count threshold |
-| `required_trailers` | Enforce git trailers (Signed-off-by, Jira-Ticket, …) |
-| `forbid_force_push_to` | Block force-pushes to protected branches (pre-push hook) |
-| `require_signed` | Require GPG/SSH-signed commits |
-
-The generated file also includes an allow-list comment block pointing to `.gk/allow.yaml` for per-finding suppressions with justification and expiry.
 
 #### Examples
 

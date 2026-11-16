@@ -146,9 +146,10 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 
 func (r *SecretPatternsRule) builtinReady() bool { return r.ScanDiff != nil && r.ScanFile != nil }
 
-// gitleaksOptions maps the input scope onto a gitleaks invocation: the
-// working directory for the default scope, staged changes, a pushed range,
-// or the history of every ref.
+// gitleaksOptions maps the input scope onto a gitleaks invocation: staged
+// changes, full history, or the default dir scan of tracked files. Push-time
+// secret scanning for commits about to be published lives in cli.push
+// (scanCommitsToPush); runGuardCheck never wired a push range here.
 func (r *SecretPatternsRule) gitleaksOptions(in policy.Input) scan.GitleaksOptions {
 	opts := r.GitleaksOpts
 	if opts.WorkDir == "" {

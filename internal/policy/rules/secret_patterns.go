@@ -601,7 +601,9 @@ func (r *SecretPatternsRule) scanHistory(ctx context.Context, runner git.Runner,
 	g.SetLimit(workers)
 	for i, chunk := range chunks {
 		g.Go(func() error {
-			args := append([]string{"log", "-p", "-U0", "--no-color", "--no-walk=unsorted"}, chunk...)
+			// The commit of a finding comes from the "commit <sha>" header,
+			// so the format must not follow format.pretty or log.decorate.
+			args := append([]string{"log", "-p", "-U0", "--no-color", "--pretty=medium", "--no-decorate", "--no-walk=unsorted"}, chunk...)
 			found, err := r.scanPatch(gctx, runner, oci, i, batch, append(args, archivePatchExclude...))
 			if err != nil {
 				return err

@@ -120,29 +120,44 @@ func TestSecretPatternsRule_HistoryFindingsCarryCommitSHA(t *testing.T) {
 	repo.Commit("fix: edit seed")
 	repo.RunGit("rm", "leak.env")
 	repo.Commit("fix: remove secret")
+	repo.RunGit("tag", "v1", leakSHA)
 
-	r := NewSecretPatternsRule()
-	r.runGitleaks = gitleaksMissing
-	r.ScanDiff = gitleaksrules.ScanDiff
-	r.ScanFile = gitleaksrules.ScanFile
-	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var violations []policy.Violation
-	for _, x := range v {
-		if x.Severity == policy.SeverityError {
-			violations = append(violations, x)
-		}
-	}
-	if len(violations) != 1 {
-		t.Fatalf("want 1 error finding, got %d: %+v", len(violations), violations)
-	}
-	if violations[0].File != "leak.env" {
-		t.Fatalf("file = %q, want leak.env", violations[0].File)
-	}
-	if violations[0].Commit != leakSHA {
-		t.Fatalf("Commit = %q, want %q", violations[0].Commit, leakSHA)
+	// The user's git config shapes the commit header of `git log`: a
+	// decoration follows the SHA, and another pretty format drops the header.
+	for name, cfg := range map[string][2]string{
+		"default":  {},
+		"decorate": {"log.decorate", "short"},
+		"pretty":   {"format.pretty", "oneline"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if cfg[0] != "" {
+				repo.RunGit("config", cfg[0], cfg[1])
+				t.Cleanup(func() { repo.RunGit("config", "--unset", cfg[0]) })
+			}
+			r := NewSecretPatternsRule()
+			r.runGitleaks = gitleaksMissing
+			r.ScanDiff = gitleaksrules.ScanDiff
+			r.ScanFile = gitleaksrules.ScanFile
+			v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var violations []policy.Violation
+			for _, x := range v {
+				if x.Severity == policy.SeverityError {
+					violations = append(violations, x)
+				}
+			}
+			if len(violations) != 1 {
+				t.Fatalf("want 1 error finding, got %d: %+v", len(violations), violations)
+			}
+			if violations[0].File != "leak.env" {
+				t.Fatalf("file = %q, want leak.env", violations[0].File)
+			}
+			if violations[0].Commit != leakSHA {
+				t.Fatalf("Commit = %q, want %q", violations[0].Commit, leakSHA)
+			}
+		})
 	}
 }
 

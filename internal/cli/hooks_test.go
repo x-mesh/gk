@@ -310,3 +310,29 @@ func TestHooksCmd_InstallSingle(t *testing.T) {
 		t.Error("pre-push was installed but wasn't selected")
 	}
 }
+
+// TestKnownHooks_PushSecretScanNotGuardCheck encodes where push-time secrets are
+// scanned: pre-push runs preflight only; gk push uses scanCommitsToPush.
+func TestKnownHooks_PushSecretScanNotGuardCheck(t *testing.T) {
+	var prePush, preCommit bool
+	for _, h := range knownHooks() {
+		switch h.Name {
+		case "pre-push":
+			prePush = true
+			if !strings.Contains(h.Script, "gk preflight") || strings.Contains(h.Script, "guard") {
+				t.Fatalf("pre-push script = %q, want gk preflight without guard", h.Script)
+			}
+		case "pre-commit":
+			preCommit = true
+			if h.Script != `exec gk guard check --staged` {
+				t.Fatalf("pre-commit script = %q", h.Script)
+			}
+		}
+	}
+	if !prePush {
+		t.Fatal("knownHooks() missing pre-push entry")
+	}
+	if !preCommit {
+		t.Fatal("knownHooks() missing pre-commit entry")
+	}
+}

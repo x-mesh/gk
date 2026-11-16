@@ -23,8 +23,8 @@ func TestGenerateConfig_Default(t *testing.T) {
 	if !strings.Contains(got, "branch-check") {
 		t.Error("expected default preflight step branch-check")
 	}
-	if !strings.Contains(got, "# policies:") {
-		t.Error("expected commented-out policies block")
+	if !strings.Contains(got, "gitleaks:allow") {
+		t.Error("expected guard note with gitleaks:allow")
 	}
 }
 
@@ -81,15 +81,15 @@ func TestGenerateConfig_NoPersonalFields(t *testing.T) {
 	}
 }
 
-func TestGenerateConfig_HasPoliciesComment(t *testing.T) {
+func TestGenerateConfig_HasGuardNote(t *testing.T) {
 	result := &AnalysisResult{}
 	got := GenerateConfig(result)
 
-	if !strings.Contains(got, "# policies:") {
-		t.Error("expected commented-out policies block")
+	if !strings.Contains(got, "gitleaks:allow") {
+		t.Error("expected gitleaks:allow in guard note")
 	}
-	if !strings.Contains(got, "#   secret_patterns:") {
-		t.Error("expected secret_patterns in policies comment")
+	if strings.Contains(got, "policies:") || strings.Contains(got, "mode: git") {
+		t.Errorf("misleading policies stub in generated config:\n%s", got)
 	}
 }
 

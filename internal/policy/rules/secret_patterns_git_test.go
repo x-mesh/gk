@@ -24,7 +24,6 @@ import (
 // names the top.
 func TestSecretPatternsRule_PatchesLeaveOutArchives(t *testing.T) {
 	repo := testutil.NewRepo(t)
-	base := strings.TrimSpace(repo.RunGit("rev-parse", "HEAD"))
 	writeArchives := func(n string) {
 		for _, p := range []string{"lib/app.jar", "UPPER.JAR", "web/site.war", "a.ear", "dist/b.zip"} {
 			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo.Dir, p)), 0o755); err != nil {
@@ -45,7 +44,6 @@ func TestSecretPatternsRule_PatchesLeaveOutArchives(t *testing.T) {
 	for name, in := range map[string]policy.Input{
 		"history": {History: true},
 		"staged":  {Staged: true},
-		"push":    {PushRange: base + "..HEAD"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := builtinRule()

@@ -13,7 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `gk guard init` and `gk init` no longer scaffold a `policies:` block or `.gk/allow.yaml` examples; config loading does not read those keys yet. The template documents `gitleaks:allow` for intentional findings. Secret finding hints point at the same marker instead of a non-existent allow list.
+- An archive that the built-in `secret_patterns` scan does not open, because it is over 512 MiB or is not a valid zip, is a `warn` violation in the default scope and `--staged`, and an `info` violation in `--history`, so a corrupt jar deep in the history does not fail every check. An archive with only some files unread stays `info`.
 - `gk guard check --history` now reports the introducing commit on each finding in human output (short SHA) and in JSON (`commit`), for both the built-in scanner and gitleaks.
+
+### Removed
+
+- Dead `policy.Default` registry, unused `Input.PushRange` handling in `secret_patterns` (never set outside tests on develop; push still scans unpushed commits via `scanCommitsToPush` in `gk push`), and v0.9 MVP wording in guard help and docs.
 
 ## [0.162.0] - 2026-11-16
 

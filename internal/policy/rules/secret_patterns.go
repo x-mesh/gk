@@ -1,5 +1,4 @@
 // Package rules holds the built-in gk guard policy rule implementations.
-// Each file in this package contributes exactly one Rule to policy.Default.
 package rules
 
 import (
@@ -25,6 +24,8 @@ import (
 	"github.com/x-mesh/gk/internal/scan"
 	"github.com/x-mesh/gk/internal/secrets"
 )
+
+const secretFindingHint = "rotate the secret; add a gitleaks:allow comment on the line only if it was intentional"
 
 // SecretPatternsRule scans with the gitleaks ruleset embedded in gk and adds
 // an informational Violation naming the scanner. The embedded engine follows
@@ -65,6 +66,9 @@ type SecretPatternsRule struct {
 	archiveLimit *archiveLimit
 	// patchBatch overrides patchBatchBytes in tests.
 	patchBatch int
+	// unscanArchiveSev is set at the start of evaluateBuiltin for archive
+	// notices that could not be read fully.
+	unscanArchiveSev policy.Severity
 }
 
 // ociProfileSink collects the OCI profiles in the text a scan reads. A nil
@@ -145,9 +149,10 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 
 func (r *SecretPatternsRule) builtinReady() bool { return r.ScanDiff != nil && r.ScanFile != nil }
 
-// gitleaksOptions maps the input scope onto a gitleaks invocation: the
-// working directory for the default scope, staged changes, a pushed range,
-// or the history of every ref.
+// gitleaksOptions maps the input scope onto a gitleaks invocation: staged
+// changes, full history, or the default dir scan of tracked files. Push-time
+// secret scanning for commits about to be published lives in cli.push
+// (scanCommitsToPush); runGuardCheck never wired a push range here.
 func (r *SecretPatternsRule) gitleaksOptions(in policy.Input) scan.GitleaksOptions {
 	opts := r.GitleaksOpts
 	if opts.WorkDir == "" {
@@ -157,8 +162,6 @@ func (r *SecretPatternsRule) gitleaksOptions(in policy.Input) scan.GitleaksOptio
 	switch {
 	case in.Staged:
 		opts.Mode, scope = "git", []string{"--staged"}
-	case in.PushRange != "":
-		opts.Mode, scope = "git", []string{"--log-opts=" + in.PushRange}
 	case in.History:
 		opts.Mode = "git"
 	default:
@@ -173,8 +176,6 @@ func scopeLabel(in policy.Input) string {
 	switch {
 	case in.Staged:
 		return "staged changes"
-	case in.PushRange != "":
-		return "push range " + in.PushRange
 	case in.History:
 		return "the history of every ref"
 	default:
@@ -182,10 +183,18 @@ func scopeLabel(in policy.Input) string {
 	}
 }
 
+func archiveUnscannedSeverity(in policy.Input) policy.Severity {
+	if in.History {
+		return policy.SeverityInfo
+	}
+	return policy.SeverityWarn
+}
+
 // evaluateBuiltin scans with the built-in patterns. Scope follows the input:
-// staged changes, the pushed range, the history of every ref, or by default
-// the current content of the tracked files.
+// staged changes, the history of every ref, or by default the current content
+// of the tracked files.
 func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Input, notice policy.Violation) ([]policy.Violation, error) {
+	r.unscanArchiveSev = archiveUnscannedSeverity(in)
 	if in.Runner == nil || !r.builtinReady() {
 		return []policy.Violation{{
 			RuleID:   r.Name(),
@@ -220,10 +229,6 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
 			append([]string{"diff", "--cached", "--no-color"}, archivePatchExclude...),
 			[]string{"diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames"})
-	case in.PushRange != "":
-		findings, archives, err = r.scanDiff(ctx, in.Runner, oci, readers,
-			append([]string{"diff", "--no-color", in.PushRange}, archivePatchExclude...),
-			[]string{"diff", "--raw", "-z", "--no-abbrev", "--no-renames", in.PushRange})
 	case in.History:
 		findings, archives, err = r.scanHistory(ctx, in.Runner, oci, readers)
 	default:
@@ -262,7 +267,7 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Line:     f.FileLine,
 			Commit:   f.Commit,
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
-			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
+			Hint:     secretFindingHint,
 		}
 		if c := f.Credential; c != nil && c.Verifiable() && verified != nil {
 			if res, ok := verified[c.ID()]; ok {
@@ -994,12 +999,12 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 		oci.scan(slot, content)
 	})
 	if err != nil {
-		return archiveResult{notice: r.archiveNotice(name, "archive not scanned: "+err.Error(),
+		return archiveResult{notice: r.archiveUnscannedNotice(name, "archive not scanned: "+err.Error(),
 			"the files in it were not checked for secrets")}
 	}
 	res.opened = true
 	if unread > 0 {
-		res.notice = r.archiveNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
+		res.notice = r.archiveInfoNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
 			fmt.Sprintf("a file larger than %d MiB once decompressed, a file past the first %d MiB that the archive decompresses to, a file compressed with a method other than store or deflate, or a corrupt file is not checked for secrets", mib(limit.EntryBytes), mib(limit.TotalBytes)))
 	}
 	return res
@@ -1008,13 +1013,21 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 // tooLarge returns the notice for an archive over the size limit, or nil.
 func (r *SecretPatternsRule) tooLarge(name string, size int64) *policy.Violation {
 	if limit := r.limit().bytes; size > limit {
-		return r.archiveNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
+		return r.archiveUnscannedNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
 			"the files in it were not checked for secrets")
 	}
 	return nil
 }
 
-func (r *SecretPatternsRule) archiveNotice(name, msg, hint string) *policy.Violation {
+func (r *SecretPatternsRule) archiveUnscannedNotice(name, msg, hint string) *policy.Violation {
+	sev := r.unscanArchiveSev
+	if sev == 0 {
+		sev = policy.SeverityInfo
+	}
+	return &policy.Violation{RuleID: r.Name(), Severity: sev, File: name, Message: msg, Hint: hint}
+}
+
+func (r *SecretPatternsRule) archiveInfoNotice(name, msg, hint string) *policy.Violation {
 	return &policy.Violation{RuleID: r.Name(), Severity: policy.SeverityInfo, File: name, Message: msg, Hint: hint}
 }
 
@@ -1063,7 +1076,7 @@ func convertFindings(findings []scan.GitleaksFinding) []policy.Violation {
 			Line:     f.StartLine,
 			Commit:   f.Commit,
 			Message:  fmt.Sprintf("%s (%s)", msg, f.RuleID),
-			Hint:     "rotate the secret and add a justified allowlist entry if it was intentional",
+			Hint:     secretFindingHint,
 		})
 	}
 	return out

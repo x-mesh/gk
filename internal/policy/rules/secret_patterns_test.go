@@ -176,21 +176,6 @@ func TestSecretPatternsRule_NoGitleaks_StagedScansCachedDiff(t *testing.T) {
 	}
 }
 
-func TestSecretPatternsRule_NoGitleaks_PushRangeScansRangeDiff(t *testing.T) {
-	run := &stubRunner{out: map[string]string{patch("diff --no-color origin/main..HEAD"): "DIFF"}}
-	r := builtinRule(secrets.Finding{Kind: "github-token", File: "x.go", FileLine: 9})
-	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, PushRange: "origin/main..HEAD"})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if _, errs := severities(v); errs != 1 {
-		t.Fatalf("errs=%d, want 1", errs)
-	}
-	if want := patch("diff --no-color origin/main..HEAD") + ",diff --raw -z --no-abbrev --no-renames origin/main..HEAD"; strings.Join(run.calls, ",") != want {
-		t.Errorf("calls = %v", run.calls)
-	}
-}
-
 // The history scan diffs every commit reachable from any ref with -U0, as
 // gitleaks' git mode does, so both scanners see the same hunks.
 func TestSecretPatternsRule_NoGitleaks_DefaultScansHistory(t *testing.T) {
@@ -556,7 +541,6 @@ func TestSecretPatternsRule_GitleaksModeFollowsScope(t *testing.T) {
 	}{
 		{"default", policy.Input{}, "dir", "--x"},
 		{"staged", policy.Input{Staged: true}, "git", "--staged --x"},
-		{"push", policy.Input{PushRange: "a..b"}, "git", "--log-opts=a..b --x"},
 		{"history", policy.Input{History: true}, "git", "--x"},
 	}
 	for _, c := range cases {
@@ -815,9 +799,7 @@ func TestSecretPatternsRule_OCIProfilesAreCollectedOnlyForVerify(t *testing.T) {
 		{"staged without verify", policy.Input{Staged: true}, nil},
 		{"tracked files without verify", policy.Input{}, nil},
 		{"history without verify", policy.Input{History: true}, nil},
-		{"push range without verify", policy.Input{PushRange: "main..feat"}, nil},
 		{"staged", policy.Input{Staged: true, Verify: true}, []string{"staged diff"}},
-		{"push range", policy.Input{PushRange: "main..feat", Verify: true}, []string{"range diff"}},
 		{"tracked files", policy.Input{Verify: true}, []string{"a.txt\n", "b.txt\n"}},
 		{"history", policy.Input{History: true, Verify: true}, []string{"history diff"}},
 	}
@@ -1036,8 +1018,8 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 }
 
 // An archive the scan could not open, or opened only in part, is reported
-// with an informational notice instead of reading as clean, and it does not
-// fail the check: a blob deep in the history stays there.
+// instead of reading as clean. In --history unscanned archives stay info so
+// the check does not fail on a blob deep in the history.
 func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	partly := makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200))
 	run := &stubRunner{out: map[string]string{
@@ -1167,8 +1149,7 @@ func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
 		in  policy.Input
 		cmd string
 	}{
-		"staged":     {policy.Input{Staged: true}, "diff --cached --raw -z --no-abbrev --no-renames"},
-		"push range": {policy.Input{PushRange: "main..feat"}, "diff --raw -z --no-abbrev --no-renames main..feat"},
+		"staged": {policy.Input{Staged: true}, "diff --cached --raw -z --no-abbrev --no-renames"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1187,6 +1168,30 @@ func TestSecretPatternsRule_DiffScopesScanArchives(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSecretPatternsRule_ArchiveUnscannedIsWarnOutsideHistory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes.zip"), []byte("not a zip\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "notes.zip\x00",
+	}}
+	v, err := builtinRule().Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range v {
+		if x.File == "notes.zip" && strings.HasPrefix(x.Message, "archive not scanned") {
+			if x.Severity != policy.SeverityWarn {
+				t.Fatalf("severity = %v, want warn", x.Severity)
+			}
+			return
+		}
+	}
+	t.Fatal("want unscanned archive notice")
 }
 
 func TestSecretPatternsRule_TrackedArchiveIsOpened(t *testing.T) {
@@ -1374,5 +1379,12 @@ func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
 	}
 	if run.reads[blobID(2)] != 0 {
 		t.Errorf("reads = %v, want the first reader stopped before blob 2", run.reads)
+	}
+}
+
+func TestConvertFindings_SecretHintMentionsGitleaksAllow(t *testing.T) {
+	v := convertFindings([]scan.GitleaksFinding{{RuleID: "generic-api-key", File: "f", StartLine: 1, Description: "found"}})
+	if len(v) != 1 || v[0].Hint != secretFindingHint || !strings.Contains(v[0].Hint, "gitleaks:allow") {
+		t.Errorf("hint = %q, want %q", v[0].Hint, secretFindingHint)
 	}
 }

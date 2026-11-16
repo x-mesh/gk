@@ -136,3 +136,57 @@ func TestGuardInit_ForceKeepsAnExistingBackup(t *testing.T) {
 		t.Errorf(".gk.yaml = %q, want it unchanged", got)
 	}
 }
+
+// --force replaces .gk.yaml with a renamed file instead of truncating it in
+// place, so a failed write cannot leave the config half written. A hard link
+// to the old file shows the difference: it keeps the old content.
+func TestGuardInit_ForceReplacesConfigAtomically(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	cfg := filepath.Join(repo.Dir, ".gk.yaml")
+	const prior = "ai: {}\n"
+	if err := os.WriteFile(cfg, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "old.yaml")
+	if err := os.Link(cfg, link); err != nil {
+		t.Skipf("hard link: %v", err)
+	}
+	if _, err := runGuardInitCmd(t, repo.Dir, repo.Dir, "--force"); err != nil {
+		t.Fatalf("guard init --force: %v", err)
+	}
+	if got, _ := os.ReadFile(link); string(got) != prior {
+		t.Errorf("old file = %q, want %q: .gk.yaml was rewritten in place", got, prior)
+	}
+	if got, _ := os.ReadFile(cfg); string(got) != gkYAMLTemplate {
+		t.Errorf(".gk.yaml = %q, want the scaffold", got)
+	}
+	if fi, err := os.Stat(cfg); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf(".gk.yaml mode = %v, %v; want 0600 kept", fi.Mode().Perm(), err)
+	}
+	if tmp, _ := filepath.Glob(filepath.Join(repo.Dir, "..gk.yaml.tmp-*")); len(tmp) != 0 {
+		t.Errorf("temp files left: %v", tmp)
+	}
+}
+
+// A symlinked .gk.yaml keeps the link: --force writes the scaffold to the
+// target, as it did before the write became a rename.
+func TestGuardInit_ForceFollowsSymlinkedConfig(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	target := filepath.Join(t.TempDir(), "shared.yaml")
+	if err := os.WriteFile(target, []byte("ai: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(repo.Dir, ".gk.yaml")
+	if err := os.Symlink(target, cfg); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if _, err := runGuardInitCmd(t, repo.Dir, repo.Dir, "--force"); err != nil {
+		t.Fatalf("guard init --force: %v", err)
+	}
+	if fi, err := os.Lstat(cfg); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf(".gk.yaml is no longer a symlink: %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != gkYAMLTemplate {
+		t.Errorf("target = %q, want the scaffold", got)
+	}
+}

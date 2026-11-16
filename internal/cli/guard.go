@@ -487,7 +487,11 @@ func runGuardInit(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "backed up existing config to %s\n", bak)
 	}
 
-	if err := os.WriteFile(outPath, []byte(gkYAMLTemplate), 0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if statErr == nil {
+		perm = existing.Mode().Perm()
+	}
+	if err := replaceFile(outPath, []byte(gkYAMLTemplate), perm); err != nil {
 		return fmt.Errorf("guard init: write %s: %w", outPath, err)
 	}
 
@@ -509,6 +513,33 @@ func guardInitRepoRoot(repoFlag string) (string, error) {
 		return "", fmt.Errorf("guard init: cannot determine working directory: %w", err)
 	}
 	return wd, nil
+}
+
+// replaceFile writes data to a temp file next to path and renames it over
+// path, so a failed write leaves the old file whole. A symlink at path is
+// followed, as os.WriteFile follows it.
+func replaceFile(path string, data []byte, perm os.FileMode) error {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // writeNewFile fails instead of replacing a file that exists, so a second

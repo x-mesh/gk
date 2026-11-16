@@ -3856,7 +3856,7 @@ gk guard init [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--force` | `false` | Overwrite existing `.gk.yaml`. gk first copies the old file to `.gk.yaml.bak.<unix time>`. |
+| `--force` | `false` | Overwrite the existing file. gk first copies the old file to `<file>.bak.<unix time>`, for example `.gk.yaml.bak.<unix time>` or, with `--out config/team.yaml`, `config/team.yaml.bak.<unix time>`. If the write fails, the old file stays unchanged. |
 | `--out` | `<repo>/.gk.yaml` | Write to a custom path instead |
 
 #### Examples

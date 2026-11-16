@@ -1211,6 +1211,42 @@ func TestSecretPatternsRule_ArchiveUnscannedIsWarnOutsideHistory(t *testing.T) {
 	}
 }
 
+// --staged is the scope of the pre-commit hook. An archive the scan could not
+// open is a warn there too, so a commit that adds one stops at the hook. An
+// archive read only in part stays info.
+func TestSecretPatternsRule_StagedArchiveUnscannedIsWarn(t *testing.T) {
+	run := &stubRunner{out: map[string]string{
+		"diff --cached --raw -z --no-abbrev --no-renames": rawEntry("A", "100644", blobID(1), "huge.war") +
+			rawEntry("A", "100644", blobID(2), "notes.zip") +
+			rawEntry("A", "100644", blobID(3), "app.jar"),
+	}}
+	archiveStub(run, map[string]string{
+		blobID(1): strings.Repeat("x", 3<<20),
+		blobID(2): "not a zip\x00",
+		blobID(3): makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200)),
+	})
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 1 << 20}}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]policy.Severity{}
+	for _, x := range v {
+		if strings.HasPrefix(x.Message, "archive ") {
+			got[x.File] = x.Severity
+		}
+	}
+	want := map[string]policy.Severity{
+		"huge.war":  policy.SeverityWarn,
+		"notes.zip": policy.SeverityWarn,
+		"app.jar":   policy.SeverityInfo,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("archive notices = %v, want %v", got, want)
+	}
+}
+
 // The rule keeps no state of one evaluation: one instance evaluated for the
 // history and for the tracked files at the same time reports each scope with
 // its own severity.

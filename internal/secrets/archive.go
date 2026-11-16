@@ -16,13 +16,13 @@ import (
 // entries the same way, so a path allowlist written for it matches here too.
 const ArchiveSeparator = "!"
 
-// binarySniff is how far git looks for a NUL byte to call a file binary.
-const binarySniff = 8000
+// BinarySniff is how far git looks for a NUL byte to call a file binary.
+const BinarySniff = 8000
 
 // LooksBinary reports whether data is binary by the test git uses: a NUL
 // byte in the first 8000 bytes.
 func LooksBinary(data []byte) bool {
-	return bytes.IndexByte(data[:min(len(data), binarySniff)], 0) >= 0
+	return bytes.IndexByte(data[:min(len(data), BinarySniff)], 0) >= 0
 }
 
 // IsZipArchive reports whether path names an archive in the zip format that
@@ -108,7 +108,7 @@ func readZipFile(f *zip.File, maxBytes int64) (string, int64, bool) {
 		return "", 0, false
 	}
 	defer rc.Close()
-	head := make([]byte, binarySniff)
+	head := make([]byte, BinarySniff)
 	n, err := io.ReadFull(rc, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", int64(n), false

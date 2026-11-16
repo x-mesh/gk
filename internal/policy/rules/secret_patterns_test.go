@@ -436,6 +436,7 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 			Description: "AWS Access Key",
 			File:        "config/secrets.yml",
 			StartLine:   5,
+			Commit:      "abc123deadbeef",
 		},
 		{
 			RuleID:      "generic-api-key",
@@ -459,6 +460,9 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 	}
 	if first.File != "config/secrets.yml" || first.Line != 5 {
 		t.Errorf("file/line = %q:%d, want config/secrets.yml:5", first.File, first.Line)
+	}
+	if first.Commit != "abc123deadbeef" {
+		t.Errorf("Commit = %q, want abc123deadbeef", first.Commit)
 	}
 	if !strings.Contains(first.Message, "AWS Access Key") ||
 		!strings.Contains(first.Message, "aws-access-key-id") {

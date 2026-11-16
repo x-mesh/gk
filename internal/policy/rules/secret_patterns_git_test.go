@@ -100,12 +100,49 @@ func TestSecretPatternsRule_PatchBatchesGiveTheSameFindings(t *testing.T) {
 	}
 	whole, batched := scan(1<<30), scan(1)
 	if !slices.EqualFunc(whole, batched, func(a, b policy.Violation) bool {
-		return a.File == b.File && a.Line == b.Line && a.Message == b.Message
+		return a.File == b.File && a.Line == b.Line && a.Commit == b.Commit && a.Message == b.Message
 	}) {
 		t.Errorf("batched findings differ:\nwhole   %v\nbatched %v", whole, batched)
 	}
 	if n := len(whole) - 1; n != 5 {
 		t.Errorf("%d findings, want 5: %v", n, whole)
+	}
+}
+
+func TestSecretPatternsRule_HistoryFindingsCarryCommitSHA(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	pat := "ghp_" + "wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx"
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	repo.WriteFile("leak.env", "token = \""+pat+"\"\n")
+	leakSHA := repo.Commit("add secret")
+	repo.WriteFile("seed.txt", "seed\nmore\n")
+	repo.Commit("fix: edit seed")
+	repo.RunGit("rm", "leak.env")
+	repo.Commit("fix: remove secret")
+
+	r := NewSecretPatternsRule()
+	r.runGitleaks = gitleaksMissing
+	r.ScanDiff = gitleaksrules.ScanDiff
+	r.ScanFile = gitleaksrules.ScanFile
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: &git.ExecRunner{Dir: repo.Dir}, History: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var violations []policy.Violation
+	for _, x := range v {
+		if x.Severity == policy.SeverityError {
+			violations = append(violations, x)
+		}
+	}
+	if len(violations) != 1 {
+		t.Fatalf("want 1 error finding, got %d: %+v", len(violations), violations)
+	}
+	if violations[0].File != "leak.env" {
+		t.Fatalf("file = %q, want leak.env", violations[0].File)
+	}
+	if violations[0].Commit != leakSHA {
+		t.Fatalf("Commit = %q, want %q", violations[0].Commit, leakSHA)
 	}
 }
 

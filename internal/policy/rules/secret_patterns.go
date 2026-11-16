@@ -473,6 +473,96 @@ func scanCommand(ctx context.Context, runner git.Runner, args ...string) (string
 	return string(stdout), nil
 }
 
+// trackedWorktreeFile is one tracked path on disk. Size comes from Lstat
+// before any read so an oversized file is never loaded whole.
+type trackedWorktreeFile struct {
+	rel  string
+	full string
+	size int64
+}
+
+// sniff reads the first BinarySniff bytes, enough for secrets.LooksBinary.
+func (f trackedWorktreeFile) sniff() ([]byte, error) {
+	file, err := os.Open(f.full)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	buf := make([]byte, secrets.BinarySniff)
+	n, err := io.ReadFull(file, buf)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return buf[:n], nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// readAll reads the whole file when the caller already knows that is safe.
+func (f trackedWorktreeFile) readAll() ([]byte, error) {
+	if f.size <= secrets.BinarySniff {
+		return f.sniff()
+	}
+	return os.ReadFile(f.full)
+}
+
+// scan reads or skips one tracked file and scans what it read.
+func (r *SecretPatternsRule) scanWorktreeFile(f trackedWorktreeFile, oci *ociProfileSink, slot int) ([]secrets.Finding, archiveResult, error) {
+	if secrets.IsZipArchive(f.rel) {
+		if n := r.tooLarge(f.rel, f.size); n != nil {
+			return nil, archiveResult{notice: n}, nil
+		}
+		data, err := f.readAll()
+		if err != nil {
+			return nil, archiveResult{}, fmt.Errorf("secret_patterns: read %s: %w", f.rel, err)
+		}
+		findings, arch := r.scanTrackedArchive(f.rel, data, oci, slot)
+		return findings, arch, nil
+	}
+	prefix, err := f.sniff()
+	if err != nil {
+		return nil, archiveResult{}, fmt.Errorf("secret_patterns: read %s: %w", f.rel, err)
+	}
+	if secrets.LooksBinary(prefix) {
+		oci.scan(slot, "")
+		return r.ScanFile(f.rel, ""), archiveResult{}, nil
+	}
+	if r.limit().bytes < f.size {
+		oci.scan(slot, "")
+		return r.ScanFile(f.rel, ""), archiveResult{}, nil
+	}
+	var data []byte
+	if int64(len(prefix)) >= f.size {
+		data = prefix
+	} else {
+		data, err = f.readAll()
+		if err != nil {
+			return nil, archiveResult{}, fmt.Errorf("secret_patterns: read %s: %w", f.rel, err)
+		}
+	}
+	content := string(data)
+	oci.scan(slot, content)
+	return r.ScanFile(f.rel, content), archiveResult{}, nil
+}
+
+// scanTrackedArchive scans a zip archive or plain text at an archive path.
+func (r *SecretPatternsRule) scanTrackedArchive(rel string, data []byte, oci *ociProfileSink, slot int) ([]secrets.Finding, archiveResult) {
+	content := string(data)
+	if secrets.LooksBinary(data) {
+		content = ""
+	}
+	if !secrets.LooksBinary(data) && !secrets.OpensAsZip(data) {
+		oci.scan(slot, content)
+		return r.ScanFile(rel, content), archiveResult{}
+	}
+	findings := r.ScanFile(rel, content)
+	oci.scan(slot, content)
+	arch := r.scanArchive(rel, data, oci, slot)
+	findings = append(findings, arch.findings...)
+	return findings, arch
+}
+
 // scanTrackedFiles scans the working-tree content of every tracked file, so
 // uncommitted edits count and ignored files do not. Files are read and
 // scanned in parallel; findings keep `git ls-files` order. A binary file is
@@ -517,20 +607,12 @@ func (r *SecretPatternsRule) scanTrackedFiles(ctx context.Context, runner git.Ru
 				// Symlinks and submodule directories have no content of their own.
 				return nil
 			}
-			data, err := os.ReadFile(full)
+			findings, arch, err := r.scanWorktreeFile(trackedWorktreeFile{rel: p, full: full, size: info.Size()}, oci, i)
 			if err != nil {
-				return fmt.Errorf("secret_patterns: read %s: %w", p, err)
+				return err
 			}
-			content := string(data)
-			if secrets.LooksBinary(data) {
-				content = ""
-			}
-			results[i] = r.ScanFile(p, content)
-			oci.scan(i, content)
-			if secrets.IsZipArchive(p) {
-				archives[i] = r.scanArchive(p, data, oci, i)
-				results[i] = append(results[i], archives[i].findings...)
-			}
+			results[i] = findings
+			archives[i] = arch
 			return nil
 		})
 	}

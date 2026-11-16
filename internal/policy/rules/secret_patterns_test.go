@@ -530,6 +530,91 @@ func TestSecretPatternsRule_DefaultScansTrackedFiles(t *testing.T) {
 	}
 }
 
+// An archive over the size limit is noticed from Lstat alone and is not opened.
+func TestSecretPatternsRule_OversizedTrackedArchiveNotRead(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "huge.war")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 3 << 20
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "huge.war\x00",
+	}}
+	var opened bool
+	r := builtinRule()
+	r.archiveLimit = &archiveLimit{bytes: 1 << 20, zip: secrets.ZipLimits{Entries: 10, EntryBytes: 100, TotalBytes: 1 << 20}}
+	r.ScanFile = func(path, content string) []secrets.Finding {
+		if content != "" {
+			opened = true
+		}
+		return nil
+	}
+	v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if opened {
+		t.Fatal("an archive over the limit must not be read")
+	}
+	var notices []string
+	for _, x := range v[1:] {
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
+		}
+	}
+	want := "huge.war: archive not scanned: 3 MiB, more than the limit of 1 MiB"
+	if len(notices) != 1 || notices[0] != want {
+		t.Fatalf("notices = %q, want %q", notices, want)
+	}
+}
+
+// Binary detection uses only the first secrets.BinarySniff bytes, so a large
+// file with a leading NUL is not read whole.
+func TestSecretPatternsRule_TrackedBinarySniffPrefix(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "bin.dat")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0, 's', 'e', 'c', 'r', 'e', 't'}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(strings.Repeat("x", secrets.BinarySniff+1000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run := &stubRunner{out: map[string]string{
+		"rev-parse --show-toplevel":     root + "\n",
+		"ls-files -z --full-name -- :/": "bin.dat\x00",
+	}}
+	var readBytes int64
+	r := builtinRule()
+	r.ScanFile = func(path, content string) []secrets.Finding {
+		if content != "" {
+			readBytes = int64(len(content))
+		}
+		return nil
+	}
+	if _, err := r.Evaluate(context.Background(), policy.Input{Runner: run, WorkDir: t.TempDir()}); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if readBytes != 0 {
+		t.Errorf("binary file read %d content bytes, want 0", readBytes)
+	}
+}
+
 func TestSecretPatternsRule_GitleaksModeFollowsScope(t *testing.T) {
 	cases := []struct {
 		name string

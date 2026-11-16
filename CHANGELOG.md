@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gk guard check` no longer reads every tracked file whole before it checks the size limit. It uses the file size from `Lstat`, notices an archive over the 512 MiB limit without opening it, sniffs the first 8000 bytes for a binary file like git, and reads a text file only when it is under the limit. Before, many cores could each hold up to twice the size of a large tracked file in memory at once.
+
 ## [0.162.0] - 2026-11-16
 
 ### Changed

@@ -228,7 +228,7 @@ gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 | Command | Description |
 |---|---|
 | `gk guard check` | Evaluate all policy rules in parallel; human or `--json` output; exit 0 clean / 1 warn / 2 error. Scans the tracked files by default; `--staged` scans the staged changes, `--history` every commit reachable from any ref, `--fetch` fetches every remote first and implies `--history` |
-| `gk guard init` | Scaffold `.gk.yaml` with a fully-commented `policies:` block; `--force` to overwrite, `--out` for custom path |
+| `gk guard init` | Scaffold `.gk.yaml` with notes on `gk guard check` and `gitleaks:allow`. `--force` overwrites the file after a backup. `--out` sets a custom path. |
 
 ### Recovery
 | Command | Alias | Description |

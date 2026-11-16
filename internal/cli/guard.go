@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/git"
 	"github.com/x-mesh/gk/internal/policy"
 	"github.com/x-mesh/gk/internal/policy/rules"
@@ -102,10 +104,11 @@ removes it or changes its severity.
 on gk guard and how to suppress an intentional secret finding (gitleaks:allow).
 
 Exits non-zero when .gk.yaml already exists; pass --force to overwrite.
+--force first copies the old file to .gk.yaml.bak.<unix time>.
 `,
 		RunE: runGuardInit,
 	}
-	initCmd.Flags().Bool("force", false, "overwrite existing .gk.yaml")
+	initCmd.Flags().Bool("force", false, "overwrite existing .gk.yaml after a backup to .gk.yaml.bak.<unix time>")
 	initCmd.Flags().String("out", "", "write to this path instead of <repo>/.gk.yaml")
 
 	guardCmd.AddCommand(checkCmd)
@@ -456,21 +459,32 @@ func runGuardInit(cmd *cobra.Command, _ []string) error {
 	force, _ := cmd.Flags().GetBool("force")
 
 	if outPath == "" {
-		repo := RepoFlag()
-		if repo == "" {
-			var err error
-			repo, err = os.Getwd()
-			if err != nil {
-				return fmt.Errorf("guard init: cannot determine working directory: %w", err)
-			}
+		repo, err := guardInitRepoRoot(RepoFlag())
+		if err != nil {
+			return err
 		}
 		outPath = filepath.Join(repo, ".gk.yaml")
 	}
 
-	if _, err := os.Stat(outPath); err == nil && !force {
+	existing, statErr := os.Stat(outPath)
+	if statErr == nil && !force {
 		return fmt.Errorf("%s already exists (use --force to overwrite)", outPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("guard init: stat %s: %w", outPath, err)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("guard init: stat %s: %w", outPath, statErr)
+	}
+
+	// .gk.yaml is the shared project config, so --force keeps the old file:
+	// the scaffold has no keys to merge it into.
+	if statErr == nil {
+		prev, err := os.ReadFile(outPath)
+		if err != nil {
+			return fmt.Errorf("guard init: read %s: %w", outPath, err)
+		}
+		bak := fmt.Sprintf("%s.bak.%d", outPath, time.Now().Unix())
+		if err := writeNewFile(bak, prev, existing.Mode()); err != nil {
+			return fmt.Errorf("guard init: backup %s: %w", bak, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "backed up existing config to %s\n", bak)
 	}
 
 	if err := os.WriteFile(outPath, []byte(gkYAMLTemplate), 0o644); err != nil {
@@ -478,6 +492,35 @@ func runGuardInit(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "created %s\n", outPath)
-	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine("next: uncomment rules, then run `gk guard check`"))
+	fmt.Fprintln(cmd.OutOrStdout(), stylizeHintLine("next: run `gk guard check`"))
 	return nil
+}
+
+func guardInitRepoRoot(repoFlag string) (string, error) {
+	search := repoFlag
+	if root, _ := config.GitRepoRootIn(search); root != "" {
+		return root, nil
+	}
+	if repoFlag != "" {
+		return repoFlag, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("guard init: cannot determine working directory: %w", err)
+	}
+	return wd, nil
+}
+
+// writeNewFile fails instead of replacing a file that exists, so a second
+// --force in the same second cannot overwrite the first backup.
+func writeNewFile(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

@@ -609,12 +609,12 @@ func (e *engine) scanRaw(f fileDiff, rules []rule, raw []pass) []hit {
 		}
 		if r.regex == nil {
 			// gitleaks reports a path-only match at line 0.
-			out = append(out, hit{Finding: secrets.Finding{Kind: r.id, File: f.path}})
+			out = append(out, hit{Finding: secrets.Finding{Kind: r.id, File: f.path, Commit: f.commit}})
 			continue
 		}
 		for i, h := range f.hunks {
 			if hasKeyword(r, raw[i].keywords) {
-				out = append(out, e.scanPass(r, f.path, h, raw[i])...)
+				out = append(out, e.scanPass(r, f.path, f.commit, h, raw[i])...)
 			}
 		}
 	}
@@ -631,7 +631,7 @@ func (e *engine) scanDecoded(f fileDiff, rules []rule, decoded [][]pass) []hit {
 		for i, h := range f.hunks {
 			for _, p := range decoded[i] {
 				if hasKeyword(r, p.keywords) {
-					out = append(out, e.scanPass(r, f.path, h, p)...)
+					out = append(out, e.scanPass(r, f.path, f.commit, h, p)...)
 				}
 			}
 		}
@@ -681,7 +681,7 @@ func isGeneric(id string) bool { return strings.Contains(strings.ToLower(id), "g
 // scanPass applies one rule to one pass of a hunk. A match in a decoded pass
 // counts only when it touches text decoded in that pass; earlier passes
 // already reported the rest. Its location maps back to the raw hunk.
-func (e *engine) scanPass(r rule, path string, h hunk, p pass) []hit {
+func (e *engine) scanPass(r rule, path, commit string, h hunk, p pass) []hit {
 	text := p.text
 	var out []hit
 	for _, loc := range passMatches(r, p) {
@@ -716,6 +716,7 @@ func (e *engine) scanPass(r rule, path string, h hunk, p pass) []hit {
 			File:     path,
 			FileLine: h.fileLine(line),
 			Line:     h.fileLine(line),
+			Commit:   commit,
 			Sample:   maskSecret(secret),
 		}
 		switch r.id {
@@ -877,8 +878,9 @@ func maskSecret(s string) string {
 }
 
 type fileDiff struct {
-	path  string
-	hunks []hunk
+	path   string
+	commit string
+	hunks  []hunk
 }
 
 // hunk holds the added lines of one @@ hunk. gitleaks scans the same unit:
@@ -924,6 +926,7 @@ func parseDiff(diff string) []fileDiff {
 	var files []fileDiff
 	var cur *fileDiff
 	var h *hunk
+	var currentCommit string
 	newLine := 0
 	flush := func() {
 		if h != nil && len(h.lines) > 0 && cur != nil {
@@ -935,11 +938,13 @@ func parseDiff(diff string) []fileDiff {
 	}
 	for line := range strings.SplitSeq(diff, "\n") {
 		switch {
+		case strings.HasPrefix(line, "commit "):
+			currentCommit = strings.TrimSpace(strings.TrimPrefix(line, "commit "))
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			// A finding outlives the diff, and a substring of the diff
 			// would keep all of it in memory.
-			files = append(files, fileDiff{path: strings.Clone(pathFromGitHeader(line))})
+			files = append(files, fileDiff{path: strings.Clone(pathFromGitHeader(line)), commit: currentCommit})
 			cur = &files[len(files)-1]
 		case cur == nil:
 		case strings.HasPrefix(line, "+++ "):

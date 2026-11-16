@@ -14,7 +14,9 @@ type Finding struct {
 	// callers — e.g. aicommit — that remap blob lines themselves)
 	File     string // owning file path, recovered from PayloadFileHeader markers; "" when none present
 	FileLine int    // 1-based line within File; equals Line when no file header precedes the hit
-	Sample   string // a masked sample suitable for display
+	// Commit is the introducing git commit when the input is `git log -p` output.
+	Commit string `json:"commit,omitempty"`
+	Sample string // a masked sample suitable for display
 	// LineText, ContextBefore, and ContextAfter back verbose ("show the
 	// surrounding source") output. They are populated only by diff-aware
 	// callers (the push/ship scanner) and are all secret-masked, so printing

@@ -66,9 +66,6 @@ type SecretPatternsRule struct {
 	archiveLimit *archiveLimit
 	// patchBatch overrides patchBatchBytes in tests.
 	patchBatch int
-	// unscanArchiveSev is set at the start of evaluateBuiltin for archive
-	// notices that could not be read fully.
-	unscanArchiveSev policy.Severity
 }
 
 // ociProfileSink collects the OCI profiles in the text a scan reads. A nil
@@ -183,18 +180,10 @@ func scopeLabel(in policy.Input) string {
 	}
 }
 
-func archiveUnscannedSeverity(in policy.Input) policy.Severity {
-	if in.History {
-		return policy.SeverityInfo
-	}
-	return policy.SeverityWarn
-}
-
 // evaluateBuiltin scans with the built-in patterns. Scope follows the input:
 // staged changes, the history of every ref, or by default the current content
 // of the tracked files.
 func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Input, notice policy.Violation) ([]policy.Violation, error) {
-	r.unscanArchiveSev = archiveUnscannedSeverity(in)
 	if in.Runner == nil || !r.builtinReady() {
 		return []policy.Violation{{
 			RuleID:   r.Name(),
@@ -279,7 +268,15 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 		}
 		out = append(out, v)
 	}
-	out = append(out, archives.notices...)
+	for _, n := range archives.notices {
+		// A blob deep in the history cannot be removed without a rewrite,
+		// so an archive there that the scan could not open does not fail
+		// every check.
+		if in.History {
+			n.Severity = policy.SeverityInfo
+		}
+		out = append(out, n)
+	}
 	if verify {
 		out = append(out, verifySummary(r.Name(), verified))
 	}
@@ -1020,11 +1017,7 @@ func (r *SecretPatternsRule) tooLarge(name string, size int64) *policy.Violation
 }
 
 func (r *SecretPatternsRule) archiveUnscannedNotice(name, msg, hint string) *policy.Violation {
-	sev := r.unscanArchiveSev
-	if sev == 0 {
-		sev = policy.SeverityInfo
-	}
-	return &policy.Violation{RuleID: r.Name(), Severity: sev, File: name, Message: msg, Hint: hint}
+	return &policy.Violation{RuleID: r.Name(), Severity: policy.SeverityWarn, File: name, Message: msg, Hint: hint}
 }
 
 func (r *SecretPatternsRule) archiveInfoNotice(name, msg, hint string) *policy.Violation {

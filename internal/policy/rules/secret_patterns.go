@@ -967,12 +967,12 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 		oci.scan(slot, content)
 	})
 	if err != nil {
-		return archiveResult{notice: r.archiveUnscannedNotice(name, "archive not scanned: "+err.Error(),
+		return archiveResult{notice: r.archiveNotice(name, "archive not scanned: "+err.Error(),
 			"the files in it were not checked for secrets")}
 	}
 	res.opened = true
 	if unread > 0 {
-		res.notice = r.archivePartlyScannedNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
+		res.notice = r.archiveNotice(name, fmt.Sprintf("archive partly scanned: %d file(s) in it could not be read", unread),
 			fmt.Sprintf("a file larger than %d MiB once decompressed, a file past the first %d MiB that the archive decompresses to, a file compressed with a method other than store or deflate, or a corrupt file is not checked for secrets", mib(limit.EntryBytes), mib(limit.TotalBytes)))
 	}
 	return res
@@ -981,17 +981,13 @@ func (r *SecretPatternsRule) scanArchive(name string, data []byte, oci *ociProfi
 // tooLarge returns the notice for an archive over the size limit, or nil.
 func (r *SecretPatternsRule) tooLarge(name string, size int64) *policy.Violation {
 	if limit := r.limit().bytes; size > limit {
-		return r.archiveUnscannedNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
+		return r.archiveNotice(name, fmt.Sprintf("archive not scanned: %d MiB, more than the limit of %d MiB", mib(size), mib(limit)),
 			"the files in it were not checked for secrets")
 	}
 	return nil
 }
 
-func (r *SecretPatternsRule) archiveUnscannedNotice(name, msg, hint string) *policy.Violation {
-	return &policy.Violation{RuleID: r.Name(), Severity: policy.SeverityWarn, File: name, Message: msg, Hint: hint}
-}
-
-func (r *SecretPatternsRule) archivePartlyScannedNotice(name, msg, hint string) *policy.Violation {
+func (r *SecretPatternsRule) archiveNotice(name, msg, hint string) *policy.Violation {
 	return &policy.Violation{RuleID: r.Name(), Severity: policy.SeverityInfo, File: name, Message: msg, Hint: hint}
 }
 

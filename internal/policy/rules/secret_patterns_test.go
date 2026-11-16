@@ -1002,19 +1002,20 @@ func TestSecretPatternsRule_TextAtAnArchivePathIsScannedAsText(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("scanned = %q, want %q", got, want)
 	}
-	var warns []string
+	var notices []string
 	for _, x := range v[1:] {
-		if x.Severity == policy.SeverityWarn {
-			warns = append(warns, x.File+": "+x.Message)
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
 		}
 	}
-	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(warns, want) {
-		t.Errorf("warns = %q, want %q", warns, want)
+	if want := []string{"bin.zip: archive not scanned: zip: not a valid zip file"}; !slices.Equal(notices, want) {
+		t.Errorf("notices = %q, want %q", notices, want)
 	}
 }
 
-// An archive the scan could not open is reported at warn; a partly-read archive
-// stays at info. Neither reads as a clean scan.
+// An archive the scan could not open, or opened only in part, is reported
+// with an informational notice instead of reading as clean, and it does not
+// fail the check: a blob deep in the history stays there.
 func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	partly := makeZip(t, "application.yml", "a: 1\n", "big.json", strings.Repeat("x", 200))
 	run := &stubRunner{out: map[string]string{
@@ -1036,25 +1037,19 @@ func TestSecretPatternsRule_UnreadArchivesAreReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	var warns, infos []string
+	var notices []string
 	for _, x := range v[1:] {
-		switch x.Severity {
-		case policy.SeverityWarn:
-			warns = append(warns, x.File+": "+x.Message)
-		case policy.SeverityInfo:
-			infos = append(infos, x.File+": "+x.Message)
+		if x.Severity == policy.SeverityInfo {
+			notices = append(notices, x.File+": "+x.Message)
 		}
 	}
-	wantWarns := []string{
+	want := []string{
 		"huge.war: archive not scanned: 3 MiB, more than the limit of 1 MiB",
 		"notes.zip: archive not scanned: zip: not a valid zip file",
+		"app.jar: archive partly scanned: 1 file(s) in it could not be read",
 	}
-	if !slices.Equal(warns, wantWarns) {
-		t.Errorf("warns = %q, want %q", warns, wantWarns)
-	}
-	wantInfos := []string{"app.jar: archive partly scanned: 1 file(s) in it could not be read"}
-	if !slices.Equal(infos, wantInfos) {
-		t.Errorf("infos = %q, want %q", infos, wantInfos)
+	if !slices.Equal(notices, want) {
+		t.Errorf("notices = %q, want %q", notices, want)
 	}
 	if _, errs := severities(v); errs != 1 {
 		t.Errorf("errs = %d, want the finding in app.jar only", errs)
@@ -1363,12 +1358,5 @@ func TestConvertFindings_SecretHintMentionsGitleaksAllow(t *testing.T) {
 	v := convertFindings([]scan.GitleaksFinding{{RuleID: "generic-api-key", File: "f", StartLine: 1, Description: "found"}})
 	if len(v) != 1 || v[0].Hint != secretFindingHint || !strings.Contains(v[0].Hint, "gitleaks:allow") {
 		t.Errorf("hint = %q, want %q", v[0].Hint, secretFindingHint)
-	}
-}
-
-func TestSecretPatternsRule_ArchiveUnscannedIsWarn(t *testing.T) {
-	v := NewSecretPatternsRule().tooLarge("big.zip", 600<<20)
-	if v == nil || v.Severity != policy.SeverityWarn {
-		t.Fatalf("tooLarge = %+v, want warn severity", v)
 	}
 }

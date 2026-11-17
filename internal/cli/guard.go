@@ -550,17 +550,19 @@ func replaceFile(path string, data []byte, perm os.FileMode) error {
 // symlinkTarget follows the symlinks at path one link at a time, so a link
 // to a file that does not exist yet resolves to that file.
 func symlinkTarget(path string) (string, error) {
-	for range maxSymlinkHops {
+	for hops := 0; ; hops++ {
 		link, err := os.Readlink(path)
 		if err != nil {
 			return path, nil
+		}
+		if hops == maxSymlinkHops {
+			return "", fmt.Errorf("%s: too many levels of symbolic links", path)
 		}
 		if !filepath.IsAbs(link) {
 			link = filepath.Join(filepath.Dir(path), link)
 		}
 		path = link
 	}
-	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
 }
 
 // writeNewFile fails instead of replacing a file that exists, so a second

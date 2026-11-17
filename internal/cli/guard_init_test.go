@@ -249,3 +249,36 @@ func TestGuardInit_SymlinkLoopFails(t *testing.T) {
 		t.Errorf(".gk.yaml is no longer a symlink: %v", err)
 	}
 }
+
+// symlinkTarget follows up to maxSymlinkHops links, as open does on Linux,
+// and fails on one more.
+func TestSymlinkTarget_HopLimit(t *testing.T) {
+	for _, tc := range []struct {
+		links   int
+		wantErr bool
+	}{{maxSymlinkHops, false}, {maxSymlinkHops + 1, true}} {
+		dir := t.TempDir()
+		file := filepath.Join(dir, "file")
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		next := "file"
+		for i := range tc.links {
+			name := fmt.Sprintf("l%d", i)
+			if err := os.Symlink(next, filepath.Join(dir, name)); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+			next = name
+		}
+		got, err := symlinkTarget(filepath.Join(dir, next))
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%d links: got %s, want an error", tc.links, got)
+			}
+			continue
+		}
+		if err != nil || got != file {
+			t.Errorf("%d links: got %q, %v; want %s", tc.links, got, err, file)
+		}
+	}
+}

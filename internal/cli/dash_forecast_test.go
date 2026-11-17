@@ -286,10 +286,11 @@ func TestForecastRepositoryPathWithColon(t *testing.T) {
 
 func TestDashQuoteAlternate(t *testing.T) {
 	for in, want := range map[string]string{
-		"/repo/.git/objects":  `"/repo/.git/objects"`,
-		"/a:b/.git/objects":   `"/a:b/.git/objects"`,
-		`/q"u\o/.git/objects`: `"/q\"u\\o/.git/objects"`,
-		"/nl\nx/.git/objects": `"/nl\nx/.git/objects"`,
+		"/repo/.git/objects":   `"/repo/.git/objects"`,
+		"/a:b/.git/objects":    `"/a:b/.git/objects"`,
+		`/q"u\o/.git/objects`:  `"/q\"u\\o/.git/objects"`,
+		"/nl\nx/.git/objects":  `"/nl\nx/.git/objects"`,
+		"/tab\tx/.git/objects": `"/tab\tx/.git/objects"`,
 	} {
 		if got := dashQuoteAlternate(in); got != want {
 			t.Errorf("dashQuoteAlternate(%q) = %s, want %s", in, got, want)

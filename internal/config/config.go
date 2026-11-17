@@ -78,6 +78,15 @@ type FleetConfig struct {
 type GitHubConfig struct {
 	Owner  string             `mapstructure:"owner"  yaml:"owner"`
 	Counts GitHubCountsConfig `mapstructure:"counts" yaml:"counts"`
+	Dash   GitHubDashConfig   `mapstructure:"dash"   yaml:"dash"`
+}
+
+// GitHubDashConfig tunes `gk dash`. ReviewContext names a commit status
+// context (for example "reviewer") whose state and description `gk dash`
+// shows as the review verdict when GitHub reports no reviewDecision. Empty
+// shows no verdict from statuses. Not omitempty, as GitHubConfig.Owner.
+type GitHubDashConfig struct {
+	ReviewContext string `mapstructure:"review_context" yaml:"review_context"`
 }
 
 // GitHubCountsConfig tunes the open PR/issue counts surfaced by `gk context`

@@ -1854,7 +1854,8 @@ gk branch clean [flags]
 | `--force` | false | Use `git branch -D` (force delete) instead of `-d` |
 | `--gone` | false | Target branches whose upstream is gone instead of merged ones |
 | `--worktrees` | false | Also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped) |
-| `--squash-merged` | false | Also include squash-merged branches — `git cherry` plus a merge-tree content check that catches multi-commit squashes (whose combined patch-id matches no original commit) |
+| `--squash-merged` | false | Also include squash-merged branches — `git cherry` plus a merge-tree content check that catches multi-commit squashes (whose combined patch-id matches no original commit). When the merge conflicts, the patch-id of the whole branch change is compared with the base commits |
+| `--base <branch>` | (`base_branch`, else the remote's default) | Judge merged branches against this branch, for example `develop` |
 | `--all` | false | Include merged, gone, stale, and squash-merged branches |
 | `--no-ai` | false | Turn off the AI branch analysis |
 | `--ai` | false | Run the AI branch analysis in agent mode (`GK_AGENT=1`), where it is off by default |
@@ -1873,6 +1874,9 @@ gk branch clean --gone
 
 # Force-delete branches (even if not fully merged)
 gk branch clean --force
+
+# Clean up branches merged into develop before the next release
+gk branch clean --squash-merged --base develop
 ```
 
 #### Notes
@@ -1881,6 +1885,8 @@ gk branch clean --force
 - Protected branches (`main`, `master`, `develop` by default) are blocked by default. With `--force` they surface in the picker marked `[protected]` and left unchecked — you must tick them manually, so a batch `--yes` run never deletes `main` by accident. Configure the list via `branch.protected`.
 - Branches checked out in a worktree show a `[worktree]` marker and are skipped unless `--worktrees` is passed (which removes the holding worktree first, skipping dirty ones with a warning).
 - `--gone` uses the `%(upstream:track)` field of `git for-each-ref` to identify branches marked `[gone]` — typically the ones whose PR was merged and the remote branch deleted.
+- Without `--base`, the base is `base_branch`, or the remote's default branch when `base_branch` is empty. A branch merged into `develop` but not yet released to `main` is then not listed. Use `--base develop` to clean it up.
+- A squash merge can conflict with the base when a later commit changes the same lines, for example a release commit that edits `CHANGELOG.md`. In that case gk compares the patch-id of the whole branch change since the merge base with the patch-ids of the base commits that touch the same paths. gk reads the newest 1000 of those commits. The check writes no objects. A squash whose context lines differ from the branch, or an empty change, does not match, and the branch stays listed as unmerged.
 
 ---
 

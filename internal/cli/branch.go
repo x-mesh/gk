@@ -55,6 +55,7 @@ func init() {
 	cleanCmd.Flags().Bool("remote", false, "run git remote prune")
 	cleanCmd.Flags().Bool("include-remote", false, "include remote-only branches as candidates (deleted via git push --delete)")
 	cleanCmd.Flags().Bool("squash-merged", false, "include squash-merged branches")
+	cleanCmd.Flags().String("base", "", "judge merged branches against this branch (e.g. develop) instead of base_branch or the remote's default branch")
 	cleanCmd.Flags().Bool("worktrees", false, "also delete branches checked out in a worktree (removes the clean worktree first; dirty ones are skipped)")
 	cleanCmd.Flags().BoolP("yes", "y", false, "skip TUI confirmation")
 
@@ -483,6 +484,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	squashMerged, _ := cmd.Flags().GetBool("squash-merged")
 	worktrees, _ := cmd.Flags().GetBool("worktrees")
 	yes, _ := cmd.Flags().GetBool("yes")
+	baseFlag, _ := cmd.Flags().GetString("base")
 
 	// --stale 유효성 검사
 	if stale < 0 {
@@ -493,6 +495,16 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 	isTTY := promptAllowed()
 	if !isTTY && !yes && !force && !dryRun {
 		return fmt.Errorf("gk branch clean: non-interactive mode requires --yes or --force")
+	}
+
+	base := cfg.BaseBranch
+	if baseFlag != "" {
+		// A typo would judge every branch against nothing and list none, so
+		// an unknown base fails before anything is deleted.
+		if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", baseFlag+"^{commit}"); err != nil {
+			return fmt.Errorf("gk branch clean: --base %s: no such branch or commit", baseFlag)
+		}
+		base = baseFlag
 	}
 
 	// CleanOptions 매핑
@@ -512,7 +524,7 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 		// (ship, sync, worktree cleanup): without this, clean always
 		// auto-detects the remote's default branch — wrong when base_branch
 		// is set to something else, fatal when the repo has no remote.
-		BaseBranch: cfg.BaseBranch,
+		BaseBranch: base,
 		RemoteName: cfg.Remote,
 		Protected:  cfg.Branch.Protected,
 		StaleDays:  cfg.Branch.StaleDays,

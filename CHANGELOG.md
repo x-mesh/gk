@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk branch clean --base <branch>` judges merged branches against that branch instead of `base_branch` or the remote's default branch. Without `base_branch`, the base was always the remote's default branch (`main`), so a branch merged into `develop` was not cleaned up until the next release.
+
+### Fixed
+
+- `gk branch clean --squash-merged` and `gk branch list --merged` find a squash-merged branch when a later commit on the base changed the same lines, for example a release commit that edits `CHANGELOG.md`. The merge-tree content check reported such a branch as a conflict, so it stayed listed as unmerged. When the merge conflicts, gk now compares the patch-id of the whole branch change with the base commits that touch the same paths, without writing objects. On this repository it found 8 of 9 leftover branches, each matching a merged PR whose head is the branch tip; the ninth had commits past its merged PR. `gk branch list --merged` took 1.4 s instead of 0.4 s there, for the 9 branches that conflict.
+
 ## [0.163.0] - 2026-11-17
 
 ### Added

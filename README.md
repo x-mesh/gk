@@ -191,7 +191,7 @@ gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 | Command | Alias | Description |
 |---|---|---|
 | `gk branch list` | | List branches with `--stale <N>` / `--merged` / `--unmerged` / `--gone` filters |
-| `gk branch clean` | | Delete merged branches while respecting protected list; `--gone` targets branches whose upstream was deleted |
+| `gk branch clean` | | Delete merged branches while respecting protected list; `--gone` targets branches whose upstream was deleted; `--base develop` judges against another branch |
 | `gk branch pick` | | Interactive branch picker with non-TTY fallback |
 | `gk branch set-parent <parent>` | | Record `branch.<current>.gk-parent = <parent>` so `gk status` compares divergence against the actual parent (stacked workflows). Validates against self/cycle (depth ≤10), tags, and non-existent refs; suggests the closest local branch on typos. |
 | `gk branch unset-parent` | | Remove the `gk-parent` config entry. Idempotent. Status output reverts to base-relative divergence. |

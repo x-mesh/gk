@@ -1031,6 +1031,14 @@ func TestBranchCleanWantsAI(t *testing.T) {
 
 func runBranchCleanViaRoot(t *testing.T, repoDir string, args ...string) error {
 	t.Helper()
+	_, err := runBranchCleanViaRootOut(t, repoDir, args...)
+	return err
+}
+
+// runBranchCleanViaRootOut runs gk branch clean --dry-run with args and
+// returns what it printed.
+func runBranchCleanViaRootOut(t *testing.T, repoDir string, args ...string) (string, error) {
+	t.Helper()
 	// Flag values and Changed marks persist on rootCmd between tests, and a
 	// stale Changed mark on --no-ai trips the --ai/--no-ai exclusivity check.
 	reset := func() {
@@ -1038,7 +1046,7 @@ func runBranchCleanViaRoot(t *testing.T, repoDir string, args ...string) error {
 		if err != nil {
 			return
 		}
-		for _, name := range []string{"ai", "no-ai", "dry-run"} {
+		for _, name := range []string{"ai", "no-ai", "dry-run", "base"} {
 			if f := c.Flags().Lookup(name); f != nil {
 				_ = f.Value.Set(f.DefValue)
 				f.Changed = false
@@ -1057,7 +1065,8 @@ func runBranchCleanViaRoot(t *testing.T, repoDir string, args ...string) error {
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs(append([]string{"--repo", repoDir, "branch", "clean", "--dry-run"}, args...))
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	return out.String(), err
 }
 
 func TestBranchCleanBuildsProviderOnlyWhenWanted(t *testing.T) {
@@ -1106,5 +1115,39 @@ func TestBranchCleanRejectsAIAndNoAI(t *testing.T) {
 	err := runBranchCleanViaRoot(t, repo.Dir, "--ai", "--no-ai")
 	if err == nil || !strings.Contains(err.Error(), "[ai no-ai]") {
 		t.Fatalf("want the --ai/--no-ai exclusivity error, got %v", err)
+	}
+}
+
+// --base judges merged branches against another branch: a branch merged into
+// develop but not yet into the configured base (main) is listed only with
+// --base develop, and an unknown base fails before anything is listed.
+func TestBranchClean_BaseFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "base_branch: main\n")
+	repo.Commit("config")
+	repo.CreateBranch("develop")
+	repo.CreateBranch("feat/dev-only")
+	repo.WriteFile("d.txt", "d\n")
+	repo.Commit("dev work")
+	repo.Checkout("develop")
+	repo.RunGit("merge", "--no-ff", "feat/dev-only", "-m", "merge feat/dev-only")
+
+	listed := func(args ...string) (string, error) {
+		return runBranchCleanViaRootOut(t, repo.Dir, append([]string{"--no-ai"}, args...)...)
+	}
+	if out, err := listed(); err != nil || strings.Contains(out, "feat/dev-only") {
+		t.Errorf("default base main: err %v, output lists feat/dev-only:\n%s", err, out)
+	}
+	if out, err := listed("--base", "develop"); err != nil || !strings.Contains(out, "feat/dev-only") {
+		t.Errorf("--base develop: err %v, output has no feat/dev-only:\n%s", err, out)
+	}
+	if _, err := listed("--base", "nope"); err == nil || !strings.Contains(err.Error(), "--base nope") {
+		t.Errorf("--base nope: err = %v, want an unknown-base error", err)
+	}
+	if !checkBranchExists(t, repo, "feat/dev-only") {
+		t.Error("dry-run deleted feat/dev-only")
 	}
 }

@@ -24,6 +24,8 @@ const (
 	ansiFgRed     = "\x1b[31m"
 	ansiFgGreen   = "\x1b[32m"
 	ansiFgYellow  = "\x1b[33m"
+	ansiFgBlue    = "\x1b[34m"
+	ansiFgMagenta = "\x1b[35m"
 	ansiFgCyan    = "\x1b[36m"
 	ansiBold      = "\x1b[1m"
 	ansiFaint     = "\x1b[2m"
@@ -50,6 +52,20 @@ func cellYellow(s string) string {
 		return s
 	}
 	return ansiFgYellow + s + ansiResetFg
+}
+
+func cellBlue(s string) string {
+	if colorOff() {
+		return s
+	}
+	return ansiFgBlue + s + ansiResetFg
+}
+
+func cellMagenta(s string) string {
+	if colorOff() {
+		return s
+	}
+	return ansiFgMagenta + s + ansiResetFg
 }
 
 func cellCyan(s string) string {

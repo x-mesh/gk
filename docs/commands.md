@@ -4595,6 +4595,104 @@ GK_AGENT=1 gk inbox --json
 
 ---
 
+### gk dash
+
+Show the open PRs and issues that involve you, together with the state of the local repository.
+
+Each PR row shows the review verdict, the CI state, the local branch, and the next action.
+The next action can include the gk command to run.
+The forecast shows which open PRs conflict with their base or with each other if you merge them.
+gk dash only reads.
+It sends GraphQL queries and runs `git merge-tree`.
+It does not change a ref, the index, or a worktree.
+The one exception is `--fetch`: it runs `git fetch`, which updates the remote-tracking branches.
+
+#### Sections
+
+| Section | Rows |
+|---------|------|
+| PRs | `mine` (your PRs), `review` (review requested from you), `cleanup` (merged PRs with a local branch that remains) |
+| Issues | `assigned`, `mentioned`, `authored`, `unassigned` (repository scope only), and a count of the issues that are assigned to other people |
+| Forecast | One line for each conflict between two open PRs or between a PR and its base, for each base branch |
+
+A row that matches two relations shows one time, with the first relation in the list above.
+Each block reads the newest 20 items.
+If GitHub has more items, the section header shows the shown count.
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown |
+| `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
+| `--watch` | false | Open the screen with auto-refresh on |
+| `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
+| `--json` | false | Print one snapshot as JSON |
+
+#### Screen
+
+In a terminal, gk dash opens a screen and reads one time.
+Auto-refresh is off until you press `w`.
+
+| Key | Action |
+|-----|--------|
+| `w` | Turn auto-refresh on or off |
+| `r` | Refresh now |
+| `tab`, `shift+tab` | Go to the next or the previous section |
+| `↑`, `↓`, `PgUp`, `PgDn` | Scroll |
+| `q` | Quit |
+
+If a refresh fails, the screen keeps the last data and shows the error and the time of the last success.
+If GitHub rate-limits the token, no refresh starts until the reset time.
+When the output is not a terminal, in agent mode, or with `--json`, gk dash prints one snapshot and stops.
+`--watch` without a terminal is an error.
+
+#### Review verdict
+
+The verdict is the GitHub `reviewDecision` of the PR.
+If the repository has no review rule, `reviewDecision` is empty.
+To use a commit status as the verdict, set `github.dash.review_context` to the status context name:
+
+```yaml
+github:
+  dash:
+    review_context: reviewer
+```
+
+If the key is empty, a PR without `reviewDecision` has no verdict.
+gk dash does not read review comments.
+
+#### Forecast
+
+The forecast merges each open PR with `<remote>/<base>`, and then merges each pair of PRs with the same base.
+It uses the remote branches from the last fetch.
+Use `--fetch` to update them first.
+The forecast reads at most 20 PRs for each base, the newest first, and stops after 10 seconds.
+A PR or a pair that the forecast cannot compute shows as unknown, never as clean.
+A PR shows `ready to merge` only when the review passed, CI passed, and the PR merges with its base without conflicts.
+
+#### Token
+
+gk dash reads the token from `GH_TOKEN`, then `GITHUB_TOKEN`, then the token of `gh auth login`.
+Without a token, gk dash stops before it sends a request.
+
+#### JSON
+
+`--json` prints one snapshot.
+In agent mode (`GK_AGENT=1`), the snapshot is in the `{state, ok, result, error}` envelope.
+The fields of `result` are `scope`, `fetched_at`, `prs`, `issues`, `forecast`, `base_behind`, and `notes`.
+`prs` and `issues` have `counts`, `items`, and `error` when their query failed.
+`issues.others_assigned` is the count of open issues assigned to other people.
+
+```bash
+gk dash                    # screen in a terminal, one snapshot otherwise
+gk dash --watch            # screen with auto-refresh on
+gk dash --org acme         # a whole org, without the local columns
+GK_AGENT=1 gk dash --json
+```
+
+---
+
 ### gk review
 
 AI-powered code review on staged changes or a commit range.

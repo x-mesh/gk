@@ -568,6 +568,9 @@ ai:
 #     include: ttl        # gk context --include=github
 #     status: cache       # gk status --vis github
 #     warm_on_list: true  # gk pr / gk issue refresh the cache
+#   dash:
+#     review_context: reviewer  # gk dash: status context shown as the review
+#                               # verdict when GitHub has no reviewDecision
 
 # Follow — `gk follow` change-detection engine.
 #   ref    — poll a remote branch via git ls-remote (no token; any git host)

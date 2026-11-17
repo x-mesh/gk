@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk dash` shows the open PRs and issues that involve you in the current repository, or in an org with `--org`. Each PR row has the review verdict, the CI state, the local branch and its worktree, and the next action with the gk command to run. A forecast shows which open PRs conflict with their base or with each other, from `git merge-tree` on the remote branches of the last fetch. In a terminal it opens a screen that reads once; `w` turns auto-refresh on or off, and `--watch` starts with it on. Piped, in agent mode, or with `--json` it prints one snapshot. `github.dash.review_context` names a commit status to use as the review verdict when a repository has no review rule. gk dash only reads: it sends two GraphQL queries of about 7 points and changes no ref, index, or worktree, except that `--fetch` runs `git fetch` and so updates the remote-tracking branches.
+
 ### Changed
 
 - `gk guard check` reads the committed `.jar`, `.war`, `.ear`, and `.zip` archives with a 512 MiB delta base cache in each git process, instead of the 96 MiB git default. The versions of a jar are stored as deltas of each other, and with the small cache git rebuilt the same bases again. `--history` on a repository with 192 jars of 14 GB took 16.1 s instead of 21.8 s, and it used up to 1.0 GB more memory. On three other repositories the time and the memory did not change, and on all four the output did not change. If your git config sets `core.deltaBaseCacheLimit`, gk uses your value.

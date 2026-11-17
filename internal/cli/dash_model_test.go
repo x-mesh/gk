@@ -204,7 +204,7 @@ func TestBuildDashSnapshot(t *testing.T) {
 	if snap.Issues.Others == nil || *snap.Issues.Others != 36 {
 		t.Errorf("others = %v, want 1077 - 1040 - 1 = 36", snap.Issues.Others)
 	}
-	if len(snap.BaseBehind) != 1 || snap.BaseBehind[0] != (dashBehindJSON{Base: "develop", Behind: 5}) {
+	if len(snap.BaseBehind) != 1 || snap.BaseBehind[0] != (dashBehindJSON{Base: "develop", Remote: "origin", Behind: 5}) {
 		t.Errorf("base behind = %+v", snap.BaseBehind)
 	}
 	if len(snap.Notes) != 1 || len(snap.Forecast) != 1 || len(snap.Forecast[0].Pairs) != 1 {

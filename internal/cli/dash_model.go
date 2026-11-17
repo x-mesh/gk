@@ -145,6 +145,7 @@ type dashForecastJSON struct {
 
 type dashBehindJSON struct {
 	Base   string `json:"base"`
+	Remote string `json:"remote"`
 	Behind int    `json:"behind"`
 }
 
@@ -188,7 +189,7 @@ func buildDashSnapshot(in dashInputs) dashSnapshot {
 	if in.Local != nil {
 		for _, b := range in.Local.Behind {
 			if b.Behind > 0 {
-				snap.BaseBehind = append(snap.BaseBehind, dashBehindJSON{Base: b.Base, Behind: b.Behind})
+				snap.BaseBehind = append(snap.BaseBehind, dashBehindJSON{Base: b.Base, Remote: in.Local.Remote, Behind: b.Behind})
 			}
 		}
 	}

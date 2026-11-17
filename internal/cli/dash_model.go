@@ -199,7 +199,7 @@ func buildDashSnapshot(in dashInputs) dashSnapshot {
 func forecastJSON(g dashForecastGroup) dashForecastJSON {
 	j := dashForecastJSON{Base: g.Base, Total: g.Total, Considered: g.Considered, Pairs: []dashForecastPairJSON{}, Uncomputed: g.Uncomputed, Note: g.Note}
 	for _, p := range g.Pairs {
-		j.Pairs = append(j.Pairs, dashForecastPairJSON{A: p.A, B: p.B, Files: p.Files})
+		j.Pairs = append(j.Pairs, dashForecastPairJSON(p))
 	}
 	for _, c := range g.BaseConflicts {
 		j.BaseConflicts = append(j.BaseConflicts, dashForecastBaseJSON{PR: c.Number, Files: c.Files})

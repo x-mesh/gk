@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -90,10 +91,16 @@ func forecastPRConflicts(ctx context.Context, r *git.ExecRunner, remote string, 
 		byBase[p.Base] = append(byBase[p.Base], p)
 	}
 	sort.Strings(bases)
+	// The setup is not forecast work, so it runs before the budget starts.
+	scratch, cleanup, setupErr := dashScratchObjects(ctx, r)
+	defer cleanup()
 	deadline := time.Now().Add(budget)
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	commitRunner := &git.ExecRunner{Dir: r.Dir, ExtraEnv: append(append([]string(nil), r.ExtraEnv...), dashForecastEnv...)}
+	var commitRunner *git.ExecRunner
+	if setupErr == nil {
+		commitRunner = &git.ExecRunner{Dir: r.Dir, ExtraEnv: append(append([]string(nil), scratch.ExtraEnv...), dashForecastEnv...)}
+	}
 
 	var groups []dashForecastGroup
 	for _, base := range bases {
@@ -104,9 +111,36 @@ func forecastPRConflicts(ctx context.Context, r *git.ExecRunner, remote string, 
 			list = list[:limit]
 		}
 		g.Considered = len(list)
-		groups = append(groups, forecastGroup(ctx, r, commitRunner, remote, g, list))
+		if setupErr != nil {
+			for _, p := range list {
+				g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: setupErr.Error()})
+			}
+			groups = append(groups, g)
+			continue
+		}
+		groups = append(groups, forecastGroup(ctx, scratch, commitRunner, remote, g, list))
 	}
 	return groups
+}
+
+// dashScratchObjects returns a runner that reads the repository's objects but
+// writes new ones to a temporary directory, and a cleanup that removes it.
+// merge-tree and commit-tree write the merged trees and the temporary commits;
+// without this every refresh with new PR heads would leave unreachable objects
+// in the repository until git gc prunes them.
+func dashScratchObjects(ctx context.Context, r *git.ExecRunner) (*git.ExecRunner, func(), error) {
+	out, stderr, err := r.Run(ctx, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("forecast skipped: %w", dashGitErr("rev-parse", stderr, err))
+	}
+	dir, err := os.MkdirTemp("", "gk-dash-objects-*")
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("forecast skipped: %w", err)
+	}
+	env := append(append([]string(nil), r.ExtraEnv...),
+		"GIT_OBJECT_DIRECTORY="+dir,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+strings.TrimSpace(string(out)))
+	return &git.ExecRunner{Dir: r.Dir, ExtraEnv: env}, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func forecastGroup(ctx context.Context, r, commitRunner *git.ExecRunner, remote string, g dashForecastGroup, list []dashForecastPR) dashForecastGroup {

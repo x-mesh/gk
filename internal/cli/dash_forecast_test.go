@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -213,5 +214,53 @@ func TestForecastMemoIsBounded(t *testing.T) {
 	dashForecastMemo.Unlock()
 	if n > dashForecastMemoMax || n == 0 {
 		t.Errorf("memo has %d entries, want it cleared and refilled below %d", n, dashForecastMemoMax)
+	}
+}
+
+// The forecast writes its merged trees and temporary commits to a scratch
+// object directory, so repeated forecasts with new heads leave no objects in
+// the repository and no scratch directory behind.
+func TestForecastLeavesNoObjects(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	r, heads := forecastRepo(t)
+	loose := func() string {
+		for _, l := range strings.Split(r.RunGit("count-objects", "-v"), "\n") {
+			if strings.HasPrefix(l, "count:") {
+				return l
+			}
+		}
+		return ""
+	}
+	before := loose()
+	for i := range 3 {
+		resetForecastMemo()
+		g := forecastPRConflicts(context.Background(), &git.ExecRunner{Dir: r.Dir}, "origin", forecastPRs(heads), dashForecastLimit, dashForecastBudget)[0]
+		if len(g.Pairs) != 1 {
+			t.Fatalf("forecast %d: group = %+v, want the #1 ↔ #2 pair", i, g)
+		}
+		if got := loose(); got != before {
+			t.Fatalf("forecast %d: repository objects %s, want %s", i, got, before)
+		}
+		// A new head for A, outside the measured window.
+		r.RunGit("checkout", "-q", "a")
+		r.WriteFile("a.txt", strings.Repeat("x", i+1))
+		heads["a"] = strings.TrimSpace(r.RunGit("rev-parse", r.Commit("move a")))
+		r.Checkout("main")
+		before = loose()
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "gk-dash-objects-*")); len(left) != 0 {
+		t.Errorf("scratch directories left: %v", left)
+	}
+}
+
+// Without a scratch object directory the forecast reports every PR as
+// unknown with the reason, not as clean.
+func TestForecastSetupFailureIsUnknown(t *testing.T) {
+	resetForecastMemo()
+	g := forecastPRConflicts(context.Background(), &git.ExecRunner{Dir: t.TempDir()}, "origin",
+		[]dashForecastPR{{Number: 1, HeadOID: "abc", Base: "main"}}, dashForecastLimit, dashForecastBudget)[0]
+	if len(g.Clean) != 0 || len(g.Unknown) != 1 || !strings.Contains(g.Unknown[0].Reason, "forecast skipped") {
+		t.Errorf("group = %+v", g)
 	}
 }

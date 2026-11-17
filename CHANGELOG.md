@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.164.0] - 2026-11-17
+
 ### Added
 
 - `gk branch clean --base <branch>` judges merged branches against that branch instead of `base_branch` or the remote's default branch. Without `base_branch`, the base was always the remote's default branch (`main`), so a branch merged into `develop` was not cleaned up until the next release.

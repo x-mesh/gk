@@ -18,7 +18,6 @@ func plainCell(s string) dashCell { return dashCell{s, s} }
 
 const (
 	dashMinTitle = 10
-	dashMaxTitle = 60
 	dashGap      = "  "
 )
 
@@ -27,51 +26,66 @@ const (
 // never skew them; the title column gives way first on a narrow terminal.
 func renderDash(w io.Writer, snap dashSnapshot, width int) {
 	repo := strings.HasPrefix(snap.Scope, "repo:")
-	fmt.Fprintf(w, "%s %s\n", cellBold("gk dash · "+humanGitHubScope(snap.Scope)), cellFaint("· "+snap.FetchedAt.Local().Format("15:04:05")))
+	fmt.Fprintf(w, "%s %s %s\n", cellBold("gk dash ·"), cellCyanBold(humanGitHubScope(snap.Scope)), cellFaint("· "+snap.FetchedAt.Local().Format("15:04:05")))
 	for _, b := range snap.BaseBehind {
 		fmt.Fprintf(w, "%s\n", cellYellow(fmt.Sprintf("%s is %d commit(s) behind %s/%s", b.Base, b.Behind, b.Remote, b.Base))+cellFaint(" → gk pull"))
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s  %s\n", cellBold("PRs"), cellFaint(dashCounts(snap.PRs.Counts)))
+	fmt.Fprintf(w, "%s  %s\n", cellBold("PRs"), dashCounts(snap.PRs.Counts))
 	switch {
 	case snap.PRs.Error != "":
 		fmt.Fprintf(w, "  %s\n", cellRed("could not read: "+snap.PRs.Error))
 	case len(snap.PRs.Items) == 0:
 		fmt.Fprintf(w, "  %s\n", cellFaint("none"))
 	default:
-		headers := []string{"#", "relation", "title", "review", "CI"}
+		headers := []string{"#"}
+		if !repo {
+			headers = append(headers, "repo")
+		}
+		headers = append(headers, "relation", "title", "review", "CI")
 		if repo {
 			headers = append(headers, "branch")
 		}
 		headers = append(headers, "next")
 		var rows [][]dashCell
 		for _, r := range snap.PRs.Items {
-			row := []dashCell{plainCell("#" + strconv.Itoa(r.Number)), relationCell(r.Relation), plainCell(r.Title), reviewCell(r), ciCell(r)}
+			row := []dashCell{numberCell(r.Number)}
+			if !repo {
+				row = append(row, repoCell(snap.Scope, r.Repo))
+			}
+			row = append(row, relationCell(r.Relation), titleCell(r.Title, r.Draft), reviewCell(r), ciCell(r))
 			if repo {
 				row = append(row, branchCell(r.Branches))
 			}
-			rows = append(rows, append(row, actionCell(r.Action)))
+			rows = append(rows, append(row, prActionCell(r)))
 		}
 		writeDashTable(w, headers, rows, 2, width)
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s  %s\n", cellBold("Issues"), cellFaint(dashCounts(snap.Issues.Counts)))
+	fmt.Fprintf(w, "%s  %s\n", cellBold("Issues"), dashCounts(snap.Issues.Counts))
 	switch {
 	case snap.Issues.Error != "":
 		fmt.Fprintf(w, "  %s\n", cellRed("could not read: "+snap.Issues.Error))
 	case len(snap.Issues.Items) == 0:
 		fmt.Fprintf(w, "  %s\n", cellFaint("none"))
 	default:
+		headers := []string{"#"}
+		if !repo {
+			headers = append(headers, "repo")
+		}
+		headers = append(headers, "relation", "title", "updated", "PR", "next")
 		var rows [][]dashCell
 		for _, r := range snap.Issues.Items {
-			rows = append(rows, []dashCell{
-				plainCell("#" + strconv.Itoa(r.Number)), relationCell(r.Relation), plainCell(r.Title),
-				faintCell(dashAge(snap.FetchedAt, r.UpdatedAt)), linkedPRCell(r.LinkedPRs), actionCell(r.Action),
-			})
+			row := []dashCell{numberCell(r.Number)}
+			if !repo {
+				row = append(row, repoCell(snap.Scope, r.Repo))
+			}
+			rows = append(rows, append(row, relationCell(r.Relation), titleCell(r.Title, false),
+				ageCell(snap.FetchedAt, r.UpdatedAt), linkedPRCell(r.LinkedPRs), issueActionCell(r.Action)))
 		}
-		writeDashTable(w, []string{"#", "relation", "title", "updated", "PR", "next"}, rows, 2, width)
+		writeDashTable(w, headers, rows, 2, width)
 	}
 	if o := snap.Issues.Others; o != nil && *o > 0 {
 		fmt.Fprintf(w, "  %s\n", cellFaint(fmt.Sprintf("%d more assigned to others · gk issue", *o)))
@@ -108,6 +122,8 @@ func renderDash(w io.Writer, snap dashSnapshot, width int) {
 	}
 }
 
+// dashCounts writes the relation counts of a section header. A relation
+// with rows stands out; an empty one stays faint.
 func dashCounts(cs []dashCount) string {
 	var parts []string
 	for _, c := range cs {
@@ -115,9 +131,13 @@ func dashCounts(cs []dashCount) string {
 		if c.truncated() {
 			s += fmt.Sprintf(" (%d shown)", c.Shown)
 		}
-		parts = append(parts, s)
+		if c.Total > 0 {
+			parts = append(parts, relationColor(c.Relation, s))
+		} else {
+			parts = append(parts, cellFaint(s))
+		}
 	}
-	return strings.Join(parts, " · ")
+	return strings.Join(parts, cellFaint(" · "))
 }
 
 func forecastSummary(f dashForecastJSON) string {
@@ -130,14 +150,54 @@ func forecastSummary(f dashForecastJSON) string {
 
 func faintCell(s string) dashCell { return dashCell{s, cellFaint(s)} }
 
-func relationCell(rel string) dashCell {
+func relationColor(rel, s string) string {
 	switch rel {
+	case dashRelMine, dashRelAssigned:
+		return cellBlue(s)
 	case dashRelReview, dashRelMentioned:
-		return dashCell{rel, cellCyan(rel)}
-	case dashRelCleanup, dashRelUnassigned:
-		return faintCell(rel)
+		return cellMagenta(s)
+	case dashRelUnassigned:
+		return cellYellow(s)
+	case dashRelCleanup:
+		return cellFaint(s)
 	}
-	return plainCell(rel)
+	return s
+}
+
+func relationCell(rel string) dashCell { return dashCell{rel, relationColor(rel, rel)} }
+
+func numberCell(n int) dashCell {
+	s := "#" + strconv.Itoa(n)
+	return dashCell{s, cellCyan(s)}
+}
+
+func titleCell(title string, draft bool) dashCell {
+	if draft {
+		return faintCell(title)
+	}
+	return plainCell(title)
+}
+
+// repoCell names the repository of a row in an org or user scope, without
+// the owner when it is the scope's owner.
+func repoCell(scope, repo string) dashCell {
+	owner := scope[strings.Index(scope, ":")+1:]
+	s := strings.TrimPrefix(repo, owner+"/")
+	return dashCell{s, cellBlue(s)}
+}
+
+// ageCell colors an update time: green within a day, faint after a month.
+func ageCell(now, t time.Time) dashCell {
+	s := dashAge(now, t)
+	switch d := now.Sub(t); {
+	case t.IsZero():
+		return faintCell(s)
+	case d < 24*time.Hour:
+		return dashCell{s, cellGreen(s)}
+	case d > 30*24*time.Hour:
+		return faintCell(s)
+	}
+	return plainCell(s)
 }
 
 func reviewCell(r dashPRRow) dashCell {
@@ -199,14 +259,54 @@ func branchCell(bs []dashBranchRef) dashCell {
 	return plainCell(s)
 }
 
-func actionCell(a dashAction) dashCell {
+// actionCell writes the next action in tint, with its command in cyan.
+func actionCell(a dashAction, tint func(string) string) dashCell {
 	if a.Text == "" {
 		return plainCell("")
 	}
 	if a.Command == "" {
-		return plainCell(a.Text)
+		return dashCell{a.Text, tint(a.Text)}
 	}
-	return dashCell{a.Text + " → " + a.Command, a.Text + cellFaint(" → ") + cellCyan(a.Command)}
+	return dashCell{a.Text + " → " + a.Command, tint(a.Text) + cellFaint(" → ") + cellCyan(a.Command)}
+}
+
+func noTint(s string) string { return s }
+
+// prActionCell colors a PR's next action by urgency: red for a conflict or a
+// failed check, yellow for a review to do, green when ready, faint for work
+// in progress and cleanup.
+func prActionCell(r dashPRRow) dashCell {
+	tint := noTint
+	switch {
+	case r.Relation == dashRelReview:
+		tint = cellYellow
+	case r.Action.Rule == 2 || r.Action.Rule == 3:
+		tint = cellRedBold
+	case r.Action.Rule == 5:
+		tint = cellRed
+	case r.Action.Rule == 4:
+		tint = cellYellow
+	case r.Action.Rule == 8:
+		tint = cellGreenBold
+	case r.Action.Rule == 9:
+		tint = cellGreen
+	case r.Action.Rule == 1 || r.Action.Rule == 6 || r.Action.Rule == 7:
+		tint = cellFaint
+	}
+	return actionCell(r.Action, tint)
+}
+
+// issueActionCell colors an issue's next action: yellow when it waits on
+// you, green when it can be closed, faint otherwise.
+func issueActionCell(a dashAction) dashCell {
+	tint := cellFaint
+	switch a.Rule {
+	case 2:
+		tint = cellGreen
+	case 3, 4:
+		tint = cellYellow
+	}
+	return actionCell(a, tint)
 }
 
 func linkedPRCell(ps []dashLinkedPRJSON) dashCell {
@@ -229,10 +329,15 @@ func dashAge(now, t time.Time) string {
 }
 
 // writeDashTable writes headers and rows indented by indent spaces. The
-// column at index 2 is the title: it takes what the other columns leave of
-// width, between dashMinTitle and dashMaxTitle. The last column is ragged.
+// "title" column takes what the other columns leave of width, at least
+// dashMinTitle and at most its longest title. The last column is ragged.
 func writeDashTable(w io.Writer, headers []string, rows [][]dashCell, indent, width int) {
-	const title = 2
+	title := -1
+	for i, h := range headers {
+		if h == "title" {
+			title = i
+		}
+	}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = runewidth.StringWidth(h)
@@ -248,7 +353,9 @@ func writeDashTable(w io.Writer, headers []string, rows [][]dashCell, indent, wi
 			others += wd
 		}
 	}
-	widths[title] = min(widths[title], dashMaxTitle, max(dashMinTitle, width-others))
+	if title >= 0 {
+		widths[title] = min(widths[title], max(dashMinTitle, width-others))
+	}
 
 	line := func(cells []dashCell, faint bool) {
 		var b strings.Builder

@@ -65,12 +65,23 @@ func (d *SquashDetector) DetectSquashMerged(
 		// cherry가 확인 못 한 나머지: 콘텐츠 검사로 승격 시도. net-zero면
 		// squash-merged, 아니면 cherry의 mixed 판정(ambiguous)이 남는다.
 		if baseTree != "" {
-			ok, cerr := effectivelyMergedTree(ctx, d.Runner, baseTree, base, branch)
+			ok, conflicted, cerr := mergeTreeVerdict(ctx, d.Runner, baseTree, base, branch)
 			if cerr != nil {
 				warnings = append(warnings, fmt.Sprintf("merge-tree check failed for %s: %v", branch, cerr))
 			} else if ok {
 				squashMerged = append(squashMerged, branch)
 				continue
+			}
+			// The base may have changed the same lines after the squash,
+			// which merge-tree reports as a conflict: compare the whole
+			// change instead.
+			if conflicted {
+				if ok, perr := patchIDMerged(ctx, d.Runner, base, branch); perr != nil {
+					warnings = append(warnings, fmt.Sprintf("patch-id check failed for %s: %v", branch, perr))
+				} else if ok {
+					squashMerged = append(squashMerged, branch)
+					continue
+				}
 			}
 		}
 		if mixed {
@@ -91,7 +102,11 @@ func EffectivelyMerged(ctx context.Context, r git.Runner, base, branch string) (
 	if err != nil {
 		return false, fmt.Errorf("resolve %s^{tree}: %w", base, err)
 	}
-	return effectivelyMergedTree(ctx, r, strings.TrimSpace(string(out)), base, branch)
+	ok, conflicted, err := mergeTreeVerdict(ctx, r, strings.TrimSpace(string(out)), base, branch)
+	if err != nil || ok || !conflicted {
+		return ok, err
+	}
+	return patchIDMerged(ctx, r, base, branch)
 }
 
 // EffectivelyMergedSet runs the content check over branches, resolving
@@ -115,7 +130,14 @@ func EffectivelyMergedSet(ctx context.Context, r git.Runner, base string, branch
 		return out
 	}
 	for _, b := range branches {
-		if ok, cerr := effectivelyMergedTree(ctx, r, baseTree, base, b); cerr == nil && ok {
+		ok, conflicted, cerr := mergeTreeVerdict(ctx, r, baseTree, base, b)
+		if cerr != nil {
+			continue
+		}
+		if conflicted {
+			ok, _ = patchIDMerged(ctx, r, base, b)
+		}
+		if ok {
 			out[b] = true
 		}
 	}
@@ -123,6 +145,15 @@ func EffectivelyMergedSet(ctx context.Context, r git.Runner, base string, branch
 }
 
 func effectivelyMergedTree(ctx context.Context, r git.Runner, baseTree, base, branch string) (bool, error) {
+	ok, _, err := mergeTreeVerdict(ctx, r, baseTree, base, branch)
+	return ok, err
+}
+
+// mergeTreeVerdict is the content check with the conflict reported apart. A
+// clean merge whose tree differs from base means the branch carries work the
+// base lacks; only a conflict leaves the question open, because the base may
+// have changed the same lines after a squash.
+func mergeTreeVerdict(ctx context.Context, r git.Runner, baseTree, base, branch string) (merged, conflicted bool, err error) {
 	stdout, stderr, err := r.Run(ctx, "merge-tree", "--write-tree", base, branch)
 	first := strings.TrimSpace(string(stdout))
 	if i := strings.IndexByte(first, '\n'); i >= 0 {
@@ -132,14 +163,14 @@ func effectivelyMergedTree(ctx context.Context, r git.Runner, baseTree, base, br
 		// Exit 1 with an OID on the first line is a CONFLICTED merge — a
 		// definitive verdict, not an execution failure.
 		if isFullOID(first) {
-			return false, nil
+			return false, true, nil
 		}
 		if msg := strings.TrimSpace(string(stderr)); msg != "" {
-			return false, fmt.Errorf("%s: %w", msg, err)
+			return false, false, fmt.Errorf("%s: %w", msg, err)
 		}
-		return false, err
+		return false, false, err
 	}
-	return first != "" && first == baseTree, nil
+	return first != "" && first == baseTree, false, nil
 }
 
 // isFullOID reports whether s is a full git object id (40- or 64-hex).

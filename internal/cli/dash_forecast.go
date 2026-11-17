@@ -139,7 +139,7 @@ func dashScratchObjects(ctx context.Context, r *git.ExecRunner) (*git.ExecRunner
 	}
 	env := append(append([]string(nil), r.ExtraEnv...),
 		"GIT_OBJECT_DIRECTORY="+dir,
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+strings.TrimSpace(string(out)))
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+dashQuoteAlternate(strings.TrimSpace(string(out))))
 	return &git.ExecRunner{Dir: r.Dir, ExtraEnv: env}, func() { _ = os.RemoveAll(dir) }, nil
 }
 
@@ -290,4 +290,12 @@ func dashGitErr(cmd string, stderr []byte, err error) error {
 		return fmt.Errorf("%s: %s", cmd, msg)
 	}
 	return fmt.Errorf("%s: %w", cmd, err)
+}
+
+// dashQuoteAlternate quotes path for GIT_ALTERNATE_OBJECT_DIRECTORIES. Git
+// splits that variable on ':', so a repository path with a colon would become
+// two paths; an entry in double quotes is read as one C-style quoted path.
+func dashQuoteAlternate(path string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
+	return `"` + r.Replace(path) + `"`
 }

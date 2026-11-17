@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -262,5 +263,36 @@ func TestForecastSetupFailureIsUnknown(t *testing.T) {
 		[]dashForecastPR{{Number: 1, HeadOID: "abc", Base: "main"}}, dashForecastLimit, dashForecastBudget)[0]
 	if len(g.Clean) != 0 || len(g.Unknown) != 1 || !strings.Contains(g.Unknown[0].Reason, "forecast skipped") {
 		t.Errorf("group = %+v", g)
+	}
+}
+
+// GIT_ALTERNATE_OBJECT_DIRECTORIES splits on ':', so a repository under a
+// path with a colon needs its alternate quoted.
+func TestForecastRepositoryPathWithColon(t *testing.T) {
+	resetForecastMemo()
+	r, heads := forecastRepo(t)
+	moved := filepath.Join(t.TempDir(), "a:b", "repo")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(r.Dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	g := forecastPRConflicts(context.Background(), &git.ExecRunner{Dir: moved}, "origin", forecastPRs(heads), dashForecastLimit, dashForecastBudget)[0]
+	if len(g.Unknown) != 0 || len(g.Pairs) != 1 {
+		t.Errorf("group = %+v, want the #1 ↔ #2 pair and no unknown", g)
+	}
+}
+
+func TestDashQuoteAlternate(t *testing.T) {
+	for in, want := range map[string]string{
+		"/repo/.git/objects":  `"/repo/.git/objects"`,
+		"/a:b/.git/objects":   `"/a:b/.git/objects"`,
+		`/q"u\o/.git/objects`: `"/q\"u\\o/.git/objects"`,
+		"/nl\nx/.git/objects": `"/nl\nx/.git/objects"`,
+	} {
+		if got := dashQuoteAlternate(in); got != want {
+			t.Errorf("dashQuoteAlternate(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

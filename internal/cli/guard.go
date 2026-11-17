@@ -515,12 +515,17 @@ func guardInitRepoRoot(repoFlag string) (string, error) {
 	return wd, nil
 }
 
+// maxSymlinkHops matches the Linux limit before open fails with ELOOP.
+const maxSymlinkHops = 40
+
 // replaceFile writes data to a temp file next to path and renames it over
 // path, so a failed write leaves the old file whole. A symlink at path is
-// followed, as os.WriteFile follows it.
+// followed, also when its target does not exist yet, as os.WriteFile follows
+// it.
 func replaceFile(path string, data []byte, perm os.FileMode) error {
-	if target, err := filepath.EvalSymlinks(path); err == nil {
-		path = target
+	path, err := symlinkTarget(path)
+	if err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -540,6 +545,22 @@ func replaceFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// symlinkTarget follows the symlinks at path one link at a time, so a link
+// to a file that does not exist yet resolves to that file.
+func symlinkTarget(path string) (string, error) {
+	for range maxSymlinkHops {
+		link, err := os.Readlink(path)
+		if err != nil {
+			return path, nil
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(path), link)
+		}
+		path = link
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
 }
 
 // writeNewFile fails instead of replacing a file that exists, so a second

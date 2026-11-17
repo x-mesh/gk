@@ -190,3 +190,62 @@ func TestGuardInit_ForceFollowsSymlinkedConfig(t *testing.T) {
 		t.Errorf("target = %q, want the scaffold", got)
 	}
 }
+
+// A symlinked .gk.yaml whose target does not exist yet keeps the link, and
+// guard init creates the target, as os.WriteFile did. It runs in a
+// subdirectory, so a relative link resolves from the link, not from there.
+func TestGuardInit_FollowsDanglingSymlinkedConfig(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	dir := t.TempDir()
+	sub := filepath.Join(repo.Dir, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(repo.Dir, ".gk.yaml")
+	for name, link := range map[string]string{
+		"absolute": filepath.Join(dir, "abs.yaml"),
+		"relative": "shared/rel.yaml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := link
+			if !filepath.IsAbs(link) {
+				target = filepath.Join(repo.Dir, link)
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = os.Remove(cfg)
+			if err := os.Symlink(link, cfg); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+			for _, args := range [][]string{nil, {"--force"}} {
+				_ = os.Remove(target)
+				if _, err := runGuardInitCmd(t, repo.Dir, sub, args...); err != nil {
+					t.Fatalf("guard init %v: %v", args, err)
+				}
+				if fi, err := os.Lstat(cfg); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("guard init %v: .gk.yaml is no longer a symlink: %v", args, err)
+				}
+				if got, _ := os.ReadFile(target); string(got) != gkYAMLTemplate {
+					t.Errorf("guard init %v: target = %q, want the scaffold", args, got)
+				}
+			}
+		})
+	}
+}
+
+// A symlink loop at .gk.yaml fails, as os.WriteFile fails with ELOOP, and the
+// link stays.
+func TestGuardInit_SymlinkLoopFails(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	cfg := filepath.Join(repo.Dir, ".gk.yaml")
+	if err := os.Symlink(".gk.yaml", cfg); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if _, err := runGuardInitCmd(t, repo.Dir, repo.Dir, "--force"); err == nil {
+		t.Fatal("want an error for a symlink loop")
+	}
+	if fi, err := os.Lstat(cfg); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf(".gk.yaml is no longer a symlink: %v", err)
+	}
+}

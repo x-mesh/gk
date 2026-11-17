@@ -47,6 +47,10 @@ gk dash only reads: it sends GraphQL queries and runs git merge-tree, and it
 changes no ref, index, or worktree. It needs a token: GH_TOKEN, GITHUB_TOKEN,
 or 'gh auth login'.
 
+In a terminal, gk dash opens a screen that reads once; press w to turn
+auto-refresh on or off, r to refresh now. --watch starts with auto-refresh
+on. Piped, in agent mode, or with --json it prints one snapshot.
+
 The review verdict is GitHub's reviewDecision. When the repository has no
 review rule, set github.dash.review_context to a commit status context (for
 example a review bot's) to show its state instead.`,
@@ -56,6 +60,8 @@ example a review bot's) to show its state instead.`,
 	cmd.Flags().String("org", "", "read the whole org/account instead of the current repo (optional name; defaults to github.owner or origin's owner)")
 	cmd.Flags().Lookup("org").NoOptDefVal = orgFlagSentinel
 	cmd.Flags().Bool("fetch", false, "fetch the remote before the forecast (no network git call by default)")
+	cmd.Flags().Bool("watch", false, "start the screen with auto-refresh on (press w on the screen to toggle it)")
+	cmd.Flags().Duration("interval", dashDefaultInterval, "auto-refresh period on the screen, at least 30s")
 	return cmd
 }
 
@@ -75,6 +81,14 @@ func runDash(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 && !cmd.Flags().Changed("org") {
 		return fmt.Errorf("unexpected argument %q — did you mean `--org %s`?", args[0], args[0])
 	}
+	interval, _ := cmd.Flags().GetDuration("interval")
+	if interval < dashMinInterval {
+		return fmt.Errorf("--interval %s is below the minimum of %s", interval, dashMinInterval)
+	}
+	screen := promptAllowed()
+	if boolFlag(cmd, "watch") && !screen {
+		return errors.New("--watch needs a terminal; without one gk dash prints one snapshot")
+	}
 	env, err := newDashEnv(ctx, cmd, args)
 	if err != nil {
 		return err
@@ -83,6 +97,9 @@ func runDash(cmd *cobra.Command, args []string) error {
 		if _, stderr, err := env.runner.Run(ctx, "fetch", "--quiet", env.remote); err != nil {
 			return fmt.Errorf("fetch %s: %w", env.remote, dashGitErr("git fetch", stderr, err))
 		}
+	}
+	if screen {
+		return runDashTUI(ctx, env, interval, boolFlag(cmd, "watch"))
 	}
 	snap, err := collectDash(ctx, env)
 	if err != nil {

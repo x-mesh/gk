@@ -16,10 +16,11 @@ import (
 )
 
 // Auto-refresh period. One refresh costs up to 7 GraphQL points, so 30 s is
-// at most 840 points an hour of the 5000 a token has.
+// at most 840 points an hour of the 5000 a token has. The search index lags
+// behind GitHub, so a shorter period would rarely show newer data.
 const (
-	dashDefaultInterval = 60 * time.Second
 	dashMinInterval     = 30 * time.Second
+	dashDefaultInterval = dashMinInterval
 )
 
 type dashResultMsg struct {

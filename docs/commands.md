@@ -4625,7 +4625,7 @@ If GitHub has more items, the section header shows the shown count.
 | `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown |
 | `--fetch` | false | Fetch the remote one time before the forecast. Without it, gk dash makes no git network call |
 | `--watch` | false | Open the screen with auto-refresh on |
-| `--interval <d>` | `1m0s` | Auto-refresh period on the screen. The minimum is `30s` |
+| `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
 | `--json` | false | Print one snapshot as JSON |
 
 #### Screen

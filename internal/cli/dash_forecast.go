@@ -62,7 +62,11 @@ type dashForecastGroup struct {
 }
 
 // dashForecastMemo keeps pair results for the life of the process, so a
-// refresh of gk dash does not merge the same commits again.
+// refresh of gk dash does not merge the same commits again. It is cleared at
+// dashForecastMemoMax entries, so a long --watch with changing heads stays
+// bounded.
+const dashForecastMemoMax = 4096
+
 var dashForecastMemo = struct {
 	sync.Mutex
 	m map[string]dashPairResult
@@ -132,13 +136,23 @@ func forecastGroup(ctx context.Context, r, commitRunner *git.ExecRunner, remote 
 			g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: "time limit"})
 			continue
 		}
+		// A git call cut off by the deadline fails like a missing object, so
+		// the deadline is checked before a failure is read as one.
 		if _, ok := dashRevParse(ctx, r, p.HeadOID+"^{commit}"); !ok || p.HeadOID == "" {
-			g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: "head not found: run gk dash --fetch"})
+			reason := "head not found: run gk dash --fetch"
+			if ctx.Err() != nil {
+				reason = "time limit"
+			}
+			g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: reason})
 			continue
 		}
 		mb, ok := dashMergeBase(ctx, r, baseOID, p.HeadOID)
 		if !ok {
-			g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: "no merge base with " + g.Base})
+			reason := "no merge base with " + g.Base
+			if ctx.Err() != nil {
+				reason = "time limit"
+			}
+			g.Unknown = append(g.Unknown, dashForecastUnknown{A: p.Number, Reason: reason})
 			continue
 		}
 		scan, err := scanMergeConflictsTree(ctx, r, mb, baseOID, p.HeadOID)
@@ -184,7 +198,8 @@ func forecastGroup(ctx context.Context, r, commitRunner *git.ExecRunner, remote 
 }
 
 // forecastPair merges b into a temporary commit of base + a. The merge base
-// is that of base and b, so the changes of a count as one side.
+// is that of b and the merge of base and a, so a PR stacked on a, whose head
+// already contains a, does not conflict with a's own changes.
 func forecastPair(ctx context.Context, r, commitRunner *git.ExecRunner, merged map[int]string, baseOID string, a dashForecastPR, aTree string, b dashForecastPR) dashPairResult {
 	key := baseOID + " " + a.HeadOID + " " + b.HeadOID
 	dashForecastMemo.Lock()
@@ -203,7 +218,7 @@ func forecastPair(ctx context.Context, r, commitRunner *git.ExecRunner, merged m
 		tmp = strings.TrimSpace(string(out))
 		merged[a.Number] = tmp
 	}
-	mb, ok := dashMergeBase(ctx, r, baseOID, b.HeadOID)
+	mb, ok := dashMergeBase(ctx, r, b.HeadOID, tmp)
 	if !ok {
 		return dashPairResult{err: fmt.Errorf("no merge base of #%d", b.Number)}
 	}
@@ -211,6 +226,9 @@ func forecastPair(ctx context.Context, r, commitRunner *git.ExecRunner, merged m
 	res := dashPairResult{files: scan.conflicts, err: err}
 	if err == nil {
 		dashForecastMemo.Lock()
+		if len(dashForecastMemo.m) >= dashForecastMemoMax {
+			dashForecastMemo.m = map[string]dashPairResult{}
+		}
 		dashForecastMemo.m[key] = res
 		dashForecastMemo.Unlock()
 	}

@@ -44,7 +44,8 @@ without the local columns and the forecast. The forecast uses the remote
 branches as of the last fetch; --fetch fetches first.
 
 gk dash only reads: it sends GraphQL queries and runs git merge-tree, and it
-changes no ref, index, or worktree. It needs a token: GH_TOKEN, GITHUB_TOKEN,
+changes no ref, index, or worktree. The one exception is --fetch, which runs
+git fetch and so updates the remote-tracking branches. It needs a token: GH_TOKEN, GITHUB_TOKEN,
 or 'gh auth login'.
 
 In a terminal, gk dash opens a screen that reads once; press w to turn
@@ -142,7 +143,9 @@ func newDashEnv(ctx context.Context, cmd *cobra.Command, args []string) (dashEnv
 // collectDash reads GitHub, then the local repository and the forecast for a
 // repo: scope. A failed GitHub read is an error, never an empty snapshot.
 func collectDash(ctx context.Context, env dashEnv) (dashSnapshot, error) {
-	res, err := env.client.Dashboard(ctx, dashQuery(env.prefix))
+	q := dashQuery(env.prefix)
+	q.ReviewContext = env.reviewContext
+	res, err := env.client.Dashboard(ctx, q)
 	if err != nil {
 		return dashSnapshot{}, fmt.Errorf("gk dash: %w", err)
 	}

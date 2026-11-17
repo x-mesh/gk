@@ -84,3 +84,26 @@ func TestRenderDashColors(t *testing.T) {
 		t.Errorf("header counts lost:\n%s", plain)
 	}
 }
+
+// Text from other people's PRs never reaches the terminal as a control
+// sequence.
+func TestRenderDashEscapesControlCharacters(t *testing.T) {
+	setNoColor(t, true, func() {})
+	snap := dashTableSnapshot("repo:x-mesh/gk", "x-mesh/gk")
+	snap.PRs.Items[0].Title = "evil\x1b]0;pwned\x07title"
+	snap.PRs.Items[0].Action = dashAction{Rule: 2, Text: "conflicts with main: a\x1b[2Jb.go"}
+	snap.Forecast = []dashForecastJSON{{Base: "main", Total: 2, Considered: 2,
+		Pairs: []dashForecastPairJSON{{A: 1, B: 2, Files: []string{"x\x1b[31m\ny.go"}}}}}
+	out := renderSnapshot(t, snap, 200)
+	if strings.ContainsAny(out, "\x1b\x07") {
+		t.Errorf("output carries a control character: %q", out)
+	}
+	for _, want := range []string{"evil?]0;pwned?title", "a?[2Jb.go", "x?[31m?y.go"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output has no %q:\n%s", want, out)
+		}
+	}
+	if snap.PRs.Items[0].Title != "evil\x1b]0;pwned\x07title" {
+		t.Errorf("rendering changed the snapshot")
+	}
+}

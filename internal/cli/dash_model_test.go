@@ -29,6 +29,7 @@ func TestReviewVerdict(t *testing.T) {
 	}{
 		{"decision wins", ghapi.DashPR{ReviewDecision: "APPROVED", URL: "u", Checks: []ghapi.DashCheck{rvBlock}}, "reviewer", dashReview{Source: "decision", State: "approved", URL: "u"}},
 		{"context when no decision", ghapi.DashPR{Checks: []ghapi.DashCheck{ciOK, rvPass}}, "reviewer", dashReview{Source: "context", State: "success", Description: "통과 · 차단 0건", URL: "https://rv"}},
+		{"the status read by name wins", ghapi.DashPR{ReviewStatus: &ghapi.DashCheck{State: "FAILURE", Description: "차단 1건", URL: "https://rv/83"}, Checks: []ghapi.DashCheck{rvPass}}, "reviewer", dashReview{Source: "context", State: "failure", Description: "차단 1건", URL: "https://rv/83"}},
 		{"context configured but absent", ghapi.DashPR{Checks: []ghapi.DashCheck{ciOK}}, "reviewer", dashReview{Source: "none"}},
 		{"context not configured", ghapi.DashPR{Checks: []ghapi.DashCheck{rvPass}}, "", dashReview{Source: "none"}},
 		{"a check run of that name is not a status", ghapi.DashPR{Checks: []ghapi.DashCheck{{Kind: "check_run", Name: "reviewer", State: "COMPLETED", Conclusion: "SUCCESS"}}}, "reviewer", dashReview{Source: "none"}},
@@ -91,6 +92,7 @@ func TestPRAction(t *testing.T) {
 		{"2 base conflict with a local branch", dashPRFacts{pr: pr, branches: current, baseConflict: []string{"CHANGELOG.md"}, ci: green}, 2, "conflicts with develop: CHANGELOG.md", "gk sync --fetch", ""},
 		{"2 base conflict without a local branch", dashPRFacts{pr: pr, baseConflict: []string{"a.go"}}, 2, "conflicts with develop: a.go", "gk pr checkout 7", ""},
 		{"3 CI failed", dashPRFacts{pr: pr, ci: dashCI{State: dashCIFailure, Failed: []dashCheckRef{{Name: "lint", URL: "https://ci/lint"}}}, review: pass}, 3, "CI failed: lint", "", "https://ci/lint"},
+		{"3 CI failed in the rollup only", dashPRFacts{pr: pr, ci: ciSummary(ghapi.DashPR{Checks: []ghapi.DashCheck{ciOK}, ChecksTotal: 25, Rollup: "FAILURE"}, ""), review: pass}, 3, "CI failed", "", "https://pr/7"},
 		{"4 review blocks", dashPRFacts{pr: pr, ci: green, review: dashReview{Source: dashReviewContext, State: "failure", URL: "https://rv"}}, 4, "review: failure", "", "https://rv"},
 		{"4 changes requested", dashPRFacts{pr: pr, ci: green, review: dashReview{Source: dashReviewDecision, State: "changes_requested"}}, 4, "review: changes_requested", "", "https://pr/7"},
 		{"5 conflicts with another PR", dashPRFacts{pr: pr, ci: green, review: pass, baseClean: true, pairWith: 8, pairFiles: []string{"CHANGELOG.md"}}, 5, "conflicts with #8: CHANGELOG.md", "", ""},
@@ -126,18 +128,19 @@ func TestIssueAction(t *testing.T) {
 		relation string
 		is       ghapi.DashIssue
 		text     string
+		url      string
 	}{
-		{"open PR first", dashRelAssigned, open, "PR #6 in review"},
-		{"merged PR", dashRelAuthored, merged, "PR #5 merged; close the issue?"},
-		{"mention", dashRelMentioned, is, "reply needed"},
-		{"unassigned", dashRelUnassigned, is, "needs triage"},
-		{"assigned without PR", dashRelAssigned, is, "no work branch"},
-		{"a closed PR is no work", dashRelAssigned, closed, "no work branch"},
-		{"authored without PR", dashRelAuthored, is, ""},
+		{"open PR first", dashRelAssigned, open, "PR #6 in review", ""},
+		{"merged PR", dashRelAuthored, merged, "PR #5 merged; close the issue?", "https://is/3"},
+		{"mention", dashRelMentioned, is, "reply needed", "https://is/3"},
+		{"unassigned", dashRelUnassigned, is, "needs triage", "https://is/3"},
+		{"assigned without PR", dashRelAssigned, is, "no work branch", ""},
+		{"a closed PR is no work", dashRelAssigned, closed, "no work branch", ""},
+		{"authored without PR", dashRelAuthored, is, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := issueAction(tc.relation, tc.is).Text; got != tc.text {
-				t.Errorf("text = %q, want %q", got, tc.text)
+			if got := issueAction(tc.relation, tc.is); got.Text != tc.text || got.URL != tc.url {
+				t.Errorf("action = %+v, want %q at %q", got, tc.text, tc.url)
 			}
 		})
 	}

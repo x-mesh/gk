@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +168,50 @@ func TestForecastPairWithoutIdentityIsDeterministic(t *testing.T) {
 	}
 	if oids[0] == "" || oids[0] != oids[1] {
 		t.Errorf("temporary commits = %v, want one OID twice", oids)
+	}
+}
+
+// A PR stacked on another (B's head contains A's head) that changes the same
+// line again merges cleanly after A, so it is not a pair conflict.
+func TestForecastPRConflictsStackedPRs(t *testing.T) {
+	resetForecastMemo()
+	r := testutil.NewRepo(t)
+	r.WriteFile("CHANGELOG.md", "# Changes\n\n- one\n")
+	r.Commit("changelog")
+	r.RunGit("update-ref", "refs/remotes/origin/main", "main")
+	r.CreateBranch("a")
+	r.WriteFile("CHANGELOG.md", "# Changes\n\n- one A\n")
+	a := r.Commit("a")
+	r.CreateBranch("b")
+	r.WriteFile("CHANGELOG.md", "# Changes\n\n- one A, then B\n")
+	b := r.Commit("b")
+	a = strings.TrimSpace(r.RunGit("rev-parse", a))
+	b = strings.TrimSpace(r.RunGit("rev-parse", b))
+	now := time.Now()
+	prs := []dashForecastPR{
+		{Number: 1, HeadOID: a, Base: "main", UpdatedAt: now},
+		{Number: 2, HeadOID: b, Base: "main", UpdatedAt: now.Add(-time.Minute)},
+	}
+	g := forecastPRConflicts(context.Background(), &git.ExecRunner{Dir: r.Dir}, "origin", prs, dashForecastLimit, dashForecastBudget)[0]
+	if len(g.Pairs) != 0 || len(g.Unknown) != 0 || len(g.Clean) != 2 {
+		t.Errorf("group = %+v, want both clean and no pair conflict", g)
+	}
+}
+
+func TestForecastMemoIsBounded(t *testing.T) {
+	resetForecastMemo()
+	t.Cleanup(resetForecastMemo)
+	dashForecastMemo.Lock()
+	for i := range dashForecastMemoMax {
+		dashForecastMemo.m[strconv.Itoa(i)] = dashPairResult{}
+	}
+	dashForecastMemo.Unlock()
+	r, heads := forecastRepo(t)
+	forecastPRConflicts(context.Background(), &git.ExecRunner{Dir: r.Dir}, "origin", forecastPRs(heads), dashForecastLimit, dashForecastBudget)
+	dashForecastMemo.Lock()
+	n := len(dashForecastMemo.m)
+	dashForecastMemo.Unlock()
+	if n > dashForecastMemoMax || n == 0 {
+		t.Errorf("memo has %d entries, want it cleared and refilled below %d", n, dashForecastMemoMax)
 	}
 }

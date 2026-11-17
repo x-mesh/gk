@@ -4605,6 +4605,7 @@ The forecast shows which open PRs conflict with their base or with each other if
 gk dash only reads.
 It sends GraphQL queries and runs `git merge-tree`.
 It does not change a ref, the index, or a worktree.
+The one exception is `--fetch`: it runs `git fetch`, which updates the remote-tracking branches.
 
 #### Sections
 
@@ -4623,7 +4624,7 @@ If GitHub has more items, the section header shows the shown count.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown |
-| `--fetch` | false | Fetch the remote one time before the forecast. Without it, gk dash makes no git network call |
+| `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
 | `--watch` | false | Open the screen with auto-refresh on |
 | `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
 | `--json` | false | Print one snapshot as JSON |

@@ -56,6 +56,9 @@ func reviewVerdict(pr ghapi.DashPR, reviewContext string) dashReview {
 		return dashReview{Source: dashReviewDecision, State: strings.ToLower(pr.ReviewDecision), URL: pr.URL}
 	}
 	if reviewContext != "" {
+		if s := pr.ReviewStatus; s != nil {
+			return dashReview{Source: dashReviewContext, State: strings.ToLower(s.State), Description: s.Description, URL: s.URL}
+		}
 		for _, c := range pr.Checks {
 			if c.Kind == "status" && c.Name == reviewContext {
 				return dashReview{Source: dashReviewContext, State: strings.ToLower(c.State), Description: c.Description, URL: c.URL}
@@ -204,9 +207,14 @@ func prAction(f dashPRFacts) dashAction {
 	case len(f.baseConflict) > 0:
 		return dashAction{Rule: 2, Text: fmt.Sprintf("conflicts with %s: %s%s", f.pr.BaseRef, strings.Join(f.baseConflict, ", "), where), Command: local("gk sync --fetch")}
 	case f.ci.State == dashCIFailure:
-		a := dashAction{Rule: 3, Text: "CI failed: " + f.ci.Failed[0].Name, URL: f.ci.Failed[0].URL}
-		if a.URL == "" {
-			a.URL = f.pr.URL
+		// The failure can come from the rollup over checks past the page,
+		// with no failed check in hand.
+		a := dashAction{Rule: 3, Text: "CI failed", URL: f.pr.URL}
+		if len(f.ci.Failed) > 0 {
+			a.Text = "CI failed: " + f.ci.Failed[0].Name
+			if f.ci.Failed[0].URL != "" {
+				a.URL = f.ci.Failed[0].URL
+			}
 		}
 		return a
 	case f.review.waiting():

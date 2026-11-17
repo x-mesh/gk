@@ -38,16 +38,19 @@ const dashPage = 20
 
 // DashQuery holds the search strings of a dashboard read. Callers add the
 // scope prefix (repo:, org:, user:). Owner and Repo, when set, add the
-// repository block and the Unassigned search.
+// repository block and the Unassigned search. ReviewContext, when set, reads
+// that commit status of each PR head by name, so it is found even past the
+// first page of checks.
 type DashQuery struct {
-	MyPRs      string
-	ReviewPRs  string
-	Assigned   string
-	Mentioned  string
-	Authored   string
-	Unassigned string
-	Owner      string
-	Repo       string
+	MyPRs         string
+	ReviewPRs     string
+	Assigned      string
+	Mentioned     string
+	Authored      string
+	Unassigned    string
+	Owner         string
+	Repo          string
+	ReviewContext string
 }
 
 func (q DashQuery) hasRepo() bool { return q.Owner != "" && q.Repo != "" }
@@ -85,6 +88,7 @@ type DashPR struct {
 	Checks         []DashCheck
 	ChecksTotal    int
 	ClosingIssues  []int
+	ReviewStatus   *DashCheck // the status named by DashQuery.ReviewContext; nil when unset or absent
 }
 
 // DashLinkedPR is a pull request that references an issue.
@@ -147,8 +151,11 @@ const dashPRFragment = `fragment DashPR on PullRequest {
     __typename
     ... on CheckRun { name status conclusion detailsUrl }
     ... on StatusContext { context state description targetUrl }
-  } } } } } }
+  } } }%s } } }
 }`
+
+// dashReviewStatus reads one status of the head by name, at one point.
+const dashReviewStatus = ` status { context(name: $rc) { state description targetUrl } }`
 
 const dashIssueFragment = `fragment DashIssue on Issue {
   number title url updatedAt
@@ -158,14 +165,17 @@ const dashIssueFragment = `fragment DashIssue on Issue {
   closedByPullRequestsReferences(first: 3, includeClosedPrs: true) { nodes { number state merged } }
 }`
 
-func dashPRQuery(hasRepo bool) string {
+func dashPRQuery(hasRepo, hasReviewContext bool) string {
 	var b strings.Builder
-	b.WriteString(dashPRFragment + "\n")
-	if hasRepo {
-		b.WriteString("query($mine: String!, $review: String!, $owner: String!, $name: String!) {\n")
-	} else {
-		b.WriteString("query($mine: String!, $review: String!) {\n")
+	status, vars := "", "$mine: String!, $review: String!"
+	if hasReviewContext {
+		status, vars = dashReviewStatus, vars+", $rc: String!"
 	}
+	if hasRepo {
+		vars += ", $owner: String!, $name: String!"
+	}
+	fmt.Fprintf(&b, dashPRFragment+"\n", status)
+	b.WriteString("query(" + vars + ") {\n")
 	fmt.Fprintf(&b, "  mine: search(type: ISSUE, query: $mine, first: %d) { issueCount nodes { ...DashPR } }\n", dashPage)
 	fmt.Fprintf(&b, "  review: search(type: ISSUE, query: $review, first: %d) { issueCount nodes { ...DashPR } }\n", dashPage)
 	if hasRepo {
@@ -214,6 +224,9 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 		issueVars["owner"], issueVars["name"] = q.Owner, q.Repo
 		issueVars["unassigned"] = q.Unassigned
 	}
+	if q.ReviewContext != "" {
+		prVars["rc"] = q.ReviewContext
+	}
 
 	var prData dashPRData
 	var issueData dashIssueData
@@ -223,7 +236,7 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		prNotes, prErr = c.graphql(ctx, "pr", dashPRQuery(q.hasRepo()), prVars, &prData)
+		prNotes, prErr = c.graphql(ctx, "pr", dashPRQuery(q.hasRepo(), q.ReviewContext != ""), prVars, &prData)
 	}()
 	go func() {
 		defer wg.Done()
@@ -384,6 +397,13 @@ type dashPRNode struct {
 						} `json:"nodes"`
 					} `json:"contexts"`
 				} `json:"statusCheckRollup"`
+				Status *struct {
+					Context *struct {
+						State       string `json:"state"`
+						Description string `json:"description"`
+						TargetURL   string `json:"targetUrl"`
+					} `json:"context"`
+				} `json:"status"`
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
@@ -403,6 +423,9 @@ func (n dashPRNode) pr() DashPR {
 		p.ClosingIssues = append(p.ClosingIssues, c.Number)
 	}
 	if len(n.Commits.Nodes) > 0 {
+		if st := n.Commits.Nodes[0].Commit.Status; st != nil && st.Context != nil {
+			p.ReviewStatus = &DashCheck{Kind: "status", State: st.Context.State, Description: st.Context.Description, URL: st.Context.TargetURL}
+		}
 		if r := n.Commits.Nodes[0].Commit.Rollup; r != nil {
 			p.Rollup = r.State
 			p.ChecksTotal = r.Contexts.TotalCount

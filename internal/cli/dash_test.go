@@ -245,3 +245,49 @@ func TestDashCmdRejectsPositional(t *testing.T) {
 		t.Fatalf("err = %v, want the --org hint", err)
 	}
 }
+
+// --fetch fetches the remote before the forecast, and a failed fetch stops
+// the command before any GitHub request. The origin is an ssh URL on
+// github.com, so the scope resolves, and GIT_SSH_COMMAND serves it from a
+// local bare repository.
+func TestDashCmdFetch(t *testing.T) {
+	withAgentMode(t, false)
+	sshOrigin := func(t *testing.T, r *testutil.Repo, sshCommand string) {
+		r.RunGit("remote", "set-url", "origin", "git@github.com:o/r.git")
+		t.Setenv("GIT_SSH_COMMAND", sshCommand)
+	}
+	t.Run("fetches first", func(t *testing.T) {
+		r, oid := dashCmdRepo(t)
+		bare := filepath.Join(t.TempDir(), "r.git")
+		r.RunGit("clone", "-q", "--bare", r.Dir, bare)
+		other := filepath.Join(t.TempDir(), "other")
+		r.RunGit("clone", "-q", bare, other)
+		r.RunGit("-C", other, "-c", "user.name=o", "-c", "user.email=o@o", "commit", "-q", "--allow-empty", "-m", "remote moves")
+		r.RunGit("-C", other, "push", "-q", "origin", "main")
+		script := filepath.Join(t.TempDir(), "ssh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nexec git upload-pack '"+bare+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sshOrigin(t, r, script)
+		want := strings.TrimSpace(r.RunGit("--git-dir", bare, "rev-parse", "main"))
+		f := &dashFake{}
+		if out, err := runDashCmd(t, r.Dir, f.server(t, oid), "tok", "--fetch"); err != nil {
+			t.Fatalf("gk dash --fetch: %v\n%s", err, out)
+		}
+		if got := strings.TrimSpace(r.RunGit("rev-parse", "refs/remotes/origin/main")); got != want {
+			t.Errorf("origin/main = %s, want the fetched %s", got, want)
+		}
+	})
+	t.Run("a failed fetch stops", func(t *testing.T) {
+		r, oid := dashCmdRepo(t)
+		sshOrigin(t, r, "false")
+		f := &dashFake{}
+		_, err := runDashCmd(t, r.Dir, f.server(t, oid), "tok", "--fetch")
+		if err == nil || !strings.Contains(err.Error(), "fetch origin") {
+			t.Fatalf("err = %v, want a fetch error", err)
+		}
+		if got := f.graphql.Load(); got != 0 {
+			t.Errorf("graphql requests = %d after a failed fetch, want 0", got)
+		}
+	})
+}

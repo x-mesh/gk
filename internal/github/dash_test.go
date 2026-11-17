@@ -351,3 +351,74 @@ func TestDashboardTimeoutAndFailures(t *testing.T) {
 		}
 	})
 }
+
+// A limit on the issue query wins too, and Retry-After sets the reset.
+func TestDashboardRateLimitOnTheIssueQuery(t *testing.T) {
+	for name, issue := range map[string]func(http.ResponseWriter, dashReq){
+		"200 with errors": func(w http.ResponseWriter, _ dashReq) {
+			w.Header().Set("Retry-After", "120")
+			writeJSON(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": "rate limited"}}})
+		},
+		"403": func(w http.ResponseWriter, _ dashReq) {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusForbidden)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _, _, _ := dashServer(t, okData(t, prData(true)), issue)
+			before := time.Now()
+			_, err := (&Client{APIBase: srv.URL, Token: "tok"}).Dashboard(context.Background(), fullQuery())
+			var rl *RateLimitError
+			if !errors.As(err, &rl) {
+				t.Fatalf("err = %v, want *RateLimitError", err)
+			}
+			// 120 s, not the one-minute fallback.
+			if d := rl.Reset.Sub(before); d < 115*time.Second || d > 125*time.Second {
+				t.Errorf("reset in %v, want about 120s", d)
+			}
+		})
+	}
+}
+
+// review_context is read by name, so it is found past the first page of checks.
+func TestDashboardReadsTheReviewContextByName(t *testing.T) {
+	withStatus := func(t *testing.T) func(http.ResponseWriter, dashReq) {
+		return func(w http.ResponseWriter, _ dashReq) {
+			d := prData(true)
+			node := d["mine"].(map[string]any)["nodes"].([]any)[0].(map[string]any)
+			commit := node["commits"].(map[string]any)["nodes"].([]any)[0].(map[string]any)["commit"].(map[string]any)
+			commit["status"] = map[string]any{"context": map[string]any{"state": "FAILURE", "description": "차단 1건", "targetUrl": "https://rv/83"}}
+			writeJSON(t, w, map[string]any{"data": d})
+		}
+	}
+	srv, _, _, reqs := dashServer(t, withStatus(t), okData(t, issueData(true)))
+	q := fullQuery()
+	q.ReviewContext = "reviewer"
+	res, err := (&Client{APIBase: srv.URL, Token: "tok"}).Dashboard(context.Background(), q)
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	got := res.MyPRs.Items[0].ReviewStatus
+	if got == nil || got.State != "FAILURE" || got.Description != "차단 1건" || got.URL != "https://rv/83" {
+		t.Errorf("review status = %+v", got)
+	}
+	for _, r := range *reqs {
+		if isPRQuery(r.Query) && (!strings.Contains(r.Query, "context(name: $rc)") || r.Variables["rc"] != "reviewer") {
+			t.Errorf("PR query does not read the context by name: %v\n%s", r.Variables, r.Query)
+		}
+	}
+
+	srv2, _, _, reqs2 := dashServer(t, okData(t, prData(true)), okData(t, issueData(true)))
+	res2, err := (&Client{APIBase: srv2.URL, Token: "tok"}).Dashboard(context.Background(), fullQuery())
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	if res2.MyPRs.Items[0].ReviewStatus != nil {
+		t.Errorf("review status without a context = %+v", res2.MyPRs.Items[0].ReviewStatus)
+	}
+	for _, r := range *reqs2 {
+		if strings.Contains(r.Query, "$rc") {
+			t.Errorf("query without a review context declares $rc:\n%s", r.Query)
+		}
+	}
+}

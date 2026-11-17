@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -25,6 +26,7 @@ const (
 // and the forecast lines. Columns are sized on plain text, so color codes
 // never skew them; the title column gives way first on a narrow terminal.
 func renderDash(w io.Writer, snap dashSnapshot, width int) {
+	snap = dashTerminalSafe(snap)
 	repo := strings.HasPrefix(snap.Scope, "repo:")
 	fmt.Fprintf(w, "%s %s %s\n", cellBold("gk dash ·"), cellCyanBold(humanGitHubScope(snap.Scope)), cellFaint("· "+snap.FetchedAt.Local().Format("15:04:05")))
 	for _, b := range snap.BaseBehind {
@@ -384,4 +386,90 @@ func writeDashTable(w io.Writer, headers []string, rows [][]dashCell, indent, wi
 	for _, r := range rows {
 		line(r, false)
 	}
+}
+
+// dashSafe replaces control characters with '?'. Titles, branch names, and
+// conflicting paths come from other people's PRs, and an ESC or OSC sequence
+// in one would reach the terminal as a command.
+func dashSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+func dashSafeAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = dashSafe(s)
+	}
+	return out
+}
+
+// dashTerminalSafe returns a copy of snap with every text field that reaches
+// the terminal passed through dashSafe.
+func dashTerminalSafe(snap dashSnapshot) dashSnapshot {
+	snap.Scope = dashSafe(snap.Scope)
+	snap.Notes = dashSafeAll(snap.Notes)
+	snap.PRs.Error = dashSafe(snap.PRs.Error)
+	snap.Issues.Error = dashSafe(snap.Issues.Error)
+	safeAction := func(a dashAction) dashAction {
+		a.Text, a.Command, a.URL = dashSafe(a.Text), dashSafe(a.Command), dashSafe(a.URL)
+		return a
+	}
+	prs := make([]dashPRRow, len(snap.PRs.Items))
+	for i, r := range snap.PRs.Items {
+		r.Title, r.Repo, r.Author, r.Base, r.Head = dashSafe(r.Title), dashSafe(r.Repo), dashSafe(r.Author), dashSafe(r.Base), dashSafe(r.Head)
+		r.Review.State, r.Review.Description = dashSafe(r.Review.State), dashSafe(r.Review.Description)
+		r.CI.State = dashSafe(r.CI.State)
+		r.Action = safeAction(r.Action)
+		branches := make([]dashBranchRef, len(r.Branches))
+		for j, b := range r.Branches {
+			b.Name, b.Worktree = dashSafe(b.Name), dashSafe(b.Worktree)
+			branches[j] = b
+		}
+		r.Branches = branches
+		prs[i] = r
+	}
+	snap.PRs.Items = prs
+	issues := make([]dashIssueRow, len(snap.Issues.Items))
+	for i, r := range snap.Issues.Items {
+		r.Title, r.Repo, r.Author = dashSafe(r.Title), dashSafe(r.Repo), dashSafe(r.Author)
+		r.Action = safeAction(r.Action)
+		issues[i] = r
+	}
+	snap.Issues.Items = issues
+	fc := make([]dashForecastJSON, len(snap.Forecast))
+	for i, f := range snap.Forecast {
+		f.Base, f.Note = dashSafe(f.Base), dashSafe(f.Note)
+		pairs := make([]dashForecastPairJSON, len(f.Pairs))
+		for j, p := range f.Pairs {
+			p.Files = dashSafeAll(p.Files)
+			pairs[j] = p
+		}
+		f.Pairs = pairs
+		bc := make([]dashForecastBaseJSON, len(f.BaseConflicts))
+		for j, c := range f.BaseConflicts {
+			c.Files = dashSafeAll(c.Files)
+			bc[j] = c
+		}
+		f.BaseConflicts = bc
+		un := make([]dashForecastUnknownJSON, len(f.Unknown))
+		for j, u := range f.Unknown {
+			u.Reason = dashSafe(u.Reason)
+			un[j] = u
+		}
+		f.Unknown = un
+		fc[i] = f
+	}
+	snap.Forecast = fc
+	bb := make([]dashBehindJSON, len(snap.BaseBehind))
+	for i, b := range snap.BaseBehind {
+		b.Base, b.Remote = dashSafe(b.Base), dashSafe(b.Remote)
+		bb[i] = b
+	}
+	snap.BaseBehind = bb
+	return snap
 }

@@ -53,6 +53,7 @@ type dashForecastGroup struct {
 	Base          string
 	Total         int
 	Considered    int
+	Clean         []int // PRs that merged with the base without conflicts
 	BaseConflicts []dashBaseConflict
 	Pairs         []dashPairConflict
 	Unknown       []dashForecastUnknown
@@ -147,6 +148,7 @@ func forecastGroup(ctx context.Context, r, commitRunner *git.ExecRunner, remote 
 		case len(scan.conflicts) > 0:
 			g.BaseConflicts = append(g.BaseConflicts, dashBaseConflict{Number: p.Number, Files: scan.conflicts})
 		default:
+			g.Clean = append(g.Clean, p.Number)
 			clean = append(clean, cleanPR{pr: p, tree: scan.treeOID})
 		}
 	}

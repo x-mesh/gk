@@ -75,6 +75,9 @@ func TestForecastPRConflicts(t *testing.T) {
 	if len(g.Pairs) != 1 || g.Pairs[0].A != 1 || g.Pairs[0].B != 2 || strings.Join(g.Pairs[0].Files, ",") != "CHANGELOG.md" {
 		t.Errorf("pairs = %+v, want only #1 ↔ #2 on CHANGELOG.md", g.Pairs)
 	}
+	if len(g.Clean) != 3 || g.Clean[0] != 1 || g.Clean[1] != 2 || g.Clean[2] != 3 {
+		t.Errorf("clean = %v, want [1 2 3]", g.Clean)
+	}
 	if len(g.BaseConflicts) != 1 || g.BaseConflicts[0].Number != 4 {
 		t.Errorf("base conflicts = %+v, want #4", g.BaseConflicts)
 	}

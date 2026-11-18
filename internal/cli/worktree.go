@@ -1272,9 +1272,25 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 
 	requestedRef := ""
 	requestedHead := ""
+	trackRef := ""
 	if branch != "" && !newBranch {
 		requestedRef = branch
 		out, stderr, rerr := runner.Run(ctx, "rev-parse", "--verify", branch+"^{commit}")
+		if rerr != nil && !detach {
+			var cands []string
+			trackRef, cands = remoteTrackingBranch(ctx, runner, branch)
+			if trackRef == "" && len(cands) > 1 {
+				return WithBlocked(
+					fmt.Errorf("worktree add: branch %q is on several remotes (%s) and checkout.defaultRemote picks none", branch, strings.Join(cands, ", ")),
+					"worktree-ref-not-found",
+					"name the remote with --new --from <remote>/"+branch+", or set checkout.defaultRemote",
+					errRemedy{Command: selfCmd("context --include=remotes"), Safety: "safe"},
+				)
+			}
+			if trackRef != "" {
+				out, stderr, rerr = runner.Run(ctx, "rev-parse", "--verify", "refs/remotes/"+trackRef+"^{commit}")
+			}
+		}
 		if rerr != nil {
 			return WithBlocked(
 				fmt.Errorf("worktree add: resolve requested ref %q: %s: %w", branch, strings.TrimSpace(string(stderr)), rerr),
@@ -1285,12 +1301,16 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		}
 		requestedHead = strings.TrimSpace(string(out))
 	}
+	if trackRef != "" {
+		gitArgs = []string{"worktree", "add", "--track", "-b", branch, resolvedPath, "refs/remotes/" + trackRef}
+		from = trackRef
+	}
 
 	// Decide the summary shape before git runs: once `worktree add`
 	// creates the auto-named branch, existence no longer distinguishes
 	// "created new" from "checked out existing".
 	sumBranch := branch
-	sumNew := newBranch
+	sumNew := newBranch || trackRef != ""
 	if !detach && branch == "" {
 		sumBranch = filepath.Base(resolvedPath)
 		sumNew = !branchExists(ctx, runner, sumBranch)
@@ -1392,6 +1412,34 @@ func runWorktreeAdd(cmd *cobra.Command, args []string) error {
 		prompt:       !doInit,
 		fromAdd:      true,
 	})
+}
+
+// remoteTrackingBranch finds <remote>/<branch> for a branch with no local
+// ref, the way `git worktree add <path> <branch>` guesses one: the only
+// remote that has it, or checkout.defaultRemote among several. It returns
+// "" and every candidate when no single remote is chosen.
+func remoteTrackingBranch(ctx context.Context, runner git.Runner, branch string) (string, []string) {
+	out, _, err := runner.Run(ctx, "remote")
+	if err != nil {
+		return "", nil
+	}
+	var cands []string
+	for _, remote := range strings.Fields(string(out)) {
+		ref := remote + "/" + branch
+		if _, _, err := runner.Run(ctx, "show-ref", "--verify", "--quiet", "refs/remotes/"+ref); err == nil {
+			cands = append(cands, ref)
+		}
+	}
+	if len(cands) == 1 {
+		return cands[0], cands
+	}
+	def, _, _ := runner.Run(ctx, "config", "--get", "checkout.defaultRemote")
+	for _, ref := range cands {
+		if d := strings.TrimSpace(string(def)); d != "" && ref == d+"/"+branch {
+			return ref, cands
+		}
+	}
+	return "", cands
 }
 
 // recordWorktreeParent best-effort writes `branch.<branch>.gk-parent`

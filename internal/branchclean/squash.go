@@ -41,6 +41,15 @@ func (d *SquashDetector) DetectSquashMerged(
 			fmt.Sprintf("resolve %s^{tree} failed — merge-tree content check disabled: %v", base, err))
 	}
 
+	// A branch whose content check conflicts waits for one patch-id check
+	// over all of them; the verdicts keep the order of branches.
+	type verdict struct {
+		branch           string
+		merged, conflict bool
+		mixed            bool
+	}
+	var verdicts []verdict
+	var conflicted []string
 	for _, branch := range branches {
 		if protected[branch] {
 			continue
@@ -58,34 +67,46 @@ func (d *SquashDetector) DetectSquashMerged(
 			continue
 		}
 		if allApplied {
-			squashMerged = append(squashMerged, branch)
+			verdicts = append(verdicts, verdict{branch: branch, merged: true})
 			continue
 		}
 
 		// cherry가 확인 못 한 나머지: 콘텐츠 검사로 승격 시도. net-zero면
 		// squash-merged, 아니면 cherry의 mixed 판정(ambiguous)이 남는다.
 		if baseTree != "" {
-			ok, conflicted, cerr := mergeTreeVerdict(ctx, d.Runner, baseTree, base, branch)
+			ok, conflict, cerr := mergeTreeVerdict(ctx, d.Runner, baseTree, base, branch)
 			if cerr != nil {
 				warnings = append(warnings, fmt.Sprintf("merge-tree check failed for %s: %v", branch, cerr))
 			} else if ok {
-				squashMerged = append(squashMerged, branch)
+				verdicts = append(verdicts, verdict{branch: branch, merged: true})
 				continue
 			}
 			// The base may have changed the same lines after the squash,
 			// which merge-tree reports as a conflict: compare the whole
 			// change instead.
-			if conflicted {
-				if ok, perr := patchIDMerged(ctx, d.Runner, base, branch); perr != nil {
-					warnings = append(warnings, fmt.Sprintf("patch-id check failed for %s: %v", branch, perr))
-				} else if ok {
-					squashMerged = append(squashMerged, branch)
-					continue
-				}
+			if conflict {
+				conflicted = append(conflicted, branch)
+				verdicts = append(verdicts, verdict{branch: branch, conflict: true, mixed: mixed})
+				continue
 			}
 		}
-		if mixed {
-			ambiguous = append(ambiguous, branch)
+		verdicts = append(verdicts, verdict{branch: branch, mixed: mixed})
+	}
+
+	patchMerged, patchErrs := patchIDMergedSet(ctx, d.Runner, base, conflicted)
+	for _, v := range verdicts {
+		if v.conflict {
+			if err := patchErrs[v.branch]; err != nil {
+				warnings = append(warnings, fmt.Sprintf("patch-id check failed for %s: %v", v.branch, err))
+			} else if patchMerged[v.branch] {
+				v.merged = true
+			}
+		}
+		switch {
+		case v.merged:
+			squashMerged = append(squashMerged, v.branch)
+		case v.mixed:
+			ambiguous = append(ambiguous, v.branch)
 		}
 	}
 	return squashMerged, ambiguous, warnings
@@ -113,7 +134,8 @@ func EffectivelyMerged(ctx context.Context, r git.Runner, base, branch string) (
 // base^{tree} once. A branch whose check errors is simply absent from the
 // result — under-claiming keeps it listed as unmerged work, the safe
 // direction for every caller. Cost: one rev-parse plus one merge-tree per
-// branch, deliberately WITHOUT git cherry — cherry computes per-commit
+// branch, and one shared patch-id pass over the branches whose merge
+// conflicts, deliberately WITHOUT git cherry — cherry computes per-commit
 // patch-ids on both sides of the fork point, which gets expensive against a
 // long-lived base, and survey commands run this by default.
 func EffectivelyMergedSet(ctx context.Context, r git.Runner, base string, branches []string) map[string]bool {
@@ -129,17 +151,20 @@ func EffectivelyMergedSet(ctx context.Context, r git.Runner, base string, branch
 	if baseTree == "" {
 		return out
 	}
+	var conflicted []string
 	for _, b := range branches {
-		ok, conflicted, cerr := mergeTreeVerdict(ctx, r, baseTree, base, b)
-		if cerr != nil {
-			continue
-		}
-		if conflicted {
-			ok, _ = patchIDMerged(ctx, r, base, b)
-		}
-		if ok {
+		ok, conflict, cerr := mergeTreeVerdict(ctx, r, baseTree, base, b)
+		switch {
+		case cerr != nil:
+		case ok:
 			out[b] = true
+		case conflict:
+			conflicted = append(conflicted, b)
 		}
+	}
+	merged, _ := patchIDMergedSet(ctx, r, base, conflicted)
+	for b := range merged {
+		out[b] = true
 	}
 	return out
 }

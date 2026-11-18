@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -251,22 +252,29 @@ type commitPaths struct {
 // changedPathsLog lists the commits of the shared log (same range, paths,
 // and limit, read from stdin) with the paths each one changed.
 func changedPathsLog(ctx context.Context, st git.Streamer, stdin string) ([]commitPaths, error) {
-	args := []string{"log", "--stdin", "--no-merges", "--no-renames", "--format=commit %H", "--name-only", "-z",
+	args := []string{"log", "--stdin", "--no-merges", "--no-renames", "--format=%x00%H", "--name-only", "-z",
 		"--max-count=" + strconv.Itoa(patchIDBaseLimit)}
 	var out bytes.Buffer
 	if err := st.Stream(ctx, strings.NewReader(stdin), &out, args...); err != nil {
 		return nil, err
 	}
-	// With -z each record is "commit <sha>\x00\n<path>\x00<path>\x00...".
+	// With -z each record is "\x00<sha>\x00\n<path>\x00<path>\x00...". A path
+	// can hold any name, "commit <sha>" too, but is never empty, so only the
+	// token after an empty one is a commit.
 	var list []commitPaths
+	header := false
 	for _, tok := range strings.Split(out.String(), "\x00") {
-		if sha, ok := strings.CutPrefix(tok, "commit "); ok && isFullOID(sha) {
-			list = append(list, commitPaths{commit: sha, paths: map[string]bool{}})
-			continue
-		}
-		tok = strings.TrimPrefix(tok, "\n")
-		if tok != "" && len(list) > 0 {
-			list[len(list)-1].paths[tok] = true
+		switch {
+		case tok == "":
+			header = true
+		case header:
+			if !isFullOID(tok) {
+				return nil, fmt.Errorf("git log: unexpected commit record %q", tok)
+			}
+			list = append(list, commitPaths{commit: tok, paths: map[string]bool{}})
+			header = false
+		case len(list) > 0:
+			list[len(list)-1].paths[strings.TrimPrefix(tok, "\n")] = true
 		}
 	}
 	return list, nil

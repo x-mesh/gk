@@ -164,6 +164,49 @@ func TestPatchIDMergedSet_SquashWithOtherBranchPaths(t *testing.T) {
 	}
 }
 
+// A path named like the old "commit <oid>" record header must stay a path of
+// the squash in the shared log, or the squash no longer covers the branch's
+// paths and the branch is missed.
+func TestPatchIDMergedSet_PathNamedLikeCommitHeader(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a\n")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	base := repo.Commit("base")
+	header := "commit " + base
+	repo.CreateBranch("feat/a")
+	repo.WriteFile("a.txt", "a\na feat\n")
+	repo.WriteFile(header, "x\n")
+	repo.Commit("a")
+	repo.Checkout("main")
+	repo.CreateBranch("feat/b")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8 feat\n")
+	repo.Commit("b")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--squash", "feat/a")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	repo.RunGit("add", "b.txt")
+	repo.RunGit("commit", "-m", "squash a, with a b.txt edit")
+	repo.WriteFile("a.txt", "a\na released\n")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8 released\n")
+	repo.Commit("release")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if ok, _ := patchIDMerged(ctx, runner, "main", "feat/a"); !ok {
+		t.Fatal("premise broken: the single check does not match the squash")
+	}
+	merged, errs := patchIDMergedSet(ctx, runner, "main", []string{"feat/a", "feat/b"})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if want := map[string]bool{"feat/a": true}; !reflect.DeepEqual(merged, want) {
+		t.Errorf("merged = %v, want %v", merged, want)
+	}
+}
+
 // The commits hashed again with one branch's paths still need to be past its
 // merge base: here the old commit changed r.txt and q.txt, was reverted, and
 // a later branch re-applies the r.txt half of it.

@@ -38,6 +38,7 @@ func init() {
 	listCmd.Flags().Bool("merged", false, "only show branches merged into base")
 	listCmd.Flags().Bool("unmerged", false, "only show branches NOT merged into base")
 	listCmd.Flags().Bool("gone", false, "only show branches whose upstream is gone (deleted on remote)")
+	listCmd.Flags().String("base", "", "with --merged or --unmerged, judge against this branch (e.g. develop) instead of base_branch or the remote's default branch")
 
 	cleanCmd := &cobra.Command{
 		Use:   "clean",
@@ -223,9 +224,13 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 	onlyMerged, _ := cmd.Flags().GetBool("merged")
 	onlyUnmerged, _ := cmd.Flags().GetBool("unmerged")
 	onlyGone, _ := cmd.Flags().GetBool("gone")
+	baseFlag, _ := cmd.Flags().GetString("base")
 
 	if onlyMerged && onlyUnmerged {
 		return fmt.Errorf("--merged and --unmerged are mutually exclusive")
+	}
+	if baseFlag != "" && !onlyMerged && !onlyUnmerged {
+		return fmt.Errorf("gk branch list: --base needs --merged or --unmerged")
 	}
 
 	branches, err := listLocalBranches(ctx, runner)
@@ -240,6 +245,14 @@ func runBranchList(cmd *cobra.Command, args []string) error {
 		// other base-relative verb — auto-detection alone is wrong when
 		// base_branch names something else and fatal without a remote.
 		base = cfg.BaseBranch
+		if baseFlag != "" {
+			// Same check as branch clean --base: a typo must fail, not
+			// report every branch as unmerged.
+			if _, _, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", baseFlag+"^{commit}"); err != nil {
+				return fmt.Errorf("gk branch list: --base %s: no such branch or commit", baseFlag)
+			}
+			base = baseFlag
+		}
 		if base == "" {
 			base, err = client.DefaultBranch(ctx, cfg.Remote)
 			if err != nil {

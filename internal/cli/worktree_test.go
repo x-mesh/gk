@@ -718,6 +718,79 @@ func TestWorktreeAdd_DetachedHonorsRequestedRef(t *testing.T) {
 	}
 }
 
+// A branch that exists only as a remote-tracking ref is checked out as a new
+// local branch that tracks it, as `git worktree add <path> <branch>` does.
+func TestWorktreeAdd_RemoteOnlyBranchTracksIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", t.TempDir())
+	repo.WriteFile("r.txt", "r\n")
+	want := repo.Commit("on the remote")
+	repo.RunGit("update-ref", "refs/remotes/origin/fix/r", want)
+	repo.RunGit("reset", "--hard", "HEAD~1")
+
+	wtPath := filepath.Join(t.TempDir(), "remote-only")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--json", "--no-init", wtPath, "fix/r")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add failed: %v\nout: %s", err, buf.String())
+	}
+	var res worktreeAddJSON
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("result unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if res.Branch != "fix/r" || !res.Created || res.From != "origin/fix/r" || res.ResolvedHead != want {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	wt := testutil.Attach(t, wtPath)
+	if got := strings.TrimSpace(wt.RunGit("rev-parse", "--abbrev-ref", "HEAD")); got != "fix/r" {
+		t.Errorf("worktree branch = %s, want fix/r", got)
+	}
+	if got := strings.TrimSpace(wt.RunGit("rev-parse", "--abbrev-ref", "@{upstream}")); got != "origin/fix/r" {
+		t.Errorf("upstream = %s, want origin/fix/r", got)
+	}
+}
+
+// With the branch on two remotes and no checkout.defaultRemote, the add stops
+// instead of picking one; checkout.defaultRemote picks it, as git does.
+func TestWorktreeAdd_RemoteBranchOnTwoRemotes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", t.TempDir())
+	repo.AddRemote("fork", t.TempDir())
+	repo.WriteFile("r.txt", "r\n")
+	want := repo.Commit("on the remotes")
+	repo.RunGit("update-ref", "refs/remotes/origin/fix/r", want)
+	repo.RunGit("update-ref", "refs/remotes/fork/fix/r", "HEAD~1")
+	repo.RunGit("reset", "--hard", "HEAD~1")
+
+	wtPath := filepath.Join(t.TempDir(), "two-remotes")
+	root, buf := buildWorktreeCmd(repo.Dir, "add", "--no-init", wtPath, "fix/r")
+	err := root.Execute()
+	if err == nil || codeFrom(err) != "worktree-ref-not-found" || !strings.Contains(err.Error(), "fork/fix/r") {
+		t.Fatalf("err = %v (code %q), want a blocked add naming both remotes\nout: %s", err, codeFrom(err), buf.String())
+	}
+	if _, serr := os.Stat(wtPath); !os.IsNotExist(serr) {
+		t.Fatalf("blocked add created the worktree at %s", wtPath)
+	}
+
+	repo.RunGit("config", "checkout.defaultRemote", "origin")
+	root, buf = buildWorktreeCmd(repo.Dir, "add", "--json", "--no-init", wtPath, "fix/r")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("add with checkout.defaultRemote failed: %v\nout: %s", err, buf.String())
+	}
+	var res worktreeAddJSON
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("result unmarshal: %v\nraw: %s", err, buf.String())
+	}
+	if res.From != "origin/fix/r" || res.ResolvedHead != want {
+		t.Errorf("unexpected result: %+v", res)
+	}
+}
+
 // TestDirtyPtrIfAny covers the clean→nil / dirty→non-nil contract that drives
 // the omitempty dirty field on context and list entries.
 func TestDirtyPtrIfAny(t *testing.T) {

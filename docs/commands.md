@@ -1802,10 +1802,11 @@ gk branch list [flags]
 | `--unmerged` | false | Only show branches NOT merged into base (mirror of `--merged`) |
 | `--gone` | false | Only show branches whose upstream has been deleted on the remote |
 | `-s, --stale <N>` | 0 (all) | Only show branches with last commit older than N days |
+| `--base <branch>` | (`base_branch`, else the remote's default) | With `--merged` or `--unmerged`, judge against this branch, for example `develop`. Alone it fails |
 
 `--merged` and `--unmerged` are mutually exclusive.
 
-Both filters honour the configured `base_branch` before falling back to the
+Both filters use `--base`, then the configured `base_branch`, then the
 remote's default branch, and both run a content check on the non-ancestor
 branches: work that landed on base via a **squash merge** is never an
 ancestor, so raw `git branch --merged` misses it. `--merged` adds those rows
@@ -1832,6 +1833,9 @@ gk branch list --gone
 
 # Combine filters
 gk branch list --stale 14 --merged
+
+# List what gk branch clean --base develop would judge merged
+gk branch list --merged --base develop
 ```
 
 ---

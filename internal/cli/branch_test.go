@@ -1151,3 +1151,63 @@ func TestBranchClean_BaseFlag(t *testing.T) {
 		t.Error("dry-run deleted feat/dev-only")
 	}
 }
+
+// branch list --base must agree with branch clean --base: a branch merged
+// into develop but not into the configured base (main) is merged only with
+// --base develop. An unknown base, or --base without a merged filter, fails.
+func TestBranchList_BaseFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile(".gk.yaml", "base_branch: main\n")
+	repo.Commit("config")
+	repo.CreateBranch("develop")
+	repo.CreateBranch("feat/dev-only")
+	repo.WriteFile("d.txt", "d\n")
+	repo.Commit("dev work")
+	repo.Checkout("develop")
+	repo.RunGit("merge", "--no-ff", "feat/dev-only", "-m", "merge feat/dev-only")
+
+	reset := func() {
+		flagRepo = ""
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		if c, _, err := rootCmd.Find([]string{"branch", "list"}); err == nil {
+			for _, name := range []string{"merged", "unmerged", "base"} {
+				if f := c.Flags().Lookup(name); f != nil {
+					_ = f.Value.Set(f.DefValue)
+					f.Changed = false
+				}
+			}
+		}
+	}
+	t.Cleanup(reset)
+	list := func(args ...string) (string, error) {
+		t.Helper()
+		reset()
+		var out strings.Builder
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs(append([]string{"--repo", repo.Dir, "--no-color", "branch", "list"}, args...))
+		err := rootCmd.Execute()
+		return out.String(), err
+	}
+
+	if out, err := list("--merged"); err != nil || strings.Contains(out, "feat/dev-only") {
+		t.Errorf("--merged against main: err %v, lists feat/dev-only:\n%s", err, out)
+	}
+	if out, err := list("--merged", "--base", "develop"); err != nil || !strings.Contains(out, "feat/dev-only") {
+		t.Errorf("--merged --base develop: err %v, no feat/dev-only:\n%s", err, out)
+	}
+	if out, err := list("--unmerged", "--base", "develop"); err != nil || strings.Contains(out, "feat/dev-only") {
+		t.Errorf("--unmerged --base develop: err %v, lists feat/dev-only:\n%s", err, out)
+	}
+	if _, err := list("--merged", "--base", "nope"); err == nil || !strings.Contains(err.Error(), "--base nope") {
+		t.Errorf("--base nope: err = %v, want an unknown-base error", err)
+	}
+	if _, err := list("--base", "develop"); err == nil || !strings.Contains(err.Error(), "needs --merged or --unmerged") {
+		t.Errorf("--base alone: err = %v, want a missing-filter error", err)
+	}
+}

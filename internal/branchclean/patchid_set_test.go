@@ -121,3 +121,124 @@ func TestPatchIDMergedSet_LimitFallsBackToOneBranch(t *testing.T) {
 		t.Errorf("merged = %v, want %v", merged, want)
 	}
 }
+
+// A squash commit that also changes another candidate branch's paths hashes
+// differently in the shared log, which covers both branches' paths. The
+// branch must still match, as it does alone, by hashing that commit again
+// with the branch's paths only.
+func TestPatchIDMergedSet_SquashWithOtherBranchPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a\n")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	repo.Commit("base")
+	repo.CreateBranch("feat/a")
+	repo.WriteFile("a.txt", "a\na feat\n")
+	repo.Commit("a")
+	repo.Checkout("main")
+	repo.CreateBranch("feat/b")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8 feat\n")
+	repo.Commit("b")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--squash", "feat/a")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	repo.RunGit("add", "b.txt")
+	repo.RunGit("commit", "-m", "squash a, with a b.txt edit")
+	repo.WriteFile("a.txt", "a\na released\n")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8 released\n")
+	repo.Commit("release")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if ok, _ := patchIDMerged(ctx, runner, "main", "feat/a"); !ok {
+		t.Fatal("premise broken: the single check does not match the squash")
+	}
+	merged, errs := patchIDMergedSet(ctx, runner, "main", []string{"feat/a", "feat/b"})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if want := map[string]bool{"feat/a": true}; !reflect.DeepEqual(merged, want) {
+		t.Errorf("merged = %v, want %v", merged, want)
+	}
+}
+
+// A path named like the old "commit <oid>" record header must stay a path of
+// the squash in the shared log, or the squash no longer covers the branch's
+// paths and the branch is missed.
+func TestPatchIDMergedSet_PathNamedLikeCommitHeader(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "a\n")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	base := repo.Commit("base")
+	header := "commit " + base
+	repo.CreateBranch("feat/a")
+	repo.WriteFile("a.txt", "a\na feat\n")
+	repo.WriteFile(header, "x\n")
+	repo.Commit("a")
+	repo.Checkout("main")
+	repo.CreateBranch("feat/b")
+	repo.WriteFile("b.txt", "b1\nb2\nb3\nb4\nb5\nb6\nb7\nb8 feat\n")
+	repo.Commit("b")
+	repo.Checkout("main")
+	repo.RunGit("merge", "--squash", "feat/a")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n")
+	repo.RunGit("add", "b.txt")
+	repo.RunGit("commit", "-m", "squash a, with a b.txt edit")
+	repo.WriteFile("a.txt", "a\na released\n")
+	repo.WriteFile("b.txt", "b1 edited with the squash\nb2\nb3\nb4\nb5\nb6\nb7\nb8 released\n")
+	repo.Commit("release")
+
+	runner := &git.ExecRunner{Dir: repo.Dir}
+	ctx := context.Background()
+	if ok, _ := patchIDMerged(ctx, runner, "main", "feat/a"); !ok {
+		t.Fatal("premise broken: the single check does not match the squash")
+	}
+	merged, errs := patchIDMergedSet(ctx, runner, "main", []string{"feat/a", "feat/b"})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if want := map[string]bool{"feat/a": true}; !reflect.DeepEqual(merged, want) {
+		t.Errorf("merged = %v, want %v", merged, want)
+	}
+}
+
+// The commits hashed again with one branch's paths still need to be past its
+// merge base: here the old commit changed r.txt and q.txt, was reverted, and
+// a later branch re-applies the r.txt half of it.
+func TestPatchIDMergedSet_SupersetReapplyNotMerged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("r.txt", "r\n")
+	repo.WriteFile("q.txt", "q\n")
+	repo.Commit("base")
+	repo.CreateBranch("feat/q")
+	repo.WriteFile("q.txt", "q\nQ2\n")
+	repo.Commit("q")
+	repo.Checkout("main")
+	repo.WriteFile("r.txt", "r\nR\n")
+	repo.WriteFile("q.txt", "q\nQ\n")
+	repo.Commit("add R and Q")
+	repo.RunGit("revert", "--no-edit", "HEAD")
+	repo.CreateBranch("feat/reapply")
+	repo.WriteFile("r.txt", "r\nR\n")
+	repo.Commit("re-add R")
+	repo.Checkout("main")
+	repo.WriteFile("r.txt", "r\nlater\n")
+	repo.WriteFile("q.txt", "q\nlater\n")
+	repo.Commit("later")
+
+	merged, errs := patchIDMergedSet(context.Background(), &git.ExecRunner{Dir: repo.Dir}, "main", []string{"feat/q", "feat/reapply"})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if len(merged) != 0 {
+		t.Errorf("merged = %v, want none", merged)
+	}
+}

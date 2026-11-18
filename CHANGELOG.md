@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `gk branch list --merged`, `--unmerged`, and `gk branch clean --squash-merged` read the base history once for all branches whose merge with the base conflicts, instead of once per branch. A test repository with 30 such branches and 600 later base commits took 2.1 to 2.6 s instead of 5.2 to 5.8 s for `gk branch list --merged`, and 5.2 s instead of 8.7 s for `gk branch clean --squash-merged --dry-run`, with the same branches listed. With the heads of 15 merged PRs of this repository checked out as branches, `gk branch list --merged --base main` took 0.8 s instead of 1.4 s and listed the same 15. A base commit that matches only after the other branches' paths are left out is no longer matched when several branches conflict; a squash merge changes only its own branch's paths.
+- `gk branch list --merged`, `--unmerged`, and `gk branch clean --squash-merged` read the base history once for all branches whose merge with the base conflicts, instead of once per branch. A test repository with 30 such branches and 600 later base commits took 2.1 to 2.6 s instead of 5.2 to 5.8 s for `gk branch list --merged`, and 5.2 s instead of 8.7 s for `gk branch clean --squash-merged --dry-run`, with the same branches listed. With the heads of 15 merged PRs of this repository checked out as branches, `gk branch list --merged --base main` took 0.8 s instead of 1.4 s and listed the same 15. A squash commit that also changes another conflicting branch's paths is hashed again with the branch's own paths, so it matches as it did before.
 
 ## [0.164.0] - 2026-11-17
 

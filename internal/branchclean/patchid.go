@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -111,8 +112,10 @@ func branchChange(ctx context.Context, r git.Runner, st git.Streamer, base, bran
 // branch's own history: a change that was reverted and then re-applied on a
 // later branch matches the old commit, which is not a squash of this branch.
 // A base commit that also changes another branch's paths hashes differently
-// than with the branch's paths alone, so it no longer matches; a squash
-// changes only its branch's paths. When the log reaches patchIDBaseLimit, a
+// in the shared log than with the branch's paths alone, so for a branch the
+// log did not match, the commits that change all of its paths and more are
+// hashed again with its paths only, as patchIDMerged would. When the log
+// reaches patchIDBaseLimit, a
 // branch it did not match is checked alone, so the reach per branch stays
 // what patchIDMerged gives. A branch whose check fails is in errs, not in
 // merged.
@@ -210,10 +213,113 @@ func patchIDMergedSet(ctx context.Context, r git.Runner, base string, branches [
 			unmatched = append(unmatched, b)
 		}
 	}
+
+	if len(unmatched) > 0 {
+		names, err := changedPathsLog(ctx, st, stdin.String())
+		if err != nil {
+			for _, b := range unmatched {
+				errs[b] = err
+			}
+			return merged, errs
+		}
+		var still []string
+		for _, b := range unmatched {
+			ok, err := supersetMerged(ctx, r, st, names, changes[b])
+			switch {
+			case err != nil:
+				errs[b] = err
+			case ok:
+				merged[b] = true
+			default:
+				still = append(still, b)
+			}
+		}
+		unmatched = still
+	}
 	if capped {
 		alone(unmatched)
 	}
 	return merged, errs
+}
+
+// commitPaths is one commit of the shared log with the paths it changed
+// among the logged ones.
+type commitPaths struct {
+	commit string
+	paths  map[string]bool
+}
+
+// changedPathsLog lists the commits of the shared log (same range, paths,
+// and limit, read from stdin) with the paths each one changed.
+func changedPathsLog(ctx context.Context, st git.Streamer, stdin string) ([]commitPaths, error) {
+	args := []string{"log", "--stdin", "--no-merges", "--no-renames", "--format=%x00%H", "--name-only", "-z",
+		"--max-count=" + strconv.Itoa(patchIDBaseLimit)}
+	var out bytes.Buffer
+	if err := st.Stream(ctx, strings.NewReader(stdin), &out, args...); err != nil {
+		return nil, err
+	}
+	// With -z each record is "\x00<sha>\x00\n<path>\x00<path>\x00...". A path
+	// can hold any name, "commit <sha>" too, but is never empty, so only the
+	// token after an empty one is a commit.
+	var list []commitPaths
+	header := false
+	for _, tok := range strings.Split(out.String(), "\x00") {
+		switch {
+		case tok == "":
+			header = true
+		case header:
+			if !isFullOID(tok) {
+				return nil, fmt.Errorf("git log: unexpected commit record %q", tok)
+			}
+			list = append(list, commitPaths{commit: tok, paths: map[string]bool{}})
+			header = false
+		case len(list) > 0:
+			list[len(list)-1].paths[strings.TrimPrefix(tok, "\n")] = true
+		}
+	}
+	return list, nil
+}
+
+// supersetMerged hashes, with ch's paths only, the commits of names that
+// change every path of ch and at least one other, and reports whether one of
+// them is ch's squash after its merge base.
+func supersetMerged(ctx context.Context, r git.Runner, st git.Streamer, names []commitPaths, ch branchPatch) (bool, error) {
+	var cands strings.Builder
+	for _, c := range names {
+		if len(c.paths) <= len(ch.paths) {
+			continue
+		}
+		all := true
+		for _, p := range ch.paths {
+			if !c.paths[p] {
+				all = false
+				break
+			}
+		}
+		if all {
+			cands.WriteString(c.commit + "\n")
+		}
+	}
+	if cands.Len() == 0 {
+		return false, nil
+	}
+	args := append([]string{"diff-tree", "--stdin", "-p", "--root"}, patchIDDiffArgs...)
+	args = append(append(args, "--"), pathspecLiterals(ch.paths)...)
+	var diff bytes.Buffer
+	if err := st.Stream(ctx, strings.NewReader(cands.String()), &diff, args...); err != nil {
+		return false, err
+	}
+	ids, err := patchIDs(ctx, st, diff.Bytes())
+	if err != nil {
+		return false, err
+	}
+	var hits []string
+	for _, e := range ids {
+		if e.id == ch.id {
+			hits = append(hits, e.commit)
+		}
+	}
+	return forkedAfter(ctx, r, hits, ch.mergeBase)
 }
 
 // forkedAfter reports whether one of commits is outside the history of

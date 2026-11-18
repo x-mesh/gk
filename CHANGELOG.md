@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `gk branch list --merged --base <branch>` and `--unmerged --base <branch>` judge against that branch, like `gk branch clean --base`. Before, the listing always used `base_branch` or the remote's default branch, so it disagreed with `gk branch clean --base develop` about which branches were merged. `--base` without `--merged` or `--unmerged` fails.
 
+### Changed
+
+- `gk branch list --merged`, `--unmerged`, and `gk branch clean --squash-merged` read the base history once for all branches whose merge with the base conflicts, instead of once per branch. A test repository with 30 such branches and 600 later base commits took 2.1 to 2.6 s instead of 5.2 to 5.8 s for `gk branch list --merged`, and 5.2 s instead of 8.7 s for `gk branch clean --squash-merged --dry-run`, with the same branches listed. With the heads of 15 merged PRs of this repository checked out as branches, `gk branch list --merged --base main` took 0.8 s instead of 1.4 s and listed the same 15. A base commit that matches only after the other branches' paths are left out is no longer matched when several branches conflict; a squash merge changes only its own branch's paths.
+
 ## [0.164.0] - 2026-11-17
 
 ### Added

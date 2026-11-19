@@ -38,16 +38,15 @@ const dashPage = 20
 
 // DashQuery holds the search strings of a dashboard read. Callers add the
 // scope prefix (repo:, org:, user:). Owner and Repo, when set, add the
-// repository block and the Unassigned search. ReviewContext, when set, reads
-// that commit status of each PR head by name, so it is found even past the
-// first page of checks.
+// repository block, which also lists the open issues with no assignee.
+// ReviewContext, when set, reads that commit status of each PR head by name,
+// so it is found even past the first page of checks.
 type DashQuery struct {
 	MyPRs         string
 	ReviewPRs     string
 	Assigned      string
 	Mentioned     string
 	Authored      string
-	Unassigned    string
 	Owner         string
 	Repo          string
 	ReviewContext string
@@ -192,7 +191,7 @@ func dashIssueQuery(hasRepo bool) string {
 	var b strings.Builder
 	b.WriteString(dashIssueFragment + "\n")
 	if hasRepo {
-		b.WriteString("query($assigned: String!, $mentioned: String!, $authored: String!, $unassigned: String!, $owner: String!, $name: String!) {\n")
+		b.WriteString("query($assigned: String!, $mentioned: String!, $authored: String!, $owner: String!, $name: String!) {\n")
 	} else {
 		b.WriteString("query($assigned: String!, $mentioned: String!, $authored: String!) {\n")
 	}
@@ -200,8 +199,13 @@ func dashIssueQuery(hasRepo bool) string {
 		fmt.Fprintf(&b, "  %s: search(type: ISSUE, query: $%s, first: %d) { issueCount nodes { ...DashIssue } }\n", alias, alias, dashPage)
 	}
 	if hasRepo {
-		fmt.Fprintf(&b, "  unassigned: search(type: ISSUE, query: $unassigned, first: %d) { issueCount nodes { ...DashIssue } }\n", dashPage)
-		b.WriteString("  repository(owner: $owner, name: $name) { issues(states: OPEN) { totalCount } }\n")
+		// The issues connection, not a no:assignee search: that search took
+		// 1.2-2.2 s on a repository with no open issues, about the whole
+		// query's time, and the connection 0.5 s.
+		b.WriteString("  repository(owner: $owner, name: $name) {\n")
+		b.WriteString("    issues(states: OPEN) { totalCount }\n")
+		fmt.Fprintf(&b, "    unassigned: issues(states: OPEN, first: %d, filterBy: {assignee: null}, orderBy: {field: UPDATED_AT, direction: DESC}) { totalCount nodes { ...DashIssue } }\n", dashPage)
+		b.WriteString("  }\n")
 	}
 	b.WriteString("}\n")
 	return b.String()
@@ -222,7 +226,6 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 	if q.hasRepo() {
 		prVars["owner"], prVars["name"] = q.Owner, q.Repo
 		issueVars["owner"], issueVars["name"] = q.Owner, q.Repo
-		issueVars["unassigned"] = q.Unassigned
 	}
 	if q.ReviewContext != "" {
 		prVars["rc"] = q.ReviewContext
@@ -266,10 +269,8 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 		res.Assigned = issueData.Assigned.issueList()
 		res.Mentioned = issueData.Mentioned.issueList()
 		res.Authored = issueData.Authored.issueList()
-		if issueData.Unassigned != nil {
-			res.Unassigned = issueData.Unassigned.issueList()
-		}
 		if issueData.Repository != nil {
+			res.Unassigned = issueData.Repository.Unassigned.issueList()
 			res.RepoIssues = issueData.Repository.Issues.TotalCount
 		}
 	}
@@ -489,11 +490,12 @@ type dashIssueNode struct {
 
 type dashIssueConn struct {
 	IssueCount int             `json:"issueCount"`
+	TotalCount int             `json:"totalCount"`
 	Nodes      []dashIssueNode `json:"nodes"`
 }
 
 func (c dashIssueConn) issueList() DashIssueList {
-	l := DashIssueList{Total: c.IssueCount}
+	l := DashIssueList{Total: max(c.IssueCount, c.TotalCount)}
 	for _, n := range c.Nodes {
 		if n.Number == 0 {
 			continue
@@ -514,13 +516,13 @@ func (c dashIssueConn) issueList() DashIssueList {
 }
 
 type dashIssueData struct {
-	Assigned   dashIssueConn  `json:"assigned"`
-	Mentioned  dashIssueConn  `json:"mentioned"`
-	Authored   dashIssueConn  `json:"authored"`
-	Unassigned *dashIssueConn `json:"unassigned"`
+	Assigned   dashIssueConn `json:"assigned"`
+	Mentioned  dashIssueConn `json:"mentioned"`
+	Authored   dashIssueConn `json:"authored"`
 	Repository *struct {
 		Issues struct {
 			TotalCount int `json:"totalCount"`
 		} `json:"issues"`
+		Unassigned dashIssueConn `json:"unassigned"`
 	} `json:"repository"`
 }

@@ -283,7 +283,7 @@ func TestBuildDashSnapshotPartialAndOrg(t *testing.T) {
 
 func TestDashQuery(t *testing.T) {
 	q := dashQuery("repo:o/r")
-	if q.Owner != "o" || q.Repo != "r" || q.Unassigned != "repo:o/r is:issue is:open no:assignee" {
+	if q.Owner != "o" || q.Repo != "r" {
 		t.Errorf("repo query = %+v", q)
 	}
 	for name, s := range map[string]string{"mine": q.MyPRs, "review": q.ReviewPRs, "assigned": q.Assigned, "mentioned": q.Mentioned, "authored": q.Authored} {
@@ -300,7 +300,7 @@ func TestDashQuery(t *testing.T) {
 		t.Errorf("types: %q / %q", q.MyPRs, q.Authored)
 	}
 	org := dashQuery("org:o")
-	if org.Owner != "" || org.Unassigned != "" || !strings.Contains(org.MyPRs, "archived:false") {
+	if org.Owner != "" || !strings.Contains(org.MyPRs, "archived:false") {
 		t.Errorf("org query = %+v", org)
 	}
 }

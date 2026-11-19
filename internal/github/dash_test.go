@@ -69,8 +69,10 @@ func issueData(withRepo bool) map[string]any {
 		"authored":  map[string]any{"issueCount": 0, "nodes": []any{}},
 	}
 	if withRepo {
-		d["unassigned"] = map[string]any{"issueCount": 3, "nodes": []any{dashIssueNodeJSON(80)}}
-		d["repository"] = map[string]any{"issues": map[string]any{"totalCount": 15}}
+		d["repository"] = map[string]any{
+			"issues":     map[string]any{"totalCount": 15},
+			"unassigned": map[string]any{"totalCount": 3, "nodes": []any{dashIssueNodeJSON(80)}},
+		}
 	}
 	return d
 }
@@ -110,7 +112,7 @@ func okData(t *testing.T, data map[string]any) func(http.ResponseWriter, dashReq
 }
 
 func fullQuery() DashQuery {
-	return DashQuery{MyPRs: "repo:o/r is:pr is:open author:@me", ReviewPRs: "rv", Assigned: "as", Mentioned: "mn", Authored: "au", Unassigned: "un", Owner: "o", Repo: "r"}
+	return DashQuery{MyPRs: "repo:o/r is:pr is:open author:@me", ReviewPRs: "rv", Assigned: "as", Mentioned: "mn", Authored: "au", Owner: "o", Repo: "r"}
 }
 
 func TestDashboardSendsTwoQueriesAtOnce(t *testing.T) {
@@ -148,6 +150,12 @@ func TestDashboardSendsTwoQueriesAtOnce(t *testing.T) {
 		for _, f := range []string{"labels", "assignees(first"} {
 			if strings.Contains(r.Query, f) {
 				t.Errorf("query requests %s:\n%s", f, r.Query)
+			}
+		}
+		if !isPRQuery(r.Query) {
+			if strings.Contains(r.Query, "no:assignee") || r.Variables["unassigned"] != nil ||
+				!strings.Contains(r.Query, "unassigned: issues(states: OPEN, first: 20, filterBy: {assignee: null}") {
+				t.Errorf("unassigned issues are not read from the issues connection:\n%s", r.Query)
 			}
 		}
 	}

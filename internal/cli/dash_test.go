@@ -94,8 +94,7 @@ func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
 			"authored":  map[string]any{"issueCount": 0, "nodes": []any{}},
 		}
 		if strings.Contains(req.Query, "repository(") {
-			data["unassigned"] = map[string]any{"issueCount": 0, "nodes": []any{}}
-			data["repository"] = map[string]any{"issues": map[string]any{"totalCount": 4}}
+			data["repository"] = map[string]any{"issues": map[string]any{"totalCount": 4}, "unassigned": map[string]any{"totalCount": 0, "nodes": []any{}}}
 		}
 		writeDashJSON(t, w, map[string]any{"data": data})
 	}))

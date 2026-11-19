@@ -42,7 +42,6 @@ func dashQuery(prefix string) ghapi.DashQuery {
 	if slug, ok := strings.CutPrefix(prefix, "repo:"); ok {
 		if owner, name, ok := strings.Cut(slug, "/"); ok {
 			q.Owner, q.Repo = owner, name
-			q.Unassigned = issue(githubSearchFilters{raw: "no:assignee"})
 		}
 	}
 	return q

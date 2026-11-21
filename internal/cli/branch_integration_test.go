@@ -373,3 +373,85 @@ func TestBranchClean_HonoursConfiguredBaseWithoutRemote(t *testing.T) {
 		t.Errorf("squash-merged candidate missing from dry-run output:\n%s", out.String())
 	}
 }
+
+// runCleanCmd runs `gk --repo <dir> branch clean <args>` and resets the flags
+// it sets, so tests sharing rootCmd do not leak state into each other.
+func runCleanCmd(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	t.Cleanup(func() {
+		flagRepo = ""
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		if c, _, err := rootCmd.Find([]string{"branch", "clean"}); err == nil {
+			for _, f := range []string{"dry-run", "remote", "include-remote", "no-ai", "yes"} {
+				_ = c.Flags().Set(f, "false")
+			}
+		}
+	})
+	var out strings.Builder
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs(append([]string{"--repo", dir, "branch", "clean"}, args...))
+	err := rootCmd.Execute()
+	return out.String(), err
+}
+
+// repoWithRemoteOnlyBranch returns a repo whose origin has feat/r, a branch
+// with no local copy.
+func repoWithRemoteOnlyBranch(t *testing.T) *testutil.Repo {
+	t.Helper()
+	origin := testutil.NewRepo(t)
+	origin.WriteFile("base.txt", "base")
+	origin.Commit("base")
+	origin.CreateBranch("feat/r")
+	origin.WriteFile("r.txt", "r")
+	origin.Commit("r")
+	origin.Checkout("main")
+
+	repo := testutil.NewRepo(t)
+	repo.AddRemote("origin", origin.Dir)
+	repo.RunGit("fetch", "origin")
+	repo.RunGit("reset", "--hard", "origin/main")
+	repo.WriteFile(".gk.yaml", "base_branch: main\n")
+	return repo
+}
+
+// `--remote` is a bool; bound to the `remote` config key it made clean run
+// `git remote prune 1`, which failed before anything was cleaned.
+func TestBranchClean_RemoteFlagPrunesConfiguredRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := repoWithRemoteOnlyBranch(t)
+	out, err := runCleanCmd(t, repo.Dir, "--remote", "--dry-run", "--no-ai")
+	if err != nil {
+		t.Fatalf("clean --remote must prune origin: %v\n%s", err, out)
+	}
+}
+
+// The dry run must match what --yes does: a remote-only branch is never
+// selected by default, so it must not be reported as "would delete".
+func TestBranchClean_DryRunSkipsUnselectedRemoteOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	repo := repoWithRemoteOnlyBranch(t)
+	out, err := runCleanCmd(t, repo.Dir, "--include-remote", "--dry-run", "--no-ai")
+	if err != nil {
+		t.Fatalf("clean --include-remote --dry-run: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "would delete: feat/r") {
+		t.Errorf("dry run reports an unselected remote-only branch as deleted:\n%s", out)
+	}
+	if !strings.Contains(out, "skip: origin/feat/r") {
+		t.Errorf("dry run must name the skipped remote-only branch:\n%s", out)
+	}
+
+	if out, err := runCleanCmd(t, repo.Dir, "--include-remote", "--yes", "--no-ai"); err != nil {
+		t.Fatalf("clean --include-remote --yes: %v\n%s", err, out)
+	}
+	if _, err := repo.TryGit("rev-parse", "--verify", "refs/remotes/origin/feat/r"); err != nil {
+		t.Errorf("--yes deleted origin/feat/r, but the dry run said it would be skipped")
+	}
+}

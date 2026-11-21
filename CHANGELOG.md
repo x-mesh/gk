@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gk worktree add <path> <branch>` checks out a branch that exists only as a remote-tracking ref, such as `origin/<branch>` after a fetch. It creates the local branch to track that ref, as `git worktree add` does. Before, gk stopped with `worktree-ref-not-found`, although the help says a remote-tracking branch is accepted. If the branch is on several remotes, `checkout.defaultRemote` picks one. Without it, the add stops and names the candidates.
+- `gk branch clean --remote` prunes the configured remote. Before, the bool flag replaced the `remote` config value with `1`, so clean ran `git remote prune 1` and stopped with an error before it cleaned any branch. A bool flag no longer overrides the `remote` or `base_branch` config value. A string flag such as `gk reset --remote <name>` still overrides it.
+- `gk branch clean --dry-run` shows `skip: <name>` for a candidate that `--yes` does not delete, such as a remote-only branch from `--include-remote`. Before, the dry run showed `would delete` for these branches, but `--yes` kept them.
 
 ## [0.164.0] - 2026-11-17
 

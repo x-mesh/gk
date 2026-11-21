@@ -72,6 +72,13 @@ func SetConfigWarnWriter(w io.Writer) func() {
 	}
 }
 
+// stringConfigKeys names the scalar top-level keys that a string flag of the
+// same name overrides (e.g. `gk reset --remote fork`).
+var stringConfigKeys = map[string]bool{
+	"base_branch": true,
+	"remote":      true,
+}
+
 // reservedConfigSections names the top-level Config keys that decode into
 // a struct/map. A CLI flag can never represent a whole section, so flags
 // whose name matches one of these are excluded from pflag→viper binding
@@ -288,6 +295,12 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		var bindErr error
 		flags.VisitAll(func(f *pflag.Flag) {
 			if bindErr != nil || reservedConfigSections[f.Name] {
+				return
+			}
+			// A non-string flag sharing a string key's name is a local switch
+			// (`gk branch clean --remote` is a bool); bound, its "true" would
+			// decode to "1" and become the remote name.
+			if stringConfigKeys[f.Name] && f.Value.Type() != "string" {
 				return
 			}
 			bindErr = v.BindPFlag(f.Name, f)

@@ -593,6 +593,15 @@ func runBranchClean(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(w, "protected: %s (check in the picker to force-delete; not auto-deleted)\n", c.Name)
 				continue
 			}
+			// Report what --yes would do: it deletes only the selected ones.
+			if !c.Selected {
+				name := c.Name
+				if c.IsRemote {
+					name = c.RemoteName + "/" + c.Name
+				}
+				fmt.Fprintf(w, "skip: %s (%s — check in the picker to delete; not auto-deleted)\n", name, c.Status)
+				continue
+			}
 			fmt.Fprintf(w, "would delete: %s\n", c.Name)
 		}
 		return nil

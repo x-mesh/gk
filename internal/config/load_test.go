@@ -335,6 +335,49 @@ func TestLoadFlagNameCollidingWithSection(t *testing.T) {
 	}
 }
 
+// TestLoadBoolFlagDoesNotOverrideStringKey guards `gk branch clean --remote`
+// (a bool "run git remote prune" switch): bound to the string `remote` key,
+// its "true" decoded to "1" and clean ran `git remote prune 1`.
+func TestLoadBoolFlagDoesNotOverrideStringKey(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "upstream")
+
+	fs := pflag.NewFlagSet("clean", pflag.ContinueOnError)
+	fs.Bool("remote", false, "run git remote prune")
+	if err := fs.Set("remote", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(fs)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.Remote != "upstream" {
+		t.Errorf("Remote = %q, want %q (a bool flag must not override the remote name)", cfg.Remote, "upstream")
+	}
+}
+
+func TestLoadStringRemoteFlagOverrides(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nonexistent"))
+	t.Setenv("GK_BASE_BRANCH", "")
+	t.Setenv("GK_REMOTE", "upstream")
+
+	fs := pflag.NewFlagSet("reset", pflag.ContinueOnError)
+	fs.String("remote", "", "remote to fetch from")
+	if err := fs.Set("remote", "fork"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(fs)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.Remote != "fork" {
+		t.Errorf("Remote = %q, want %q from the string --remote flag", cfg.Remote, "fork")
+	}
+}
+
 func TestAIDefaults(t *testing.T) {
 	d := config.Defaults()
 	if !d.AI.Enabled {

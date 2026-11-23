@@ -434,3 +434,50 @@ func TestDashboardReadsTheReviewContextByName(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardReadsOthersAndViewer(t *testing.T) {
+	data := prData(false)
+	data["others"] = map[string]any{"issueCount": 4, "nodes": []any{dashPRNodeJSON(9, "feat/bot")}}
+	data["viewer"] = map[string]any{"login": "me"}
+	srv, _, _, reqs := dashServer(t, okData(t, data), okData(t, issueData(false)))
+	c := &Client{APIBase: srv.URL, Token: "tok"}
+	q := fullQuery()
+	q.Owner, q.Repo = "", ""
+	q.OtherPRs = "org:o is:pr is:open -author:@me -review-requested:@me"
+	res, err := c.Dashboard(context.Background(), q)
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	for _, r := range *reqs {
+		if !isPRQuery(r.Query) {
+			continue
+		}
+		if !strings.Contains(r.Query, "others: search(type: ISSUE, query: $others, first: 20)") || !strings.Contains(r.Query, "viewer { login }") {
+			t.Errorf("org PR query does not read others and the viewer:\n%s", r.Query)
+		}
+		if r.Variables["others"] != q.OtherPRs {
+			t.Errorf("others variable = %v", r.Variables["others"])
+		}
+	}
+	if res.OtherPRs.Total != 4 || len(res.OtherPRs.Items) != 1 || res.OtherPRs.Items[0].Number != 9 || res.Viewer != "me" {
+		t.Errorf("others %+v viewer %q", res.OtherPRs, res.Viewer)
+	}
+
+	// A repository reads the open PRs of the repository instead: no search.
+	srv, _, _, reqs = dashServer(t, okData(t, prData(true)), okData(t, issueData(true)))
+	c = &Client{APIBase: srv.URL, Token: "tok"}
+	if _, err := c.Dashboard(context.Background(), fullQuery()); err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	for _, r := range *reqs {
+		if !isPRQuery(r.Query) {
+			continue
+		}
+		if strings.Contains(r.Query, "others: search") || !strings.Contains(r.Query, "viewer { login }") {
+			t.Errorf("repository PR query:\n%s", r.Query)
+		}
+		if _, ok := r.Variables["others"]; ok {
+			t.Errorf("variables carry others: %v", r.Variables)
+		}
+	}
+}

@@ -4623,12 +4623,15 @@ The one exception is `--fetch`: it runs `git fetch`, which updates the remote-tr
 | Section | Rows |
 |---------|------|
 | Activity | One line with the PRs opened, the PRs merged, and the commits of each of the last 7 days |
-| PRs | `mine` (your PRs), `review` (review requested from you), `cleanup` (merged PRs with a local branch that remains) |
+| PRs | `mine` (your PRs), `review` (review requested from you), `others` (the open PRs of other authors with no review requested from you), `cleanup` (merged PRs with a local branch that remains) |
 | Issues | `assigned`, `mentioned`, `authored`, `unassigned` (repository scope only), and a count of the issues that are assigned to other people |
 | Forecast | One line for each conflict between two open PRs or between a PR and its base, for each base branch |
 | Unreleased | The PRs that are merged after the latest tag, for the release branch and for each base branch of the merged PRs |
 
 A row that matches two relations shows one time, with the first relation in the list above.
+`others` rows show below your PRs and the review requests, and above `cleanup`.
+In a repository, gk dash takes `others` from the open PRs of the repository, and the count is the open PRs less `mine` and `review`.
+With `--org`, gk dash searches for `others`.
 Each block reads the newest 20 items.
 If GitHub has more items, the section header shows the shown count.
 
@@ -4647,7 +4650,7 @@ If GitHub has more items, the section header shows the shown count.
 In a terminal, gk dash opens a screen.
 Auto-refresh is on: the screen reads again at each `--interval`.
 Press `w` to turn it off.
-One refresh costs 3 GraphQL points in a repository and 2 points with `--org`.
+One refresh costs 3 GraphQL points, in a repository and with `--org`.
 With the default interval, that is at most 720 points of the 5000 points that a token has for each hour.
 
 | Key | Action |

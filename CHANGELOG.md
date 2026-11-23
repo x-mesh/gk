@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The PRs section of `gk dash` shows `others`: the open PRs of other authors with no review requested from you, below your PRs and the review requests. Before, the section showed only `mine`, `review`, and `cleanup`, so a PR that a bot account opened did not show anywhere. In a repository the rows come from the open PRs that gk dash already read, at no cost. With `--org` one more search reads them, and one refresh costs 3 GraphQL points instead of 2, the same as in a repository.
+
 ## [0.166.0] - 2026-11-23
 
 ### Changed

@@ -238,10 +238,14 @@ func prAction(f dashPRFacts) dashAction {
 }
 
 // prRank orders PR rows: failures and conflicts, then reviews to do, then
-// work in progress, then ready, then the rest, and cleanup last.
+// work in progress, then ready, then the rest, then the PRs of others, and
+// cleanup last.
 func prRank(relation string, a dashAction) int {
-	if relation == dashRelReview {
+	switch relation {
+	case dashRelReview:
 		return 1
+	case dashRelOthers:
+		return 5
 	}
 	switch a.Rule {
 	case 2, 3, 5:
@@ -253,7 +257,7 @@ func prRank(relation string, a dashAction) int {
 	case 8, 9:
 		return 3
 	case 1:
-		return 5
+		return 6
 	}
 	return 4
 }

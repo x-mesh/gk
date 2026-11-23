@@ -16,7 +16,7 @@ import (
 )
 
 // Auto-refresh period. One refresh sends two GraphQL queries at the same time,
-// which cost 3 points in a repository and 2 for an org or account, so 15 s is
+// which cost 3 points in a repository and for an org or account, so 15 s is
 // at most 720 points an hour of the 5000 a token has. The PR lists that come
 // from a search follow the search index, which lags behind GitHub; the open and
 // merged lists of a repository read the pull requests directly. The slow

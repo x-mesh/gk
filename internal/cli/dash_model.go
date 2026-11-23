@@ -14,6 +14,7 @@ import (
 const (
 	dashRelMine       = "mine"
 	dashRelReview     = "review"
+	dashRelOthers     = "others"
 	dashRelCleanup    = "cleanup"
 	dashRelAssigned   = "assigned"
 	dashRelMentioned  = "mentioned"
@@ -43,6 +44,14 @@ func dashQuery(prefix string) ghapi.DashQuery {
 		if owner, name, ok := strings.Cut(slug, "/"); ok {
 			q.Owner, q.Repo = owner, name
 		}
+		// The others of a repository come from its open PRs, newest update
+		// first. In the same order, a review request among those PRs is on
+		// the first page of this search too; in the default order it can be
+		// on a later page and show as a PR of another author.
+		q.ReviewPRs = pr(githubSearchFilters{review: true, raw: "sort:updated-desc"})
+	} else {
+		// A repository reads the open PRs of others from its open PRs.
+		q.OtherPRs = pr(githubSearchFilters{raw: "-author:@me -review-requested:@me"})
 	}
 	return q
 }
@@ -344,6 +353,30 @@ func buildPRSection(in dashInputs) dashPRSection {
 	for _, p := range res.ReviewPRs.Items {
 		add(p, dashRelReview)
 	}
+	// Others are the open PRs of other authors with no review requested from
+	// me. A repository takes them from its open PRs and skips mine by the
+	// viewer's login, also past the first page of the mine search; its count is
+	// the open PRs less mine and the review requests, which a lagging search
+	// index can make negative.
+	others := dashCount{Relation: dashRelOthers}
+	addOther := func(p ghapi.DashPR) {
+		if seen[rowKey(p.Repo, p.Number)] || (res.Viewer != "" && p.Author == res.Viewer) {
+			return
+		}
+		add(p, dashRelOthers)
+		others.Shown++
+	}
+	if res.HasRepo {
+		for _, p := range res.RepoOpen.Items {
+			addOther(p)
+		}
+		others.Total = max(res.RepoOpen.Total-res.MyPRs.Total-res.ReviewPRs.Total, others.Shown)
+	} else {
+		for _, p := range res.OtherPRs.Items {
+			addOther(p)
+		}
+		others.Total = res.OtherPRs.Total
+	}
 	cleanup := 0
 	if in.Local != nil {
 		for _, p := range res.RepoMerged.Items {
@@ -359,6 +392,7 @@ func buildPRSection(in dashInputs) dashPRSection {
 	sec.Counts = []dashCount{
 		{Relation: dashRelMine, Total: res.MyPRs.Total, Shown: len(res.MyPRs.Items)},
 		{Relation: dashRelReview, Total: res.ReviewPRs.Total, Shown: len(res.ReviewPRs.Items)},
+		others,
 	}
 	if in.Local != nil {
 		sec.Counts = append(sec.Counts, dashCount{Relation: dashRelCleanup, Total: cleanup, Shown: cleanup})

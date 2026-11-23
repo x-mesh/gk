@@ -83,7 +83,7 @@ example a review bot's) to show its state instead.`,
 	cmd.Flags().Lookup("org").NoOptDefVal = orgFlagSentinel
 	cmd.Flags().Bool("fetch", false, "fetch the remote before the forecast (no network git call by default)")
 	cmd.Flags().Bool("watch", true, "start the screen with auto-refresh on; --watch=false starts with it off (press w on the screen to toggle it)")
-	cmd.Flags().Duration("interval", dashDefaultInterval, "auto-refresh period on the screen, at least 30s")
+	cmd.Flags().Duration("interval", dashDefaultInterval, "auto-refresh period on the screen, at least 15s")
 	return cmd
 }
 

@@ -4639,7 +4639,7 @@ If GitHub has more items, the section header shows the shown count.
 | `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown. The unreleased section is a summary for each repository |
 | `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
 | `--watch` | true | Open the screen with auto-refresh on. `--watch=false` opens it with auto-refresh off |
-| `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
+| `--interval <d>` | `15s` | Auto-refresh period on the screen. The minimum is `15s` |
 | `--json` | false | Print one snapshot as JSON |
 
 #### Screen
@@ -4647,8 +4647,8 @@ If GitHub has more items, the section header shows the shown count.
 In a terminal, gk dash opens a screen.
 Auto-refresh is on: the screen reads again at each `--interval`.
 Press `w` to turn it off.
-One refresh costs up to 7 GraphQL points.
-With the default interval, that is at most 840 points of the 5000 points that a token has for each hour.
+One refresh costs 3 GraphQL points in a repository and 2 points with `--org`.
+With the default interval, that is at most 720 points of the 5000 points that a token has for each hour.
 
 | Key | Action |
 |-----|--------|

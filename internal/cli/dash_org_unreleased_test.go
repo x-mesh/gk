@@ -41,6 +41,39 @@ func TestComparisonPRs(t *testing.T) {
 	}
 }
 
+func TestOnlyNoReleaseCommits(t *testing.T) {
+	cmp := func(ahead int, msgs ...string) ghapi.TagComparison {
+		c := ghapi.TagComparison{Ahead: ahead}
+		for i, m := range msgs {
+			c.Commits = append(c.Commits, cmpCommit(string(rune('a'+i)), "", m))
+		}
+		return c
+	}
+	cases := []struct {
+		name string
+		c    ghapi.TagComparison
+		want bool
+	}{
+		{"docs only", cmp(1, "docs: re-record the demo GIF"), true},
+		{"maintenance types with scopes", cmp(5, "docs(readme): a", "chore(deps): b", "ci: c", "test: d", "style: e"), true},
+		{"a fix among docs", cmp(2, "docs: a", "fix: b"), false},
+		{"a refactor", cmp(1, "refactor: a"), false},
+		{"breaking marker", cmp(1, "docs!: drop the old guide"), false},
+		{"breaking footer", cmp(1, "chore: bump\n\nBREAKING CHANGE: needs go 1.27"), false},
+		{"breaking change in the body", cmp(1, "docs: a\n\nBREAKING CHANGE: x\n\nmore body text"), false},
+		{"merge commit subject", cmp(2, "docs: a", "Merge pull request #8 from o/b\n\ndocs: a"), false},
+		{"plain subject", cmp(1, "update readme"), false},
+		{"more commits than were read", cmp(31, "docs: a"), false},
+		{"no commits read", cmp(1), false},
+		{"nothing after the tag", cmp(0), false},
+	}
+	for _, tc := range cases {
+		if got := onlyNoReleaseCommits(tc.c); got != tc.want {
+			t.Errorf("%s: onlyNoReleaseCommits = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestOrgUnreleasedJSON(t *testing.T) {
 	one := []ghapi.CompareCommit{cmpCommit("h", "", "fix: a (#3)")}
 	res := &ghapi.OwnerUnreleased{Total: 40, Scanned: 20, Notes: []string{"unreleased query: partial"}, Repos: []ghapi.RepoUnreleased{
@@ -93,6 +126,15 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 	if whole.Commits != 1 || whole.PRs != 1 || whole.PRsPartial {
 		t.Errorf("a read with every commit = %+v, want no partial sum", whole)
 	}
+
+	// A repository with docs commits only keeps its row and says so.
+	docs := []ghapi.CompareCommit{cmpCommit("h", "", "docs: re-record the demo GIF")}
+	d := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: []ghapi.RepoUnreleased{
+		{Repo: "o/docs-only", Tag: "v0.2.0", Branches: []ghapi.TagComparison{{Branch: "main", Default: true, Ahead: 1, Head: "h", Commits: docs}}},
+	}})
+	if len(d.Items) != 1 || !d.Items[0].NoReleaseChanges || d.Commits != 1 {
+		t.Errorf("a docs-only repository = %+v", d)
+	}
 }
 
 func TestRenderDashOrgUnreleased(t *testing.T) {
@@ -124,6 +166,24 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 	if snap.UnreleasedRepos.Items[1].Since != "v0.2.3\x1b[2J" {
 		t.Errorf("rendering changed the snapshot")
 	}
+
+	// A repository with maintenance commits only gets a note, and keeps its row.
+	gkRow := snap.UnreleasedRepos.Items[0]
+	snap.UnreleasedRepos.Items = append(snap.UnreleasedRepos.Items[:2:2], dashRepoUnreleasedRow{Repo: "x-mesh/ai-spinner", Since: "v0.2.0", Branch: "main", Commits: 1, NoReleaseChanges: true})
+	out = renderSnapshot(t, snap, 200)
+	if !strings.Contains(out, "12+  tag is not on main") || !strings.Contains(out, "0    docs/chore/ci/test/style only") {
+		t.Errorf("output has no maintenance-only note:\n%s", out)
+	}
+	both := dashRepoUnreleasedRow{Repo: "x-mesh/both", Since: "v1", Branch: "main", Commits: 1, TagOffBranch: true, NoReleaseChanges: true}
+	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{both}
+	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "tag is not on main; docs/chore/ci/test/style only") {
+		t.Errorf("a row with both notes:\n%s", out)
+	}
+	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{{Repo: "x-mesh/ai-spinner", Since: "v0.2.0", Branch: "main", Commits: 1, NoReleaseChanges: true}}
+	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "note") || !strings.Contains(out, "docs/chore/ci/test/style only") {
+		t.Errorf("a maintenance-only row alone has no note column:\n%s", out)
+	}
+	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{gkRow}
 
 	// Without a tag off its branch there is no note column.
 	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Commits: 12, PRs: 1, Items: snap.UnreleasedRepos.Items[:1]}

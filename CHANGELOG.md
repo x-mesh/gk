@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- In the `Unreleased` summary of `gk dash --org`, a repository gets the note `docs/chore/ci/test/style only` when all of its commits after the tag are of those Conventional Commits types and none is a breaking change. The row stays in the list, and `--json` sets `no_release_changes`. If GitHub returned fewer commits than the branch has after the tag, or a commit subject is not in Conventional Commits form (a merge commit, for example), the row gets no note.
+
 ## [0.165.0] - 2026-11-23
 
 ### Added

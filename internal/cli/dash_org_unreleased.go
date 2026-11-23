@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/x-mesh/gk/internal/commitlint"
 	ghapi "github.com/x-mesh/gk/internal/github"
 )
 
@@ -14,15 +15,18 @@ import (
 // PRsPartial says the branch has more commits than that, so there can be more
 // PRs. TagOffBranch says the tag is on neither the branch nor the default
 // branch, as a tag of a maintenance branch is: Commits is then not a count
-// since a release of the branch.
+// since a release of the branch. NoReleaseChanges says every commit after the
+// tag was read and is a docs, chore, ci, test or style commit without a
+// breaking change, so the commits may not need a release.
 type dashRepoUnreleasedRow struct {
-	Repo         string `json:"repo"`
-	Since        string `json:"since"`
-	Branch       string `json:"branch"`
-	Commits      int    `json:"commits"`
-	PRs          int    `json:"prs"`
-	PRsPartial   bool   `json:"prs_partial,omitempty"`
-	TagOffBranch bool   `json:"tag_off_branch,omitempty"`
+	Repo             string `json:"repo"`
+	Since            string `json:"since"`
+	Branch           string `json:"branch"`
+	Commits          int    `json:"commits"`
+	PRs              int    `json:"prs"`
+	PRsPartial       bool   `json:"prs_partial,omitempty"`
+	TagOffBranch     bool   `json:"tag_off_branch,omitempty"`
+	NoReleaseChanges bool   `json:"no_release_changes,omitempty"`
 }
 
 // dashOrgUnreleasedJSON is the unreleased summary of an org or account:
@@ -64,6 +68,7 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 		row := dashRepoUnreleasedRow{
 			Repo: r.Repo, Since: r.Tag, Branch: best.Branch, Commits: best.Ahead,
 			PRs: comparisonPRs(*best), PRsPartial: best.Ahead > len(best.Commits), TagOffBranch: best.Behind > 0 && !tagOnDefault,
+			NoReleaseChanges: onlyNoReleaseCommits(*best),
 		}
 		j.Items = append(j.Items, row)
 		j.Commits += row.Commits
@@ -71,6 +76,27 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 		j.PRsPartial = j.PRsPartial || row.PRsPartial
 	}
 	return j
+}
+
+// noReleaseTypes are the Conventional Commits types that change nothing a
+// release ships.
+var noReleaseTypes = map[string]bool{"docs": true, "chore": true, "ci": true, "test": true, "style": true}
+
+// onlyNoReleaseCommits reports whether every commit after the tag was read and
+// is of a noReleaseTypes type without a breaking change. A breaking change is
+// found anywhere in the message, as inferShipBump finds it. A commit that is not
+// in Conventional Commits form, a merge commit among them, counts as a change.
+func onlyNoReleaseCommits(c ghapi.TagComparison) bool {
+	if len(c.Commits) == 0 || c.Ahead > len(c.Commits) {
+		return false
+	}
+	for _, cm := range c.Commits {
+		m := commitlint.Parse(cm.Message)
+		if m.Breaking || strings.Contains(cm.Message, "BREAKING CHANGE:") || !noReleaseTypes[m.Type] {
+			return false
+		}
+	}
+	return true
 }
 
 // comparisonPRs counts the pull requests merged in the first-parent commits
@@ -137,7 +163,7 @@ func renderDashOrgUnreleased(w io.Writer, snap dashSnapshot, width int) {
 	headers := []string{"repo", "range", "commits", "PRs"}
 	notes := false
 	for _, r := range u.Items {
-		notes = notes || r.TagOffBranch
+		notes = notes || r.TagOffBranch || r.NoReleaseChanges
 	}
 	if notes {
 		headers = append(headers, "note")
@@ -150,11 +176,14 @@ func renderDashOrgUnreleased(w io.Writer, snap dashSnapshot, width int) {
 		}
 		row := []dashCell{repoCell(snap.Scope, r.Repo), plainCell(r.Since + ".." + r.Branch), plainCell(strconv.Itoa(r.Commits)), plainCell(prs)}
 		if notes {
-			note := ""
+			var note []string
 			if r.TagOffBranch {
-				note = "tag is not on " + r.Branch
+				note = append(note, "tag is not on "+r.Branch)
 			}
-			row = append(row, faintCell(note))
+			if r.NoReleaseChanges {
+				note = append(note, "docs/chore/ci/test/style only")
+			}
+			row = append(row, faintCell(strings.Join(note, "; ")))
 		}
 		rows = append(rows, row)
 	}

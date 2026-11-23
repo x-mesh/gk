@@ -4756,7 +4756,7 @@ The row shows the branch that has more of these commits, and the default branch 
 | `range` | The tag and the branch, as `<tag>..<branch>` |
 | `commits` | The count of commits on the branch that are not in the tag |
 | `PRs` | The count of merged PRs in the newest 30 of these commits. A `+` shows that the branch has more commits |
-| `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch |
+| `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch. `docs/chore/ci/test/style only` if every commit is a `docs`, `chore`, `ci`, `test` or `style` commit and no commit is a breaking change. The note does not show if GitHub returned fewer commits than the branch has, or if a commit subject is not in Conventional Commits form |
 
 A repository without a tag does not show.
 On the screen, the PRs and the issues show first, and the section shows `loading…` until its query ends.
@@ -4783,7 +4783,7 @@ The fields of `result` are `scope`, `fetched_at`, `activity`, `prs`, `issues`, `
 `since` is the tag, or the release branch, that the count starts after.
 `not_fetched` has the numbers of the merged PRs whose merge commit is not in the local repository.
 With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `commits`, `prs`, `prs_partial`, `items`, and `error` when the query failed.
-Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, and `tag_off_branch`.
+Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, `tag_off_branch`, and `no_release_changes`.
 `issues.others_assigned` is the count of open issues assigned to other people.
 
 ```bash

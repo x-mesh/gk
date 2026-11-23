@@ -41,6 +41,42 @@ func TestComparisonPRs(t *testing.T) {
 	}
 }
 
+func TestOnlyNoReleaseCommits(t *testing.T) {
+	cmp := func(ahead int, msgs ...string) ghapi.TagComparison {
+		c := ghapi.TagComparison{Ahead: ahead}
+		for i, m := range msgs {
+			c.Commits = append(c.Commits, cmpCommit(string(rune('a'+i)), "", m))
+		}
+		return c
+	}
+	cases := []struct {
+		name string
+		c    ghapi.TagComparison
+		want bool
+	}{
+		{"docs only", cmp(1, "docs: re-record the demo GIF"), true},
+		{"maintenance types with scopes", cmp(5, "docs(readme): a", "chore(lint): b", "ci: c", "test: d", "style: e"), true},
+		{"a dependency update", cmp(2, "docs: a", "chore(deps): bump x"), false},
+		{"a dev dependency update", cmp(1, "chore(deps-dev): bump y"), false},
+		{"a scope that only starts with deps", cmp(1, "docs(deps-guide): clarify installation"), true},
+		{"a fix among docs", cmp(2, "docs: a", "fix: b"), false},
+		{"a refactor", cmp(1, "refactor: a"), false},
+		{"breaking marker", cmp(1, "docs!: drop the old guide"), false},
+		{"breaking footer", cmp(1, "chore: bump\n\nBREAKING CHANGE: needs go 1.27"), false},
+		{"breaking change in the body", cmp(1, "docs: a\n\nBREAKING CHANGE: x\n\nmore body text"), false},
+		{"merge commit subject", cmp(2, "docs: a", "Merge pull request #8 from o/b\n\ndocs: a"), false},
+		{"plain subject", cmp(1, "update readme"), false},
+		{"more commits than were read", cmp(31, "docs: a"), false},
+		{"no commits read", cmp(1), false},
+		{"nothing after the tag", cmp(0), false},
+	}
+	for _, tc := range cases {
+		if got := onlyNoReleaseCommits(tc.c); got != tc.want {
+			t.Errorf("%s: onlyNoReleaseCommits = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestOrgUnreleasedJSON(t *testing.T) {
 	one := []ghapi.CompareCommit{cmpCommit("h", "", "fix: a (#3)")}
 	res := &ghapi.OwnerUnreleased{Total: 40, Scanned: 20, Notes: []string{"unreleased query: partial"}, Repos: []ghapi.RepoUnreleased{
@@ -93,6 +129,28 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 	if whole.Commits != 1 || whole.PRs != 1 || whole.PRsPartial {
 		t.Errorf("a read with every commit = %+v, want no partial sum", whole)
 	}
+
+	// A repository with docs commits only keeps its item, is counted apart,
+	// and adds nothing to the sums.
+	docs := []ghapi.CompareCommit{cmpCommit("h", "", "docs: re-record the demo GIF (#4)")}
+	d := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: append([]ghapi.RepoUnreleased{
+		{Repo: "o/docs-only", Tag: "v0.2.0", Branches: []ghapi.TagComparison{{Branch: "main", Default: true, Ahead: 1, Head: "h", Commits: docs}}},
+	}, res.Repos[:1]...)})
+	if len(d.Items) != 2 || !d.Items[0].NoReleaseChanges || d.NoReleaseRepos != 1 || d.Commits != 1 || d.PRs != 1 {
+		t.Errorf("a docs-only repository = %+v", d)
+	}
+
+	// The row is develop, with docs commits only, but main has a fix after
+	// the tag: the repository has a change to release.
+	split := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: []ghapi.RepoUnreleased{
+		{Repo: "o/split", Tag: "v0.3.0", Branches: []ghapi.TagComparison{
+			{Branch: "main", Default: true, Ahead: 1, Head: "h", Commits: one},
+			{Branch: "develop", Ahead: 2, Head: "h", Commits: append(docs, cmpCommit("i", "", "docs: b"))},
+		}},
+	}})
+	if len(split.Items) != 1 || split.Items[0].Branch != "develop" || split.Items[0].NoReleaseChanges || split.NoReleaseRepos != 0 || split.Commits != 2 {
+		t.Errorf("a repository with a fix on another branch = %+v", split)
+	}
 }
 
 func TestRenderDashOrgUnreleased(t *testing.T) {
@@ -124,6 +182,26 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 	if snap.UnreleasedRepos.Items[1].Since != "v0.2.3\x1b[2J" {
 		t.Errorf("rendering changed the snapshot")
 	}
+
+	// A repository with maintenance commits only has no row; the header
+	// counts it.
+	gkRow := snap.UnreleasedRepos.Items[0]
+	snap.UnreleasedRepos.Items = append(snap.UnreleasedRepos.Items[:2:2], dashRepoUnreleasedRow{Repo: "x-mesh/ai-spinner", Since: "v0.2.0", Branch: "main", Commits: 1, NoReleaseChanges: true})
+	out = renderSnapshot(t, snap, 200)
+	if strings.Contains(out, "ai-spinner") || !strings.Contains(out, "Unreleased  2 repos · 1,483 commits · 18+ PRs · 1 repo docs/chore only · newest 20 of 40 repos") {
+		t.Errorf("a maintenance-only repository:\n%s", out)
+	}
+	// A hidden row with a tag off its branch adds no note column.
+	both := dashRepoUnreleasedRow{Repo: "x-mesh/both", Since: "v1", Branch: "main", Commits: 1, TagOffBranch: true, NoReleaseChanges: true}
+	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{gkRow, both}
+	if out = renderSnapshot(t, snap, 200); strings.Contains(out, "note") || strings.Contains(out, "both") {
+		t.Errorf("a hidden row with a note:\n%s", out)
+	}
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, NoReleaseRepos: 2, Items: []dashRepoUnreleasedRow{both, both}}
+	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "Unreleased  2 repos docs/chore only · all 5 repos\n  none\n") {
+		t.Errorf("an org with maintenance-only repositories only:\n%s", out)
+	}
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 40, Scanned: 20, Items: []dashRepoUnreleasedRow{gkRow}}
 
 	// Without a tag off its branch there is no note column.
 	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Commits: 12, PRs: 1, Items: snap.UnreleasedRepos.Items[:1]}

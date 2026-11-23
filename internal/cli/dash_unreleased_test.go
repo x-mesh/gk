@@ -60,6 +60,11 @@ func TestCollectDashUnreleased(t *testing.T) {
 		if len(notes) != 0 {
 			t.Errorf("notes = %v", notes)
 		}
+		// Every commit of the range counts, with or without a PR: develop has
+		// the merge commit of #7, the commit of its branch, and #8.
+		if groups[0].Commits != 1 || groups[1].Commits != 3 {
+			t.Errorf("commits = %d and %d, want 1 and 3", groups[0].Commits, groups[1].Commits)
+		}
 	})
 
 	t.Run("a PR shows under the first branch that holds it", func(t *testing.T) {
@@ -142,6 +147,18 @@ func TestCollectDashUnreleased(t *testing.T) {
 		}
 	})
 
+	t.Run("a commit count that fails is a note", func(t *testing.T) {
+		r := unreleasedRepo(t, true)
+		runner := failingCountRunner{&git.ExecRunner{Dir: r.Dir}}
+		groups, notes := collectDashUnreleased(context.Background(), runner, "origin", "", merged)
+		if got, want := unreleasedSummary(groups), "main since v1.0.0: 9 | develop since v1.0.0: 8 7"; got != want {
+			t.Errorf("groups = %s\nwant     %s", got, want)
+		}
+		if len(notes) != 2 || !strings.Contains(notes[0], "unreleased main: count commits") || !strings.Contains(notes[1], "unreleased develop: count commits") {
+			t.Errorf("notes = %v, want one per base naming the commit count", notes)
+		}
+	})
+
 	t.Run("a release branch that is all released has an empty group", func(t *testing.T) {
 		r := unreleasedRepo(t, true)
 		r.RunGit("tag", "v1.1.0", "refs/remotes/origin/main")
@@ -150,6 +167,16 @@ func TestCollectDashUnreleased(t *testing.T) {
 			t.Errorf("groups = %q\nwant     %q", got, want)
 		}
 	})
+}
+
+// failingCountRunner fails `git rev-list --count` and runs the rest.
+type failingCountRunner struct{ git.Runner }
+
+func (f failingCountRunner) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	if len(args) > 1 && args[0] == "rev-list" && args[1] == "--count" {
+		return nil, nil, fmt.Errorf("rev-list failed")
+	}
+	return f.Runner.Run(ctx, args...)
 }
 
 func TestIsHexOID(t *testing.T) {
@@ -173,13 +200,13 @@ func TestBuildDashSnapshotUnreleased(t *testing.T) {
 		{Number: 200, BaseRef: "develop", URL: "https://github.com/o/r/pull/200", Author: "me", State: "MERGED"},
 		{Number: 199, BaseRef: "other", URL: "https://github.com/o/r/pull/199", Author: "someone", State: "MERGED"},
 	}}}
-	in := dashInputs{Res: res, Local: &dashLocal{Remote: "origin"}, Unreleased: []dashUnreleasedGroup{{Base: "develop", Since: "v1.0.0", PRs: prs, NotFetched: []int{201}}}}
+	in := dashInputs{Res: res, Local: &dashLocal{Remote: "origin"}, Unreleased: []dashUnreleasedGroup{{Base: "develop", Since: "v1.0.0", Commits: 40, PRs: prs, NotFetched: []int{201}}}}
 	snap := buildDashSnapshot(in)
 	if len(snap.Unreleased) != 1 {
 		t.Fatalf("unreleased = %+v", snap.Unreleased)
 	}
 	u := snap.Unreleased[0]
-	if u.Base != "develop" || u.Remote != "origin" || u.Since != "v1.0.0" || u.Total != len(prs) || len(u.Items) != releasePRListCap || len(u.NotFetched) != 1 || u.NotFetched[0] != 201 {
+	if u.Base != "develop" || u.Remote != "origin" || u.Since != "v1.0.0" || u.Total != len(prs) || len(u.Items) != releasePRListCap || len(u.NotFetched) != 1 || u.NotFetched[0] != 201 || u.Commits != 40 {
 		t.Errorf("group = %s %s %s total %d items %d", u.Base, u.Remote, u.Since, u.Total, len(u.Items))
 	}
 	if r := u.Items[0]; r.Number != 200 || r.URL == "" || r.Author != "me" || r.Title != "commit title" || !r.MergedAt.Equal(time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)) {
@@ -202,13 +229,13 @@ func TestRenderDashUnreleased(t *testing.T) {
 	snap := dashTableSnapshot("repo:x-mesh/gk", "x-mesh/gk")
 	snap.Unreleased = []dashUnreleasedJSON{
 		{Base: "main", Remote: "origin", Since: "v1.0.0", Total: 0, Items: []dashUnreleasedRow{}},
-		{Base: "develop", Remote: "origin", Since: "v1.0.0", Total: 3, NotFetched: []int{92, 91}, Items: []dashUnreleasedRow{
+		{Base: "develop", Remote: "origin", Since: "v1.0.0", Commits: 1204, Total: 3, NotFetched: []int{92, 91}, Items: []dashUnreleasedRow{
 			{Number: 90, Title: "fix(branch): prune the configured remote", SHA: "d707eb9", MergedAt: now.Add(-2 * time.Hour)},
 			{Number: 89, Title: "evil\x1b]0;pwned\x07title", SHA: "e502b8a", MergedAt: now.Add(-72 * time.Hour)},
 		}},
 	}
 	out := renderSnapshot(t, snap, 200)
-	for _, want := range []string{"Unreleased  develop · 3 merged PR(s) since v1.0.0", "#90  fix(branch): prune the configured remote", "evil?]0;pwned?title", "1 more · gk log v1.0.0..origin/develop",
+	for _, want := range []string{"Unreleased  develop · 1,204 commits · 3 merged PR(s) since v1.0.0", "#90  fix(branch): prune the configured remote", "evil?]0;pwned?title", "1 more · gk log v1.0.0..origin/develop",
 		"#92 #91 merged on GitHub, not in the local repository → gk dash --fetch"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output has no %q:\n%s", want, out)
@@ -274,8 +301,9 @@ func TestDashCmdUnreleased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gk dash: %v\n%s", err, out)
 	}
-	for _, want := range []string{"Unreleased  main · 1 merged PR(s) since v1.0.0", "#9  fix: hotfix on main",
-		"Unreleased  develop · 2 merged PR(s) since v1.0.0", "#31 merged on GitHub, not in the local repository"} {
+	// develop has the merge commit of #7, the commit of its branch, and #8.
+	for _, want := range []string{"Unreleased  main · 1 commit · 1 merged PR(s) since v1.0.0", "#9  fix: hotfix on main",
+		"Unreleased  develop · 3 commits · 2 merged PR(s) since v1.0.0", "#31 merged on GitHub, not in the local repository"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output has no %q:\n%s", want, out)
 		}

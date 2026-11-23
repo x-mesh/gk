@@ -271,7 +271,7 @@ gk ship --dry-run         # preview squash/version/changelog/tag/push plan
 | `gk pr new` | Generate a structured PR description (Summary, Changes, Risk Assessment, Test Plan) from branch commits. `--output clipboard` copies directly; `--dry-run` previews the prompt |
 | `gk issue` | List open issues via the GitHub search API. Same scope flags as `gk pr` (`--org`, `--mine`, `--state`, `--json`) |
 | `gk inbox` | Every open PR and issue involving you (`involves:@me`) across all repos, in one search. `--pr`/`--issue` narrow the type; needs a token |
-| `gk dash` | Your open PRs and issues with the local branch, the worktree state, and the next action of each, a forecast of merge conflicts between open PRs, and the merged PRs that are not in a release. `--org` shows the repositories that have commits after their latest tag. In a terminal it opens a screen: `w` turns auto-refresh on or off. `--org`, `--fetch`, `--watch`, `--json`. Needs a token |
+| `gk dash` | Your open PRs and issues with the local branch, the worktree state, and the next action of each, a forecast of merge conflicts between open PRs, and the merged PRs that are not in a release. `--org` shows the repositories that have commits after their latest tag. An activity line shows the PRs and the commits of the last 7 days. In a terminal it opens a screen: `w` turns auto-refresh on or off. `--org`, `--fetch`, `--watch`, `--json`. Needs a token |
 | `gk review` | AI-powered code review on staged changes (`git diff --cached`) or a commit range (`--range ref1..ref2`). `--format json` for structured output |
 | `gk changelog` | Generate a changelog grouped by Conventional Commit type from a commit range. `--from`/`--to` refs; defaults to latest tag..HEAD |
 

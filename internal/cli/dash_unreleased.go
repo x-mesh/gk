@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/x-mesh/gk/internal/git"
@@ -17,6 +18,7 @@ import (
 type dashUnreleasedGroup struct {
 	Base       string
 	Since      string
+	Commits    int // every commit of the range, not only those of a PR
 	PRs        []releasePR
 	NotFetched []int
 }
@@ -34,13 +36,9 @@ type dashUnreleasedGroup struct {
 // no starting point and is left out. A failed read is a note.
 func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, releaseBase string, merged []ghapi.DashPR) ([]dashUnreleasedGroup, []string) {
 	var notes []string
-	if releaseBase == "" {
-		detected, err := git.NewClient(runner).DefaultBranch(ctx, remote)
-		if err != nil {
-			notes = append(notes, "unreleased: release branch unknown (set base_branch): "+err.Error())
-		} else {
-			releaseBase = detected
-		}
+	releaseBase, err := dashReleaseBase(ctx, runner, remote, releaseBase)
+	if err != nil {
+		notes = append(notes, "unreleased: release branch unknown (set base_branch): "+err.Error())
 	}
 	releaseRef := "refs/remotes/" + remote + "/" + releaseBase
 	hasRelease := releaseBase != "" && refExists(ctx, runner, releaseRef)
@@ -73,7 +71,15 @@ func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, relea
 			notes = append(notes, "unreleased "+base+": "+err.Error())
 			continue
 		}
-		groups = append(groups, dashUnreleasedGroup{Base: base, Since: since, PRs: prs})
+		g := dashUnreleasedGroup{Base: base, Since: since, PRs: prs}
+		out, _, err := runner.Run(ctx, append([]string{"rev-list", "--count"}, revs...)...)
+		if err == nil {
+			g.Commits, err = strconv.Atoi(strings.TrimSpace(string(out)))
+		}
+		if err != nil {
+			notes = append(notes, "unreleased "+base+": count commits: "+err.Error())
+		}
+		groups = append(groups, g)
 	}
 
 	// A branch cut from another holds that branch's pull requests too.
@@ -111,6 +117,20 @@ func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, relea
 		sort.Sort(sort.Reverse(sort.IntSlice(g.NotFetched)))
 	}
 	return groups, notes
+}
+
+// dashReleaseBase is the release branch: base when the config names one, and
+// the remote's default branch otherwise. When neither is known it returns ""
+// and why the default branch was not found.
+func dashReleaseBase(ctx context.Context, runner git.Runner, remote, base string) (string, error) {
+	if base != "" {
+		return base, nil
+	}
+	detected, err := git.NewClient(runner).DefaultBranch(ctx, remote)
+	if err != nil {
+		return "", err
+	}
+	return detected, nil
 }
 
 // missingMergeCommits returns the numbers of the merged PRs whose merge commit

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,13 +48,14 @@ func dashGraphQLPR(head, oid string) map[string]any {
 }
 
 type dashFake struct {
-	graphql  atomic.Int32
-	mu       sync.Mutex
-	queries  []string
-	limited  bool
-	merged   []any // the repository's merged PR nodes
-	orgRepos []any // the owner's repository nodes of the unreleased query
-	orgFails bool  // the unreleased query answers 502
+	graphql       atomic.Int32
+	mu            sync.Mutex
+	queries       []string
+	limited       bool
+	merged        []any // the repository's merged PR nodes
+	orgRepos      []any // the owner's repository nodes of the unreleased query
+	orgFails      bool  // the unreleased query answers 502
+	activityFails bool  // the activity queries answer 502
 }
 
 func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
@@ -74,6 +76,34 @@ func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
 		if f.limited {
 			w.Header().Set("Retry-After", "120")
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		// The PR activity query: day i has i+1 PRs opened and i merged.
+		if strings.Contains(req.Query, "o0: search") {
+			if f.activityFails {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			data := map[string]any{}
+			for i := range dashActivityDays {
+				data["o"+strconv.Itoa(i)] = map[string]any{"issueCount": i + 1}
+				data["m"+strconv.Itoa(i)] = map[string]any{"issueCount": i}
+			}
+			writeDashJSON(t, w, map[string]any{"data": data})
+			return
+		}
+		// The commit activity query: one repository with 2 commits each day.
+		if strings.Contains(req.Query, "history(since") {
+			if f.activityFails {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			target := map[string]any{}
+			for i := range dashActivityDays {
+				target["d"+strconv.Itoa(i)] = map[string]any{"totalCount": 2}
+			}
+			writeDashJSON(t, w, map[string]any{"data": map[string]any{"repositoryOwner": map[string]any{"repositories": map[string]any{
+				"totalCount": 1, "nodes": []any{map[string]any{"pushedAt": "2026-11-17T01:00:00Z", "defaultBranchRef": map[string]any{"target": target}}}}}}})
 			return
 		}
 		if strings.Contains(req.Query, "repositoryOwner(") {
@@ -161,13 +191,14 @@ func TestDashCmdTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gk dash: %v\n%s", err, out)
 	}
-	for _, want := range []string{"gk dash · ", "o/r", "PRs", "mine 1", "#7", "feat: a dashboard", "fix/a", "ready to merge", "Issues", "#70", "#7 open", "PR #7 in review", "3 more assigned to others", "Forecast", "main · 1 PR(s)", "no conflicts", "branch"} {
+	for _, want := range []string{"gk dash · ", "o/r", "PRs", "mine 1", "#7", "feat: a dashboard", "fix/a", "ready to merge", "Issues", "#70", "#7 open", "PR #7 in review", "3 more assigned to others", "Forecast", "main · 1 PR(s)", "no conflicts", "branch", "Activity  7d · PRs opened 28 ▂▃▄▅▆▇█ · merged 21 ·▂▃▄▆▇█ · commits "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output has no %q:\n%s", want, out)
 		}
 	}
-	if got := f.graphql.Load(); got != 2 {
-		t.Errorf("graphql requests = %d, want 2", got)
+	// The PR query, the issue query, and the PR activity query.
+	if got := f.graphql.Load(); got != 3 {
+		t.Errorf("graphql requests = %d, want 3", got)
 	}
 	if c, ok := readGitHubCounts(context.Background(), &git.ExecRunner{Dir: r.Dir}, "o/r"); !ok || c.OpenPRs != 1 {
 		t.Errorf("counts cache = %+v, %v; want open_prs 1", c, ok)

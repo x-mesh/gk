@@ -168,6 +168,7 @@ type dashUnreleasedJSON struct {
 	Base       string              `json:"base"`
 	Remote     string              `json:"remote"`
 	Since      string              `json:"since"`
+	Commits    int                 `json:"commits"` // every commit after Since, with or without a PR
 	Total      int                 `json:"total"`
 	Items      []dashUnreleasedRow `json:"items"`
 	NotFetched []int               `json:"not_fetched,omitempty"`
@@ -178,6 +179,7 @@ type dashUnreleasedJSON struct {
 type dashSnapshot struct {
 	Scope      string               `json:"scope"`
 	FetchedAt  time.Time            `json:"fetched_at"`
+	Activity   *dashActivityJSON    `json:"activity,omitempty"`
 	PRs        dashPRSection        `json:"prs"`
 	Issues     dashIssueSection     `json:"issues"`
 	Forecast   []dashForecastJSON   `json:"forecast,omitempty"`
@@ -196,7 +198,7 @@ type dashInputs struct {
 	Local         *dashLocal // nil outside the repository or with --org
 	Forecast      []dashForecastGroup
 	Unreleased    []dashUnreleasedGroup
-	OrgUnreleased *dashOrgUnreleasedJSON // nil in a repository scope
+	Commits       *dashSeriesJSON // the repository's commits by day; nil for an org scope
 	ReviewContext string
 }
 
@@ -210,7 +212,8 @@ func forecastInputs(res *ghapi.DashResult) []dashForecastPR {
 }
 
 func buildDashSnapshot(in dashInputs) dashSnapshot {
-	snap := dashSnapshot{Scope: in.Scope, FetchedAt: in.Now, Notes: append([]string(nil), in.Res.Notes...), UnreleasedRepos: in.OrgUnreleased}
+	snap := dashSnapshot{Scope: in.Scope, FetchedAt: in.Now, Notes: append([]string(nil), in.Res.Notes...)}
+	snap.Activity = &dashActivityJSON{Since: dashDayRanges(in.Now, dashActivityDays)[0].Start, Commits: in.Commits}
 	snap.PRs = buildPRSection(in)
 	snap.Issues = buildIssueSection(in)
 	for _, g := range in.Forecast {
@@ -233,7 +236,7 @@ func buildDashSnapshot(in dashInputs) dashSnapshot {
 // row. The base branch must match too: in a fork, a commit subject can carry a
 // PR number of the upstream repository.
 func unreleasedJSON(g dashUnreleasedGroup, remote string, merged []ghapi.DashPR) dashUnreleasedJSON {
-	j := dashUnreleasedJSON{Base: g.Base, Remote: remote, Since: g.Since, Total: len(g.PRs), Items: []dashUnreleasedRow{}, NotFetched: g.NotFetched}
+	j := dashUnreleasedJSON{Base: g.Base, Remote: remote, Since: g.Since, Commits: g.Commits, Total: len(g.PRs), Items: []dashUnreleasedRow{}, NotFetched: g.NotFetched}
 	for _, p := range g.PRs[:min(len(g.PRs), releasePRListCap)] {
 		row := dashUnreleasedRow{Number: p.Number, Title: p.Title, SHA: p.SHA}
 		if t, err := time.Parse(time.RFC3339, p.Date); err == nil {

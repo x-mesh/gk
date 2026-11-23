@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- In the `Unreleased` summary of `gk dash --org`, a repository gets the note `docs/chore/ci/test/style only` when all of its commits after the tag are of those Conventional Commits types and none is a breaking change or a dependency update (scope `deps` or `deps-dev`). The row stays in the list, and `--json` sets `no_release_changes`. If GitHub returned fewer commits than the branch has after the tag, or a commit subject is not in Conventional Commits form (a merge commit, for example), the row gets no note.
+- The `Unreleased` summary of `gk dash --org` does not show a repository whose commits after the tag are all `docs`, `chore`, `ci`, `test` or `style` commits without a breaking change or a dependency update (scope `deps` or `deps-dev`). The header shows the count of these repositories as `<n> repos docs/chore only`, and the commit and PR totals do not include them. `--json` keeps them in `items` with `no_release_changes`, and counts them in `no_release_repos`. If GitHub returned fewer commits than the branch has after the tag, or a commit subject is not in Conventional Commits form (a merge commit, for example), the repository shows as before.
 
 ## [0.165.0] - 2026-11-23
 

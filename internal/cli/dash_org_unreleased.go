@@ -17,7 +17,8 @@ import (
 // branch, as a tag of a maintenance branch is: Commits is then not a count
 // since a release of the branch. NoReleaseChanges says every commit after the
 // tag was read and is a docs, chore, ci, test or style commit without a
-// breaking change, so the commits may not need a release.
+// breaking change, so the commits may not need a release: the screen hides the
+// row.
 type dashRepoUnreleasedRow struct {
 	Repo             string `json:"repo"`
 	Since            string `json:"since"`
@@ -33,17 +34,19 @@ type dashRepoUnreleasedRow struct {
 // Scanned of its Total repositories were read, the newest push first. Pending
 // is set on the screen until the first read ends. Error keeps the rows of the
 // read before it, or the rows GitHub answered next to a partial error.
-// Commits and PRs add up the rows; PRsPartial says a row's count is partial,
-// so the sum is a lower bound.
+// Commits and PRs add up the rows without NoReleaseChanges; PRsPartial says
+// the count of one of these rows is partial, so the sum is a lower bound.
+// NoReleaseRepos counts the rows with NoReleaseChanges.
 type dashOrgUnreleasedJSON struct {
-	Total      int                     `json:"total"`
-	Scanned    int                     `json:"scanned"`
-	Commits    int                     `json:"commits"`
-	PRs        int                     `json:"prs"`
-	PRsPartial bool                    `json:"prs_partial,omitempty"`
-	Items      []dashRepoUnreleasedRow `json:"items"`
-	Pending    bool                    `json:"pending,omitempty"`
-	Error      string                  `json:"error,omitempty"`
+	Total          int                     `json:"total"`
+	Scanned        int                     `json:"scanned"`
+	Commits        int                     `json:"commits"`
+	PRs            int                     `json:"prs"`
+	PRsPartial     bool                    `json:"prs_partial,omitempty"`
+	NoReleaseRepos int                     `json:"no_release_repos,omitempty"`
+	Items          []dashRepoUnreleasedRow `json:"items"`
+	Pending        bool                    `json:"pending,omitempty"`
+	Error          string                  `json:"error,omitempty"`
 }
 
 // orgUnreleasedJSON keeps one row for each repository that has commits after
@@ -71,6 +74,10 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 			NoReleaseChanges: onlyNoReleaseCommits(*best),
 		}
 		j.Items = append(j.Items, row)
+		if row.NoReleaseChanges {
+			j.NoReleaseRepos++
+			continue
+		}
 		j.Commits += row.Commits
 		j.PRs += row.PRs
 		j.PRsPartial = j.PRsPartial || row.PRsPartial
@@ -144,19 +151,37 @@ func renderDashOrgUnreleased(w io.Writer, snap dashSnapshot, width int) {
 	if u.Scanned < u.Total {
 		read = fmt.Sprintf("newest %d of %d repos", u.Scanned, u.Total)
 	}
+	// A repository with maintenance commits only needs no release: it has no
+	// row, and the header counts it.
+	var items []dashRepoUnreleasedRow
+	for _, r := range u.Items {
+		if !r.NoReleaseChanges {
+			items = append(items, r)
+		}
+	}
+	hidden := ""
+	if n := len(u.Items) - len(items); n > 0 {
+		hidden = pluralCount(n, "repo", "repos") + " docs/chore only"
+	}
 	summary := "nothing after the latest tag · " + read
 	switch {
-	case len(u.Items) > 0:
-		summary = strings.Join([]string{pluralCount(len(u.Items), "repo", "repos"), pluralCount(u.Commits, "commit", "commits"), prs, read}, " · ")
+	case len(items) > 0:
+		parts := []string{pluralCount(len(items), "repo", "repos"), pluralCount(u.Commits, "commit", "commits"), prs}
+		if hidden != "" {
+			parts = append(parts, hidden)
+		}
+		summary = strings.Join(append(parts, read), " · ")
 	case u.Error != "":
 		// Nothing was read: a summary would say that nothing waits.
 		summary = ""
+	case hidden != "":
+		summary = hidden + " · " + read
 	}
 	fmt.Fprintln(w, strings.TrimRight(cellBold("Unreleased")+"  "+cellFaint(summary), " "))
 	if u.Error != "" {
 		fmt.Fprintf(w, "  %s\n", cellRed("could not read: "+u.Error))
 	}
-	if len(u.Items) == 0 {
+	if len(items) == 0 {
 		if u.Error == "" {
 			fmt.Fprintf(w, "  %s\n", cellFaint("none"))
 		}
@@ -164,28 +189,25 @@ func renderDashOrgUnreleased(w io.Writer, snap dashSnapshot, width int) {
 	}
 	headers := []string{"repo", "range", "commits", "PRs"}
 	notes := false
-	for _, r := range u.Items {
-		notes = notes || r.TagOffBranch || r.NoReleaseChanges
+	for _, r := range items {
+		notes = notes || r.TagOffBranch
 	}
 	if notes {
 		headers = append(headers, "note")
 	}
 	var rows [][]dashCell
-	for _, r := range u.Items {
+	for _, r := range items {
 		prs := strconv.Itoa(r.PRs)
 		if r.PRsPartial {
 			prs += "+"
 		}
 		row := []dashCell{repoCell(snap.Scope, r.Repo), plainCell(r.Since + ".." + r.Branch), plainCell(strconv.Itoa(r.Commits)), plainCell(prs)}
 		if notes {
-			var note []string
+			note := ""
 			if r.TagOffBranch {
-				note = append(note, "tag is not on "+r.Branch)
+				note = "tag is not on " + r.Branch
 			}
-			if r.NoReleaseChanges {
-				note = append(note, "docs/chore/ci/test/style only")
-			}
-			row = append(row, faintCell(strings.Join(note, "; ")))
+			row = append(row, faintCell(note))
 		}
 		rows = append(rows, row)
 	}

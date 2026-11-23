@@ -129,12 +129,13 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 		t.Errorf("a read with every commit = %+v, want no partial sum", whole)
 	}
 
-	// A repository with docs commits only keeps its row and says so.
-	docs := []ghapi.CompareCommit{cmpCommit("h", "", "docs: re-record the demo GIF")}
-	d := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: []ghapi.RepoUnreleased{
+	// A repository with docs commits only keeps its item, is counted apart,
+	// and adds nothing to the sums.
+	docs := []ghapi.CompareCommit{cmpCommit("h", "", "docs: re-record the demo GIF (#4)")}
+	d := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: append([]ghapi.RepoUnreleased{
 		{Repo: "o/docs-only", Tag: "v0.2.0", Branches: []ghapi.TagComparison{{Branch: "main", Default: true, Ahead: 1, Head: "h", Commits: docs}}},
-	}})
-	if len(d.Items) != 1 || !d.Items[0].NoReleaseChanges || d.Commits != 1 {
+	}, res.Repos[:1]...)})
+	if len(d.Items) != 2 || !d.Items[0].NoReleaseChanges || d.NoReleaseRepos != 1 || d.Commits != 1 || d.PRs != 1 {
 		t.Errorf("a docs-only repository = %+v", d)
 	}
 }
@@ -169,23 +170,25 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 		t.Errorf("rendering changed the snapshot")
 	}
 
-	// A repository with maintenance commits only gets a note, and keeps its row.
+	// A repository with maintenance commits only has no row; the header
+	// counts it.
 	gkRow := snap.UnreleasedRepos.Items[0]
 	snap.UnreleasedRepos.Items = append(snap.UnreleasedRepos.Items[:2:2], dashRepoUnreleasedRow{Repo: "x-mesh/ai-spinner", Since: "v0.2.0", Branch: "main", Commits: 1, NoReleaseChanges: true})
 	out = renderSnapshot(t, snap, 200)
-	if !strings.Contains(out, "12+  tag is not on main") || !strings.Contains(out, "0    docs/chore/ci/test/style only") {
-		t.Errorf("output has no maintenance-only note:\n%s", out)
+	if strings.Contains(out, "ai-spinner") || !strings.Contains(out, "Unreleased  2 repos · 1,483 commits · 18+ PRs · 1 repo docs/chore only · newest 20 of 40 repos") {
+		t.Errorf("a maintenance-only repository:\n%s", out)
 	}
+	// A hidden row with a tag off its branch adds no note column.
 	both := dashRepoUnreleasedRow{Repo: "x-mesh/both", Since: "v1", Branch: "main", Commits: 1, TagOffBranch: true, NoReleaseChanges: true}
-	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{both}
-	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "tag is not on main; docs/chore/ci/test/style only") {
-		t.Errorf("a row with both notes:\n%s", out)
+	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{gkRow, both}
+	if out = renderSnapshot(t, snap, 200); strings.Contains(out, "note") || strings.Contains(out, "both") {
+		t.Errorf("a hidden row with a note:\n%s", out)
 	}
-	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{{Repo: "x-mesh/ai-spinner", Since: "v0.2.0", Branch: "main", Commits: 1, NoReleaseChanges: true}}
-	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "note") || !strings.Contains(out, "docs/chore/ci/test/style only") {
-		t.Errorf("a maintenance-only row alone has no note column:\n%s", out)
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, NoReleaseRepos: 2, Items: []dashRepoUnreleasedRow{both, both}}
+	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "Unreleased  2 repos docs/chore only · all 5 repos\n  none\n") {
+		t.Errorf("an org with maintenance-only repositories only:\n%s", out)
 	}
-	snap.UnreleasedRepos.Items = []dashRepoUnreleasedRow{gkRow}
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 40, Scanned: 20, Items: []dashRepoUnreleasedRow{gkRow}}
 
 	// Without a tag off its branch there is no note column.
 	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Commits: 12, PRs: 1, Items: snap.UnreleasedRepos.Items[:1]}

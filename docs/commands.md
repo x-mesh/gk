@@ -4756,9 +4756,12 @@ The row shows the branch that has more of these commits, and the default branch 
 | `range` | The tag and the branch, as `<tag>..<branch>` |
 | `commits` | The count of commits on the branch that are not in the tag |
 | `PRs` | The count of merged PRs in the newest 30 of these commits. A `+` shows that the branch has more commits |
-| `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch. `docs/chore/ci/test/style only` if every commit is a `docs`, `chore`, `ci`, `test` or `style` commit and no commit is a breaking change or a dependency update (scope `deps` or `deps-dev`). The note does not show if GitHub returned fewer commits than the branch has, or if a commit subject is not in Conventional Commits form |
+| `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch |
 
 A repository without a tag does not show.
+A repository does not show if every commit after the tag is a `docs`, `chore`, `ci`, `test` or `style` commit and no commit is a breaking change or a dependency update (scope `deps` or `deps-dev`).
+The header shows the count of these repositories as `<n> repos docs/chore only`, and its commit and PR totals do not include them.
+A repository shows if GitHub returned fewer commits than the branch has, or if a commit subject is not in Conventional Commits form, for example a merge commit.
 On the screen, the PRs and the issues show first, and the section shows `loading…` until its query ends.
 The unreleased query costs 13 GraphQL points, more than the other queries together.
 Auto-refresh sends it again only if the last read is 5 minutes old.
@@ -4782,8 +4785,9 @@ The fields of `result` are `scope`, `fetched_at`, `activity`, `prs`, `issues`, `
 `unreleased` has one entry for each branch, with `base`, `remote`, `since`, `commits`, `total`, `items`, and `not_fetched`.
 `since` is the tag, or the release branch, that the count starts after.
 `not_fetched` has the numbers of the merged PRs whose merge commit is not in the local repository.
-With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `commits`, `prs`, `prs_partial`, `items`, and `error` when the query failed.
+With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `commits`, `prs`, `prs_partial`, `no_release_repos`, `items`, and `error` when the query failed.
 Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, `tag_off_branch`, and `no_release_changes`.
+`items` keeps the repositories with `no_release_changes`, and `no_release_repos` counts them. `commits` and `prs` do not include them.
 `issues.others_assigned` is the count of open issues assigned to other people.
 
 ```bash

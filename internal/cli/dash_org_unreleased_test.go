@@ -55,7 +55,9 @@ func TestOnlyNoReleaseCommits(t *testing.T) {
 		want bool
 	}{
 		{"docs only", cmp(1, "docs: re-record the demo GIF"), true},
-		{"maintenance types with scopes", cmp(5, "docs(readme): a", "chore(deps): b", "ci: c", "test: d", "style: e"), true},
+		{"maintenance types with scopes", cmp(5, "docs(readme): a", "chore(lint): b", "ci: c", "test: d", "style: e"), true},
+		{"a dependency update", cmp(2, "docs: a", "chore(deps): bump x"), false},
+		{"a dev dependency update", cmp(1, "chore(deps-dev): bump y"), false},
 		{"a fix among docs", cmp(2, "docs: a", "fix: b"), false},
 		{"a refactor", cmp(1, "refactor: a"), false},
 		{"breaking marker", cmp(1, "docs!: drop the old guide"), false},

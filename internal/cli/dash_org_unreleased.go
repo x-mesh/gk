@@ -86,13 +86,15 @@ var noReleaseTypes = map[string]bool{"docs": true, "chore": true, "ci": true, "t
 // is of a noReleaseTypes type without a breaking change. A breaking change is
 // found anywhere in the message, as inferShipBump finds it. A commit that is not
 // in Conventional Commits form, a merge commit among them, counts as a change.
+// So does a dependency update (scope deps or deps-dev, as Dependabot writes
+// it), because a release ships the new dependency.
 func onlyNoReleaseCommits(c ghapi.TagComparison) bool {
 	if len(c.Commits) == 0 || c.Ahead > len(c.Commits) {
 		return false
 	}
 	for _, cm := range c.Commits {
 		m := commitlint.Parse(cm.Message)
-		if m.Breaking || strings.Contains(cm.Message, "BREAKING CHANGE:") || !noReleaseTypes[m.Type] {
+		if m.Breaking || strings.Contains(cm.Message, "BREAKING CHANGE:") || !noReleaseTypes[m.Type] || strings.HasPrefix(m.Scope, "deps") {
 			return false
 		}
 	}

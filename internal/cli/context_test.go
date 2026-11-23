@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -456,8 +457,8 @@ func TestIntegration_ContextReleaseUnreleasedVsBase(t *testing.T) {
 	if rel.BaseRef != "origin/main" {
 		t.Errorf("base_ref = %q, want origin/main", rel.BaseRef)
 	}
-	if rel.UnreleasedCount != 1 {
-		t.Errorf("unreleased_count = %d, want 1 (origin/main..HEAD)", rel.UnreleasedCount)
+	if rel.UnreleasedCount == nil || *rel.UnreleasedCount != 1 {
+		t.Errorf("unreleased_count = %v, want 1 (origin/main..HEAD)", rel.UnreleasedCount)
 	}
 	if rel.AlreadyOnBase != 2 {
 		t.Errorf("already_on_base = %d, want 2 (3 since tag − 1 unreleased)", rel.AlreadyOnBase)
@@ -500,8 +501,8 @@ func TestIntegration_ContextReleaseNoTagsWithBase(t *testing.T) {
 	if out.Release.SinceTag != "" {
 		t.Errorf("since_tag = %q, want empty (no tags)", out.Release.SinceTag)
 	}
-	if out.Release.UnreleasedCount != 1 {
-		t.Errorf("unreleased_count = %d, want 1", out.Release.UnreleasedCount)
+	if out.Release.UnreleasedCount == nil || *out.Release.UnreleasedCount != 1 {
+		t.Errorf("unreleased_count = %v, want 1", out.Release.UnreleasedCount)
 	}
 	if out.Release.BaseRef != "origin/main" {
 		t.Errorf("base_ref = %q, want origin/main", out.Release.BaseRef)
@@ -606,5 +607,69 @@ func writeContextTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// unreleased_count is a count against the release branch. Without that
+// comparison (HEAD on the base branch, or no remote-tracking base) the JSON
+// leaves the field out, so a reader cannot take it for "nothing unreleased";
+// with the comparison a 0 is printed.
+func TestIntegration_ContextReleaseUnreleasedCountOnlyWhenMeasured(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("a.txt", "seed\n")
+	repo.Commit("feat: seed")
+	repo.RunGit("tag", "v1.0.0")
+	repo.WriteFile("README.md", "docs\n")
+	tip := repo.Commit("docs: after the tag")
+	repo.RunGit("update-ref", "refs/remotes/origin/main", tip)
+
+	prev := flagRepo
+	flagRepo = repo.Dir
+	t.Cleanup(func() { flagRepo = prev })
+
+	release := func() map[string]any {
+		t.Helper()
+		runner := &git.ExecRunner{Dir: repo.Dir}
+		cfg := config.Defaults()
+		cfg.BaseBranch = "main"
+		out, err := collectContext(context.Background(), runner, &cfg)
+		if err != nil {
+			t.Fatalf("collectContext: %v", err)
+		}
+		collectContextIncludes(context.Background(), runner, &cfg, map[string]bool{"release": true}, &out)
+		if out.Release == nil {
+			t.Fatalf("release section missing, notes=%v", out.Notes)
+		}
+		raw, err := json.Marshal(out.Release)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	// On the base branch there is no release branch to compare with.
+	m := release()
+	if v, ok := m["unreleased_count"]; ok {
+		t.Errorf("on the base branch unreleased_count = %v, want no field", v)
+	}
+	if m["commit_count"] != float64(1) {
+		t.Errorf("commit_count = %v, want 1 since the tag", m["commit_count"])
+	}
+
+	// On a branch that origin/main already holds, the comparison gives 0.
+	repo.RunGit("checkout", "-b", "feature/merged")
+	m = release()
+	if v, ok := m["unreleased_count"]; !ok || v != float64(0) {
+		t.Errorf("unreleased_count = %v (present %v), want 0", v, ok)
+	}
+	if m["base_ref"] != "origin/main" {
+		t.Errorf("base_ref = %v, want origin/main", m["base_ref"])
 	}
 }

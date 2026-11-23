@@ -101,7 +101,7 @@ func onlyNoReleaseCommits(c ghapi.TagComparison) bool {
 	}
 	for _, cm := range c.Commits {
 		m := commitlint.Parse(cm.Message)
-		if m.Breaking || strings.Contains(cm.Message, "BREAKING CHANGE:") || !noReleaseTypes[m.Type] || strings.HasPrefix(m.Scope, "deps") {
+		if m.Breaking || strings.Contains(cm.Message, "BREAKING CHANGE:") || !noReleaseTypes[m.Type] || m.Scope == "deps" || m.Scope == "deps-dev" {
 			return false
 		}
 	}

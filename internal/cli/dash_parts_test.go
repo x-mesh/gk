@@ -231,14 +231,40 @@ func TestDashScreenSplitsTheSlowReads(t *testing.T) {
 		t.Errorf("main read filled a slow block: %+v, %+v", snap.UnreleasedRepos, snap.Activity)
 	}
 	slow := readParts(m)
-	if total, activity, commits, unreleased := count(f); total != 5 || activity != 1 || commits != 1 || unreleased != 1 {
-		t.Errorf("after the slow reads: %d queries (%d activity, %d commits, %d unreleased)", total, activity, commits, unreleased)
+	// The commit activity is one commit search for each day, and no query.
+	if total, activity, commits, unreleased := count(f); total != 4 || activity != 1 || commits != 0 || unreleased != 1 || f.searches.Load() != dashActivityDays {
+		t.Errorf("after the slow reads: %d queries (%d activity, %d commits, %d unreleased), %d searches", total, activity, commits, unreleased, f.searches.Load())
 	}
-	if a := slow.Activity; a == nil || a.Opened == nil || a.Opened.Total != 28 || a.Merged.Total != 21 || a.Commits == nil || a.Commits.Total != 14 {
+	if a := slow.Activity; a == nil || a.Opened == nil || a.Opened.Total != 28 || a.Merged.Total != 21 || a.Commits == nil || a.Commits.Total != 21 || a.Commits.Fallback {
 		t.Errorf("activity = %+v", slow.Activity)
 	}
+	// The search is scoped to the owner: without the qualifier it would
+	// count commits of every repository on GitHub.
+	for _, q := range f.searchQueries {
+		if !strings.HasPrefix(q, "org:o committer-date:") {
+			t.Errorf("commit search = %q, want the org:o scope", q)
+		}
+	}
+
 	if u := slow.UnreleasedRepos; u == nil || len(u.Items) != 1 {
 		t.Errorf("unreleased = %+v", u)
+	}
+
+	// A rate-limited commit search counts the repositories with one query,
+	// and the count says so. The search limit is not the screen's limit.
+	lf := &dashFake{searchLimited: true}
+	lm := screen(lf, "org:o")
+	limited := readParts(lm)
+	if _, _, commits, _ := count(lf); commits != 1 {
+		t.Errorf("history queries after a limited search = %d, want 1", commits)
+	}
+	if c := limited.Activity.Commits; c == nil || c.Total != 14 || !c.Fallback || c.Error != "" {
+		t.Errorf("commits after a limited search = %+v, want 14 from the repositories", c)
+	}
+	for _, p := range lm.parts {
+		if p.err != nil {
+			t.Errorf("a limited commit search failed a slow read: %v", p.err)
+		}
 	}
 
 	// A repository counts its commits and its unreleased PRs locally.
@@ -251,8 +277,8 @@ func TestDashScreenSplitsTheSlowReads(t *testing.T) {
 		t.Fatalf("main read: %v", err)
 	}
 	slow = readParts(m)
-	if total, activity, commits, unreleased := count(f); total != 3 || activity != 1 || commits+unreleased != 0 {
-		t.Errorf("repository: %d queries (%d activity, %d commits, %d unreleased)", total, activity, commits, unreleased)
+	if total, activity, commits, unreleased := count(f); total != 3 || activity != 1 || commits+unreleased != 0 || f.searches.Load() != 0 {
+		t.Errorf("repository: %d queries (%d activity, %d commits, %d unreleased), %d searches", total, activity, commits, unreleased, f.searches.Load())
 	}
 	if slow.Activity == nil || slow.Activity.Opened.Total != 28 || slow.UnreleasedRepos != nil {
 		t.Errorf("repository slow blocks = %+v, %+v", slow.Activity, slow.UnreleasedRepos)

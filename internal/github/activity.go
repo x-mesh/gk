@@ -2,15 +2,22 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
 // activityRepos is how many of the owner's most recently pushed repositories
-// OwnerCommitActivity reads. Seven day counts for 30 repositories took 3.7 to
-// 4.1 s on accounts of 40 to 174 repositories; 100 repositories took 8.4 s on
-// kubernetes and answered 502 on vercel.
+// historyCommitActivity reads. Seven day counts for 30 repositories took 3.2
+// to 4.2 s on accounts of 40 to 174 repositories; 100 repositories took 8.4 s
+// on kubernetes and answered 502 on vercel.
 const activityRepos = 30
 
 // DayRange is one day to count in: Start is its first instant and End its
@@ -67,25 +74,116 @@ func (c *Client) PRActivity(ctx context.Context, scope string, days []DayRange) 
 }
 
 // CommitActivity is the commits on the default branches of an owner's
-// repositories for each day. Partial says more repositories were pushed since
-// the first day than were read, so the counts are a lower bound.
+// repositories for each day. Fallback says the commit search was rate limited
+// and the counts come from the activityRepos most recently pushed
+// repositories. Partial says the counts are a lower bound: a search timed out
+// before it searched everything, or more repositories than those were pushed
+// since the first day.
 type CommitActivity struct {
-	Days    []int
-	Partial bool
+	Days     []int
+	Partial  bool
+	Fallback bool
 }
 
-// OwnerCommitActivity counts, for each day, the commits on the default branch
-// of the owner's activityRepos most recently pushed repositories. GitHub has
-// no count across an owner, so each repository is counted and added. Forks
-// and archived repositories are left out.
-func (c *Client) OwnerCommitActivity(ctx context.Context, owner string, days []DayRange) (*CommitActivity, error) {
+// OwnerCommitActivity counts, for each day, the commits on the default
+// branches of scope (org:o or user:o). It asks the commit search for one
+// count a day, all at the same time: that took 0.5 to 0.75 s on accounts of
+// 40 to 174 repositories and counts every repository, against 3.2 to 4.2 s
+// for the newest activityRepos with historyCommitActivity.
+func (c *Client) OwnerCommitActivity(ctx context.Context, scope string, days []DayRange) (*CommitActivity, error) {
 	if c.Token == "" {
 		return nil, ErrNoToken
 	}
-	res := &CommitActivity{Days: make([]int, len(days))}
 	if len(days) == 0 {
-		return res, nil
+		return &CommitActivity{Days: []int{}}, nil
 	}
+	res, err := c.searchCommitActivity(ctx, scope, days)
+	var limited *RateLimitError
+	if !errors.As(err, &limited) {
+		return res, err
+	}
+	// The search API allows 30 requests a minute for a token, shared with
+	// every other search: when it is used up, count the repositories.
+	_, owner, _ := strings.Cut(scope, ":")
+	res, err = c.historyCommitActivity(ctx, owner, days)
+	if err != nil {
+		return nil, err
+	}
+	res.Fallback = true
+	return res, nil
+}
+
+// searchCommitActivity sends one commit search for each day and reads its
+// total_count. Any failed search fails the read: a missing day would show as
+// a day with no commit.
+func (c *Client) searchCommitActivity(ctx context.Context, scope string, days []DayRange) (*CommitActivity, error) {
+	res := &CommitActivity{Days: make([]int, len(days))}
+	errs := make([]error, len(days))
+	incomplete := make([]bool, len(days))
+	var wg sync.WaitGroup
+	for i, d := range days {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res.Days[i], incomplete[i], errs[i] = c.commitSearchCount(ctx, scope+" committer-date:"+d.search())
+		}()
+	}
+	wg.Wait()
+	res.Partial = slices.Contains(incomplete, true)
+	// A rate limit comes first, so the caller counts the repositories instead.
+	var limited *RateLimitError
+	for _, err := range errs {
+		if errors.As(err, &limited) {
+			return nil, err
+		}
+	}
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+// commitSearchCount returns how many commits match query. GitHub searches the
+// default branch of each repository and leaves forks out. incomplete says the
+// search timed out before it searched everything, so the count is a lower
+// bound.
+func (c *Client) commitSearchCount(ctx context.Context, query string) (count int, incomplete bool, err error) {
+	q := url.Values{}
+	q.Set("q", query)
+	q.Set("per_page", "1")
+	resp, err := c.get(ctx, "/search/commits?"+q.Encode())
+	if err != nil {
+		return 0, false, fmt.Errorf("github commit search: %w", err)
+	}
+	defer resp.Body.Close()
+	if rl := asRateLimit(resp, time.Now()); rl != nil {
+		return 0, false, rl
+	}
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		return 0, false, scopeError(resp)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, false, fmt.Errorf("github commit search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		TotalCount        int  `json:"total_count"`
+		IncompleteResults bool `json:"incomplete_results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, false, fmt.Errorf("decode github commit search: %w", err)
+	}
+	return out.TotalCount, out.IncompleteResults, nil
+}
+
+// historyCommitActivity counts, for each day, the commits on the default
+// branch of the owner's activityRepos most recently pushed repositories. Each
+// repository is counted and added. Forks and archived repositories are left
+// out.
+func (c *Client) historyCommitActivity(ctx context.Context, owner string, days []DayRange) (*CommitActivity, error) {
+	res := &CommitActivity{Days: make([]int, len(days))}
 	var decl, history strings.Builder
 	vars := map[string]any{"owner": owner}
 	for i, d := range days {

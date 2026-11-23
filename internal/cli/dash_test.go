@@ -56,12 +56,33 @@ type dashFake struct {
 	orgRepos      []any // the owner's repository nodes of the unreleased query
 	orgFails      bool  // the unreleased query answers 502
 	activityFails bool  // the activity queries answer 502
+	// The commit search: each day has 3 commits. searchLimited answers it as
+	// rate limited, which sends the commit activity to the history query.
+	searches      atomic.Int32
+	searchLimited bool
+	searchQueries []string
 }
 
 func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/") {
 			writeDashJSON(t, w, map[string]any{"login": "o", "type": "Organization"})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/search/commits" {
+			f.searches.Add(1)
+			f.mu.Lock()
+			f.searchQueries = append(f.searchQueries, r.URL.Query().Get("q"))
+			f.mu.Unlock()
+			switch {
+			case f.searchLimited:
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.WriteHeader(http.StatusForbidden)
+			case f.activityFails:
+				w.WriteHeader(http.StatusBadGateway)
+			default:
+				writeDashJSON(t, w, map[string]any{"total_count": 3})
+			}
 			return
 		}
 		f.graphql.Add(1)

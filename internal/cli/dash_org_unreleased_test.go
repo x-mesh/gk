@@ -175,14 +175,15 @@ func TestDashCmdOrgUnreleased(t *testing.T) {
 			t.Fatalf("gk dash --org: %v\n%s", err, out)
 		}
 		for _, want := range []string{"Unreleased  1 repo · 2 commits · 2 PRs · newest 1 of 40 repos", "v1.0.0..develop  2        2",
-			"Activity  7d · PRs opened 28 ▂▃▄▅▆▇█ · merged 21 ·▂▃▄▆▇█ · commits 14 ███████"} {
+			"Activity  7d · PRs opened 28 ▂▃▄▅▆▇█ · merged 21 ·▂▃▄▆▇█ · commits 21 ███████"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output has no %q:\n%s", want, out)
 			}
 		}
-		// The PR query, the issue query, and the three slow reads.
-		if got := f.graphql.Load(); got != 5 {
-			t.Errorf("graphql requests = %d, want 5", got)
+		// The PR query, the issue query, the PR activity, and the unreleased
+		// summary. The commit activity is one search for each day.
+		if got, searches := f.graphql.Load(), f.searches.Load(); got != 4 || searches != dashActivityDays {
+			t.Errorf("graphql requests = %d, searches = %d; want 4 and %d", got, searches, dashActivityDays)
 		}
 	})
 

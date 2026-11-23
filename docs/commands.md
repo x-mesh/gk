@@ -4698,10 +4698,14 @@ A day starts and ends at midnight in the local time zone.
 gk reads the two PR counts with one GraphQL query of 1 point, for a repository and for an org.
 In a repository, gk counts the commits from the local repository: the commits of the release branch and of each base branch of the merged PRs, on the remote from the last fetch.
 A commit that is on two of these branches counts one time.
-With `--org`, gk counts the commits on the default branch of the 30 most recently pushed repositories, with one more query of 1 point.
+With `--org`, gk counts the commits on the default branches of the org or account with the commit search of GitHub.
+It sends one search for each day, 7 at the same time.
+The search API has its own limit of 30 requests each minute for a token, and other searches such as `gk pr` use the same limit.
+If the search is rate-limited, gk counts the commits of the 30 most recently pushed repositories with one GraphQL query of 1 point.
+That query is slower, and `--json` shows `fallback` on the commit count.
 A repository that releases from another branch shows its commits on the day of the release, not on the day of the work.
 The count of merged PRs shows the work of each day better for such a repository.
-A `+` after the commit total shows that more than 30 repositories have a push in the 7 days, so the total is a minimum.
+A `+` after the commit total shows that gk counted the 30 repositories and more than 30 have a push in the 7 days, so the total is a minimum.
 
 On the screen, the PR counts and the `--org` commit count show `…` until their query ends.
 Auto-refresh sends these queries again only if the last read is 5 minutes old, or when the day changes.
@@ -4773,7 +4777,7 @@ Without a token, gk dash stops before it sends a request.
 `--json` prints one snapshot.
 In agent mode (`GK_AGENT=1`), the snapshot is in the `{state, ok, result, error}` envelope.
 The fields of `result` are `scope`, `fetched_at`, `activity`, `prs`, `issues`, `forecast`, `unreleased`, `base_behind`, and `notes`.
-`activity` has `since`, `opened`, `merged`, and `commits`. Each count has `total`, `days` with the oldest day first, `partial` when the total is a minimum, and `error` when its query failed.
+`activity` has `since`, `opened`, `merged`, and `commits`. Each count has `total`, `days` with the oldest day first, `partial` when the total is a minimum, `fallback` when the commit search was rate-limited, and `error` when its query failed.
 `prs` and `issues` have `counts`, `items`, and `error` when their query failed.
 `unreleased` has one entry for each branch, with `base`, `remote`, `since`, `commits`, `total`, `items`, and `not_fetched`.
 `since` is the tag, or the release branch, that the count starts after.

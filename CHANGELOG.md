@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `gk dash` screen refreshes every 15 s by default, and `--interval` accepts 15 s as the minimum. Before, both were 30 s. One refresh costs 3 GraphQL points in a repository and 2 with `--org`, so the default uses at most 720 of the 5000 points that a token has for each hour. The documentation said that one refresh costs up to 7 points, which was more than the queries cost.
 - The `Unreleased` summary of `gk dash --org` does not show a repository whose commits after the tag, on each branch, are all `docs`, `chore`, `ci`, `test` or `style` commits without a breaking change or a dependency update (scope `deps` or `deps-dev`). The header shows the count of these repositories as `<n> repos docs/chore only`, and the commit and PR totals do not include them. `--json` keeps them in `items` with `no_release_changes`, and counts them in `no_release_repos`. If GitHub returned fewer commits than the branch has after the tag, or a commit subject is not in Conventional Commits form (a merge commit, for example), the repository shows as before.
 
 ## [0.165.0] - 2026-11-23

@@ -190,8 +190,14 @@ func TestDashCmdIntervalAndWatchFlags(t *testing.T) {
 	withAgentMode(t, false)
 	r, oid := dashCmdRepo(t)
 	srv := (&dashFake{}).server(t, oid)
-	if _, err := runDashCmd(t, r.Dir, srv, "tok", "--interval", "10s"); err == nil || !strings.Contains(err.Error(), "minimum") {
-		t.Errorf("--interval 10s: err = %v", err)
+	if _, err := runDashCmd(t, r.Dir, srv, "tok", "--interval", "14s"); err == nil || !strings.Contains(err.Error(), "minimum") {
+		t.Errorf("--interval 14s: err = %v", err)
+	}
+	if _, err := runDashCmd(t, r.Dir, srv, "tok", "--interval", "15s"); err != nil {
+		t.Errorf("--interval 15s: err = %v, want the minimum accepted", err)
+	}
+	if def := newDashCmd().Flags().Lookup("interval").DefValue; def != "15s" {
+		t.Errorf("--interval default = %s, want 15s", def)
 	}
 	// Tests have no terminal.
 	if _, err := runDashCmd(t, r.Dir, srv, "tok", "--watch"); err == nil || !strings.Contains(err.Error(), "terminal") {

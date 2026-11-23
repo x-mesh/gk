@@ -129,6 +129,19 @@ func TestCollectDashUnreleased(t *testing.T) {
 		}
 	})
 
+	t.Run("an unknown release branch is a note", func(t *testing.T) {
+		r := unreleasedRepo(t, true)
+		// DefaultBranch falls back to origin/develop, main, and master.
+		r.RunGit("symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+		r.RunGit("update-ref", "refs/remotes/origin/trunk", "refs/remotes/origin/main")
+		r.RunGit("update-ref", "-d", "refs/remotes/origin/main")
+		r.RunGit("update-ref", "-d", "refs/remotes/origin/develop")
+		_, notes := collectDashUnreleased(context.Background(), &git.ExecRunner{Dir: r.Dir}, "origin", "", nil)
+		if len(notes) != 1 || !strings.Contains(notes[0], "release branch unknown") {
+			t.Errorf("notes = %v, want one naming the unknown release branch", notes)
+		}
+	})
+
 	t.Run("a release branch that is all released has an empty group", func(t *testing.T) {
 		r := unreleasedRepo(t, true)
 		r.RunGit("tag", "v1.1.0", "refs/remotes/origin/main")

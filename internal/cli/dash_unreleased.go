@@ -33,8 +33,12 @@ type dashUnreleasedGroup struct {
 // branch first. A branch with no tag and no release branch to compare with has
 // no starting point and is left out. A failed read is a note.
 func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, releaseBase string, merged []ghapi.DashPR) ([]dashUnreleasedGroup, []string) {
+	var notes []string
 	if releaseBase == "" {
-		if detected, err := git.NewClient(runner).DefaultBranch(ctx, remote); err == nil {
+		detected, err := git.NewClient(runner).DefaultBranch(ctx, remote)
+		if err != nil {
+			notes = append(notes, "unreleased: release branch unknown (set base_branch): "+err.Error())
+		} else {
 			releaseBase = detected
 		}
 	}
@@ -42,7 +46,6 @@ func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, relea
 	hasRelease := releaseBase != "" && refExists(ctx, runner, releaseRef)
 
 	var groups []dashUnreleasedGroup
-	var notes []string
 	for _, base := range unreleasedBases(releaseBase, merged) {
 		tip := "refs/remotes/" + remote + "/" + base
 		if !refExists(ctx, runner, tip) {

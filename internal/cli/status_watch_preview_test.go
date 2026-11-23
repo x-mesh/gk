@@ -174,10 +174,35 @@ func TestPreviewText(t *testing.T) {
 		"x\r":              "x",
 		"\x1b[31mred\x07":  "[31mred",
 		"a\tb\tc\r\x1b[0m": "a   b   c[0m",
+		// U+009B is the one-rune form of ESC [ and starts an escape sequence.
+		"a\u009b31mb\u007f": "a31mb",
+		// A row keeps the first changePreviewMaxCols columns of a line.
+		strings.Repeat("y", 3*changePreviewMaxCols): strings.Repeat("y", changePreviewMaxCols),
+		strings.Repeat("한", changePreviewMaxCols):   strings.Repeat("한", changePreviewMaxCols/2),
 	} {
 		if got := previewText(in); got != want {
 			t.Errorf("previewText(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestCappedBuffer covers the bound on what the pane reads from git: the
+// buffer keeps max bytes, and the write that goes over fails, which is what
+// ends the git process.
+func TestCappedBuffer(t *testing.T) {
+	c := cappedBuffer{max: 10}
+	if n, err := c.Write([]byte("123456")); n != 6 || err != nil || c.full {
+		t.Fatalf("first write = %d, %v, full %v", n, err, c.full)
+	}
+	if n, err := c.Write([]byte("7890")); n != 4 || err != nil || c.full {
+		t.Fatalf("a write that ends at the limit = %d, %v, full %v", n, err, c.full)
+	}
+	if n, err := c.Write([]byte("ab")); n != 0 || err == nil || !c.full {
+		t.Errorf("a write over the limit = %d, %v, full %v", n, err, c.full)
+	}
+	c = cappedBuffer{max: 10}
+	if n, err := c.Write([]byte("123456789012345")); n != 10 || err == nil || !c.full || c.buf.String() != "1234567890" {
+		t.Errorf("a write across the limit = %d, %v, full %v, kept %q", n, err, c.full, c.buf.String())
 	}
 }
 
@@ -649,5 +674,84 @@ func TestLoadChangePreviewKinds(t *testing.T) {
 	// A mode change has no hunk: the pane says so, not nothing.
 	if p = load("mode.sh", " M"); !strings.Contains(p.note, "no line changed") || !strings.Contains(p.note, "100755") {
 		t.Errorf("mode change: note %q", p.note)
+	}
+}
+
+// TestLoadChangePreviewBounds covers a diff larger than the pane reads: the
+// read stops at changePreviewMaxBytes, and a row keeps the start of its line.
+func TestLoadChangePreviewBounds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	ctx := context.Background()
+
+	t.Run("a diff past the byte limit is cut", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.WriteFile("big.txt", "start\n")
+		repo.Commit("init")
+		line := strings.Repeat("x", 199) + "\n"
+		lines := 4 * changePreviewMaxBytes / len(line)
+		repo.WriteFile("big.txt", strings.Repeat(line, lines))
+		p := loadChangePreview(ctx, &git.ExecRunner{Dir: repo.Dir}, repo.Dir, "big.txt", fileSig{xy: " M", added: lines, removed: 1}, "")
+		if p.note != "" || len(p.rows) != changePreviewMaxRows+1 {
+			t.Fatalf("note %q, %d rows", p.note, len(p.rows))
+		}
+		if last := p.rows[len(p.rows)-1]; !strings.Contains(last, "1 MB") {
+			t.Errorf("last row = %q, want the byte limit", last)
+		}
+		// The part that was read has fewer lines than the file: the counts are
+		// those of the feed.
+		if p.added != lines || p.removed != 1 {
+			t.Errorf("counts = +%d -%d, want +%d -1 from the signature", p.added, p.removed, lines)
+		}
+	})
+
+	t.Run("a row keeps the start of a long line", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.WriteFile("min.js", strings.Repeat("a", 3*changePreviewMaxBytes)+"\n")
+		repo.Commit("init")
+		repo.WriteFile("min.js", strings.Repeat("b", 3*changePreviewMaxBytes)+"\n")
+		p := loadChangePreview(ctx, &git.ExecRunner{Dir: repo.Dir}, repo.Dir, "min.js", fileSig{xy: " M"}, "")
+		if p.note != "" || len(p.rows) < 2 {
+			t.Fatalf("note %q, %d rows", p.note, len(p.rows))
+		}
+		for i, row := range p.rows {
+			if w := lipgloss.Width(row); w > changePreviewMaxCols+16 {
+				t.Errorf("row %d is %d columns wide", i, w)
+			}
+		}
+		if !strings.Contains(joined(p), strings.Repeat("a", 100)) {
+			t.Errorf("the rows miss the start of the line")
+		}
+	})
+}
+
+// TestChangeWatchPreviewDoesNotShowAnotherFile covers the time between a new
+// file to show and the end of its read: the pane names the new file and says
+// that it reads, and it does not show the rows of the file before it.
+func TestChangeWatchPreviewDoesNotShowAnotherFile(t *testing.T) {
+	m := previewFrame(160, 40)
+	before := m.preview.path
+	m.events = append(m.events, changeEvent{ts: time.Unix(5000, 0), path: "next.go", label: "mod"})
+	m.prev["next.go"] = fileSig{xy: " M", mtime: 9}
+	m.previewLoading = true
+	if m.previewTarget() != "next.go" {
+		t.Fatalf("target = %q", m.previewTarget())
+	}
+	pane := strings.Join(m.previewPane(80, 20), "\n")
+	if !strings.Contains(pane, "diff next.go") || !strings.Contains(pane, "loading…") {
+		t.Errorf("the pane does not say that it reads next.go:\n%s", pane)
+	}
+	if strings.Contains(pane, filepath.Base(before)) || strings.Contains(pane, "code code") || strings.Contains(pane, "+300") {
+		t.Errorf("the pane shows %s while it reads next.go:\n%s", before, pane)
+	}
+
+	// The same file with an older read on show keeps its rows: the title is
+	// right, and the new read replaces them.
+	m.applyPreview(changePreviewMsg{preview: changePreview{path: "next.go", sig: fileSig{xy: " M", mtime: 9}, head: m.head.sha, rows: []string{"   1  ▶ ▌ next line"}}})
+	m.prev["next.go"] = fileSig{xy: " M", mtime: 10}
+	m.previewLoading = true
+	if pane = strings.Join(m.previewPane(80, 20), "\n"); !strings.Contains(pane, "next line") || strings.Contains(pane, "loading…") {
+		t.Errorf("a new read of the file on show hid its rows:\n%s", pane)
 	}
 }

@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -37,7 +40,14 @@ const (
 	// changePreviewMaxRows bounds the rendered diff: a generated file or a
 	// lockfile can change by tens of thousands of lines, and every re-touch
 	// renders the diff again.
-	changePreviewMaxRows  = 2000
+	changePreviewMaxRows = 2000
+	// changePreviewMaxBytes bounds the diff text read from git. The row limit
+	// does not bound the read: git writes the whole diff of a generated file,
+	// and the memory and the time to hold and parse it grow with its size.
+	changePreviewMaxBytes = 1 << 20
+	// changePreviewMaxCols bounds one row. A minified file is one line of
+	// megabytes, and the pane measures each row on show at every redraw.
+	changePreviewMaxCols  = 400
 	changePreviewTabWidth = 4
 )
 
@@ -69,10 +79,37 @@ type changePreviewMsg struct {
 	preview changePreview
 }
 
-// loadChangePreview reads the uncommitted diff of path against HEAD. An
-// untracked file is not in `git diff`, so its content is read and shown as
-// added lines.
-func loadChangePreview(ctx context.Context, runner git.Runner, root, path string, sig fileSig, head string) changePreview {
+// previewGit is the git call of the pane. The output is read as git writes
+// it, so the read can stop at changePreviewMaxBytes.
+type previewGit interface {
+	Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error
+}
+
+// cappedBuffer keeps the first max bytes written to it and fails the write
+// that goes over. exec closes the pipe after a failed copy, so the process
+// that writes ends there and does not produce the rest.
+type cappedBuffer struct {
+	buf  bytes.Buffer
+	max  int
+	full bool
+}
+
+var errPreviewFull = errors.New("preview byte limit reached")
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	room := c.max - c.buf.Len()
+	if len(p) <= room {
+		return c.buf.Write(p)
+	}
+	c.buf.Write(p[:room])
+	c.full = true
+	return room, errPreviewFull
+}
+
+// loadChangePreview reads the uncommitted diff of path against HEAD, up to
+// changePreviewMaxBytes of it. An untracked file is not in `git diff`, so its
+// content is read and shown as added lines.
+func loadChangePreview(ctx context.Context, runner previewGit, root, path string, sig fileSig, head string) changePreview {
 	p := changePreview{path: path, sig: sig, head: head}
 	if sig.xy == "??" {
 		f, note := untrackedPreviewFile(root, path)
@@ -80,23 +117,27 @@ func loadChangePreview(ctx context.Context, runner git.Runner, root, path string
 			p.note = note
 			return p
 		}
-		p.render(f)
+		p.render(f, false)
 		return p
 	}
 	// --literal-pathspecs: a path that starts with ':' is a file name here, not
 	// pathspec magic. --no-color and --no-ext-diff keep the output parseable
 	// whatever color.diff and diff.external say.
-	out, stderr, err := runner.Run(ctx, "--no-optional-locks", "--literal-pathspecs",
+	out := cappedBuffer{max: changePreviewMaxBytes}
+	err := runner.Stream(ctx, nil, &out, "--no-optional-locks", "--literal-pathspecs",
 		"diff", "--no-color", "--no-ext-diff", "HEAD", "--", path)
-	if err != nil {
-		reason := firstLine(string(stderr))
-		if reason == "" {
-			reason = err.Error()
+	// A full buffer ended git before it was done: that error is the limit at
+	// work, not a failed diff.
+	if err != nil && !out.full {
+		reason := err.Error()
+		var exit *git.ExitError
+		if errors.As(err, &exit) && firstLine(exit.Stderr) != "" {
+			reason = firstLine(exit.Stderr)
 		}
 		p.note = "git diff failed: " + stripControlChars(reason)
 		return p
 	}
-	res, perr := diff.ParseUnifiedDiff(bytes.NewReader(out))
+	res, perr := diff.ParseUnifiedDiff(bytes.NewReader(out.buf.Bytes()))
 	if perr != nil {
 		p.note = "diff not readable: " + perr.Error()
 		return p
@@ -117,7 +158,12 @@ func loadChangePreview(ctx context.Context, runner git.Runner, root, path string
 		}
 		return p
 	}
-	p.render(&f)
+	p.render(&f, out.full)
+	if out.full {
+		// The part that was read has fewer lines than the diff. The signature
+		// has the counts of the whole diff, as the feed shows them.
+		p.added, p.removed = max(p.added, sig.added), max(p.removed, sig.removed)
+	}
 	return p
 }
 
@@ -125,12 +171,33 @@ func loadChangePreview(ctx context.Context, runner git.Runner, root, path string
 // It returns a note and no file for what the pane cannot show.
 func untrackedPreviewFile(root, rel string) (*diff.DiffFile, string) {
 	full := filepath.Join(root, rel)
-	fi, err := os.Stat(full)
+	// Lstat, not Stat: the pane shows what is in the worktree, and a link is
+	// there, not its target.
+	fi, err := os.Lstat(full)
 	switch {
 	case err != nil:
 		return nil, "file not readable: " + err.Error()
 	case fi.IsDir():
 		return nil, "untracked directory"
+	case fi.Mode()&os.ModeSymlink != 0:
+		// The target can be any file the user can read, outside the worktree
+		// too, so it is named and not read. git shows a tracked link the same
+		// way, as the path it holds.
+		target, _ := os.Readlink(full)
+		return nil, "symbolic link → " + previewText(target)
+	case !fi.Mode().IsRegular():
+		// A read of a named pipe waits for a writer, and no special file has
+		// lines to show.
+		kind := "special file"
+		switch {
+		case fi.Mode()&os.ModeNamedPipe != 0:
+			kind = "named pipe"
+		case fi.Mode()&os.ModeSocket != 0:
+			kind = "socket"
+		case fi.Mode()&os.ModeDevice != 0:
+			kind = "device"
+		}
+		return nil, kind + ", not a regular file"
 	case fi.Size() > untrackedProfileMaxBytes:
 		return nil, fmt.Sprintf("untracked file too large to show (%d KB)", fi.Size()/1024)
 	}
@@ -152,8 +219,10 @@ func untrackedPreviewFile(root, rel string) (*diff.DiffFile, string) {
 	return &diff.DiffFile{NewPath: rel, Status: diff.StatusAdded, AddedLines: len(lines), Hunks: []diff.Hunk{h}}, ""
 }
 
-// render fills the rows from one file's hunks, up to changePreviewMaxRows.
-func (p *changePreview) render(f *diff.DiffFile) {
+// render fills the rows from one file's hunks, up to changePreviewMaxRows. cut
+// says the read stopped at changePreviewMaxBytes, so the hunks are not all of
+// the diff.
+func (p *changePreview) render(f *diff.DiffFile, cut bool) {
 	p.added, p.removed = f.AddedLines, f.DeletedLines
 	header := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	left := 0
@@ -177,31 +246,38 @@ func (p *changePreview) render(f *diff.DiffFile) {
 			p.rows = append(p.rows, diff.RenderLine(l, false))
 		}
 	}
-	if left > 0 {
-		p.rows = append(p.rows, lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("… %d more lines not shown", left)))
+	dim := lipgloss.NewStyle().Faint(true)
+	switch {
+	case cut:
+		// The count of the lines left out is not known: git stopped.
+		p.rows = append(p.rows, dim.Render(fmt.Sprintf("… more not shown: the pane reads the first %d MB of a diff", changePreviewMaxBytes>>20)))
+	case left > 0:
+		p.rows = append(p.rows, dim.Render(fmt.Sprintf("… %d more lines not shown", left)))
 	}
 }
 
-// previewText makes one line of file content safe for a pane cell. A tab has
-// no width of its own and a carriage return moves the cursor back over the
-// feed column, so tabs become spaces up to the next tab stop and the other
-// control characters, ESC among them, are dropped.
+// previewText makes one line of file content safe for a pane cell and keeps
+// its first changePreviewMaxCols columns. A tab has no width of its own and a
+// carriage return moves the cursor back over the feed column, so tabs become
+// spaces up to the next tab stop and the other control characters are
+// dropped: ESC, and the C1 range, where U+009B starts an escape sequence too.
 func previewText(s string) string {
-	s = stripControlChars(s)
-	if !strings.ContainsRune(s, '\t') {
-		return s
-	}
 	var b strings.Builder
 	col := 0
 	for _, r := range s {
-		if r == '\t' {
+		if col >= changePreviewMaxCols {
+			break
+		}
+		switch {
+		case r == '\t':
 			n := changePreviewTabWidth - col%changePreviewTabWidth
 			b.WriteString(strings.Repeat(" ", n))
 			col += n
-			continue
+		case unicode.IsControl(r):
+		default:
+			b.WriteRune(r)
+			col += runewidth.RuneWidth(r)
 		}
-		b.WriteRune(r)
-		col += runewidth.RuneWidth(r)
 	}
 	return b.String()
 }
@@ -486,18 +562,32 @@ func cutCell(s string, w int) string {
 	return lipgloss.NewStyle().MaxWidth(w).Render(s)
 }
 
+// shownPreview is the read the pane can show, and the file the pane wants. The
+// read on hand shows when it is of that file. While the read of another file
+// is on its way, the pane has nothing of it yet: the rows of one file never
+// show under the name of another.
+func (m *changeWatchModel) shownPreview() (p changePreview, target string) {
+	target = m.previewTarget()
+	if m.preview.path == target {
+		return m.preview, target
+	}
+	return changePreview{}, target
+}
+
 // previewPane renders the pane as exactly rows rows of at most w columns: the
 // title rule, then the diff rows from the scroll position.
 func (m *changeWatchModel) previewPane(w, rows int) []string {
 	body := rows - 1
-	m.previewScroll = clampPreviewScroll(m.previewScroll, len(m.preview.rows), body)
+	p, target := m.shownPreview()
+	if p.path != "" {
+		m.previewScroll = clampPreviewScroll(m.previewScroll, len(p.rows), body)
+	}
 	out := make([]string, 0, rows)
-	out = append(out, m.previewTitle(w, body))
+	out = append(out, m.previewTitle(p, target, w, body))
 
 	dim := lipgloss.NewStyle().Faint(true)
-	p := m.preview
 	switch {
-	case p.path == "" && m.previewLoading:
+	case p.path == "" && target != "":
 		out = append(out, cutCell("   "+dim.Render("loading…"), w))
 	case p.path == "":
 		out = append(out, cutCell("   "+dim.Render("no changed file to show"), w))
@@ -521,18 +611,17 @@ func (m *changeWatchModel) previewPane(w, rows int) []string {
 // previewTitle is the pane's rule: the file, its +/- counts, whether the pane
 // follows the feed or is pinned, and the rows on show when the diff is longer
 // than the pane.
-func (m *changeWatchModel) previewTitle(w, body int) string {
+func (m *changeWatchModel) previewTitle(p changePreview, target string, w, body int) string {
 	dim := lipgloss.NewStyle().Faint(true)
 	bold := lipgloss.NewStyle().Bold(true)
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	red := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 
-	p := m.preview
 	name := p.path
 	if name == "" {
-		name = m.previewTarget()
+		name = target
 	}
-	name = stripControlChars(name)
+	name = previewText(name)
 
 	const label = "─── diff "
 	tail := "following"

@@ -56,7 +56,7 @@ the count of commits and of merged PRs on the default branch or on develop.
 The Activity line counts the PRs opened and merged and the commits of each of
 the last 7 days. In a repository the commits are those of the branches that
 PRs merge into, as of the last fetch; with --org they are those of the
-default branches of the 30 most recently pushed repositories.
+default branches of the org's repositories, from the commit search.
 
 The Activity counts and the --org Unreleased block come from their own
 GraphQL queries. On the screen they fill in after the PRs and issues, and

@@ -118,12 +118,12 @@ func dashSlowParts(env dashEnv, now func() time.Time) []*dashPart {
 	_, owner, _ := strings.Cut(env.prefix, ":")
 	return append(parts, &dashPart{
 		fetch: func(ctx context.Context) (func(*dashSnapshot), error) {
-			res, err := env.client.OwnerCommitActivity(ctx, owner, dashDayRanges(now(), dashActivityDays))
+			res, err := env.client.OwnerCommitActivity(ctx, env.prefix, dashDayRanges(now(), dashActivityDays))
 			if err != nil {
 				return nil, err
 			}
 			c := newDashSeries(res.Days)
-			c.Partial = res.Partial
+			c.Partial, c.Fallback = res.Partial, res.Fallback
 			return func(s *dashSnapshot) { dashActivityOf(s).Commits = c }, nil
 		},
 		pending: func(s *dashSnapshot) { dashActivityOf(s).Commits = &dashSeriesJSON{Pending: true} },

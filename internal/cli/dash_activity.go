@@ -16,15 +16,17 @@ import (
 const dashActivityDays = 7
 
 // dashSeriesJSON is one count for each day of the activity line, the oldest
-// day first. Partial says the counts are a lower bound. Pending is set on the
-// screen until the first read ends, and Error keeps the days of the read
-// before it.
+// day first. Partial says the counts are a lower bound. Fallback says the
+// org commit search was rate limited, so the counts are those of the most
+// recently pushed repositories. Pending is set on the screen until the first
+// read ends, and Error keeps the days of the read before it.
 type dashSeriesJSON struct {
-	Total   int    `json:"total"`
-	Days    []int  `json:"days"`
-	Partial bool   `json:"partial,omitempty"`
-	Pending bool   `json:"pending,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Total    int    `json:"total"`
+	Days     []int  `json:"days"`
+	Partial  bool   `json:"partial,omitempty"`
+	Fallback bool   `json:"fallback,omitempty"`
+	Pending  bool   `json:"pending,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 func newDashSeries(days []int) *dashSeriesJSON {

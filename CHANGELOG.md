@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.166.0] - 2026-11-23
+
 ### Changed
 
 - The `gk dash` screen refreshes every 15 s by default, and `--interval` accepts 15 s as the minimum. Before, both were 30 s. One refresh costs 3 GraphQL points in a repository and 2 with `--org`, so the default uses at most 720 of the 5000 points that a token has for each hour. The documentation said that one refresh costs up to 7 points, which was more than the queries cost.

@@ -1,24 +1,12 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
-	"time"
 
 	ghapi "github.com/x-mesh/gk/internal/github"
-)
-
-const (
-	// dashOrgUnreleasedBudget bounds the read. It took up to 8.7 s on a large
-	// account, and a read that runs out is reported, not waited for.
-	dashOrgUnreleasedBudget = 15 * time.Second
-	// dashOrgUnreleasedMaxAge is how old the read may get on the screen before
-	// an auto-refresh repeats it. It costs 13 GraphQL points, about twice a
-	// whole refresh, and changes only on a push or a new tag.
-	dashOrgUnreleasedMaxAge = 5 * time.Minute
 )
 
 // dashRepoUnreleasedRow is one repository with commits after its latest tag.
@@ -41,24 +29,17 @@ type dashRepoUnreleasedRow struct {
 // Scanned of its Total repositories were read, the newest push first. Pending
 // is set on the screen until the first read ends. Error keeps the rows of the
 // read before it, or the rows GitHub answered next to a partial error.
+// Commits and PRs add up the rows; PRsPartial says a row's count is partial,
+// so the sum is a lower bound.
 type dashOrgUnreleasedJSON struct {
-	Total   int                     `json:"total"`
-	Scanned int                     `json:"scanned"`
-	Items   []dashRepoUnreleasedRow `json:"items"`
-	Pending bool                    `json:"pending,omitempty"`
-	Error   string                  `json:"error,omitempty"`
-}
-
-// collectDashOrgUnreleased reads the summary for an org: or user: scope.
-func collectDashOrgUnreleased(ctx context.Context, client *ghapi.Client, scope string) (*dashOrgUnreleasedJSON, error) {
-	_, owner, _ := strings.Cut(scope, ":")
-	ctx, cancel := context.WithTimeout(ctx, dashOrgUnreleasedBudget)
-	defer cancel()
-	res, err := client.OwnerUnreleased(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	return orgUnreleasedJSON(res), nil
+	Total      int                     `json:"total"`
+	Scanned    int                     `json:"scanned"`
+	Commits    int                     `json:"commits"`
+	PRs        int                     `json:"prs"`
+	PRsPartial bool                    `json:"prs_partial,omitempty"`
+	Items      []dashRepoUnreleasedRow `json:"items"`
+	Pending    bool                    `json:"pending,omitempty"`
+	Error      string                  `json:"error,omitempty"`
 }
 
 // orgUnreleasedJSON keeps one row for each repository that has commits after
@@ -80,10 +61,14 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 		}
 		// A release often leaves a commit on the default branch only, so the
 		// other branch is behind a tag that is still its release.
-		j.Items = append(j.Items, dashRepoUnreleasedRow{
+		row := dashRepoUnreleasedRow{
 			Repo: r.Repo, Since: r.Tag, Branch: best.Branch, Commits: best.Ahead,
 			PRs: comparisonPRs(*best), PRsPartial: best.Ahead > len(best.Commits), TagOffBranch: best.Behind > 0 && !tagOnDefault,
-		})
+		}
+		j.Items = append(j.Items, row)
+		j.Commits += row.Commits
+		j.PRs += row.PRs
+		j.PRsPartial = j.PRsPartial || row.PRsPartial
 	}
 	return j
 }
@@ -123,11 +108,23 @@ func renderDashOrgUnreleased(w io.Writer, snap dashSnapshot, width int) {
 		fmt.Fprintf(w, "%s  %s\n", cellBold("Unreleased"), cellFaint("loading…"))
 		return
 	}
-	summary := fmt.Sprintf("%d repo(s) with commits after the latest tag · %d repos", len(u.Items), u.Scanned)
-	if u.Scanned < u.Total {
-		summary = fmt.Sprintf("%d repo(s) with commits after the latest tag · newest %d of %d repos", len(u.Items), u.Scanned, u.Total)
+	prs := pluralCount(u.PRs, "PR", "PRs")
+	if u.PRsPartial {
+		prs = commaInt(u.PRs) + "+ PRs"
 	}
-	fmt.Fprintf(w, "%s  %s\n", cellBold("Unreleased"), cellFaint(summary))
+	read := "all " + pluralCount(u.Scanned, "repo", "repos")
+	if u.Scanned < u.Total {
+		read = fmt.Sprintf("newest %d of %d repos", u.Scanned, u.Total)
+	}
+	summary := "nothing after the latest tag · " + read
+	switch {
+	case len(u.Items) > 0:
+		summary = strings.Join([]string{pluralCount(len(u.Items), "repo", "repos"), pluralCount(u.Commits, "commit", "commits"), prs, read}, " · ")
+	case u.Error != "":
+		// Nothing was read: a summary would say that nothing waits.
+		summary = ""
+	}
+	fmt.Fprintln(w, strings.TrimRight(cellBold("Unreleased")+"  "+cellFaint(summary), " "))
 	if u.Error != "" {
 		fmt.Fprintf(w, "  %s\n", cellRed("could not read: "+u.Error))
 	}

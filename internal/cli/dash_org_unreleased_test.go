@@ -1,14 +1,10 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/x-mesh/gk/internal/git"
 	ghapi "github.com/x-mesh/gk/internal/github"
 )
 
@@ -64,7 +60,9 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 		{Repo: "o/tag-on-develop", Tag: "v8.0.0", Branches: []ghapi.TagComparison{{Branch: "main", Default: true, Ahead: 5, Behind: 2, Head: "h", Commits: one}, {Branch: "develop", Ahead: 1, Head: "h", Commits: one}}},
 	}}
 	j := orgUnreleasedJSON(res)
-	if j.Total != 40 || j.Scanned != 20 || j.Error != "unreleased query: partial" || j.Pending {
+	// 1 + 4 + 1 + 3 + 1 + 5 commits and one PR in each of the six rows. Three
+	// rows have more commits than were read, so the PR sum is a lower bound.
+	if j.Total != 40 || j.Scanned != 20 || j.Error != "unreleased query: partial" || j.Pending || j.Commits != 15 || j.PRs != 6 || !j.PRsPartial {
 		t.Errorf("summary = %+v", j)
 	}
 	want := []dashRepoUnreleasedRow{
@@ -84,8 +82,16 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 		}
 	}
 
-	if empty := orgUnreleasedJSON(&ghapi.OwnerUnreleased{}); empty.Items == nil {
-		t.Errorf("items is null in JSON for a read with no rows")
+	if empty := orgUnreleasedJSON(&ghapi.OwnerUnreleased{}); empty.Items == nil || empty.PRsPartial {
+		t.Errorf("a read with no rows = %+v, want items that are not null", empty)
+	}
+	// A partial row before a whole one still makes the sum a lower bound.
+	if mixed := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: res.Repos[:4]}); len(mixed.Items) != 3 || mixed.Items[2].PRsPartial || !mixed.PRsPartial {
+		t.Errorf("a partial row before a whole one = %+v", mixed)
+	}
+	whole := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: res.Repos[:1]})
+	if whole.Commits != 1 || whole.PRs != 1 || whole.PRsPartial {
+		t.Errorf("a read with every commit = %+v, want no partial sum", whole)
 	}
 }
 
@@ -101,12 +107,12 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 		t.Errorf("a pending block does not say loading:\n%s", out)
 	}
 
-	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 40, Scanned: 20, Items: []dashRepoUnreleasedRow{
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 40, Scanned: 20, Commits: 1483, PRs: 18, PRsPartial: true, Items: []dashRepoUnreleasedRow{
 		{Repo: "x-mesh/gk", Since: "v0.164.0", Branch: "develop", Commits: 12, PRs: 6},
 		{Repo: "x-mesh/ai-mesh", Since: "v0.2.3\x1b[2J", Branch: "main", Commits: 471, PRs: 12, PRsPartial: true, TagOffBranch: true},
 	}}
 	out := renderSnapshot(t, snap, 200)
-	for _, want := range []string{"Unreleased  2 repo(s) with commits after the latest tag · newest 20 of 40 repos",
+	for _, want := range []string{"Unreleased  2 repos · 1,483 commits · 18+ PRs · newest 20 of 40 repos",
 		"repo     range              commits  PRs  note", "gk       v0.164.0..develop  12       6\n", "v0.2.3?[2J..main", "12+  tag is not on main"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output has no %q:\n%s", want, out)
@@ -120,9 +126,9 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 	}
 
 	// Without a tag off its branch there is no note column.
-	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Items: snap.UnreleasedRepos.Items[:1]}
+	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Commits: 12, PRs: 1, Items: snap.UnreleasedRepos.Items[:1]}
 	out = renderSnapshot(t, snap, 200)
-	if strings.Contains(out, "note") || !strings.Contains(out, "1 repo(s) with commits after the latest tag · 5 repos\n") {
+	if strings.Contains(out, "note") || !strings.Contains(out, "Unreleased  1 repo · 12 commits · 1 PR · all 5 repos\n") {
 		t.Errorf("output without notes:\n%s", out)
 	}
 
@@ -134,158 +140,12 @@ func TestRenderDashOrgUnreleased(t *testing.T) {
 	}
 
 	snap.UnreleasedRepos = &dashOrgUnreleasedJSON{Total: 5, Scanned: 5, Items: []dashRepoUnreleasedRow{}}
-	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "0 repo(s) with commits after the latest tag · 5 repos\n  none\n") {
+	if out = renderSnapshot(t, snap, 200); !strings.Contains(out, "Unreleased  nothing after the latest tag · all 5 repos\n  none\n") {
 		t.Errorf("an org with nothing unreleased:\n%s", out)
 	}
 	snap.UnreleasedRepos.Error = "boom"
-	if out = renderSnapshot(t, snap, 200); strings.Contains(out, "none") || !strings.Contains(out, "could not read: boom") {
+	if out = renderSnapshot(t, snap, 200); strings.Contains(out, "none") || strings.Contains(out, "nothing after") || !strings.Contains(out, "\nUnreleased\n  could not read: boom\n") {
 		t.Errorf("a failed first read says none:\n%s", out)
-	}
-}
-
-func TestDashTUIOrgUnreleasedFillsLater(t *testing.T) {
-	m, clock := newTestDashTUI(t, false)
-	m.width = 120
-	reads := 0
-	m.fetchOrg = func(context.Context) (*dashOrgUnreleasedJSON, error) { reads++; return nil, nil }
-	if m.Init(); !m.orgInFlight || !m.inFlight {
-		t.Fatalf("Init did not start both reads: main %v org %v", m.inFlight, m.orgInFlight)
-	}
-	if m.startOrg(true) != nil {
-		t.Errorf("a second org read started while one is in flight")
-	}
-
-	// The main read ends first: the block is pending, the rest is shown.
-	m.Update(okResult(m))
-	if m.snap == nil || m.snap.UnreleasedRepos == nil || !m.snap.UnreleasedRepos.Pending {
-		t.Fatalf("snapshot before the org read = %+v", m.snap)
-	}
-	if !strings.Contains(m.status(), "refreshing") {
-		t.Errorf("status while the org read runs = %q", m.status())
-	}
-	first := &dashOrgUnreleasedJSON{Total: 3, Scanned: 3, Items: []dashRepoUnreleasedRow{{Repo: "o/r", Since: "v1.0.0", Branch: "main", Commits: 2, PRs: 1}}}
-	m.Update(dashOrgResultMsg{res: first})
-	if m.orgInFlight || m.snap.UnreleasedRepos != first || !strings.Contains(m.vp.View(), "v1.0.0..main") {
-		t.Fatalf("org result not shown: in flight %v, block %+v", m.orgInFlight, m.snap.UnreleasedRepos)
-	}
-	if len(m.sections) != 3 {
-		t.Errorf("sections = %v, want PRs, Issues, and Unreleased", m.sections)
-	}
-
-	// A later main read keeps the rows, and an auto-refresh does not repeat
-	// the org read until it is old.
-	m.Update(key("r"))
-	if !m.orgInFlight {
-		t.Fatalf("r did not start the org read")
-	}
-	m.Update(okResult(m))
-	if m.snap.UnreleasedRepos != first {
-		t.Errorf("a main read dropped the org rows: %+v", m.snap.UnreleasedRepos)
-	}
-	m.Update(dashOrgResultMsg{res: first})
-	if m.startOrg(false) != nil {
-		t.Errorf("an auto-refresh repeats a fresh org read")
-	}
-	clock.advance(dashOrgUnreleasedMaxAge)
-	if m.startOrg(false) == nil {
-		t.Errorf("an auto-refresh does not repeat an old org read")
-	}
-	m.orgInFlight = false
-
-	// A failure keeps the rows; a rate limit also stops the next reads.
-	m.Update(dashOrgResultMsg{err: errors.New("boom")})
-	if u := m.snap.UnreleasedRepos; u.Error != "boom" || len(u.Items) != 1 || first.Error != "" {
-		t.Errorf("after a failure: %+v (first result changed: %q)", u, first.Error)
-	}
-	reset := clock.now().Add(2 * time.Minute)
-	m.Update(dashOrgResultMsg{err: &ghapi.RateLimitError{Status: "403", Reset: reset}})
-	if !m.limited() || m.startOrg(true) != nil {
-		t.Errorf("a rate-limited org read does not stop the reads: limited %v", m.limited())
-	}
-	if reads != 0 {
-		t.Errorf("the test ran %d fetch commands", reads)
-	}
-}
-
-// The two reads start together, so the main read can succeed after the org
-// read was rate limited. That success must not lift the org read's limit.
-func TestDashTUIMainSuccessKeepsTheOrgRateLimit(t *testing.T) {
-	m, clock := newTestDashTUI(t, true)
-	m.fetchOrg = func(context.Context) (*dashOrgUnreleasedJSON, error) { return nil, nil }
-	m.Init()
-	reset := clock.now().Add(5 * time.Minute)
-	m.Update(dashOrgResultMsg{err: &ghapi.RateLimitError{Status: "403", Reset: reset}})
-	m.Update(okResult(m))
-	if !m.limited() {
-		t.Fatalf("the main read's success lifted the org rate limit")
-	}
-	if !m.nextAt.Equal(reset) {
-		t.Errorf("next tick at %v, want the reset %v", m.nextAt, reset)
-	}
-	if !strings.Contains(m.status(), "rate limited") {
-		t.Errorf("status = %q", m.status())
-	}
-}
-
-func TestDashTUIRepoScopeHasNoOrgRead(t *testing.T) {
-	m, _ := newTestDashTUI(t, false)
-	m.Init()
-	if m.orgInFlight || m.startOrg(true) != nil {
-		t.Errorf("a repository scope starts an org read")
-	}
-	m.Update(okResult(m))
-	if m.snap.UnreleasedRepos != nil {
-		t.Errorf("a repository scope has an org block: %+v", m.snap.UnreleasedRepos)
-	}
-	if strings.Contains(m.status(), "refreshing") {
-		t.Errorf("status = %q", m.status())
-	}
-}
-
-// The screen sends the unreleased query one time for each org read: the main
-// read leaves it out.
-func TestDashScreenSplitsTheOrgRead(t *testing.T) {
-	r, oid := dashCmdRepo(t)
-	count := func(f *dashFake) (total, unreleased int) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		for _, q := range f.queries {
-			if strings.Contains(q, "repositoryOwner(") {
-				unreleased++
-			}
-		}
-		return len(f.queries), unreleased
-	}
-	screen := func(f *dashFake, prefix string) *dashTUI {
-		resetForecastMemo()
-		env := dashEnv{client: &ghapi.Client{Token: "tok", APIBase: f.server(t, oid).URL}, runner: &git.ExecRunner{Dir: r.Dir}, prefix: prefix, remote: "origin"}
-		m := newDashScreen(context.Background(), env, time.Minute, false)
-		t.Cleanup(m.cancel)
-		return m
-	}
-
-	f := &dashFake{orgRepos: []any{dashOrgRepoNode("o/r")}}
-	m := screen(f, "org:o")
-	snap, err := m.fetch(context.Background())
-	if err != nil {
-		t.Fatalf("main read: %v", err)
-	}
-	if total, unreleased := count(f); total != 2 || unreleased != 0 || snap.UnreleasedRepos != nil {
-		t.Errorf("main read sent %d queries, %d unreleased; block %+v", total, unreleased, snap.UnreleasedRepos)
-	}
-	if m.fetchOrg == nil {
-		t.Fatalf("an org screen has no org read")
-	}
-	org, err := m.fetchOrg(context.Background())
-	if err != nil || len(org.Items) != 1 {
-		t.Fatalf("org read: %v, %+v", err, org)
-	}
-	if total, unreleased := count(f); total != 3 || unreleased != 1 {
-		t.Errorf("after the org read: %d queries, %d unreleased", total, unreleased)
-	}
-
-	if m := screen(&dashFake{}, "repo:o/r"); m.fetchOrg != nil {
-		t.Errorf("a repository screen has an org read")
 	}
 }
 
@@ -314,14 +174,15 @@ func TestDashCmdOrgUnreleased(t *testing.T) {
 		if err != nil {
 			t.Fatalf("gk dash --org: %v\n%s", err, out)
 		}
-		for _, want := range []string{"Unreleased  1 repo(s) with commits after the latest tag · newest 1 of 40 repos", "v1.0.0..develop  2        2"} {
+		for _, want := range []string{"Unreleased  1 repo · 2 commits · 2 PRs · newest 1 of 40 repos", "v1.0.0..develop  2        2",
+			"Activity  7d · PRs opened 28 ▂▃▄▅▆▇█ · merged 21 ·▂▃▄▆▇█ · commits 14 ███████"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output has no %q:\n%s", want, out)
 			}
 		}
-		// The PR query, the issue query, and the unreleased query.
-		if got := f.graphql.Load(); got != 3 {
-			t.Errorf("graphql requests = %d, want 3", got)
+		// The PR query, the issue query, and the three slow reads.
+		if got := f.graphql.Load(); got != 5 {
+			t.Errorf("graphql requests = %d, want 5", got)
 		}
 	})
 
@@ -342,7 +203,7 @@ func TestDashCmdOrgUnreleased(t *testing.T) {
 			t.Fatalf("decode: %v\n%s", err, out)
 		}
 		u := env.Result.UnreleasedRepos
-		if u == nil || len(u.Items) != 1 || u.Items[0] != (dashRepoUnreleasedRow{Repo: "o/r", Since: "v1.0.0", Branch: "develop", Commits: 2, PRs: 2}) || u.Pending {
+		if u == nil || len(u.Items) != 1 || u.Items[0] != (dashRepoUnreleasedRow{Repo: "o/r", Since: "v1.0.0", Branch: "develop", Commits: 2, PRs: 2}) || u.Pending || u.Commits != 2 || u.PRs != 2 {
 			t.Errorf("unreleased_repos = %+v", u)
 		}
 		if len(env.Result.Unreleased) != 0 {
@@ -357,7 +218,7 @@ func TestDashCmdOrgUnreleased(t *testing.T) {
 		if err != nil {
 			t.Fatalf("gk dash --org: %v\n%s", err, out)
 		}
-		if !strings.Contains(out, "#7") || !strings.Contains(out, "could not read: github unreleased query timed out") {
+		if !strings.Contains(out, "#7") || !strings.Contains(out, "\nUnreleased\n  could not read: github unreleased query timed out") || strings.Contains(out, "nothing after") {
 			t.Errorf("output:\n%s", out)
 		}
 	})

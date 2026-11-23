@@ -4622,6 +4622,7 @@ The one exception is `--fetch`: it runs `git fetch`, which updates the remote-tr
 
 | Section | Rows |
 |---------|------|
+| Activity | One line with the PRs opened, the PRs merged, and the commits of each of the last 7 days |
 | PRs | `mine` (your PRs), `review` (review requested from you), `cleanup` (merged PRs with a local branch that remains) |
 | Issues | `assigned`, `mentioned`, `authored`, `unassigned` (repository scope only), and a count of the issues that are assigned to other people |
 | Forecast | One line for each conflict between two open PRs or between a PR and its base, for each base branch |
@@ -4683,6 +4684,27 @@ The forecast reads at most 20 PRs for each base, the newest first, and stops aft
 A PR or a pair that the forecast cannot compute shows as unknown, never as clean.
 A PR shows `ready to merge` only when the review passed, CI passed, and the PR merges with its base without conflicts.
 
+#### Activity
+
+The activity line shows three counts for the last 7 days: the PRs opened, the PRs merged, and the commits.
+Each count has its total and one block for each day, with the oldest day on the left and today on the right.
+The height of a block is in proportion to the busiest day of that count.
+A day with no item shows as `·`.
+A day starts and ends at midnight in the local time zone.
+
+gk reads the two PR counts with one GraphQL query of 1 point, for a repository and for an org.
+In a repository, gk counts the commits from the local repository: the commits of the release branch and of each base branch of the merged PRs, on the remote from the last fetch.
+A commit that is on two of these branches counts one time.
+With `--org`, gk counts the commits on the default branch of the 30 most recently pushed repositories, with one more query of 1 point.
+A repository that releases from another branch shows its commits on the day of the release, not on the day of the work.
+The count of merged PRs shows the work of each day better for such a repository.
+A `+` after the commit total shows that more than 30 repositories have a push in the 7 days, so the total is a minimum.
+
+On the screen, the PR counts and the `--org` commit count show `…` until their query ends.
+Auto-refresh sends these queries again only if the last read is 5 minutes old, or when the day changes.
+`r` sends them at once.
+If a query fails, the line shows `?` or the counts of the last read, and a line below it shows the error.
+
 #### Unreleased
 
 The unreleased section lists the PRs that are merged but are not in a release.
@@ -4696,6 +4718,7 @@ It uses the remote branches and the tags from the last fetch.
 Use `--fetch` to update them first.
 
 Each block shows the newest 20 PRs and the count of all of them.
+The header also shows the count of all commits after the tag, with or without a PR.
 A PR shows one time.
 If GitHub names the base branch of the PR and that branch has it, the PR shows with that branch.
 If not, the PR shows with the first branch that has it, and the release branch is first.
@@ -4717,6 +4740,8 @@ gk sends one more GraphQL query for the 20 most recently pushed repositories of 
 Forks and archived repositories are not read.
 For each repository, gk compares the default branch and `develop` with the latest tag by commit date.
 A repository shows one row when a branch has commits that are not in the tag.
+The header shows the count of these repositories and the totals of their commits and PRs.
+A `+` after the PR total shows that it is a minimum.
 The row shows the branch that has more of these commits, and the default branch if the counts are equal.
 
 | Column | Content |
@@ -4728,7 +4753,7 @@ The row shows the branch that has more of these commits, and the default branch 
 
 A repository without a tag does not show.
 On the screen, the PRs and the issues show first, and the section shows `loading…` until its query ends.
-The query costs 13 GraphQL points, more than the other queries together.
+The unreleased query costs 13 GraphQL points, more than the other queries together.
 Auto-refresh sends it again only if the last read is 5 minutes old.
 `r` sends it at once.
 If the query fails, the section shows the error and keeps the rows of the last read.
@@ -4744,12 +4769,13 @@ Without a token, gk dash stops before it sends a request.
 
 `--json` prints one snapshot.
 In agent mode (`GK_AGENT=1`), the snapshot is in the `{state, ok, result, error}` envelope.
-The fields of `result` are `scope`, `fetched_at`, `prs`, `issues`, `forecast`, `unreleased`, `base_behind`, and `notes`.
+The fields of `result` are `scope`, `fetched_at`, `activity`, `prs`, `issues`, `forecast`, `unreleased`, `base_behind`, and `notes`.
+`activity` has `since`, `opened`, `merged`, and `commits`. Each count has `total`, `days` with the oldest day first, `partial` when the total is a minimum, and `error` when its query failed.
 `prs` and `issues` have `counts`, `items`, and `error` when their query failed.
-`unreleased` has one entry for each branch, with `base`, `remote`, `since`, `total`, `items`, and `not_fetched`.
+`unreleased` has one entry for each branch, with `base`, `remote`, `since`, `commits`, `total`, `items`, and `not_fetched`.
 `since` is the tag, or the release branch, that the count starts after.
 `not_fetched` has the numbers of the merged PRs whose merge commit is not in the local repository.
-With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `items`, and `error` when the query failed.
+With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `commits`, `prs`, `prs_partial`, `items`, and `error` when the query failed.
 Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, and `tag_off_branch`.
 `issues.others_assigned` is the count of open issues assigned to other people.
 

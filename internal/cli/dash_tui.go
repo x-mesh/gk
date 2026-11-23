@@ -17,9 +17,10 @@ import (
 
 // Auto-refresh period. One refresh costs up to 7 GraphQL points, so 30 s is
 // at most 840 points an hour of the 5000 a token has. The search index lags
-// behind GitHub, so a shorter period would rarely show newer data. The org
-// unreleased read costs 13 points more, so an auto-refresh repeats it only
-// every dashOrgUnreleasedMaxAge: 156 points an hour.
+// behind GitHub, so a shorter period would rarely show newer data. The slow
+// reads (dashSlowParts) cost 1 point each for the activity counts and 13 for
+// the org unreleased summary, and an auto-refresh repeats them only every
+// dashSlowMaxAge: at most 180 points an hour.
 const (
 	dashMinInterval     = 30 * time.Second
 	dashDefaultInterval = dashMinInterval
@@ -31,10 +32,11 @@ type dashResultMsg struct {
 	err  error
 }
 
-// dashOrgResultMsg is the end of an org unreleased read.
-type dashOrgResultMsg struct {
-	res *dashOrgUnreleasedJSON
-	err error
+// dashPartMsg is the end of the read of the slow part at index part.
+type dashPartMsg struct {
+	part  int
+	write func(*dashSnapshot)
+	err   error
 }
 
 // dashTickMsg asks for an auto-refresh. gen is the watch generation it was
@@ -59,17 +61,13 @@ type dashTUI struct {
 	seq       int
 	lastFetch time.Time // when the last read finished
 
-	// The org unreleased read runs apart from the main read: it is slower,
-	// so the screen shows the PRs and issues first and fills the block when
-	// the read ends. fetchOrg is nil in a repository scope.
-	fetchOrg    func(context.Context) (*dashOrgUnreleasedJSON, error)
-	orgInFlight bool
-	orgAt       time.Time              // when the last org read ended
-	org         *dashOrgUnreleasedJSON // its result, kept across main reads
-	// orgLimitUntil is the rate limit the org read hit. It is kept apart
-	// from limitUntil because the main read, started with it, can succeed
-	// after it and clears only its own limit.
-	orgLimitUntil time.Time
+	// The slow reads run apart from the main read, so the screen shows the
+	// PRs and issues first and fills each block when its read ends.
+	parts []*dashPart
+	// slowLimitUntil is the rate limit a slow read hit. It is kept apart from
+	// limitUntil because the main read, started with the slow reads, can
+	// succeed after one of them and clears only its own limit.
+	slowLimitUntil time.Time
 
 	snap       *dashSnapshot
 	lastOK     time.Time
@@ -87,37 +85,41 @@ func newDashTUI(ctx context.Context, fetch func(context.Context) (dashSnapshot, 
 }
 
 func (m *dashTUI) Init() tea.Cmd {
-	return tea.Batch(m.startFetch(), m.startOrg(true), dashClock())
+	return tea.Batch(m.startFetch(), m.startParts(true), dashClock())
 }
 
-// startOrg starts the org unreleased read, or returns nil: in a repository
-// scope, while one is in flight, during a rate limit, or, without force, when
-// the last read is newer than dashOrgUnreleasedMaxAge.
-func (m *dashTUI) startOrg(force bool) tea.Cmd {
-	if m.fetchOrg == nil || m.orgInFlight || m.limited() {
+// startParts starts the slow reads that are due: every one with force, and
+// otherwise one that has not been read, whose last read is older than
+// dashSlowMaxAge, or whose last read was on another day, because the
+// activity counts are by day. A read in flight is not started again, and none
+// starts during a rate limit.
+func (m *dashTUI) startParts(force bool) tea.Cmd {
+	if m.limited() {
 		return nil
 	}
-	if !force && m.org != nil && m.now().Sub(m.orgAt) < dashOrgUnreleasedMaxAge {
-		return nil
+	var cmds []tea.Cmd
+	for i, p := range m.parts {
+		fresh := !p.at.IsZero() && m.now().Sub(p.at) < dashSlowMaxAge && p.at.YearDay() == m.now().YearDay()
+		if p.inFlight || (!force && fresh) {
+			continue
+		}
+		p.inFlight = true
+		ctx := m.ctx
+		cmds = append(cmds, func() tea.Msg {
+			write, err := p.fetchWithin(ctx)
+			return dashPartMsg{part: i, write: write, err: err}
+		})
 	}
-	m.orgInFlight = true
-	ctx, fetch := m.ctx, m.fetchOrg
-	return func() tea.Msg {
-		res, err := fetch(ctx)
-		return dashOrgResultMsg{res: res, err: err}
-	}
+	return tea.Batch(cmds...)
 }
 
-// orgBlock is what a snapshot shows for the org unreleased read: the last
-// result, or a pending block before the first one.
-func (m *dashTUI) orgBlock() *dashOrgUnreleasedJSON {
-	switch {
-	case m.fetchOrg == nil:
-		return nil
-	case m.org == nil:
-		return &dashOrgUnreleasedJSON{Pending: true}
+func (m *dashTUI) partInFlight() bool {
+	for _, p := range m.parts {
+		if p.inFlight {
+			return true
+		}
 	}
-	return m.org
+	return false
 }
 
 func dashClock() tea.Cmd {
@@ -149,10 +151,11 @@ func (m *dashTUI) schedule(d time.Duration) tea.Cmd {
 
 func (m *dashTUI) limited() bool { return m.now().Before(m.limitEnd()) }
 
-// limitEnd is the later end of the main and the org read's rate limits.
+// limitEnd is the later end of the main read's and the slow reads' rate
+// limits.
 func (m *dashTUI) limitEnd() time.Time {
-	if m.orgLimitUntil.After(m.limitUntil) {
-		return m.orgLimitUntil
+	if m.slowLimitUntil.After(m.limitUntil) {
+		return m.slowLimitUntil
 	}
 	return m.limitUntil
 }
@@ -173,7 +176,9 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.limitUntil = rl.Reset
 			}
 		} else {
-			msg.snap.UnreleasedRepos = m.orgBlock()
+			for _, p := range m.parts {
+				p.apply(&msg.snap)
+			}
 			m.snap, m.lastOK, m.err, m.limitUntil = &msg.snap, m.now(), nil, time.Time{}
 			m.render()
 		}
@@ -182,26 +187,21 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case dashOrgResultMsg:
-		m.orgInFlight = false
-		m.orgAt = m.now()
-		if msg.err != nil {
-			// Keep the rows of the read before; the block says what failed.
-			failed := dashOrgUnreleasedJSON{Items: []dashRepoUnreleasedRow{}}
-			if m.org != nil {
-				failed = *m.org
-			}
-			failed.Error = msg.err.Error()
-			m.org = &failed
-			var rl *ghapi.RateLimitError
-			if errors.As(msg.err, &rl) {
-				m.orgLimitUntil = rl.Reset
-			}
-		} else {
-			m.org, m.orgLimitUntil = msg.res, time.Time{}
+	case dashPartMsg:
+		p := m.parts[msg.part]
+		p.inFlight = false
+		p.at = m.now()
+		p.done(msg.write, msg.err)
+		// A slow read that succeeds shows that the limit is over.
+		var rl *ghapi.RateLimitError
+		switch {
+		case errors.As(msg.err, &rl):
+			m.slowLimitUntil = rl.Reset
+		case msg.err == nil:
+			m.slowLimitUntil = time.Time{}
 		}
 		if m.snap != nil {
-			m.snap.UnreleasedRepos = m.org
+			p.apply(m.snap)
 			m.render()
 		}
 		return m, nil
@@ -217,7 +217,7 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.limited() {
 			return m, m.schedule(0)
 		}
-		return m, tea.Batch(m.startFetch(), m.startOrg(false))
+		return m, tea.Batch(m.startFetch(), m.startParts(false))
 
 	case dashClockMsg:
 		return m, dashClock()
@@ -242,7 +242,7 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The result schedules the next tick, so drop the pending one.
 			m.gen++
 			m.scheduled = false
-			return m, tea.Batch(m.startFetch(), m.startOrg(true))
+			return m, tea.Batch(m.startFetch(), m.startParts(true))
 		case "tab":
 			m.jumpSection(1)
 			return m, nil
@@ -268,7 +268,7 @@ func (m *dashTUI) toggleWatch() tea.Cmd {
 	}
 	elapsed := m.now().Sub(m.lastFetch)
 	if elapsed >= m.interval && !m.limited() {
-		return tea.Batch(m.startFetch(), m.startOrg(false))
+		return tea.Batch(m.startFetch(), m.startParts(false))
 	}
 	return m.schedule(m.interval - elapsed)
 }
@@ -327,7 +327,7 @@ func (m *dashTUI) status() string {
 	}
 	var state string
 	switch {
-	case m.inFlight || m.orgInFlight:
+	case m.inFlight || m.partInFlight():
 		state = cellYellow("⟳ refreshing…")
 	case m.limited():
 		state = cellYellow("⏸ rate limited · retry at " + m.limitEnd().Local().Format("15:04:05"))
@@ -356,16 +356,12 @@ func (m *dashTUI) View() string {
 	return m.status() + "\n" + body + "\n" + footer
 }
 
-// newDashScreen is the screen for env. For an org scope the main read leaves
-// the unreleased query out, and the screen sends it apart.
+// newDashScreen is the screen for env. Its main read leaves the slow reads
+// out, and the screen sends them apart.
 func newDashScreen(ctx context.Context, env dashEnv, interval time.Duration, watch bool) *dashTUI {
-	env.deferOrgUnreleased = true
+	env.deferSlow = true
 	m := newDashTUI(ctx, func(ctx context.Context) (dashSnapshot, error) { return collectDash(ctx, env) }, interval, watch)
-	if !strings.HasPrefix(env.prefix, "repo:") {
-		m.fetchOrg = func(ctx context.Context) (*dashOrgUnreleasedJSON, error) {
-			return collectDashOrgUnreleased(ctx, env.client, env.prefix)
-		}
-	}
+	m.parts = dashSlowParts(env, func() time.Time { return m.now() })
 	return m
 }
 

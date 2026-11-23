@@ -32,6 +32,7 @@ func renderDash(w io.Writer, snap dashSnapshot, width int) {
 	for _, b := range snap.BaseBehind {
 		fmt.Fprintf(w, "%s\n", cellYellow(fmt.Sprintf("%s is %d commit(s) behind %s/%s", b.Base, b.Behind, b.Remote, b.Base))+cellFaint(" → gk pull"))
 	}
+	renderDashActivity(w, snap)
 
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s  %s\n", cellBold("PRs"), dashCounts(snap.PRs.Counts))
@@ -132,9 +133,14 @@ func renderDash(w io.Writer, snap dashSnapshot, width int) {
 // read that found nothing shows as that.
 func renderDashUnreleased(w io.Writer, snap dashSnapshot, width int) {
 	header := func(u dashUnreleasedJSON) {
-		summary := fmt.Sprintf("%s · no merged PR since %s", u.Base, u.Since)
+		summary := u.Base
+		if u.Commits > 0 {
+			summary += " · " + pluralCount(u.Commits, "commit", "commits")
+		}
 		if u.Total > 0 {
-			summary = fmt.Sprintf("%s · %d merged PR(s) since %s", u.Base, u.Total, u.Since)
+			summary += fmt.Sprintf(" · %d merged PR(s) since %s", u.Total, u.Since)
+		} else {
+			summary += fmt.Sprintf(" · no merged PR since %s", u.Since)
 		}
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "%s  %s\n", cellBold("Unreleased"), cellFaint(summary))
@@ -522,6 +528,17 @@ func dashTerminalSafe(snap dashSnapshot) dashSnapshot {
 		un[i] = u
 	}
 	snap.Unreleased = un
+	if a := snap.Activity; a != nil {
+		safe := *a
+		for _, s := range []**dashSeriesJSON{&safe.Opened, &safe.Merged, &safe.Commits} {
+			if *s != nil {
+				c := **s
+				c.Error = dashSafe(c.Error)
+				*s = &c
+			}
+		}
+		snap.Activity = &safe
+	}
 	if o := snap.UnreleasedRepos; o != nil {
 		safe := *o
 		safe.Error = dashSafe(o.Error)

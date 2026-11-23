@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.165.0] - 2026-11-23
+
 ### Added
 
 - `gk branch list --merged --base <branch>` and `--unmerged --base <branch>` judge against that branch, like `gk branch clean --base`. Before, the listing always used `base_branch` or the remote's default branch, so it disagreed with `gk branch clean --base develop` about which branches were merged. `--base` without `--merged` or `--unmerged` fails.

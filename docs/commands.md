@@ -414,7 +414,7 @@ Each linked worktree carries its own status: `current` (the worktree this call r
 
 With the global `--json` flag the output is a stable, schema-versioned document intended for AI agents: one call replaces the usual `git status`/`branch`/`log`/`worktree list` probe sequence. Fields are append-only; breaking changes bump `schema`.
 
-`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (a fixed newest-first slice of the current branch — 5 commits, with no ref selection and no format control, so a ref-scoped, longer, or shaped log query is `gk log`, not this), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, stage blobs, and `symbols` — the enclosing function/entity of each conflict marker, weave-style: "`process` 양쪽 수정" beats "app.py 충돌"), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (what is still unreleased: when a release branch resolves, the commits on HEAD not yet on it — `origin/<base>..HEAD` — plus the since-tag total and `already_on_base` so squash-merged work already shipped no longer inflates the count; falls back to since-tag-only when no base resolves, and still appears when the repo has no tags but a base does). One more section, `github`, counts the repo's open PRs/issues (plus PRs awaiting your review) via the GitHub search API. `gk context` (bare) shows it by default, and `--include=github` is an explicit refresh; it stays **excluded from `all`**. All GitHub-count surfaces (`gk context`, `gk status --vis github`) share one on-disk cache (`.git/gk-github-cache`) governed by a per-surface policy in `github.counts` — `off` | `cache` (never fetch) | `ttl` (fetch when older than `ttl_minutes`, default 3) | `force` (always fetch). Defaults keep bare `gk context` and `gk status` offline (`cache`) and let `--include=github` refresh on the TTL (`ttl`); `gk pr`/`gk issue` on the current repo warm the cache for free. Fetches run under a 5s timeout; `github.as_of` records the fetch time. A section that cannot be collected degrades to a `notes` entry instead of failing the call.
+`--include` fuses the usual follow-up probes into the same document — one call instead of six: `diff` (uncommitted changes as a digest with per-file ±lines and symbols, untracked files included; before the first commit the empty tree stands in for HEAD), `log` (a fixed newest-first slice of the current branch — 5 commits, with no ref selection and no format control, so a ref-scoped, longer, or shaped log query is `gk log`, not this), `precheck` (merge-tree forecast for the next pull), `conflict` (current unmerged files with operation kind, conflict type, hunk counts, stage blobs, and `symbols` — the enclosing function/entity of each conflict marker, weave-style: "`process` 양쪽 수정" beats "app.py 충돌"), `remotes` (every registered remote with the current branch's drift as of the last fetch, plus asymmetric push URLs — see `gk doctor`), `release` (what is still unreleased: when a release branch resolves, the commits on HEAD not yet on it — `origin/<base>..HEAD` — plus the since-tag total and `already_on_base` so squash-merged work already shipped no longer inflates the count; falls back to since-tag-only when no base resolves, and still appears when the repo has no tags but a base does; `pr_count` and `prs` name the pull requests merged in that range, from the first-parent commit subjects that GitHub writes — `Merge pull request #N from …`, or a `(#N)` suffix — with `prs` capped at 20). One more section, `github`, counts the repo's open PRs/issues (plus PRs awaiting your review) via the GitHub search API. `gk context` (bare) shows it by default, and `--include=github` is an explicit refresh; it stays **excluded from `all`**. All GitHub-count surfaces (`gk context`, `gk status --vis github`) share one on-disk cache (`.git/gk-github-cache`) governed by a per-surface policy in `github.counts` — `off` | `cache` (never fetch) | `ttl` (fetch when older than `ttl_minutes`, default 3) | `force` (always fetch). Defaults keep bare `gk context` and `gk status` offline (`cache`) and let `--include=github` refresh on the TTL (`ttl`); `gk pr`/`gk issue` on the current repo warm the cache for free. Fetches run under a 5s timeout; `github.as_of` records the fetch time. A section that cannot be collected degrades to a `notes` entry instead of failing the call.
 
 `--fetch` refreshes the remote-tracking refs before anything is counted: it fetches origin (the configured `remote`), plus the remote of the current branch's upstream when that is another remote. Without it, `ahead`/`behind` and `base.behind_remote`/`base.ahead_remote` are as of the last fetch. Each fetched remote appears in `fetch: [{remote, ok, error}]`. A failed fetch (offline, rejected credentials, or the 15 s timeout) does not fail the call, and the counts stay as of the last fetch. Credential prompts are disabled, so the call cannot wait for input. `--include=all` does not fetch.
 
@@ -4612,6 +4612,7 @@ Show the open PRs and issues that involve you, together with the state of the lo
 Each PR row shows the review verdict, the CI state, the local branch, and the next action.
 The next action can include the gk command to run.
 The forecast shows which open PRs conflict with their base or with each other if you merge them.
+The unreleased section shows the merged PRs that are not in a release.
 gk dash only reads.
 It sends GraphQL queries and runs `git merge-tree`.
 It does not change a ref, the index, or a worktree.
@@ -4624,6 +4625,7 @@ The one exception is `--fetch`: it runs `git fetch`, which updates the remote-tr
 | PRs | `mine` (your PRs), `review` (review requested from you), `cleanup` (merged PRs with a local branch that remains) |
 | Issues | `assigned`, `mentioned`, `authored`, `unassigned` (repository scope only), and a count of the issues that are assigned to other people |
 | Forecast | One line for each conflict between two open PRs or between a PR and its base, for each base branch |
+| Unreleased | The PRs that are merged after the latest tag, for the release branch and for each base branch of the merged PRs |
 
 A row that matches two relations shows one time, with the first relation in the list above.
 Each block reads the newest 20 items.
@@ -4633,7 +4635,7 @@ If GitHub has more items, the section header shows the shown count.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown |
+| `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, the forecast, and the unreleased section are not shown |
 | `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
 | `--watch` | false | Open the screen with auto-refresh on |
 | `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
@@ -4681,6 +4683,35 @@ The forecast reads at most 20 PRs for each base, the newest first, and stops aft
 A PR or a pair that the forecast cannot compute shows as unknown, never as clean.
 A PR shows `ready to merge` only when the review passed, CI passed, and the PR merges with its base without conflicts.
 
+#### Unreleased
+
+The unreleased section lists the PRs that are merged but are not in a release.
+gk reads the release branch and each base branch of the newest 20 merged PRs.
+The release branch is `base_branch`, or the default branch of the remote.
+For each branch, gk reads the first-parent commits of `<remote>/<branch>` after the latest tag on that branch.
+A branch that is not the release branch also leaves out the commits of the release branch.
+gk finds a PR from the commit subject that GitHub writes: `Merge pull request #N from ...`, or a subject that ends with `(#N)`.
+The section does not depend on the branch that is checked out.
+It uses the remote branches and the tags from the last fetch.
+Use `--fetch` to update them first.
+
+Each block shows the newest 20 PRs and the count of all of them.
+A PR shows one time.
+If GitHub names the base branch of the PR and that branch has it, the PR shows with that branch.
+If not, the PR shows with the first branch that has it, and the release branch is first.
+If no branch has an unreleased PR, one line shows that for the first branch.
+The section does not show a release branch that has no tag.
+
+If GitHub merged a PR and the local repository does not have its merge commit, the block names that PR as not in the local repository.
+The count does not include it.
+Run `gk dash --fetch` to include it.
+
+The section has these limits:
+
+- If a release squashes a branch into the release branch, the PRs of that branch stay in the section. Their commits are not in the release branch, and git cannot match them.
+- If a branch moves by fast-forward to a branch that merged it, the PRs before that merge are not first-parent commits. The section does not show them.
+- A commit subject that ends with `(#N)` but names an issue shows as a PR.
+
 #### Token
 
 gk dash reads the token from `GH_TOKEN`, then `GITHUB_TOKEN`, then the token of `gh auth login`.
@@ -4690,8 +4721,11 @@ Without a token, gk dash stops before it sends a request.
 
 `--json` prints one snapshot.
 In agent mode (`GK_AGENT=1`), the snapshot is in the `{state, ok, result, error}` envelope.
-The fields of `result` are `scope`, `fetched_at`, `prs`, `issues`, `forecast`, `base_behind`, and `notes`.
+The fields of `result` are `scope`, `fetched_at`, `prs`, `issues`, `forecast`, `unreleased`, `base_behind`, and `notes`.
 `prs` and `issues` have `counts`, `items`, and `error` when their query failed.
+`unreleased` has one entry for each branch, with `base`, `remote`, `since`, `total`, `items`, and `not_fetched`.
+`since` is the tag, or the release branch, that the count starts after.
+`not_fetched` has the numbers of the merged PRs whose merge commit is not in the local repository.
 `issues.others_assigned` is the count of open issues assigned to other people.
 
 ```bash

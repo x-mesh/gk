@@ -80,6 +80,7 @@ type DashPR struct {
 	HeadOID        string
 	BaseRef        string
 	BaseOID        string
+	MergeOID       string // the merge, squash, or rebase commit; "" until the PR is merged
 	CrossRepo      bool
 	ReviewDecision string // "" when the repository sets no review rule
 	UpdatedAt      time.Time
@@ -143,6 +144,7 @@ type DashResult struct {
 
 const dashPRFragment = `fragment DashPR on PullRequest {
   number title url isDraft state headRefName headRefOid baseRefName baseRefOid isCrossRepository reviewDecision updatedAt
+  mergeCommit { oid }
   repository { nameWithOwner }
   author { login }
   closingIssuesReferences(first: 5) { nodes { number } }
@@ -359,15 +361,18 @@ type dashRepoName struct {
 }
 
 type dashPRNode struct {
-	Number            int          `json:"number"`
-	Title             string       `json:"title"`
-	URL               string       `json:"url"`
-	IsDraft           bool         `json:"isDraft"`
-	State             string       `json:"state"`
-	HeadRefName       string       `json:"headRefName"`
-	HeadRefOid        string       `json:"headRefOid"`
-	BaseRefName       string       `json:"baseRefName"`
-	BaseRefOid        string       `json:"baseRefOid"`
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	URL         string `json:"url"`
+	IsDraft     bool   `json:"isDraft"`
+	State       string `json:"state"`
+	HeadRefName string `json:"headRefName"`
+	HeadRefOid  string `json:"headRefOid"`
+	BaseRefName string `json:"baseRefName"`
+	BaseRefOid  string `json:"baseRefOid"`
+	MergeCommit *struct {
+		Oid string `json:"oid"`
+	} `json:"mergeCommit"`
 	IsCrossRepository bool         `json:"isCrossRepository"`
 	ReviewDecision    string       `json:"reviewDecision"`
 	UpdatedAt         time.Time    `json:"updatedAt"`
@@ -419,6 +424,9 @@ func (n dashPRNode) pr() DashPR {
 	}
 	if n.Author != nil {
 		p.Author = n.Author.Login
+	}
+	if n.MergeCommit != nil {
+		p.MergeOID = n.MergeCommit.Oid
 	}
 	for _, c := range n.Closing.Nodes {
 		p.ClosingIssues = append(p.ClosingIssues, c.Number)

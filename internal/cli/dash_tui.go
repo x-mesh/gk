@@ -200,7 +200,7 @@ func (m *dashTUI) render() {
 	m.sections = m.sections[:0]
 	for i, line := range strings.Split(content, "\n") {
 		plain := ui.StripANSI(line)
-		if strings.HasPrefix(plain, "PRs") || strings.HasPrefix(plain, "Issues") || strings.HasPrefix(plain, "Forecast") {
+		if strings.HasPrefix(plain, "PRs") || strings.HasPrefix(plain, "Issues") || strings.HasPrefix(plain, "Forecast") || strings.HasPrefix(plain, "Unreleased") {
 			m.sections = append(m.sections, i)
 		}
 	}

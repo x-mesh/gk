@@ -51,6 +51,7 @@ type dashFake struct {
 	mu      sync.Mutex
 	queries []string
 	limited bool
+	merged  []any // the repository's merged PR nodes
 }
 
 func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
@@ -82,7 +83,7 @@ func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
 			if strings.Contains(req.Query, "repository(") {
 				data["repository"] = map[string]any{
 					"open":   map[string]any{"totalCount": 1, "nodes": []any{pr}},
-					"merged": map[string]any{"totalCount": 0, "nodes": []any{}},
+					"merged": map[string]any{"totalCount": len(f.merged), "nodes": append([]any{}, f.merged...)},
 				}
 			}
 			writeDashJSON(t, w, map[string]any{"data": data})

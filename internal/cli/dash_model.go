@@ -148,16 +148,42 @@ type dashBehindJSON struct {
 	Behind int    `json:"behind"`
 }
 
+// dashUnreleasedRow is one merged pull request that no release holds yet.
+// Title, SHA, and MergedAt come from the merge or squash commit; URL and
+// Author are set when GitHub's merged PRs include the number.
+type dashUnreleasedRow struct {
+	Number   int       `json:"number"`
+	Title    string    `json:"title"`
+	URL      string    `json:"url,omitempty"`
+	Author   string    `json:"author,omitempty"`
+	SHA      string    `json:"sha"`
+	MergedAt time.Time `json:"merged_at"`
+}
+
+// dashUnreleasedJSON is the unreleased pull requests of one branch: Total is
+// every one found after Since, Items the newest releasePRListCap of them.
+// NotFetched names the PRs GitHub merged into the branch whose commit is not
+// in the local repository; Total and Items do not include them.
+type dashUnreleasedJSON struct {
+	Base       string              `json:"base"`
+	Remote     string              `json:"remote"`
+	Since      string              `json:"since"`
+	Total      int                 `json:"total"`
+	Items      []dashUnreleasedRow `json:"items"`
+	NotFetched []int               `json:"not_fetched,omitempty"`
+}
+
 // dashSnapshot is one gk dash read: the table, the screen, and --json all
 // render it.
 type dashSnapshot struct {
-	Scope      string             `json:"scope"`
-	FetchedAt  time.Time          `json:"fetched_at"`
-	PRs        dashPRSection      `json:"prs"`
-	Issues     dashIssueSection   `json:"issues"`
-	Forecast   []dashForecastJSON `json:"forecast,omitempty"`
-	BaseBehind []dashBehindJSON   `json:"base_behind,omitempty"`
-	Notes      []string           `json:"notes,omitempty"`
+	Scope      string               `json:"scope"`
+	FetchedAt  time.Time            `json:"fetched_at"`
+	PRs        dashPRSection        `json:"prs"`
+	Issues     dashIssueSection     `json:"issues"`
+	Forecast   []dashForecastJSON   `json:"forecast,omitempty"`
+	Unreleased []dashUnreleasedJSON `json:"unreleased,omitempty"`
+	BaseBehind []dashBehindJSON     `json:"base_behind,omitempty"`
+	Notes      []string             `json:"notes,omitempty"`
 }
 
 type dashInputs struct {
@@ -166,6 +192,7 @@ type dashInputs struct {
 	Res           *ghapi.DashResult
 	Local         *dashLocal // nil outside the repository or with --org
 	Forecast      []dashForecastGroup
+	Unreleased    []dashUnreleasedGroup
 	ReviewContext string
 }
 
@@ -191,8 +218,32 @@ func buildDashSnapshot(in dashInputs) dashSnapshot {
 				snap.BaseBehind = append(snap.BaseBehind, dashBehindJSON{Base: b.Base, Remote: in.Local.Remote, Behind: b.Behind})
 			}
 		}
+		for _, g := range in.Unreleased {
+			snap.Unreleased = append(snap.Unreleased, unreleasedJSON(g, in.Local.Remote, in.Res.RepoMerged.Items))
+		}
 	}
 	return snap
+}
+
+// unreleasedJSON adds the URL and the author of GitHub's merged PR to each
+// row. The base branch must match too: in a fork, a commit subject can carry a
+// PR number of the upstream repository.
+func unreleasedJSON(g dashUnreleasedGroup, remote string, merged []ghapi.DashPR) dashUnreleasedJSON {
+	j := dashUnreleasedJSON{Base: g.Base, Remote: remote, Since: g.Since, Total: len(g.PRs), Items: []dashUnreleasedRow{}, NotFetched: g.NotFetched}
+	for _, p := range g.PRs[:min(len(g.PRs), releasePRListCap)] {
+		row := dashUnreleasedRow{Number: p.Number, Title: p.Title, SHA: p.SHA}
+		if t, err := time.Parse(time.RFC3339, p.Date); err == nil {
+			row.MergedAt = t
+		}
+		for _, m := range merged {
+			if m.Number == p.Number && m.BaseRef == g.Base {
+				row.URL, row.Author = m.URL, m.Author
+				break
+			}
+		}
+		j.Items = append(j.Items, row)
+	}
+	return j
 }
 
 func forecastJSON(g dashForecastGroup) dashForecastJSON {

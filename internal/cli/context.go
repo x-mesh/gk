@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -139,14 +140,28 @@ type contextLogJSON struct {
 // counts explicit. All base fields are empty when no release branch resolves.
 // Commits and UnreleasedCommits are each capped at 20 so the section stays
 // orientation-sized, with the counts revealing any overflow.
+//
+// PRCount/PRs name the pull requests merged in the unreleased range:
+// <base_ref>..HEAD when a release branch resolves, tag..HEAD otherwise. They
+// come from the commit subjects GitHub writes (see listReleasePRs), over the
+// whole range and not the capped commit list. PRs holds at most
+// releasePRListCap entries.
 type contextReleaseJSON struct {
-	SinceTag          string           `json:"since_tag"`
-	CommitCount       int              `json:"commit_count"`
-	Commits           []contextLogJSON `json:"commits,omitempty"`
-	BaseRef           string           `json:"base_ref,omitempty"`
-	UnreleasedCount   int              `json:"unreleased_count"`
-	UnreleasedCommits []contextLogJSON `json:"unreleased_commits,omitempty"`
-	AlreadyOnBase     int              `json:"already_on_base,omitempty"`
+	SinceTag          string                 `json:"since_tag"`
+	CommitCount       int                    `json:"commit_count"`
+	Commits           []contextLogJSON       `json:"commits,omitempty"`
+	BaseRef           string                 `json:"base_ref,omitempty"`
+	UnreleasedCount   int                    `json:"unreleased_count"`
+	UnreleasedCommits []contextLogJSON       `json:"unreleased_commits,omitempty"`
+	AlreadyOnBase     int                    `json:"already_on_base,omitempty"`
+	PRCount           int                    `json:"pr_count"`
+	PRs               []contextReleasePRJSON `json:"prs,omitempty"`
+}
+
+type contextReleasePRJSON struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	SHA    string `json:"sha"`
 }
 
 // contextRemoteJSON describes one registered remote and the current
@@ -215,7 +230,8 @@ replaces the usual status/branch/log/worktree probe sequence.
   conflict  current unmerged files with operation kind, stages, and hunk counts
   remotes   every registered remote with the current branch's drift as of
             the last fetch, plus asymmetric push URLs (see gk doctor)
-  release   commits since the latest tag (tag..HEAD) — "what hasn't shipped?"
+  release   commits since the latest tag (tag..HEAD) — "what hasn't shipped?" —
+            and the pull requests merged in them (pr_count, prs)
   github    open PR/issue counts for this repo (+ PRs awaiting your review);
             hits the network, so it is opt-in only and NOT part of "all"
 
@@ -628,11 +644,13 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 				line += fmt.Sprintf(" (%d already on %s)", rel.AlreadyOnBase, rel.BaseRef)
 			}
 			fmt.Fprintln(w, line)
+			writeContextReleasePRs(w, rel)
 			for _, l := range rel.UnreleasedCommits {
 				fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
 			}
 		} else {
 			fmt.Fprintf(w, "release: %d commit(s) since %s\n", rel.CommitCount, rel.SinceTag)
+			writeContextReleasePRs(w, rel)
 			for _, l := range rel.Commits {
 				fmt.Fprintf(w, "  %s  %s\n", l.SHA, l.Subject)
 			}
@@ -1021,7 +1039,37 @@ func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTa
 			rel.AlreadyOnBase = rel.CommitCount - rel.UnreleasedCount
 		}
 	}
+
+	prRange := latestTag + "..HEAD"
+	if baseRef != "" {
+		prRange = baseRef + "..HEAD"
+	}
+	prs, err := listReleasePRs(ctx, runner, prRange)
+	if err != nil {
+		return nil, err
+	}
+	rel.PRCount = len(prs)
+	for _, p := range prs[:min(len(prs), releasePRListCap)] {
+		rel.PRs = append(rel.PRs, contextReleasePRJSON{Number: p.Number, Title: p.Title, SHA: p.SHA})
+	}
 	return rel, nil
+}
+
+// writeContextReleasePRs prints the merged pull requests of the release
+// section on one line, newest first. It prints nothing when there are none.
+func writeContextReleasePRs(w io.Writer, rel *contextReleaseJSON) {
+	if rel.PRCount == 0 {
+		return
+	}
+	nums := make([]string, len(rel.PRs))
+	for i, p := range rel.PRs {
+		nums[i] = "#" + strconv.Itoa(p.Number)
+	}
+	line := fmt.Sprintf("  %d merged PR(s): %s", rel.PRCount, strings.Join(nums, " "))
+	if rel.PRCount > len(rel.PRs) {
+		line += " …"
+	}
+	fmt.Fprintln(w, line)
 }
 
 // revCountAndLog returns the commit count and up to 20 newest commits in a

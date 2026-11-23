@@ -107,7 +107,7 @@ func init() {
 	cmd.Flags().StringVar(&statusXYStyleFlag, "xy-style", "", "per-entry state column: 'labels' (new/mod/staged/conflict, default), 'glyphs' (+ ~ ● ⚔ #), or 'raw' (git's two-char code like ??/.M/UU)")
 	cmd.Flags().CountVarP(&statusVerbose, "verbose", "v", "show a richer status summary; repeat for diagnostic details")
 	cmd.Flags().BoolVar(&statusExitCode, "exit-code", false, "exit 0 clean, 1 dirty, 2 submodule-only dirty, 3 conflicts, 4 behind remote")
-	cmd.Flags().BoolVar(&statusWatch, "watch", false, "live change-feed: a timeline of which files change (fsnotify, polling fallback) — for watching an AI agent edit in real time; press [s] for the full status dashboard")
+	cmd.Flags().BoolVar(&statusWatch, "watch", false, "live change-feed: a timeline of which files change (fsnotify, polling fallback) — for watching an AI agent edit in real time; press [s] for the full status dashboard, [d] for the diff of the newest changed file")
 	cmd.Flags().Var(watchIntervalValue{d: &statusWatchInterval}, "watch-interval", "polling-fallback refresh interval for --watch, in seconds (e.g. 2) or a duration (500ms, 2s); implies --watch")
 	cmd.Flags().BoolVar(&statusExplainBase, "explain-base", false, "print a multi-line block explaining how the base branch was resolved (sources, mismatches, action hints)")
 	cmd.Flags().BoolVar(&statusFetchDefault, "fetch-default", false, "with --explain-base, also query the remote's live default branch via ls-remote (one network call)")

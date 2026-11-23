@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The PRs section of `gk dash` shows `others`: the open PRs of other authors with no review requested from you, below your PRs and the review requests. Before, the section showed only `mine`, `review`, and `cleanup`, so a PR that a bot account opened did not show anywhere. In a repository the rows come from the open PRs that gk dash already read, at no cost. With `--org` one more search reads them, and one refresh costs 3 GraphQL points instead of 2, the same as in a repository.
+- `gk status --watch` and the zoom of `gk watch` (`w`) have a diff pane. Press `d` to show the uncommitted diff of the newest changed file next to the feed: on the right if the terminal has 140 columns or more, and below the feed if the terminal is narrower. `f` pins the file on show, `tab` and `shift`+`tab` step through the changed files, and `Ctrl-D` and `Ctrl-U` scroll the diff. While the pane follows the feed, a new change in the file on show moves the pane to the hunk that changed. gk reads the diff of that one file only while the pane is open, and only when the file or HEAD changes, so the cost of the feed does not change.
 
 ## [0.166.0] - 2026-11-23
 

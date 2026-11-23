@@ -1455,6 +1455,9 @@ type fleetModel struct {
 	zoom     *changeWatchModel
 	zoomPath string
 	zoomGen  int
+	// zoomDiff keeps the zoom's diff pane ([d]) open from one zoom to the
+	// next: each hop and each re-entry builds a new embedded model.
+	zoomDiff bool
 
 	// view controls: filter ('f' cycle: all→busy→stuck) and sort ('s' cycle:
 	// default→activity→status) apply to the rendered view only — entries and
@@ -1569,6 +1572,12 @@ func (m fleetModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case changeFrameMsg:
 			if msg.gen != m.zoomGen {
 				return m, nil // frame from a replaced/popped zoom target
+			}
+			_, cmd := m.zoom.Update(msg)
+			return m, cmd
+		case changePreviewMsg:
+			if msg.gen != m.zoomGen {
+				return m, nil // diff read for a replaced/popped zoom target
 			}
 			_, cmd := m.zoom.Update(msg)
 			return m, cmd

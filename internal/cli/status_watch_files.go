@@ -594,6 +594,15 @@ type changeWatchModel struct {
 	showDash  bool
 	dashFrame string
 
+	// Diff preview pane ([d]): the diff of one changed file beside or below
+	// the feed. previewPin is the file the user pinned; "" follows the newest
+	// feed event. previewScroll is the first diff row on show.
+	previewOn      bool
+	previewPin     string
+	preview        changePreview
+	previewScroll  int
+	previewLoading bool
+
 	// Embedded mode: `gk fleet` hosts this model as its zoom view, inside the
 	// fleet program. Fleet drives every refresh (this model arms no tick or fs
 	// chains of its own), so these fields only shape the render and let fleet
@@ -887,12 +896,20 @@ func (m *changeWatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.feedOffset = holdFeedScroll(m.feedOffset, len(msg.events))
 		}
 		m.files, m.added, m.removed = rollupSnapshot(msg.curr)
-		return m, nil
+		return m, m.previewCmd()
+	case changePreviewMsg:
+		return m, m.applyPreview(msg)
 	}
 	return m, nil
 }
 
 func (m *changeWatchModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The status dashboard covers the pane, so its keys wait for the feed.
+	if !m.showDash {
+		if cmd, ok := m.handlePreviewKey(msg.String()); ok {
+			return m, cmd
+		}
+	}
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
@@ -952,7 +969,8 @@ func rollupSnapshot(curr map[string]fileSig) (files, added, removed int) {
 
 // View is the split layout: a compact status header on top (where you are +
 // the latest commit + the dirty rollup), a divider, then the live change feed
-// filling the remaining height, and a keybar.
+// filling the remaining height, and a keybar. With the diff pane open ([d]),
+// the feed shares that height or that width with it (previewLayout).
 func (m *changeWatchModel) View() string {
 	// Dashboard mode: the full `gk status` frame in place of the feed.
 	if m.showDash {
@@ -966,18 +984,21 @@ func (m *changeWatchModel) View() string {
 	}
 
 	header := m.compactHeader()
-	budget := m.feedBudget()
+	lay := m.previewLayout()
 	// Clamp before anything renders: the divider reports the scroll position,
 	// so it must not announce a position the body is about to correct.
-	m.feedOffset = clampFeedOffset(m.feedOffset, len(m.events), budget)
-	return header + "\n\n" + m.divider() + "\n" + m.feedBody(budget) + "\n" + m.keyBar()
+	m.feedOffset = clampFeedOffset(m.feedOffset, len(m.events), lay.feedRows)
+	body := m.divider(lay.feedWidth) + "\n" + m.feedBody(lay.feedRows, lay.feedWidth)
+	if lay.paneRows > 0 {
+		body = m.joinPreview(body, lay)
+	}
+	return header + "\n\n" + body + "\n" + m.keyBar()
 }
 
-// feedBudget is how many feed rows fit under the header — the render height,
-// and the page size for pgup/pgdn. Rows consumed by chrome: the header lines +
-// a blank + the divider + the keybar. Zero means the height is unknown, and
-// the feed renders uncapped.
-func (m *changeWatchModel) feedBudget() int {
+// bodyBudget is how many rows fit under the header. Rows consumed by chrome:
+// the header lines + a blank + the divider + the keybar. Zero means the height
+// is unknown.
+func (m *changeWatchModel) bodyBudget() int {
 	if m.height <= 0 {
 		return 0
 	}
@@ -986,6 +1007,13 @@ func (m *changeWatchModel) feedBudget() int {
 		budget = 1
 	}
 	return budget
+}
+
+// feedBudget is how many feed rows fit — the render height, and the page size
+// for pgup/pgdn. It is the body budget, less the rows of a diff pane below the
+// feed. Zero means the height is unknown, and the feed renders uncapped.
+func (m *changeWatchModel) feedBudget() int {
+	return m.previewLayout().feedRows
 }
 
 // scrollFeed moves the feed by n rows (negative = back into history), clamped
@@ -1073,7 +1101,7 @@ func (m *changeWatchModel) compactHeader() string {
 // divider separates the status header from the live feed and carries the live
 // wall-clock on the right — it ticks every second (clockTickCmd) so the UI
 // visibly stays alive even when nothing is changing.
-func (m *changeWatchModel) divider() string {
+func (m *changeWatchModel) divider(width int) string {
 	dim := lipgloss.NewStyle().Faint(true)
 	livedot := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -1087,7 +1115,7 @@ func (m *changeWatchModel) divider() string {
 		scroll = fmt.Sprintf("↓ %d newer · [end] live  ", m.feedOffset)
 	}
 	tail := "● " + clock // visible width used for fill math
-	w := m.width
+	w := width
 	if w <= 0 || w > 80 {
 		w = 80
 	}
@@ -1099,7 +1127,7 @@ func (m *changeWatchModel) divider() string {
 		livedot.Render("●") + dim.Render(" "+clock)
 }
 
-func (m *changeWatchModel) feedBody(budget int) string {
+func (m *changeWatchModel) feedBody(budget, width int) string {
 	if len(m.events) == 0 {
 		dim := lipgloss.NewStyle().Faint(true)
 		if m.first {
@@ -1123,12 +1151,13 @@ func (m *changeWatchModel) feedBody(budget int) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(m.renderEvent(e))
+		b.WriteString(renderEvent(e, width))
 	}
 	return b.String()
 }
 
-func (m *changeWatchModel) renderEvent(e changeEvent) string {
+// renderEvent renders one feed row for a feed of width columns.
+func renderEvent(e changeEvent, width int) string {
 	dim := lipgloss.NewStyle().Faint(true)
 	ts := dim.Render(e.ts.Format(changeTSFormat))
 	glyph := styleGlyph(e)
@@ -1138,8 +1167,8 @@ func (m *changeWatchModel) renderEvent(e changeEvent) string {
 	// screen.
 	sym := e.symbols
 	// Reserve: indent(3)+ts(11)+sp(2)+glyph(1)+sp(1)+stat(~12)+note(~12).
-	if m.width > 24 {
-		budget := m.width - 3 - 11 - 2 - 1 - 1 - 12 - 12
+	if width > 24 {
+		budget := width - 3 - 11 - 2 - 1 - 1 - 12 - 12
 		if budget > 8 && runewidth.StringWidth(path) > budget {
 			path = runewidth.Truncate(path, budget, "…")
 		}
@@ -1201,12 +1230,22 @@ func styleStat(e changeEvent) string {
 }
 
 func (m *changeWatchModel) keyBar() string {
+	keys := "   [s] status  [d] diff  [r] refresh  [p] pause  [c] clear  [↑↓] scroll"
+	if m.previewOn {
+		// The pane's keys come first: a narrow terminal cuts the end of the bar.
+		pin := "[f] pin"
+		if m.previewPin != "" {
+			pin = "[f] follow"
+		}
+		keys = "   [d] diff off  " + pin + "  [tab] file  [^d/^u] diff scroll  [↑↓] feed  [s] status  [r] refresh  [p] pause  [c] clear"
+	}
 	// Embedded (fleet zoom): navigation keys live on the fleet breadcrumb
 	// above; the interval keys are dropped because fleet drives the cadence.
-	if m.embedded {
-		return lipgloss.NewStyle().Faint(true).
-			Render("   [s] status  [r] refresh  [p] pause  [c] clear  [↑↓] scroll")
+	if !m.embedded {
+		keys += "  [+/-] interval  [q] quit"
 	}
-	return lipgloss.NewStyle().Faint(true).
-		Render("   [s] status  [r] refresh  [p] pause  [c] clear  [↑↓] scroll  [+/-] interval  [q] quit")
+	if m.previewOn && m.width > 0 {
+		keys = cutCell(keys, m.width)
+	}
+	return lipgloss.NewStyle().Faint(true).Render(keys)
 }

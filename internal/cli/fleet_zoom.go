@@ -42,6 +42,7 @@ func (m fleetModel) openZoom(path string) (tea.Model, tea.Cmd) {
 	zm.gen = m.zoomGen
 	zm.fsLive = m.ws.hasWatcher(path)
 	zm.captureDash = captureStatusFrameFor(path)
+	zm.previewOn = m.zoomDiff
 	zm.width, zm.height = m.width, zoomBodyHeight(m.height)
 	m.zoom = zm
 	m.zoomPath = path
@@ -82,8 +83,11 @@ func (m fleetModel) handleZoomKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r", "p", " ", "c", "s",
 		// Feed scrolling belongs to the embedded view: the fleet cursor is not
 		// on screen here, so the arrows are free to move through its history.
-		"up", "down", "k", "j", "shift+up", "shift+down", "pgup", "pgdown", "home", "end":
+		"up", "down", "k", "j", "shift+up", "shift+down", "pgup", "pgdown", "home", "end",
+		// The diff pane and its keys.
+		"d", "f", "tab", "shift+tab", "ctrl+d", "ctrl+u":
 		_, cmd := m.zoom.Update(msg)
+		m.zoomDiff = m.zoom.previewOn
 		return m, cmd
 	}
 	return m, nil

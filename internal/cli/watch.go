@@ -52,6 +52,11 @@ rule says how many newer events are waiting below, and arriving events no
 longer move the lines being read — inside the zoom or 'gk status --watch'
 the plain arrows do the same.
 
+In the zoom, and in 'gk status --watch', d shows the uncommitted diff of
+the newest changed file beside the feed (below it on a terminal under 140
+columns). f pins the file on show, tab / shift+tab step through the changed
+files, and ctrl+d / ctrl+u scroll the diff.
+
 Under --json (or GK_AGENT) it instead emits a one-shot machine-readable
 snapshot — always the dashboard contract, regardless of worktree count.
 --events streams changes as NDJSON instead — file-changed / status-changed /

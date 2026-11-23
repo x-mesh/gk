@@ -282,6 +282,19 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 // graphql posts one query and decodes data into out. It returns the GraphQL
 // error messages that came with data as notes. data null is an error.
 func (c *Client) graphql(ctx context.Context, name, query string, vars map[string]any, out any) ([]string, error) {
+	return c.graphqlSkip(ctx, name, query, vars, out, nil)
+}
+
+// graphqlError is one entry of a GraphQL response's errors.
+type graphqlError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Path    []any  `json:"path"`
+}
+
+// graphqlSkip is graphql for a query that expects some errors: an error that
+// skip accepts is not a note. The field it names is null in data.
+func (c *Client) graphqlSkip(ctx context.Context, name, query string, vars map[string]any, out any, skip func(graphqlError) bool) ([]string, error) {
 	resp, err := c.post(ctx, "/graphql", map[string]any{"query": query, "variables": vars})
 	if err != nil {
 		if isTimeout(err) {
@@ -304,9 +317,7 @@ func (c *Client) graphql(ctx context.Context, name, query string, vars map[strin
 
 	var payload struct {
 		Data   json.RawMessage `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
+		Errors []graphqlError  `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		if isTimeout(err) {
@@ -320,6 +331,9 @@ func (c *Client) graphql(ctx context.Context, name, query string, vars map[strin
 	}
 	var notes []string
 	for _, e := range payload.Errors {
+		if skip != nil && skip(e) {
+			continue
+		}
 		notes = append(notes, fmt.Sprintf("%s query: %s", name, e.Message))
 	}
 	if len(payload.Data) == 0 || string(payload.Data) == "null" {

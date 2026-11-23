@@ -47,11 +47,13 @@ func dashGraphQLPR(head, oid string) map[string]any {
 }
 
 type dashFake struct {
-	graphql atomic.Int32
-	mu      sync.Mutex
-	queries []string
-	limited bool
-	merged  []any // the repository's merged PR nodes
+	graphql  atomic.Int32
+	mu       sync.Mutex
+	queries  []string
+	limited  bool
+	merged   []any // the repository's merged PR nodes
+	orgRepos []any // the owner's repository nodes of the unreleased query
+	orgFails bool  // the unreleased query answers 502
 }
 
 func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
@@ -72,6 +74,15 @@ func (f *dashFake) server(t *testing.T, oid string) *httptest.Server {
 		if f.limited {
 			w.Header().Set("Retry-After", "120")
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if strings.Contains(req.Query, "repositoryOwner(") {
+			if f.orgFails {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			writeDashJSON(t, w, map[string]any{"data": map[string]any{"repositoryOwner": map[string]any{
+				"repositories": map[string]any{"totalCount": 40, "nodes": append([]any{}, f.orgRepos...)}}}})
 			return
 		}
 		if strings.Contains(req.Query, "mine: search") {

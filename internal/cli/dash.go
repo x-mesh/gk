@@ -45,9 +45,14 @@ release branch and each base branch of the merged PRs, the PRs merged into
 not depend on the checked-out branch.
 
 The scope is the current repository; --org reads a whole org or account,
-without the local columns, the forecast, and the Unreleased block. The
-forecast and the Unreleased block use the remote branches as of the last
-fetch; --fetch fetches first.
+without the local columns and the forecast. The forecast and the Unreleased
+block use the remote branches as of the last fetch; --fetch fetches first.
+
+With --org, the Unreleased block is a summary: one row for each of the 20
+most recently pushed repositories that has commits after its latest tag, with
+the count of commits and of merged PRs on the default branch or on develop.
+It comes from one more GraphQL query, and on the screen it fills in after the
+PRs and issues.
 
 gk dash only reads: it sends GraphQL queries and runs git merge-tree, and it
 changes no ref, index, or worktree. The one exception is --fetch, which runs
@@ -82,6 +87,9 @@ type dashEnv struct {
 	baseBranch    string // base_branch from the config; "" means the remote's default branch
 	reviewContext string
 	warmCounts    bool
+	// deferOrgUnreleased leaves the org unreleased read to the caller: the
+	// screen starts it apart from the main read and fills the block later.
+	deferOrgUnreleased bool
 }
 
 func runDash(cmd *cobra.Command, args []string) error {
@@ -153,11 +161,32 @@ func newDashEnv(ctx context.Context, cmd *cobra.Command, args []string) (dashEnv
 func collectDash(ctx context.Context, env dashEnv) (dashSnapshot, error) {
 	q := dashQuery(env.prefix)
 	q.ReviewContext = env.reviewContext
+	var org *dashOrgUnreleasedJSON
+	orgDone, stopOrg := make(chan struct{}), func() {}
+	if strings.HasPrefix(env.prefix, "repo:") || env.deferOrgUnreleased {
+		close(orgDone)
+	} else {
+		// The unreleased read runs next to the dashboard queries. Its failure
+		// shows in its block and does not fail the snapshot.
+		orgCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		stopOrg = cancel
+		go func() {
+			defer close(orgDone)
+			var err error
+			if org, err = collectDashOrgUnreleased(orgCtx, env.client, env.prefix); err != nil {
+				org = &dashOrgUnreleasedJSON{Items: []dashRepoUnreleasedRow{}, Error: err.Error()}
+			}
+		}()
+	}
 	res, err := env.client.Dashboard(ctx, q)
 	if err != nil {
+		stopOrg()
+		<-orgDone
 		return dashSnapshot{}, fmt.Errorf("gk dash: %w", err)
 	}
-	in := dashInputs{Scope: env.prefix, Now: time.Now(), Res: res, ReviewContext: env.reviewContext}
+	<-orgDone
+	in := dashInputs{Scope: env.prefix, Now: time.Now(), Res: res, OrgUnreleased: org, ReviewContext: env.reviewContext}
 	if res.HasRepo {
 		bases := dashBases(res)
 		loc, err := collectDashLocal(ctx, env.runner, env.remote, bases)

@@ -72,8 +72,12 @@ func collectDashUnreleased(ctx context.Context, runner git.Runner, remote, relea
 			continue
 		}
 		g := dashUnreleasedGroup{Base: base, Since: since, PRs: prs}
-		if out, _, err := runner.Run(ctx, append([]string{"rev-list", "--count"}, revs...)...); err == nil {
-			g.Commits, _ = strconv.Atoi(strings.TrimSpace(string(out)))
+		out, _, err := runner.Run(ctx, append([]string{"rev-list", "--count"}, revs...)...)
+		if err == nil {
+			g.Commits, err = strconv.Atoi(strings.TrimSpace(string(out)))
+		}
+		if err != nil {
+			notes = append(notes, "unreleased "+base+": count commits: "+err.Error())
 		}
 		groups = append(groups, g)
 	}

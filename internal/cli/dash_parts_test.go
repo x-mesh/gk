@@ -157,15 +157,20 @@ func TestDashTUIMainSuccessKeepsTheSlowRateLimit(t *testing.T) {
 	if !strings.Contains(m.status(), "rate limited") && !strings.Contains(m.status(), "refreshing") {
 		t.Errorf("status = %q", m.status())
 	}
-	// A failure of another kind keeps the limit; a slow read that succeeds
-	// ends it.
+	// A failure of another kind keeps the limit.
 	m.Update(dashPartMsg{part: 1, err: errors.New("boom")})
 	if !m.limited() || !strings.Contains(m.status(), "rate limited") {
 		t.Errorf("another failure lifted the limit: status %q", m.status())
 	}
+	// A slow read started with the limited one keeps the limit when it ends
+	// later with success. The limit ends at its reset.
 	m.Update(dashPartMsg{part: 1, write: writeNote("ok")})
+	if !m.limited() {
+		t.Errorf("a slow read started before the limit lifted it")
+	}
+	clock.advance(5 * time.Minute)
 	if m.limited() {
-		t.Errorf("a slow read that succeeded did not end the limit")
+		t.Errorf("the limit outlived its reset")
 	}
 }
 

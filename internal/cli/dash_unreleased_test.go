@@ -147,6 +147,18 @@ func TestCollectDashUnreleased(t *testing.T) {
 		}
 	})
 
+	t.Run("a commit count that fails is a note", func(t *testing.T) {
+		r := unreleasedRepo(t, true)
+		runner := failingCountRunner{&git.ExecRunner{Dir: r.Dir}}
+		groups, notes := collectDashUnreleased(context.Background(), runner, "origin", "", merged)
+		if got, want := unreleasedSummary(groups), "main since v1.0.0: 9 | develop since v1.0.0: 8 7"; got != want {
+			t.Errorf("groups = %s\nwant     %s", got, want)
+		}
+		if len(notes) != 2 || !strings.Contains(notes[0], "unreleased main: count commits") || !strings.Contains(notes[1], "unreleased develop: count commits") {
+			t.Errorf("notes = %v, want one per base naming the commit count", notes)
+		}
+	})
+
 	t.Run("a release branch that is all released has an empty group", func(t *testing.T) {
 		r := unreleasedRepo(t, true)
 		r.RunGit("tag", "v1.1.0", "refs/remotes/origin/main")
@@ -155,6 +167,16 @@ func TestCollectDashUnreleased(t *testing.T) {
 			t.Errorf("groups = %q\nwant     %q", got, want)
 		}
 	})
+}
+
+// failingCountRunner fails `git rev-list --count` and runs the rest.
+type failingCountRunner struct{ git.Runner }
+
+func (f failingCountRunner) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	if len(args) > 1 && args[0] == "rev-list" && args[1] == "--count" {
+		return nil, nil, fmt.Errorf("rev-list failed")
+	}
+	return f.Runner.Run(ctx, args...)
 }
 
 func TestIsHexOID(t *testing.T) {

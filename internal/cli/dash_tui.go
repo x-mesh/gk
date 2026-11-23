@@ -192,13 +192,12 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.inFlight = false
 		p.at = m.now()
 		p.done(msg.write, msg.err)
-		// A slow read that succeeds shows that the limit is over.
+		// The limit ends at its reset, not when a slow read succeeds: the
+		// slow reads start together, so one that ends after the limited one
+		// was sent before the limit and does not show that it is over.
 		var rl *ghapi.RateLimitError
-		switch {
-		case errors.As(msg.err, &rl):
+		if errors.As(msg.err, &rl) {
 			m.slowLimitUntil = rl.Reset
-		case msg.err == nil:
-			m.slowLimitUntil = time.Time{}
 		}
 		if m.snap != nil {
 			p.apply(m.snap)

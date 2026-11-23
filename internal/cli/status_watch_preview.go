@@ -270,13 +270,19 @@ func previewText(s string) string {
 		}
 		switch {
 		case r == '\t':
-			n := changePreviewTabWidth - col%changePreviewTabWidth
+			n := min(changePreviewTabWidth-col%changePreviewTabWidth, changePreviewMaxCols-col)
 			b.WriteString(strings.Repeat(" ", n))
 			col += n
 		case unicode.IsControl(r):
 		default:
+			// A rune of two columns does not fit in the last column: the row
+			// ends before it.
+			w := runewidth.RuneWidth(r)
+			if col+w > changePreviewMaxCols {
+				return b.String()
+			}
 			b.WriteRune(r)
-			col += runewidth.RuneWidth(r)
+			col += w
 		}
 	}
 	return b.String()

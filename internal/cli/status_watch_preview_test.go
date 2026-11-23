@@ -179,6 +179,11 @@ func TestPreviewText(t *testing.T) {
 		// A row keeps the first changePreviewMaxCols columns of a line.
 		strings.Repeat("y", 3*changePreviewMaxCols): strings.Repeat("y", changePreviewMaxCols),
 		strings.Repeat("한", changePreviewMaxCols):   strings.Repeat("한", changePreviewMaxCols/2),
+		// A rune of two columns that starts at the last column does not fit:
+		// the row ends before it, and takes nothing after it.
+		strings.Repeat("y", changePreviewMaxCols-1) + "한z": strings.Repeat("y", changePreviewMaxCols-1),
+		// A tab at the limit pads to the limit and no further.
+		strings.Repeat("y", changePreviewMaxCols-2) + "\tz": strings.Repeat("y", changePreviewMaxCols-2) + "  ",
 	} {
 		if got := previewText(in); got != want {
 			t.Errorf("previewText(%q) = %q, want %q", in, got, want)

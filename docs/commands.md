@@ -4635,7 +4635,7 @@ If GitHub has more items, the section header shows the shown count.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, the forecast, and the unreleased section are not shown |
+| `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown. The unreleased section is a summary for each repository |
 | `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
 | `--watch` | false | Open the screen with auto-refresh on |
 | `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
@@ -4712,6 +4712,29 @@ The section has these limits:
 - If a branch moves by fast-forward to a branch that merged it, the PRs before that merge are not first-parent commits. The section does not show them.
 - A commit subject that ends with `(#N)` but names an issue shows as a PR.
 
+With `--org`, the section is a summary and uses no local repository.
+gk sends one more GraphQL query for the 20 most recently pushed repositories of the org or account.
+Forks and archived repositories are not read.
+For each repository, gk compares the default branch and `develop` with the latest tag by commit date.
+A repository shows one row when a branch has commits that are not in the tag.
+The row shows the branch that has more of these commits, and the default branch if the counts are equal.
+
+| Column | Content |
+|--------|---------|
+| `range` | The tag and the branch, as `<tag>..<branch>` |
+| `commits` | The count of commits on the branch that are not in the tag |
+| `PRs` | The count of merged PRs in the newest 30 of these commits. A `+` shows that the branch has more commits |
+| `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch |
+
+A repository without a tag does not show.
+On the screen, the PRs and the issues show first, and the section shows `loading…` until its query ends.
+The query costs 13 GraphQL points, more than the other queries together.
+Auto-refresh sends it again only if the last read is 5 minutes old.
+`r` sends it at once.
+If the query fails, the section shows the error and keeps the rows of the last read.
+Auto-refresh sends a failed query again after 5 minutes, not at the next refresh.
+In one snapshot, the query has a limit of 15 seconds.
+
 #### Token
 
 gk dash reads the token from `GH_TOKEN`, then `GITHUB_TOKEN`, then the token of `gh auth login`.
@@ -4726,6 +4749,8 @@ The fields of `result` are `scope`, `fetched_at`, `prs`, `issues`, `forecast`, `
 `unreleased` has one entry for each branch, with `base`, `remote`, `since`, `total`, `items`, and `not_fetched`.
 `since` is the tag, or the release branch, that the count starts after.
 `not_fetched` has the numbers of the merged PRs whose merge commit is not in the local repository.
+With `--org`, `unreleased_repos` replaces `unreleased`: it has `total`, `scanned`, `items`, and `error` when the query failed.
+Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, and `tag_off_branch`.
 `issues.others_assigned` is the count of open issues assigned to other people.
 
 ```bash

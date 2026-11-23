@@ -182,8 +182,11 @@ type dashSnapshot struct {
 	Issues     dashIssueSection     `json:"issues"`
 	Forecast   []dashForecastJSON   `json:"forecast,omitempty"`
 	Unreleased []dashUnreleasedJSON `json:"unreleased,omitempty"`
-	BaseBehind []dashBehindJSON     `json:"base_behind,omitempty"`
-	Notes      []string             `json:"notes,omitempty"`
+	// UnreleasedRepos is set for an org or account scope, Unreleased for a
+	// repository scope.
+	UnreleasedRepos *dashOrgUnreleasedJSON `json:"unreleased_repos,omitempty"`
+	BaseBehind      []dashBehindJSON       `json:"base_behind,omitempty"`
+	Notes           []string               `json:"notes,omitempty"`
 }
 
 type dashInputs struct {
@@ -193,6 +196,7 @@ type dashInputs struct {
 	Local         *dashLocal // nil outside the repository or with --org
 	Forecast      []dashForecastGroup
 	Unreleased    []dashUnreleasedGroup
+	OrgUnreleased *dashOrgUnreleasedJSON // nil in a repository scope
 	ReviewContext string
 }
 
@@ -206,7 +210,7 @@ func forecastInputs(res *ghapi.DashResult) []dashForecastPR {
 }
 
 func buildDashSnapshot(in dashInputs) dashSnapshot {
-	snap := dashSnapshot{Scope: in.Scope, FetchedAt: in.Now, Notes: append([]string(nil), in.Res.Notes...)}
+	snap := dashSnapshot{Scope: in.Scope, FetchedAt: in.Now, Notes: append([]string(nil), in.Res.Notes...), UnreleasedRepos: in.OrgUnreleased}
 	snap.PRs = buildPRSection(in)
 	snap.Issues = buildIssueSection(in)
 	for _, g := range in.Forecast {

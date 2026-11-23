@@ -120,6 +120,7 @@ func renderDash(w io.Writer, snap dashSnapshot, width int) {
 		}
 	}
 	renderDashUnreleased(w, snap, width)
+	renderDashOrgUnreleased(w, snap, width)
 	for _, n := range snap.Notes {
 		fmt.Fprintf(w, "%s\n", cellFaint("note: "+n))
 	}
@@ -521,6 +522,16 @@ func dashTerminalSafe(snap dashSnapshot) dashSnapshot {
 		un[i] = u
 	}
 	snap.Unreleased = un
+	if o := snap.UnreleasedRepos; o != nil {
+		safe := *o
+		safe.Error = dashSafe(o.Error)
+		safe.Items = make([]dashRepoUnreleasedRow, len(o.Items))
+		for i, r := range o.Items {
+			r.Repo, r.Since, r.Branch = dashSafe(r.Repo), dashSafe(r.Since), dashSafe(r.Branch)
+			safe.Items[i] = r
+		}
+		snap.UnreleasedRepos = &safe
+	}
 	bb := make([]dashBehindJSON, len(snap.BaseBehind))
 	for i, b := range snap.BaseBehind {
 		b.Base, b.Remote = dashSafe(b.Base), dashSafe(b.Remote)

@@ -216,6 +216,20 @@ func TestOwnerCommitActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("an incomplete search is a lower bound", func(t *testing.T) {
+		srv, _, _ := commitSearchServer(t, func(w http.ResponseWriter, q string) {
+			incomplete := strings.Contains(q, "2026-11-23T00:00:00")
+			writeJSON(t, w, map[string]any{"total_count": 7, "incomplete_results": incomplete})
+		})
+		res, err := (&Client{APIBase: srv.URL, Token: "tok"}).OwnerCommitActivity(context.Background(), "org:o", twoDays())
+		if err != nil {
+			t.Fatalf("OwnerCommitActivity: %v", err)
+		}
+		if fmt.Sprint(res.Days) != "[7 7]" || !res.Partial || res.Fallback {
+			t.Errorf("result = %+v, want [7 7] marked as partial", res)
+		}
+	})
+
 	t.Run("a rate-limited search counts the repositories", func(t *testing.T) {
 		// One day is answered and the other is limited: the read does not mix
 		// the two sources.
@@ -243,6 +257,7 @@ func TestOwnerCommitActivity(t *testing.T) {
 		for name, status := range map[string]int{"a scope GitHub cannot search": http.StatusUnprocessableEntity, "a server error": http.StatusBadGateway, "a 403 with quota left": http.StatusForbidden} {
 			t.Run(name, func(t *testing.T) {
 				srv, _, graphql := commitSearchServer(t, func(w http.ResponseWriter, _ string) {
+					w.Header().Set("X-RateLimit-Remaining", "5")
 					w.WriteHeader(status)
 					_, _ = w.Write([]byte(`{"message":"cannot be searched"}`))
 				})

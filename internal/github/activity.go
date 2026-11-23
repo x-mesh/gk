@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,8 +76,9 @@ func (c *Client) PRActivity(ctx context.Context, scope string, days []DayRange) 
 // CommitActivity is the commits on the default branches of an owner's
 // repositories for each day. Fallback says the commit search was rate limited
 // and the counts come from the activityRepos most recently pushed
-// repositories. Partial says that more repositories than those were pushed
-// since the first day, so the counts are a lower bound.
+// repositories. Partial says the counts are a lower bound: a search timed out
+// before it searched everything, or more repositories than those were pushed
+// since the first day.
 type CommitActivity struct {
 	Days     []int
 	Partial  bool
@@ -117,15 +119,17 @@ func (c *Client) OwnerCommitActivity(ctx context.Context, scope string, days []D
 func (c *Client) searchCommitActivity(ctx context.Context, scope string, days []DayRange) (*CommitActivity, error) {
 	res := &CommitActivity{Days: make([]int, len(days))}
 	errs := make([]error, len(days))
+	incomplete := make([]bool, len(days))
 	var wg sync.WaitGroup
 	for i, d := range days {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res.Days[i], errs[i] = c.commitSearchCount(ctx, scope+" committer-date:"+d.search())
+			res.Days[i], incomplete[i], errs[i] = c.commitSearchCount(ctx, scope+" committer-date:"+d.search())
 		}()
 	}
 	wg.Wait()
+	res.Partial = slices.Contains(incomplete, true)
 	// A rate limit comes first, so the caller counts the repositories instead.
 	var limited *RateLimitError
 	for _, err := range errs {
@@ -142,33 +146,36 @@ func (c *Client) searchCommitActivity(ctx context.Context, scope string, days []
 }
 
 // commitSearchCount returns how many commits match query. GitHub searches the
-// default branch of each repository and leaves forks out.
-func (c *Client) commitSearchCount(ctx context.Context, query string) (int, error) {
+// default branch of each repository and leaves forks out. incomplete says the
+// search timed out before it searched everything, so the count is a lower
+// bound.
+func (c *Client) commitSearchCount(ctx context.Context, query string) (count int, incomplete bool, err error) {
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("per_page", "1")
 	resp, err := c.get(ctx, "/search/commits?"+q.Encode())
 	if err != nil {
-		return 0, fmt.Errorf("github commit search: %w", err)
+		return 0, false, fmt.Errorf("github commit search: %w", err)
 	}
 	defer resp.Body.Close()
 	if rl := asRateLimit(resp, time.Now()); rl != nil {
-		return 0, rl
+		return 0, false, rl
 	}
 	if resp.StatusCode == http.StatusUnprocessableEntity {
-		return 0, scopeError(resp)
+		return 0, false, scopeError(resp)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("github commit search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return 0, false, fmt.Errorf("github commit search returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var out struct {
-		TotalCount int `json:"total_count"`
+		TotalCount        int  `json:"total_count"`
+		IncompleteResults bool `json:"incomplete_results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return 0, fmt.Errorf("decode github commit search: %w", err)
+		return 0, false, fmt.Errorf("decode github commit search: %w", err)
 	}
-	return out.TotalCount, nil
+	return out.TotalCount, out.IncompleteResults, nil
 }
 
 // historyCommitActivity counts, for each day, the commits on the default

@@ -137,7 +137,9 @@ type contextLogJSON struct {
 // merge/rebase/ff — but a pure squash-merge mints a new SHA, so un-merged-back
 // squash originals cannot be excluded by any git-native means. AlreadyOnBase
 // (CommitCount - UnreleasedCount, when positive) makes the gap between the two
-// counts explicit. All base fields are empty when no release branch resolves.
+// counts explicit. All base fields are empty when no release branch resolves:
+// UnreleasedCount is then absent from the JSON, not 0, because no comparison
+// ran (HEAD on the base branch, or no remote-tracking base ref).
 // Commits and UnreleasedCommits are each capped at 20 so the section stays
 // orientation-sized, with the counts revealing any overflow.
 //
@@ -151,7 +153,7 @@ type contextReleaseJSON struct {
 	CommitCount       int                    `json:"commit_count"`
 	Commits           []contextLogJSON       `json:"commits,omitempty"`
 	BaseRef           string                 `json:"base_ref,omitempty"`
-	UnreleasedCount   int                    `json:"unreleased_count"`
+	UnreleasedCount   *int                   `json:"unreleased_count,omitempty"`
 	UnreleasedCommits []contextLogJSON       `json:"unreleased_commits,omitempty"`
 	AlreadyOnBase     int                    `json:"already_on_base,omitempty"`
 	PRCount           int                    `json:"pr_count"`
@@ -636,7 +638,7 @@ func renderContextText(cmd *cobra.Command, c contextJSON) {
 		if rel.BaseRef != "" {
 			// Lead with the honest unreleased count; the since-tag total is
 			// secondary and, under squash-merge, inflated.
-			line := fmt.Sprintf("release: %d unreleased vs %s", rel.UnreleasedCount, rel.BaseRef)
+			line := fmt.Sprintf("release: %d unreleased vs %s", *rel.UnreleasedCount, rel.BaseRef)
 			if rel.SinceTag != "" {
 				line += fmt.Sprintf(" · %d since %s", rel.CommitCount, rel.SinceTag)
 			}
@@ -1029,14 +1031,14 @@ func collectContextRelease(ctx context.Context, runner *git.ExecRunner, latestTa
 		if err != nil {
 			return nil, err
 		}
-		rel.UnreleasedCount = n
+		rel.UnreleasedCount = &n
 		rel.UnreleasedCommits = commits
 		// AlreadyOnBase exposes the squash-merge illusion: how much of the
 		// since-tag count already sits on the release branch. origin/<base>
 		// can trail the tag, so clamp a negative gap away rather than imply
 		// the tag under-counts.
-		if latestTag != "" && rel.CommitCount > rel.UnreleasedCount {
-			rel.AlreadyOnBase = rel.CommitCount - rel.UnreleasedCount
+		if latestTag != "" && rel.CommitCount > n {
+			rel.AlreadyOnBase = rel.CommitCount - n
 		}
 	}
 

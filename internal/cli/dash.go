@@ -59,9 +59,10 @@ changes no ref, index, or worktree. The one exception is --fetch, which runs
 git fetch and so updates the remote-tracking branches. It needs a token: GH_TOKEN, GITHUB_TOKEN,
 or 'gh auth login'.
 
-In a terminal, gk dash opens a screen that reads once; press w to turn
-auto-refresh on or off, r to refresh now. --watch starts with auto-refresh
-on. Piped, in agent mode, or with --json it prints one snapshot.
+In a terminal, gk dash opens a screen that reads again every --interval;
+press w to turn auto-refresh off or on, r to refresh now. --watch=false
+starts with auto-refresh off. Piped, in agent mode, or with --json it prints
+one snapshot.
 
 The review verdict is GitHub's reviewDecision. When the repository has no
 review rule, set github.dash.review_context to a commit status context (for
@@ -72,7 +73,7 @@ example a review bot's) to show its state instead.`,
 	cmd.Flags().String("org", "", "read the whole org/account instead of the current repo (optional name; defaults to github.owner or origin's owner)")
 	cmd.Flags().Lookup("org").NoOptDefVal = orgFlagSentinel
 	cmd.Flags().Bool("fetch", false, "fetch the remote before the forecast (no network git call by default)")
-	cmd.Flags().Bool("watch", false, "start the screen with auto-refresh on (press w on the screen to toggle it)")
+	cmd.Flags().Bool("watch", true, "start the screen with auto-refresh on; --watch=false starts with it off (press w on the screen to toggle it)")
 	cmd.Flags().Duration("interval", dashDefaultInterval, "auto-refresh period on the screen, at least 30s")
 	return cmd
 }
@@ -102,7 +103,8 @@ func runDash(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--interval %s is below the minimum of %s", interval, dashMinInterval)
 	}
 	screen := promptAllowed()
-	if boolFlag(cmd, "watch") && !screen {
+	// The default is on, so only an explicit --watch asks for the screen.
+	if cmd.Flags().Changed("watch") && boolFlag(cmd, "watch") && !screen {
 		return errors.New("--watch needs a terminal; without one gk dash prints one snapshot")
 	}
 	env, err := newDashEnv(ctx, cmd, args)

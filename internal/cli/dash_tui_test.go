@@ -197,4 +197,14 @@ func TestDashCmdIntervalAndWatchFlags(t *testing.T) {
 	if _, err := runDashCmd(t, r.Dir, srv, "tok", "--watch"); err == nil || !strings.Contains(err.Error(), "terminal") {
 		t.Errorf("--watch without a terminal: err = %v", err)
 	}
+	// Auto-refresh is on by default. Without a terminal that default asks for
+	// nothing: only an explicit --watch is an error.
+	if def := newDashCmd().Flags().Lookup("watch").DefValue; def != "true" {
+		t.Errorf("--watch default = %s, want true", def)
+	}
+	for _, args := range [][]string{nil, {"--watch=false"}} {
+		if out, err := runDashCmd(t, r.Dir, srv, "tok", args...); err != nil || !strings.Contains(out, "gk dash · ") {
+			t.Errorf("gk dash %v without a terminal: err = %v\n%s", args, err, out)
+		}
+	}
 }

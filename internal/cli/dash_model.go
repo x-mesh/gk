@@ -44,6 +44,11 @@ func dashQuery(prefix string) ghapi.DashQuery {
 		if owner, name, ok := strings.Cut(slug, "/"); ok {
 			q.Owner, q.Repo = owner, name
 		}
+		// The others of a repository come from its open PRs, newest update
+		// first. In the same order, a review request among those PRs is on
+		// the first page of this search too; in the default order it can be
+		// on a later page and show as a PR of another author.
+		q.ReviewPRs = pr(githubSearchFilters{review: true, raw: "sort:updated-desc"})
 	} else {
 		// A repository reads the open PRs of others from its open PRs.
 		q.OtherPRs = pr(githubSearchFilters{raw: "-author:@me -review-requested:@me"})

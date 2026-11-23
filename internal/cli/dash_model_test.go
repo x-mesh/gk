@@ -313,6 +313,15 @@ func TestDashQuery(t *testing.T) {
 	if org.Owner != "" || !strings.Contains(org.MyPRs, "archived:false") {
 		t.Errorf("org query = %+v", org)
 	}
+	// A repository takes the PRs of others from its open PRs, newest update
+	// first. Its review search has the same order, so a review request among
+	// those PRs is on the first page of the search too.
+	if !strings.HasSuffix(q.ReviewPRs, " sort:updated-desc") {
+		t.Errorf("repository review search = %q, want the order of the open PRs", q.ReviewPRs)
+	}
+	if strings.Contains(org.ReviewPRs, "sort:") {
+		t.Errorf("org review search = %q, want no order: its others come from a search", org.ReviewPRs)
+	}
 }
 
 func TestBuildDashSnapshotOthers(t *testing.T) {

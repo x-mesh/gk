@@ -4637,14 +4637,17 @@ If GitHub has more items, the section header shows the shown count.
 |------|---------|-------------|
 | `--org [name]` | (current repo) | Read a whole org or account. The branch column, the `unassigned` rows, and the forecast are not shown. The unreleased section is a summary for each repository |
 | `--fetch` | false | Run `git fetch` one time before the forecast. This updates the remote-tracking branches. Without it, gk dash makes no git network call |
-| `--watch` | false | Open the screen with auto-refresh on |
+| `--watch` | true | Open the screen with auto-refresh on. `--watch=false` opens it with auto-refresh off |
 | `--interval <d>` | `30s` | Auto-refresh period on the screen. The minimum is `30s` |
 | `--json` | false | Print one snapshot as JSON |
 
 #### Screen
 
-In a terminal, gk dash opens a screen and reads one time.
-Auto-refresh is off until you press `w`.
+In a terminal, gk dash opens a screen.
+Auto-refresh is on: the screen reads again at each `--interval`.
+Press `w` to turn it off.
+One refresh costs up to 7 GraphQL points.
+With the default interval, that is at most 840 points of the 5000 points that a token has for each hour.
 
 | Key | Action |
 |-----|--------|
@@ -4657,7 +4660,7 @@ Auto-refresh is off until you press `w`.
 If a refresh fails, the screen keeps the last data and shows the error and the time of the last success.
 If GitHub rate-limits the token, no refresh starts until the reset time.
 When the output is not a terminal, in agent mode, or with `--json`, gk dash prints one snapshot and stops.
-`--watch` without a terminal is an error.
+`--watch` on the command line without a terminal is an error.
 
 #### Review verdict
 
@@ -4755,7 +4758,7 @@ Each item has `repo`, `since`, `branch`, `commits`, `prs`, `prs_partial`, and `t
 
 ```bash
 gk dash                    # screen in a terminal, one snapshot otherwise
-gk dash --watch            # screen with auto-refresh on
+gk dash --watch=false      # screen with auto-refresh off
 gk dash --org acme         # a whole org, without the local columns
 GK_AGENT=1 gk dash --json
 ```

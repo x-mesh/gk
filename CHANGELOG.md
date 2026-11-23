@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `gk branch list --merged --base <branch>` and `--unmerged --base <branch>` judge against that branch, like `gk branch clean --base`. Before, the listing always used `base_branch` or the remote's default branch, so it disagreed with `gk branch clean --base develop` about which branches were merged. `--base` without `--merged` or `--unmerged` fails.
+- `gk dash` shows an `Unreleased` section: the PRs that are merged but are not in a release. For the release branch and for each base branch of the merged PRs, it lists the PRs merged into `<remote>/<branch>` after the latest tag on that branch. It reads the first-parent commit subjects that GitHub writes, so it does not depend on the branch that is checked out. A PR that GitHub merged after the last fetch shows as not in the local repository, with `gk dash --fetch` as the next step. `--json` has the same data in `unreleased`.
+- `gk context --include=release` returns `pr_count` and `prs`: the pull requests merged in the unreleased range, with the number, the title, and the commit of each. Before, the section listed commits only, and a squash-merged PR had no merge commit to count.
 
 ### Changed
 

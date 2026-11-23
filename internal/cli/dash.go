@@ -39,9 +39,15 @@ left). Issue rows: assigned, mentioned, authored, unassigned (repository
 scope only); issues assigned to someone else are counted, not listed. Each
 row has a next action, with the gk command to run when there is one.
 
+The Unreleased block lists the merged PRs that no release holds yet: for the
+release branch and each base branch of the merged PRs, the PRs merged into
+<remote>/<branch> after its latest tag. It reads commit subjects, so it does
+not depend on the checked-out branch.
+
 The scope is the current repository; --org reads a whole org or account,
-without the local columns and the forecast. The forecast uses the remote
-branches as of the last fetch; --fetch fetches first.
+without the local columns, the forecast, and the Unreleased block. The
+forecast and the Unreleased block use the remote branches as of the last
+fetch; --fetch fetches first.
 
 gk dash only reads: it sends GraphQL queries and runs git merge-tree, and it
 changes no ref, index, or worktree. The one exception is --fetch, which runs
@@ -73,6 +79,7 @@ type dashEnv struct {
 	runner        *git.ExecRunner
 	prefix        string
 	remote        string
+	baseBranch    string // base_branch from the config; "" means the remote's default branch
 	reviewContext string
 	warmCounts    bool
 }
@@ -126,6 +133,7 @@ func newDashEnv(ctx context.Context, cmd *cobra.Command, args []string) (dashEnv
 		client:        &ghapi.Client{Token: token, APIBase: dashAPIBase},
 		runner:        &git.ExecRunner{Dir: RepoFlag()},
 		remote:        cfg.Remote,
+		baseBranch:    cfg.BaseBranch,
 		reviewContext: cfg.GitHub.Dash.ReviewContext,
 		warmCounts:    cfg.GitHub.Counts.WarmOnList,
 	}
@@ -158,6 +166,9 @@ func collectDash(ctx context.Context, env dashEnv) (dashSnapshot, error) {
 		} else {
 			in.Local = &loc
 			in.Forecast = forecastPRConflicts(ctx, env.runner, env.remote, forecastInputs(res), dashForecastLimit, dashForecastBudget)
+			var notes []string
+			in.Unreleased, notes = collectDashUnreleased(ctx, env.runner, env.remote, env.baseBranch, res.RepoMerged.Items)
+			res.Notes = append(res.Notes, notes...)
 		}
 		if env.warmCounts && res.PRErr == nil {
 			warmGitHubCountFromList(ctx, env.runner, strings.TrimPrefix(env.prefix, "repo:"), true, res.RepoOpen.Total)

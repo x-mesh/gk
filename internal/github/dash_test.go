@@ -27,7 +27,8 @@ func dashPRNodeJSON(n int, head string) map[string]any {
 		"number": n, "title": "pr " + strconv.Itoa(n), "url": "https://github.com/o/r/pull/" + strconv.Itoa(n),
 		"isDraft": false, "state": "OPEN", "headRefName": head, "headRefOid": "aaaa", "baseRefName": "develop",
 		"baseRefOid": "bbbb", "isCrossRepository": false, "reviewDecision": "", "updatedAt": "2026-11-17T01:00:00Z",
-		"repository": map[string]any{"nameWithOwner": "o/r"}, "author": map[string]any{"login": "me"},
+		"mergeCommit": map[string]any{"oid": "cccc"},
+		"repository":  map[string]any{"nameWithOwner": "o/r"}, "author": map[string]any{"login": "me"},
 		"closingIssuesReferences": map[string]any{"nodes": []any{map[string]any{"number": 68}}},
 		"commits": map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": map[string]any{
 			"state": "SUCCESS",
@@ -152,6 +153,9 @@ func TestDashboardSendsTwoQueriesAtOnce(t *testing.T) {
 				t.Errorf("query requests %s:\n%s", f, r.Query)
 			}
 		}
+		if isPRQuery(r.Query) && !strings.Contains(r.Query, "mergeCommit { oid }") {
+			t.Errorf("PR query does not read the merge commit:\n%s", r.Query)
+		}
 		if !isPRQuery(r.Query) {
 			if strings.Contains(r.Query, "no:assignee") || r.Variables["unassigned"] != nil ||
 				!strings.Contains(r.Query, "unassigned: issues(states: OPEN, first: 20, filterBy: {assignee: null}") {
@@ -167,7 +171,7 @@ func TestDashboardSendsTwoQueriesAtOnce(t *testing.T) {
 		t.Fatalf("MyPRs total %d items %d, want 21 and 1 (a non-PR node is dropped)", res.MyPRs.Total, len(res.MyPRs.Items))
 	}
 	p := res.MyPRs.Items[0]
-	if p.Number != 78 || p.HeadRef != "fix/a" || p.HeadOID != "aaaa" || p.BaseRef != "develop" || p.Author != "me" || p.Repo != "o/r" || p.Rollup != "SUCCESS" || p.ChecksTotal != 2 {
+	if p.Number != 78 || p.HeadRef != "fix/a" || p.HeadOID != "aaaa" || p.MergeOID != "cccc" || p.BaseRef != "develop" || p.Author != "me" || p.Repo != "o/r" || p.Rollup != "SUCCESS" || p.ChecksTotal != 2 {
 		t.Fatalf("pr = %+v", p)
 	}
 	if len(p.ClosingIssues) != 1 || p.ClosingIssues[0] != 68 {

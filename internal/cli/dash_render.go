@@ -119,8 +119,52 @@ func renderDash(w io.Writer, snap dashSnapshot, width int) {
 			fmt.Fprintf(w, "  %s\n", cellFaint(f.Note))
 		}
 	}
+	renderDashUnreleased(w, snap, width)
 	for _, n := range snap.Notes {
 		fmt.Fprintf(w, "%s\n", cellFaint("note: "+n))
+	}
+}
+
+// renderDashUnreleased prints one block for each branch with merged pull
+// requests that no release holds yet, or with a merged PR that is not fetched.
+// When no branch has one, a single line says so for the first branch, so a
+// read that found nothing shows as that.
+func renderDashUnreleased(w io.Writer, snap dashSnapshot, width int) {
+	header := func(u dashUnreleasedJSON) {
+		summary := fmt.Sprintf("%s · no merged PR since %s", u.Base, u.Since)
+		if u.Total > 0 {
+			summary = fmt.Sprintf("%s · %d merged PR(s) since %s", u.Base, u.Total, u.Since)
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "%s  %s\n", cellBold("Unreleased"), cellFaint(summary))
+	}
+	shown := false
+	for _, u := range snap.Unreleased {
+		if u.Total == 0 && len(u.NotFetched) == 0 {
+			continue
+		}
+		shown = true
+		header(u)
+		if len(u.Items) > 0 {
+			var rows [][]dashCell
+			for _, r := range u.Items {
+				rows = append(rows, []dashCell{numberCell(r.Number), titleCell(r.Title, false), ageCell(snap.FetchedAt, r.MergedAt)})
+			}
+			writeDashTable(w, []string{"#", "title", "merged"}, rows, 2, width)
+		}
+		if more := u.Total - len(u.Items); more > 0 {
+			fmt.Fprintf(w, "  %s\n", cellFaint(fmt.Sprintf("%d more · gk log %s..%s/%s", more, u.Since, u.Remote, u.Base)))
+		}
+		if len(u.NotFetched) > 0 {
+			nums := make([]string, len(u.NotFetched))
+			for i, n := range u.NotFetched {
+				nums[i] = "#" + strconv.Itoa(n)
+			}
+			fmt.Fprintf(w, "  %s\n", cellYellow(strings.Join(nums, " ")+" merged on GitHub, not in the local repository")+cellFaint(" → gk dash --fetch"))
+		}
+	}
+	if !shown && len(snap.Unreleased) > 0 {
+		header(snap.Unreleased[0])
 	}
 }
 
@@ -465,6 +509,18 @@ func dashTerminalSafe(snap dashSnapshot) dashSnapshot {
 		fc[i] = f
 	}
 	snap.Forecast = fc
+	un := make([]dashUnreleasedJSON, len(snap.Unreleased))
+	for i, u := range snap.Unreleased {
+		u.Base, u.Remote, u.Since = dashSafe(u.Base), dashSafe(u.Remote), dashSafe(u.Since)
+		items := make([]dashUnreleasedRow, len(u.Items))
+		for j, r := range u.Items {
+			r.Title, r.URL, r.Author, r.SHA = dashSafe(r.Title), dashSafe(r.URL), dashSafe(r.Author), dashSafe(r.SHA)
+			items[j] = r
+		}
+		u.Items = items
+		un[i] = u
+	}
+	snap.Unreleased = un
 	bb := make([]dashBehindJSON, len(snap.BaseBehind))
 	for i, b := range snap.BaseBehind {
 		b.Base, b.Remote = dashSafe(b.Base), dashSafe(b.Remote)

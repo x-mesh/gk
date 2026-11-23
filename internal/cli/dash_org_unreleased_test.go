@@ -207,6 +207,26 @@ func TestDashTUIOrgUnreleasedFillsLater(t *testing.T) {
 	}
 }
 
+// The two reads start together, so the main read can succeed after the org
+// read was rate limited. That success must not lift the org read's limit.
+func TestDashTUIMainSuccessKeepsTheOrgRateLimit(t *testing.T) {
+	m, clock := newTestDashTUI(t, true)
+	m.fetchOrg = func(context.Context) (*dashOrgUnreleasedJSON, error) { return nil, nil }
+	m.Init()
+	reset := clock.now().Add(5 * time.Minute)
+	m.Update(dashOrgResultMsg{err: &ghapi.RateLimitError{Status: "403", Reset: reset}})
+	m.Update(okResult(m))
+	if !m.limited() {
+		t.Fatalf("the main read's success lifted the org rate limit")
+	}
+	if !m.nextAt.Equal(reset) {
+		t.Errorf("next tick at %v, want the reset %v", m.nextAt, reset)
+	}
+	if !strings.Contains(m.status(), "rate limited") {
+		t.Errorf("status = %q", m.status())
+	}
+}
+
 func TestDashTUIRepoScopeHasNoOrgRead(t *testing.T) {
 	m, _ := newTestDashTUI(t, false)
 	m.Init()

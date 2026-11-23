@@ -66,6 +66,10 @@ type dashTUI struct {
 	orgInFlight bool
 	orgAt       time.Time              // when the last org read ended
 	org         *dashOrgUnreleasedJSON // its result, kept across main reads
+	// orgLimitUntil is the rate limit the org read hit. It is kept apart
+	// from limitUntil because the main read, started with it, can succeed
+	// after it and clears only its own limit.
+	orgLimitUntil time.Time
 
 	snap       *dashSnapshot
 	lastOK     time.Time
@@ -135,15 +139,23 @@ func (m *dashTUI) startFetch() tea.Cmd {
 // a rate limit when that is later.
 func (m *dashTUI) schedule(d time.Duration) tea.Cmd {
 	at := m.now().Add(d)
-	if m.limitUntil.After(at) {
-		at = m.limitUntil
+	if end := m.limitEnd(); end.After(at) {
+		at = end
 	}
 	m.scheduled, m.nextAt = true, at
 	gen := m.gen
 	return tea.Tick(at.Sub(m.now()), func(time.Time) tea.Msg { return dashTickMsg{gen: gen} })
 }
 
-func (m *dashTUI) limited() bool { return m.now().Before(m.limitUntil) }
+func (m *dashTUI) limited() bool { return m.now().Before(m.limitEnd()) }
+
+// limitEnd is the later end of the main and the org read's rate limits.
+func (m *dashTUI) limitEnd() time.Time {
+	if m.orgLimitUntil.After(m.limitUntil) {
+		return m.orgLimitUntil
+	}
+	return m.limitUntil
+}
 
 func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -183,10 +195,10 @@ func (m *dashTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.org = &failed
 			var rl *ghapi.RateLimitError
 			if errors.As(msg.err, &rl) {
-				m.limitUntil = rl.Reset
+				m.orgLimitUntil = rl.Reset
 			}
 		} else {
-			m.org = msg.res
+			m.org, m.orgLimitUntil = msg.res, time.Time{}
 		}
 		if m.snap != nil {
 			m.snap.UnreleasedRepos = m.org
@@ -318,7 +330,7 @@ func (m *dashTUI) status() string {
 	case m.inFlight || m.orgInFlight:
 		state = cellYellow("⟳ refreshing…")
 	case m.limited():
-		state = cellYellow("⏸ rate limited · retry at " + m.limitUntil.Local().Format("15:04:05"))
+		state = cellYellow("⏸ rate limited · retry at " + m.limitEnd().Local().Format("15:04:05"))
 	case m.err != nil:
 		state = cellRed("⚠ refresh failed: "+m.err.Error()) + cellFaint(" · last success "+dashClockTime(m.lastOK))
 	}

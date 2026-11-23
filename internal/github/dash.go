@@ -40,10 +40,13 @@ const dashPage = 20
 // scope prefix (repo:, org:, user:). Owner and Repo, when set, add the
 // repository block, which also lists the open issues with no assignee.
 // ReviewContext, when set, reads that commit status of each PR head by name,
-// so it is found even past the first page of checks.
+// so it is found even past the first page of checks. OtherPRs, when set,
+// searches the open PRs of other authors; a repository reads them from its
+// open PRs instead.
 type DashQuery struct {
 	MyPRs         string
 	ReviewPRs     string
+	OtherPRs      string
 	Assigned      string
 	Mentioned     string
 	Authored      string
@@ -125,10 +128,13 @@ type DashIssueList struct {
 
 // DashResult is one dashboard read. When only one of the two queries fails,
 // PRErr or IssueErr holds why, and the other side's blocks are filled.
-// Notes carry GraphQL errors that came with partial data.
+// Notes carry GraphQL errors that came with partial data. Viewer is the login
+// of the token.
 type DashResult struct {
 	MyPRs      DashPRList
 	ReviewPRs  DashPRList
+	OtherPRs   DashPRList
+	Viewer     string
 	RepoOpen   DashPRList
 	RepoMerged DashPRList
 	Assigned   DashIssueList
@@ -166,11 +172,14 @@ const dashIssueFragment = `fragment DashIssue on Issue {
   closedByPullRequestsReferences(first: 3, includeClosedPrs: true) { nodes { number state merged } }
 }`
 
-func dashPRQuery(hasRepo, hasReviewContext bool) string {
+func dashPRQuery(hasRepo, hasReviewContext, hasOthers bool) string {
 	var b strings.Builder
 	status, vars := "", "$mine: String!, $review: String!"
 	if hasReviewContext {
 		status, vars = dashReviewStatus, vars+", $rc: String!"
+	}
+	if hasOthers {
+		vars += ", $others: String!"
 	}
 	if hasRepo {
 		vars += ", $owner: String!, $name: String!"
@@ -179,6 +188,10 @@ func dashPRQuery(hasRepo, hasReviewContext bool) string {
 	b.WriteString("query(" + vars + ") {\n")
 	fmt.Fprintf(&b, "  mine: search(type: ISSUE, query: $mine, first: %d) { issueCount nodes { ...DashPR } }\n", dashPage)
 	fmt.Fprintf(&b, "  review: search(type: ISSUE, query: $review, first: %d) { issueCount nodes { ...DashPR } }\n", dashPage)
+	if hasOthers {
+		fmt.Fprintf(&b, "  others: search(type: ISSUE, query: $others, first: %d) { issueCount nodes { ...DashPR } }\n", dashPage)
+	}
+	b.WriteString("  viewer { login }\n")
 	if hasRepo {
 		b.WriteString("  repository(owner: $owner, name: $name) {\n")
 		fmt.Fprintf(&b, "    open: pullRequests(states: OPEN, first: %d, orderBy: {field: UPDATED_AT, direction: DESC}) { totalCount nodes { ...DashPR } }\n", dashPage)
@@ -232,6 +245,9 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 	if q.ReviewContext != "" {
 		prVars["rc"] = q.ReviewContext
 	}
+	if q.OtherPRs != "" {
+		prVars["others"] = q.OtherPRs
+	}
 
 	var prData dashPRData
 	var issueData dashIssueData
@@ -241,7 +257,7 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		prNotes, prErr = c.graphql(ctx, "pr", dashPRQuery(q.hasRepo(), q.ReviewContext != ""), prVars, &prData)
+		prNotes, prErr = c.graphql(ctx, "pr", dashPRQuery(q.hasRepo(), q.ReviewContext != "", q.OtherPRs != ""), prVars, &prData)
 	}()
 	go func() {
 		defer wg.Done()
@@ -262,6 +278,8 @@ func (c *Client) Dashboard(ctx context.Context, q DashQuery) (*DashResult, error
 	if prErr == nil {
 		res.MyPRs = prData.Mine.prList()
 		res.ReviewPRs = prData.Review.prList()
+		res.OtherPRs = prData.Others.prList()
+		res.Viewer = prData.Viewer.Login
 		if prData.Repository != nil {
 			res.RepoOpen = prData.Repository.Open.prList()
 			res.RepoMerged = prData.Repository.Merged.prList()
@@ -483,8 +501,12 @@ func (c dashPRConn) prList() DashPRList {
 }
 
 type dashPRData struct {
-	Mine       dashPRConn `json:"mine"`
-	Review     dashPRConn `json:"review"`
+	Mine   dashPRConn `json:"mine"`
+	Review dashPRConn `json:"review"`
+	Others dashPRConn `json:"others"`
+	Viewer struct {
+		Login string `json:"login"`
+	} `json:"viewer"`
 	Repository *struct {
 		Open   dashPRConn `json:"open"`
 		Merged dashPRConn `json:"merged"`

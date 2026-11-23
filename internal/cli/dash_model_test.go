@@ -193,7 +193,10 @@ func TestBuildDashSnapshot(t *testing.T) {
 	if b := snap.PRs.Items[3].Branches; len(b) != 1 || b[0].Name != "fix/a" || !b[0].Current {
 		t.Errorf("#76 branches = %+v", b)
 	}
-	if c := snap.PRs.Counts; len(c) != 3 || c[0] != (dashCount{Relation: "mine", Total: 25, Shown: 3}) || !c[0].truncated() || c[2].Total != 1 {
+	// Every open PR of the repository is mine or a review request, and the
+	// search counts more than the repository has: others clamps at 0.
+	if c := snap.PRs.Counts; len(c) != 4 || c[0] != (dashCount{Relation: "mine", Total: 25, Shown: 3}) || !c[0].truncated() ||
+		c[2] != (dashCount{Relation: "others"}) || c[3].Relation != "cleanup" || c[3].Total != 1 {
 		t.Errorf("PR counts = %+v", c)
 	}
 
@@ -272,7 +275,7 @@ func TestBuildDashSnapshotPartialAndOrg(t *testing.T) {
 	t.Run("org scope", func(t *testing.T) {
 		res := &ghapi.DashResult{MyPRs: ghapi.DashPRList{Total: 1, Items: []ghapi.DashPR{dashPR(1, "a", "a1", time.Time{}, ciOK)}}}
 		snap := buildDashSnapshot(dashInputs{Res: res})
-		if snap.Issues.Others != nil || len(snap.PRs.Counts) != 2 || len(snap.PRs.Items[0].Branches) != 0 {
+		if snap.Issues.Others != nil || len(snap.PRs.Counts) != 3 || len(snap.PRs.Items[0].Branches) != 0 {
 			t.Errorf("snapshot = %+v", snap)
 		}
 		if a := snap.PRs.Items[0].Action; a.Rule == 8 || a.Rule == 9 {
@@ -291,6 +294,13 @@ func TestDashQuery(t *testing.T) {
 			t.Errorf("%s = %q", name, s)
 		}
 	}
+	if q.OtherPRs != "" {
+		t.Errorf("repository query searches for others: %q", q.OtherPRs)
+	}
+	if o := dashQuery("org:o").OtherPRs; !strings.HasPrefix(o, "org:o is:pr is:open") || !strings.Contains(o, "archived:false") ||
+		!strings.Contains(o, "-author:@me") || !strings.Contains(o, "-review-requested:@me") {
+		t.Errorf("org others = %q", o)
+	}
 	for want, s := range map[string]string{"author:@me": q.MyPRs, "review-requested:@me": q.ReviewPRs, "assignee:@me": q.Assigned, "mentions:@me": q.Mentioned} {
 		if !strings.Contains(s, want) {
 			t.Errorf("%q has no %s", s, want)
@@ -303,4 +313,75 @@ func TestDashQuery(t *testing.T) {
 	if org.Owner != "" || !strings.Contains(org.MyPRs, "archived:false") {
 		t.Errorf("org query = %+v", org)
 	}
+}
+
+func TestBuildDashSnapshotOthers(t *testing.T) {
+	now := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
+	pr := func(n int, author string, updated time.Time, checks ...ghapi.DashCheck) ghapi.DashPR {
+		p := dashPR(n, "b"+strconv.Itoa(n), "o"+strconv.Itoa(n), updated, checks...)
+		p.Author = author
+		return p
+	}
+	draft := pr(1, "me", now.Add(-5*time.Hour))
+	draft.Draft = true
+	review := pr(2, "ana", now.Add(-4*time.Hour))
+	failing := pr(3, "infra-deployer", now.Add(-time.Hour), ciFail)
+	pastPage := pr(4, "me", now.Add(-2*time.Hour)) // mine, past the first page of the search
+	quiet := pr(5, "bo", now.Add(-3*time.Hour))
+
+	t.Run("repository", func(t *testing.T) {
+		merged := pr(7, "me", now.Add(-48*time.Hour))
+		merged.State = "MERGED"
+		res := &ghapi.DashResult{HasRepo: true, Viewer: "me",
+			MyPRs:      ghapi.DashPRList{Total: 2, Items: []ghapi.DashPR{draft}},
+			ReviewPRs:  ghapi.DashPRList{Total: 1, Items: []ghapi.DashPR{review}},
+			RepoOpen:   ghapi.DashPRList{Total: 5, Items: []ghapi.DashPR{draft, review, failing, pastPage, quiet}},
+			RepoMerged: ghapi.DashPRList{Total: 1, Items: []ghapi.DashPR{merged}}}
+		local := &dashLocal{Remote: "origin", Branches: []dashLocalBranch{{Name: "b7", Tip: "o7"}}}
+		snap := buildDashSnapshot(dashInputs{Scope: "repo:o/r", Now: now, Res: res, Local: local})
+		var got []string
+		for _, r := range snap.PRs.Items {
+			got = append(got, r.Relation+"#"+strconv.Itoa(r.Number)+":"+strconv.Itoa(r.Action.Rule))
+		}
+		// The CI failure of another author sorts below my draft, and cleanup
+		// stays last.
+		if want := "review#2:4 mine#1:6 others#3:3 others#5:10 cleanup#7:1"; strings.Join(got, " ") != want {
+			t.Errorf("PR rows = %s\nwant      %s", strings.Join(got, " "), want)
+		}
+		if c := snap.PRs.Counts; len(c) != 4 || c[2] != (dashCount{Relation: "others", Total: 2, Shown: 2}) {
+			t.Errorf("PR counts = %+v, want others 5 - 2 - 1 = 2", c)
+		}
+		// The search index counts a PR that the repository already closed:
+		// the difference is below the rows shown, and the count keeps them.
+		res.MyPRs.Total = 4
+		snap = buildDashSnapshot(dashInputs{Scope: "repo:o/r", Now: now, Res: res, Local: local})
+		if c := snap.PRs.Counts; c[2] != (dashCount{Relation: "others", Total: 2, Shown: 2}) {
+			t.Errorf("others with a lagging search = %+v, want the 2 rows shown", c[2])
+		}
+		if a := snap.PRs.Items[2].Action; a.Command != "" && a.Command != "gk pr checkout 3" {
+			t.Errorf("another author's PR action = %+v", a)
+		}
+	})
+	t.Run("org", func(t *testing.T) {
+		mine := pr(6, "me", now)
+		res := &ghapi.DashResult{Viewer: "me",
+			MyPRs:    ghapi.DashPRList{Total: 1, Items: []ghapi.DashPR{mine}},
+			OtherPRs: ghapi.DashPRList{Total: 4, Items: []ghapi.DashPR{failing, mine}}}
+		snap := buildDashSnapshot(dashInputs{Scope: "org:o", Now: now, Res: res})
+		var got []string
+		for _, r := range snap.PRs.Items {
+			got = append(got, r.Relation+"#"+strconv.Itoa(r.Number))
+		}
+		// A PR that the search index still lists under others shows once, as mine.
+		if strings.Join(got, " ") != "mine#6 others#3" {
+			t.Errorf("PR rows = %v", got)
+		}
+		if c := snap.PRs.Counts; len(c) != 3 || c[2] != (dashCount{Relation: "others", Total: 4, Shown: 1}) {
+			t.Errorf("PR counts = %+v", c)
+		}
+		setNoColor(t, true, func() {})
+		if h := dashCounts(snap.PRs.Counts); !strings.Contains(h, "others 4 (1 shown)") {
+			t.Errorf("header = %q", h)
+		}
+	})
 }

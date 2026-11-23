@@ -16,7 +16,7 @@ import (
 // PRs. TagOffBranch says the tag is on neither the branch nor the default
 // branch, as a tag of a maintenance branch is: Commits is then not a count
 // since a release of the branch. NoReleaseChanges says every commit after the
-// tag was read and is a docs, chore, ci, test or style commit without a
+// tag, on each branch, was read and is a docs, chore, ci, test or style commit without a
 // breaking change, so the commits may not need a release: the screen hides the
 // row.
 type dashRepoUnreleasedRow struct {
@@ -56,10 +56,16 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 	for _, r := range res.Repos {
 		var best *ghapi.TagComparison
 		tagOnDefault := false
+		// A change to release on any branch, not only on the row's, keeps the
+		// repository from being docs/chore only.
+		noRelease := true
 		for i := range r.Branches {
 			b := &r.Branches[i]
 			if b.Ahead > 0 && (best == nil || b.Ahead > best.Ahead) {
 				best = b
+			}
+			if b.Ahead > 0 {
+				noRelease = noRelease && onlyNoReleaseCommits(*b)
 			}
 			tagOnDefault = tagOnDefault || (b.Default && b.Behind == 0)
 		}
@@ -71,7 +77,7 @@ func orgUnreleasedJSON(res *ghapi.OwnerUnreleased) *dashOrgUnreleasedJSON {
 		row := dashRepoUnreleasedRow{
 			Repo: r.Repo, Since: r.Tag, Branch: best.Branch, Commits: best.Ahead,
 			PRs: comparisonPRs(*best), PRsPartial: best.Ahead > len(best.Commits), TagOffBranch: best.Behind > 0 && !tagOnDefault,
-			NoReleaseChanges: onlyNoReleaseCommits(*best),
+			NoReleaseChanges: noRelease,
 		}
 		j.Items = append(j.Items, row)
 		if row.NoReleaseChanges {

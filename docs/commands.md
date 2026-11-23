@@ -4759,7 +4759,7 @@ The row shows the branch that has more of these commits, and the default branch 
 | `note` | `tag is not on <branch>` if the tag is not on the branch and not on the default branch, for example a tag of a maintenance branch. The commit count is then not a count from a release of the branch |
 
 A repository without a tag does not show.
-A repository does not show if every commit after the tag is a `docs`, `chore`, `ci`, `test` or `style` commit and no commit is a breaking change or a dependency update (scope `deps` or `deps-dev`).
+A repository does not show if every commit after the tag, on each branch, is a `docs`, `chore`, `ci`, `test` or `style` commit and no commit is a breaking change or a dependency update (scope `deps` or `deps-dev`).
 The header shows the count of these repositories as `<n> repos docs/chore only`, and its commit and PR totals do not include them.
 A repository shows if GitHub returned fewer commits than the branch has, or if a commit subject is not in Conventional Commits form, for example a merge commit.
 On the screen, the PRs and the issues show first, and the section shows `loading…` until its query ends.

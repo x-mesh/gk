@@ -139,6 +139,18 @@ func TestOrgUnreleasedJSON(t *testing.T) {
 	if len(d.Items) != 2 || !d.Items[0].NoReleaseChanges || d.NoReleaseRepos != 1 || d.Commits != 1 || d.PRs != 1 {
 		t.Errorf("a docs-only repository = %+v", d)
 	}
+
+	// The row is develop, with docs commits only, but main has a fix after
+	// the tag: the repository has a change to release.
+	split := orgUnreleasedJSON(&ghapi.OwnerUnreleased{Repos: []ghapi.RepoUnreleased{
+		{Repo: "o/split", Tag: "v0.3.0", Branches: []ghapi.TagComparison{
+			{Branch: "main", Default: true, Ahead: 1, Head: "h", Commits: one},
+			{Branch: "develop", Ahead: 2, Head: "h", Commits: append(docs, cmpCommit("i", "", "docs: b"))},
+		}},
+	}})
+	if len(split.Items) != 1 || split.Items[0].Branch != "develop" || split.Items[0].NoReleaseChanges || split.NoReleaseRepos != 0 || split.Commits != 2 {
+		t.Errorf("a repository with a fix on another branch = %+v", split)
+	}
 }
 
 func TestRenderDashOrgUnreleased(t *testing.T) {

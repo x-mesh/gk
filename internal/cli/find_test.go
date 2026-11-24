@@ -53,7 +53,7 @@ func TestFindCommits_AllThreeModesHitTheirOwnCommit(t *testing.T) {
 	if len(res.Failed) > 0 {
 		t.Fatalf("no mode may fail on a healthy repo: %v", res.Failed)
 	}
-	// -S widgetPipeline finds the code commit; the message/path spellings differ
+	// The content search finds the code commit; the message/path spellings differ
 	// ("widget pipeline", "widget_pipeline_test.go"), so content must carry it.
 	var byContent bool
 	for _, m := range res.Matches {

@@ -1230,7 +1230,7 @@ One-call history search: `gk find <query>` runs three searches **at the same tim
 | mode | what it asks | raw equivalent |
 | --- | --- | --- |
 | `message` | the commit message mentions it | `git log --grep` |
-| `content` | the commit added or removed it | `git log -S` (the "pickaxe") |
+| `content` | the commit added or removed a line that contains it | `git log -G` (the "pickaxe") |
 | `path` | the commit touched a matching file | `git log -- '*<query>*'` |
 
 The gap it closes is **not** "gk log lacks `--grep`" — adding that flag would be a 1:1 swap. It is that you cannot know *which* query will hit, so the hunt costs a turn per guess:
@@ -1249,9 +1249,36 @@ gk find "fleet watch" --since 2w        # narrow by time
 gk find tildePath --path internal/cli   # search for tildePath inside this subtree
 gk find --path docs/commands.md         # no query: the history of a path
 gk find OTLP --json                     # agent contract
+gk find OTLP --oneline                  # the commit rows only
 ```
 
-Flags: `-n/--limit` (default 20) · `--since` · `--author` · `--path` · `--ref` (search one ref instead of all) · `--no-message` / `--no-content` / `--no-path` to narrow the fan-out — `--no-content` drops the pickaxe, which is the slow mode on large repos because it must diff every commit.
+Flags: `-n/--limit` (default 20) · `--since` · `--author` · `--path` · `--ref` (search one ref instead of all) · `--no-message` / `--no-content` / `--no-path` to narrow the fan-out — `--no-content` drops the pickaxe, which is the slow mode on large repos because it must diff every commit. `--oneline` prints the commit rows only, and `--reveal` prints the evidence without the secret mask.
+
+Each row shows the evidence for its tags below it:
+
+```
+1dd2722  2026-10-27  [content+message]       chore: prepare the handover
+    message  The TEST_DEPLOYER_PRIVATE_KEY value moves to the vault.
+    + .env.example:12   TEST_DEPLOYER_PRIVATE_KEY=0x9f********
+    - e2e/setup.ts:40   const key = process.env.TEST_DEPLOYER_PRIVATE_KEY
+    (+2 more)
+```
+
+- `content`: the added (`+`) and removed (`-`) lines that contain the query, with the file and the line number.
+- `message`: the first line of the message body that matches, when the subject does not match.
+- `path`: the path that matches, with its git status letter. A search with `--path` and no query shows no path line.
+
+A commit shows at most three lines of each kind, and two in agent mode. `(+N more)` counts the remainder. gk clips a long line around the match. On a terminal, added lines are green, removed lines are red, and the match is bold.
+
+gk reads the evidence only for the rows that it prints, with one more git call for each mode. On the gk repository, the evidence for 20 rows adds approximately 0.08 seconds. `--oneline` skips those calls.
+
+A removed line can contain a secret that is no longer in the tree. gk masks the secrets that the built-in `gk guard` ruleset finds in an evidence line, and it replaces the control characters in the line. The mask is not a guarantee: a value that the ruleset does not detect, such as a short password, prints as it is. When gk masks a line, the last lines of the output give the count: `2 lines masked · --reveal prints the values`. A result without that line contains no masked value.
+
+`--reveal` prints the lines without the mask and gives a warning on stderr with the count of those lines. The values stay in the terminal or the log that receives the output, so clear them afterwards. If no line contains a secret, the output is the same as without `--reveal`, and gk says so on stderr. Agent mode (`GK_AGENT`) refuses `--reveal`, because its output goes to a model.
+
+In the JSON output, each match has `evidence`, an array of `{mode, op, file, line, text, masked, revealed}`, and `evidence_more`. `masked` is true when gk replaced a secret in `text`. `revealed` is true when `text` contains a secret that `--reveal` did not mask. If gk cannot read the evidence, the matches are complete and `evidence_error` gives the cause.
+
+The `content` search uses `git log -G` with the query as a literal string, not `git log -S`. `-S` counts the query in each file, so it does not find a commit that changes the remainder of a line and keeps the query. An example is a commit that changes `API_KEY=` to `API_KEY=<value>`: the name is in the file one time before the commit and one time after it. `-G` finds each commit that adds or removes a line with the query, and that set includes all the commits that `-S` finds in text files. `-G` does not search binary files. One `git log -G` call is slower than `-S` when the query is rare, because git makes the diff of each commit on one core: on the gk repository (1,197 commits), that call takes approximately 0.6 seconds with `-G` and 0.2 seconds with `-S`. For that reason gk does not make one call. It reads the list of commits from `git rev-list` and gives the commits in chunks to `git log --no-walk -G` processes that run at the same time, one for each core. The first round reads the newest commits, each subsequent round is larger, and gk stops when it has sufficient matches. The result is the same as that of one call: the same commits in the same sequence.
 
 `--path` has two deliberately distinct forms. Without a query it asks for that path's history and follows a literal file across renames. With a query it is only a scope filter for the message/content searches; commits do not become matches merely because they touched something in that subtree. Invalid `--since` values and invocations that disable every applicable search mode fail explicitly rather than looking like trustworthy zero-result searches.
 
@@ -1260,7 +1287,8 @@ A mode that fails (an unknown `--ref`, say) is reported in `failed` alongside wh
 Set `ai.jev.find_rerank: true` to rank the merged candidates with Jev before
 `--limit` applies. The request contains the query, commit subjects, and
 existing match labels. It evaluates at most fifty candidates. Path-only
-searches and result sets with fewer than two candidates skip ranking.
+searches and result sets with fewer than two candidates skip ranking. gk reads
+the evidence after the ranking, so the request contains no line of a diff.
 
 The text output reports the evaluated candidate count and model. JSON output
 adds a `ranking` object. An active Jev error returns an error and preserves no

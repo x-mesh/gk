@@ -475,6 +475,8 @@ func TestFindMessageMatcher(t *testing.T) {
 		{"카페", "카페 메뉴", true},
 		{"caf.", "café", true}, // . is one rune
 		{"[é]x", "éx", true},
+		{`caf\é`, "café", true}, // an escaped rune is that rune
+		{`\카페`, "카페 메뉴", true},
 	}
 	for _, c := range cases {
 		re := findMessageMatcher(c.query)

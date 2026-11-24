@@ -24,6 +24,10 @@ const lineMask = "********"
 // YAML block, every line of it is replaced: the pieces would join back into
 // the secret. The pieces of a folded value are also joined and scanned, since
 // the decoder reads one line at a time and finds no secret in a short piece.
+// Lines of text around the value that look like pieces, such as a word or the
+// end of a heredoc, are left out by scanning each span of the lines. In a run
+// longer than 48 lines, a value is found when it starts in its first 8 lines
+// or ends in its last 8, and is at most 1 KiB long.
 // So is a line that is one opaque run of base64, such as a line of a PEM
 // block: apart from the block around it, it matches no rule.
 func MaskLines(path string, lines []string) []string { return get().maskLines(path, lines) }
@@ -44,13 +48,15 @@ func (e *engine) maskLines(path string, lines []string) []string {
 		}
 	}
 	masked := make([]bool, len(runs))
-	maskRun := func(r int) {
+	// maskRun masks a run from its line from on; the lines above that are
+	// text that only looked like a piece of the value.
+	maskRun := func(r, from int) {
 		if masked[r] {
 			return
 		}
 		masked[r] = true
 		run := runs[r]
-		for i := run.first; i <= run.last; i++ {
+		for i := run.first + from; i <= run.last; i++ {
 			// Keep the text before the value on the first line, such as
 			// "data: ", so the line still says what it holds.
 			out[i] = lines[i][:run.starts[i-run.first]] + lineMask
@@ -86,7 +92,7 @@ func (e *engine) maskLines(path string, lines []string) []string {
 		// The secret is in decoded text. Its encoded form can go on over the
 		// lines below, and the pieces left there would join back into it.
 		if r := runOf[hit.FileLine-1]; r >= 0 {
-			maskRun(r)
+			maskRun(r, 0)
 		} else {
 			out[hit.FileLine-1] = lineMask
 		}
@@ -97,11 +103,8 @@ func (e *engine) maskLines(path string, lines []string) []string {
 		if masked[r] {
 			continue
 		}
-		for _, value := range run.values {
-			if len(e.scanLines(path, []string{value})) > 0 {
-				maskRun(r)
-				break
-			}
+		if from, ok := e.foldedSecret(path, run.pieces); ok {
+			maskRun(r, from)
 		}
 	}
 	for i, l := range lines {
@@ -139,16 +142,13 @@ func (e *engine) scanLines(path string, lines []string) []hit {
 	return hits
 }
 
-// encodedRun is an encoded value folded over lines first to last. starts
-// holds, for each of its lines, where the piece of the value begins. values
-// are the pieces put back together: all of them, and, when the first line has
-// text before its piece, also the pieces below it. The word that ends such a
-// line can be text and not the start of the value, and a base64 value read
-// from the wrong character decodes to nothing.
+// encodedRun is a run of lines that can hold an encoded value folded over
+// them, first to last. starts holds, for each of its lines, where its piece
+// begins, and pieces the pieces.
 type encodedRun struct {
 	first, last int
 	starts      []int
-	values      []string
+	pieces      []string
 }
 
 // encodedPiece is a line of a folded value: indentation, then base64 or hex
@@ -160,10 +160,72 @@ var (
 	encodedFirstLine = regexp.MustCompile(`([A-Za-z0-9+/_-]+={0,2})\s*$`)
 )
 
-// encodedRunMin is the length of the shortest value that is scanned. The
-// encoded form of the shortest secret a rule finds is longer, and a shorter
-// run, such as two lines of code that end in a word, is not worth a scan.
-const encodedRunMin = 16
+const (
+	// encodedRunMin is the length of the shortest value that is scanned.
+	// The encoded form of the shortest secret a rule finds is longer.
+	encodedRunMin = 16
+	// encodedRunAll is the longest run whose every span of lines is
+	// scanned. A scan of a value takes 20 to 200 µs, so a run of 48 lines,
+	// 1128 spans, takes at most about 0.2 s. In a longer run, the spans
+	// that start in its first encodedRunEdge lines or end in its last ones
+	// are scanned, up to encodedValueMax bytes long.
+	encodedRunAll   = 48
+	encodedRunEdge  = 8
+	encodedValueMax = 1 << 10
+)
+
+// foldedSecret looks for a secret in a run whose lines are pieces of an
+// encoded value, and returns the piece the value starts at. A line of text
+// above or below the value can look like a piece, such as "abc" or the "EOF"
+// that ends a heredoc, and a value read from the wrong character, or with
+// text after its end, decodes to nothing. So the spans of the run are
+// scanned, the widest first.
+func (e *engine) foldedSecret(path string, pieces []string) (from int, ok bool) {
+	offsets := make([]int, len(pieces)+1)
+	for i, p := range pieces {
+		offsets[i+1] = offsets[i] + len(p)
+	}
+	all := strings.Join(pieces, "")
+	scan := func(k, end int) bool {
+		text := all[offsets[k]:offsets[end]]
+		return len(text) >= encodedRunMin && len(e.scanLines(path, []string{text})) > 0
+	}
+	n := len(pieces)
+	if n <= encodedRunAll {
+		for size := n; size >= 2; size-- {
+			for k := 0; k+size <= n; k++ {
+				if scan(k, k+size) {
+					return k, true
+				}
+			}
+		}
+		return 0, false
+	}
+	// The widest span up to encodedValueMax first, from each edge line.
+	for k := 0; k < encodedRunEdge; k++ {
+		end := k + 2
+		for end < n && offsets[end+1]-offsets[k] <= encodedValueMax {
+			end++
+		}
+		for ; end >= k+2; end-- {
+			if scan(k, end) {
+				return k, true
+			}
+		}
+	}
+	for end := n; end > n-encodedRunEdge; end-- {
+		k := end - 2
+		for k > 0 && offsets[end]-offsets[k-1] <= encodedValueMax {
+			k--
+		}
+		for ; k <= end-2; k++ {
+			if scan(k, end) {
+				return k, true
+			}
+		}
+	}
+	return 0, false
+}
 
 // encodedRuns returns the folded values in lines: a line that ends in a piece
 // of base64, and one or more lines below it that hold nothing else.
@@ -189,15 +251,8 @@ func encodedRuns(lines []string) []encodedRun {
 			continue
 		}
 		run.last = j - 1
-		if all := strings.Join(pieces, ""); len(all) >= encodedRunMin {
-			run.values = append(run.values, all)
-		}
-		if strings.TrimSpace(lines[i][:head[2]]) != "" {
-			if rest := strings.Join(pieces[1:], ""); len(rest) >= encodedRunMin {
-				run.values = append(run.values, rest)
-			}
-		}
-		if len(run.values) > 0 {
+		run.pieces = pieces
+		if len(strings.Join(pieces, "")) >= encodedRunMin {
 			runs = append(runs, run)
 		}
 		i = j - 1

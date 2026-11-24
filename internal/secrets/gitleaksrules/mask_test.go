@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 // hexKey is a 32-byte key in hex, the form of an Ethereum private key. It is
@@ -174,6 +175,103 @@ func TestMaskLines_FoldedEncodedSecret(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A line of ordinary text made of base64 characters, such as a word, can sit
+// right above a folded value, and then it starts the run. The value is found
+// from the line where it starts, and the text above it stays.
+func TestMaskLines_FoldedValueBelowAWord(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("AKIA" + "Z3MMNQW4XPLR7TQB"))
+	for _, above := range [][]string{{"abc"}, {"return"}, {"end", "abc"}, {"a", "bb", "ccc"}} {
+		for _, width := range []int{1, 2, 3, 8} {
+			block := fold("  ", encoded, width)
+			lines := append(append([]string{"notes:"}, above...), block...)
+			got := MaskLines("", lines)
+			var joined strings.Builder
+			for _, l := range got[1+len(above):] {
+				joined.WriteString(strings.TrimSpace(l))
+			}
+			if strings.Contains(joined.String(), encoded[:len(encoded)/2]) {
+				t.Errorf("above %q, width %d: the lines join back into the value: %q", above, width, got)
+			}
+			for k, w := range above {
+				if got[1+k] != w {
+					t.Errorf("above %q, width %d: the word %q above the value changed to %q", above, width, w, got[1+k])
+				}
+			}
+		}
+	}
+}
+
+// Text made of base64 characters can follow a folded value too, as the end
+// word of a heredoc does. The value is found without it.
+func TestMaskLines_FoldedValueAboveAWord(t *testing.T) {
+	for name, plain := range map[string]string{
+		"aws key":     "AKIA" + "Z3MMNQW4XPLR7TQB", // its base64 ends in padding
+		"slack token": "token: xoxb-" + "123456789012-1234567890123-abcdefghijklmnopqrstuvwx",
+	} {
+		encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+		for _, below := range [][]string{{"EOF"}, {"end"}, {"a"}, {"fi", "done"}, {"EOF", "fi", "done", "exit"}} {
+			for _, width := range []int{1, 8, 16} {
+				for _, above := range [][]string{nil, {"abc"}} {
+					block := fold("  ", encoded, width)
+					lines := append(append(append([]string{"cat <<EOF"}, above...), block...), below...)
+					got := MaskLines("", lines)
+					var joined strings.Builder
+					for _, l := range got[1+len(above) : 1+len(above)+len(block)] {
+						joined.WriteString(strings.TrimSpace(l))
+					}
+					if strings.Contains(joined.String(), encoded[:len(encoded)/2]) {
+						t.Errorf("%s, above %q, below %q, width %d: the lines join back into the value: %q", name, above, below, width, got)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A long run is tried from its first lines to its last lines, so its cost
+// does not grow with the square of its length.
+func TestMaskLines_LongFoldedRun(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("AKIA" + "Z3MMNQW4XPLR7TQB"))
+	filler := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("ordinary words and nothing secret ", 40)))
+	var lines []string
+	for i := 0; i+16 <= len(filler); i += 16 {
+		lines = append(lines, "  "+filler[i:i+16])
+	}
+	start := time.Now()
+	got := MaskLines("", lines)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("%d lines of base64 took %v", len(lines), d)
+	}
+	for i := range lines {
+		if got[i] != lines[i] {
+			t.Fatalf("line %d of a run with no secret changed: %q", i, got[i])
+		}
+	}
+	// A value at the start of a long run is found: the spans of a long run
+	// start in its first lines.
+	lines = append(fold("  ", encoded, 8), lines...)
+	got = MaskLines("", lines)
+	if strings.Contains(strings.Join(got, ""), encoded[:8]) {
+		t.Errorf("the value at the start of a run of %d lines is left: %q", len(lines), got[:5])
+	}
+	// And one at the end: those spans end in its last lines.
+	tail := append(lines[4:len(lines):len(lines)], fold("  ", encoded, 8)...)
+	got = MaskLines("", tail)
+	if strings.Contains(strings.Join(got, ""), encoded[:8]) {
+		t.Errorf("the value at the end of a run of %d lines is left: %q", len(tail), got[len(got)-5:])
+	}
+	// The cost of a run of thousands of lines stays bounded.
+	var long []string
+	for len(long) < 3000 {
+		long = append(long, lines[4:]...)
+	}
+	start = time.Now()
+	MaskLines("", long)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("%d lines of base64 took %v", len(long), d)
 	}
 }
 

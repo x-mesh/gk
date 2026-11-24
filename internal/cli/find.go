@@ -405,7 +405,7 @@ func runFindMode(ctx context.Context, runner *git.ExecRunner, q findQuery, mode 
 	// A generous per-mode cap: the merge ranks and then trims to --limit, so a
 	// mode must be allowed to return more than the final limit or a strong
 	// multi-mode hit could be cut before it is ever compared.
-	args = append(args, "-n", strconv.Itoa(q.limit*5))
+	args = append(args, "-n", strconv.Itoa(findModeCap(q.limit)))
 	if q.since != "" {
 		args = append(args, "--since="+normalizeSince(q.since))
 	}

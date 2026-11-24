@@ -236,6 +236,38 @@ func TestFindEvidence_PathOnlySearchShowsNone(t *testing.T) {
 	}
 }
 
+// The subject holds "ab" and the body holds the query "a+b". git reads the
+// query as a basic regular expression, where + is literal, so the commit
+// matches because of its body, and the body line is the evidence.
+func TestFindEvidence_MessageBodyLineForAQueryWithAPlus(t *testing.T) {
+	repo := evidenceRepo(t)
+	repo.WriteFile("sum.txt", "1")
+	repo.Commit("docs: ab\n\nThe sum is a+b.")
+	res := findWithEvidence(t, repo, findQuery{query: "a+b", message: true}, findEvidenceOpts{})
+	m := matchBySubject(t, res, "ab")
+	if len(m.Evidence) != 1 || m.Evidence[0].Text != "The sum is a+b." {
+		t.Errorf("evidence = %+v, want the body line", m.Evidence)
+	}
+}
+
+// With --path, the path search lists the commits that touch that path, so
+// the path evidence is the files under it, and not the files whose name holds
+// the query.
+func TestFindEvidence_PathScopeNamesTheFilesUnderThePath(t *testing.T) {
+	repo := evidenceRepo(t)
+	repo.WriteFile("internal/cli/widget.go", "package cli\n")
+	repo.WriteFile("needle.txt", "out of the path\n")
+	repo.Commit("feat: add the widget")
+	res := findWithEvidence(t, repo, findQuery{query: "needle", pathMode: true, path: "internal/cli"}, findEvidenceOpts{})
+	m := matchBySubject(t, res, "add the widget")
+	if len(m.Evidence) != 1 {
+		t.Fatalf("evidence = %+v, want internal/cli/widget.go", m.Evidence)
+	}
+	if ev := m.Evidence[0]; ev.Mode != findModePath || ev.File != "internal/cli/widget.go" {
+		t.Errorf("path evidence = %+v, want internal/cli/widget.go", ev)
+	}
+}
+
 // --path with a query scopes the search, so it scopes the evidence too.
 func TestFindEvidence_PathScopeLimitsContentLines(t *testing.T) {
 	repo := evidenceRepo(t)
@@ -401,9 +433,34 @@ func TestFindMessageMatcher(t *testing.T) {
 		{"fix.*bug", "fix the bug", true},            // an expression to both
 		{"call(", "the call( site", true},            // not a Go expression
 		{"gizmo", "nothing here", false},
+		// git reads the query as a basic regular expression: + ? | ( ) { }
+		// are literal there, and the backslash forms are the operators.
+		{"a+b", "ab", false},
+		{"a+b", "aab", false},
+		{"a?b", "b", false},
+		{"x|y", "y", false},
+		{"x|y", "x|y", true},
+		{`a\+b`, "aab", true},
+		{`a\+b`, "a+b", false},
+		{`x\|y`, "y", true},
+		{`\(ab\)*c`, "ababc", true},
+		{"a{2}", "a{2}", true},
+		{"a{2}", "aa", false},
+		{`a\{2\}`, "aa", true},
+		{"*x", "*x", true},       // a leading * is literal
+		{"^fix", "fix it", true}, // anchors are kept
+		{"^fix", "a fix", false},
+		{"[ab]x", "bx", true}, // a bracket expression is kept
+		{"[]a]x", "]x", true}, // ] first in the brackets is literal
+		{`a\.b`, "a.b", true}, // an escaped dot is a dot
+		{`a\.b`, "axb", false},
+		{"fix$", "a fix", true},
+		{"a$b", "a$b", true},                  // $ is an anchor only at the end
+		{"[unclosed", "the [unclosed", false}, // git rejects it too
 	}
 	for _, c := range cases {
-		if got := findMessageMatcher(c.query).MatchString(c.text); got != c.want {
+		re := findMessageMatcher(c.query)
+		if got := re != nil && re.MatchString(c.text); got != c.want {
 			t.Errorf("findMessageMatcher(%q).MatchString(%q) = %v, want %v", c.query, c.text, got, c.want)
 		}
 	}

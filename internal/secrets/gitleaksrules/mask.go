@@ -20,8 +20,12 @@ const lineMask = "********"
 // came from. Only the rules that are limited to a path, such as the Terraform
 // password rule, run with path. A secret found only in decoded text, such as
 // a base64 value, cannot be located in the line, so the whole line is
-// replaced. So is a line that is one opaque run of base64, such as a line of
-// a PEM block: apart from the block around it, it matches no rule.
+// replaced. When the encoded value is folded over the lines below, as in a
+// YAML block, every line of it is replaced: the pieces would join back into
+// the secret. The pieces of a folded value are also joined and scanned, since
+// the decoder reads one line at a time and finds no secret in a short piece.
+// So is a line that is one opaque run of base64, such as a line of a PEM
+// block: apart from the block around it, it matches no rule.
 func MaskLines(path string, lines []string) []string { return get().maskLines(path, lines) }
 
 func (e *engine) maskLines(path string, lines []string) []string {
@@ -29,30 +33,31 @@ func (e *engine) maskLines(path string, lines []string) []string {
 	if len(lines) == 0 {
 		return out
 	}
-	h := hunk{lines: lines, numbers: make([]int, len(lines))}
-	for i := range h.numbers {
-		h.numbers[i] = i + 1
+	runs := encodedRuns(lines)
+	runOf := make([]int, len(lines))
+	for i := range runOf {
+		runOf[i] = -1
 	}
-	h.joined = strings.Join(lines, "\n")
-	h.lower = strings.ToLower(h.joined)
-	f := fileDiff{hunks: []hunk{h}}
-	raw, decoded := e.rawPasses(f), e.decodedPasses(f)
-	hits := e.scanRaw(f, e.rules, raw)
-	hits = append(hits, e.scanDecoded(f, e.rules, decoded)...)
-	if path != "" {
-		// With no path the pass above skipped these rules.
-		var scoped []rule
-		for _, r := range e.rules {
-			if r.path != nil && r.regex != nil {
-				scoped = append(scoped, r)
-			}
+	for r, run := range runs {
+		for i := run.first; i <= run.last; i++ {
+			runOf[i] = r
 		}
-		f.path = path
-		hits = append(hits, e.scanRaw(f, scoped, raw)...)
-		hits = append(hits, e.scanDecoded(f, scoped, decoded)...)
+	}
+	masked := make([]bool, len(runs))
+	maskRun := func(r int) {
+		if masked[r] {
+			return
+		}
+		masked[r] = true
+		run := runs[r]
+		for i := run.first; i <= run.last; i++ {
+			// Keep the text before the value on the first line, such as
+			// "data: ", so the line still says what it holds.
+			out[i] = lines[i][:run.starts[i-run.first]] + lineMask
+		}
 	}
 
-	for _, hit := range hits {
+	for _, hit := range e.scanLines(path, lines) {
 		if hit.secret == "" {
 			continue
 		}
@@ -75,8 +80,22 @@ func (e *engine) maskLines(path string, lines []string) []string {
 				}
 			}
 		}
-		if !found && hit.FileLine >= 1 && hit.FileLine <= len(out) {
+		if found || hit.FileLine < 1 || hit.FileLine > len(out) {
+			continue
+		}
+		// The secret is in decoded text. Its encoded form can go on over the
+		// lines below, and the pieces left there would join back into it.
+		if r := runOf[hit.FileLine-1]; r >= 0 {
+			maskRun(r)
+		} else {
 			out[hit.FileLine-1] = lineMask
+		}
+	}
+	// The decoder reads one line at a time, so an encoded secret folded over
+	// short lines is found only with its pieces joined.
+	for r, run := range runs {
+		if !masked[r] && len(e.scanLines(path, []string{run.joined})) > 0 {
+			maskRun(r)
 		}
 	}
 	for i, l := range lines {
@@ -85,6 +104,81 @@ func (e *engine) maskLines(path string, lines []string) []string {
 		}
 	}
 	return out
+}
+
+// scanLines scans lines as one block, the way MaskLines describes.
+func (e *engine) scanLines(path string, lines []string) []hit {
+	h := hunk{lines: lines, numbers: make([]int, len(lines))}
+	for i := range h.numbers {
+		h.numbers[i] = i + 1
+	}
+	h.joined = strings.Join(lines, "\n")
+	h.lower = strings.ToLower(h.joined)
+	f := fileDiff{hunks: []hunk{h}}
+	raw, decoded := e.rawPasses(f), e.decodedPasses(f)
+	hits := e.scanRaw(f, e.rules, raw)
+	hits = append(hits, e.scanDecoded(f, e.rules, decoded)...)
+	if path != "" {
+		// With no path the pass above skipped these rules.
+		var scoped []rule
+		for _, r := range e.rules {
+			if r.path != nil && r.regex != nil {
+				scoped = append(scoped, r)
+			}
+		}
+		f.path = path
+		hits = append(hits, e.scanRaw(f, scoped, raw)...)
+		hits = append(hits, e.scanDecoded(f, scoped, decoded)...)
+	}
+	return hits
+}
+
+// encodedRun is an encoded value folded over lines first to last. starts
+// holds, for each of its lines, where the piece of the value begins; joined
+// is the pieces put back together.
+type encodedRun struct {
+	first, last int
+	starts      []int
+	joined      string
+}
+
+// encodedPiece is a line of a folded value: indentation, then base64 or hex
+// and nothing else. The last line can be as short as one character and its
+// padding. The first line of a value can have a key before it.
+var (
+	encodedPiece     = regexp.MustCompile(`^\s*([A-Za-z0-9+/_-]+={0,2})\s*$`)
+	encodedFirstLine = regexp.MustCompile(`([A-Za-z0-9+/_-]{4,}={0,2})\s*$`)
+)
+
+// encodedRuns returns the folded values in lines: a line that ends in a piece
+// of base64, and one or more lines below it that hold nothing else.
+func encodedRuns(lines []string) []encodedRun {
+	var runs []encodedRun
+	for i := 0; i < len(lines); i++ {
+		head := encodedFirstLine.FindStringSubmatchIndex(lines[i])
+		if head == nil {
+			continue
+		}
+		run := encodedRun{first: i, starts: []int{head[2]}}
+		pieces := []string{lines[i][head[2]:head[3]]}
+		j := i + 1
+		for ; j < len(lines); j++ {
+			m := encodedPiece.FindStringSubmatchIndex(lines[j])
+			if m == nil {
+				break
+			}
+			run.starts = append(run.starts, m[2])
+			pieces = append(pieces, lines[j][m[2]:m[3]])
+		}
+		if j-i < 2 {
+			continue
+		}
+		run.last = j - 1
+		run.joined = strings.Join(pieces, "")
+		runs = append(runs, run)
+		i = j - 1
+	}
+	return runs
 }
 
 var blobLine = regexp.MustCompile(`^[A-Za-z0-9+/_-]{40,}={0,2}$`)

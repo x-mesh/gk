@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -143,13 +144,16 @@ func TestFindContent_UnknownRefIsAnError(t *testing.T) {
 
 // The comparisons above pass when both sides are whole, so the narrowing is
 // also checked by its count. The commits of a test repository carry the dates
-// that testutil gives them, so --since is checked only to narrow.
+// that testutil gives them, so --since is checked only to narrow, with a date
+// past any of them. git reads "tomorrow" as now, and a year it does not
+// expect, such as 2999-01-01, as the current year, so an ISO time is used.
 func TestFindContent_SinceAndAuthorNarrow(t *testing.T) {
 	repo := contentRepo(t)
 	setFindContentSplit(t, 2, 4, 3)
 	all := len(contentHashes(t, repo, findQuery{query: "needleTerm"}))
-	if got := contentHashes(t, repo, findQuery{query: "needleTerm", since: "tomorrow"}); len(got) >= all {
-		t.Errorf("--since tomorrow: %d commits of %d, want fewer", len(got), all)
+	const future = "2099-12-31T00:00:00Z"
+	if got := contentHashes(t, repo, findQuery{query: "needleTerm", since: future}); len(got) >= all {
+		t.Errorf("--since %s: %d commits of %d, want fewer", future, len(got), all)
 	}
 	if got := contentHashes(t, repo, findQuery{query: "needleTerm", author: "nobody-by-this-name"}); len(got) != 0 {
 		t.Errorf("--author of nobody: %d commits, want none", len(got))
@@ -235,5 +239,20 @@ func TestFindContent_NoMatchIsEmptyNotAnError(t *testing.T) {
 	setFindContentSplit(t, 2, 4, 3)
 	if got := contentHashes(t, repo, findQuery{query: "termThatIsNowhere"}); len(got) != 0 {
 		t.Errorf("got %d commits, want none", len(got))
+	}
+}
+
+// A --limit too large to multiply by five has no cap, instead of a negative
+// one that would cut the matches at a negative index.
+func TestFindModeCap(t *testing.T) {
+	for limit, want := range map[int]int{1: 5, 20: 100, 0: math.MaxInt, -1: math.MaxInt, math.MaxInt/5 + 1: math.MaxInt, math.MaxInt: math.MaxInt} {
+		if got := findModeCap(limit); got != want {
+			t.Errorf("findModeCap(%d) = %d, want %d", limit, got, want)
+		}
+	}
+	repo := contentRepo(t)
+	got, err := runFindContent(context.Background(), &git.ExecRunner{Dir: repo.Dir}, findQuery{query: "needleTerm", limit: math.MaxInt})
+	if err != nil || len(got) == 0 {
+		t.Errorf("--limit %d: %d matches, err %v", math.MaxInt, len(got), err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -33,13 +34,24 @@ var (
 	findContentWorkers  = func() int { return runtime.GOMAXPROCS(0) }
 )
 
+// findModeCap is how many matches one mode may return for a --limit of
+// limit: five times as many, so the merge can rank before it trims. A limit
+// too large to multiply has no cap, as one under 1 does, instead of a cap
+// that wraps around to a negative count.
+func findModeCap(limit int) int {
+	if limit < 1 || limit > math.MaxInt/5 {
+		return math.MaxInt
+	}
+	return limit * 5
+}
+
 // runFindContent returns the commits whose diff adds or removes a line that
-// holds the query, newest first, at most q.limit*5 of them: the same commits
-// as one `git log -n <cap> -G<query>` walk.
+// holds the query, newest first, at most findModeCap(q.limit) of them: the
+// same commits as one `git log -n <cap> -G<query>` walk.
 func runFindContent(ctx context.Context, runner *git.ExecRunner, q findQuery) ([]findMatch, error) {
 	// The cap is applied here and not with -n: on a --no-walk list, -n
 	// counts the commits read, not the commits that match.
-	limit := q.limit * 5
+	limit := findModeCap(q.limit)
 
 	list := []string{"--no-optional-locks", "rev-list"}
 	if q.ref != "" {

@@ -121,3 +121,71 @@ func TestMaskLines_PathScopedRuleNeedsThePath(t *testing.T) {
 		t.Fatalf("the fixture must be a value that only the path-scoped rule finds, got %q", got)
 	}
 }
+
+// fold splits an encoded value into lines of width characters, indented as in
+// a YAML block, after a first line that holds prefix and the first piece.
+func fold(prefix, encoded string, width int) []string {
+	var lines []string
+	for i := 0; i < len(encoded); i += width {
+		piece := encoded[i:min(i+width, len(encoded))]
+		if i == 0 {
+			lines = append(lines, prefix+piece)
+			continue
+		}
+		lines = append(lines, "  "+piece)
+	}
+	return lines
+}
+
+// An encoded secret folded over lines is masked on every line it spans: the
+// pieces left on the other lines would join back into the secret.
+func TestMaskLines_FoldedEncodedSecret(t *testing.T) {
+	secretsToFold := map[string]string{
+		"aws key":     "AKIA" + "Z3MMNQW4XPLR7TQB",
+		"slack token": "token: xoxb-" + "123456789012-1234567890123-abcdefghijklmnopqrstuvwx",
+		"github pat":  "GITHUB_TOKEN=" + githubPAT,
+	}
+	for name, plain := range secretsToFold {
+		encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+		for _, width := range []int{8, 16, 30, 64} {
+			for _, prefix := range []string{"  ", "data: ", "value: "} {
+				block := fold(prefix, encoded, width)
+				lines := append([]string{"kind: Secret", "data:"}, block...)
+				lines = append(lines, "type: Opaque")
+				got := MaskLines("", lines)
+				// No piece of the encoded value is left on any line.
+				for i, l := range got {
+					for j, piece := range block {
+						p := strings.TrimSpace(strings.TrimPrefix(piece, prefix))
+						if len(p) >= 4 && strings.Contains(l, p) {
+							t.Errorf("%s, width %d, prefix %q: piece %d is left on line %d: %q", name, width, prefix, j, i, got)
+						}
+					}
+				}
+				// The lines around the block are not touched, and a prefix
+				// before a folded value stays. A value on one line replaces
+				// the line, as TestMaskLines_EncodedSecretReplacesTheLine
+				// covers.
+				if got[0] != "kind: Secret" || got[1] != "data:" || got[len(got)-1] != "type: Opaque" {
+					t.Errorf("%s, width %d: the lines around the block changed: %q", name, width, got)
+				}
+				if p := strings.TrimSpace(prefix); p != "" && len(block) > 1 && !strings.HasPrefix(got[2], p) {
+					t.Errorf("%s, width %d: the prefix %q is gone: %q", name, width, p, got[2])
+				}
+			}
+		}
+	}
+}
+
+// A run of base64 lines that decodes to no secret is left alone, and so is a
+// line of base64 next to ordinary text.
+func TestMaskLines_FoldedBase64WithNoSecret(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("an ordinary config value, nothing secret here. ", 3)))
+	lines := append([]string{"data:"}, fold("  ", encoded, 16)...)
+	got := MaskLines("", lines)
+	for i := range lines {
+		if got[i] != lines[i] {
+			t.Errorf("line %d changed: %q → %q", i, lines[i], got[i])
+		}
+	}
+}

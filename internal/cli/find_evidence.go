@@ -177,8 +177,14 @@ func findEvidenceFor(ctx context.Context, runner *git.ExecRunner, q findQuery, m
 		}
 		return parseFindMessages(out.String(), findMessageMatcher(q.query)), nil
 	case findModePath:
+		// The pathspec of the path search: with --path, the commits are
+		// there because they touch that path.
+		pathspec := "*" + q.query + "*"
+		if q.path != "" {
+			pathspec = q.path
+		}
 		var out bytes.Buffer
-		args = append(args, "--name-status", "--format=%x01%H", "--", "*"+q.query+"*")
+		args = append(args, "--name-status", "--format=%x01%H", "--", pathspec)
 		if err := runner.Stream(ctx, stdin, &out, args...); err != nil {
 			return nil, findGitErr(err)
 		}
@@ -412,20 +418,117 @@ func findContentMatcher(query string) *regexp.Regexp {
 }
 
 // findMessageMatcher follows `git log -i --grep`, which reads the query as a
-// basic regular expression. Go has no such dialect, so the query is matched
-// as a literal and, when it compiles as a Go expression, as that too: "a+b"
-// is a literal to git and a repetition to Go. Where neither reading agrees
-// with git, a [message] row shows no line, and the tag on the row is still
-// right.
+// basic regular expression (BRE). The query is translated to a Go expression
+// with the same meaning, so a line matches here when it matches for git. It
+// is nil for a query that does not translate, such as one with an unclosed
+// bracket, which git rejects as well.
 func findMessageMatcher(query string) *regexp.Regexp {
 	if query == "" {
 		return nil
 	}
-	literal := regexp.QuoteMeta(query)
-	if re, err := regexp.Compile("(?i)(?:" + literal + "|" + query + ")"); err == nil {
-		return re
+	expr, ok := breToGo(query)
+	if !ok {
+		return nil
 	}
-	return regexp.MustCompile("(?i)" + literal)
+	re, err := regexp.Compile("(?i)" + expr)
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// breToGo translates a POSIX basic regular expression, with the GNU
+// extensions that git accepts, to a Go expression. In a BRE, + ? | ( ) { }
+// are literal and the backslash forms are the operators; . [ ] * ^ $ are the
+// same as in Go, except that a * at the start of the expression or of a group
+// is literal.
+func breToGo(q string) (string, bool) {
+	var b strings.Builder
+	atStart := true // where a * is literal
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		switch c {
+		case '\\':
+			if i+1 == len(q) {
+				return "", false
+			}
+			i++
+			n := q[i]
+			switch n {
+			case '+', '?', '|', '(', ')', '{', '}':
+				b.WriteByte(n)
+				atStart = n == '(' || n == '|'
+				continue
+			case 'w', 'W', 's', 'S', 'b', 'B':
+				b.WriteByte('\\')
+				b.WriteByte(n)
+			case '<', '>':
+				b.WriteString(`\b`)
+			default:
+				b.WriteString(regexp.QuoteMeta(string(n)))
+			}
+		case '+', '?', '|', '(', ')', '{', '}':
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		case '*':
+			if atStart {
+				b.WriteString(`\*`)
+			} else {
+				b.WriteByte('*')
+			}
+		case '^':
+			if atStart {
+				b.WriteByte('^')
+				continue // a * after a leading ^ is literal too
+			}
+			b.WriteString(`\^`)
+		case '.':
+			b.WriteByte('.')
+		case '$':
+			// An anchor only at the end; elsewhere a BRE reads it as a $.
+			if i == len(q)-1 {
+				b.WriteByte('$')
+			} else {
+				b.WriteString(`\$`)
+			}
+		case '[':
+			end := bracketEnd(q, i)
+			if end < 0 {
+				return "", false
+			}
+			// Inside the brackets a backslash is literal in a BRE.
+			b.WriteString(strings.ReplaceAll(q[i:end+1], `\`, `\\`))
+			i = end
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+		atStart = false
+	}
+	return b.String(), true
+}
+
+// bracketEnd returns the index of the ] that closes the bracket expression
+// that starts at q[start], or -1. A ] right after [ or [^ is a member, and a
+// [: :] class holds its own ].
+func bracketEnd(q string, start int) int {
+	i := start + 1
+	if i < len(q) && q[i] == '^' {
+		i++
+	}
+	if i < len(q) && q[i] == ']' {
+		i++
+	}
+	for ; i < len(q); i++ {
+		if q[i] == '[' && i+1 < len(q) && q[i+1] == ':' {
+			if end := strings.Index(q[i+2:], ":]"); end >= 0 {
+				i += end + 3
+				continue
+			}
+		}
+		if q[i] == ']' {
+			return i
+		}
+	}
+	return -1
 }
 
 // findEvidenceText prepares a raw line of file for display: masks its

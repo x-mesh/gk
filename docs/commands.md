@@ -13,7 +13,7 @@ All subcommands accept the following global flags:
 
 ### Progress feedback for long operations
 
-Operations that would otherwise hang the terminal silently while gk waits on an external process (`git fetch`, AI provider CLIs, gitleaks scan) now render a braille-dot spinner on stderr. The first frame is delayed 150ms, so sub-150ms calls never flash a spinner that would only clear itself. Spinners are suppressed when stderr is not a TTY (pipes, CI, `2>file`), when `CI` is set to a value other than `0`, `false`, `no`, or `off` (a CI job can give gk a terminal with `docker run -t` or `script`), when `TERM=dumb`, in agent mode (`GK_AGENT=1`), and with `--debug`. `NO_COLOR` removes the color of a spinner, but the spinner still turns. A line announcing each long stage is printed before the spinner starts so the transcript stays readable even without the animation.
+Operations that would otherwise hang the terminal silently while gk waits on an external process (`git fetch`, AI provider CLIs, gitleaks scan) now render a braille-dot spinner on stderr. The first frame is delayed 150ms, so sub-150ms calls never flash a spinner that would only clear itself. Spinners are suppressed when stderr is not a TTY (a pipe, `2>file`, or a CI job that gives gk no terminal), when `CI` is set to a value other than `0`, `false`, `no`, or `off` (a CI job can give gk a terminal with `docker run -t` or `script`), when `TERM=dumb`, in agent mode (`GK_AGENT=1`), and with `--debug`. `NO_COLOR` removes the color of a spinner, but the spinner still turns. A line announcing each long stage is printed before the spinner starts so the transcript stays readable even without the animation.
 
 ---
 

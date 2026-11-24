@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.0] - 2026-11-24
+
 ### Added
 
 - `gk guard check` colors its report in a terminal: the severity (`error` red, `warn` yellow, `info` faint), the file and line, the commit, the `verify:` status (`valid` red, `rejected` green, `unknown` yellow), and the hint. `--no-color` and output that is not a terminal stay plain. While it fetches and scans, a spinner on stderr names the step; it shows only when stderr is a terminal and not in agent mode.

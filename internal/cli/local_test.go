@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -245,5 +246,91 @@ func TestWorktreeLocalCounts_MissingPathIsUnknownNotClean(t *testing.T) {
 		filepath.Join(t.TempDir(), "does-not-exist"))
 	if !unknown {
 		t.Error("an unreadable worktree must be reported unknown")
+	}
+}
+
+// A detached worktree holds no branch, so a scan that walks branches alone
+// never looks inside it. Its uncommitted edits and the commits only its
+// HEAD reaches are stranded all the same.
+func TestCollectAllLocal_DetachedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "detached-wt")
+	r.RunGit("worktree", "add", "-q", "--detach", wtDir, "main")
+	gitIn := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", wtDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	writeIn := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(wtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeIn("d.txt", "on no branch\n")
+	gitIn("add", "d.txt")
+	gitIn("commit", "-q", "-m", "commit on a detached HEAD")
+	writeIn("scratch.txt", "never added\n")
+
+	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	if !known {
+		t.Fatal("a remote exists → push state must be knowable")
+	}
+	var det *localBranchReport
+	for i := range branches {
+		if branches[i].Detached {
+			det = &branches[i]
+		}
+	}
+	if det == nil {
+		t.Fatalf("the detached worktree must appear as its own row, got %+v", branches)
+	}
+	if det.Unpushed != 1 || det.Unstaged != 1 || det.Clean {
+		t.Errorf("detached row: want 1 commit on no branch, 1 unstaged, clean=false; got %+v", *det)
+	}
+}
+
+// A rebase stopped on a conflict is unfinished work even before anything is
+// committed: the report must name it and point at the command that resumes.
+func TestCollectLocal_PausedRebase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	r.WriteFile("c.txt", "base\n")
+	r.Commit("add c")
+	r.CreateBranch("topic")
+	r.WriteFile("c.txt", "topic\n")
+	r.Commit("topic edits c")
+	r.Checkout("main")
+	r.WriteFile("c.txt", "main\n")
+	r.Commit("main edits c")
+	r.Checkout("topic")
+	if _, err := r.TryGit("rebase", "main"); err == nil {
+		t.Fatal("precondition: the rebase must stop on a conflict")
+	}
+
+	rep, err := collectLocal(context.Background(), r.Dir, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(rep.Operation, "rebase") || rep.Resume == "" {
+		t.Errorf("want a rebase operation with a resume command, got op=%q resume=%q", rep.Operation, rep.Resume)
+	}
+	if rep.Clean {
+		t.Error("a paused rebase is not clean")
+	}
+	found := false
+	for _, b := range rep.Branches {
+		if b.Detached && strings.HasPrefix(b.Operation, "rebase") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the rebasing worktree must be listed with its operation, got %+v", rep.Branches)
 	}
 }

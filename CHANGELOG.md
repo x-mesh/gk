@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gk local` checks many repos. Outside a git repo, it finds the repos below the current directory (depth 2) and checks each one with the `--all` rules: uncommitted files, commits on no remote, the stash, and every branch and worktree. `--scan DIR` and `--repos PATH` select the repos, and `--depth` sets the depth. The text view lists only the repos with stranded work and ends with the counts, such as `121 repos scanned · 81 need action · 40 clean`. A spinner on stderr shows the progress. On a directory with 121 repos, the check takes approximately 4 seconds. gk checks each repo for at most 10 seconds, and a repo that it cannot check counts as not clean. `--json` gives `scope: "multi"`, `repos[]`, and `counts`. In agent mode (`GK_AGENT=1`), gk does not scan automatically: outside a repo it returns `not-a-repo` with the remedy `gk local --scan .`.
+- `gk local --exit-code` exits 1 when the result is not clean, for a script or a handoff hook. Without the flag, the exit code does not change.
+- `gk local` shows a paused rebase, merge, cherry-pick, revert, or bisect, such as `rebase 2/5 → gk continue`, and the paused operation makes the result not clean. `--json` adds `operation` and `resume`.
+
+### Fixed
+
+- `gk local --all` checks detached worktrees. Before, it walked only the branches, so it did not see a rebase in progress, which is detached: the edits in that worktree and the commits that only its HEAD reaches did not show, and the result could be clean. A detached row now shows them, with the label `N on no branch` for the commits.
+
 ## [0.167.0] - 2026-11-24
 
 ### Added

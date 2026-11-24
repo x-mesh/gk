@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 )
 
 func init() {
@@ -29,11 +30,21 @@ func init() {
 			"every local branch (including ones with no upstream, which no other\n" +
 			"machine can see) and every worktree. Use it to answer \"is any work\n" +
 			"stranded on this machine\" before switching machines — the current\n" +
-			"branch alone cannot answer that.",
+			"branch alone cannot answer that.\n\n" +
+			"Outside a git repo, gk local checks every repo below the current\n" +
+			"directory (depth 2) with the --all rules and lists the ones with\n" +
+			"stranded work. --scan and --repos pick the repos from anywhere.\n" +
+			"In agent mode (GK_AGENT=1) the implicit scan is off: outside a repo\n" +
+			"the command fails with a --scan remedy. --exit-code exits 1 when\n" +
+			"anything is stranded.",
 		RunE: runLocal,
 	}
 	cmd.Flags().IntP("limit", "n", 10, "max commits/files to list per section (0 = unlimited)")
 	cmd.Flags().Bool("all", false, "scan every local branch and worktree, not just the current branch")
+	cmd.Flags().Bool("exit-code", false, "exit 1 when anything is stranded (after printing the result)")
+	cmd.Flags().StringSlice("scan", nil, "check every git repo found under these directories (repeatable)")
+	cmd.Flags().StringSlice("repos", nil, "check these git repos (repeatable)")
+	cmd.Flags().Int("depth", 0, "how deep --scan looks for repos (default: fleet.depth, else 2)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -60,7 +71,13 @@ type localReport struct {
 	Stash         int                 `json:"stash"`
 	Commits       []localCommit       `json:"unpushed_commits,omitempty"`
 	Branches      []localBranchReport `json:"branches,omitempty"`
-	Clean         bool                `json:"clean"`
+	// Operation names a paused rebase/merge/cherry-pick/revert/bisect in the
+	// checked-out worktree ("rebase 2/5"); Resume is how to finish it.
+	Operation string `json:"operation,omitempty"`
+	Resume    string `json:"resume,omitempty"`
+	Clean     bool   `json:"clean"`
+
+	entries []git.StatusEntry
 }
 
 // localBranchReport is one branch's local-only state under --all.
@@ -83,17 +100,62 @@ type localBranchReport struct {
 	// worktree that is gone, a status that failed). It forces Clean false
 	// rather than reporting a reassuring answer we did not verify.
 	Unknown bool `json:"unknown,omitempty"`
-	Clean   bool `json:"clean"`
+	// Detached marks a worktree whose HEAD is on no branch — a rebase in
+	// progress, or a plain detached checkout. Its Unpushed counts commits
+	// reachable from that HEAD and from no branch or remote.
+	Detached  bool   `json:"detached,omitempty"`
+	Operation string `json:"operation,omitempty"`
+	Resume    string `json:"resume,omitempty"`
+	Clean     bool   `json:"clean"`
 }
 
 func runLocal(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	runner := &git.ExecRunner{Dir: RepoFlag()}
+	set, err := resolveLocalRepos(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	if set != nil {
+		return runLocalMulti(cmd, set)
+	}
 	limit, _ := cmd.Flags().GetInt("limit")
+	all, _ := cmd.Flags().GetBool("all")
 
+	rep, err := collectLocal(ctx, RepoFlag(), all, limit)
+	if err != nil {
+		return err
+	}
+	if JSONOut() {
+		if err := emitAgentResult(cmd.OutOrStdout(), rep); err != nil {
+			return err
+		}
+		return localExitCode(cmd, rep.Clean)
+	}
+	if all {
+		renderLocalAll(cmd.OutOrStdout(), rep)
+		return localExitCode(cmd, rep.Clean)
+	}
+	renderLocalBranch(ctx, cmd.OutOrStdout(), &git.ExecRunner{Dir: RepoFlag()}, rep, limit)
+	return localExitCode(cmd, rep.Clean)
+}
+
+// localExitCode implements --exit-code: after the result is rendered, a
+// non-clean result exits 1 without printing anything more.
+func localExitCode(cmd *cobra.Command, clean bool) error {
+	if on, _ := cmd.Flags().GetBool("exit-code"); on && !clean {
+		return &ExitError{Code: 1}
+	}
+	return nil
+}
+
+// collectLocal gathers the local-only state of the repository at dir ("" is
+// the current directory): the branch scope by default, every branch and
+// worktree when all is set.
+func collectLocal(ctx context.Context, dir string, all bool, limit int) (localReport, error) {
+	runner := &git.ExecRunner{Dir: dir}
 	st, err := git.NewClient(runner).Status(ctx)
 	if err != nil {
-		return fmt.Errorf("gk local: %w", err)
+		return localReport{}, fmt.Errorf("gk local: %w", err)
 	}
 	g := groupEntries(st.Entries)
 	unstaged := len(g.Modified) + len(g.Untracked)
@@ -102,11 +164,15 @@ func runLocal(cmd *cobra.Command, args []string) error {
 
 	commits, unpushedOK := unpushedCommits(ctx, runner, limitArg(limit))
 	stashN := stashCount(ctx, runner)
-	all, _ := cmd.Flags().GetBool("all")
+	op, resume, opKnown := worktreeOperation(ctx, dir)
+	if !opKnown {
+		return localReport{}, fmt.Errorf("gk local: cannot read the state of a paused git operation")
+	}
 
 	// "clean" requires that we could actually determine push state — with no
 	// remote to compare against we cannot assert "nothing local-only."
-	clean := unpushedOK && unstaged == 0 && staged == 0 && conflicts == 0 && len(commits) == 0 && stashN == 0
+	clean := unpushedOK && unstaged == 0 && staged == 0 && conflicts == 0 &&
+		len(commits) == 0 && stashN == 0 && op == ""
 
 	scope := "branch"
 	var branches []localBranchReport
@@ -127,36 +193,60 @@ func runLocal(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if JSONOut() {
-		rep := localReport{
-			Scope:         scope,
-			Branch:        st.Branch,
-			Upstream:      st.Upstream,
-			Unstaged:      unstaged,
-			Staged:        staged,
-			Conflicts:     conflicts,
-			Unpushed:      len(commits),
-			UnpushedKnown: unpushedOK,
-			Stash:         stashN,
-			Commits:       commits,
-			Branches:      branches,
-			Clean:         clean,
-		}
-		return emitAgentResult(cmd.OutOrStdout(), rep)
-	}
+	return localReport{
+		Scope:         scope,
+		Branch:        st.Branch,
+		Upstream:      st.Upstream,
+		Unstaged:      unstaged,
+		Staged:        staged,
+		Conflicts:     conflicts,
+		Unpushed:      len(commits),
+		UnpushedKnown: unpushedOK,
+		Stash:         stashN,
+		Commits:       commits,
+		Branches:      branches,
+		Operation:     op,
+		Resume:        resume,
+		Clean:         clean,
+		entries:       st.Entries,
+	}, nil
+}
 
-	if all {
-		return renderLocalAll(cmd.OutOrStdout(), branches, stashN, unpushedOK, clean)
-	}
+// localDetectFn reads the paused operation of a worktree; a test swaps it to
+// make the read fail.
+var localDetectFn = gitstate.Detect
 
-	w := cmd.OutOrStdout()
+// worktreeOperation reports a paused git operation in the worktree at path
+// ("" is the current directory) and the command that finishes it. known is
+// false when the state could not be read: that is not "no operation", and a
+// caller must not call the worktree clean on it.
+func worktreeOperation(ctx context.Context, path string) (op, resume string, known bool) {
+	st, err := localDetectFn(ctx, path)
+	if err != nil || st == nil {
+		return "", "", false
+	}
+	if op = fleetOperationLabel(st); op == "" {
+		return "", "", true
+	}
+	return op, selfCmd("continue"), true
+}
+
+// renderLocalBranch prints the default, current-branch view.
+func renderLocalBranch(ctx context.Context, w io.Writer, runner *git.ExecRunner, rep localReport, limit int) {
+	unstaged, staged, conflicts := rep.Unstaged, rep.Staged, rep.Conflicts
+	commits, unpushedOK, stashN, clean := rep.Commits, rep.UnpushedKnown, rep.Stash, rep.Clean
+
 	faint := color.New(color.Faint).SprintFunc()
 	bold := color.New(color.Bold).SprintFunc()
 	head := faint("LOCAL") + "  " + faint("— only on this machine")
-	if st.Branch != "" {
-		head = bold(st.Branch) + "  " + faint("— local only")
+	if rep.Branch != "" {
+		head = bold(rep.Branch) + "  " + faint("— local only")
 	}
 	fmt.Fprintln(w, head)
+
+	if rep.Operation != "" {
+		fmt.Fprintf(w, "  %s  %s\n", faint("operation"), localOperationText(rep.Operation, rep.Resume))
+	}
 
 	// Working tree.
 	wtParts := []string{}
@@ -174,9 +264,9 @@ func runLocal(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(w, "  %s  %s\n", faint("working tree"), strings.Join(wtParts, faint(" · ")))
 		shown := 0
-		for _, e := range committableEntries(st.Entries) {
+		for _, e := range committableEntries(rep.entries) {
 			if limit > 0 && shown >= limit {
-				fmt.Fprintf(w, "      %s\n", faint(fmt.Sprintf("… and %d more", countCommittable(st.Entries)-shown)))
+				fmt.Fprintf(w, "      %s\n", faint(fmt.Sprintf("… and %d more", countCommittable(rep.entries)-shown)))
 				break
 			}
 			fmt.Fprintf(w, "      %s %s\n", localStateGlyph(e), e.Path)
@@ -216,60 +306,86 @@ func runLocal(cmd *cobra.Command, args []string) error {
 	if clean {
 		fmt.Fprintln(w, faint("  ✓ nothing local-only — everything is committed and pushed"))
 	}
-	return nil
 }
 
 // renderLocalAll prints the repo-wide view. Only branches with something
 // stranded are listed: the question --all answers is "what is stuck
 // here", and a roster of clean branches buries the answer.
-func renderLocalAll(w io.Writer, branches []localBranchReport, stashN int, unpushedKnown, clean bool) error {
+func renderLocalAll(w io.Writer, rep localReport) {
 	faint := color.New(color.Faint).SprintFunc()
 	bold := color.New(color.Bold).SprintFunc()
 	fmt.Fprintf(w, "%s  %s\n", bold("LOCAL"),
-		faint(fmt.Sprintf("— %d branch(es) scanned, repo-wide", len(branches))))
+		faint(fmt.Sprintf("— %d branch(es) scanned, repo-wide", len(rep.Branches))))
+	renderLocalAllRows(w, rep)
+	if rep.Clean {
+		fmt.Fprintln(w, faint("  ✓ nothing stranded — every branch is pushed and every worktree clean"))
+	} else {
+		fmt.Fprintln(w, faint(localPushHint))
+	}
+}
 
-	if !unpushedKnown {
+const localPushHint = "  hint: push what should travel — gk push --set-upstream — before switching machines"
+
+// renderLocalAllRows prints one line per branch or worktree holding
+// something stranded, then the stash. Shared by --all and the multi-repo
+// view, which prints these rows under each repo's label.
+func renderLocalAllRows(w io.Writer, rep localReport) {
+	faint := color.New(color.Faint).SprintFunc()
+	if !rep.UnpushedKnown {
 		fmt.Fprintf(w, "  %s\n", faint("no remote to compare against — push state unknown"))
 	}
-	for _, b := range branches {
+	for _, b := range rep.Branches {
 		if b.Clean {
 			continue
 		}
-		var parts []string
-		if b.Unknown {
-			parts = append(parts, color.RedString("state unknown"))
-		}
-		if b.NoUpstream {
-			parts = append(parts, color.YellowString("no upstream"))
-		}
-		if b.Unpushed > 0 {
-			parts = append(parts, color.YellowString("%d unpushed", b.Unpushed))
-		}
-		if b.Unstaged > 0 {
-			parts = append(parts, fmt.Sprintf("%d unstaged", b.Unstaged))
-		}
-		if b.Staged > 0 {
-			parts = append(parts, color.GreenString("%d staged", b.Staged))
-		}
-		if b.Conflicts > 0 {
-			parts = append(parts, color.RedString("%d conflicts", b.Conflicts))
-		}
-		line := fmt.Sprintf("  %-34s %s", b.Branch, strings.Join(parts, faint(" · ")))
+		line := fmt.Sprintf("  %-34s %s", b.Branch, strings.Join(localBranchParts(b), faint(" · ")))
 		if b.Worktree != "" {
 			line += "  " + faint("("+filepath.Base(b.Worktree)+")")
 		}
 		fmt.Fprintln(w, line)
 	}
-	if stashN > 0 {
-		fmt.Fprintf(w, "  %-34s %s\n", faint("(stash)"), color.YellowString("%d entr(ies)", stashN))
+	if rep.Stash > 0 {
+		fmt.Fprintf(w, "  %-34s %s\n", faint("(stash)"), color.YellowString("%d entr(ies)", rep.Stash))
 	}
+}
 
-	if clean {
-		fmt.Fprintln(w, faint("  ✓ nothing stranded — every branch is pushed and every worktree clean"))
-	} else {
-		fmt.Fprintln(w, faint("  hint: push what should travel — gk push --set-upstream — before switching machines"))
+// localBranchParts lists what is stranded on one branch row, most urgent
+// first: a paused operation blocks everything else on that worktree.
+func localBranchParts(b localBranchReport) []string {
+	var parts []string
+	if b.Operation != "" {
+		parts = append(parts, localOperationText(b.Operation, b.Resume))
 	}
-	return nil
+	if b.Unknown {
+		parts = append(parts, color.RedString("state unknown"))
+	}
+	if b.NoUpstream {
+		parts = append(parts, color.YellowString("no upstream"))
+	}
+	if b.Unpushed > 0 {
+		label := "%d unpushed"
+		if b.Detached {
+			label = "%d on no branch"
+		}
+		parts = append(parts, color.YellowString(label, b.Unpushed))
+	}
+	if b.Unstaged > 0 {
+		parts = append(parts, fmt.Sprintf("%d unstaged", b.Unstaged))
+	}
+	if b.Staged > 0 {
+		parts = append(parts, color.GreenString("%d staged", b.Staged))
+	}
+	if b.Conflicts > 0 {
+		parts = append(parts, color.RedString("%d conflicts", b.Conflicts))
+	}
+	return parts
+}
+
+func localOperationText(op, resume string) string {
+	if resume == "" {
+		return color.RedString(op)
+	}
+	return color.RedString("%s → %s", op, resume)
 }
 
 // collectAllLocal reports every local branch's local-only state plus the
@@ -316,14 +432,63 @@ func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBr
 			}
 			if r.Worktree != "" {
 				r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, r.Worktree)
+				var opKnown bool
+				r.Operation, r.Resume, opKnown = worktreeOperation(ctx, r.Worktree)
+				r.Unknown = r.Unknown || !opKnown
 			}
-			r.Clean = unpushedKnown && !r.Unknown &&
-				r.Unpushed == 0 && r.Unstaged == 0 && r.Staged == 0 && r.Conflicts == 0
+			r.Clean = localBranchClean(r, unpushedKnown)
 			out[i] = r
 		}(i, b)
 	}
 	wg.Wait()
+
+	// A detached worktree holds no branch, so the loop above never visits
+	// it — yet a rebase in progress is exactly that: its new commits and
+	// its uncommitted edits live on no branch at all.
+	var detached []WorktreeEntry
+	if wt.current.Detached && wt.current.Path != "" {
+		detached = append(detached, wt.current)
+	}
+	for _, e := range wt.others {
+		if e.Detached && !e.Bare {
+			detached = append(detached, e)
+		}
+	}
+	for _, e := range detached {
+		r := localBranchReport{Branch: "(detached)", Detached: true, Worktree: e.Path}
+		r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, e.Path)
+		if !r.Unknown {
+			var unknown bool
+			r.Unpushed, unknown = detachedOnlyCount(ctx, e.Path)
+			r.Unknown = unknown
+		}
+		var opKnown bool
+		r.Operation, r.Resume, opKnown = worktreeOperation(ctx, e.Path)
+		r.Unknown = r.Unknown || !opKnown
+		r.Clean = localBranchClean(r, unpushedKnown)
+		out = append(out, r)
+	}
 	return out, unpushedKnown
+}
+
+func localBranchClean(r localBranchReport, unpushedKnown bool) bool {
+	return unpushedKnown && !r.Unknown && r.Operation == "" &&
+		r.Unpushed == 0 && r.Unstaged == 0 && r.Staged == 0 && r.Conflicts == 0
+}
+
+// detachedOnlyCount counts commits reachable from a detached worktree's HEAD
+// and from no branch or remote — work that only that HEAD still points at.
+func detachedOnlyCount(ctx context.Context, path string) (n int, unknown bool) {
+	out, _, err := (&git.ExecRunner{Dir: path}).Run(ctx,
+		"rev-list", "--count", "HEAD", "--not", "--branches", "--remotes")
+	if err != nil {
+		return 0, true
+	}
+	n, err = strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, true
+	}
+	return n, false
 }
 
 // unpushedCountFor counts commits on branch that exist on no remote.

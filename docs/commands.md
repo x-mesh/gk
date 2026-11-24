@@ -1700,7 +1700,8 @@ Alias: `gk lo`.
 ### Synopsis
 
 ```
-gk local [-n N] [--all] [--json]
+gk local [-n N] [--all] [--json] [--exit-code]
+gk local [--scan DIR]... [--repos PATH]... [--depth N] [--json] [--exit-code]
 ```
 
 ### Flags
@@ -1710,6 +1711,10 @@ gk local [-n N] [--all] [--json]
 | `-n`, `--limit` | `10` | Max commits/files to list per section (`0` = unlimited). |
 | `--all` | off | Scan every local branch and worktree instead of just the current branch. |
 | `--json` | off | Emit a structured report instead of the text view. |
+| `--exit-code` | off | Exit 1 when the result is not clean. The output does not change. |
+| `--scan` | — | Check every git repo below this directory. You can give it more than one time. |
+| `--repos` | — | Check this git repo. You can give it more than one time. |
+| `--depth` | `fleet.depth`, else `2` | The number of directory levels that `--scan` and the automatic scan look into. |
 
 ### `--all` — repo scope
 
@@ -1737,6 +1742,48 @@ LOCAL  — 4 branch(es) scanned, repo-wide
 ```
 
 Only branches with something stranded are listed; a roster of clean branches would bury the answer. `--json` still carries every branch.
+
+### Many repos: `--scan`, `--repos`, and the automatic scan
+
+If you run `gk local` outside a git repo, gk finds the repos below the current directory and checks each one with the `--all` rules. The default depth is 2, so `<dir>/<group>/<repo>` is in the scan. `--depth` and the `fleet.depth` setting change the depth. gk skips the directories in `fleet.exclude` and `node_modules`, `vendor`, `target`, `dist`, `build`, and `.archive`. The automatic scan always starts at the current directory. It does not use `fleet.repos` or `fleet.scan`.
+
+Inside a repo, `gk local` checks that repo only. To check other repos from a repo, give `--scan` or `--repos`.
+
+The text view starts with the counts. Then it lists only the repos that have stranded work, in path order. Each repo shows its path below the scan root. A repo with one stranded row uses one line: repo, branch, and state. A repo with more rows shows the number of branches, and its rows follow below the branch column. `-n` limits the rows of one repo. The color of the `●` marker gives the worst item: red for commits on no remote, a paused operation, conflicts, or a stash, yellow for uncommitted files only, and grey for a repo that gk could not verify. While gk checks the repos, a spinner on stderr shows the progress. The spinner shows only when stderr is a terminal, and not in CI or agent mode.
+
+```
+LOCAL  121 repos · 81 need action · 40 clean   (outside a repo — ~/work, depth 2)
+
+● agentic/agent-guard     main                    7 unpushed · 5 unstaged
+● group/app               2 branches
+                          feat/parser             no upstream · 3 unpushed
+                          (detached)              rebase 2/5 → gk continue  (app-wt)
+                          (stash)                 2 entr(ies)
+● toolbox                 refactor                1 unstaged
+● universal-makefile-test main                    no remote · 5 unstaged
+
+hint: push what should travel — gk push --set-upstream — before switching machines
+```
+
+gk checks each repo for at most 10 seconds. If the check fails or the time ends, the repo shows as `state unknown` and counts as not clean. A repo that gk did not check is never clean.
+
+With `--json`, the result has `scope: "multi"`, the scan `root`, `depth`, `auto`, and `repos[]`. Each entry of `repos[]` has `repo`, `path`, and the `report` of `gk local --all --json`, or an `error`. `counts` gives `repos`, `need_action`, `clean`, and `unknown`. `clean` is true only when all the repos are clean. A person who adds `--json` outside a repo also gets this shape.
+
+In agent mode (`GK_AGENT=1`), gk does not scan automatically. Outside a repo, it returns the `not-a-repo` error with the remedy `gk local --scan .`. An agent that runs in the incorrect directory thus gets an error, not a report about other repos. `--scan` and `--repos` operate in agent mode.
+
+```bash
+# Before a handoff: is work stranded in any repo below here?
+cd ~/work && gk local
+
+# A gate for a script or a hook
+gk local --scan ~/work --exit-code || echo "Push or commit first"
+```
+
+### Paused operations and detached worktrees
+
+If a worktree has a paused rebase, merge, cherry-pick, revert, or bisect, `gk local` shows it, such as `rebase 2/5 → gk continue`. A paused operation makes the result not clean. `--json` adds `operation` and `resume`.
+
+`--all` also checks each detached worktree. A rebase in progress is detached, so before this change `--all` did not see its edits. A detached row shows the uncommitted files and the commits that only its HEAD reaches, with the label `N on no branch`.
 
 ### Unpushed resolution
 

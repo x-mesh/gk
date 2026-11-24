@@ -1,0 +1,463 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/fatih/color"
+	"github.com/spf13/cobra"
+
+	"github.com/x-mesh/gk/internal/config"
+	"github.com/x-mesh/gk/internal/ui"
+)
+
+// localAutoDepth is how deep an implicit scan looks. Deeper than watch's 1:
+// a handoff check that silently skips a repo one level down is worse than a
+// slower one, and ~/work/<group>/<repo> is a common layout.
+const localAutoDepth = 2
+
+// localRepoTimeout bounds one repository's check. A var so a test can shrink it.
+var localRepoTimeout = 10 * time.Second
+
+// localCollectFn is the per-repository collector; a test swaps it to inject a
+// collector that outlives its deadline.
+var localCollectFn = collectLocal
+
+// localRepoTarget is one repository a multi-repo run checks.
+type localRepoTarget struct {
+	Label string
+	Root  string
+}
+
+// localRepoSet is what resolveLocalRepos decided: the repositories to check,
+// and how they were found, for the notice line and the JSON result.
+type localRepoSet struct {
+	Targets []localRepoTarget
+	Root    string // the scan root when exactly one was scanned
+	Depth   int
+	Auto    bool // found by scanning the current directory without a flag
+}
+
+type localMultiRepo struct {
+	Repo   string       `json:"repo"`
+	Path   string       `json:"path"`
+	Error  string       `json:"error,omitempty"`
+	Report *localReport `json:"report,omitempty"`
+}
+
+type localMultiCounts struct {
+	Repos      int `json:"repos"`
+	NeedAction int `json:"need_action"`
+	Clean      int `json:"clean"`
+	Unknown    int `json:"unknown"`
+}
+
+type localMultiResult struct {
+	Scope  string           `json:"scope"`
+	Root   string           `json:"root,omitempty"`
+	Depth  int              `json:"depth"`
+	Auto   bool             `json:"auto"`
+	Repos  []localMultiRepo `json:"repos"`
+	Clean  bool             `json:"clean"`
+	Counts localMultiCounts `json:"counts"`
+}
+
+// resolveLocalRepos decides whether `gk local` checks one repository or many.
+// It returns nil when the run stays single-repo: no --scan/--repos and the
+// current directory is inside a repository.
+func resolveLocalRepos(ctx context.Context, cmd *cobra.Command) (*localRepoSet, error) {
+	reposFlag, _ := cmd.Flags().GetStringSlice("repos")
+	scanFlag, _ := cmd.Flags().GetStringSlice("scan")
+
+	var fc config.FleetConfig
+	if cfg, err := config.Load(nil); err == nil && cfg != nil {
+		fc = cfg.Fleet
+	}
+	depth := localAutoDepth
+	if fc.Depth > 0 {
+		depth = fc.Depth
+	}
+	if cmd.Flags().Changed("depth") {
+		if d, _ := cmd.Flags().GetInt("depth"); d > 0 {
+			depth = d
+		}
+	}
+
+	set := &localRepoSet{Depth: depth}
+	scan := scanFlag
+	if len(reposFlag) == 0 && len(scanFlag) == 0 {
+		if currentRepoRoot(ctx) != "" {
+			return nil, nil
+		}
+		cwd := RepoFlag()
+		if cwd == "" {
+			var err error
+			if cwd, err = os.Getwd(); err != nil {
+				return nil, fmt.Errorf("gk local: cannot determine the working directory: %w", err)
+			}
+		}
+		// An agent standing in the wrong directory should hear so, not get a
+		// report about every repository below it.
+		if AgentOut() {
+			return nil, WithRemedy(
+				fmt.Errorf("gk local: not a git repository: %s", cwd),
+				"to check every repository below this directory, pass --scan",
+				errRemedy{Command: selfCmd("local --scan ."), Safety: "safe"})
+		}
+		scan = []string{cwd}
+		set.Auto = true
+	}
+
+	for _, p := range reposFlag {
+		if _, _, ok := repoRootAndCommonDir(ctx, expandHome(p)); !ok {
+			return nil, fmt.Errorf("gk local: not a git repository: %s", p)
+		}
+	}
+	ids, err := discoverRepos(ctx, reposFlag, scan, fc.Exclude, depth)
+	if err != nil {
+		return nil, fmt.Errorf("gk local: %w", err)
+	}
+	if len(scan) == 1 {
+		set.Root = expandHome(scan[0])
+	}
+	if len(ids) == 0 {
+		where := strings.Join(scan, ", ")
+		if where == "" {
+			where = strings.Join(reposFlag, ", ")
+		}
+		return nil, fmt.Errorf("gk local: no git repositories found under %s (depth %d); pass --scan <dir> or a larger --depth", where, depth)
+	}
+
+	base := ""
+	if set.Root != "" {
+		base = canonDir(set.Root)
+	}
+	for _, id := range ids {
+		set.Targets = append(set.Targets, localRepoTarget{Label: localRepoLabel(base, id.Root), Root: id.Root})
+	}
+	return set, nil
+}
+
+// localRepoLabel names a repository by its path below the scan root, so two
+// repos that share a directory name stay apart; outside the root it falls
+// back to the ~-shortened absolute path.
+func localRepoLabel(base, root string) string {
+	if base != "" {
+		if rel, err := filepath.Rel(base, canonDir(root)); err == nil && rel != "." &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return rel
+		}
+	}
+	return tildePath(root)
+}
+
+// canonDir resolves symlinks so a scan root spelled through one (/tmp on
+// macOS) compares against repo roots git reports resolved (/private/tmp).
+func canonDir(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
+// collectLocalMulti checks every target with the repo-scope collector,
+// bounded by the shared fleet concurrency. A repository whose check fails or
+// runs past its deadline becomes an error entry and counts as not clean: a
+// silent gap would read as "nothing stranded".
+func collectLocalMulti(ctx context.Context, set *localRepoSet, limit int, done *atomic.Int64) (localMultiResult, error) {
+	res := localMultiResult{Scope: "multi", Root: set.Root, Depth: set.Depth, Auto: set.Auto}
+	res.Repos = make([]localMultiRepo, len(set.Targets))
+	sem := newFleetLimiter(fleetConcurrency())
+	var wg sync.WaitGroup
+	for i, t := range set.Targets {
+		// The slot is taken before the goroutine starts, so a scan that
+		// finds thousands of repositories runs only the limit of them at once.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(i int, t localRepoTarget) {
+			defer wg.Done()
+			defer done.Add(1)
+			defer func() { <-sem }()
+			entry := localMultiRepo{Repo: t.Label, Path: t.Root}
+			// The deadline starts once a slot is held, so waiting in the
+			// queue does not eat into this repository's budget.
+			rctx, cancel := context.WithTimeout(ctx, localRepoTimeout)
+			defer cancel()
+			rep, err := localCollectFn(rctx, t.Root, true, limit)
+			// The collectors swallow per-branch errors into zero counts, so
+			// a deadline that fires midway can still return a "clean" report.
+			// Only rctx itself can tell.
+			if err == nil && rctx.Err() != nil {
+				err = fmt.Errorf("timed out after %s", localRepoTimeout)
+			}
+			if err != nil {
+				entry.Error = err.Error()
+			} else {
+				entry.Report = &rep
+			}
+			res.Repos[i] = entry
+		}(i, t)
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		// An interrupted scan has no verdict; a partial one would read as clean.
+		return localMultiResult{}, fmt.Errorf("gk local: scan interrupted: %w", err)
+	}
+
+	res.Counts.Repos = len(res.Repos)
+	for _, r := range res.Repos {
+		switch {
+		case r.Report == nil:
+			res.Counts.Unknown++
+		case r.Report.Clean:
+			res.Counts.Clean++
+		default:
+			res.Counts.NeedAction++
+		}
+	}
+	res.Clean = res.Counts.NeedAction == 0 && res.Counts.Unknown == 0
+	return res, nil
+}
+
+func runLocalMulti(cmd *cobra.Command, set *localRepoSet) error {
+	ctx := cmd.Context()
+	limit, _ := cmd.Flags().GetInt("limit")
+
+	var done atomic.Int64
+	total := len(set.Targets)
+	stop := ui.StartBubbleSpinnerLive(func() string {
+		return fmt.Sprintf("scanning repos %d/%d", done.Load(), total)
+	})
+	res, err := collectLocalMulti(ctx, set, limit, &done)
+	stop()
+	if err != nil {
+		return err
+	}
+
+	if JSONOut() {
+		if err := emitAgentResult(cmd.OutOrStdout(), res); err != nil {
+			return err
+		}
+		return localExitCode(cmd, res.Clean)
+	}
+	renderLocalMulti(cmd.OutOrStdout(), res, limit)
+	return localExitCode(cmd, res.Clean)
+}
+
+// localRow is one stranded branch, worktree, or stash line of a repository.
+type localRow struct {
+	branch   string
+	parts    []string
+	worktree string // shown only when it differs from the repo directory
+}
+
+// localRepoLevel ranks a repository for its marker color: work that can be
+// lost (commits on no remote, a paused operation, conflicts, a stash) is red,
+// uncommitted edits alone are yellow, and a repo gk could not verify is grey.
+type localRepoLevel int
+
+const (
+	localLevelUnverified localRepoLevel = iota
+	localLevelUncommitted
+	localLevelRisk
+)
+
+func localLevelOf(r localMultiRepo) localRepoLevel {
+	rep := r.Report
+	if rep == nil {
+		return localLevelUnverified
+	}
+	if rep.Stash > 0 {
+		return localLevelRisk
+	}
+	level := localLevelUnverified
+	for _, b := range rep.Branches {
+		if b.Clean {
+			continue
+		}
+		if b.Unpushed > 0 || b.Operation != "" || b.Conflicts > 0 {
+			return localLevelRisk
+		}
+		if !b.Unknown && (b.Unstaged > 0 || b.Staged > 0) {
+			level = localLevelUncommitted
+		}
+	}
+	return level
+}
+
+func localLevelDot(l localRepoLevel) string {
+	switch l {
+	case localLevelRisk:
+		return color.RedString("●")
+	case localLevelUncommitted:
+		return color.YellowString("●")
+	default:
+		return color.New(color.Faint).Sprint("●")
+	}
+}
+
+// localRowsOf lists what is stranded in one repository. "no remote" replaces
+// "no upstream" when the repo has no remote at all: the branch-level label
+// would blame the branch for what is a property of the repo. For the same
+// reason it is said once: on the row of a one-row repo, and on the repo line
+// (see localRepoNote) when there are several rows.
+func localRowsOf(r localMultiRepo) []localRow {
+	faint := color.New(color.Faint).SprintFunc()
+	if r.Report == nil {
+		return []localRow{{parts: []string{color.RedString("state unknown: %s", r.Error)}}}
+	}
+	rep := r.Report
+	repoBase := filepath.Base(r.Path)
+	var rows []localRow
+	for _, b := range rep.Branches {
+		if b.Clean {
+			continue
+		}
+		if !rep.UnpushedKnown {
+			b.NoUpstream = false
+		}
+		// The worktree name only adds information when it differs from the
+		// repo's own directory name.
+		row := localRow{branch: b.Branch, parts: localBranchParts(b)}
+		if b.Worktree != "" && filepath.Base(b.Worktree) != repoBase {
+			row.worktree = filepath.Base(b.Worktree)
+		}
+		rows = append(rows, row)
+	}
+	if rep.Stash > 0 {
+		rows = append(rows, localRow{branch: "(stash)", parts: []string{color.YellowString("%d entr(ies)", rep.Stash)}})
+	}
+	if !rep.UnpushedKnown {
+		switch len(rows) {
+		case 0:
+			rows = append(rows, localRow{branch: "-", parts: []string{faint("no remote")}})
+		case 1:
+			rows[0].parts = append([]string{faint("no remote")}, rows[0].parts...)
+		}
+	}
+	return rows
+}
+
+// localRepoNote is what the repo line of a several-row block adds after the
+// branch count: "no remote", said once for every row.
+func localRepoNote(r localMultiRepo) string {
+	if r.Report != nil && !r.Report.UnpushedKnown {
+		return " · no remote"
+	}
+	return ""
+}
+
+// Column caps keep one long repo or branch name from pushing every status to
+// the right edge; a longer name is clipped with an ellipsis.
+const (
+	localRepoColMax   = 32
+	localBranchColMax = 34
+)
+
+// renderLocalMulti prints one block per repository that needs action, in scan
+// (path) order: a marker colored by the worst stranded item, the repo, and its
+// rows. A repo with one row fits on one line. The counts lead, so a long list
+// does not hide the verdict below the fold.
+func renderLocalMulti(w io.Writer, res localMultiResult, limit int) {
+	faint := color.New(color.Faint).SprintFunc()
+	bold := color.New(color.Bold).SprintFunc()
+	c := res.Counts
+
+	head := fmt.Sprintf("%d repos · %d need action · %d clean", c.Repos, c.NeedAction, c.Clean)
+	if c.Unknown > 0 {
+		head += fmt.Sprintf(" · %d unknown", c.Unknown)
+	}
+	line := bold("LOCAL") + "  " + head
+	if res.Auto {
+		line += "   " + faint(fmt.Sprintf("(outside a repo — %s, depth %d)", tildePath(res.Root), res.Depth))
+	}
+	fmt.Fprintln(w, line)
+	if res.Clean {
+		fmt.Fprintln(w, faint(fmt.Sprintf("✓ nothing stranded in %d repos", c.Repos)))
+		return
+	}
+	fmt.Fprintln(w)
+
+	type block struct {
+		repo  localMultiRepo
+		level localRepoLevel
+		rows  []localRow
+	}
+	var blocks []block
+	repoW, branchW := 0, 0
+	for _, r := range res.Repos {
+		if r.Report != nil && r.Report.Clean {
+			continue
+		}
+		b := block{repo: r, level: localLevelOf(r), rows: localRowsOf(r)}
+		blocks = append(blocks, b)
+		repoW = max(repoW, len([]rune(r.Repo)))
+		for _, row := range b.rows {
+			branchW = max(branchW, len([]rune(row.branch)))
+		}
+		if len(b.rows) > 1 {
+			branchW = max(branchW, len([]rune(localBranchCount(b.rows))))
+		}
+	}
+	repoW = min(repoW, localRepoColMax)
+	branchW = min(branchW, localBranchColMax)
+	indent := strings.Repeat(" ", 2+repoW+2)
+
+	for _, b := range blocks {
+		repoCell := bold(padCell(clip(b.repo.Repo, repoW), repoW))
+		prefix := localLevelDot(b.level) + " " + repoCell + "  "
+		if len(b.rows) == 1 {
+			row := b.rows[0]
+			fmt.Fprintln(w, prefix+localRowText(row, branchW, faint))
+			continue
+		}
+		fmt.Fprintln(w, prefix+faint(localBranchCount(b.rows)+localRepoNote(b.repo)))
+		for i, row := range b.rows {
+			if limit > 0 && i >= limit {
+				fmt.Fprintln(w, indent+faint(fmt.Sprintf("… and %d more", len(b.rows)-i)))
+				break
+			}
+			fmt.Fprintln(w, indent+localRowText(row, branchW, faint))
+		}
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, faint(strings.TrimSpace(localPushHint)))
+}
+
+func localRowText(row localRow, branchW int, faint func(...any) string) string {
+	text := padCell(clip(row.branch, branchW), branchW) + "  " + strings.Join(row.parts, faint(" · "))
+	if row.worktree != "" {
+		text += "  " + faint("("+row.worktree+")")
+	}
+	return text
+}
+
+func localBranchCount(rows []localRow) string {
+	n := 0
+	for _, r := range rows {
+		if r.branch != "(stash)" {
+			n++
+		}
+	}
+	if n == 1 {
+		return "1 branch"
+	}
+	return fmt.Sprintf("%d branches", n)
+}

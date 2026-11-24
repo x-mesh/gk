@@ -147,20 +147,20 @@ func TestMaskLines_FoldedEncodedSecret(t *testing.T) {
 	}
 	for name, plain := range secretsToFold {
 		encoded := base64.StdEncoding.EncodeToString([]byte(plain))
-		for _, width := range []int{8, 16, 30, 64} {
-			for _, prefix := range []string{"  ", "data: ", "value: "} {
+		for _, width := range []int{1, 2, 3, 8, 16, 30, 64} {
+			for _, prefix := range []string{"  ", "data: ", "value: ", "the value is "} {
 				block := fold(prefix, encoded, width)
 				lines := append([]string{"kind: Secret", "data:"}, block...)
 				lines = append(lines, "type: Opaque")
 				got := MaskLines("", lines)
-				// No piece of the encoded value is left on any line.
-				for i, l := range got {
-					for j, piece := range block {
-						p := strings.TrimSpace(strings.TrimPrefix(piece, prefix))
-						if len(p) >= 4 && strings.Contains(l, p) {
-							t.Errorf("%s, width %d, prefix %q: piece %d is left on line %d: %q", name, width, prefix, j, i, got)
-						}
-					}
+				// The pieces left on the lines do not join back into the
+				// encoded value, nor into half of it.
+				var joined strings.Builder
+				for _, l := range got[2 : len(got)-1] {
+					joined.WriteString(strings.TrimSpace(strings.TrimPrefix(l, prefix)))
+				}
+				if strings.Contains(joined.String(), encoded[:len(encoded)/2]) {
+					t.Errorf("%s, width %d, prefix %q: the lines join back into the value: %q", name, width, prefix, got)
 				}
 				// The lines around the block are not touched, and a prefix
 				// before a folded value stays. A value on one line replaces

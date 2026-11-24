@@ -94,8 +94,14 @@ func (e *engine) maskLines(path string, lines []string) []string {
 	// The decoder reads one line at a time, so an encoded secret folded over
 	// short lines is found only with its pieces joined.
 	for r, run := range runs {
-		if !masked[r] && len(e.scanLines(path, []string{run.joined})) > 0 {
-			maskRun(r)
+		if masked[r] {
+			continue
+		}
+		for _, value := range run.values {
+			if len(e.scanLines(path, []string{value})) > 0 {
+				maskRun(r)
+				break
+			}
 		}
 	}
 	for i, l := range lines {
@@ -134,21 +140,30 @@ func (e *engine) scanLines(path string, lines []string) []hit {
 }
 
 // encodedRun is an encoded value folded over lines first to last. starts
-// holds, for each of its lines, where the piece of the value begins; joined
-// is the pieces put back together.
+// holds, for each of its lines, where the piece of the value begins. values
+// are the pieces put back together: all of them, and, when the first line has
+// text before its piece, also the pieces below it. The word that ends such a
+// line can be text and not the start of the value, and a base64 value read
+// from the wrong character decodes to nothing.
 type encodedRun struct {
 	first, last int
 	starts      []int
-	joined      string
+	values      []string
 }
 
 // encodedPiece is a line of a folded value: indentation, then base64 or hex
-// and nothing else. The last line can be as short as one character and its
-// padding. The first line of a value can have a key before it.
+// and nothing else. A piece can be one character and its padding, since a
+// value can be folded at any width. The first line of a value can have a key
+// before it.
 var (
 	encodedPiece     = regexp.MustCompile(`^\s*([A-Za-z0-9+/_-]+={0,2})\s*$`)
-	encodedFirstLine = regexp.MustCompile(`([A-Za-z0-9+/_-]{4,}={0,2})\s*$`)
+	encodedFirstLine = regexp.MustCompile(`([A-Za-z0-9+/_-]+={0,2})\s*$`)
 )
+
+// encodedRunMin is the length of the shortest value that is scanned. The
+// encoded form of the shortest secret a rule finds is longer, and a shorter
+// run, such as two lines of code that end in a word, is not worth a scan.
+const encodedRunMin = 16
 
 // encodedRuns returns the folded values in lines: a line that ends in a piece
 // of base64, and one or more lines below it that hold nothing else.
@@ -174,8 +189,17 @@ func encodedRuns(lines []string) []encodedRun {
 			continue
 		}
 		run.last = j - 1
-		run.joined = strings.Join(pieces, "")
-		runs = append(runs, run)
+		if all := strings.Join(pieces, ""); len(all) >= encodedRunMin {
+			run.values = append(run.values, all)
+		}
+		if strings.TrimSpace(lines[i][:head[2]]) != "" {
+			if rest := strings.Join(pieces[1:], ""); len(rest) >= encodedRunMin {
+				run.values = append(run.values, rest)
+			}
+		}
+		if len(run.values) > 0 {
+			runs = append(runs, run)
+		}
 		i = j - 1
 	}
 	return runs

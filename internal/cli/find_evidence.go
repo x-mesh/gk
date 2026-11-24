@@ -441,7 +441,8 @@ func findMessageMatcher(query string) *regexp.Regexp {
 // extensions that git accepts, to a Go expression. In a BRE, + ? | ( ) { }
 // are literal and the backslash forms are the operators; . [ ] * ^ $ are the
 // same as in Go, except that a * at the start of the expression or of a group
-// is literal.
+// is literal. ok is false for what Go cannot express: an unclosed bracket,
+// which git rejects too, and a back-reference such as \1.
 func breToGo(q string) (string, bool) {
 	var b strings.Builder
 	atStart := true // where a * is literal
@@ -464,8 +465,15 @@ func breToGo(q string) (string, bool) {
 				b.WriteByte(n)
 			case '<', '>':
 				b.WriteString(`\b`)
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				// A back-reference: Go has none, and a literal digit would
+				// match lines that git does not.
+				return "", false
 			default:
-				b.WriteString(regexp.QuoteMeta(string(n)))
+				// The escaped character can be any rune of a UTF-8 query.
+				_, size := utf8.DecodeRuneInString(q[i:])
+				b.WriteString(regexp.QuoteMeta(q[i : i+size]))
+				i += size - 1
 			}
 		case '+', '?', '|', '(', ')', '{', '}':
 			b.WriteString(regexp.QuoteMeta(string(c)))
@@ -499,7 +507,11 @@ func breToGo(q string) (string, bool) {
 			b.WriteString(strings.ReplaceAll(q[i:end+1], `\`, `\\`))
 			i = end
 		default:
-			b.WriteString(regexp.QuoteMeta(string(c)))
+			// Every operator is ASCII; anything else is a literal rune,
+			// read whole, since git gets the query as UTF-8.
+			_, size := utf8.DecodeRuneInString(q[i:])
+			b.WriteString(regexp.QuoteMeta(q[i : i+size]))
+			i += size - 1
 		}
 		atStart = false
 	}

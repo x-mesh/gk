@@ -423,6 +423,19 @@ func TestParseFindPaths_RenameShowsTheNewPath(t *testing.T) {
 	}
 }
 
+// Go has no back-reference, so a query with one gets no matcher: a row
+// shows no message line rather than a line that git did not match.
+func TestFindMessageMatcherBackReference(t *testing.T) {
+	for _, q := range []string{`\(a\)\1`, `\(ab\)\(c\)\2`} {
+		if re := findMessageMatcher(q); re != nil {
+			t.Errorf("findMessageMatcher(%q) = %s, want none", q, re)
+		}
+	}
+	if re := findMessageMatcher(`a\\1`); re == nil || !re.MatchString(`a\1`) {
+		t.Errorf("an escaped backslash before 1 is not a back-reference")
+	}
+}
+
 func TestFindMessageMatcher(t *testing.T) {
 	cases := []struct {
 		query, text string
@@ -457,6 +470,11 @@ func TestFindMessageMatcher(t *testing.T) {
 		{"fix$", "a fix", true},
 		{"a$b", "a$b", true},                  // $ is an anchor only at the end
 		{"[unclosed", "the [unclosed", false}, // git rejects it too
+		// A query is UTF-8 to git; it is read by rune, not by byte.
+		{"café", "the café opens", true},
+		{"카페", "카페 메뉴", true},
+		{"caf.", "café", true}, // . is one rune
+		{"[é]x", "éx", true},
 	}
 	for _, c := range cases {
 		re := findMessageMatcher(c.query)

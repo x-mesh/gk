@@ -101,7 +101,7 @@ func StartBubbleSpinnerLive(label func() string) (stop func()) {
 }
 
 func startBubbleSpinnerLiveTo(w io.Writer, label func() string) (stop func()) {
-	if w == os.Stderr && !IsStderrTerminal() {
+	if !spinnerAllowed(w) {
 		return func() {}
 	}
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
@@ -112,7 +112,7 @@ func startBubbleSpinnerLiveTo(w io.Writer, label func() string) (stop func()) {
 }
 
 func startBubbleSpinnerTo(w io.Writer, msg string, budget time.Duration) (stop func()) {
-	if w == os.Stderr && !IsStderrTerminal() {
+	if !spinnerAllowed(w) {
 		return func() {}
 	}
 

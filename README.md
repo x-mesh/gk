@@ -157,6 +157,7 @@ gk guard check       # evaluate all policy rules on the tracked files; exit 0/1/
 gk guard check --history   # scan every commit reachable from any ref
 gk guard check --fetch     # fetch every remote, then scan the history
 gk guard check --verify    # check each AWS key, Slack token, GCP API key, and OCI API key found with its issuer (network)
+gk guard check --reveal    # print the full value of each secret found (refused in agent mode)
 
 # Onboarding
 gk doctor            # report env health + fix commands

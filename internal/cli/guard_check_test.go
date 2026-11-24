@@ -63,6 +63,7 @@ func runGuardCheckArgs(t *testing.T, dir string, args ...string) (string, error)
 	cmd.Flags().Bool("history", false, "")
 	cmd.Flags().Bool("fetch", false, "")
 	cmd.Flags().Int("archive-readers", rules.DefaultArchiveReaders, "")
+	cmd.Flags().Bool("reveal", false, "")
 	cmd.SetArgs(args)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -607,5 +608,180 @@ func TestGuardCheck_OCIKeyInIndentedAndEscapedPEM(t *testing.T) {
 				t.Errorf("the key in %s did not bind to its profile: %v", path, bound)
 			}
 		})
+	}
+}
+
+// The human report colors the severity, the location, the verification
+// status, and the hint. Without the color codes it is the plain report, so
+// the columns line up the same way.
+func TestGuardCheck_HumanOutputColors(t *testing.T) {
+	vs := []policy.Violation{
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "config.env", Line: 1, Commit: "abcdef123456", Message: "secret matched built-in pattern aws-access-token (AKIA********)",
+			Hint: "rotate the secret", Verification: &policy.Verification{Status: "valid", Account: "123456789012"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "b", Line: 2, Message: "m",
+			Verification: &policy.Verification{Status: "rejected", Code: "InvalidClientTokenId"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "c", Line: 3, Message: "m",
+			Verification: &policy.Verification{Status: "unknown", Code: "http_401"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "d", Line: 4, Message: "m",
+			Verification: &policy.Verification{Status: "unverifiable"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityWarn, File: "lib.jar", Message: "archive too large"},
+		{RuleID: "secret_patterns", Severity: policy.SeverityInfo, Message: "scanned tracked files"},
+	}
+	render := func(noColor bool) string {
+		var out string
+		setNoColor(t, noColor, func() {
+			var b bytes.Buffer
+			printViolationsHuman(&b, vs)
+			out = b.String()
+		})
+		return out
+	}
+	plain, colored := render(true), render(false)
+	if strings.Contains(plain, "\x1b[") {
+		t.Fatalf("plain report has color codes:\n%q", plain)
+	}
+	if got := stripANSI(colored); got != plain {
+		t.Errorf("colored report without codes =\n%s\nwant\n%s", got, plain)
+	}
+	for _, want := range []string{
+		cellRedBold("error") + "  ",
+		cellYellow("warn ") + "  ",
+		cellFaint("info ") + "  ",
+		cellCyan("config.env:1"),
+		cellYellow("@abcdef1"),
+		cellRedBold("valid"),
+		cellGreen("rejected"),
+		"verify: " + cellYellow("unknown"),
+		"verify: " + cellFaint("unverifiable"),
+		cellFaint("hint: rotate the secret"),
+	} {
+		var w string
+		setNoColor(t, false, func() { w = want })
+		if !strings.Contains(colored, w) {
+			t.Errorf("colored report lacks %q:\n%q", w, colored)
+		}
+	}
+	setNoColor(t, false, func() {
+		var b bytes.Buffer
+		printViolationsHuman(&b, nil)
+		if !strings.Contains(b.String(), cellGreen("gk guard: no violations")) {
+			t.Errorf("a clean report is not green: %q", b.String())
+		}
+	})
+}
+
+// --reveal prints the value of each secret in the human report and in the
+// NDJSON stream. Without it the value is nowhere in any output, and agent
+// mode refuses it before a scan, because that output goes to a model.
+func TestGuardCheck_Reveal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	raw := "ghp_4fT9kL2mQ8wX1zR7vB3nC6yH0pJ5sD8gA2eW"
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("config.env", "github = \""+raw+"\"\n")
+	repo.Commit("add config")
+
+	for _, args := range [][]string{nil, {"--json"}, {"--history"}} {
+		out, _ := runGuardCheckArgs(t, repo.Dir, args...)
+		if !strings.Contains(out, "github-pat") || strings.Contains(out, raw) || strings.Contains(out, raw[4:]) {
+			t.Errorf("%v without --reveal:\n%s", args, out)
+		}
+	}
+	func() {
+		withAgentMode(t, true)
+		out, _ := runGuardCheckCmd(t, repo.Dir)
+		if !strings.Contains(out, "github-pat") || strings.Contains(out, raw[4:]) {
+			t.Errorf("agent envelope:\n%s", out)
+		}
+		out, err := runGuardCheckCmd(t, repo.Dir, "--reveal")
+		if err == nil || !strings.Contains(err.Error(), "--reveal") || strings.Contains(out, raw[4:]) || strings.Contains(out, "github-pat") {
+			t.Errorf("agent mode with --reveal: err %v\n%s", err, out)
+		}
+	}()
+	withAgentMode(t, false)
+
+	out, _ := runGuardCheckArgs(t, repo.Dir, "--reveal")
+	if !strings.Contains(out, "       secret: "+raw+"\n") {
+		t.Errorf("human report with --reveal:\n%s", out)
+	}
+	out, _ = runGuardCheckArgs(t, repo.Dir, "--reveal", "--json")
+	if !strings.Contains(out, `"secret":"`+raw+`"`) {
+		t.Errorf("NDJSON with --reveal:\n%s", out)
+	}
+}
+
+// A value that spans lines prints as an indented block, and a value with a
+// control byte prints quoted, so it cannot move the cursor or clear the
+// screen.
+func TestGuardCheck_SecretLines(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want []string
+	}{
+		{"ghp_abc", []string{"ghp_abc"}},
+		{"-----BEGIN KEY-----\r\nAAAA\r\n-----END KEY-----\n", []string{"-----BEGIN KEY-----", "AAAA", "-----END KEY-----"}},
+		{"abc\x1b[2Jdef", []string{`"abc\x1b[2Jdef"`}},
+		// U+009B is the one-rune form of ESC [ in the C1 range.
+		{"abc\u009b2Jdef", []string{`"abc\u009b2Jdef"`}},
+		{"abc\x7fdef", []string{`"abc\x7fdef"`}},
+		{"a\tb", []string{"a\tb"}},
+	} {
+		if got := secretLines(c.in); strings.Join(got, "|") != strings.Join(c.want, "|") {
+			t.Errorf("secretLines(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	vs := []policy.Violation{{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "k", Line: 1, Message: "m",
+		Secret: secrets.NewSecret("-----BEGIN KEY-----\nAAAA\n-----END KEY-----")}}
+	var b bytes.Buffer
+	printViolationsHuman(&b, vs)
+	if !strings.Contains(b.String(), "       secret:\n         -----BEGIN KEY-----\n         AAAA\n         -----END KEY-----\n") {
+		t.Errorf("multi-line value:\n%s", b.String())
+	}
+}
+
+// The check shows a spinner while it fetches and while it scans, named for
+// the scope, and stops it before the report. Agent mode shows none.
+func TestGuardCheck_Spinner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	var started []string
+	running := 0
+	prev := startGuardSpinner
+	startGuardSpinner = func(msg string) func() {
+		started = append(started, msg)
+		running++
+		return func() { running-- }
+	}
+	t.Cleanup(func() { startGuardSpinner = prev })
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		{nil, []string{"gk guard: scanning tracked files"}},
+		{[]string{"--staged"}, []string{"gk guard: scanning staged changes"}},
+		{[]string{"--history"}, []string{"gk guard: scanning the history of every ref"}},
+		{[]string{"--fetch"}, []string{"gk guard: fetching every remote", "gk guard: scanning the history of every ref"}},
+	} {
+		started = nil
+		_, _ = runGuardCheckArgs(t, repo.Dir, c.args...)
+		if strings.Join(started, "|") != strings.Join(c.want, "|") || running != 0 {
+			t.Errorf("%v: spinners %q, %d still running; want %q", c.args, started, running, c.want)
+		}
+	}
+	if got := guardSpinnerLabel(false, false, true); got != "gk guard: scanning tracked files and checking credentials" {
+		t.Errorf("--verify label = %q", got)
+	}
+
+	withAgentMode(t, true)
+	started = nil
+	_, _ = runGuardCheckCmd(t, repo.Dir)
+	if len(started) != 0 {
+		t.Errorf("agent mode started %q", started)
 	}
 }

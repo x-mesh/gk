@@ -341,32 +341,88 @@ func TestLocalMulti_TextOnlyStranded(t *testing.T) {
 	res := localMultiResult{
 		Scope: "multi", Root: "/work", Depth: 2, Auto: true,
 		Repos: []localMultiRepo{
-			{Repo: "group/quiet", Report: &localReport{UnpushedKnown: true, Clean: true}},
-			{Repo: "group/busy", Report: &localReport{UnpushedKnown: true, Branches: []localBranchReport{
+			{Repo: "group/busy", Path: "/work/group/busy", Report: &localReport{UnpushedKnown: true, Branches: []localBranchReport{
 				{Branch: "feat/x", Unpushed: 2},
-				{Branch: "(detached)", Detached: true, Operation: "rebase 1/3", Resume: "gk continue"},
+				{Branch: "(detached)", Detached: true, Operation: "rebase 1/3", Resume: "gk continue", Worktree: "/wt/busy-wt"},
 			}}},
-			{Repo: "slow", Error: "timed out after 10s"},
+			{Repo: "group/quiet", Path: "/work/group/quiet", Report: &localReport{UnpushedKnown: true, Clean: true}},
+			{Repo: "noremote", Path: "/work/noremote", Report: &localReport{Branches: []localBranchReport{
+				{Branch: "main", NoUpstream: true, Unstaged: 5, Worktree: "/work/noremote"},
+			}}},
+			{Repo: "slow", Path: "/work/slow", Error: "timed out after 10s"},
+			{Repo: "solo", Path: "/work/solo", Report: &localReport{UnpushedKnown: true, Branches: []localBranchReport{
+				{Branch: "main", Unstaged: 1, Worktree: "/work/solo"},
+			}}},
 		},
-		Counts: localMultiCounts{Repos: 3, NeedAction: 1, Clean: 1, Unknown: 1},
+		Counts: localMultiCounts{Repos: 5, NeedAction: 3, Clean: 1, Unknown: 1},
 	}
 	var buf bytes.Buffer
-	renderLocalMulti(&buf, res)
+	renderLocalMulti(&buf, res, 10)
 	out := buf.String()
-	for _, want := range []string{
-		"outside a repo — scanned /work (depth 2)",
-		"group/busy", "feat/x", "2 unpushed", "rebase 1/3 → gk continue",
-		"slow", "state unknown: timed out after 10s",
-		"3 repos scanned · 1 need action · 1 clean · 1 unknown",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output lacks %q:\n%s", want, out)
+	lines := strings.Split(out, "\n")
+
+	if !strings.HasPrefix(lines[0], "LOCAL  5 repos · 3 need action · 1 clean · 1 unknown") ||
+		!strings.Contains(lines[0], "(outside a repo — /work, depth 2)") {
+		t.Errorf("the counts and the scan root lead the output, got %q", lines[0])
+	}
+	lineWith := func(subs ...string) string {
+		for _, l := range lines {
+			ok := true
+			for _, s := range subs {
+				ok = ok && strings.Contains(l, s)
+			}
+			if ok {
+				return l
+			}
 		}
+		return ""
+	}
+	// A repo with one row fits on one line: marker, repo, branch, state.
+	if l := lineWith("● solo", "main", "1 unstaged"); l == "" || strings.Contains(l, "(solo)") {
+		t.Errorf("solo: want one line without the redundant worktree name, got %q\n%s", l, out)
+	}
+	// Several rows: the repo line counts the branches, the rows follow.
+	if lineWith("● group/busy", "2 branches") == "" || lineWith("feat/x", "2 unpushed") == "" ||
+		lineWith("(detached)", "rebase 1/3 → gk continue", "(busy-wt)") == "" {
+		t.Errorf("busy: want a branch count line and both rows:\n%s", out)
+	}
+	// No remote at all: say so once, not "no upstream" on every branch.
+	if l := lineWith("noremote", "no remote · 5 unstaged"); l == "" || strings.Contains(l, "no upstream") {
+		t.Errorf("noremote: want `no remote · 5 unstaged`, got %q\n%s", l, out)
+	}
+	if lineWith("● slow", "state unknown: timed out after 10s") == "" {
+		t.Errorf("slow: want the error on the repo line:\n%s", out)
+	}
+	// Path order is kept: the scan order, not a regrouping by severity.
+	if strings.Index(out, "group/busy") > strings.Index(out, "noremote") ||
+		strings.Index(out, "noremote") > strings.Index(out, "slow") ||
+		strings.Index(out, "slow") > strings.Index(out, "solo") {
+		t.Errorf("repos must keep scan order:\n%s", out)
 	}
 	if strings.Contains(out, "group/quiet") {
 		t.Errorf("a clean repo must be counted, not listed:\n%s", out)
 	}
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("no-color output must carry no escape codes:\n%q", out)
+	}
+}
+
+func TestLocalLevelOf(t *testing.T) {
+	cases := []struct {
+		name string
+		repo localMultiRepo
+		want localRepoLevel
+	}{
+		{"error", localMultiRepo{Error: "x"}, localLevelUnverified},
+		{"stash", localMultiRepo{Report: &localReport{Stash: 1}}, localLevelRisk},
+		{"unpushed", localMultiRepo{Report: &localReport{Branches: []localBranchReport{{Unpushed: 1}}}}, localLevelRisk},
+		{"paused", localMultiRepo{Report: &localReport{Branches: []localBranchReport{{Operation: "merge"}}}}, localLevelRisk},
+		{"uncommitted", localMultiRepo{Report: &localReport{Branches: []localBranchReport{{Unstaged: 2}}}}, localLevelUncommitted},
+		{"missing worktree", localMultiRepo{Report: &localReport{Branches: []localBranchReport{{Unknown: true}}}}, localLevelUnverified},
+	}
+	for _, c := range cases {
+		if got := localLevelOf(c.repo); got != c.want {
+			t.Errorf("%s: want level %d, got %d", c.name, c.want, got)
+		}
 	}
 }

@@ -1749,17 +1749,19 @@ If you run `gk local` outside a git repo, gk finds the repos below the current d
 
 Inside a repo, `gk local` checks that repo only. To check other repos from a repo, give `--scan` or `--repos`.
 
-The text view lists only the repos that have stranded work. Each repo shows its path below the scan root and the rows of `gk local --all`. The last line gives the counts. While gk checks the repos, a spinner on stderr shows the progress. The spinner shows only when stderr is a terminal, and not in CI or agent mode.
+The text view starts with the counts. Then it lists only the repos that have stranded work, in path order. Each repo shows its path below the scan root. A repo with one stranded row uses one line: repo, branch, and state. A repo with more rows shows the number of branches, and its rows follow below the branch column. `-n` limits the rows of one repo. The color of the `●` marker gives the worst item: red for commits on no remote, a paused operation, conflicts, or a stash, yellow for uncommitted files only, and grey for a repo that gk could not verify. While gk checks the repos, a spinner on stderr shows the progress. The spinner shows only when stderr is a terminal, and not in CI or agent mode.
 
 ```
-outside a repo — scanned ~/work (depth 2)
-agentic/agent-guard  — 1 branch(es) scanned
-  main                               7 unpushed · 5 unstaged  (agent-guard)
-group/app  — 3 branch(es) scanned
-  feat/parser                        no upstream · 3 unpushed
-  (detached)                         rebase 2/5 → gk continue  (app-wt)
-  (stash)                            2 entr(ies)
-121 repos scanned · 81 need action · 40 clean
+LOCAL  121 repos · 81 need action · 40 clean   (outside a repo — ~/work, depth 2)
+
+● agentic/agent-guard     main                    7 unpushed · 5 unstaged
+● group/app               2 branches
+                          feat/parser             no upstream · 3 unpushed
+                          (detached)              rebase 2/5 → gk continue  (app-wt)
+                          (stash)                 2 entr(ies)
+● toolbox                 refactor                1 unstaged
+● universal-makefile-test main                    no remote · 5 unstaged
+
 hint: push what should travel — gk push --set-upstream — before switching machines
 ```
 

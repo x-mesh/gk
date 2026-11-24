@@ -256,40 +256,196 @@ func runLocalMulti(cmd *cobra.Command, set *localRepoSet) error {
 		}
 		return localExitCode(cmd, res.Clean)
 	}
-	renderLocalMulti(cmd.OutOrStdout(), res)
+	renderLocalMulti(cmd.OutOrStdout(), res, limit)
 	return localExitCode(cmd, res.Clean)
 }
 
-// renderLocalMulti prints only the repositories that need action, each as its
-// label over the same rows `gk local --all` prints, then one summary line.
-func renderLocalMulti(w io.Writer, res localMultiResult) {
+// localRow is one stranded branch, worktree, or stash line of a repository.
+type localRow struct {
+	branch   string
+	parts    []string
+	worktree string // shown only when it differs from the repo directory
+}
+
+// localRepoLevel ranks a repository for its marker color: work that can be
+// lost (commits on no remote, a paused operation, conflicts, a stash) is red,
+// uncommitted edits alone are yellow, and a repo gk could not verify is grey.
+type localRepoLevel int
+
+const (
+	localLevelUnverified localRepoLevel = iota
+	localLevelUncommitted
+	localLevelRisk
+)
+
+func localLevelOf(r localMultiRepo) localRepoLevel {
+	rep := r.Report
+	if rep == nil {
+		return localLevelUnverified
+	}
+	if rep.Stash > 0 {
+		return localLevelRisk
+	}
+	level := localLevelUnverified
+	for _, b := range rep.Branches {
+		if b.Clean {
+			continue
+		}
+		if b.Unpushed > 0 || b.Operation != "" || b.Conflicts > 0 {
+			return localLevelRisk
+		}
+		if !b.Unknown && (b.Unstaged > 0 || b.Staged > 0) {
+			level = localLevelUncommitted
+		}
+	}
+	return level
+}
+
+func localLevelDot(l localRepoLevel) string {
+	switch l {
+	case localLevelRisk:
+		return color.RedString("●")
+	case localLevelUncommitted:
+		return color.YellowString("●")
+	default:
+		return color.New(color.Faint).Sprint("●")
+	}
+}
+
+// localRowsOf lists what is stranded in one repository. "no remote" replaces
+// "no upstream" when the repo has no remote at all: the branch-level label
+// would blame the branch for what is a property of the repo.
+func localRowsOf(r localMultiRepo) []localRow {
+	faint := color.New(color.Faint).SprintFunc()
+	if r.Report == nil {
+		return []localRow{{parts: []string{color.RedString("state unknown: %s", r.Error)}}}
+	}
+	rep := r.Report
+	repoBase := filepath.Base(r.Path)
+	var rows []localRow
+	for _, b := range rep.Branches {
+		if b.Clean {
+			continue
+		}
+		if !rep.UnpushedKnown {
+			b.NoUpstream = false
+		}
+		parts := localBranchParts(b)
+		if !rep.UnpushedKnown {
+			parts = append([]string{faint("no remote")}, parts...)
+		}
+		// The worktree name only adds information when it differs from the
+		// repo's own directory name.
+		row := localRow{branch: b.Branch, parts: parts}
+		if b.Worktree != "" && filepath.Base(b.Worktree) != repoBase {
+			row.worktree = filepath.Base(b.Worktree)
+		}
+		rows = append(rows, row)
+	}
+	if rep.Stash > 0 {
+		rows = append(rows, localRow{branch: "(stash)", parts: []string{color.YellowString("%d entr(ies)", rep.Stash)}})
+	}
+	if len(rows) == 0 && !rep.UnpushedKnown {
+		rows = append(rows, localRow{branch: "-", parts: []string{faint("no remote")}})
+	}
+	return rows
+}
+
+// Column caps keep one long repo or branch name from pushing every status to
+// the right edge; a longer name is clipped with an ellipsis.
+const (
+	localRepoColMax   = 32
+	localBranchColMax = 34
+)
+
+// renderLocalMulti prints one block per repository that needs action, in scan
+// (path) order: a marker colored by the worst stranded item, the repo, and its
+// rows. A repo with one row fits on one line. The counts lead, so a long list
+// does not hide the verdict below the fold.
+func renderLocalMulti(w io.Writer, res localMultiResult, limit int) {
 	faint := color.New(color.Faint).SprintFunc()
 	bold := color.New(color.Bold).SprintFunc()
-	if res.Auto {
-		fmt.Fprintln(w, faint(fmt.Sprintf("outside a repo — scanned %s (depth %d)", tildePath(res.Root), res.Depth)))
-	}
-	for _, r := range res.Repos {
-		if r.Report != nil && r.Report.Clean {
-			continue
-		}
-		if r.Report == nil {
-			fmt.Fprintf(w, "%s\n  %s\n", bold(r.Repo), color.RedString("state unknown: %s", r.Error))
-			continue
-		}
-		fmt.Fprintf(w, "%s  %s\n", bold(r.Repo),
-			faint(fmt.Sprintf("— %d branch(es) scanned", len(r.Report.Branches))))
-		renderLocalAllRows(w, *r.Report)
-	}
-
 	c := res.Counts
+
+	head := fmt.Sprintf("%d repos · %d need action · %d clean", c.Repos, c.NeedAction, c.Clean)
+	if c.Unknown > 0 {
+		head += fmt.Sprintf(" · %d unknown", c.Unknown)
+	}
+	line := bold("LOCAL") + "  " + head
+	if res.Auto {
+		line += "   " + faint(fmt.Sprintf("(outside a repo — %s, depth %d)", tildePath(res.Root), res.Depth))
+	}
+	fmt.Fprintln(w, line)
 	if res.Clean {
 		fmt.Fprintln(w, faint(fmt.Sprintf("✓ nothing stranded in %d repos", c.Repos)))
 		return
 	}
-	summary := fmt.Sprintf("%d repos scanned · %d need action · %d clean", c.Repos, c.NeedAction, c.Clean)
-	if c.Unknown > 0 {
-		summary += fmt.Sprintf(" · %d unknown", c.Unknown)
+	fmt.Fprintln(w)
+
+	type block struct {
+		repo  localMultiRepo
+		level localRepoLevel
+		rows  []localRow
 	}
-	fmt.Fprintln(w, bold(summary))
+	var blocks []block
+	repoW, branchW := 0, 0
+	for _, r := range res.Repos {
+		if r.Report != nil && r.Report.Clean {
+			continue
+		}
+		b := block{repo: r, level: localLevelOf(r), rows: localRowsOf(r)}
+		blocks = append(blocks, b)
+		repoW = max(repoW, len([]rune(r.Repo)))
+		for _, row := range b.rows {
+			branchW = max(branchW, len([]rune(row.branch)))
+		}
+		if len(b.rows) > 1 {
+			branchW = max(branchW, len([]rune(localBranchCount(b.rows))))
+		}
+	}
+	repoW = min(repoW, localRepoColMax)
+	branchW = min(branchW, localBranchColMax)
+	indent := strings.Repeat(" ", 2+repoW+2)
+
+	for _, b := range blocks {
+		repoCell := bold(padCell(clip(b.repo.Repo, repoW), repoW))
+		prefix := localLevelDot(b.level) + " " + repoCell + "  "
+		if len(b.rows) == 1 {
+			row := b.rows[0]
+			fmt.Fprintln(w, prefix+localRowText(row, branchW, faint))
+			continue
+		}
+		fmt.Fprintln(w, prefix+faint(localBranchCount(b.rows)))
+		for i, row := range b.rows {
+			if limit > 0 && i >= limit {
+				fmt.Fprintln(w, indent+faint(fmt.Sprintf("… and %d more", len(b.rows)-i)))
+				break
+			}
+			fmt.Fprintln(w, indent+localRowText(row, branchW, faint))
+		}
+	}
+
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, faint(strings.TrimSpace(localPushHint)))
+}
+
+func localRowText(row localRow, branchW int, faint func(...any) string) string {
+	text := padCell(clip(row.branch, branchW), branchW) + "  " + strings.Join(row.parts, faint(" · "))
+	if row.worktree != "" {
+		text += "  " + faint("("+row.worktree+")")
+	}
+	return text
+}
+
+func localBranchCount(rows []localRow) string {
+	n := 0
+	for _, r := range rows {
+		if r.branch != "(stash)" {
+			n++
+		}
+	}
+	if n == 1 {
+		return "1 branch"
+	}
+	return fmt.Sprintf("%d branches", n)
 }

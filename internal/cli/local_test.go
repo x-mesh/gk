@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/gitstate"
 	"github.com/x-mesh/gk/internal/testutil"
 )
 
@@ -291,6 +293,36 @@ func TestCollectAllLocal_DetachedWorktree(t *testing.T) {
 	}
 	if det.Unpushed != 1 || det.Unstaged != 1 || det.Clean {
 		t.Errorf("detached row: want 1 commit on no branch, 1 unstaged, clean=false; got %+v", *det)
+	}
+}
+
+// When the state of a paused operation cannot be read, it is not "no
+// operation": a worktree row turns unknown and the current-branch check fails.
+func TestLocal_UnreadableOperationIsNotClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "detached-wt")
+	r.RunGit("worktree", "add", "-q", "--detach", wtDir, "main")
+
+	prev := localDetectFn
+	t.Cleanup(func() { localDetectFn = prev })
+	localDetectFn = func(context.Context, string) (*gitstate.State, error) {
+		return nil, errors.New("cannot read the git dir")
+	}
+
+	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	if !known {
+		t.Fatal("a remote exists → push state must be knowable")
+	}
+	for _, b := range branches {
+		if b.Worktree != "" && (!b.Unknown || b.Clean) {
+			t.Errorf("row %q in %s: want unknown and not clean, got %+v", b.Branch, b.Worktree, b)
+		}
+	}
+	if _, err := collectLocal(context.Background(), r.Dir, false, 10); err == nil {
+		t.Error("the current-branch check must fail when the operation state cannot be read")
 	}
 }
 

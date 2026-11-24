@@ -164,7 +164,10 @@ func collectLocal(ctx context.Context, dir string, all bool, limit int) (localRe
 
 	commits, unpushedOK := unpushedCommits(ctx, runner, limitArg(limit))
 	stashN := stashCount(ctx, runner)
-	op, resume := worktreeOperation(ctx, dir)
+	op, resume, opKnown := worktreeOperation(ctx, dir)
+	if !opKnown {
+		return localReport{}, fmt.Errorf("gk local: cannot read the state of a paused git operation")
+	}
 
 	// "clean" requires that we could actually determine push state — with no
 	// remote to compare against we cannot assert "nothing local-only."
@@ -209,17 +212,23 @@ func collectLocal(ctx context.Context, dir string, all bool, limit int) (localRe
 	}, nil
 }
 
+// localDetectFn reads the paused operation of a worktree; a test swaps it to
+// make the read fail.
+var localDetectFn = gitstate.Detect
+
 // worktreeOperation reports a paused git operation in the worktree at path
-// ("" is the current directory) and the command that finishes it.
-func worktreeOperation(ctx context.Context, path string) (op, resume string) {
-	st, err := gitstate.Detect(ctx, path)
+// ("" is the current directory) and the command that finishes it. known is
+// false when the state could not be read: that is not "no operation", and a
+// caller must not call the worktree clean on it.
+func worktreeOperation(ctx context.Context, path string) (op, resume string, known bool) {
+	st, err := localDetectFn(ctx, path)
 	if err != nil || st == nil {
-		return "", ""
+		return "", "", false
 	}
 	if op = fleetOperationLabel(st); op == "" {
-		return "", ""
+		return "", "", true
 	}
-	return op, selfCmd("continue")
+	return op, selfCmd("continue"), true
 }
 
 // renderLocalBranch prints the default, current-branch view.
@@ -423,7 +432,9 @@ func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBr
 			}
 			if r.Worktree != "" {
 				r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, r.Worktree)
-				r.Operation, r.Resume = worktreeOperation(ctx, r.Worktree)
+				var opKnown bool
+				r.Operation, r.Resume, opKnown = worktreeOperation(ctx, r.Worktree)
+				r.Unknown = r.Unknown || !opKnown
 			}
 			r.Clean = localBranchClean(r, unpushedKnown)
 			out[i] = r
@@ -451,7 +462,9 @@ func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBr
 			r.Unpushed, unknown = detachedOnlyCount(ctx, e.Path)
 			r.Unknown = unknown
 		}
-		r.Operation, r.Resume = worktreeOperation(ctx, e.Path)
+		var opKnown bool
+		r.Operation, r.Resume, opKnown = worktreeOperation(ctx, e.Path)
+		r.Unknown = r.Unknown || !opKnown
 		r.Clean = localBranchClean(r, unpushedKnown)
 		out = append(out, r)
 	}

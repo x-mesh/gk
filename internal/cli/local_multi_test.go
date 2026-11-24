@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -196,6 +198,138 @@ func TestLocalMulti_TimeoutIsNotClean(t *testing.T) {
 	if res.Clean || res.Counts.Unknown != 1 || res.Repos[0].Report != nil ||
 		!strings.Contains(res.Repos[0].Error, "timed out") {
 		t.Errorf("a repo past its deadline must be an unknown error entry, got %+v", res)
+	}
+}
+
+// A scan stopped from outside, such as by Ctrl-C, has no verdict: the
+// repositories it checked must not come back as a partial, clean-looking
+// result.
+func TestLocalMulti_InterruptedScanFails(t *testing.T) {
+	prevFn := localCollectFn
+	t.Cleanup(func() { localCollectFn = prevFn })
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int64
+	localCollectFn = func(rctx context.Context, _ string, _ bool, _ int) (localReport, error) {
+		// The first repository is clean; the scan is stopped during the
+		// second one, and the ones after it wait for the stop.
+		switch calls.Add(1) {
+		case 1:
+		case 2:
+			cancel()
+			<-rctx.Done()
+		default:
+			<-rctx.Done()
+		}
+		return localReport{UnpushedKnown: true, Clean: true}, nil
+	}
+
+	set := &localRepoSet{}
+	for i := 0; i < 20; i++ {
+		set.Targets = append(set.Targets, localRepoTarget{Label: "r", Root: t.TempDir()})
+	}
+	var done atomic.Int64
+	res, err := collectLocalMulti(ctx, set, 10, &done)
+	if err == nil || !strings.Contains(err.Error(), "scan interrupted") {
+		t.Fatalf("an interrupted scan must fail with scan interrupted, got %v", err)
+	}
+	if res.Repos != nil || res.Clean {
+		t.Errorf("an interrupted scan must return no result, got %+v", res)
+	}
+	if n := calls.Load(); n >= 20 {
+		t.Errorf("the scan went on to every repository after the interrupt: %d calls", n)
+	}
+}
+
+// The goroutines of a scan stay at the concurrency limit, whatever the number
+// of repositories it found.
+func TestLocalMulti_GoroutinesStayAtTheLimit(t *testing.T) {
+	prevFn := localCollectFn
+	t.Cleanup(func() { localCollectFn = prevFn })
+	release := make(chan struct{})
+	var running atomic.Int64
+	localCollectFn = func(context.Context, string, bool, int) (localReport, error) {
+		running.Add(1)
+		<-release
+		return localReport{UnpushedKnown: true, Clean: true}, nil
+	}
+
+	const repos = 500
+	set := &localRepoSet{}
+	for i := 0; i < repos; i++ {
+		set.Targets = append(set.Targets, localRepoTarget{Label: "r", Root: "/nonexistent"})
+	}
+	before := runtime.NumGoroutine()
+	errc := make(chan error, 1)
+	go func() {
+		var done atomic.Int64
+		_, err := collectLocalMulti(context.Background(), set, 10, &done)
+		errc <- err
+	}()
+	limit := int64(fleetConcurrency())
+	deadline := time.Now().Add(5 * time.Second)
+	for running.Load() < limit && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if running.Load() != limit {
+		t.Fatalf("want %d repositories checked at once, got %d", limit, running.Load())
+	}
+	// The scan itself, one goroutine per slot, and their timers; far from
+	// one per repository.
+	if extra := runtime.NumGoroutine() - before; extra > 4*int(limit)+8 {
+		t.Errorf("a scan of %d repositories with a limit of %d started %d goroutines", repos, limit, extra)
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// `gk local --json` outside a repository prints the multi-repo result, and
+// --exit-code still follows its verdict.
+func TestRunLocalMulti_JSON(t *testing.T) {
+	prevFn := localCollectFn
+	t.Cleanup(func() { localCollectFn = prevFn })
+	localCollectFn = func(_ context.Context, dir string, all bool, _ int) (localReport, error) {
+		if !all {
+			t.Errorf("a multi-repo run must check the repo scope")
+		}
+		if filepath.Base(dir) == "busy" {
+			return localReport{Scope: "repo", UnpushedKnown: true, Branches: []localBranchReport{{Branch: "feat/x", Unpushed: 2}}}, nil
+		}
+		return localReport{Scope: "repo", UnpushedKnown: true, Clean: true}, nil
+	}
+	withAgentMode(t, false)
+	flagJSON = true
+
+	root := t.TempDir()
+	set := &localRepoSet{Root: root, Depth: 2, Auto: true, Targets: []localRepoTarget{
+		{Label: "quiet", Root: filepath.Join(root, "quiet")},
+		{Label: "busy", Root: filepath.Join(root, "busy")},
+	}}
+	cmd := newLocalFlagsCmd(t, "--exit-code")
+	cmd.Flags().Int("limit", 10, "")
+	cmd.SetContext(context.Background())
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := runLocalMulti(cmd, set)
+	if code, _ := ExitCodeFor(err); code != 1 {
+		t.Errorf("--exit-code with stranded work: want exit 1, got %v", err)
+	}
+	var got localMultiResult
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("the output is not the bare JSON result: %v\n%s", err, buf.String())
+	}
+	if got.Scope != "multi" || got.Root != root || got.Depth != 2 || !got.Auto || got.Clean {
+		t.Errorf("header fields: got %+v", got)
+	}
+	if got.Counts != (localMultiCounts{Repos: 2, NeedAction: 1, Clean: 1}) {
+		t.Errorf("counts: got %+v", got.Counts)
+	}
+	// Every repository is in the JSON, the clean one too, in the order found.
+	if len(got.Repos) != 2 || got.Repos[0].Repo != "quiet" || got.Repos[1].Repo != "busy" ||
+		got.Repos[1].Report == nil || len(got.Repos[1].Report.Branches) != 1 {
+		t.Errorf("repos: got %+v", got.Repos)
 	}
 }
 

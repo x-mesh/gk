@@ -180,19 +180,21 @@ func collectLocalMulti(ctx context.Context, set *localRepoSet, limit int, done *
 	sem := newFleetLimiter(fleetConcurrency())
 	var wg sync.WaitGroup
 	for i, t := range set.Targets {
+		// The slot is taken before the goroutine starts, so a scan that
+		// finds thousands of repositories runs only the limit of them at once.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		go func(i int, t localRepoTarget) {
 			defer wg.Done()
 			defer done.Add(1)
-			entry := localMultiRepo{Repo: t.Label, Path: t.Root}
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				entry.Error = ctx.Err().Error()
-				res.Repos[i] = entry
-				return
-			}
 			defer func() { <-sem }()
+			entry := localMultiRepo{Repo: t.Label, Path: t.Root}
 			// The deadline starts once a slot is held, so waiting in the
 			// queue does not eat into this repository's budget.
 			rctx, cancel := context.WithTimeout(ctx, localRepoTimeout)

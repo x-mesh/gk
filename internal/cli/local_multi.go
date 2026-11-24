@@ -314,7 +314,9 @@ func localLevelDot(l localRepoLevel) string {
 
 // localRowsOf lists what is stranded in one repository. "no remote" replaces
 // "no upstream" when the repo has no remote at all: the branch-level label
-// would blame the branch for what is a property of the repo.
+// would blame the branch for what is a property of the repo. For the same
+// reason it is said once: on the row of a one-row repo, and on the repo line
+// (see localRepoNote) when there are several rows.
 func localRowsOf(r localMultiRepo) []localRow {
 	faint := color.New(color.Faint).SprintFunc()
 	if r.Report == nil {
@@ -330,13 +332,9 @@ func localRowsOf(r localMultiRepo) []localRow {
 		if !rep.UnpushedKnown {
 			b.NoUpstream = false
 		}
-		parts := localBranchParts(b)
-		if !rep.UnpushedKnown {
-			parts = append([]string{faint("no remote")}, parts...)
-		}
 		// The worktree name only adds information when it differs from the
 		// repo's own directory name.
-		row := localRow{branch: b.Branch, parts: parts}
+		row := localRow{branch: b.Branch, parts: localBranchParts(b)}
 		if b.Worktree != "" && filepath.Base(b.Worktree) != repoBase {
 			row.worktree = filepath.Base(b.Worktree)
 		}
@@ -345,10 +343,24 @@ func localRowsOf(r localMultiRepo) []localRow {
 	if rep.Stash > 0 {
 		rows = append(rows, localRow{branch: "(stash)", parts: []string{color.YellowString("%d entr(ies)", rep.Stash)}})
 	}
-	if len(rows) == 0 && !rep.UnpushedKnown {
-		rows = append(rows, localRow{branch: "-", parts: []string{faint("no remote")}})
+	if !rep.UnpushedKnown {
+		switch len(rows) {
+		case 0:
+			rows = append(rows, localRow{branch: "-", parts: []string{faint("no remote")}})
+		case 1:
+			rows[0].parts = append([]string{faint("no remote")}, rows[0].parts...)
+		}
 	}
 	return rows
+}
+
+// localRepoNote is what the repo line of a several-row block adds after the
+// branch count: "no remote", said once for every row.
+func localRepoNote(r localMultiRepo) string {
+	if r.Report != nil && !r.Report.UnpushedKnown {
+		return " · no remote"
+	}
+	return ""
 }
 
 // Column caps keep one long repo or branch name from pushing every status to
@@ -415,7 +427,7 @@ func renderLocalMulti(w io.Writer, res localMultiResult, limit int) {
 			fmt.Fprintln(w, prefix+localRowText(row, branchW, faint))
 			continue
 		}
-		fmt.Fprintln(w, prefix+faint(localBranchCount(b.rows)))
+		fmt.Fprintln(w, prefix+faint(localBranchCount(b.rows)+localRepoNote(b.repo)))
 		for i, row := range b.rows {
 			if limit > 0 && i >= limit {
 				fmt.Fprintln(w, indent+faint(fmt.Sprintf("… and %d more", len(b.rows)-i)))

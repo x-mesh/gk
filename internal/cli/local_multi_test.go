@@ -407,6 +407,60 @@ func TestLocalMulti_TextOnlyStranded(t *testing.T) {
 	}
 }
 
+// A repo with more stranded rows than --limit shows the first rows and counts
+// the rest. With no remote, "no remote" is said once on the repo line, not on
+// every row.
+func TestLocalMulti_RowLimitAndNoRemoteOnce(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = prev })
+
+	res := localMultiResult{
+		Scope: "multi",
+		Repos: []localMultiRepo{
+			{Repo: "many", Path: "/work/many", Report: &localReport{Stash: 1, Branches: []localBranchReport{
+				{Branch: "b1", NoUpstream: true, Unstaged: 1},
+				{Branch: "b2", NoUpstream: true, Staged: 2},
+				{Branch: "b3", NoUpstream: true, Unstaged: 3},
+				{Branch: "b4", NoUpstream: true, Unstaged: 4},
+			}}},
+		},
+		Counts: localMultiCounts{Repos: 1, NeedAction: 1},
+	}
+	var buf bytes.Buffer
+	renderLocalMulti(&buf, res, 2)
+	out := buf.String()
+
+	if !strings.Contains(out, "● many") || !strings.Contains(out, "4 branches · no remote") {
+		t.Errorf("want the repo line to count the branches and say no remote once:\n%s", out)
+	}
+	if n := strings.Count(out, "no remote"); n != 1 {
+		t.Errorf("want `no remote` once, got %d times:\n%s", n, out)
+	}
+	if strings.Contains(out, "no upstream") {
+		t.Errorf("no upstream must not show in a repo with no remote:\n%s", out)
+	}
+	// Five rows (four branches and the stash) with a limit of 2: two are
+	// shown, three are counted, and nothing after the limit is printed.
+	for _, want := range []string{"b1", "1 unstaged", "b2", "2 staged", "… and 3 more"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	for _, gone := range []string{"b3", "b4", "(stash)"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("row %q is past the limit and must not print:\n%s", gone, out)
+		}
+	}
+
+	// With no limit every row prints.
+	buf.Reset()
+	renderLocalMulti(&buf, res, 0)
+	if out := buf.String(); !strings.Contains(out, "b4") || !strings.Contains(out, "(stash)") || strings.Contains(out, "more") {
+		t.Errorf("a limit of 0 prints every row:\n%s", out)
+	}
+}
+
 func TestLocalLevelOf(t *testing.T) {
 	cases := []struct {
 		name string

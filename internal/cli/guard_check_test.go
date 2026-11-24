@@ -620,6 +620,10 @@ func TestGuardCheck_HumanOutputColors(t *testing.T) {
 			Hint: "rotate the secret", Verification: &policy.Verification{Status: "valid", Account: "123456789012"}},
 		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "b", Line: 2, Message: "m",
 			Verification: &policy.Verification{Status: "rejected", Code: "InvalidClientTokenId"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "c", Line: 3, Message: "m",
+			Verification: &policy.Verification{Status: "unknown", Code: "http_401"}},
+		{RuleID: "secret_patterns", Severity: policy.SeverityError, File: "d", Line: 4, Message: "m",
+			Verification: &policy.Verification{Status: "unverifiable"}},
 		{RuleID: "secret_patterns", Severity: policy.SeverityWarn, File: "lib.jar", Message: "archive too large"},
 		{RuleID: "secret_patterns", Severity: policy.SeverityInfo, Message: "scanned tracked files"},
 	}
@@ -647,6 +651,8 @@ func TestGuardCheck_HumanOutputColors(t *testing.T) {
 		cellYellow("@abcdef1"),
 		cellRedBold("valid"),
 		cellGreen("rejected"),
+		"verify: " + cellYellow("unknown"),
+		"verify: " + cellFaint("unverifiable"),
 		cellFaint("hint: rotate the secret"),
 	} {
 		var w string
@@ -716,6 +722,9 @@ func TestGuardCheck_SecretLines(t *testing.T) {
 		{"ghp_abc", []string{"ghp_abc"}},
 		{"-----BEGIN KEY-----\r\nAAAA\r\n-----END KEY-----\n", []string{"-----BEGIN KEY-----", "AAAA", "-----END KEY-----"}},
 		{"abc\x1b[2Jdef", []string{`"abc\x1b[2Jdef"`}},
+		// U+009B is the one-rune form of ESC [ in the C1 range.
+		{"abc\u009b2Jdef", []string{`"abc\u009b2Jdef"`}},
+		{"abc\x7fdef", []string{`"abc\x7fdef"`}},
 		{"a\tb", []string{"a\tb"}},
 	} {
 		if got := secretLines(c.in); strings.Join(got, "|") != strings.Join(c.want, "|") {

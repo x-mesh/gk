@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -89,7 +90,9 @@ removes it or changes its severity.
 --reveal prints the value of each secret found below its finding, and adds
 it to --json as "secret". The values stay in the terminal or the log that
 receives the output, so clear them afterwards. A value that spans lines,
-such as a private key, prints as an indented block; a value with a control
+such as a private key, prints as an indented block of its lines, without
+the carriage return of a CRLF line end and without the line end at the end
+of the value; --json holds the value without change. A value with a control
 character prints quoted. Agent mode (GK_AGENT) refuses --reveal, because its
 output goes to a model.
 `,
@@ -451,12 +454,16 @@ func printViolationsHuman(w io.Writer, vs []policy.Violation) {
 }
 
 // secretLines splits a revealed value for the terminal: one entry per line of
-// a value that spans lines, such as a private key. A value with a control
-// character other than a line break or a tab is one quoted entry, so the
-// value cannot move the cursor or clear the screen.
+// a value that spans lines, such as a private key. A CRLF line end counts as
+// a line end, and the line end at the end of the value adds no entry: the
+// rows are for reading, and --json holds the value without change. A value
+// with a control character other than a line break or a tab is one quoted
+// entry, so the value cannot move the cursor or clear the screen. That is
+// ESC and the rest of C0, DEL, and the C1 range, where U+009B starts an
+// escape sequence as ESC [ does.
 func secretLines(s string) []string {
 	flat := strings.ReplaceAll(s, "\r\n", "\n")
-	if strings.ContainsFunc(flat, func(r rune) bool { return (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f }) {
+	if strings.ContainsFunc(flat, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
 		return []string{strconv.Quote(s)}
 	}
 	return strings.Split(strings.TrimRight(flat, "\n"), "\n")

@@ -3796,7 +3796,7 @@ In a terminal, the report has colors. The severity is red for `error`, yellow fo
 
 While the command fetches and scans, a spinner on stderr names the step, for example `gk guard: scanning the history of every ref`. The spinner shows only when stderr is a terminal, and not in agent mode. It appears only when the step takes longer than 150 ms, and it is cleared before the report. `NO_COLOR` removes its color, but it still turns.
 
-A finding shows the first 4 characters of the secret, for example `(AKIA********)`. `--reveal` adds a `secret:` line with the full value below each finding, and adds the value to `--json` as `secret`. A value that spans lines, such as a private key, prints as an indented block. A value with a control character prints quoted, so it cannot move the cursor or clear the screen. The values stay in the terminal or the log that receives the output, so clear them after use. The command prints a warning about this on stderr. With gitleaks instead of the built-in scan, `--reveal` also runs gitleaks without `--redact`. Agent mode refuses `--reveal` before the scan, because the agent output goes to a model.
+A finding shows the first 4 characters of the secret, for example `(AKIA********)`. `--reveal` adds a `secret:` line with the full value below each finding, and adds the value to `--json` as `secret`. A value that spans lines, such as a private key, prints as an indented block with one row for each line. The block does not show the carriage return of a CRLF line end, or the line end at the end of the value. `--json` holds the value without change. A value with a control character prints quoted, so it cannot move the cursor or clear the screen. The values stay in the terminal or the log that receives the output, so clear them after use. The command prints a warning about this on stderr. With gitleaks instead of the built-in scan, `--reveal` also runs gitleaks without `--redact`. Agent mode refuses `--reveal` before the scan, because the agent output goes to a model.
 
 #### Exit codes
 
@@ -3860,7 +3860,7 @@ gk guard check --fetch
 # Check whether the AWS keys, Slack tokens, GCP API keys, and OCI API keys found are live
 gk guard check --verify
 
-# Show the full value of each secret found, in a terminal only
+# Show the full value of each secret found (refused in agent mode)
 gk guard check --reveal
 ```
 

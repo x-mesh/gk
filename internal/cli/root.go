@@ -21,6 +21,7 @@ import (
 	"github.com/x-mesh/gk/internal/config"
 	"github.com/x-mesh/gk/internal/easy"
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 var (
@@ -70,6 +71,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "emit diagnostic logs (subprocess invocations, retry reasons, timings) to stderr")
 	rootCmd.PersistentFlags().BoolVar(&flagEasy, "easy", false, "enable Easy Mode for this invocation")
 	rootCmd.PersistentFlags().BoolVar(&flagNoEasy, "no-easy", false, "disable Easy Mode even if config/env enables it")
+	// An agent reads the output, and debug logs would interleave with the
+	// frames, so both turn every spinner off.
+	ui.SpinnerOff = func() bool { return AgentOut() || flagDebug }
 	// GK_DEBUG=1 env var is honored so users can opt in without every
 	// subcommand needing to pass -d by hand.
 	if v := os.Getenv("GK_DEBUG"); v == "1" || v == "true" {

@@ -42,9 +42,8 @@ func StartSpinner(msg string) (stop func()) {
 // StartSpinner, but tests can inject a bytes.Buffer to verify the
 // clear sequence or compare frame output.
 func startSpinnerTo(w io.Writer, msg string) (stop func()) {
-	// If the target writer is os.Stderr but stderr is not a TTY, this
-	// would paint garbage into log files. Skip silently in that case.
-	if w == os.Stderr && !IsStderrTerminal() {
+	// Frames that are not erased would pile up in a log or on one line.
+	if !spinnerAllowed(w) {
 		return func() {}
 	}
 	done := make(chan struct{})

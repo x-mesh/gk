@@ -2,7 +2,6 @@ package cli
 
 import (
 	"os"
-	"strings"
 
 	"github.com/x-mesh/gk/internal/ui"
 )
@@ -15,14 +14,5 @@ func promptAllowed() bool {
 }
 
 func promptAllowedFor(tty, agent, json bool, ci string) bool {
-	return tty && !agent && !json && !envTruthy(ci)
-}
-
-func envTruthy(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
+	return tty && !agent && !json && !ui.EnvTruthy(ci)
 }

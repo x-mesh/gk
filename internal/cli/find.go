@@ -32,7 +32,7 @@ import (
 
 const (
 	findModeMessage = "message" // --grep: the commit message says it
-	findModeContent = "content" // -S pickaxe: the commit changed an occurrence of it
+	findModeContent = "content" // -G pickaxe: the commit added or removed a line that holds it
 	findModePath    = "path"    // the commit touched a file whose path matches
 )
 
@@ -48,7 +48,7 @@ The query runs against three things simultaneously, across every ref (not just
 the current branch):
 
   message   the commit message mentions it        (git log --grep)
-  content   the commit added or removed it        (git log -S, the "pickaxe")
+  content   the commit changed a line with it     (git log -G, the "pickaxe")
   path      the commit touched a matching file    (git log -- '*<query>*')
 
 Each result says which of the three matched, so "the message never mentions it
@@ -60,6 +60,25 @@ second query. Commits that match more than one way rank first, then by recency.
   gk find tildePath --path internal/cli   # search for tildePath inside this subtree
   gk find --path docs/commands.md   # no query: the history of a path
   gk find OTLP --json               # agent contract
+  gk find OTLP --oneline            # the commit rows only
+
+Under each row is the evidence for its tags: the added (+) and removed (-)
+lines that hold the query, the line of the message body that matches when the
+subject does not, and the path that matches. At most three lines of a kind
+show per commit, and "(+N more)" counts the rest. --oneline prints the rows
+alone and skips the git calls that fetch the evidence.
+
+A removed line can hold a secret that is no longer in the tree, so the
+secrets that the gk guard ruleset finds in the evidence are masked, and the
+output ends with the count of masked lines. --reveal prints the lines as they
+are. The values stay in the terminal or the log that receives the output, so
+clear them afterwards. If no line holds a secret, --reveal changes nothing and
+says so. Agent mode (GK_AGENT) refuses --reveal, because its output goes to a
+model.
+
+The content search finds each commit that adds or removes a line with the
+query. That includes a commit that changes the rest of such a line, as when a
+value changes and its name stays, which git log -S does not find.
 
 --no-content skips the pickaxe, which is the slow one on large repos (it must
 diff every commit); --no-path and --no-message likewise narrow the fan-out.
@@ -79,6 +98,8 @@ for the upstream/base cases.`,
 	cmd.Flags().Bool("no-content", false, "내용(pickaxe) 검색 끄기 — 큰 저장소에서 가장 느린 모드")
 	cmd.Flags().Bool("no-path", false, "경로 검색 끄기")
 	cmd.Flags().Bool("json", false, "기계가 읽는 JSON으로 출력")
+	cmd.Flags().Bool("oneline", false, "근거 줄 없이 커밋 줄만 출력")
+	cmd.Flags().Bool("reveal", false, "근거 줄의 비밀값을 가리지 않고 출력 (터미널이나 로그에 남음, 에이전트 모드에서는 거부)")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -90,6 +111,11 @@ type findMatch struct {
 	Author  string   `json:"author"`
 	Subject string   `json:"subject"`
 	Matched []string `json:"matched"` // message | content | path
+	// Evidence is why the commit matched, and EvidenceMore counts the
+	// evidence that the per-commit cap left out. Both are absent with
+	// --oneline.
+	Evidence     []findEvidence `json:"evidence,omitempty"`
+	EvidenceMore int            `json:"evidence_more,omitempty"`
 
 	when time.Time // ranking only
 }
@@ -103,9 +129,12 @@ type findResult struct {
 	Matches []findMatch `json:"matches"`
 	// Failed records a mode that errored (e.g. an unknown --ref). The other modes
 	// still return: a partial answer beats no answer, but it must not look complete.
-	Failed     map[string]string `json:"failed,omitempty"`
-	Ranking    *findRanking      `json:"ranking,omitempty"`
-	allMatches []findMatch
+	Failed map[string]string `json:"failed,omitempty"`
+	// EvidenceError records a failed evidence lookup. The matches are still
+	// complete; only their evidence is missing.
+	EvidenceError string       `json:"evidence_error,omitempty"`
+	Ranking       *findRanking `json:"ranking,omitempty"`
+	allMatches    []findMatch
 }
 
 func runFind(cmd *cobra.Command, args []string) error {
@@ -123,6 +152,13 @@ func runFind(cmd *cobra.Command, args []string) error {
 	noPath, _ := cmd.Flags().GetBool("no-path")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asJSON = asJSON || JSONOut()
+	oneline, _ := cmd.Flags().GetBool("oneline")
+	reveal, _ := cmd.Flags().GetBool("reveal")
+	if reveal && AgentOut() {
+		// The agent output goes to a model, which must not receive secret
+		// values. Refused before the search, so nothing is read.
+		return fmt.Errorf("gk find: 에이전트 모드(GK_AGENT)에서는 --reveal을 쓸 수 없습니다. 출력이 모델로 전달되기 때문입니다. 터미널에서 실행하세요")
+	}
 
 	if query == "" && path == "" {
 		return fmt.Errorf("gk find: 검색어 또는 --path 중 하나는 필요합니다")
@@ -151,6 +187,24 @@ func runFind(cmd *cobra.Command, args []string) error {
 	cfg, cfgErr := config.Load(cmd.Flags())
 	if err := applyFindRanking(cmd.Context(), &res, findQ, cfg, cfgErr); err != nil {
 		return err
+	}
+	// After the ranking and the trim to --limit: the evidence is fetched
+	// only for the rows that are printed, and none of it goes to Jev.
+	if !oneline {
+		perCommit := findEvidencePerCommit
+		if AgentOut() {
+			perCommit = findEvidencePerCommitAgent
+		}
+		attachFindEvidence(cmd.Context(), runner, &res, findQ, findEvidenceOpts{perCommit: perCommit, reveal: reveal})
+		if reveal {
+			// The warning counts what the scan found, so a search with no
+			// secret in it does not read as one that printed secrets.
+			if n := countFindEvidence(res, evidenceRevealed); n > 0 {
+				fmt.Fprintln(cmd.ErrOrStderr(), cellYellow(fmt.Sprintf("gk find: --reveal로 비밀값이 든 근거 줄 %d개를 가리지 않고 출력합니다. 터미널이나 로그에 남으니 확인한 뒤 지우세요", n)))
+			} else {
+				fmt.Fprintln(cmd.ErrOrStderr(), cellFaint("gk find: --reveal: 근거 줄에 가려진 값이 없어 출력이 같습니다"))
+			}
+		}
 	}
 
 	if asJSON {
@@ -338,6 +392,10 @@ const findFormat = "--format=%H%x00%h%x00%ct%x00%an%x00%s"
 // found — otherwise a hit in one mode and a miss in another would be an artifact
 // of the mode, not of the history.
 func runFindMode(ctx context.Context, runner *git.ExecRunner, q findQuery, mode string) ([]findMatch, error) {
+	if mode == findModeContent {
+		// The one mode that diffs every commit runs on several processes.
+		return runFindContent(ctx, runner, q)
+	}
 	args := []string{"--no-optional-locks", "log", findFormat}
 	if q.ref != "" {
 		args = append(args, q.ref)
@@ -359,8 +417,6 @@ func runFindMode(ctx context.Context, runner *git.ExecRunner, q findQuery, mode 
 	switch mode {
 	case findModeMessage:
 		args = append(args, "--regexp-ignore-case", "--grep="+q.query)
-	case findModeContent:
-		args = append(args, "-S"+q.query)
 	case findModePath:
 		// With an explicit --path the request is "history of this path". With a
 		// query and no --path, the query itself is the path fragment to look for.
@@ -420,16 +476,26 @@ func renderFind(w io.Writer, res findResult) {
 	for mode, msg := range res.Failed {
 		fmt.Fprintf(w, "! %s 검색 실패: %s\n", mode, msg)
 	}
+	if res.EvidenceError != "" {
+		fmt.Fprintf(w, "! 근거 줄 조회 실패: %s\n", res.EvidenceError)
+	}
 	if res.Count == 0 {
 		fmt.Fprintf(w, "no commits match %q (searched: %s)\n", res.Query, strings.Join(res.Modes, ", "))
 		renderFindRanking(res, func(format string, args ...any) { fmt.Fprintf(w, format, args...) })
 		return
 	}
 	for _, m := range res.Matches {
-		fmt.Fprintf(w, "%s  %s  %-22s  %s\n",
-			m.Short, m.Date, "["+strings.Join(m.Matched, "+")+"]", m.Subject)
+		// Pad before coloring: the width of a colored string counts its codes.
+		tag := fmt.Sprintf("%-22s", "["+strings.Join(m.Matched, "+")+"]")
+		fmt.Fprintf(w, "%s  %s  %s  %s\n", cellYellow(m.Short), cellFaint(m.Date), cellCyan(tag), m.Subject)
+		renderFindEvidence(w, m, res.Query)
 	}
 	fmt.Fprintf(w, "\n%d commits · searched %s across %s\n",
 		res.Count, strings.Join(res.Modes, " + "), res.Scope)
+	// Without this line a result with no secret and a result with a masked
+	// one differ only by the asterisks in a row.
+	if n := countFindEvidence(res, evidenceMasked); n > 0 {
+		fmt.Fprintln(w, cellYellow(fmt.Sprintf("%s masked · --reveal prints the values", findLines(n))))
+	}
 	renderFindRanking(res, func(format string, args ...any) { fmt.Fprintf(w, format, args...) })
 }

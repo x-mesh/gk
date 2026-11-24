@@ -434,7 +434,7 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 		},
 	}
 
-	violations := convertFindings(findings)
+	violations := convertFindings(findings, false)
 	if len(violations) != 2 {
 		t.Fatalf("got %d violations, want 2", len(violations))
 	}
@@ -464,7 +464,7 @@ func TestSecretPatternsRule_FindingsMap_ConvertFromSampleStruct(t *testing.T) {
 }
 
 func TestConvertFindings_Empty(t *testing.T) {
-	v := convertFindings(nil)
+	v := convertFindings(nil, false)
 	if len(v) != 0 {
 		t.Errorf("got %d violations for nil input, want 0", len(v))
 	}
@@ -1628,7 +1628,7 @@ func TestSecretPatternsRule_ArchiveReaderFailureFailsTheScan(t *testing.T) {
 }
 
 func TestConvertFindings_SecretHintMentionsGitleaksAllow(t *testing.T) {
-	v := convertFindings([]scan.GitleaksFinding{{RuleID: "generic-api-key", File: "f", StartLine: 1, Description: "found"}})
+	v := convertFindings([]scan.GitleaksFinding{{RuleID: "generic-api-key", File: "f", StartLine: 1, Description: "found"}}, false)
 	if len(v) != 1 || v[0].Hint != secretFindingHint || !strings.Contains(v[0].Hint, "gitleaks:allow") {
 		t.Errorf("hint = %q, want %q", v[0].Hint, secretFindingHint)
 	}
@@ -1678,5 +1678,53 @@ func TestSecretPatternsRule_TrackedLargeTextAtArchivePathIsScanned(t *testing.T)
 	}
 	if want := map[string]policy.Severity{"notes.zip": policy.SeverityWarn, "huge.jar": policy.SeverityWarn}; !maps.Equal(notices, want) {
 		t.Errorf("archive notices = %v, want %v", notices, want)
+	}
+}
+
+// A violation carries the value only when the input asks to reveal it, on
+// the built-in path and on the gitleaks path. gitleaks redacts its report
+// unless the value is revealed.
+func TestSecretPatternsRule_RevealCarriesTheValue(t *testing.T) {
+	raw := "ghp_4fT9kL2mQ8wX1zR7vB3nC6yH0pJ5sD8gA2eW"
+	for _, reveal := range []bool{false, true} {
+		r := builtinRule(secrets.Finding{Kind: "github-pat", File: "f", FileLine: 1, Sample: "ghp_********", Secret: secrets.NewSecret(raw)})
+		run := &stubRunner{out: map[string]string{patch("diff --cached --no-color"): "DIFF"}}
+		v, err := r.Evaluate(context.Background(), policy.Input{Runner: run, Staged: true, Reveal: reveal})
+		if err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		if _, errs := severities(v); errs != 1 {
+			t.Fatalf("reveal=%v: no finding: %+v", reveal, v)
+		}
+		var got []string
+		for _, x := range v {
+			if x.Secret.Reveal() != "" {
+				got = append(got, x.Secret.Reveal())
+			}
+			if strings.Contains(x.Message, raw) {
+				t.Errorf("message carries the value: %s", x.Message)
+			}
+		}
+		want := 0
+		if reveal {
+			want = 1
+		}
+		if len(got) != want || (reveal && got[0] != raw) {
+			t.Errorf("reveal=%v: values %v", reveal, got)
+		}
+
+		var redact bool
+		g := NewSecretPatternsRule()
+		g.runGitleaks = func(_ context.Context, o scan.GitleaksOptions) ([]scan.GitleaksFinding, error) {
+			redact = o.Redact
+			return []scan.GitleaksFinding{{RuleID: "github-pat", File: "f", StartLine: 1, Secret: raw}}, nil
+		}
+		v, err = g.Evaluate(context.Background(), policy.Input{Runner: &stubRunner{}, WorkDir: gitleaksConfigDir(t, ".gitleaks.toml"), Reveal: reveal})
+		if err != nil {
+			t.Fatalf("Evaluate gitleaks: %v", err)
+		}
+		if redact == reveal || len(v) != 1 || (v[0].Secret.Reveal() == raw) != reveal || strings.Contains(v[0].Message, raw) {
+			t.Errorf("gitleaks reveal=%v: redact %v violations %+v", reveal, redact, v)
+		}
 	}
 }

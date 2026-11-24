@@ -132,7 +132,7 @@ func (r *SecretPatternsRule) Evaluate(ctx context.Context, in policy.Input) ([]p
 		return nil, fmt.Errorf("secret_patterns: %w", err)
 	}
 
-	out := convertFindings(findings)
+	out := convertFindings(findings, in.Reveal)
 	if in.Verify {
 		out = append(out, policy.Violation{
 			RuleID:   r.Name(),
@@ -154,6 +154,9 @@ func (r *SecretPatternsRule) gitleaksOptions(in policy.Input) scan.GitleaksOptio
 	opts := r.GitleaksOpts
 	if opts.WorkDir == "" {
 		opts.WorkDir = in.WorkDir
+	}
+	if in.Reveal {
+		opts.Redact = false
 	}
 	var scope []string
 	switch {
@@ -257,6 +260,9 @@ func (r *SecretPatternsRule) evaluateBuiltin(ctx context.Context, in policy.Inpu
 			Commit:   f.Commit,
 			Message:  fmt.Sprintf("secret matched built-in pattern %s (%s)", f.Kind, f.Sample),
 			Hint:     secretFindingHint,
+		}
+		if in.Reveal {
+			v.Secret = f.Secret
 		}
 		if c := f.Credential; c != nil && c.Verifiable() && verified != nil {
 			if res, ok := verified[c.ID()]; ok {
@@ -1150,8 +1156,9 @@ func (r *SecretPatternsRule) builtinNotice(in policy.Input, gitleaksConfigPresen
 
 // convertFindings maps gitleaks findings into policy.Violations. Exported
 // within the package so unit tests can verify the mapping without spawning
-// gitleaks.
-func convertFindings(findings []scan.GitleaksFinding) []policy.Violation {
+// gitleaks. reveal puts each matched value on its violation; gitleaks reports
+// the values only when it ran without --redact.
+func convertFindings(findings []scan.GitleaksFinding, reveal bool) []policy.Violation {
 	out := make([]policy.Violation, 0, len(findings))
 	for _, f := range findings {
 		msg := f.Description
@@ -1166,7 +1173,15 @@ func convertFindings(findings []scan.GitleaksFinding) []policy.Violation {
 			Commit:   f.Commit,
 			Message:  fmt.Sprintf("%s (%s)", msg, f.RuleID),
 			Hint:     secretFindingHint,
+			Secret:   revealed(reveal, f.Secret),
 		})
 	}
 	return out
+}
+
+func revealed(reveal bool, v string) secrets.Secret {
+	if !reveal {
+		return secrets.Secret{}
+	}
+	return secrets.NewSecret(v)
 }

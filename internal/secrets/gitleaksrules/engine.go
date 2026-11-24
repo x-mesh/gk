@@ -718,6 +718,7 @@ func (e *engine) scanPass(r rule, path, commit string, h hunk, p pass) []hit {
 			Line:     h.fileLine(line),
 			Commit:   commit,
 			Sample:   maskSecret(secret),
+			Secret:   secrets.NewSecret(secret),
 		}
 		switch r.id {
 		case awsAccessRuleID:

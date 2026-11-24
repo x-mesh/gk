@@ -735,3 +735,32 @@ func sharesMemory(s, text string) bool {
 	lo := uintptr(unsafe.Pointer(unsafe.StringData(text)))
 	return p >= lo && p < lo+uintptr(len(text))
 }
+
+// Every finding keeps the value that its sample masks, also a private key
+// that spans lines.
+func TestScanFileKeepsTheMaskedValue(t *testing.T) {
+	var key strings.Builder
+	key.WriteString("-----BEGIN RSA PRIVATE KEY-----\n")
+	for i := 0; i < 6; i++ {
+		fmt.Fprintf(&key, "MIIEow%02dAAKCAQEAq7Zt3Lp9Vw2Xr5Yk8Hn1Gd4Fs6Jm0Qc3Tb7Ne9Ua2Wi5Ro8Pl\n", i)
+	}
+	key.WriteString("-----END RSA PRIVATE KEY-----\n")
+	content := "aws_access_key_id = AKIAZ7Q2XJ5M3PLR6WNA\ngithub = \"ghp_4fT9kL2mQ8wX1zR7vB3nC6yH0pJ5sD8gA2eW\"\n" + key.String()
+	fs := ScanFile("config.env", content)
+	kinds := map[string]bool{}
+	for _, f := range fs {
+		kinds[f.Kind] = true
+		v := f.Secret.Reveal()
+		if v == "" || maskSecret(v) != f.Sample {
+			t.Errorf("%s: value %q does not mask to %q", f.Kind, v, f.Sample)
+		}
+		if f.Kind == "private-key" && !strings.Contains(v, "\n") {
+			t.Errorf("private key value is one line: %q", v)
+		}
+	}
+	for _, k := range []string{"aws-access-token", "github-pat", "private-key"} {
+		if !kinds[k] {
+			t.Errorf("no %s finding in %v", k, kinds)
+		}
+	}
+}

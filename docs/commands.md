@@ -3781,6 +3781,7 @@ gk guard check [flags]
 | `--history` | `false` | Scan every commit that a ref (branch, remote-tracking branch, tag, stash) can reach, instead of the current files. |
 | `--fetch` | `false` | Fetch every remote, then scan the history. This flag sets `--history`. The fetch does not prune. If a fetch fails, the scan continues on the local refs and adds one `warn` violation that names the remote. |
 | `--verify` | `false` | Check each AWS access key, Slack token, GCP API key, and OCI API signing key that the built-in scan finds with its issuer. This flag sends Slack tokens and GCP API keys to `slack.com` and `googleapis.com`. You cannot use this flag with `--staged`. See "Live credential check" below. |
+| `--reveal` | `false` | Print the value of each secret found below its finding, and add it to `--json` as `secret`. See "Output" below. Agent mode (`GK_AGENT=1`) refuses this flag. |
 | `--archive-readers` | `2` | Set the number of git processes that read the committed archives at the same time. Each process keeps the archive that it rebuilds in memory. Each process also uses up to 512 MiB for its delta base cache, unless your git config sets `core.deltaBaseCacheLimit`. More processes make a scan of many archives faster, and they use more memory. The value must be 1 or more. The default scope reads the archives from the work tree, so this flag has no effect on it. |
 
 Without a flag, the built-in scan checks the current content of every tracked file. Uncommitted edits are scanned. A text file is read whole. A binary file that is not an archive is read only as far as the first 8000 bytes, which tell that it is binary. A binary archive over 512 MiB is not opened and gets an `archive not scanned` notice. Untracked and ignored files are not scanned. If the repo has a gitleaks config, `gitleaks dir` scans instead, and it also reads untracked files (see `secret_patterns` below).
@@ -3788,6 +3789,12 @@ Without a flag, the built-in scan checks the current content of every tracked fi
 The built-in scan also opens each zip archive (`.jar`, `.war`, `.ear`, `.zip`) in its scope and scans the files in it. A build often packs its configuration, such as `BOOT-INF/classes/application.yml`, into a jar. A finding in an archive has the path `<archive>!<file>` and the line in that file. With `--history`, the scan reads each archive blob one time and scans it at each path where it was committed. A renamed archive with new content is scanned too. The scan does not open an archive in an archive. An archive that is larger than 512 MiB or that is not a valid zip file is not scanned. A text file at an archive path that does not open as a zip file is scanned as text in every scope, and it is not reported as an archive. If such a file is larger than 512 MiB, the report has the `archive not scanned` violation for it. The default scope still scans it whole as text, but `--staged` and `--history` do not read it. A file in an archive is not scanned if it is larger than 64 MiB, if the files before it in the archive used up 1 GiB, or if it uses a compression method other than store or deflate. For each archive that the scan does not open, the report has one `warn` violation with the archive path in the default scope and `--staged`, and one `info` violation in `--history`. When only some files in an archive could not be read, the report has one `info` violation. If Git LFS stores an archive, the history has only a pointer to it, and `--history` does not scan that archive. If gitleaks scans instead of the built-in scan, the archives are not opened.
 
 A rule can fail before it scans. Examples are a directory that is not a git repository, and a bare repository without `--history`. For each rule that fails, the report has one `error` violation with the rule ID `rule_error`. Thus the command does not print `no violations`, and it does not exit with code 0.
+
+#### Output
+
+In a terminal, the report has colors. The severity is red for `error`, yellow for `warn`, and faint for `info`. The file and line are cyan, and the commit is yellow. In a `verify:` line, `valid` is red, because a live credential is the finding to fix first. `rejected` is green, and `unknown` is yellow. A hint is faint. `--no-color`, `NO_COLOR`, and output that is not a terminal remove the colors.
+
+A finding shows the first 4 characters of the secret, for example `(AKIA********)`. `--reveal` adds a `secret:` line with the full value below each finding, and adds the value to `--json` as `secret`. A value that spans lines, such as a private key, prints as an indented block. A value with a control character prints quoted, so it cannot move the cursor or clear the screen. The values stay in the terminal or the log that receives the output, so clear them after use. The command prints a warning about this on stderr. With gitleaks instead of the built-in scan, `--reveal` also runs gitleaks without `--redact`. Agent mode refuses `--reveal` before the scan, because the agent output goes to a model.
 
 #### Exit codes
 
@@ -3850,6 +3857,9 @@ gk guard check --fetch
 
 # Check whether the AWS keys, Slack tokens, GCP API keys, and OCI API keys found are live
 gk guard check --verify
+
+# Show the full value of each secret found, in a terminal only
+gk guard check --reveal
 ```
 
 ---

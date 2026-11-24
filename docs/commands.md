@@ -3794,6 +3794,8 @@ A rule can fail before it scans. Examples are a directory that is not a git repo
 
 In a terminal, the report has colors. The severity is red for `error`, yellow for `warn`, and faint for `info`. The file and line are cyan, and the commit is yellow. In a `verify:` line, `valid` is red, because a live credential is the finding to fix first. `rejected` is green, and `unknown` is yellow. A hint is faint. `--no-color`, `NO_COLOR`, and output that is not a terminal remove the colors.
 
+While the command fetches and scans, a spinner on stderr names the step, for example `gk guard: scanning the history of every ref`. The spinner shows only when stderr is a terminal, and not in agent mode. It appears only when the step takes longer than 150 ms, and it is cleared before the report. `NO_COLOR` removes its color, but it still turns.
+
 A finding shows the first 4 characters of the secret, for example `(AKIA********)`. `--reveal` adds a `secret:` line with the full value below each finding, and adds the value to `--json` as `secret`. A value that spans lines, such as a private key, prints as an indented block. A value with a control character prints quoted, so it cannot move the cursor or clear the screen. The values stay in the terminal or the log that receives the output, so clear them after use. The command prints a warning about this on stderr. With gitleaks instead of the built-in scan, `--reveal` also runs gitleaks without `--redact`. Agent mode refuses `--reveal` before the scan, because the agent output goes to a model.
 
 #### Exit codes

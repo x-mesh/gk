@@ -22,6 +22,7 @@ import (
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 	"github.com/x-mesh/gk/internal/secrets/verify"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -271,7 +272,9 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	}
 	var fetchViolations []policy.Violation
 	if doFetch {
+		stop := guardSpinner("gk guard: fetching every remote")
 		fetchViolations = guardFetch(ctx, runner)
+		stop()
 	}
 
 	reg := guardRegistry()
@@ -286,7 +289,9 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	in.Verify, _ = cmd.Flags().GetBool("verify")
 	in.Reveal = reveal
 
+	stop := guardSpinner(guardSpinnerLabel(in.Staged, in.History, in.Verify))
 	violations, errs := reg.Evaluate(ctx, in)
+	stop()
 	violations = slices.Concat(ruleErrorViolations(errs), fetchViolations, violations)
 
 	asJSON, _ := cmd.Flags().GetBool("json")
@@ -319,6 +324,34 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	default:
 		return nil
 	}
+}
+
+// startGuardSpinner draws a spinner on stderr; it draws nothing when stderr is
+// not a terminal. A test replaces it.
+var startGuardSpinner = ui.StartBubbleSpinner
+
+// guardSpinner shows a spinner while a step runs, except in agent mode.
+func guardSpinner(msg string) (stop func()) {
+	if AgentOut() {
+		return func() {}
+	}
+	return startGuardSpinner(msg)
+}
+
+// guardSpinnerLabel names what the scan covers, as the notice does.
+func guardSpinnerLabel(staged, history, verify bool) string {
+	scope := "tracked files"
+	switch {
+	case staged:
+		scope = "staged changes"
+	case history:
+		scope = "the history of every ref"
+	}
+	label := "gk guard: scanning " + scope
+	if verify {
+		label += " and checking credentials"
+	}
+	return label
 }
 
 // guardResultJSON is the agent-mode result. A warning or an error makes the

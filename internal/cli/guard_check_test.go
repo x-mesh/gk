@@ -730,3 +730,49 @@ func TestGuardCheck_SecretLines(t *testing.T) {
 		t.Errorf("multi-line value:\n%s", b.String())
 	}
 }
+
+// The check shows a spinner while it fetches and while it scans, named for
+// the scope, and stops it before the report. Agent mode shows none.
+func TestGuardCheck_Spinner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in short mode")
+	}
+	var started []string
+	running := 0
+	prev := startGuardSpinner
+	startGuardSpinner = func(msg string) func() {
+		started = append(started, msg)
+		running++
+		return func() { running-- }
+	}
+	t.Cleanup(func() { startGuardSpinner = prev })
+
+	repo := testutil.NewRepo(t)
+	repo.WriteFile("seed.txt", "seed\n")
+	repo.Commit("seed")
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		{nil, []string{"gk guard: scanning tracked files"}},
+		{[]string{"--staged"}, []string{"gk guard: scanning staged changes"}},
+		{[]string{"--history"}, []string{"gk guard: scanning the history of every ref"}},
+		{[]string{"--fetch"}, []string{"gk guard: fetching every remote", "gk guard: scanning the history of every ref"}},
+	} {
+		started = nil
+		_, _ = runGuardCheckArgs(t, repo.Dir, c.args...)
+		if strings.Join(started, "|") != strings.Join(c.want, "|") || running != 0 {
+			t.Errorf("%v: spinners %q, %d still running; want %q", c.args, started, running, c.want)
+		}
+	}
+	if got := guardSpinnerLabel(false, false, true); got != "gk guard: scanning tracked files and checking credentials" {
+		t.Errorf("--verify label = %q", got)
+	}
+
+	withAgentMode(t, true)
+	started = nil
+	_, _ = runGuardCheckCmd(t, repo.Dir)
+	if len(started) != 0 {
+		t.Errorf("agent mode started %q", started)
+	}
+}

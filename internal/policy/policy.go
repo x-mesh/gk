@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/x-mesh/gk/internal/git"
+	"github.com/x-mesh/gk/internal/secrets"
 )
 
 // Severity ranks a Violation. Lower values mean more severe so sorting a
@@ -64,6 +65,9 @@ type Input struct {
 	// Verify asks rules that can test a finding against its issuer (live
 	// credential checks) to do so. It adds network calls, so it is opt-in.
 	Verify bool
+	// Reveal asks rules that find secrets to put each matched value on its
+	// violation, for a user who asked to see it.
+	Reveal bool
 	// ArchiveReaders is how many git processes read committed archives at
 	// once. Each holds the archive it rebuilds in memory. Zero means the
 	// rule's default.
@@ -82,6 +86,9 @@ type Violation struct {
 	Hint     string   // optional fix suggestion
 	// Verification is set when Input.Verify ran a live check for this finding.
 	Verification *Verification
+	// Secret is the matched value, set only when Input.Reveal asked for it.
+	// It formats masked; Secret.Reveal returns the value.
+	Secret secrets.Secret
 }
 
 // Verification is the outcome of a live credential check. Provider is aws,

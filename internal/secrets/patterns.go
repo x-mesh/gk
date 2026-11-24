@@ -17,6 +17,9 @@ type Finding struct {
 	// Commit is the introducing git commit when the input is `git log -p` output.
 	Commit string `json:"commit,omitempty"`
 	Sample string // a masked sample suitable for display
+	// Secret is the value that Sample masks. It formats masked too; only
+	// Secret.Reveal returns the value.
+	Secret Secret `json:"-"`
 	// LineText, ContextBefore, and ContextAfter back verbose ("show the
 	// surrounding source") output. They are populated only by diff-aware
 	// callers (the push/ship scanner) and are all secret-masked, so printing
@@ -212,7 +215,7 @@ func newFinding(kind string, blobLine, header int, file, match string) Finding {
 	if header > 0 {
 		fileLine = blobLine - header
 	}
-	return Finding{Kind: kind, Line: blobLine, File: file, FileLine: fileLine, Sample: mask(match)}
+	return Finding{Kind: kind, Line: blobLine, File: file, FileLine: fileLine, Sample: mask(match), Secret: NewSecret(match)}
 }
 
 // SecretValue returns the substring worth masking for display. Patterns

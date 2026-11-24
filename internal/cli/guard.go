@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/x-mesh/gk/internal/secrets"
 	"github.com/x-mesh/gk/internal/secrets/gitleaksrules"
 	"github.com/x-mesh/gk/internal/secrets/verify"
+	"github.com/x-mesh/gk/internal/ui"
 )
 
 func init() {
@@ -84,6 +86,15 @@ do or when the response shows that the local clock is off. OCI gives the
 same 401 for a region the tenancy is not subscribed to, so rejected does not
 prove that the key was deleted. The status annotates the finding; it never
 removes it or changes its severity.
+
+--reveal prints the value of each secret found below its finding, and adds
+it to --json as "secret". The values stay in the terminal or the log that
+receives the output, so clear them afterwards. A value that spans lines,
+such as a private key, prints as an indented block of its lines, without
+the carriage return of a CRLF line end and without the line end at the end
+of the value; --json holds the value without change. A value with a control
+character prints quoted. Agent mode (GK_AGENT) refuses --reveal, because its
+output goes to a model.
 `,
 		RunE: runGuardCheck,
 	}
@@ -92,6 +103,7 @@ removes it or changes its severity.
 	checkCmd.Flags().Bool("history", false, "scan every commit reachable from any ref instead of the current files")
 	checkCmd.Flags().Bool("fetch", false, "fetch every remote first and scan the history, including branches that exist only on a remote (implies --history; network)")
 	checkCmd.Flags().Bool("verify", false, "check each AWS key, Slack token, GCP API key, and OCI API key found with its issuer (network; sends Slack and GCP values; never with --staged)")
+	checkCmd.Flags().Bool("reveal", false, "print the value of each secret found, unmasked (it stays in the terminal or log; refused in agent mode)")
 	checkCmd.Flags().Int("archive-readers", rules.DefaultArchiveReaders, "git processes that read the committed .jar/.war/.ear/.zip archives at once; each holds the archive it rebuilds in memory, so more is faster and uses more memory")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "history")
 	checkCmd.MarkFlagsMutuallyExclusive("staged", "verify")
@@ -217,6 +229,8 @@ type violationJSON struct {
 	Commit   string `json:"commit,omitempty"`
 	Message  string `json:"message"`
 	Hint     string `json:"hint,omitempty"`
+	// Secret is the matched value, present only with --reveal.
+	Secret string `json:"secret,omitempty"`
 	// Verification is present only on findings that --verify checked.
 	Verification *verificationJSON `json:"verification,omitempty"`
 }
@@ -240,6 +254,16 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 
+	reveal, _ := cmd.Flags().GetBool("reveal")
+	if reveal && AgentOut() {
+		// The agent output goes to a model, which must not receive secret
+		// values. Refused before the scan, so nothing is read.
+		return fmt.Errorf("gk guard check: --reveal is refused in agent mode (GK_AGENT), because the output goes to a model; run it in a terminal")
+	}
+	if reveal {
+		fmt.Fprintln(cmd.ErrOrStderr(), cellYellow("gk guard: --reveal prints secret values unmasked; clear them from the terminal or log afterwards"))
+	}
+
 	repo := RepoFlag()
 	runner := &git.ExecRunner{Dir: repo}
 	staged, _ := cmd.Flags().GetBool("staged")
@@ -251,7 +275,9 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	}
 	var fetchViolations []policy.Violation
 	if doFetch {
+		stop := guardSpinner("gk guard: fetching every remote")
 		fetchViolations = guardFetch(ctx, runner)
+		stop()
 	}
 
 	reg := guardRegistry()
@@ -264,8 +290,11 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 		ArchiveReaders: readers,
 	}
 	in.Verify, _ = cmd.Flags().GetBool("verify")
+	in.Reveal = reveal
 
+	stop := guardSpinner(guardSpinnerLabel(in.Staged, in.History, in.Verify))
 	violations, errs := reg.Evaluate(ctx, in)
+	stop()
 	violations = slices.Concat(ruleErrorViolations(errs), fetchViolations, violations)
 
 	asJSON, _ := cmd.Flags().GetBool("json")
@@ -300,6 +329,34 @@ func runGuardCheck(cmd *cobra.Command, _ []string) error {
 	}
 }
 
+// startGuardSpinner draws a spinner on stderr; it draws nothing when stderr is
+// not a terminal. A test replaces it.
+var startGuardSpinner = ui.StartBubbleSpinner
+
+// guardSpinner shows a spinner while a step runs, except in agent mode.
+func guardSpinner(msg string) (stop func()) {
+	if AgentOut() {
+		return func() {}
+	}
+	return startGuardSpinner(msg)
+}
+
+// guardSpinnerLabel names what the scan covers, as the notice does.
+func guardSpinnerLabel(staged, history, verify bool) string {
+	scope := "tracked files"
+	switch {
+	case staged:
+		scope = "staged changes"
+	case history:
+		scope = "the history of every ref"
+	}
+	label := "gk guard: scanning " + scope
+	if verify {
+		label += " and checking credentials"
+	}
+	return label
+}
+
 // guardResultJSON is the agent-mode result. A warning or an error makes the
 // check exit non-zero, and the envelope state is blocked to match.
 type guardResultJSON []violationJSON
@@ -324,6 +381,7 @@ func violationsJSON(vs []policy.Violation) []violationJSON {
 			Commit:   v.Commit,
 			Message:  v.Message,
 			Hint:     v.Hint,
+			Secret:   v.Secret.Reveal(),
 		}
 		if r := v.Verification; r != nil {
 			j.Verification = &verificationJSON{
@@ -358,29 +416,82 @@ func printViolationsNDJSON(w io.Writer, vs []policy.Violation) error {
 
 func printViolationsHuman(w io.Writer, vs []policy.Violation) {
 	if len(vs) == 0 {
-		fmt.Fprintln(w, "gk guard: no violations")
+		fmt.Fprintln(w, cellGreen("gk guard: no violations"))
 		return
 	}
 	for _, v := range vs {
 		loc := v.RuleID
 		if v.File != "" {
+			at := v.File
 			if v.Line > 0 {
-				loc = fmt.Sprintf("%s (%s:%d)", v.RuleID, v.File, v.Line)
-			} else {
-				loc = fmt.Sprintf("%s (%s)", v.RuleID, v.File)
+				at = fmt.Sprintf("%s:%d", v.File, v.Line)
 			}
+			loc = fmt.Sprintf("%s (%s)", v.RuleID, cellCyan(at))
 		}
 		if short := guardCommitShort(v.Commit); short != "" {
-			loc += " @" + short
+			loc += " " + cellYellow("@"+short)
 		}
-		fmt.Fprintf(w, "%-5s  %s  %s\n", v.Severity, loc, v.Message)
-		if v.Verification != nil {
-			fmt.Fprintf(w, "       verify: %s\n", verificationLabel(*v.Verification))
+		// Pad before coloring: the width of a colored string counts its codes.
+		fmt.Fprintf(w, "%s  %s  %s\n", severityColor(v.Severity, fmt.Sprintf("%-5s", v.Severity)), loc, v.Message)
+		if value := v.Secret.Reveal(); value != "" {
+			if lines := secretLines(value); len(lines) == 1 {
+				fmt.Fprintf(w, "       secret: %s\n", cellRed(lines[0]))
+			} else {
+				fmt.Fprintln(w, "       secret:")
+				for _, l := range lines {
+					fmt.Fprintf(w, "         %s\n", cellRed(l))
+				}
+			}
+		}
+		if r := v.Verification; r != nil {
+			label := verificationLabel(*r)
+			fmt.Fprintf(w, "       verify: %s%s\n", verifyStatusColor(r.Status), strings.TrimPrefix(label, r.Status))
 		}
 		if v.Hint != "" {
-			fmt.Fprintf(w, "       hint: %s\n", v.Hint)
+			fmt.Fprintf(w, "       %s\n", cellFaint("hint: "+v.Hint))
 		}
 	}
+}
+
+// secretLines splits a revealed value for the terminal: one entry per line of
+// a value that spans lines, such as a private key. A CRLF line end counts as
+// a line end, and the line end at the end of the value adds no entry: the
+// rows are for reading, and --json holds the value without change. A value
+// with a control character other than a line break or a tab is one quoted
+// entry, so the value cannot move the cursor or clear the screen. That is
+// ESC and the rest of C0, DEL, and the C1 range, where U+009B starts an
+// escape sequence as ESC [ does.
+func secretLines(s string) []string {
+	flat := strings.ReplaceAll(s, "\r\n", "\n")
+	if strings.ContainsFunc(flat, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
+		return []string{strconv.Quote(s)}
+	}
+	return strings.Split(strings.TrimRight(flat, "\n"), "\n")
+}
+
+// severityColor colors an error red, a warning yellow, and a notice faint.
+func severityColor(s policy.Severity, text string) string {
+	switch s {
+	case policy.SeverityError:
+		return cellRedBold(text)
+	case policy.SeverityWarn:
+		return cellYellow(text)
+	}
+	return cellFaint(text)
+}
+
+// verifyStatusColor colors a live credential red: it is the finding to act on
+// first. A rejected one is green, and a check that did not decide is yellow.
+func verifyStatusColor(status string) string {
+	switch status {
+	case string(verify.StatusValid):
+		return cellRedBold(status)
+	case string(verify.StatusRejected):
+		return cellGreen(status)
+	case string(verify.StatusUnknown):
+		return cellYellow(status)
+	}
+	return cellFaint(status)
 }
 
 func verificationLabel(r policy.Verification) string {

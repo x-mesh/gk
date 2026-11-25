@@ -179,7 +179,8 @@ func collectLocal(ctx context.Context, dir string, all bool, limit int) (localRe
 	if all {
 		scope = "repo"
 		var allKnown bool
-		branches, allKnown = collectAllLocal(ctx, runner)
+		branches, allKnown = collectAllLocal(ctx, runner,
+			&localWorktreeState{entries: st.Entries, op: op, resume: resume})
 		unpushedOK = allKnown
 		// Repo scope: the rollup answers for every branch and worktree, so
 		// a clean current branch no longer makes the repo clean. The stash
@@ -397,13 +398,43 @@ func localOperationText(op, resume string) string {
 // unpushedKnown is false when the repo has no remote-tracking refs at
 // all, in which case "not pushed" cannot be distinguished from "nothing
 // to push" and no branch may be called clean.
-func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBranchReport, unpushedKnown bool) {
+// localWorktreeState is what collectLocal already read for the invoking
+// worktree, so collectAllLocal does not run status and the operation probe
+// on it a second time.
+type localWorktreeState struct {
+	entries    []git.StatusEntry
+	op, resume string
+}
+
+func collectAllLocal(ctx context.Context, runner *git.ExecRunner, current *localWorktreeState) (out []localBranchReport, unpushedKnown bool) {
 	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {
 		return nil, false
 	}
 	unpushedKnown = anyRemoteTrackingRef(ctx, runner)
+	var unpushed map[string]int
+	var unpushedErr error
+	if unpushedKnown {
+		unpushed, unpushedErr = localUnpushedFn(ctx, runner)
+	}
 	wt := loadSwitchWorktrees(ctx, runner)
+
+	// worktreeState reads one worktree's uncommitted counts and paused
+	// operation; unknown is true when either could not be read.
+	worktreeState := func(path string) (r localBranchReport) {
+		if current != nil && path == wt.current.Path {
+			g := groupEntries(current.entries)
+			r.Unstaged = len(g.Modified) + len(g.Untracked)
+			r.Staged, r.Conflicts = len(g.Staged), len(g.Unmerged)
+			r.Operation, r.Resume = current.op, current.resume
+			return r
+		}
+		r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, path)
+		var opKnown bool
+		r.Operation, r.Resume, opKnown = worktreeOperation(ctx, path)
+		r.Unknown = r.Unknown || !opKnown
+		return r
+	}
 
 	// byBranch covers the *other* worktrees; the invoking one is held
 	// separately but is just as capable of holding uncommitted work.
@@ -421,20 +452,15 @@ func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBr
 		wg.Add(1)
 		go func(i int, b branchInfo) {
 			defer wg.Done()
-			r := localBranchReport{
-				Branch:     b.Name,
-				Upstream:   b.Upstream,
-				NoUpstream: b.Upstream == "",
-				Worktree:   holder[b.Name],
+			var r localBranchReport
+			if path := holder[b.Name]; path != "" {
+				r = worktreeState(path)
+				r.Worktree = path
 			}
+			r.Branch, r.Upstream, r.NoUpstream = b.Name, b.Upstream, b.Upstream == ""
 			if unpushedKnown {
-				r.Unpushed = unpushedCountFor(ctx, runner, b.Name)
-			}
-			if r.Worktree != "" {
-				r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, r.Worktree)
-				var opKnown bool
-				r.Operation, r.Resume, opKnown = worktreeOperation(ctx, r.Worktree)
-				r.Unknown = r.Unknown || !opKnown
+				r.Unpushed = unpushedLookup(unpushed, b.Name)
+				r.Unknown = r.Unknown || unpushedErr != nil
 			}
 			r.Clean = localBranchClean(r, unpushedKnown)
 			out[i] = r
@@ -455,16 +481,13 @@ func collectAllLocal(ctx context.Context, runner *git.ExecRunner) (out []localBr
 		}
 	}
 	for _, e := range detached {
-		r := localBranchReport{Branch: "(detached)", Detached: true, Worktree: e.Path}
-		r.Unstaged, r.Staged, r.Conflicts, r.Unknown = worktreeLocalCounts(ctx, e.Path)
+		r := worktreeState(e.Path)
+		r.Branch, r.Detached, r.Worktree = "(detached)", true, e.Path
 		if !r.Unknown {
 			var unknown bool
 			r.Unpushed, unknown = detachedOnlyCount(ctx, e.Path)
 			r.Unknown = unknown
 		}
-		var opKnown bool
-		r.Operation, r.Resume, opKnown = worktreeOperation(ctx, e.Path)
-		r.Unknown = r.Unknown || !opKnown
 		r.Clean = localBranchClean(r, unpushedKnown)
 		out = append(out, r)
 	}
@@ -491,20 +514,90 @@ func detachedOnlyCount(ctx context.Context, path string) (n int, unknown bool) {
 	return n, false
 }
 
-// unpushedCountFor counts commits on branch that exist on no remote.
-// `--not --remotes` (rather than @{upstream}) is deliberate: a branch with
-// no upstream still needs an answer, and "reachable from some remote ref"
-// is the property that decides whether another machine can see the work.
-func unpushedCountFor(ctx context.Context, runner *git.ExecRunner, branch string) int {
-	out, _, err := runner.Run(ctx, "rev-list", "--count", branch, "--not", "--remotes")
+// localUnpushedFn is unpushedByBranch; a test swaps it to make the read fail.
+var localUnpushedFn = unpushedByBranch
+
+// unpushedByBranch counts, for every local branch, the commits it reaches
+// that exist on no remote, keyed by full refname. `--not --remotes` (rather
+// than @{upstream}) is deliberate: a branch with no upstream still needs an
+// answer, and "reachable from some remote ref" is the property that decides
+// whether another machine can see the work.
+//
+// One git call lists every such commit with its parents and the branches
+// that point at it; a per-branch rev-list cost one process per branch, which
+// dominated a scan over repos with hundreds of branches. The count walks
+// parents inside that set only, and that is exact: an ancestor of a commit a
+// remote reaches is reached by the remote too, so no unpushed commit hides
+// behind a pushed one. A branch absent from the map has no unpushed commits.
+func unpushedByBranch(ctx context.Context, runner *git.ExecRunner) (map[string]int, error) {
+	out, stderr, err := runner.Run(ctx, "log", "--no-show-signature", "--branches", "--not", "--remotes",
+		"--decorate-refs=refs/heads/", "--decorate=full", "--format=%H %P%x09%D")
 	if err != nil {
-		return 0
+		return nil, fmt.Errorf("unpushed commits: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		return 0
+	index := map[string]int{}
+	var parents [][]string
+	tips := map[string]int{}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		hashes, decor, _ := strings.Cut(line, "\t")
+		f := strings.Fields(hashes)
+		if len(f) == 0 {
+			continue
+		}
+		i := len(parents)
+		index[f[0]] = i
+		parents = append(parents, f[1:])
+		for _, ref := range strings.Split(decor, ", ") {
+			ref = strings.TrimPrefix(ref, "HEAD -> ")
+			if strings.HasPrefix(ref, "refs/heads/") {
+				tips[ref] = i
+			}
+		}
 	}
-	return n
+	// Parents resolved to indexes once; a parent outside the set is pushed.
+	edges := make([][]int, len(parents))
+	for i, ps := range parents {
+		for _, p := range ps {
+			if j, ok := index[p]; ok {
+				edges[i] = append(edges[i], j)
+			}
+		}
+	}
+	counts := make(map[string]int, len(tips))
+	seen := make([]int, len(edges)) // generation marks: no clearing per tip
+	stack := make([]int, 0, len(edges))
+	gen := 0
+	for ref, tip := range tips {
+		gen++
+		n := 0
+		stack = append(stack[:0], tip)
+		seen[tip] = gen
+		for len(stack) > 0 {
+			c := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			n++
+			for _, p := range edges[c] {
+				if seen[p] != gen {
+					seen[p] = gen
+					stack = append(stack, p)
+				}
+			}
+		}
+		counts[ref] = n
+	}
+	return counts, nil
+}
+
+// unpushedLookup finds a branch from listLocalBranches in unpushedByBranch's
+// map. %(refname:short) writes "heads/x" when a tag x also exists.
+func unpushedLookup(counts map[string]int, branch string) int {
+	if n, ok := counts["refs/heads/"+branch]; ok {
+		return n
+	}
+	return counts["refs/"+branch]
 }
 
 // worktreeLocalCounts counts uncommitted work in one worktree. It does not

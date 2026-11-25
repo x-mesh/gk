@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.168.0] - 2026-11-25
+
 ### Added
 
 - `gk local` checks many repos. Outside a git repo, it finds the repos below the current directory (depth 2) and checks each one with the `--all` rules: uncommitted files, commits on no remote, the stash, and every branch and worktree. `--scan DIR` and `--repos PATH` select the repos, and `--depth` sets the depth. The text view starts with the counts, such as `121 repos · 81 need action · 40 clean`, and lists only the repos with stranded work, in path order. A repo with one stranded row uses one line, and the color of its `●` marker gives the worst item: red for work that can be lost, yellow for uncommitted files only, grey for a repo that gk could not verify. A spinner on stderr shows the progress. On a directory with 121 repos, the check takes approximately 2.5 seconds: gk counts the unpushed commits of all branches with two git calls for each repo, not one call for each branch. gk checks each repo for at most 10 seconds, and a repo that it cannot check counts as not clean. `--json` gives `scope: "multi"`, `repos[]`, and `counts`. In agent mode (`GK_AGENT=1`), gk does not scan automatically: outside a repo it returns `not-a-repo` with the remedy `gk local --scan .`.

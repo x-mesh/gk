@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fatih/color"
@@ -431,6 +432,51 @@ func TestLocal_UnreadableOperationIsNotClean(t *testing.T) {
 
 // A rebase stopped on a conflict is unfinished work even before anything is
 // committed: the report must name it and point at the command that resumes.
+// --all reuses the paused operation that collectLocal read for the invoking
+// worktree. On a branch, as in a merge stopped on a conflict, that branch's
+// row keeps the operation and its resume command, and is not clean.
+func TestCollectLocal_ReusedOperationOnTheCurrentBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	r.CreateBranch("side")
+	r.WriteFile("c.txt", "side\n")
+	r.Commit("side edits c")
+	r.Checkout("main")
+	r.WriteFile("c.txt", "main\n")
+	r.Commit("main edits c")
+	if _, err := r.TryGit("merge", "side"); err == nil {
+		t.Fatal("precondition: the merge must stop on a conflict")
+	}
+	// Only the first read can succeed: the row of the current branch must
+	// carry the operation that collectLocal read, not a read of its own.
+	prev := localDetectFn
+	t.Cleanup(func() { localDetectFn = prev })
+	var calls atomic.Int64
+	localDetectFn = func(ctx context.Context, path string) (*gitstate.State, error) {
+		if calls.Add(1) > 1 {
+			return nil, errors.New("read again")
+		}
+		return prev(ctx, path)
+	}
+
+	rep, err := collectLocal(context.Background(), r.Dir, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainRep, ok := branchByName(rep.Branches, "main")
+	if !ok {
+		t.Fatalf("no row for main in %+v", rep.Branches)
+	}
+	if !strings.HasPrefix(mainRep.Operation, "merge") || mainRep.Resume == "" || mainRep.Unknown || mainRep.Clean {
+		t.Errorf("main: want the reused merge operation with its resume command, known and not clean; got %+v", mainRep)
+	}
+	if rep.Clean {
+		t.Error("a paused merge is not clean")
+	}
+}
+
 func TestCollectLocal_PausedRebase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")

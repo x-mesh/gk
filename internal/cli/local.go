@@ -389,15 +389,6 @@ func localOperationText(op, resume string) string {
 	return color.RedString("%s → %s", op, resume)
 }
 
-// collectAllLocal reports every local branch's local-only state plus the
-// worktree holding it. This is what --all exists for: the current branch
-// alone cannot answer "is any work stranded on this machine", because a
-// branch that was never pushed is invisible from the current branch's
-// point of view — and invisible from every other machine's too.
-//
-// unpushedKnown is false when the repo has no remote-tracking refs at
-// all, in which case "not pushed" cannot be distinguished from "nothing
-// to push" and no branch may be called clean.
 // localWorktreeState is what collectLocal already read for the invoking
 // worktree, so collectAllLocal does not run status and the operation probe
 // on it a second time.
@@ -406,6 +397,16 @@ type localWorktreeState struct {
 	op, resume string
 }
 
+// collectAllLocal reports every local branch's local-only state plus the
+// worktree holding it. This is what --all exists for: the current branch
+// alone cannot answer "is any work stranded on this machine", because a
+// branch that was never pushed is invisible from the current branch's
+// point of view — and invisible from every other machine's too. current is
+// the invoking worktree's state when the caller already read it, else nil.
+//
+// unpushedKnown is false when the repo has no remote-tracking refs at
+// all, in which case "not pushed" cannot be distinguished from "nothing
+// to push" and no branch may be called clean.
 func collectAllLocal(ctx context.Context, runner *git.ExecRunner, current *localWorktreeState) (out []localBranchReport, unpushedKnown bool) {
 	branches, err := listLocalBranches(ctx, runner)
 	if err != nil {

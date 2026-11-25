@@ -523,38 +523,44 @@ var localUnpushedFn = unpushedByBranch
 // answer, and "reachable from some remote ref" is the property that decides
 // whether another machine can see the work.
 //
-// One git call lists every such commit with its parents and the branches
-// that point at it; a per-branch rev-list cost one process per branch, which
-// dominated a scan over repos with hundreds of branches. The count walks
-// parents inside that set only, and that is exact: an ancestor of a commit a
-// remote reaches is reached by the remote too, so no unpushed commit hides
-// behind a pushed one. A branch absent from the map has no unpushed commits.
+// One git call lists every such commit with its parents, and one more lists
+// the branch tips; a per-branch rev-list cost one process per branch, which
+// dominated a scan over repos with hundreds of branches. The tips come from
+// for-each-ref, not from the decorations of the log: decorations follow user
+// config such as log.excludeDecoration, and a branch whose tip lost its
+// decoration would count 0. The count walks parents inside that set only,
+// and that is exact: an ancestor of a commit a remote reaches is reached by
+// the remote too, so no unpushed commit hides behind a pushed one. A branch
+// absent from the map, or whose tip is outside the set, has no unpushed
+// commits.
 func unpushedByBranch(ctx context.Context, runner *git.ExecRunner) (map[string]int, error) {
+	heads, stderr, err := runner.Run(ctx, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/")
+	if err != nil {
+		return nil, fmt.Errorf("unpushed commits: %s: %w", strings.TrimSpace(string(stderr)), err)
+	}
 	out, stderr, err := runner.Run(ctx, "log", "--no-show-signature", "--branches", "--not", "--remotes",
-		"--decorate-refs=refs/heads/", "--decorate=full", "--format=%H %P%x09%D")
+		"--format=%H %P")
 	if err != nil {
 		return nil, fmt.Errorf("unpushed commits: %s: %w", strings.TrimSpace(string(stderr)), err)
 	}
 	index := map[string]int{}
 	var parents [][]string
-	tips := map[string]int{}
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		hashes, decor, _ := strings.Cut(line, "\t")
-		f := strings.Fields(hashes)
+		f := strings.Fields(line)
 		if len(f) == 0 {
 			continue
 		}
-		i := len(parents)
-		index[f[0]] = i
+		index[f[0]] = len(parents)
 		parents = append(parents, f[1:])
-		for _, ref := range strings.Split(decor, ", ") {
-			ref = strings.TrimPrefix(ref, "HEAD -> ")
-			if strings.HasPrefix(ref, "refs/heads/") {
-				tips[ref] = i
-			}
+	}
+	tips := map[string]int{}
+	for _, line := range strings.Split(strings.TrimRight(string(heads), "\n"), "\n") {
+		hash, ref, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if i, ok := index[hash]; ok {
+			tips[ref] = i
 		}
 	}
 	// Parents resolved to indexes once; a parent outside the set is pushed.

@@ -228,29 +228,38 @@ func TestUnpushedByBranch_MatchesPerBranchRevList(t *testing.T) {
 
 	runner := &git.ExecRunner{Dir: r.Dir}
 	ctx := context.Background()
-	counts, err := unpushedByBranch(ctx, runner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	branches, err := listLocalBranches(ctx, runner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sawQualified := false
-	for _, b := range branches {
-		sawQualified = sawQualified || strings.HasPrefix(b.Name, "heads/")
-		full := "refs/heads/" + strings.TrimPrefix(b.Name, "heads/")
-		want, _ := strconv.Atoi(strings.TrimSpace(r.RunGit("rev-list", "--count", full, "--not", "--remotes")))
-		if got := unpushedLookup(counts, b.Name); got != want {
-			t.Errorf("%s: got %d unpushed, rev-list says %d", b.Name, got, want)
+	check := func(setting string) {
+		t.Helper()
+		counts, err := unpushedByBranch(ctx, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		branches, err := listLocalBranches(ctx, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sawQualified := false
+		for _, b := range branches {
+			sawQualified = sawQualified || strings.HasPrefix(b.Name, "heads/")
+			full := "refs/heads/" + strings.TrimPrefix(b.Name, "heads/")
+			want, _ := strconv.Atoi(strings.TrimSpace(r.RunGit("rev-list", "--count", full, "--not", "--remotes")))
+			if got := unpushedLookup(counts, b.Name); got != want {
+				t.Errorf("%s: %s: got %d unpushed, rev-list says %d", setting, b.Name, got, want)
+			}
+		}
+		if !sawQualified {
+			t.Fatalf("%s: precondition: the tag should make git print the branch as heads/amb", setting)
+		}
+		if counts["refs/heads/merged"] != 4 {
+			t.Errorf("%s: merged: want 4 (shared local-only, never pushed, merge, after merge), got %d", setting, counts["refs/heads/merged"])
 		}
 	}
-	if !sawQualified {
-		t.Fatal("precondition: the tag should make git print the branch as heads/amb")
-	}
-	if counts["refs/heads/merged"] != 4 {
-		t.Errorf("merged: want 4 (shared local-only, never pushed, merge, after merge), got %d", counts["refs/heads/merged"])
-	}
+	check("default config")
+	// The counts must not depend on how the user's config decorates log
+	// output: a branch that lost its decoration once counted 0.
+	r.RunGit("config", "log.excludeDecoration", "refs/heads/")
+	r.RunGit("config", "log.decorate", "no")
+	check("log.excludeDecoration=refs/heads/")
 }
 
 // Untracked files count as stranded work. loadWorktreeDirtyStates drops

@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fatih/color"
@@ -169,7 +171,7 @@ func TestCollectAllLocal_FindsBranchesTheCurrentScopeCannotSee(t *testing.T) {
 		t.Fatalf("precondition: main should look clean, got ok=%v commits=%d", ok, len(commits))
 	}
 
-	branches, known := collectAllLocal(ctx, runner)
+	branches, known := collectAllLocal(ctx, runner, nil)
 	if !known {
 		t.Fatal("a remote exists → push state must be knowable")
 	}
@@ -202,6 +204,65 @@ func TestCollectAllLocal_FindsBranchesTheCurrentScopeCannotSee(t *testing.T) {
 	}
 }
 
+// unpushedByBranch replaced one rev-list per branch; its counts must match
+// that per-branch answer on shapes the graph walk could get wrong: a merge
+// joining two unpushed lines, two branches on one tip, a branch on a pushed
+// commit, and a branch whose short name git qualifies because a tag shares it.
+func TestUnpushedByBranch_MatchesPerBranchRevList(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	r.Checkout("shared")
+	r.CreateBranch("merged")
+	r.RunGit("merge", "-q", "--no-ff", "--no-edit", "orphaned")
+	r.WriteFile("m.txt", "m\n")
+	r.Commit("after merge")
+	r.RunGit("branch", "twin", "merged")
+	r.RunGit("branch", "at-main", "main")
+	r.Checkout("main")
+	r.CreateBranch("amb")
+	r.WriteFile("a.txt", "a\n")
+	r.Commit("amb only")
+	r.RunGit("tag", "amb", "main")
+	r.Checkout("main")
+
+	runner := &git.ExecRunner{Dir: r.Dir}
+	ctx := context.Background()
+	check := func(setting string) {
+		t.Helper()
+		counts, err := unpushedByBranch(ctx, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		branches, err := listLocalBranches(ctx, runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sawQualified := false
+		for _, b := range branches {
+			sawQualified = sawQualified || strings.HasPrefix(b.Name, "heads/")
+			full := "refs/heads/" + strings.TrimPrefix(b.Name, "heads/")
+			want, _ := strconv.Atoi(strings.TrimSpace(r.RunGit("rev-list", "--count", full, "--not", "--remotes")))
+			if got := unpushedLookup(counts, b.Name); got != want {
+				t.Errorf("%s: %s: got %d unpushed, rev-list says %d", setting, b.Name, got, want)
+			}
+		}
+		if !sawQualified {
+			t.Fatalf("%s: precondition: the tag should make git print the branch as heads/amb", setting)
+		}
+		if counts["refs/heads/merged"] != 4 {
+			t.Errorf("%s: merged: want 4 (shared local-only, never pushed, merge, after merge), got %d", setting, counts["refs/heads/merged"])
+		}
+	}
+	check("default config")
+	// The counts must not depend on how the user's config decorates log
+	// output: a branch that lost its decoration once counted 0.
+	r.RunGit("config", "log.excludeDecoration", "refs/heads/")
+	r.RunGit("config", "log.decorate", "no")
+	check("log.excludeDecoration=refs/heads/")
+}
+
 // Untracked files count as stranded work. loadWorktreeDirtyStates drops
 // them as picker noise, which is why --all does not reuse it: a file you
 // wrote and never added is exactly what gets lost on a machine switch.
@@ -212,13 +273,32 @@ func TestCollectAllLocal_CountsUntrackedInWorktree(t *testing.T) {
 	r := newAllScopeRepo(t)
 	r.WriteFile("scratch.txt", "never added\n") // untracked, not committed
 
-	branches, _ := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	branches, _ := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir}, nil)
 	mainRep, _ := branchByName(branches, "main")
 	if mainRep.Unstaged == 0 {
 		t.Errorf("untracked file must count as local-only work, got %+v", mainRep)
 	}
 	if mainRep.Clean {
 		t.Error("a branch holding an untracked file is not clean")
+	}
+}
+
+// collectLocal hands its own status read to collectAllLocal instead of a
+// second status call; the row of the invoking worktree must still carry it.
+func TestCollectLocal_AllReusesCurrentWorktreeStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	r.WriteFile("scratch.txt", "never added\n")
+
+	rep, err := collectLocal(context.Background(), r.Dir, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainRep, _ := branchByName(rep.Branches, "main")
+	if mainRep.Unstaged != 1 || mainRep.Clean {
+		t.Errorf("main holds one untracked file, got %+v", mainRep)
 	}
 }
 
@@ -229,7 +309,7 @@ func TestCollectAllLocal_NoRemoteIsNeverClean(t *testing.T) {
 		t.Skip("integration test skipped in short mode")
 	}
 	r := testutil.NewRepo(t)
-	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir}, nil)
 	if known {
 		t.Fatal("no remote-tracking refs → push state must be unknown")
 	}
@@ -278,7 +358,7 @@ func TestCollectAllLocal_DetachedWorktree(t *testing.T) {
 	gitIn("commit", "-q", "-m", "commit on a detached HEAD")
 	writeIn("scratch.txt", "never added\n")
 
-	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir}, nil)
 	if !known {
 		t.Fatal("a remote exists → push state must be knowable")
 	}
@@ -298,6 +378,30 @@ func TestCollectAllLocal_DetachedWorktree(t *testing.T) {
 
 // When the state of a paused operation cannot be read, it is not "no
 // operation": a worktree row turns unknown and the current-branch check fails.
+// The per-branch rev-list it replaced read a failure as 0 unpushed, so a
+// branch could pass as clean; a failed read must mark every branch unknown.
+func TestCollectAllLocal_UnreadableUnpushedIsNotClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	prev := localUnpushedFn
+	t.Cleanup(func() { localUnpushedFn = prev })
+	localUnpushedFn = func(context.Context, *git.ExecRunner) (map[string]int, error) {
+		return nil, errors.New("log failed")
+	}
+
+	branches, _ := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir}, nil)
+	if len(branches) == 0 {
+		t.Fatal("want the branch rows even when the unpushed read fails")
+	}
+	for _, b := range branches {
+		if !b.Unknown || b.Clean {
+			t.Errorf("%s: want unknown and not clean, got %+v", b.Branch, b)
+		}
+	}
+}
+
 func TestLocal_UnreadableOperationIsNotClean(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
@@ -312,7 +416,7 @@ func TestLocal_UnreadableOperationIsNotClean(t *testing.T) {
 		return nil, errors.New("cannot read the git dir")
 	}
 
-	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir})
+	branches, known := collectAllLocal(context.Background(), &git.ExecRunner{Dir: r.Dir}, nil)
 	if !known {
 		t.Fatal("a remote exists → push state must be knowable")
 	}
@@ -328,6 +432,51 @@ func TestLocal_UnreadableOperationIsNotClean(t *testing.T) {
 
 // A rebase stopped on a conflict is unfinished work even before anything is
 // committed: the report must name it and point at the command that resumes.
+// --all reuses the paused operation that collectLocal read for the invoking
+// worktree. On a branch, as in a merge stopped on a conflict, that branch's
+// row keeps the operation and its resume command, and is not clean.
+func TestCollectLocal_ReusedOperationOnTheCurrentBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+	r := newAllScopeRepo(t)
+	r.CreateBranch("side")
+	r.WriteFile("c.txt", "side\n")
+	r.Commit("side edits c")
+	r.Checkout("main")
+	r.WriteFile("c.txt", "main\n")
+	r.Commit("main edits c")
+	if _, err := r.TryGit("merge", "side"); err == nil {
+		t.Fatal("precondition: the merge must stop on a conflict")
+	}
+	// Only the first read can succeed: the row of the current branch must
+	// carry the operation that collectLocal read, not a read of its own.
+	prev := localDetectFn
+	t.Cleanup(func() { localDetectFn = prev })
+	var calls atomic.Int64
+	localDetectFn = func(ctx context.Context, path string) (*gitstate.State, error) {
+		if calls.Add(1) > 1 {
+			return nil, errors.New("read again")
+		}
+		return prev(ctx, path)
+	}
+
+	rep, err := collectLocal(context.Background(), r.Dir, true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainRep, ok := branchByName(rep.Branches, "main")
+	if !ok {
+		t.Fatalf("no row for main in %+v", rep.Branches)
+	}
+	if !strings.HasPrefix(mainRep.Operation, "merge") || mainRep.Resume == "" || mainRep.Unknown || mainRep.Clean {
+		t.Errorf("main: want the reused merge operation with its resume command, known and not clean; got %+v", mainRep)
+	}
+	if rep.Clean {
+		t.Error("a paused merge is not clean")
+	}
+}
+
 func TestCollectLocal_PausedRebase(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
